@@ -343,6 +343,85 @@ func detectVirtualVideoDisplayTitle(source *jsons.Item) {
 	}
 }
 
+// detectSubtitleStreamsDeliveryUrl 将外挂字幕改为 Emby 可直接请求的 DeliveryUrl。
+func detectSubtitleStreamsDeliveryUrl(source *jsons.Item, apiKey string) {
+	if source == nil || source.Type() != jsons.JsonTypeObj || strings.TrimSpace(apiKey) == "" {
+		return
+	}
+
+	mediaSourceID, ok := source.Attr("Id").String()
+	if !ok || mediaSourceID == "" {
+		return
+	}
+	itemID, ok := source.Attr("ItemId").String()
+	if !ok || itemID == "" {
+		return
+	}
+
+	mediaStreams, ok := source.Attr("MediaStreams").Done()
+	if !ok || mediaStreams.Type() != jsons.JsonTypeArr {
+		return
+	}
+
+	mediaStreams.RangeArr(func(_ int, stream *jsons.Item) error {
+		if stream.Attr("Type").Val() != "Subtitle" {
+			return nil
+		}
+
+		isExternal, _ := stream.Attr("IsExternal").Bool()
+		if !isExternal {
+			return nil
+		}
+
+		deliveryMethod, _ := stream.Attr("DeliveryMethod").String()
+		if deliveryMethod == "External" {
+			return nil
+		}
+
+		subtitleIndex, ok := stream.Attr("Index").Int()
+		if !ok {
+			return nil
+		}
+
+		codec, _ := stream.Attr("Codec").String()
+		u := url.URL{
+			Path: fmt.Sprintf(
+				"/Videos/%s/%s/Subtitles/%d/0/Stream.%s",
+				itemID,
+				mediaSourceID,
+				subtitleIndex,
+				subtitleDeliveryFormat(codec),
+			),
+		}
+		query := u.Query()
+		query.Set(QueryApiKeyName, apiKey)
+		u.RawQuery = query.Encode()
+
+		stream.Put("DeliveryMethod", jsons.FromValue("External"))
+		stream.Put("DeliveryUrl", jsons.FromValue(u.String()))
+		return nil
+	})
+}
+
+func subtitleDeliveryFormat(codec string) string {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	switch codec {
+	case "pgssub", "pgs", "hdmv_pgs_subtitle", "sup":
+		return "sup"
+	case "":
+		return "vtt"
+	}
+
+	for _, character := range codec {
+		isASCIIAlpha := character >= 'a' && character <= 'z'
+		isASCIIDigit := character >= '0' && character <= '9'
+		if !isASCIIAlpha && !isASCIIDigit {
+			return "vtt"
+		}
+	}
+	return codec
+}
+
 // simplifyMediaName 简化 MediaSource 中的视频名称, 如 '1080p HEVC'
 func simplifyMediaName(source *jsons.Item) {
 	if source == nil || source.Type() != jsons.JsonTypeObj {
