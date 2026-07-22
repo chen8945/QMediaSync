@@ -148,7 +148,13 @@ func New(rawJson string) (i *Item, err error) {
 
 	// 尝试转换成基础类型
 	var v any
-	if err := json.Unmarshal([]byte(rawJson), &v); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(rawJson))
+	decoder.UseNumber()
+	if err := decoder.Decode(&v); err != nil {
+		return nil, fmt.Errorf("不支持的字符串: %s", rawJson)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("不支持的字符串: %s", rawJson)
 	}
 	return FromValue(v), nil

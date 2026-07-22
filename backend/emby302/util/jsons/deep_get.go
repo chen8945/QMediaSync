@@ -1,5 +1,11 @@
 package jsons
 
+import (
+	"encoding/json"
+	"math"
+	"strconv"
+)
+
 // TempItem 临时暂存 Item 对象
 type TempItem struct {
 
@@ -67,9 +73,36 @@ func (ti *TempItem) Int() (int, bool) {
 	if ti.item == nil || ti.item.jType != JsonTypeVal {
 		return 0, false
 	}
-	if val, ok := ti.item.val.(int); ok {
+
+	switch val := ti.item.val.(type) {
+	case int:
 		return val, true
+	case int64:
+		maxInt := int64(^uint(0) >> 1)
+		minInt := -maxInt - 1
+		if val < minInt || val > maxInt {
+			return 0, false
+		}
+		return int(val), true
+	case json.Number:
+		intVal, err := val.Int64()
+		if err != nil {
+			return 0, false
+		}
+		maxInt := int64(^uint(0) >> 1)
+		minInt := -maxInt - 1
+		if intVal < minInt || intVal > maxInt {
+			return 0, false
+		}
+		return int(intVal), true
+	case float64:
+		intLimit := math.Ldexp(1, strconv.IntSize-1)
+		if math.IsNaN(val) || math.IsInf(val, 0) || math.Trunc(val) != val || val < -intLimit || val >= intLimit {
+			return 0, false
+		}
+		return int(val), true
 	}
+
 	return 0, false
 }
 
@@ -78,13 +111,18 @@ func (ti *TempItem) Int64() (int64, bool) {
 	if ti.item == nil || ti.item.jType != JsonTypeVal {
 		return 0, false
 	}
-	if val, ok := ti.item.val.(int); ok {
+	switch val := ti.item.val.(type) {
+	case int:
 		return int64(val), true
-	}
-	if val, ok := ti.item.val.(int64); ok {
+	case int64:
 		return val, true
-	}
-	if val, ok := ti.item.val.(float64); ok {
+	case json.Number:
+		intVal, err := val.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return intVal, true
+	case float64:
 		return int64(val), true
 	}
 	return 0, false
@@ -95,8 +133,15 @@ func (ti *TempItem) Float() (float64, bool) {
 	if ti.item == nil || ti.item.jType != JsonTypeVal {
 		return 0, false
 	}
-	if val, ok := ti.item.val.(float64); ok {
+	switch val := ti.item.val.(type) {
+	case float64:
 		return val, true
+	case json.Number:
+		floatVal, err := val.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return floatVal, true
 	}
 	return 0, false
 }
@@ -132,7 +177,7 @@ func (ti *TempItem) Set(val any) *TempItem {
 	}
 
 	switch val.(type) {
-	case bool, string, int, float64, int64:
+	case bool, string, int, float64, int64, json.Number:
 		ti.item.val = val
 	default:
 	}
