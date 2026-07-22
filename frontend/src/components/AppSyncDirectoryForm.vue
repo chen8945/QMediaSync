@@ -1074,7 +1074,7 @@
 
     <el-dialog
       v-model="showDirDialog"
-      title="选择文件夹"
+      :title="directoryDialogTitle"
       :width="checkIsMobile ? '90%' : '600px'"
       :close-on-click-modal="false"
       body-class="directory-selector"
@@ -1082,6 +1082,7 @@
       <div class="dir-selector">
         <DirectorySelector
           v-model="tempSelectedDir"
+          :root-id="initialRootId"
           :root-path="initialRootPath"
           :source-type="selectedSourceType"
           :account-id="Number(selectedAccountId)"
@@ -1225,8 +1226,18 @@ const accountsLoading = ref(false)
 const showDirDialog = ref(false)
 const selectedDirPath = ref('')
 const tempSelectedDir = ref<DirInfo | null>(null)
+const initialRootId = ref('')
 const initialRootPath = ref('')
 const directorySelectTarget = ref<DirectorySelectTarget>('source')
+const directoryDialogTitle = computed(() => {
+  const titles: Record<DirectorySelectTarget, string> = {
+    source: '选择网盘来源目录',
+    strmLocal: '选择 STRM 存放目录',
+    uploadMonitor: '选择监控目录',
+    uploadRemote: '选择上传目标目录',
+  }
+  return titles[directorySelectTarget.value]
+})
 const selectedSourceType = ref('')
 const selectedAccountId: Ref<number | string> = ref(0)
 const activeDirectoryUploadRuleClientId = ref<number | null>(null)
@@ -1902,6 +1913,7 @@ const openDirSelector = async (isLocalPath: boolean = false) => {
   directorySelectTarget.value = isLocalPath ? 'strmLocal' : 'source'
   selectedSourceType.value = isLocalPath ? 'local' : form.source_type
   selectedAccountId.value = form.account_id
+  initialRootId.value = ''
   initialRootPath.value = ''
 }
 
@@ -1912,6 +1924,7 @@ const openDirectoryUploadMonitorSelector = (clientId: number) => {
   directorySelectTarget.value = 'uploadMonitor'
   selectedSourceType.value = 'local'
   selectedAccountId.value = 0
+  initialRootId.value = ''
   initialRootPath.value = ''
 }
 
@@ -1922,6 +1935,7 @@ const openDirectoryUploadRemoteSelector = (clientId: number) => {
   directorySelectTarget.value = 'uploadRemote'
   selectedSourceType.value = '115'
   selectedAccountId.value = form.account_id
+  initialRootId.value = form.base_cid || ''
   initialRootPath.value = selectedDirPath.value || form.remote_path || ''
 }
 
@@ -2176,7 +2190,8 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 500px;
+  height: min(500px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
 }
 
 .dialog-footer {
