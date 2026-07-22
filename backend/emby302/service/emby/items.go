@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"qmediasync/emby302/config"
 	"qmediasync/emby302/util/bytess"
+	"qmediasync/emby302/util/encrypts"
 	"qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/jsons"
 	"qmediasync/emby302/util/logs"
@@ -30,6 +32,9 @@ const (
 
 	// ResortMinNum 至少请求多少个 Item 才会走重排序逻辑
 	ResortMinNum = 300
+
+	// RandomItemsMaxLimit 随机 Items 回源与缓存允许的最大条目数
+	RandomItemsMaxLimit = 500
 )
 
 // ResortRandomItems 对随机 Items 列表进行重排序
@@ -93,12 +98,7 @@ func ResortRandomItems(c *gin.Context) {
 
 // RandomItemsWithLimit 代理原始的随机列表接口
 func RandomItemsWithLimit(c *gin.Context) {
-	u := c.Request.URL
-	u.Path = strings.TrimSuffix(u.Path, "/with_limit")
-	q := u.Query()
-	q.Set("Limit", "500")
-	q.Del("SortOrder")
-	u.RawQuery = q.Encode()
+	u := randomItemsUpstreamURL(c.Request.URL)
 	embyHost := config.C.Emby.Host
 	c.Request.Header.Del("Accept-Encoding")
 	resp, err := https.Request(c.Request.Method, embyHost+u.String()).
@@ -127,17 +127,45 @@ func RandomItemsWithLimit(c *gin.Context) {
 	io.CopyBuffer(c.Writer, resp.Body, buf.Bytes())
 }
 
+// randomItemsUpstreamURL 构造随机 Items 的内部回源地址，不修改客户端请求 URL。
+func randomItemsUpstreamURL(requestURL *url.URL) *url.URL {
+	u := *requestURL
+	u.Path = strings.TrimSuffix(u.Path, "/with_limit")
+
+	q := u.Query()
+	q.Set("Limit", randomItemsEffectiveLimit(q))
+	q.Del("SortOrder")
+	u.RawQuery = q.Encode()
+	return &u
+}
+
+// randomItemsEffectiveLimit 返回随机 Items 实际回源时使用的 Limit。
+func randomItemsEffectiveLimit(query url.Values) string {
+	limit, err := strconv.ParseUint(strings.TrimSpace(query.Get("Limit")), 10, 64)
+	if err != nil || limit > RandomItemsMaxLimit {
+		return strconv.Itoa(RandomItemsMaxLimit)
+	}
+	return strconv.FormatUint(limit, 10)
+}
+
 // calcRandomItemsCacheKey 计算随机 Items 在缓存空间中的 key 值
 func calcRandomItemsCacheKey(c *gin.Context) string {
-	return c.Query("IncludeItemTypes") +
-		c.Query("Recursive") +
-		c.Query("Fields") +
-		c.Query("EnableImageTypes") +
-		c.Query("ImageTypeLimit") +
-		c.Query("IsFavorite") +
-		c.Query("IsFolder") +
-		c.Query("ProjectToMedia") +
-		c.Query("ParentId")
+	query := c.Request.URL.Query()
+	_, _, apiKey := getApiKey(c)
+	cacheIdentity := url.Values{
+		"ApiKey":           {apiKey},
+		"EnableImageTypes": {query.Get("EnableImageTypes")},
+		"Fields":           {query.Get("Fields")},
+		"ImageTypeLimit":   {query.Get("ImageTypeLimit")},
+		"IncludeItemTypes": {query.Get("IncludeItemTypes")},
+		"IsFavorite":       {query.Get("IsFavorite")},
+		"IsFolder":         {query.Get("IsFolder")},
+		"Limit":            {randomItemsEffectiveLimit(query)},
+		"ParentId":         {query.Get("ParentId")},
+		"ProjectToMedia":   {query.Get("ProjectToMedia")},
+		"Recursive":        {query.Get("Recursive")},
+	}
+	return encrypts.Md5Hash(cacheIdentity.Encode())
 }
 
 // ProxyAddItemsPreviewInfo 代理 Items 接口, 并附带上转码版本信息
