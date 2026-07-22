@@ -13,6 +13,7 @@ Thumbs.db
 .agents/
 .claude/
 .codex/
+.trellis/
 skills-lock.json
 
 # Logs and temporary files
