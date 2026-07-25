@@ -592,29 +592,7 @@ func (s *SyncStrm) addMetaDownloadTask(file *models.SyncFile) error {
 // 遍历同步缓存，添加下载任务
 // 先提取下载队列中未完成的任务，再遍历内存同步缓存，把需要下载且未在队列中的文件加入下载队列
 func (s *SyncStrm) AddDownloadTaskFromMemCache() {
-	// 获取未完成的下载任务
-	existingDownloads := make(map[string]bool)
-	offset := 0
-	limit := 1000
-	type existDownloadTask struct {
-		RemoteFileId string `json:"remote_file_id"`
-	}
-	for {
-		var batch []existDownloadTask
-		err := db.Db.Model(models.DbDownloadTask{}).Select("remote_file_id").Where("source_type = ? AND status IN ?", s.Account.SourceType, []int{int(models.DownloadStatusPending), int(models.DownloadStatusDownloading)}).
-			Offset(offset).Limit(limit).Order("id ASC").Find(&batch).Error
-		if err != nil {
-			s.Sync.Logger.Errorf("获取未完成的下载任务失败：%v", err)
-			break
-		}
-		if len(batch) == 0 || len(batch) < limit {
-			break
-		}
-		for _, item := range batch {
-			existingDownloads[item.RemoteFileId] = true
-		}
-		offset += limit
-	}
+	existingDownloads := s.pendingDownloadFileIDs()
 	// 遍历内存同步缓存的下载索引
 	s.memSyncCache.mu.RLock()
 	for _, file := range s.memSyncCache.downloadIndex {
@@ -629,6 +607,32 @@ func (s *SyncStrm) AddDownloadTaskFromMemCache() {
 		}
 	}
 	s.memSyncCache.mu.RUnlock()
+}
+
+func (s *SyncStrm) pendingDownloadFileIDs() map[string]bool {
+	existingDownloads := make(map[string]bool)
+	offset := 0
+	limit := 1000
+	type existDownloadTask struct {
+		RemoteFileId string `json:"remote_file_id"`
+	}
+	for {
+		var batch []existDownloadTask
+		err := db.Db.Model(models.DbDownloadTask{}).Select("remote_file_id").Where("source_type = ? AND status IN ?", s.Account.SourceType, []int{int(models.DownloadStatusPending), int(models.DownloadStatusDownloading)}).
+			Offset(offset).Limit(limit).Order("id ASC").Find(&batch).Error
+		if err != nil {
+			s.Sync.Logger.Errorf("获取未完成的下载任务失败：%v", err)
+			break
+		}
+		for _, item := range batch {
+			existingDownloads[item.RemoteFileId] = true
+		}
+		if len(batch) == 0 || len(batch) < limit {
+			break
+		}
+		offset += limit
+	}
+	return existingDownloads
 }
 
 // 对比本地文件和临时表中的文件
