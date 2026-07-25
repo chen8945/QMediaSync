@@ -841,7 +841,7 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 
 - `upload_task_id` 仍保持单任务一个当前 session。进程重启只恢复上传任务状态，不删除本表记录。
 - 有效 session 重试时会先走 115 `/open/upload/resume`，再用 OSS `upload_id` 查询已上传 part 并跳过已完成分片。
-- 本地文件大小、mtime、SHA1 或快速签名发生变化时，不复用旧 session；旧 session 会标记为 `aborted` 并记录 `last_error`。
+- 本地文件大小、mtime、SHA1 或快速签名发生变化时，不复用旧 checkpoint；复用当前 session 记录写入新本地签名，清空 115 调度、OSS multipart、分片进度和完成态字段，将状态设为 `init`、恢复状态设为 `session_expired_restarted`，并在 `last_error` 留下废弃原因。上传执行会立即重新 init，不新增 session 历史记录，也不先标记上传任务失败。
 - 本地签名仍匹配但 OSS 返回 `NoSuchUpload`、`InvalidUploadId` 等 checkpoint 已失效错误时，会将当前 session 标记为 `session_expired_restarted`，清空 `upload_id`、part size、已上传字节数和分片进度，并在同一次任务中复用当前 115 调度结果创建新的 OSS multipart。
 
 ### `directory_upload_processed_files`

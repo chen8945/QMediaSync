@@ -124,7 +124,7 @@ func TestPrepare115UploadSessionResumesValidSession(t *testing.T) {
 	}
 }
 
-func TestPrepare115UploadSessionAbortsChangedSignature(t *testing.T) {
+func TestPrepare115UploadSessionRestartsChangedSignature(t *testing.T) {
 	setupQueueStatusTestDB(t)
 
 	task := &DbUploadTask{
@@ -141,26 +141,44 @@ func TestPrepare115UploadSessionAbortsChangedSignature(t *testing.T) {
 		t.Fatalf("创建上传任务失败: %v", err)
 	}
 	session := &UploadSession{
-		UploadTaskId:   task.ID,
-		AccountId:      task.AccountId,
-		LocalFullPath:  task.LocalFullPath,
-		FileName:       task.FileName,
-		FileSize:       task.FileSize,
-		LocalMtime:     100,
-		LocalSignature: "old-sig",
-		FileSha1:       "old-sha1",
-		Preid:          "old-preid",
-		ParentFileId:   task.RemotePathId,
-		PickCode:       "pick-1",
-		UploadId:       "upload-1",
-		Status:         UploadSessionStatusMultipart,
-		ResumeState:    UploadResumeStateResumedSession,
+		UploadTaskId:      task.ID,
+		AccountId:         task.AccountId,
+		LocalFullPath:     task.LocalFullPath,
+		FileName:          task.FileName,
+		FileSize:          task.FileSize,
+		LocalMtime:        100,
+		LocalSignature:    "old-sig",
+		FileSha1:          "old-sha1",
+		Preid:             "old-preid",
+		ParentFileId:      task.RemotePathId,
+		PickCode:          "pick-1",
+		SignKey:           "sign-key",
+		SignRangeStart:    1,
+		SignRangeEnd:      2,
+		SignValSha1:       "sign-sha1",
+		Callback:          "callback",
+		CallbackVar:       "callback-var",
+		Bucket:            "bucket-1",
+		Object:            "object-1",
+		Endpoint:          "endpoint-1",
+		Region:            "region-1",
+		UploadId:          "upload-1",
+		PartSize:          1024,
+		TotalParts:        2,
+		UploadedBytes:     512,
+		UploadedParts:     1,
+		LastPartNumber:    1,
+		LastPartEtag:      "etag-1",
+		Status:            UploadSessionStatusMultipart,
+		ResumeState:       UploadResumeStateResumedSession,
+		RapidWaitUntil:    123,
+		RapidWaitAttempts: 2,
 	}
 	if err := session.Save(); err != nil {
 		t.Fatalf("保存上传会话失败: %v", err)
 	}
 
-	_, err := task.prepare115UploadSession(upload115LocalFileInfo{
+	got, err := task.prepare115UploadSession(upload115LocalFileInfo{
 		FileName:       task.FileName,
 		FileSize:       task.FileSize,
 		LocalMtime:     time.Now().Unix(),
@@ -168,16 +186,29 @@ func TestPrepare115UploadSessionAbortsChangedSignature(t *testing.T) {
 		FileSha1:       "new-sha1",
 		Preid:          "new-preid",
 	})
-	if err == nil {
-		t.Fatal("本地文件签名变化时应拒绝复用旧 session")
+	if err != nil {
+		t.Fatalf("本地文件签名变化时应立即重建 session：%v", err)
+	}
+	if got.ID != session.ID || got.Status != UploadSessionStatusInit || got.ResumeState != UploadResumeStateSessionExpiredRestarted {
+		t.Fatalf("重建后的会话 = %+v，期望复用当前记录并等待新的 init", got)
+	}
+	if got.FileSha1 != "new-sha1" || got.Preid != "new-preid" || got.LocalSignature != "new-sig" || got.LocalMtime == 100 {
+		t.Fatalf("重建后的本地签名 = %+v，期望保存当前文件签名", got)
+	}
+	if got.UploadId != "" || got.PickCode != "" || got.Bucket != "" || got.Object != "" || got.Endpoint != "" || got.Region != "" ||
+		got.SignKey != "" || got.SignValSha1 != "" || got.PartSize != 0 || got.TotalParts != 0 || got.UploadedBytes != 0 || got.UploadedParts != 0 || got.LastPartNumber != 0 || got.LastPartEtag != "" {
+		t.Fatalf("重建后的 checkpoint 未清空：%+v", got)
+	}
+	if got.LastError == "" || task.ResumeState != UploadResumeStateSessionExpiredRestarted || task.UploadedBytes != 0 || task.RapidWaitAttempts != 0 || task.RapidWaitUntil != 0 {
+		t.Fatalf("重建后的任务状态 = %+v，期望记录废弃原因并清空进度", task)
 	}
 
-	got, readErr := GetUploadSessionByUploadTaskId(task.ID)
+	persisted, readErr := GetUploadSessionByUploadTaskId(task.ID)
 	if readErr != nil {
 		t.Fatalf("读取上传会话失败: %v", readErr)
 	}
-	if got.Status != UploadSessionStatusAborted || got.LastError == "" {
-		t.Fatalf("会话状态 = %+v，期望 aborted 并记录错误", got)
+	if persisted.Status != UploadSessionStatusInit || persisted.ResumeState != UploadResumeStateSessionExpiredRestarted || persisted.UploadId != "" {
+		t.Fatalf("持久化会话状态 = %+v，期望 init、重启状态和空 checkpoint", persisted)
 	}
 }
 

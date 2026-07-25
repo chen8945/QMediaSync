@@ -495,16 +495,11 @@ func (task *DbUploadTask) prepare115UploadSession(info upload115LocalFileInfo) (
 	session, err := GetUploadSessionByUploadTaskId(task.ID)
 	if err == nil {
 		if validateErr := session.ValidateLocalFile(signature); validateErr != nil {
-			session.Status = UploadSessionStatusAborted
-			session.LastError = fmt.Sprintf("本地文件已变化，不能复用断点续传 session：%v", validateErr)
-			if saveErr := session.Save(); saveErr != nil {
-				return nil, fmt.Errorf("保存废弃上传会话失败：%w", saveErr)
+			helpers.V115Log.Warnf("本地文件签名变化，废弃 115 上传 checkpoint 并重新初始化：task_id=%d, reason=%v", task.ID, validateErr)
+			if err := task.restart115SessionForChangedLocalFile(session, info, validateErr); err != nil {
+				return nil, err
 			}
-			task.ResumeState = UploadResumeStateSessionExpiredRestarted
-			_ = db.Db.Model(task).Updates(map[string]any{
-				"resume_state": task.ResumeState,
-			}).Error
-			return nil, fmt.Errorf("本地文件已变化，不能复用断点续传 session：%w", validateErr)
+			return session, nil
 		}
 		if session.ResumeState == UploadResumeStateSessionExpiredRestarted &&
 			session.Status == UploadSessionStatusInit &&
@@ -570,6 +565,85 @@ func (task *DbUploadTask) prepare115UploadSession(info upload115LocalFileInfo) (
 		"file_name":      info.FileName,
 	}).Error
 	return session, nil
+}
+
+func (task *DbUploadTask) restart115SessionForChangedLocalFile(session *UploadSession, info upload115LocalFileInfo, cause error) error {
+	if task == nil || session == nil {
+		return errors.New("上传任务或会话为空")
+	}
+
+	now := time.Now().Unix()
+	session.AccountId = task.AccountId
+	session.LocalFullPath = task.LocalFullPath
+	session.FileName = info.FileName
+	session.FileSize = info.FileSize
+	session.LocalMtime = info.LocalMtime
+	session.LocalSignature = info.LocalSignature
+	session.FileSha1 = info.FileSha1
+	session.Preid = info.Preid
+	session.ParentFileId = task.RemotePathId
+	session.Target = fmt.Sprintf("U_1_%s", task.RemotePathId)
+	session.FileId = ""
+	session.PickCode = ""
+	session.SignKey = ""
+	session.SignRangeStart = 0
+	session.SignRangeEnd = 0
+	session.SignValSha1 = ""
+	session.LastInitAt = now
+	session.LastResumeAt = 0
+	session.Callback = ""
+	session.CallbackVar = ""
+	session.Bucket = ""
+	session.Object = ""
+	session.Endpoint = ""
+	session.Region = ""
+	session.UploadId = ""
+	session.PartSize = 0
+	session.TotalParts = 0
+	session.UploadedBytes = 0
+	session.UploadedParts = 0
+	session.LastPartNumber = 0
+	session.LastPartEtag = ""
+	session.Status = UploadSessionStatusInit
+	session.ResumeState = UploadResumeStateSessionExpiredRestarted
+	session.RapidWaitUntil = 0
+	session.RapidWaitAttempts = 0
+	session.RetryCount = 0
+	session.LastError = fmt.Sprintf("本地文件已变化，已废弃旧断点续传 checkpoint：%v", cause)
+	session.LastProgressAt = 0
+	session.UploadStartedAt = 0
+	session.CompletedAt = 0
+	session.CompleteCallbackState = ""
+	session.CompleteCallbackError = ""
+	session.CompletedFileId = ""
+	session.CompletedPickCode = ""
+	session.CompletedParentId = ""
+	session.CompletedSha1 = ""
+	session.CompletedSize = 0
+	session.CompletedMtime = 0
+	if err := session.Save(); err != nil {
+		return fmt.Errorf("重建上传会话失败：%w", err)
+	}
+
+	task.FileName = info.FileName
+	task.FileSize = info.FileSize
+	task.LocalMtime = info.LocalMtime
+	task.ResumeState = UploadResumeStateSessionExpiredRestarted
+	task.UploadedBytes = 0
+	task.RapidWaitAttempts = 0
+	task.RapidWaitUntil = 0
+	if err := db.Db.Model(task).Updates(map[string]any{
+		"file_name":           task.FileName,
+		"file_size":           task.FileSize,
+		"local_mtime":         task.LocalMtime,
+		"resume_state":        task.ResumeState,
+		"uploaded_bytes":      task.UploadedBytes,
+		"rapid_wait_attempts": task.RapidWaitAttempts,
+		"rapid_wait_until":    task.RapidWaitUntil,
+	}).Error; err != nil {
+		return fmt.Errorf("保存重建上传会话任务状态失败：%w", err)
+	}
+	return nil
 }
 
 func apply115InitResultToSession(session *UploadSession, result *v115open.UploadInitResult) {
