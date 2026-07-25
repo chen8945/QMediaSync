@@ -465,7 +465,7 @@ func fetch115NetFileBatch(ctx context.Context, account *models.Account, parentID
 			IsDirectory: item.FileCategory == v115open.TypeDir,
 			Name:        item.FileName,
 			Size:        item.FileSize,
-			ModifiedAt:  item.Ptime,
+			ModifiedAt:  item.ModifiedAt(),
 		})
 	}
 	return netFileBatch{
@@ -614,7 +614,7 @@ func get115Dirs(parentId string, account *models.Account, page, pageSize int) (n
 			IsDirectory: item.FileCategory == v115open.TypeDir,
 			Name:        item.FileName,
 			Size:        item.FileSize,
-			ModifiedAt:  item.Ptime,
+			ModifiedAt:  item.ModifiedAt(),
 		})
 	}
 	return netFileListPage{list: items, total: int64(resp.Count)}, nil

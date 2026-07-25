@@ -84,7 +84,7 @@ func (s *SyncStrm) process115FilePage(ctx context.Context, page, limit int) erro
 			FileType:   file.FileCategory,
 			PickCode:   file.PickCode,
 			Sha1:       file.Sha1,
-			MTime:      file.Ptime,
+			MTime:      file.ModifiedAt(),
 			ThumbUrl:   file.Thumbnail,
 		}
 		// 验证文件本身，然后入临时表

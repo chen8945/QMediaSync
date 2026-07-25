@@ -39,6 +39,18 @@ type driverImpl interface {
 	DeleteFile(ctx context.Context, parentId string, fileIds []string) error
 }
 
+type metadataMtimeAction int
+
+const (
+	metadataMtimeActionNone metadataMtimeAction = iota
+	metadataMtimeActionDownload
+	metadataMtimeActionUpload
+	metadataMtimeActionAlign
+	metadataMtimeActionSkipChanged
+)
+
+var calculateMetadataFileSHA1 = helpers.FileSHA1
+
 type SyncStrm struct {
 	SyncDriver   driverImpl
 	Account      *models.Account // 网盘账号，如果是本地类型则为 nil
@@ -801,11 +813,14 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					}
 					// 网盘存在且设置为上传，需要检查本地是不是比网盘新，如果是的话，需要删除网盘文件并将本地文件上传
 					if existsFile != nil && s.Config.CheckMetaMtime == 1 {
-						localMTime := info.ModTime().Unix()
-						// 网盘比本地新，重新下载
-						// 1. 删除本地文件
-						// 2. 添加下载任务
-						if localMTime < existsFile.MTime {
+						switch s.decideMetadataMtimeAction(path, info, existsFile) {
+						case metadataMtimeActionAlign:
+							s.alignMetadataMtime(path, existsFile.MTime)
+							return nil
+						case metadataMtimeActionSkipChanged:
+							return nil
+						case metadataMtimeActionDownload:
+							localMTime := info.ModTime().Unix()
 							s.Sync.Logger.Infof("本地元数据文件 %s 由于修改时间比网盘旧 %d < %d 所以需要重新下载", path, localMTime, existsFile.MTime)
 							// 1. 删除本地文件
 							s.RemoveFileAndCheckDirEmtry(path)
@@ -815,9 +830,8 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								s.Sync.Logger.Warnf("添加元数据重新下载任务失败：%v", err)
 							}
 							return nil
-						}
-
-						if localMTime > existsFile.MTime && s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionUpload {
+						case metadataMtimeActionUpload:
+							localMTime := info.ModTime().Unix()
 							// 本地比网盘新，需要删除网盘旧文件并上传新文件
 							s.Sync.Logger.Infof("本地元数据文件 %s 由于修改时间比网盘新 %d > %d 所以需要上传", path, localMTime, existsFile.MTime)
 							// 1. 删除网盘旧文件
@@ -842,6 +856,68 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		})
 	}
 	return nil
+}
+
+func (s *SyncStrm) decideMetadataMtimeAction(path string, info os.FileInfo, remote *SyncFileCache) metadataMtimeAction {
+	if info == nil || remote == nil {
+		return metadataMtimeActionNone
+	}
+
+	localMtime := info.ModTime().Unix()
+	if localMtime == remote.MTime {
+		return metadataMtimeActionNone
+	}
+
+	contentMatches, localStable := s.metadataContentMatches(path, info, remote)
+	if !localStable {
+		return metadataMtimeActionSkipChanged
+	}
+	if contentMatches {
+		return metadataMtimeActionAlign
+	}
+	if localMtime < remote.MTime {
+		return metadataMtimeActionDownload
+	}
+	if localMtime > remote.MTime && s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionUpload {
+		return metadataMtimeActionUpload
+	}
+	return metadataMtimeActionNone
+}
+
+func (s *SyncStrm) metadataContentMatches(path string, info os.FileInfo, remote *SyncFileCache) (bool, bool) {
+	if info.Size() != remote.FileSize || strings.TrimSpace(remote.Sha1) == "" {
+		return false, true
+	}
+
+	initialSize := info.Size()
+	initialMtime := info.ModTime().UnixNano()
+	localSHA1, err := calculateMetadataFileSHA1(path)
+	if err != nil {
+		s.Sync.Logger.Warnf("计算本地元数据文件 SHA1 失败，将按修改时间处理：%s，错误：%v", path, err)
+		return false, true
+	}
+	currentInfo, err := os.Stat(path)
+	if err != nil {
+		s.Sync.Logger.Warnf("复核本地元数据文件失败，将按修改时间处理：%s，错误：%v", path, err)
+		return false, true
+	}
+	if currentInfo.Size() != initialSize || currentInfo.ModTime().UnixNano() != initialMtime {
+		s.Sync.Logger.Warnf("本地元数据文件在 SHA1 计算期间发生变化，跳过本轮处理：%s", path)
+		return false, false
+	}
+	return strings.EqualFold(localSHA1, remote.Sha1), true
+}
+
+func (s *SyncStrm) alignMetadataMtime(path string, remoteMtime int64) {
+	if remoteMtime <= 0 {
+		return
+	}
+	mtime := time.Unix(remoteMtime, 0)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		s.Sync.Logger.Warnf("对齐本地元数据文件修改时间失败：%s，错误：%v", path, err)
+		return
+	}
+	s.Sync.Logger.Infof("本地元数据文件内容与网盘一致，已对齐修改时间：%s => %d", path, remoteMtime)
 }
 
 // 处理 SyncFile 表和内存同步缓存的数据差异

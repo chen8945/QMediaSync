@@ -602,10 +602,7 @@ func applyStrmWebhookFileDetail(item *strmWebhookFileItem, detail *v115open.File
 		item.FileSize = helpers.StringToInt64(detail.FileSize)
 	}
 	item.Sha1 = strings.TrimSpace(detail.Sha1)
-	item.Mtime = helpers.StringToInt64(detail.Utime)
-	if item.Mtime == 0 {
-		item.Mtime = helpers.StringToInt64(detail.Ptime)
-	}
+	item.Mtime = detail.ModifiedAt()
 }
 
 func strmWebhookDetailParentID(detail *v115open.FileDetail) string {

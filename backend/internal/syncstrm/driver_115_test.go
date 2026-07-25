@@ -34,6 +34,8 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 				PickCode:     "pick-code",
 				FileSize:     1024,
 				Sha1:         "sha1",
+				Utime:        200,
+				Ptime:        100,
 			})
 		}
 		return &v115open.FileListResp{
@@ -60,5 +62,8 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 	}
 	if files[0].FileId != "file-0" || files[249].FileId != "file-249" {
 		t.Fatalf("分页结果顺序错误，first=%s last=%s", files[0].FileId, files[249].FileId)
+	}
+	if files[0].MTime != 200 {
+		t.Fatalf("文件修改时间 = %d，期望使用 115 upt 字段的 200", files[0].MTime)
 	}
 }

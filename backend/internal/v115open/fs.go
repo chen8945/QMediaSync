@@ -46,6 +46,14 @@ type File struct {
 	PlayLong     json.Number `json:"play_long"` // 视频时长，-1 表示正在统计，其他值是时长，单位秒
 }
 
+// ModifiedAt 返回 115 列表响应中的官方修改时间，缺失时回退上传时间。
+func (f File) ModifiedAt() int64 {
+	if f.Utime > 0 {
+		return f.Utime
+	}
+	return f.Ptime
+}
+
 type FileListResp struct {
 	RespBaseBool[[]File]
 	Count    int              `json:"count"`
@@ -60,7 +68,7 @@ type FileDetail struct {
 	Count        json.Number      `json:"count"`          // 包含文件总数量
 	FileSize     string           `json:"size"`           // 文件夹或文件大小，字符串如："10 GB"
 	FileSizeByte int64            `json:"size_byte"`      // 大小的字节表示
-	FolderCount  json.Number      `json:"folder_number"`  // 子文件夹的数量
+	FolderCount  json.Number      `json:"folder_count"`   // 子文件夹的数量
 	PlayLong     json.Number      `json:"play_long"`      // 视频时长，-1 表示正在统计，其他值是时长，单位秒
 	ShowPlayLong json.Number      `json:"show_play_long"` // 是否展示视频时长
 	Ptime        string           `json:"ptime"`          // 上传时间
@@ -74,6 +82,14 @@ type FileDetail struct {
 	FileCategory FileType         `json:"file_category"`  // 类型，1-文件，0-文件夹
 	Paths        []FileDetailPath `json:"paths"`          // 父目录
 	Path         string           `json:"path"`           // 完整路径
+}
+
+// ModifiedAt 返回 115 详情响应中的官方修改时间，缺失或无效时回退上传时间。
+func (d FileDetail) ModifiedAt() int64 {
+	if mtime := helpers.StringToInt64(d.Utime); mtime > 0 {
+		return mtime
+	}
+	return helpers.StringToInt64(d.Ptime)
 }
 
 type MkDirData struct {

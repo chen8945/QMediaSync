@@ -10,7 +10,7 @@
 
 ## 115 上传增强
 
-115 上传任务先执行 `/open/upload/init`。115 官方秒传返回只保证包含新增 `file_id`，不返回 mtime；因此秒传成功后系统会按 `file_id` 查询远端文件详情，补齐 PickCode、SHA1、大小和 mtime，并记录 `upload_result=rapid_upload`。`strm_sync` 上传需要用远端 mtime 同步本地元数据文件，详情查询失败会让任务失败；目录监控上传可用 init 返回的 `file_id` 兜底完成，后续 STRM worker 仍可按 `file_id` 补齐文件详情。如果未命中秒传且启用了秒传等待策略，任务会按 `upload_rapid_wait_interval_seconds` 重复尝试 init，直到命中秒传或达到 `upload_rapid_wait_timeout_seconds`。`upload_rapid_wait_interval_seconds` 是两次 init 之间的重试间隔，`upload_rapid_wait_timeout_seconds` 是最大等待时长；最后一次等待会按剩余超时时间裁剪，不会因为间隔更长而超过最大等待时长。`upload_rapid_wait_min_size` 控制进入等待策略的最小文件大小，`upload_rapid_wait_force_size` 控制必须等待到超时的大文件阈值；等待超时后是否跳过真实上传由 `upload_rapid_wait_skip_upload` 控制。
+115 上传任务先执行 `/open/upload/init`。115 官方秒传返回只保证包含新增 `file_id`，不返回 mtime；因此秒传成功后系统会按 `file_id` 查询远端文件详情，补齐 PickCode、SHA1、大小和官方修改时间，并记录 `upload_result=rapid_upload`。115 列表的 `upt` 和详情的 `utime` 是修改时间；只有字段缺失或零值时才回退列表 `uppt` 或详情 `ptime`。`strm_sync` 上传需要用最终查询到的远端官方修改时间同步本地元数据文件，详情查询失败会让任务失败；目录监控上传可用 init 返回的 `file_id` 兜底完成，后续 STRM worker 仍可按 `file_id` 补齐文件详情。如果未命中秒传且启用了秒传等待策略，任务会按 `upload_rapid_wait_interval_seconds` 重复尝试 init，直到命中秒传或达到 `upload_rapid_wait_timeout_seconds`。`upload_rapid_wait_interval_seconds` 是两次 init 之间的重试间隔，`upload_rapid_wait_timeout_seconds` 是最大等待时长；最后一次等待会按剩余超时时间裁剪，不会因为间隔更长而超过最大等待时长。`upload_rapid_wait_min_size` 控制进入等待策略的最小文件大小，`upload_rapid_wait_force_size` 控制必须等待到超时的大文件阈值；等待超时后是否跳过真实上传由 `upload_rapid_wait_skip_upload` 控制。
 
 非秒传上传使用 OSS multipart。初始化 OSS multipart 时会带 `sequential=1`；真实非秒传任务验证显示，该参数配合 115 callback 原样透传后，OSS 会在完成对象上返回可供 115 校验的最终 SHA1。默认 part size 为 `32 MiB`；当文件按该大小切分会超过 `9999` 个 part 时，part size 会按文件大小动态放大并向上取整到 `1 MiB`。首次创建 `upload_sessions` 后会持久化 part size、OSS `upload_id`、本地文件签名、115 调度字段和已上传进度，后续重试或进程重启恢复时必须复用这些 checkpoint。
 
@@ -79,7 +79,7 @@ fsnotify 文件事件候选在通过递归、忽略规则和扩展名过滤后�
 
 STRM 生成 worker 会读取 `strm_generation_tasks`，复用同步目录配置写入或确认 STRM。该后处理只创建或更新 `SyncFile` 和 STRM 文件，不创建 `syncs` 同步记录，也不向同步目录队列添加“等待中”任务；完整同步记录只由手动同步、定时同步等 STRM 同步入口创建。文件级任务会先比较已有 STRM 内容；确认需要更新后直接写入新 STRM，不再重复比较，因此同一次后处理只输出一次 PickCode、路径或用户 ID 差异日志。文件级任务在文件名、路径、父目录 ID、PickCode、mtime、大小或 115 SHA1 等远端元数据缺失时，会优先按 `file_id` 补齐文件详情后再保存 `SyncFile` 和 STRM 文件。Webhook 和目录扫描子任务的 `request_hash` 使用短格式摘要，远端路径、文件名和目录路径仍保存在任务字段中，不依赖唯一键明文。上传完成、远端已存在等非 Webhook 文件任务在 STRM 新增或更新后会优先提交 Emby item 级定向刷新，定位不到可靠 item 时回退同步目录关联媒体库刷新。Webhook 文件任务只有 `refresh_emby=true` 且 STRM 变更或新增元数据下载任务时才提交刷新；批量和目录扫描只有在所有子任务成功完成且存在 STRM / 元数据变化时才统一提交目标集合，任一子任务失败则父任务失败且不提交刷新。
 
-115 同目录视频去掉扩展名后映射到同一个 STRM 时，只由上传时间 `Ptime` 最新的文件生成；时间相同使用 FileID 固定排序。目录扫描复用已经取得的父目录列表选择 owner，不增加 115 请求。普通文件级任务先查询本地 `SyncFile`，只有发现同目标路径候选时才额外列出一次远端父目录；non-owner 任务仍保存远端文件记录，但不比较、不写入 STRM，也不触发 Emby 刷新。
+115 同目录视频去掉扩展名后映射到同一个 STRM 时，只由官方修改时间最新的文件生成；时间相同使用 FileID 固定排序。目录扫描复用已经取得的父目录列表选择 owner，不增加 115 请求。普通文件级任务先查询本地 `SyncFile`，只有发现同目标路径候选时才额外列出一次远端父目录；non-owner 任务仍保存远端文件记录，但不比较、不写入 STRM，也不触发 Emby 刷新。
 
 外部程序触发 STRM 生成的接口见 [STRM Webhook](../reference/strm-webhook.md)。本文件只说明上传完成、远端已存在和 Webhook 入队后共用的 worker 后处理边界。
 
@@ -109,6 +109,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 
 - 断点续传必须同时恢复 115 调度和 OSS 分片 checkpoint；仅重新 init、普通 multipart 或远端已存在跳过都不是断点续传。
 - 115 callback / `callback_var` 必须原样透传给 OSS；不得本地展开占位符或记录 STS 凭证。
+- 115 上传成功后的本地 mtime 必须以远端详情的官方修改时间为准；只有详情查询成功且本地 `Chtimes` 成功，才视为本轮两端时间已收敛。
 - 远端同名文件只有大小和 SHA1 都一致时才是 `remote_exists`；该结果仍进入 STRM 后处理，但不代表续传。
 - 目录监控上传不能在 fsnotify / 扫描 goroutine 直接上传；稳定性、持久化账本和活跃队列共同保证幂等。
 - 源文件只在目录监控任务、上传和 STRM 都成功、路径仍在监控根且 fingerprint 一致时删除；清理失败不得回滚远端文件或已生成 STRM。

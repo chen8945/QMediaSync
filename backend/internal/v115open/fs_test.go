@@ -2,6 +2,7 @@ package v115open
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -14,6 +15,43 @@ import (
 
 	"resty.dev/v3"
 )
+
+func TestFileModifiedAtPrefersOfficialModificationTime(t *testing.T) {
+	tests := []struct {
+		name string
+		file File
+		want int64
+	}{
+		{name: "优先列表修改时间", file: File{Utime: 200, Ptime: 100}, want: 200},
+		{name: "修改时间缺失回退上传时间", file: File{Ptime: 100}, want: 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.file.ModifiedAt(); got != tt.want {
+				t.Fatalf("ModifiedAt() = %d，期望 %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileDetailModifiedAtAndFolderCount(t *testing.T) {
+	var detail FileDetail
+	if err := json.Unmarshal([]byte(`{"utime":"200","ptime":"100","folder_count":3}`), &detail); err != nil {
+		t.Fatalf("解析 115 文件详情失败：%v", err)
+	}
+	if got := detail.ModifiedAt(); got != 200 {
+		t.Fatalf("详情 ModifiedAt() = %d，期望 200", got)
+	}
+	if got := detail.FolderCount.String(); got != "3" {
+		t.Fatalf("FolderCount = %s，期望 3", got)
+	}
+
+	detail.Utime = "invalid"
+	if got := detail.ModifiedAt(); got != 100 {
+		t.Fatalf("无效 utime 回退结果 = %d，期望 100", got)
+	}
+}
 
 type capturedOpenAPIRequest struct {
 	Method string

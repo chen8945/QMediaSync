@@ -1419,16 +1419,12 @@ func (client *open115RemoteClient) FindFile(ctx context.Context, parentID string
 			if item.FileCategory != v115open.TypeFile || item.FileName != fileName {
 				continue
 			}
-			mtime := item.Ptime
-			if mtime == 0 {
-				mtime = item.Utime
-			}
 			return &RemoteFile{
 				ID:       item.FileId,
 				PickCode: item.PickCode,
 				SHA1:     item.Sha1,
 				Size:     item.FileSize,
-				Mtime:    mtime,
+				Mtime:    item.ModifiedAt(),
 			}, nil
 		}
 		if len(resp.Data) < pageSize {

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"qmediasync/internal/baidupan"
-	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/v115open"
 )
@@ -78,7 +77,7 @@ mainloop:
 					PickCode:   file.PickCode,
 					FileType:   file.FileCategory,
 					FileSize:   file.FileSize,
-					MTime:      file.Ptime,
+					MTime:      file.ModifiedAt(),
 					Sha1:       file.Sha1,
 					ThumbUrl:   file.Thumbnail,
 					SourceType: models.SourceType115,
@@ -224,7 +223,7 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 			pathDirs = append(pathDirs, pathQueueItem{
 				Path:   path,
 				PathId: file.FileId,
-				Mtime:  file.Ptime,
+				Mtime:  file.ModifiedAt(),
 			})
 		}
 		if resp.Count < limit {
@@ -274,8 +273,8 @@ func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*Syn
 		SourceType: models.SourceType115,
 		Path:       resp.Path,
 		ParentId:   parentId,
-		MTime:      helpers.StringToInt64(resp.Ptime),
-		FileSize:   helpers.StringToInt64(resp.FileSize),
+		MTime:      resp.ModifiedAt(),
+		FileSize:   resp.FileSizeByte,
 		PickCode:   resp.PickCode,
 		Paths:      resp.Paths,
 	}

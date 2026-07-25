@@ -156,10 +156,7 @@ func (runner open115UploadRunner) findExistingRemoteFile(
 	if !sameSHA1 || !sameSize {
 		return upload115TaskResult{}, false
 	}
-	mtime := helpers.StringToInt64(detail.Ptime)
-	if mtime == 0 {
-		mtime = helpers.StringToInt64(detail.Utime)
-	}
+	mtime := detail.ModifiedAt()
 	return upload115TaskResult{
 		UploadResult:          UploadResultRemoteExists,
 		ResumeState:           UploadResumeStateNone,
@@ -309,10 +306,7 @@ func build115RapidUploadCompleteResult(
 	if size == 0 {
 		size = fallback.Size
 	}
-	mtime := helpers.StringToInt64(detail.Ptime)
-	if mtime == 0 {
-		mtime = helpers.StringToInt64(detail.Utime)
-	}
+	mtime := detail.ModifiedAt()
 	return UploadSessionCompleteResult{
 		FileId:   strings.TrimSpace(detail.FileId),
 		PickCode: pickCode,
