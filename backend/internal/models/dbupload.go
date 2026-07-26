@@ -178,6 +178,7 @@ func publishUploadQueueChanged(task *DbUploadTask, reason string) {
 			payload.SourceCleanupStatus = string(task.SourceCleanupStatus)
 			cleanupError := task.SourceCleanupError
 			payload.SourceCleanupError = &cleanupError
+			payload.SourceDeletedAt = task.SourceDeletedAt
 		}
 	}
 	if reason == "progress" {

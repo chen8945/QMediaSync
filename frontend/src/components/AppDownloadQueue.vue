@@ -57,10 +57,10 @@
           @change="handleStatusChange"
         >
           <el-option label="全部状态" :value="-1"></el-option>
-          <el-option label="等待中" :value="0"></el-option>
-          <el-option label="下载中" :value="1"></el-option>
-          <el-option label="已完成" :value="2"></el-option>
-          <el-option label="失败" :value="3"></el-option>
+          <el-option label="等待下载" :value="0"></el-option>
+          <el-option label="正在下载" :value="1"></el-option>
+          <el-option label="下载完成" :value="2"></el-option>
+          <el-option label="下载失败" :value="3"></el-option>
           <el-option label="已取消" :value="4"></el-option>
         </el-select>
       </div>
@@ -77,6 +77,7 @@
     </div>
     <el-table
       v-if="isMobileView"
+      ref="mobileTableRef"
       :data="queueData"
       style="width: 100%"
       v-loading="initialLoading || queryLoading"
@@ -86,52 +87,69 @@
       @expand-change="handleExpandChange"
       :row-class-name="tableRowClassName"
       :height="tableHeight"
+      flexible
       class="queue-table-mobile"
     >
-      <el-table-column type="expand" width="30">
+      <el-table-column
+        type="expand"
+        width="1"
+        class-name="queue-expand-carrier"
+        label-class-name="queue-expand-carrier"
+      >
         <template #default="scope">
-          <el-descriptions class="margin-top" :column="2" border size="small">
-            <el-descriptions-item label="来源">{{
-              getDownloadSourceName(scope.row.source)
-            }}</el-descriptions-item>
-            <el-descriptions-item label="类型">
-              <el-tag :type="getTaskSourceTypeTagType(scope.row.source_type)">
-                {{ getTaskSourceTypeName(scope.row.source_type) }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="状态">
-              <el-tag :type="getStatusTagType(scope.row.status)">
-                {{ getStatusText(scope.row.status) }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="文件大小">
-              {{ formatFileSize(scope.row.size) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="开始时间">
-              {{ scope.row.start_time ? formatDateTime(scope.row.start_time) : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="完成时间">
-              {{ scope.row.end_time ? formatDateTime(scope.row.end_time) : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="重试次数">
-              {{ scope.row.retry_count || 0 }}
-            </el-descriptions-item>
-            <el-descriptions-item label="失败原因" v-if="scope.row.error" :span="2">
-              {{ scope.row.error ? scope.row.error : '-' }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <section
+            :id="getDownloadDetailRegionId(scope.row)"
+            class="queue-task-details-region"
+            role="region"
+            :aria-label="`下载任务 ${scope.row.id} 详情`"
+          >
+            <QueueTaskDetails :groups="buildDownloadTaskDetailGroups(scope.row)" :max-columns="2" />
+          </section>
+        </template>
+      </el-table-column>
+      <el-table-column
+        width="44"
+        align="center"
+        class-name="queue-expand-column"
+        label-class-name="queue-expand-column"
+      >
+        <template #default="scope">
+          <QueueTaskExpandButton
+            :expanded="isDownloadRowExpanded(scope.row)"
+            :label="getDownloadExpandButtonLabel(scope.row)"
+            :controls="
+              isDownloadRowExpanded(scope.row) ? getDownloadDetailRegionId(scope.row) : undefined
+            "
+            @toggle="toggleDownloadRowExpansion(scope.row)"
+          />
         </template>
       </el-table-column>
       <el-table-column prop="speed" label="下载文件">
         <template #default="scope">
-          <span class="queue-path-text">{{ scope.row.remote_file_id }}</span> <br />
-          => <br />
-          <span class="queue-path-text">{{ scope.row.local_full_path }}</span>
+          <div class="mobile-task-summary">
+            <div class="mobile-task-meta">
+              <span class="mobile-task-id"># {{ scope.row.id }}</span>
+              <el-tag size="small" effect="plain">{{
+                getDownloadSourceName(scope.row.source)
+              }}</el-tag>
+              <el-tag size="small" :type="getTaskSourceTypeTagType(scope.row.source_type)">
+                {{ getTaskSourceTypeName(scope.row.source_type) }}
+              </el-tag>
+              <el-tag size="small" :type="getDownloadStatusTagType(scope.row.status)">
+                {{ getDownloadStatusText(scope.row.status) }}
+              </el-tag>
+            </div>
+            <div class="mobile-task-title-row">
+              <span class="mobile-task-file-name">{{ getDownloadTaskName(scope.row) }}</span>
+            </div>
+            <div class="mobile-task-metrics">文件大小：{{ formatFileSize(scope.row.size) }}</div>
+          </div>
         </template>
       </el-table-column>
     </el-table>
     <el-table
       v-else
+      ref="desktopTableRef"
       :data="queueData"
       style="width: 100%"
       v-loading="initialLoading || queryLoading"
@@ -141,61 +159,127 @@
       @expand-change="handleExpandChange"
       :row-class-name="tableRowClassName"
       :height="tableHeight"
+      flexible
+      class="queue-table-desktop"
     >
-      <el-table-column prop="id" label="ID" width="64" />
-      <el-table-column prop="source" label="来源" width="128" show-overflow-tooltip>
+      <el-table-column
+        type="expand"
+        width="1"
+        class-name="queue-expand-carrier"
+        label-class-name="queue-expand-carrier"
+      >
         <template #default="scope">
-          {{ getDownloadSourceName(scope.row.source) }}
+          <section
+            :id="getDownloadDetailRegionId(scope.row)"
+            class="queue-task-details-region"
+            role="region"
+            :aria-label="`下载任务 ${scope.row.id} 详情`"
+          >
+            <QueueTaskDetails :groups="buildDownloadTaskDetailGroups(scope.row)" :max-columns="5" />
+          </section>
+        </template>
+      </el-table-column>
+      <el-table-column
+        width="44"
+        align="center"
+        class-name="queue-expand-column"
+        label-class-name="queue-expand-column"
+      >
+        <template #default="scope">
+          <QueueTaskExpandButton
+            :expanded="isDownloadRowExpanded(scope.row)"
+            :label="getDownloadExpandButtonLabel(scope.row)"
+            :controls="
+              isDownloadRowExpanded(scope.row) ? getDownloadDetailRegionId(scope.row) : undefined
+            "
+            @toggle="toggleDownloadRowExpansion(scope.row)"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column label="任务" width="320">
+        <template #default="scope">
+          <div class="desktop-task-summary">
+            <el-tooltip :content="getDownloadTaskTooltipContent(scope.row)" placement="top">
+              <div class="desktop-task-summary-text">
+                <span class="desktop-task-file-name">{{ getDownloadTaskName(scope.row) }}</span>
+                <span class="desktop-task-meta">
+                  <span class="desktop-task-id"># {{ scope.row.id }}</span> ·
+                  <el-tag class="desktop-task-source" size="small" effect="plain">
+                    {{ getDownloadSourceName(scope.row.source) }}
+                  </el-tag>
+                  ·
+                  <el-tag
+                    class="desktop-task-source-type"
+                    size="small"
+                    :type="getTaskSourceTypeTagType(scope.row.source_type)"
+                  >
+                    {{ getTaskSourceTypeName(scope.row.source_type) }}
+                  </el-tag>
+                </span>
+              </div>
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" width="104">
         <template #default="scope">
           <div v-if="scope.row.error">
             <el-tooltip :content="scope.row.error" placement="top">
-              <el-tag :type="getStatusTagType(scope.row.status)">
+              <el-tag :type="getDownloadStatusTagType(scope.row.status)">
                 <el-icon>
                   <WarningFilled />
                 </el-icon>
-                {{ getStatusText(scope.row.status) }}
+                {{ getDownloadStatusText(scope.row.status) }}
               </el-tag>
             </el-tooltip>
           </div>
           <div v-else>
-            <el-tag :type="getStatusTagType(scope.row.status)">
-              {{ getStatusText(scope.row.status) }}
+            <el-tag :type="getDownloadStatusTagType(scope.row.status)">
+              {{ getDownloadStatusText(scope.row.status) }}
             </el-tag>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="size" label="大小" width="104">
+      <el-table-column prop="size" label="大小" width="128">
         <template #default="scope">
           {{ formatFileSize(scope.row.size) }}
         </template>
       </el-table-column>
-      <el-table-column prop="file_name" label="文件名" min-width="220" show-overflow-tooltip>
+      <el-table-column label="下载位置" min-width="200">
         <template #default="scope">
-          <span class="filename">{{ scope.row.file_name }}</span>
+          <el-tooltip
+            v-if="getDownloadLocationSummary(scope.row)"
+            :content="getDownloadLocationSummary(scope.row)"
+            placement="top"
+          >
+            <span class="desktop-location-summary">
+              <template
+                v-if="
+                  scope.row.source_type !== 'emby_media' &&
+                  scope.row.remote_path &&
+                  scope.row.local_full_path
+                "
+              >
+                {{ scope.row.remote_path }}<br />
+                <span class="desktop-location-direction">下载至</span>
+                {{ scope.row.local_full_path }}
+              </template>
+              <template v-else>{{ getDownloadLocationSummary(scope.row) }}</template>
+            </span>
+          </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="start_time" label="时间" width="180">
+      <el-table-column prop="start_time" label="时间" width="260">
         <template #default="scope">
-          开始时间：{{ scope.row.start_time ? formatDateTime(scope.row.start_time) : '-' }}<br />
-          结束时间：{{ scope.row.end_time ? formatDateTime(scope.row.end_time) : '-' }}<br />
-          <span v-if="scope.row.retry_count">重试次数：{{ scope.row.retry_count }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="source_type" label="类型" width="72">
-        <template #default="scope">
-          <el-tag :type="getTaskSourceTypeTagType(scope.row.source_type)">
-            {{ getTaskSourceTypeName(scope.row.source_type) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="speed" label="下载文件" min-width="240">
-        <template #default="scope">
-          <span class="queue-path-text">{{ scope.row.remote_file_id }}</span> <br />
-          => <br />
-          <span class="queue-path-text">{{ scope.row.local_full_path }}</span>
+          <div class="queue-time-summary">
+            <span v-if="scope.row.start_time"
+              >开始时间：{{ formatDateTime(scope.row.start_time) }}</span
+            >
+            <span v-if="scope.row.end_time"
+              >结束时间：{{ formatDateTime(scope.row.end_time) }}</span
+            >
+            <span v-if="scope.row.retry_count > 0">重试 {{ scope.row.retry_count }} 次</span>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -213,9 +297,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  ref,
+  useTemplateRef,
+} from 'vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
+import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
@@ -231,6 +326,11 @@ import {
   getTaskSourceTypeTagType,
 } from '@/utils/taskSourceUtils'
 import { formatDateTime } from '@/utils/timeUtils'
+import {
+  buildDownloadTaskDetailGroups,
+  getDownloadStatusTagType,
+  getDownloadStatusText,
+} from '@/utils/queueTaskDetailUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
 import {
   canPauseQueue,
@@ -281,6 +381,8 @@ const queueStatusSnapshot = ref<QueueStatusSnapshot>(emptyQueueStatusSnapshot())
 const canPauseAllTasks = computed(() => canPauseQueue(queueStatusSnapshot.value))
 const canResumeAllTasks = computed(() => canResumeQueue(queueStatusSnapshot.value))
 const { isMobile: isMobileView } = useDeviceType()
+const mobileTableRef = useTemplateRef<TableInstance>('mobileTableRef')
+const desktopTableRef = useTemplateRef<TableInstance>('desktopTableRef')
 const tableHeight = computed(() => (isMobileView.value ? undefined : 'calc(100vh - 300px)'))
 const queueControlSize = computed<'small' | 'default'>(() =>
   isMobileView.value ? 'small' : 'default',
@@ -352,42 +454,43 @@ const isMessageBoxCancelError = (error: unknown): boolean => {
   return errorMessage.includes('用户取消操作')
 }
 
-// 获取状态文本
-const getStatusText = (status: number): string => {
-  switch (status) {
-    case 0:
-      return '等待中'
-    case 1:
-      return '下载中'
-    case 2:
-      return '已完成'
-    case 3:
-      return '失败'
-    case 4:
-      return '已取消'
-    default:
-      return '未知'
+const getDownloadTaskName = (task: DownloadTask): string => task.file_name || task.remote_file_id
+
+const getDownloadLocationSummary = (task: DownloadTask): string => {
+  if (task.source_type === 'emby_media') {
+    return ''
   }
+
+  const sourcePath = task.remote_path
+  const targetPath = task.local_full_path
+
+  if (sourcePath && targetPath) {
+    return `${sourcePath}\n下载至 ${targetPath}`
+  }
+
+  return sourcePath || targetPath || ''
 }
 
-// 获取状态标签类型
-const getStatusTagType = (
-  status: number,
-): 'primary' | 'success' | 'warning' | 'danger' | 'info' => {
-  switch (status) {
-    case 0:
-      return 'info'
-    case 1:
-      return 'primary'
-    case 2:
-      return 'success'
-    case 3:
-      return 'danger'
-    case 4:
-      return 'info'
-    default:
-      return 'info'
-  }
+const getDownloadTaskTooltipContent = (task: DownloadTask): string =>
+  [
+    getDownloadTaskName(task),
+    `${getDownloadSourceName(task.source)} · ${getTaskSourceTypeName(task.source_type)}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+const getDownloadDetailRegionId = (task: DownloadTask): string =>
+  `queue-download-task-${encodeURIComponent(String(task.id))}-details`
+
+const isDownloadRowExpanded = (task: DownloadTask): boolean =>
+  pageState.expandedRowKeys.includes(String(task.id))
+
+const getDownloadExpandButtonLabel = (task: DownloadTask): string =>
+  `${isDownloadRowExpanded(task) ? '收起' : '展开'}下载任务 ${task.id} 详情`
+
+const toggleDownloadRowExpansion = (task: DownloadTask) => {
+  const table = isMobileView.value ? mobileTableRef.value : desktopTableRef.value
+  table?.toggleRowExpansion(task, !isDownloadRowExpanded(task))
 }
 
 // 表格行类名
@@ -408,6 +511,13 @@ const handleExpandChange = (row: DownloadTask, expandedRows: DownloadTask[]) => 
   pageStateStore.setExpandedRowKeys(
     'download-queue',
     expandedRows.map((item) => String(item.id)),
+  )
+}
+
+const pruneExpandedRowsAfterLoad = () => {
+  pageStateStore.setExpandedRowKeys(
+    'download-queue',
+    retainExistingKeys(pageState.expandedRowKeys, queueData.value, (row) => row.id),
   )
 }
 
@@ -448,10 +558,7 @@ const loadQueueData = async () => {
             response.data.data.queue_status,
             queueStatusSnapshot.value.running,
           )
-          pageStateStore.setExpandedRowKeys(
-            'download-queue',
-            retainExistingKeys(pageState.expandedRowKeys, queueData.value, (row) => row.id),
-          )
+          pruneExpandedRowsAfterLoad()
           if (hasActiveQueueWork.value) {
             startAutoRefresh()
           } else {
@@ -816,7 +923,8 @@ onActivated(() => {
     )
   }
   nextTick(() => {
-    window.dispatchEvent(new Event('resize'))
+    const table = isMobileView.value ? mobileTableRef.value : desktopTableRef.value
+    table?.doLayout()
   })
 })
 
@@ -905,12 +1013,119 @@ onUnmounted(() => {
   margin: 16px 0;
 }
 
-.filename {
-  font-weight: 500;
+.desktop-task-summary {
+  min-width: 0;
 }
 
-.queue-path-text {
+.desktop-task-summary :deep(.el-tooltip__trigger) {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.desktop-task-summary-text {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.desktop-task-file-name {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: 500;
+  line-height: 1.4;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.desktop-task-meta,
+.queue-time-summary span {
+  display: block;
+  overflow: hidden;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-task-source,
+.desktop-task-source-type {
+  vertical-align: baseline;
+}
+
+.desktop-location-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-line;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.desktop-location-direction {
+  color: var(--el-text-color-secondary);
+}
+
+.queue-time-summary {
+  min-width: 0;
+}
+
+.mobile-task-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-task-title-row,
+.mobile-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-task-file-name {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mobile-task-file-name {
+  flex: 1 1 0;
+}
+
+.mobile-task-id,
+.desktop-task-id {
+  color: var(--el-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-task-metrics {
+  color: var(--el-text-color-regular);
+}
+
+:deep(.queue-expand-carrier) {
+  width: 1px !important;
+  min-width: 1px !important;
+  max-width: 1px !important;
+  padding: 0 !important;
+}
+
+:deep(.queue-expand-carrier .cell) {
+  display: none;
+}
+
+:deep(.queue-expand-column .cell) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0;
+}
+
+:deep(.queue-table-desktop .el-table__body tr > td.el-table__cell) {
+  height: 110px;
 }
 
 /* 表格行样式 */

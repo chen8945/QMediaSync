@@ -78,6 +78,7 @@
 
     <el-table
       v-if="isMobileView"
+      ref="mobileTableRef"
       :data="queueData"
       style="width: 100%"
       v-loading="initialLoading || queryLoading"
@@ -87,60 +88,41 @@
       @expand-change="handleExpandChange"
       :row-class-name="tableRowClassName"
       :height="tableHeight"
+      flexible
       class="queue-table-mobile"
     >
-      <el-table-column type="expand" width="30">
+      <el-table-column
+        type="expand"
+        width="1"
+        class-name="queue-expand-carrier"
+        label-class-name="queue-expand-carrier"
+      >
         <template #default="scope">
-          <el-descriptions class="margin-top" :column="2" border size="small">
-            <el-descriptions-item label="来源">{{
-              getUploadSourceName(scope.row.source)
-            }}</el-descriptions-item>
-            <el-descriptions-item label="类型">
-              <el-tag :type="getTaskSourceTypeTagType(scope.row.source_type)">
-                {{ getTaskSourceTypeName(scope.row.source_type) }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="状态">
-              <el-tag :type="getStatusTagType(scope.row.status)">
-                {{ getStatusText(scope.row.status) }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="进度">
-              {{ getUploadedSizeLabel(scope.row) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="速度">
-              {{ formatByteRate(scope.row.upload_speed_bytes) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="阶段">
-              {{ getUploadPhaseLabel(scope.row) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="结果">
-              {{ getUploadResultLabel(scope.row) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="文件大小">
-              {{ formatFileSize(scope.row.file_size) }}
-            </el-descriptions-item>
-            <el-descriptions-item label="开始时间">
-              {{ scope.row.start_time ? formatDateTime(scope.row.start_time) : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="完成时间">
-              {{ scope.row.end_time ? formatDateTime(scope.row.end_time) : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="重试次数">
-              {{ scope.row.retry_count || 0 }}
-            </el-descriptions-item>
-            <el-descriptions-item label="失败原因" v-if="scope.row.error" :span="2">
-              {{ scope.row.error ? scope.row.error : '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item
-              v-for="detail in getUploadTaskDetailRows(scope.row)"
-              :key="detail.label"
-              :label="detail.label"
-              :span="2"
-            >
-              {{ detail.value }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <section
+            :id="getUploadDetailRegionId(scope.row)"
+            class="queue-task-details-region"
+            role="region"
+            :aria-label="`上传任务 ${scope.row.id} 详情`"
+          >
+            <QueueTaskDetails :groups="buildUploadTaskDetailGroups(scope.row)" :max-columns="2" />
+          </section>
+        </template>
+      </el-table-column>
+      <el-table-column
+        width="44"
+        align="center"
+        class-name="queue-expand-column"
+        label-class-name="queue-expand-column"
+      >
+        <template #default="scope">
+          <QueueTaskExpandButton
+            :expanded="isUploadRowExpanded(scope.row)"
+            :label="getUploadExpandButtonLabel(scope.row)"
+            :controls="
+              isUploadRowExpanded(scope.row) ? getUploadDetailRegionId(scope.row) : undefined
+            "
+            @toggle="toggleUploadRowExpansion(scope.row)"
+          />
         </template>
       </el-table-column>
 
@@ -148,16 +130,26 @@
         <template #default="scope">
           <div class="mobile-task-summary">
             <div class="mobile-task-meta">
-              <el-text type="primary"># {{ scope.row.id }}</el-text>
+              <span class="mobile-task-id"># {{ scope.row.id }}</span>
               <el-tag size="small" effect="plain">{{
                 getUploadSourceName(scope.row.source)
               }}</el-tag>
-              <el-tag size="small" :type="getStatusTagType(scope.row.status)">
-                {{ getStatusText(scope.row.status) }}
+              <el-tag size="small" :type="getTaskSourceTypeTagType(scope.row.source_type)">
+                {{ getTaskSourceTypeName(scope.row.source_type) }}
+              </el-tag>
+              <el-tag size="small" :type="getUploadStatusTagType(scope.row.status)">
+                {{ getUploadStatusText(scope.row.status) }}
               </el-tag>
             </div>
-            <div class="queue-path-text mobile-task-path">
-              {{ scope.row.file_name || scope.row.local_full_path }}
+            <div class="mobile-task-title-row">
+              <span class="mobile-task-file-name">{{ getUploadTaskName(scope.row) }}</span>
+            </div>
+            <div class="mobile-task-metrics">
+              <span>{{ getUploadedSizeLabel(scope.row) }}</span>
+              <span> · {{ getUploadProgressPercent(scope.row) }}%</span>
+              <span v-if="scope.row.status === 1 && scope.row.upload_speed_bytes">
+                · {{ formatByteRate(scope.row.upload_speed_bytes) }}
+              </span>
             </div>
             <el-progress
               class="queue-progress mobile-progress"
@@ -171,6 +163,7 @@
     </el-table>
     <el-table
       v-else
+      ref="desktopTableRef"
       :data="queueData"
       style="width: 100%"
       v-loading="initialLoading || queryLoading"
@@ -180,33 +173,88 @@
       @expand-change="handleExpandChange"
       :row-class-name="tableRowClassName"
       :height="tableHeight"
+      flexible
+      class="queue-table-desktop"
     >
-      <el-table-column prop="id" label="ID" width="64" />
-      <el-table-column prop="source" label="来源" width="128" show-overflow-tooltip>
+      <el-table-column
+        type="expand"
+        width="1"
+        class-name="queue-expand-carrier"
+        label-class-name="queue-expand-carrier"
+      >
         <template #default="scope">
-          {{ getUploadSourceName(scope.row.source) }}
+          <section
+            :id="getUploadDetailRegionId(scope.row)"
+            class="queue-task-details-region"
+            role="region"
+            :aria-label="`上传任务 ${scope.row.id} 详情`"
+          >
+            <QueueTaskDetails :groups="buildUploadTaskDetailGroups(scope.row)" :max-columns="5" />
+          </section>
+        </template>
+      </el-table-column>
+      <el-table-column
+        width="44"
+        align="center"
+        class-name="queue-expand-column"
+        label-class-name="queue-expand-column"
+      >
+        <template #default="scope">
+          <QueueTaskExpandButton
+            :expanded="isUploadRowExpanded(scope.row)"
+            :label="getUploadExpandButtonLabel(scope.row)"
+            :controls="
+              isUploadRowExpanded(scope.row) ? getUploadDetailRegionId(scope.row) : undefined
+            "
+            @toggle="toggleUploadRowExpansion(scope.row)"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column label="任务" width="320">
+        <template #default="scope">
+          <div class="desktop-task-summary">
+            <el-tooltip :content="getUploadTaskTooltipContent(scope.row)" placement="top">
+              <div class="desktop-task-summary-text">
+                <span class="desktop-task-file-name">{{ getUploadTaskName(scope.row) }}</span>
+                <span class="desktop-task-meta">
+                  <span class="desktop-task-id"># {{ scope.row.id }}</span> ·
+                  <el-tag class="desktop-task-source" size="small" effect="plain">
+                    {{ getUploadSourceName(scope.row.source) }}
+                  </el-tag>
+                  ·
+                  <el-tag
+                    class="desktop-task-source-type"
+                    size="small"
+                    :type="getTaskSourceTypeTagType(scope.row.source_type)"
+                  >
+                    {{ getTaskSourceTypeName(scope.row.source_type) }}
+                  </el-tag>
+                </span>
+              </div>
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" width="104">
         <template #default="scope">
           <div v-if="scope.row.error">
             <el-tooltip :content="scope.row.error" placement="top">
-              <el-tag :type="getStatusTagType(scope.row.status)">
+              <el-tag :type="getUploadStatusTagType(scope.row.status)">
                 <el-icon>
                   <WarningFilled />
                 </el-icon>
-                {{ getStatusText(scope.row.status) }}
+                {{ getUploadStatusText(scope.row.status) }}
               </el-tag>
             </el-tooltip>
           </div>
           <div v-else>
-            <el-tag :type="getStatusTagType(scope.row.status)">
-              {{ getStatusText(scope.row.status) }}
+            <el-tag :type="getUploadStatusTagType(scope.row.status)">
+              {{ getUploadStatusText(scope.row.status) }}
             </el-tag>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="progress_percent" label="进度" width="220">
+      <el-table-column prop="progress_percent" label="进度" width="160">
         <template #default="scope">
           <div class="progress-cell">
             <el-progress
@@ -223,15 +271,19 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="upload_phase" label="阶段 / 结果" width="148">
+      <el-table-column prop="upload_phase" label="结果" width="180">
         <template #default="scope">
           <div class="stage-result-cell">
-            <el-tag :type="getStageResultTagType(scope.row)" effect="light">
-              {{ getUploadStageOrResultLabel(scope.row) }}
+            <el-tag
+              v-if="shouldShowUploadStageSummary(scope.row)"
+              :type="getUploadStageResultTagType(scope.row)"
+              effect="light"
+            >
+              {{ getUploadStageSummaryLabel(scope.row) }}
             </el-tag>
             <el-tooltip
-              v-if="getUploadDetailSummary(scope.row)"
-              :content="getUploadDetailSummary(scope.row)"
+              v-if="getUploadTransportDetailSummary(scope.row)"
+              :content="getUploadTransportDetailSummary(scope.row)"
               placement="top"
             >
               <el-text class="stage-detail-link" type="info">详情</el-text>
@@ -239,26 +291,35 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="start_time" label="时间" width="180">
+      <el-table-column label="上传位置" min-width="200">
         <template #default="scope">
-          开始时间：{{ scope.row.start_time ? formatDateTime(scope.row.start_time) : '-' }} <br />
-          完成时间：{{ scope.row.end_time ? formatDateTime(scope.row.end_time) : '-' }} <br />
-          <span v-if="scope.row.retry_count">重试次数：{{ scope.row.retry_count }}</span>
+          <el-tooltip
+            v-if="getUploadLocationSummary(scope.row)"
+            :content="getUploadLocationSummary(scope.row)"
+            placement="top"
+          >
+            <span class="desktop-location-summary">
+              <template v-if="scope.row.local_full_path && scope.row.remote_file_id">
+                {{ scope.row.local_full_path }}<br />
+                <span class="desktop-location-direction">上传至</span>
+                {{ scope.row.remote_file_id }}
+              </template>
+              <template v-else>{{ getUploadLocationSummary(scope.row) }}</template>
+            </span>
+          </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="source_type" label="类型" width="72">
+      <el-table-column prop="start_time" label="时间" width="260">
         <template #default="scope">
-          <el-tag :type="getTaskSourceTypeTagType(scope.row.source_type)">
-            {{ getTaskSourceTypeName(scope.row.source_type) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="speed" label="上传文件" min-width="300">
-        <template #default="scope">
-          <p class="queue-path-text">{{ scope.row.local_full_path }}</p>
-          <p>
-            => <span class="queue-path-text">{{ scope.row.remote_file_id }}</span>
-          </p>
+          <div class="queue-time-summary">
+            <span v-if="scope.row.start_time"
+              >开始时间：{{ formatDateTime(scope.row.start_time) }}</span
+            >
+            <span v-if="scope.row.end_time"
+              >结束时间：{{ formatDateTime(scope.row.end_time) }}</span
+            >
+            <span v-if="scope.row.retry_count > 0">重试 {{ scope.row.retry_count }} 次</span>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -275,9 +336,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  ref,
+  useTemplateRef,
+} from 'vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
+import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
@@ -286,7 +358,6 @@ import { useHttpClient } from '@/http/client'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import { usePageStateStore } from '@/stores/pageState'
-import { formatFileSize } from '@/utils/fileSizeUtils'
 import {
   getTaskSourceTypeName,
   getTaskSourceTypeTagType,
@@ -294,14 +365,18 @@ import {
 } from '@/utils/taskSourceUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import {
+  buildUploadTaskDetailGroups,
+  getUploadStageResultTagType,
+  getUploadStageSummaryLabel,
+  getUploadStatusTagType,
+  getUploadStatusText,
+  getUploadTransportDetailSummary,
+} from '@/utils/queueTaskDetailUtils'
+import {
   applyUploadQueuePatch,
   formatByteRate,
   getUploadedSizeLabel,
-  getUploadPhaseLabel,
   getUploadProgressPercent,
-  getUploadResultLabel,
-  getUploadStageOrResultLabel,
-  getUploadTaskDetailRows,
   type UploadQueuePatch,
 } from '@/utils/uploadQueueDisplayUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
@@ -321,7 +396,7 @@ interface UploadTask {
   source_type: string
   file_name: string
   local_full_path: string
-  remote_path: string
+  remote_path_id?: string
   status: 0 | 1 | 2 | 3 | 4 | 5 | 6
   file_size: number
   start_time: number
@@ -330,7 +405,6 @@ interface UploadTask {
   error: string
   retry_count: number
   last_retry_time: number
-  is_season_or_tvshow_file: boolean
   uploaded_bytes?: number
   upload_result?: string
   resume_state?: string
@@ -342,6 +416,11 @@ interface UploadTask {
   uploaded_parts?: number
   source_cleanup_status?: string
   source_cleanup_error?: string
+  rapid_wait_attempts?: number
+  relative_path?: string
+  source_deleted_at?: number
+  completed_remote_file_id?: string
+  completed_pick_code?: string
 }
 
 interface QueueMutationContextSnapshot {
@@ -366,6 +445,8 @@ const queueStatusSnapshot = ref<QueueStatusSnapshot>(emptyQueueStatusSnapshot())
 const canPauseAllTasks = computed(() => canPauseQueue(queueStatusSnapshot.value))
 const canResumeAllTasks = computed(() => canResumeQueue(queueStatusSnapshot.value))
 const { isMobile: isMobileView } = useDeviceType()
+const mobileTableRef = useTemplateRef<TableInstance>('mobileTableRef')
+const desktopTableRef = useTemplateRef<TableInstance>('desktopTableRef')
 const tableHeight = computed(() => (isMobileView.value ? undefined : 'calc(100vh - 300px)'))
 const queueControlSize = computed<'small' | 'default'>(() =>
   isMobileView.value ? 'small' : 'default',
@@ -461,90 +542,42 @@ const isMessageBoxCancelError = (error: unknown): boolean => {
   return errorMessage.includes('用户取消操作')
 }
 
-// 获取状态文本
-const getStatusText = (status: number): string => {
-  switch (status) {
-    case 0:
-      return '等待上传'
-    case 1:
-      return '正在上传'
-    case 2:
-      return '上传完成'
-    case 3:
-      return '上传失败'
-    case 4:
-      return '已取消'
-    case 5:
-      return '等待完成处理'
-    case 6:
-      return '正在完成处理'
-    default:
-      return '未知'
+const getUploadTaskName = (task: UploadTask): string => task.file_name || task.local_full_path
+
+const getUploadLocationSummary = (task: UploadTask): string => {
+  const sourcePath = task.local_full_path
+  const targetPath = task.remote_file_id
+
+  if (sourcePath && targetPath) {
+    return `${sourcePath}\n上传至 ${targetPath}`
   }
+
+  return sourcePath || targetPath || ''
 }
 
-// 获取状态标签类型
-const getStatusTagType = (
-  status: number,
-): 'primary' | 'success' | 'warning' | 'danger' | 'info' => {
-  switch (status) {
-    case 0:
-      return 'info'
-    case 1:
-      return 'primary'
-    case 2:
-      return 'success'
-    case 3:
-      return 'danger'
-    case 4:
-      return 'warning'
-    case 5:
-    case 6:
-      return 'primary'
-    default:
-      return 'info'
-  }
-}
+const shouldShowUploadStageSummary = (task: UploadTask): boolean =>
+  Boolean(getUploadStageSummaryLabel(task))
 
-const getStageResultTagType = (
-  task: UploadTask,
-): 'primary' | 'success' | 'warning' | 'danger' | 'info' => {
-  if (task.upload_result === 'rapid_upload' || task.upload_result === 'multipart_uploaded') {
-    return 'success'
-  }
-  if (task.upload_result === 'remote_exists') {
-    return 'info'
-  }
-  if (task.upload_result === 'skipped_after_rapid_wait') {
-    return 'warning'
-  }
-  if (task.upload_phase === 'rapid_waiting') {
-    return 'warning'
-  }
-  if (
-    task.status === 5 ||
-    task.status === 6 ||
-    task.upload_phase === 'remote_completed_pending_finalize' ||
-    task.upload_phase === 'remote_completed_finalizing'
-  ) {
-    return 'primary'
-  }
-  if (task.status === 2) {
-    return 'success'
-  }
-  if (task.status === 3) {
-    return 'danger'
-  }
-  if (task.status === 1) {
-    return 'primary'
-  }
-  return 'info'
-}
+const getUploadTaskTooltipContent = (task: UploadTask): string =>
+  [
+    getUploadTaskName(task),
+    `${getUploadSourceName(task.source)} · ${getTaskSourceTypeName(task.source_type)}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
 
-const getUploadDetailSummary = (task: UploadTask): string => {
-  return getUploadTaskDetailRows(task)
-    .map((item) => `${item.label}：${item.value}`)
-    .join('；')
+const getUploadDetailRegionId = (task: UploadTask): string =>
+  `queue-upload-task-${encodeURIComponent(String(task.id))}-details`
+
+const isUploadRowExpanded = (task: UploadTask): boolean =>
+  pageState.expandedRowKeys.includes(String(task.id))
+
+const getUploadExpandButtonLabel = (task: UploadTask): string =>
+  `${isUploadRowExpanded(task) ? '收起' : '展开'}上传任务 ${task.id} 详情`
+
+const toggleUploadRowExpansion = (task: UploadTask) => {
+  const table = isMobileView.value ? mobileTableRef.value : desktopTableRef.value
+  table?.toggleRowExpansion(task, !isUploadRowExpanded(task))
 }
 
 // 表格行类名
@@ -565,6 +598,13 @@ const handleExpandChange = (row: UploadTask, expandedRows: UploadTask[]) => {
   pageStateStore.setExpandedRowKeys(
     'upload-queue',
     expandedRows.map((item) => String(item.id)),
+  )
+}
+
+const pruneExpandedRowsAfterLoad = () => {
+  pageStateStore.setExpandedRowKeys(
+    'upload-queue',
+    retainExistingKeys(pageState.expandedRowKeys, queueData.value, (row) => row.id),
   )
 }
 
@@ -605,10 +645,7 @@ const loadQueueData = async () => {
             response.data.data.queue_status,
             queueStatusSnapshot.value.running,
           )
-          pageStateStore.setExpandedRowKeys(
-            'upload-queue',
-            retainExistingKeys(pageState.expandedRowKeys, queueData.value, (row) => row.id),
-          )
+          pruneExpandedRowsAfterLoad()
           if (hasActiveQueueWork.value) {
             startAutoRefresh()
           } else {
@@ -948,6 +985,7 @@ const progressPatchFields = [
   'uploaded_parts',
   'source_cleanup_status',
   'source_cleanup_error',
+  'source_deleted_at',
 ] as const
 
 const uploadQueuePatchReasons = ['progress', 'source_cleanup_changed'] as const
@@ -1024,7 +1062,8 @@ onActivated(() => {
     )
   }
   nextTick(() => {
-    window.dispatchEvent(new Event('resize'))
+    const table = isMobileView.value ? mobileTableRef.value : desktopTableRef.value
+    table?.doLayout()
   })
 })
 
@@ -1107,13 +1146,61 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
-.filename {
-  font-weight: 500;
+.desktop-task-summary {
+  min-width: 0;
 }
 
-.queue-path-text {
+.desktop-task-summary :deep(.el-tooltip__trigger) {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.desktop-task-summary-text {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.desktop-task-file-name {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: 500;
+  line-height: 1.4;
   overflow-wrap: anywhere;
-  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.desktop-task-meta,
+.queue-time-summary span {
+  display: block;
+  overflow: hidden;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-task-source,
+.desktop-task-source-type {
+  vertical-align: baseline;
+}
+
+.desktop-location-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-line;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.desktop-location-direction {
+  color: var(--el-text-color-secondary);
+}
+
+.queue-time-summary {
+  min-width: 0;
 }
 
 .progress-cell {
@@ -1162,17 +1249,62 @@ onUnmounted(() => {
   gap: 6px;
 }
 
-.mobile-task-path {
-  display: -webkit-box;
-  max-width: 100%;
-  overflow: hidden;
-  line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.mobile-task-id,
+.desktop-task-id {
+  color: var(--el-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-task-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-task-file-name {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mobile-task-file-name {
+  flex: 1 1 0;
+}
+
+.mobile-task-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: var(--el-text-color-regular);
 }
 
 .mobile-progress {
   max-width: 100%;
+}
+
+:deep(.queue-expand-carrier) {
+  width: 1px !important;
+  min-width: 1px !important;
+  max-width: 1px !important;
+  padding: 0 !important;
+}
+
+:deep(.queue-expand-carrier .cell) {
+  display: none;
+}
+
+:deep(.queue-expand-column .cell) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0;
+}
+
+:deep(.queue-table-desktop .el-table__body tr > td.el-table__cell) {
+  height: 110px;
 }
 
 /* 表格行样式 */

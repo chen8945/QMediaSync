@@ -204,30 +204,6 @@ interface DirectoryUploadRule {
   overwrite_mode: DirectoryUploadOverwriteMode
 }
 
-type UploadTaskStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6
-
-interface UploadTaskQueueItem {
-  id: string | number
-  source: string
-  source_type: string
-  file_name: string
-  local_full_path: string
-  remote_path: string
-  status: UploadTaskStatus
-  file_size: number
-  uploaded_bytes?: number
-  upload_result?: string
-  resume_state?: string
-  rapid_wait_until?: number
-  upload_phase?: string
-  upload_speed_bytes?: number
-  progress_percent?: number
-  total_parts?: number
-  uploaded_parts?: number
-  source_cleanup_status?: string
-  source_cleanup_error?: string
-}
-
 export type {
   oo5Account,
   LibForm,
@@ -257,6 +233,4 @@ export type {
   DirectoryUploadWatchMode,
   DirectoryUploadOverwriteMode,
   DirectoryUploadRule,
-  UploadTaskStatus,
-  UploadTaskQueueItem,
 }

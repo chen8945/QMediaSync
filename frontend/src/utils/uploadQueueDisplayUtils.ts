@@ -16,6 +16,7 @@ export interface UploadQueueDisplayTask {
   uploaded_parts?: number
   source_cleanup_status?: string
   source_cleanup_error?: string
+  source_deleted_at?: number
 }
 
 export interface UploadQueuePatch {
@@ -34,6 +35,7 @@ export interface UploadQueuePatch {
   uploaded_parts?: number
   source_cleanup_status?: string
   source_cleanup_error?: string
+  source_deleted_at?: number
 }
 
 export interface UploadTaskDetailRow {
@@ -94,14 +96,48 @@ const cleanupStatusLabelMap: Record<string, string> = {
 
 const roundPercent = (value: number): number => Math.round(value * 10) / 10
 
+const isSkippedAfterRapidWait = (task: Pick<UploadQueueDisplayTask, 'upload_result'>): boolean =>
+  task.upload_result === 'skipped_after_rapid_wait'
+
+const isCompletedUpload = (task: Pick<UploadQueueDisplayTask, 'status'>): boolean =>
+  task.status === 2 || task.status === 5 || task.status === 6
+
+const getEffectiveUploadedBytes = (task: UploadQueueDisplayTask, fileSize: number): number => {
+  if (isSkippedAfterRapidWait(task)) {
+    return 0
+  }
+  if (task.uploaded_bytes && Number.isFinite(task.uploaded_bytes)) {
+    return Math.max(0, task.uploaded_bytes)
+  }
+  if (isCompletedUpload(task) && fileSize > 0) {
+    return fileSize
+  }
+  return 0
+}
+
 export const getUploadProgressPercent = (task: UploadQueueDisplayTask): number => {
+  if (isSkippedAfterRapidWait(task)) {
+    return 0
+  }
+  const fileSize = Math.max(0, task.file_size || 0)
+  if (
+    task.progress_percent === 0 &&
+    fileSize > 0 &&
+    isCompletedUpload(task) &&
+    getEffectiveUploadedBytes(task, fileSize) === fileSize
+  ) {
+    return 100
+  }
   if (typeof task.progress_percent === 'number' && Number.isFinite(task.progress_percent)) {
     return Math.min(100, Math.max(0, roundPercent(task.progress_percent)))
   }
-  if (task.file_size && task.file_size > 0 && typeof task.uploaded_bytes === 'number') {
-    return Math.min(100, Math.max(0, roundPercent((task.uploaded_bytes / task.file_size) * 100)))
+  if (fileSize > 0) {
+    return Math.min(
+      100,
+      Math.max(0, roundPercent((getEffectiveUploadedBytes(task, fileSize) / fileSize) * 100)),
+    )
   }
-  if (task.status === 2 || task.status === 5 || task.status === 6) {
+  if (isCompletedUpload(task)) {
     return 100
   }
   return 0
@@ -153,8 +189,8 @@ export const getUploadStageOrResultLabel = (task: UploadQueueDisplayTask): strin
 }
 
 export const getUploadedSizeLabel = (task: UploadQueueDisplayTask): string => {
-  const uploadedBytes = Math.max(0, task.uploaded_bytes || 0)
   const fileSize = Math.max(0, task.file_size || 0)
+  const uploadedBytes = getEffectiveUploadedBytes(task, fileSize)
   if (fileSize > 0) {
     return `${formatFileSize(uploadedBytes)} / ${formatFileSize(fileSize)}`
   }
@@ -249,6 +285,9 @@ export const applyUploadQueuePatch = <T extends UploadQueueDisplayTask>(
   }
   if (patch.source_cleanup_error !== undefined) {
     row.source_cleanup_error = patch.source_cleanup_error
+  }
+  if (patch.source_deleted_at !== undefined) {
+    row.source_deleted_at = patch.source_deleted_at
   }
   return true
 }

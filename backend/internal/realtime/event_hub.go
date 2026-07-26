@@ -53,6 +53,7 @@ type QueueChangedPayload struct {
 	UploadedParts       int     `json:"uploaded_parts,omitempty"`
 	SourceCleanupStatus string  `json:"source_cleanup_status,omitempty"`
 	SourceCleanupError  *string `json:"source_cleanup_error,omitempty"`
+	SourceDeletedAt     int64   `json:"source_deleted_at,omitempty"`
 }
 
 // EventHub 按有界 channel 向全局事件订阅者分发事件。

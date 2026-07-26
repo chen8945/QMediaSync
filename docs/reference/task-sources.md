@@ -10,6 +10,8 @@
 
 下载和上传队列表都会持久化 `source` 与 `source_type`。`source` 表示创建任务的业务流程，用于来源级查询、去重和后处理分支；`source_type` 表示关联的账号 / 存储后端类型，完整稳定值见 [数据库 schema 与迁移](database-schema.md#常用枚举)。两者不能互相推导：例如 `strm_sync` 可以对应多种存储后端，而 Emby 媒体信息提取下载任务同时使用 `source=emby_media` 与 `source_type=emby_media`。
 
+下载队列详情中的 `remote_file_id` 是按来源复用的存储字段：`source_type=115` 时为 PickCode，`source_type=local` 时为本地源文件路径，其他普通来源时为远端文件 ID；`source_type=emby_media` 使用提取地址的专用展示。前端必须按此语义标注，不能一律显示为远端文件 ID。
+
 同步队列的 `task_type` 不写入数据库，但参与队列路由、去重 key、取消和状态查询。STRM 生成任务的 `source` 和 `task_type` 会写入数据库。
 
 后端业务标识使用稳定机器值，展示层负责把机器值映射为用户可读文案。

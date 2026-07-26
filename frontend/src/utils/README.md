@@ -137,6 +137,21 @@ OAuth 回调参数收集：
 
 `normalizeQueueStatusSnapshot` 同时兼容旧的布尔运行状态和对象快照；缺失或非数值计数归零。`removePendingQueueRows` 只移除 `status=0` 的本地行，不请求后端。
 
+## queueTaskDetailUtils.ts
+
+下载和上传队列的详情展示辅助：
+
+- `QueueTaskDetailField`、`QueueTaskDetailGroup`
+- `buildDownloadTaskDetailGroups(task)`
+- `buildUploadTaskDetailGroups(task)`
+- 下载 / 上传状态文案与标签类型映射
+- `getUploadStageSummaryLabel(task)`、`getUploadStageResultTagType(task)`
+- `getUploadTransportDetailRows(task)`、`getUploadTransportDetailSummary(task)`
+
+这些函数只把接口已返回的队列字段组织为摘要或展开详情，且省略不适用或空值字段；不修改队列状态、请求、SSE payload 或本地列表。展开详情使用轻量的纵向标签布局，并按分组独立指定列数：基本信息紧凑排列，上传传输信息优先并列展示大小、阶段和结果，文件信息中的路径独占整行，执行时间包含开始、结束和可计算的耗时。上传信息优先并列展示断点续传、源文件清理和相对监控根目录。上传传输详情 Tooltip 会同时包含续传、分片、目录监控源文件清理信息和实际存在的完整失败原因。
+
+下载任务的 `remote_file_id` 依据 `source_type` 标注其实际含义：`115` 为 PickCode，`local` 为本地源文件路径，其他普通来源为远端文件 ID；`emby_media` 保持提取地址的专用展示。
+
 ## sourceTypeUtils.ts
 
 同步来源类型展示配置：
@@ -216,9 +231,11 @@ OAuth 回调参数收集：
 - `getResumeStateLabel(resumeState)`
 - `getSourceCleanupStatusLabel(cleanupStatus)`
 - `getUploadTaskDetailRows(task)`
-- `applyUploadQueuePatch(rows, patch)`：合并上传进度、分片、断点续传和目录监控源文件清理状态 patch。`source_cleanup_error` 可能是空字符串，用于清空前端已有的失败原因，不要用 truthy 判断跳过。
+- `applyUploadQueuePatch(rows, patch)`：合并上传进度、分片、断点续传和目录监控源文件清理状态 patch（包括 `source_deleted_at`）。`source_cleanup_error` 可能是空字符串，用于清空前端已有的失败原因，不要用 truthy 判断跳过。
 
 后端返回的 `upload_phase`、`upload_result` 和 `source_cleanup_status` 保持机器值，前端在这里统一映射为用户可读文案；例如上传状态 `5` 对应的 `remote_completed_pending_finalize` 显示为“等待完成处理”，状态 `6` 对应的 `remote_completed_finalizing` 显示为“正在完成处理”。不要把展示文案回写到接口字段或数据库字段。
+
+完成态中 `uploaded_bytes=0` 可能表示后端未跟踪字节数，后端快照中的 `progress_percent=0` 也可能只是同一未知值的序列化结果；前端因此保持完整文件大小和 100% 进度的兼容回退。`skipped_after_rapid_wait` 是明确的例外：它表示秒传等待超时后按配置跳过真实上传，进度和已上传大小固定显示为零，不能按完成态回退为完整上传。
 
 ## timeUtils.ts
 

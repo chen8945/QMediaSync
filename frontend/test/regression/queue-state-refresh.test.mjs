@@ -169,6 +169,153 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
   }
 
+  const assertQueueDetailPresentation = (source, messagePrefix) => {
+    assert.equal(
+      countMatches(source, /^\s+flexible$/gm),
+      2,
+      `${messagePrefix} should let both responsive tables shrink to their available container width`,
+    )
+    assert.equal(
+      countMatches(source, /^\s+class-name="queue-expand-carrier"$/gm),
+      2,
+      `${messagePrefix} should keep a hidden expand carrier for both tables`,
+    )
+    assert.equal(
+      countMatches(source, /^\s+label-class-name="queue-expand-carrier"$/gm),
+      2,
+      `${messagePrefix} should hide both expand carrier headers`,
+    )
+    assert.equal(
+      countMatches(source, /<QueueTaskExpandButton\s+/g),
+      2,
+      `${messagePrefix} should provide one explicit expansion control per responsive table`,
+    )
+    assert.equal(
+      countMatches(source, /:expanded="is(?:Download|Upload)RowExpanded\(scope\.row\)"/g),
+      2,
+      `${messagePrefix} should pass the controlled expansion state to both controls`,
+    )
+    assert.equal(
+      countMatches(source, /@toggle="toggle(?:Download|Upload)RowExpansion\(scope\.row\)"/g),
+      2,
+      `${messagePrefix} should connect both controls to their table expansion action`,
+    )
+    assert.equal(
+      countMatches(source, /^\s+class-name="queue-expand-column"$/gm),
+      2,
+      `${messagePrefix} should reserve a left-hand control column for both tables`,
+    )
+    assert.equal(
+      countMatches(source, /<QueueTaskDetails\s+:groups=/g),
+      2,
+      `${messagePrefix} should render shared details from both responsive tables`,
+    )
+    assert.equal(
+      countMatches(source, /^\s*<QueueTaskDetails\s+:groups=.*?:max-columns="2"\s*\/>$/gm),
+      1,
+      `${messagePrefix} should cap each detail group at two columns on mobile`,
+    )
+    assert.equal(
+      countMatches(source, /^\s*<QueueTaskDetails\s+:groups=.*?:max-columns="5"\s*\/>$/gm),
+      1,
+      `${messagePrefix} should preserve each detail group's desktop column layout`,
+    )
+    const isUploadQueue = source.includes('<el-table-column prop="upload_phase"')
+    const locationLabel = isUploadQueue ? '上传位置' : '下载位置'
+    const progressLabel = isUploadQueue ? '进度' : '大小'
+    const summaryLabels = [
+      '任务',
+      '状态',
+      progressLabel,
+      ...(isUploadQueue ? ['结果'] : []),
+      locationLabel,
+      '时间',
+    ]
+    for (const label of summaryLabels) {
+      assert.match(
+        source,
+        new RegExp(`<el-table-column[^>]*label="${label}"`),
+        `${messagePrefix} desktop table should include ${label} summary column`,
+      )
+    }
+    assert.match(
+      source,
+      /<el-table-column\s+label="任务"\s+width="320">/,
+      `${messagePrefix} should give the task column enough room for long file names`,
+    )
+    assert.match(
+      source,
+      new RegExp(`<el-table-column\\s+label="${locationLabel}"\\s+min-width="200">`),
+      `${messagePrefix} should let the location column consume the remaining desktop width`,
+    )
+    assert.doesNotMatch(
+      source,
+      new RegExp(`<el-table-column\\s+label="${locationLabel}"\\s+width=`),
+      `${messagePrefix} should not impose a fixed width on the location column`,
+    )
+    for (const [label, width] of [
+      ['状态', '104'],
+      ['时间', '260'],
+      ...(isUploadQueue
+        ? [
+            ['进度', '160'],
+            ['结果', '180'],
+          ]
+        : [['大小', '128']]),
+    ]) {
+      assert.match(
+        source,
+        new RegExp(`<el-table-column[^>]*label="${label}"[^>]*\\bwidth="${width}"`),
+        `${messagePrefix} ${label} should use its compact fixed width`,
+      )
+    }
+    assert.doesNotMatch(
+      source,
+      /class="mobile-task-location"/,
+      `${messagePrefix} should keep detailed locations out of the collapsed mobile summary`,
+    )
+    assert.match(
+      source,
+      />开始时间：\{\{ formatDateTime\(scope\.row\.start_time\) \}\}<\/span\s*>/,
+      `${messagePrefix} should label the start timestamp clearly`,
+    )
+    assert.match(
+      source,
+      /结束时间：\{\{ formatDateTime\(scope\.row\.end_time\) \}\}<\/span\s*>/,
+      `${messagePrefix} should label the end timestamp clearly`,
+    )
+    assert.match(
+      source,
+      /:deep\(\.queue-expand-carrier\)\s*{\s*width:\s*1px\s*!important;\s*min-width:\s*1px\s*!important;\s*max-width:\s*1px\s*!important;\s*padding:\s*0\s*!important;/,
+      `${messagePrefix} should keep the hidden expand carrier in the table layout`,
+    )
+    assert.match(
+      source,
+      /:deep\(\.queue-expand-carrier\s+\.cell\)\s*{\s*display:\s*none;/,
+      `${messagePrefix} should hide only the expand carrier's generated control`,
+    )
+    assert.doesNotMatch(
+      source,
+      /:deep\(\.queue-expand-carrier\)\s*{\s*display:\s*none/,
+      `${messagePrefix} should not remove a structural table column from browser layout`,
+    )
+    assert.match(
+      source,
+      /\.desktop-task-summary\s*:deep\(\.el-tooltip__trigger\)\s*{\s*display:\s*block;\s*flex:\s*1\s+1\s+0;\s*min-width:\s*0;/,
+      `${messagePrefix} should let the tooltip trigger shrink with its task-summary text`,
+    )
+    assert.match(
+      source,
+      /:deep\(\.queue-table-desktop\s+\.el-table__body\s+tr\s*>\s*td\.el-table__cell\)\s*{\s*height:\s*110px;/,
+      `${messagePrefix} should reserve roughly five lines of height for desktop task rows`,
+    )
+    assert.match(
+      source,
+      /:deep\(\.queue-expand-column\s+\.cell\)\s*{\s*display:\s*flex;\s*align-items:\s*center;\s*justify-content:\s*center;\s*height:\s*100%;\s*padding:\s*0;/,
+      `${messagePrefix} should center its left-hand expansion control vertically`,
+    )
+  }
+
   const assertLoadQueueData = (
     source,
     pageKey,
@@ -197,10 +344,8 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      new RegExp(
-        `pageStateStore\\.setExpandedRowKeys\\s*\\(\\s*['"]${pageKey}['"][\\s\\S]*?retainExistingKeys\\s*\\(\\s*pageState\\.expandedRowKeys\\s*,\\s*queueData\\.value\\s*,\\s*\\(\\s*row\\s*\\)\\s*=>\\s*row\\.id\\s*\\)`,
-      ),
-      `${messagePrefix} should retain only expanded rows still present after refresh`,
+      /pruneExpandedRowsAfterLoad\s*\(\s*\)/,
+      `${messagePrefix} should prune controlled expanded rows after refresh`,
     )
     assert.match(
       body,
@@ -302,17 +447,17 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
       `${messagePrefix} should prune expanded keys on activation only when queue data is non-empty`,
     )
 
-    const resizeIndex = body.search(
-      /nextTick\s*\(\s*\(\s*\)\s*=>\s*{[\s\S]*?window\.dispatchEvent\s*\(\s*new Event\s*\(\s*['"]resize['"]\s*\)\s*\)/,
+    const layoutIndex = body.search(
+      /nextTick\s*\(\s*\(\s*\)\s*=>\s*{[\s\S]*?const\s+table\s*=\s*isMobileView\.value\s*\?\s*mobileTableRef\.value\s*:\s*desktopTableRef\.value[\s\S]*?table\?\.doLayout\s*\(\s*\)/,
     )
     assert.ok(
-      resizeIndex > guardEnd,
-      `${messagePrefix} should dispatch resize after activation outside the non-empty queue data guard`,
+      layoutIndex > guardEnd,
+      `${messagePrefix} should recalculate its active table after activation outside the non-empty queue data guard`,
     )
     assert.match(
       source,
-      /nextTick\s*\(\s*\(\s*\)\s*=>\s*{[\s\S]*?window\.dispatchEvent\s*\(\s*new Event\s*\(\s*['"]resize['"]\s*\)\s*\)/,
-      `${messagePrefix} should dispatch resize after activation`,
+      /nextTick\s*\(\s*\(\s*\)\s*=>\s*{[\s\S]*?const\s+table\s*=\s*isMobileView\.value\s*\?\s*mobileTableRef\.value\s*:\s*desktopTableRef\.value[\s\S]*?table\?\.doLayout\s*\(\s*\)/,
+      `${messagePrefix} should recalculate its active table after activation`,
     )
   }
 
@@ -433,6 +578,29 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assertLoadQueueDataCoalescesInFlightChanges(source, messagePrefix)
     assertTablesUseControlledExpansion(source, queuePage.rowType, messagePrefix)
+    assertQueueDetailPresentation(source, messagePrefix)
+    assert.doesNotMatch(
+      source,
+      /popper-class=/,
+      `${messagePrefix} should use Element Plus default Tooltip styles`,
+    )
+    assert.doesNotMatch(
+      source,
+      /detailExpansionInitialized/,
+      `${messagePrefix} should not automatically initialize expanded rows`,
+    )
+    assert.doesNotMatch(
+      source,
+      /watch\s*\(\s*isMobileView/,
+      `${messagePrefix} should not add a breakpoint-specific expansion default`,
+    )
+    assert.match(
+      source,
+      new RegExp(
+        `const\\s+pruneExpandedRowsAfterLoad\\s*=\\s*\\(\\)\\s*=>\\s*{[\\s\\S]*?retainExistingKeys\\s*\\(\\s*pageState\\.expandedRowKeys\\s*,\\s*queueData\\.value\\s*,\\s*\\(\\s*row\\s*\\)\\s*=>\\s*row\\.id\\s*\\)`,
+      ),
+      `${messagePrefix} should retain only expanded rows that remain in the refreshed list`,
+    )
     assert.match(
       source,
       /<el-button[\s\S]*?type="info"[\s\S]*?@click="refreshQueue"[\s\S]*?:loading="backgroundRefreshing"/,
@@ -448,4 +616,112 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     assertActivationRepair(source, queuePage.key, messagePrefix)
     assertQueueMutationsUseContext(source, queuePage.mutationFunctions, messagePrefix)
   }
+
+  const uploadSource = readSource('src/components/AppUploadQueue.vue')
+  const downloadSource = readSource('src/components/AppDownloadQueue.vue')
+  const expandButtonSource = readSource('src/components/queue/QueueTaskExpandButton.vue')
+  const mainStyles = readSource('src/assets/main.css')
+
+  assert.match(
+    expandButtonSource,
+    /:icon="CaretRight"[\s\S]*?:aria-expanded="expanded"[\s\S]*?@click\.stop="emit\('toggle'\)"/,
+    '共享展开按钮应使用可访问的图标控件并向父组件发出切换事件',
+  )
+
+  assert.doesNotMatch(
+    mainStyles,
+    /\.queue-(?:upload-detail-tooltip|summary-tooltip|status-error-tooltip)/,
+    '队列 Tooltip 不应保留覆盖 Element Plus 默认样式的全局选择器',
+  )
+
+  assert.match(
+    uploadSource,
+    /<div\s+class="mobile-task-metrics">[\s\S]*?getUploadedSizeLabel\(scope\.row\)[\s\S]*?getUploadProgressPercent\(scope\.row\)[\s\S]*?formatByteRate\(scope\.row\.upload_speed_bytes\)/,
+    '上传移动摘要应始终显示已上传大小、百分比和速度',
+  )
+  assert.doesNotMatch(
+    uploadSource,
+    /<el-progress\s+v-if="scope\.row\.status === 1"/,
+    '上传进度条应始终显示',
+  )
+  assert.match(
+    uploadSource,
+    /return `\$\{sourcePath\}\\n上传至 \$\{targetPath\}`/,
+    '上传位置应将“上传至”和目标路径放在单独一行',
+  )
+  assert.match(
+    downloadSource,
+    /return `\$\{sourcePath\}\\n下载至 \$\{targetPath\}`/,
+    '下载位置应将“下载至”和目标路径放在单独一行',
+  )
+  for (const [source, direction] of [
+    [uploadSource, '上传至'],
+    [downloadSource, '下载至'],
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`<span class="desktop-location-direction">${direction}</span>`),
+      `${direction} 应作为独立元素展示`,
+    )
+    assert.match(
+      source,
+      /\.desktop-location-direction\s*{[\s\S]*?color:\s*var\(--el-text-color-secondary\)/,
+      `${direction} 应使用次级文本色弱化展示`,
+    )
+  }
+  assert.match(
+    uploadSource,
+    /<div\s+class="mobile-task-meta">[\s\S]*?# \{\{ scope\.row\.id \}\}[\s\S]*?<div\s+class="mobile-task-title-row">/,
+    '上传移动摘要应将任务 ID、来源和状态置于文件名上方',
+  )
+  assert.match(
+    downloadSource,
+    /<div\s+class="mobile-task-meta">[\s\S]*?# \{\{ scope\.row\.id \}\}[\s\S]*?<div\s+class="mobile-task-title-row">/,
+    '下载移动摘要应将任务 ID、来源和状态置于文件名上方',
+  )
+  assert.doesNotMatch(
+    uploadSource,
+    /isRapidUploadSuccess|mobile-task-stage-result/,
+    '上传移动摘要不应单独展示秒传或阶段结果',
+  )
+  assert.match(
+    uploadSource,
+    /const shouldShowUploadStageSummary\s*=\s*\(task: UploadTask\): boolean\s*=>\s*Boolean\(getUploadStageSummaryLabel\(task\)\)/,
+    '上传桌面结果列应展示包括上传完成在内的所有可用结果',
+  )
+  assert.match(
+    uploadSource,
+    /<el-tag\s+v-if="shouldShowUploadStageSummary\(scope\.row\)"\s+:type="getUploadStageResultTagType\(scope\.row\)"\s+effect="light"/,
+    '上传桌面结果列应展示可用结果',
+  )
+  assert.match(
+    uploadSource,
+    /<span\s+class="desktop-task-id"># \{\{ scope\.row\.id \}\}<\/span>/,
+    '上传桌面任务摘要应显示任务 ID',
+  )
+  assert.match(
+    downloadSource,
+    /<span\s+class="desktop-task-id"># \{\{ scope\.row\.id \}\}<\/span>/,
+    '下载桌面任务摘要应显示任务 ID',
+  )
+  assert.match(
+    uploadSource,
+    /<el-tag\s+class="desktop-task-source"\s+size="small"\s+effect="plain">[\s\S]*?getUploadSourceName\(scope\.row\.source\)/,
+    '上传桌面任务摘要应以标签展示任务来源',
+  )
+  assert.match(
+    downloadSource,
+    /<el-tag\s+class="desktop-task-source"\s+size="small"\s+effect="plain">[\s\S]*?getDownloadSourceName\(scope\.row\.source\)/,
+    '下载桌面任务摘要应以标签展示任务来源',
+  )
+  assert.match(
+    uploadSource,
+    /<el-tooltip\s+v-if="getUploadTransportDetailSummary\(scope\.row\)"\s+:content="getUploadTransportDetailSummary\(scope\.row\)"\s+placement="top"/,
+    '上传阶段详情 Tooltip should show the shared full transport summary with Element Plus defaults',
+  )
+  assert.doesNotMatch(
+    uploadSource,
+    /getUploadDetailSummary\s*=\s*\(/,
+    '上传页面不应保留只含局部字段的旧详情摘要',
+  )
 })

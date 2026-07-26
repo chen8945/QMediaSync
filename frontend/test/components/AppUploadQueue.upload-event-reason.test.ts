@@ -4,6 +4,10 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const source = readFileSync(resolve(__dirname, '../../src/components/AppUploadQueue.vue'), 'utf-8')
+const queueTaskDetailUtilsSource = readFileSync(
+  resolve(__dirname, '../../src/utils/queueTaskDetailUtils.ts'),
+  'utf-8',
+)
 
 const getLocalFunctionBody = (functionName: string) => {
   const match = new RegExp(
@@ -35,12 +39,13 @@ describe('AppUploadQueue 上传队列事件', () => {
       ['5', '等待完成处理'],
       ['6', '正在完成处理'],
     ]
-    const statusTextBody = getLocalFunctionBody('getStatusText')
-
     for (const [value, label] of statusLabels) {
       expect(source).toContain(`<el-option label="${label}" :value="${value}"></el-option>`)
-      expect(statusTextBody).toContain(`return '${label}'`)
+      expect(queueTaskDetailUtilsSource).toContain(`return '${label}'`)
     }
+
+    expect(source).toContain('getUploadStatusText,')
+    expect(source).toContain("from '@/utils/queueTaskDetailUtils'")
   })
 
   it('只有明确的上传队列 patch 事件才走局部合并', () => {
@@ -49,6 +54,7 @@ describe('AppUploadQueue 上传队列事件', () => {
     expect(source).toContain(
       "const uploadQueuePatchReasons = ['progress', 'source_cleanup_changed'] as const",
     )
+    expect(source).toContain("'source_deleted_at',")
     expect(body).toContain('uploadQueuePatchReasons.includes')
     expect(body.indexOf('data.reason')).toBeLessThan(body.indexOf('progressPatchFields.some'))
   })

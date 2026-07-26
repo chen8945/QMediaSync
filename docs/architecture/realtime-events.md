@@ -28,6 +28,8 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 全局事件 payload 保留 `event_type`、`timestamp`、`data` 三个字段，事件类型包括队列状态、队列列表、刮削任务和同步任务事件。它的语义是“至多一次通知 + HTTP snapshot 最终收敛”：页面收到结构性事件或原生 EventSource 非首次 `open` 后，复用当前页的 HTTP 加载函数重新获取列表快照。
 
+上传队列的 `upload_queue_changed` 中，`progress` 和 `source_cleanup_changed` 是当前页已有任务的局部 patch 例外。目录监控源文件清理更新会同时携带 `source_cleanup_status`、可为空的 `source_cleanup_error` 与正值 `source_deleted_at`；前端将这些字段合并到现有行。缺少目标行、其他变更原因或原生重连仍通过 HTTP snapshot 收敛。
+
 全局流的前端连接状态分为 `idle`、`connecting`、`connected` 和 `reconnecting`。创建 `EventSource` 后先进入 `connecting`，首次 `open` 只更新为 `connected`，不显示断线提示；原生 `error` 才进入 `reconnecting` 并显示“实时更新暂时断开，正在重新连接…”。后台重连会等待页面重新可见后执行一次收敛，避免后台页无意义请求。同步记录和同步目录页面会在这次 HTTP snapshot 前清空本地 `sequence` 水位，避免后端进程重启后用旧水位丢弃重新计数的事件。最后一个全局监听器注销时关闭 source；登出或认证状态清理会关闭所有已登记的实时 source。
 
 不支持 `EventSource` 的浏览器不创建 source、不引入全局轮询，应用壳层会提示“当前浏览器不支持自动刷新，请手动刷新页面查看最新状态”。连接暂时断开时显示“实时更新暂时断开，正在重新连接…”，由浏览器原生重连处理。

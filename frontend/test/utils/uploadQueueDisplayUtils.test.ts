@@ -5,6 +5,7 @@ import {
   formatByteRate,
   getResumeStateLabel,
   getSourceCleanupStatusLabel,
+  getUploadedSizeLabel,
   getUploadPhaseLabel,
   getUploadProgressPercent,
   getUploadResultLabel,
@@ -82,7 +83,64 @@ describe('uploadQueueDisplayUtils', () => {
       ),
     ).toBe(43.3)
     expect(getUploadProgressPercent(createTask({ uploaded_bytes: 256, file_size: 1024 }))).toBe(25)
+    expect(getUploadedSizeLabel(createTask({ status: 2, file_size: 1024 }))).toBe('1 KB / 1 KB')
     expect(formatByteRate(2 * 1024 * 1024)).toBe('2 MB/s')
+  })
+
+  it('秒传等待超时跳过时保留未传输的进度和大小', () => {
+    const skippedTask = createTask({
+      status: 2,
+      file_size: 1024,
+      uploaded_bytes: 0,
+      progress_percent: 0,
+      upload_result: 'skipped_after_rapid_wait',
+    })
+
+    expect(getUploadProgressPercent(skippedTask)).toBe(0)
+    expect(getUploadedSizeLabel(skippedTask)).toBe('0 Bytes / 1 KB')
+    expect(
+      getUploadProgressPercent(
+        createTask({
+          status: 2,
+          file_size: 1024,
+          upload_result: 'skipped_after_rapid_wait',
+        }),
+      ),
+    ).toBe(0)
+    expect(
+      getUploadedSizeLabel(
+        createTask({
+          status: 2,
+          file_size: 1024,
+          upload_result: 'skipped_after_rapid_wait',
+        }),
+      ),
+    ).toBe('0 Bytes / 1 KB')
+  })
+
+  it('完成态快照的零进度和未跟踪上传字节回退为完整大小', () => {
+    const zeroByteTask = createTask({
+      status: 2,
+      file_size: 1024,
+      uploaded_bytes: 0,
+      progress_percent: 0,
+      upload_result: 'unknown',
+    })
+
+    expect(getUploadProgressPercent(zeroByteTask)).toBe(100)
+    expect(getUploadedSizeLabel(zeroByteTask)).toBe('1 KB / 1 KB')
+  })
+
+  it('秒传成功时展示完整进度和大小', () => {
+    const rapidUploadTask = createTask({
+      status: 2,
+      file_size: 1024,
+      uploaded_bytes: 1024,
+      upload_result: 'rapid_upload',
+    })
+
+    expect(getUploadProgressPercent(rapidUploadTask)).toBe(100)
+    expect(getUploadedSizeLabel(rapidUploadTask)).toBe('1 KB / 1 KB')
   })
 
   it('展示后端真实续传和源文件清理枚举', () => {
@@ -153,12 +211,14 @@ describe('uploadQueueDisplayUtils', () => {
       task_id: 7,
       source_cleanup_status: 'completed',
       source_cleanup_error: '',
+      source_deleted_at: 1_700_000_000,
     })
 
     expect(patched).toBe(true)
     expect(rows[0]).toMatchObject({
       source_cleanup_status: 'completed',
       source_cleanup_error: '',
+      source_deleted_at: 1_700_000_000,
     })
   })
 })
