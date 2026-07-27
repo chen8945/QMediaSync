@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest'
 import {
   buildDownloadTaskDetailGroups,
   buildUploadTaskDetailGroups,
+  getDownloadQueueLocationSummary,
+  getQueueRemotePathSummary,
+  getUploadQueueLocationSummary,
   getUploadTransportDetailSummary,
   type DownloadQueueTaskDetailInput,
   type UploadQueueTaskDetailInput,
@@ -40,12 +43,60 @@ const createUploadTask = (
 })
 
 describe('queueTaskDetailUtils', () => {
-  it('按来源类型标注下载标识符，并按 Emby 媒体提取语义组织位置', () => {
+  // This test protects the queue summary contract shared by the upload and download pages.
+  it('只以远端完整路径生成队列摘要，历史记录明确显示未知路径', () => {
+    expect(getQueueRemotePathSummary('/remote/movie.mkv')).toBe('/remote/movie.mkv')
+    expect(getQueueRemotePathSummary('')).toBe('远端路径未知（历史记录未保存）')
+    expect(getQueueRemotePathSummary(undefined)).toBe('远端路径未知（历史记录未保存）')
+  })
+
+  it('本地复制下载仅显示本地目标，远端任务保留完整路径或历史未知提示', () => {
+    expect(
+      getDownloadQueueLocationSummary({
+        source_type: 'local',
+        local_full_path: '/library/movie.nfo',
+      }),
+    ).toBe('下载至 /library/movie.nfo')
+    expect(getDownloadQueueLocationSummary({ source_type: 'local' })).toBe('')
+    expect(
+      getDownloadQueueLocationSummary({
+        source_type: '115',
+        local_full_path: '/library/movie.nfo',
+      }),
+    ).toBe('远端路径未知（历史记录未保存）\n下载至 /library/movie.nfo')
+    expect(
+      getDownloadQueueLocationSummary({
+        source_type: 'emby_media',
+        local_full_path: '/library/movie.nfo',
+      }),
+    ).toBe('')
+  })
+
+  it('本地复制上传明确标记本地目标，不作为远端路径展示', () => {
+    expect(
+      getUploadQueueLocationSummary({
+        source_type: 'local',
+        local_full_path: '/source/movie.nfo',
+        remote_full_path: '/target/movie.nfo',
+      }),
+    ).toBe('/source/movie.nfo\n复制到 /target/movie.nfo')
+    expect(
+      getUploadQueueLocationSummary({
+        source_type: '115',
+        local_full_path: '/source/movie.mkv',
+      }),
+    ).toBe('/source/movie.mkv\n上传至 远端路径未知（历史记录未保存）')
+  })
+
+  it('按来源展示远端身份，并隐藏本地与 Emby 的执行定位', () => {
     const regularGroups = buildDownloadTaskDetailGroups(
       createDownloadTask({
         size: 1024,
-        remote_file_id: 'pick-code',
-        remote_path: '/remote/movie.mkv',
+        remote_file_id: 'file-id',
+        remote_pick_code: 'pick-code',
+        remote_path: '/remote',
+        remote_full_path: '/remote/movie.mkv',
+        remote_sha1: 'remote-sha1',
         local_full_path: '/library/movie.mkv',
         retry_count: 2,
         last_retry_time: 1_700_000_000,
@@ -63,8 +114,15 @@ describe('queueTaskDetailUtils', () => {
         expect.objectContaining({ label: '来源类型', value: '115 网盘' }),
         expect.objectContaining({ label: '状态', value: '下载完成' }),
         expect.objectContaining({ label: '文件大小', value: '1 KB' }),
+        expect.objectContaining({ label: '远端文件 ID', value: 'file-id' }),
         expect.objectContaining({ label: 'PickCode', value: 'pick-code' }),
-        expect.objectContaining({ label: '远端路径', value: '/remote/movie.mkv', fullWidth: true }),
+        expect.objectContaining({ label: '远端目录路径', value: '/remote', fullWidth: true }),
+        expect.objectContaining({
+          label: '远端完整路径',
+          value: '/remote/movie.mkv',
+          fullWidth: true,
+        }),
+        expect.objectContaining({ label: 'SHA1', value: 'remote-sha1' }),
         expect.objectContaining({
           label: '本地目标路径',
           value: '/library/movie.mkv',
@@ -100,11 +158,9 @@ describe('queueTaskDetailUtils', () => {
         }),
       ),
     )
-    expect(localFields).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ label: '本地源文件路径', value: '/source/movie.mkv' }),
-      ]),
-    )
+    for (const label of ['远端文件 ID', 'PickCode', '远端完整路径']) {
+      expect(localFields.map((field) => field.label)).not.toContain(label)
+    }
 
     const embyFields = getFields(
       buildDownloadTaskDetailGroups(
@@ -117,13 +173,29 @@ describe('queueTaskDetailUtils', () => {
       ),
     )
 
-    expect(embyFields).toEqual(
+    for (const label of ['提取地址', 'Emby 条目 ID', '远端文件 ID', 'PickCode']) {
+      expect(embyFields.map((field) => field.label)).not.toContain(label)
+    }
+    expect(embyFields.map((field) => field.label)).not.toContain('本地目标路径')
+
+    const openListFields = getFields(
+      buildDownloadTaskDetailGroups(
+        createDownloadTask({
+          source_type: 'openlist',
+          remote_file_id: 'openlist-object-id',
+          remote_full_path: '/remote/openlist/movie.mkv',
+          remote_sha1: 'openlist-sha1',
+          remote_md5: 'openlist-md5',
+        }),
+      ),
+    )
+    expect(openListFields).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: '提取地址', value: 'https://emby.example/extract' }),
-        expect.objectContaining({ label: 'Emby 条目 ID', value: 'emby-item-123' }),
+        expect.objectContaining({ label: '远端文件 ID', value: 'openlist-object-id' }),
+        expect.objectContaining({ label: 'SHA1', value: 'openlist-sha1' }),
+        expect.objectContaining({ label: 'MD5', value: 'openlist-md5' }),
       ]),
     )
-    expect(embyFields.map((field) => field.label)).not.toContain('本地目标路径')
   })
 
   it('按来源和阶段显示上传专属详情，不生成空值占位', () => {
@@ -134,10 +206,12 @@ describe('queueTaskDetailUtils', () => {
         file_size: 2 * 1024,
         upload_phase: 'completed',
         upload_result: 'multipart_uploaded',
-        remote_file_id: '/remote/movie.mkv',
+        remote_full_path: '/remote/movie.mkv',
         remote_path_id: '115-parent-id',
-        completed_remote_file_id: 'completed-file-id',
-        completed_pick_code: 'pick-code',
+        remote_file_id: 'completed-file-id',
+        remote_pick_code: 'pick-code',
+        remote_sha1: 'remote-sha1',
+        replaced_remote_file_id: 'old-file-id',
         relative_path: 'Season 1/movie.mkv',
         source_deleted_at: 1_700_000_000,
         resume_state: 'resumed_session',
@@ -156,10 +230,12 @@ describe('queueTaskDetailUtils', () => {
       expect.arrayContaining([
         expect.objectContaining({ label: '上传结果', value: '上传完成' }),
         expect.objectContaining({ label: '失败原因', value: '上传后回调失败', fullWidth: true }),
-        expect.objectContaining({ label: '远端目标', value: '/remote/movie.mkv' }),
+        expect.objectContaining({ label: '远端完整路径', value: '/remote/movie.mkv' }),
         expect.objectContaining({ label: '远端父目录 ID', value: '115-parent-id' }),
         expect.objectContaining({ label: '远端文件 ID', value: 'completed-file-id' }),
         expect.objectContaining({ label: 'PickCode', value: 'pick-code' }),
+        expect.objectContaining({ label: 'SHA1', value: 'remote-sha1' }),
+        expect.objectContaining({ label: '旧文件 ID', value: 'old-file-id' }),
         expect.objectContaining({ label: '断点续传', value: '已恢复上传' }),
         expect.objectContaining({ label: '分片进度', value: '10/10' }),
         expect.objectContaining({ label: '源文件清理', value: '清理成功' }),
@@ -216,7 +292,6 @@ describe('queueTaskDetailUtils', () => {
         createUploadTask({
           source_type: 'openlist',
           remote_path_id: '/media',
-          completed_pick_code: 'not-for-openlist',
           upload_phase: 'rapid_waiting',
           rapid_wait_attempts: 2,
           rapid_wait_until: 1_700_000_000,
@@ -225,7 +300,6 @@ describe('queueTaskDetailUtils', () => {
     )
     expect(openListFields).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: '远端父目录路径', value: '/media' }),
         expect.objectContaining({ label: '秒传等待尝试次数', value: '2 次' }),
         expect.objectContaining({ label: '秒传等待截止时间' }),
       ]),
@@ -236,7 +310,6 @@ describe('queueTaskDetailUtils', () => {
       buildUploadTaskDetailGroups(
         createUploadTask({
           source_type: 'baidupan',
-          remote_path_id: 'parent',
           upload_phase: 'multipart_uploading',
           rapid_wait_attempts: 3,
           rapid_wait_until: 1_700_000_000,
@@ -246,14 +319,37 @@ describe('queueTaskDetailUtils', () => {
       ),
     )
     expect(otherFields).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ label: '远端父目录', value: 'parent' }),
-        expect.objectContaining({ label: '上传进度', value: '0%' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ label: '上传进度', value: '0%' })]),
     )
-    expect(otherFields.map((field) => field.label)).not.toEqual(
-      expect.arrayContaining(['秒传等待尝试次数', '秒传等待截止时间', '上传结果']),
+    for (const label of ['秒传等待尝试次数', '秒传等待截止时间', '上传结果']) {
+      expect(otherFields.map((field) => field.label)).not.toContain(label)
+    }
+
+    const baiduFields = getFields(
+      buildUploadTaskDetailGroups(
+        createUploadTask({
+          source_type: 'baidupan',
+          remote_sha1: 'not-a-baidu-sha1',
+          remote_md5: 'remote-md5',
+        }),
+      ),
     )
+    expect(baiduFields).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'MD5', value: 'remote-md5' })]),
+    )
+    expect(baiduFields.map((field) => field.label)).not.toContain('SHA1')
+
+    const localFields = getFields(
+      buildUploadTaskDetailGroups(
+        createUploadTask({
+          source_type: 'local',
+          remote_file_id: 'not-a-remote-id',
+          replaced_remote_file_id: 'not-an-old-remote-id',
+        }),
+      ),
+    )
+    expect(localFields.map((field) => field.label)).not.toContain('远端文件 ID')
+    expect(localFields.map((field) => field.label)).not.toContain('旧文件 ID')
   })
 
   it('上传传输 Tooltip 同时保留完整错误和已有附加信息', () => {

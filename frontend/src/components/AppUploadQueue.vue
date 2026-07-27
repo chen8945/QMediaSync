@@ -294,17 +294,23 @@
       <el-table-column label="上传位置" min-width="200">
         <template #default="scope">
           <el-tooltip
-            v-if="getUploadLocationSummary(scope.row)"
-            :content="getUploadLocationSummary(scope.row)"
+            v-if="getUploadQueueLocationSummary(scope.row)"
+            :content="getUploadQueueLocationSummary(scope.row)"
             placement="top"
           >
             <span class="desktop-location-summary">
-              <template v-if="scope.row.local_full_path && scope.row.remote_file_id">
+              <template
+                v-if="
+                  scope.row.source_type !== 'local' &&
+                  scope.row.local_full_path &&
+                  scope.row.remote_full_path
+                "
+              >
                 {{ scope.row.local_full_path }}<br />
                 <span class="desktop-location-direction">上传至</span>
-                {{ scope.row.remote_file_id }}
+                {{ scope.row.remote_full_path }}
               </template>
-              <template v-else>{{ getUploadLocationSummary(scope.row) }}</template>
+              <template v-else>{{ getUploadQueueLocationSummary(scope.row) }}</template>
             </span>
           </el-tooltip>
         </template>
@@ -370,6 +376,7 @@ import {
   getUploadStageSummaryLabel,
   getUploadStatusTagType,
   getUploadStatusText,
+  getUploadQueueLocationSummary,
   getUploadTransportDetailSummary,
 } from '@/utils/queueTaskDetailUtils'
 import {
@@ -402,6 +409,11 @@ interface UploadTask {
   start_time: number
   end_time: number
   remote_file_id: string
+  remote_full_path: string
+  remote_pick_code?: string
+  remote_sha1?: string
+  remote_md5?: string
+  replaced_remote_file_id?: string
   error: string
   retry_count: number
   last_retry_time: number
@@ -419,8 +431,6 @@ interface UploadTask {
   rapid_wait_attempts?: number
   relative_path?: string
   source_deleted_at?: number
-  completed_remote_file_id?: string
-  completed_pick_code?: string
 }
 
 interface QueueMutationContextSnapshot {
@@ -543,17 +553,6 @@ const isMessageBoxCancelError = (error: unknown): boolean => {
 }
 
 const getUploadTaskName = (task: UploadTask): string => task.file_name || task.local_full_path
-
-const getUploadLocationSummary = (task: UploadTask): string => {
-  const sourcePath = task.local_full_path
-  const targetPath = task.remote_file_id
-
-  if (sourcePath && targetPath) {
-    return `${sourcePath}\n上传至 ${targetPath}`
-  }
-
-  return sourcePath || targetPath || ''
-}
 
 const shouldShowUploadStageSummary = (task: UploadTask): boolean =>
   Boolean(getUploadStageSummaryLabel(task))

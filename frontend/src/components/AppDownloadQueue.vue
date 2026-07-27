@@ -248,23 +248,24 @@
       <el-table-column label="下载位置" min-width="200">
         <template #default="scope">
           <el-tooltip
-            v-if="getDownloadLocationSummary(scope.row)"
-            :content="getDownloadLocationSummary(scope.row)"
+            v-if="getDownloadQueueLocationSummary(scope.row)"
+            :content="getDownloadQueueLocationSummary(scope.row)"
             placement="top"
           >
             <span class="desktop-location-summary">
               <template
                 v-if="
+                  scope.row.source_type !== 'local' &&
                   scope.row.source_type !== 'emby_media' &&
-                  scope.row.remote_path &&
+                  scope.row.remote_full_path &&
                   scope.row.local_full_path
                 "
               >
-                {{ scope.row.remote_path }}<br />
+                {{ scope.row.remote_full_path }}<br />
                 <span class="desktop-location-direction">下载至</span>
                 {{ scope.row.local_full_path }}
               </template>
-              <template v-else>{{ getDownloadLocationSummary(scope.row) }}</template>
+              <template v-else>{{ getDownloadQueueLocationSummary(scope.row) }}</template>
             </span>
           </el-tooltip>
         </template>
@@ -330,6 +331,7 @@ import {
   buildDownloadTaskDetailGroups,
   getDownloadStatusTagType,
   getDownloadStatusText,
+  getDownloadQueueLocationSummary,
 } from '@/utils/queueTaskDetailUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
 import {
@@ -348,11 +350,15 @@ interface DownloadTask {
   file_name: string
   local_full_path: string
   remote_path: string
+  remote_full_path: string
   status: 0 | 1 | 2 | 3 | 4
   size: number
   start_time: number
   end_time: number
   remote_file_id: string
+  remote_pick_code?: string
+  remote_sha1?: string
+  remote_md5?: string
   error: string
   source_type: string
   retry_count: number
@@ -455,21 +461,6 @@ const isMessageBoxCancelError = (error: unknown): boolean => {
 }
 
 const getDownloadTaskName = (task: DownloadTask): string => task.file_name || task.remote_file_id
-
-const getDownloadLocationSummary = (task: DownloadTask): string => {
-  if (task.source_type === 'emby_media') {
-    return ''
-  }
-
-  const sourcePath = task.remote_path
-  const targetPath = task.local_full_path
-
-  if (sourcePath && targetPath) {
-    return `${sourcePath}\n下载至 ${targetPath}`
-  }
-
-  return sourcePath || targetPath || ''
-}
 
 const getDownloadTaskTooltipContent = (task: DownloadTask): string =>
   [

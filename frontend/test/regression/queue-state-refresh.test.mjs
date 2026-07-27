@@ -619,6 +619,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
 
   const uploadSource = readSource('src/components/AppUploadQueue.vue')
   const downloadSource = readSource('src/components/AppDownloadQueue.vue')
+  const queueTaskDetailUtilsSource = readSource('src/utils/queueTaskDetailUtils.ts')
   const expandButtonSource = readSource('src/components/queue/QueueTaskExpandButton.vue')
   const mainStyles = readSource('src/assets/main.css')
 
@@ -646,13 +647,23 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
   )
   assert.match(
     uploadSource,
-    /return `\$\{sourcePath\}\\n上传至 \$\{targetPath\}`/,
-    '上传位置应将“上传至”和目标路径放在单独一行',
+    /getUploadQueueLocationSummary\(scope\.row\)/,
+    '上传位置应使用共享的位置摘要工具',
+  )
+  assert.match(
+    queueTaskDetailUtilsSource,
+    /`\$\{sourcePath\}\\n上传至 \$\{targetPath\}`/,
+    '共享上传位置摘要应将“上传至”和目标路径放在单独一行',
   )
   assert.match(
     downloadSource,
-    /return `\$\{sourcePath\}\\n下载至 \$\{targetPath\}`/,
-    '下载位置应将“下载至”和目标路径放在单独一行',
+    /getDownloadQueueLocationSummary\(scope\.row\)/,
+    '下载位置应使用共享的位置摘要工具',
+  )
+  assert.match(
+    queueTaskDetailUtilsSource,
+    /`\$\{sourcePath\}\\n下载至 \$\{targetPath\}`/,
+    '共享下载位置摘要应将“下载至”和目标路径放在单独一行',
   )
   for (const [source, direction] of [
     [uploadSource, '上传至'],

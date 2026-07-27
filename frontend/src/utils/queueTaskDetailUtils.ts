@@ -44,6 +44,10 @@ interface QueueTaskDetailBaseInput {
   end_time?: number
   remote_file_id?: string
   remote_path?: string
+  remote_full_path?: string
+  remote_pick_code?: string
+  remote_sha1?: string
+  remote_md5?: string
   local_full_path?: string
   error?: string
   retry_count?: number
@@ -61,8 +65,7 @@ export type UploadQueueTaskDetailInput = QueueTaskDetailBaseInput &
     relative_path?: string
     source_deleted_at?: number
     remote_path_id?: string
-    completed_remote_file_id?: string
-    completed_pick_code?: string
+    replaced_remote_file_id?: string
   }
 
 export interface UploadTransportDetailRow {
@@ -77,6 +80,60 @@ const hasNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value)
 
 const hasPositiveNumber = (value: unknown): value is number => hasNumber(value) && value > 0
+
+// getQueueRemotePathSummary 只以持久化的远端完整路径生成队列摘要；历史任务不把 ID 回退为路径。
+export const getQueueRemotePathSummary = (remoteFullPath: string | undefined): string =>
+  hasText(remoteFullPath) ? remoteFullPath : '远端路径未知（历史记录未保存）'
+
+export interface DownloadQueueLocationSummaryInput {
+  source_type?: string
+  remote_full_path?: string
+  local_full_path?: string
+}
+
+export const getDownloadQueueLocationSummary = (
+  task: DownloadQueueLocationSummaryInput,
+): string => {
+  const targetPath = hasText(task.local_full_path) ? task.local_full_path : ''
+  if (task.source_type === 'local') {
+    return targetPath ? `下载至 ${targetPath}` : ''
+  }
+  if (task.source_type === 'emby_media') {
+    return ''
+  }
+
+  const sourcePath = getQueueRemotePathSummary(task.remote_full_path)
+  return targetPath ? `${sourcePath}\n下载至 ${targetPath}` : sourcePath
+}
+
+export interface UploadQueueLocationSummaryInput {
+  source_type?: string
+  remote_full_path?: string
+  local_full_path?: string
+}
+
+export const getUploadQueueLocationSummary = (task: UploadQueueLocationSummaryInput): string => {
+  const sourcePath = hasText(task.local_full_path) ? task.local_full_path : ''
+  if (task.source_type === 'local') {
+    const targetPath = hasText(task.remote_full_path) ? task.remote_full_path : ''
+    if (sourcePath && targetPath) {
+      return `${sourcePath}\n复制到 ${targetPath}`
+    }
+    return sourcePath || targetPath
+  }
+  if (task.source_type === 'emby_media') {
+    return ''
+  }
+
+  const targetPath = getQueueRemotePathSummary(task.remote_full_path)
+  return sourcePath ? `${sourcePath}\n上传至 ${targetPath}` : targetPath
+}
+
+const supportsRemoteSHA1 = (sourceType: string): boolean =>
+  sourceType === '115' || sourceType === 'openlist'
+
+const supportsRemoteMD5 = (sourceType: string): boolean =>
+  sourceType === 'baidupan' || sourceType === 'openlist'
 
 const createGroup = (
   key: string,
@@ -262,17 +319,6 @@ export const getUploadTransportDetailSummary = (task: UploadQueueTaskDetailInput
     .map((item) => `${item.label}：${item.value}`)
     .join('\n')
 
-const getDownloadRemoteFileIdentifierLabel = (sourceType: string): string => {
-  switch (sourceType) {
-    case '115':
-      return 'PickCode'
-    case 'local':
-      return '本地源文件路径'
-    default:
-      return '远端文件 ID'
-  }
-}
-
 export const buildDownloadTaskDetailGroups = (
   task: DownloadQueueTaskDetailInput,
 ): QueueTaskDetailGroup[] => {
@@ -307,47 +353,60 @@ export const buildDownloadTaskDetailGroups = (
   }
 
   const locationFields: QueueTaskDetailField[] = []
-  if (task.source_type === 'emby_media') {
-    if (hasText(task.remote_file_id)) {
-      locationFields.push({
-        key: 'extract-address',
-        label: '提取地址',
-        value: task.remote_file_id,
-        fullWidth: true,
-      })
-    }
-    if (hasText(task.remote_path)) {
-      locationFields.push({
-        key: 'emby-item-id',
-        label: 'Emby 条目 ID',
-        value: task.remote_path,
-        fullWidth: true,
-      })
-    }
-  } else {
+  const hasRemoteIdentity = task.source_type !== 'local' && task.source_type !== 'emby_media'
+  if (hasRemoteIdentity) {
     if (hasText(task.remote_file_id)) {
       locationFields.push({
         key: 'remote-file-id',
-        label: getDownloadRemoteFileIdentifierLabel(task.source_type),
+        label: '远端文件 ID',
         value: task.remote_file_id,
       })
     }
     if (hasText(task.remote_path)) {
       locationFields.push({
         key: 'remote-path',
-        label: '远端路径',
+        label: '远端目录路径',
         value: task.remote_path,
         fullWidth: true,
       })
     }
-    if (hasText(task.local_full_path)) {
+    if (hasText(task.remote_full_path)) {
       locationFields.push({
-        key: 'local-path',
-        label: '本地目标路径',
-        value: task.local_full_path,
+        key: 'remote-full-path',
+        label: '远端完整路径',
+        value: task.remote_full_path,
         fullWidth: true,
       })
     }
+    if (task.source_type === '115' && hasText(task.remote_pick_code)) {
+      locationFields.push({
+        key: 'remote-pick-code',
+        label: 'PickCode',
+        value: task.remote_pick_code,
+      })
+    }
+    if (supportsRemoteSHA1(task.source_type) && hasText(task.remote_sha1)) {
+      locationFields.push({
+        key: 'remote-sha1',
+        label: 'SHA1',
+        value: task.remote_sha1,
+      })
+    }
+    if (supportsRemoteMD5(task.source_type) && hasText(task.remote_md5)) {
+      locationFields.push({
+        key: 'remote-md5',
+        label: 'MD5',
+        value: task.remote_md5,
+      })
+    }
+  }
+  if (hasText(task.local_full_path)) {
+    locationFields.push({
+      key: 'local-path',
+      label: '本地目标路径',
+      value: task.local_full_path,
+      fullWidth: true,
+    })
   }
 
   return compactGroups([
@@ -356,16 +415,6 @@ export const buildDownloadTaskDetailGroups = (
     createGroup('file', '文件信息', 3, locationFields),
     createGroup('time', '执行时间', 3, buildTimeFields(task, '结束时间')),
   ])
-}
-
-const getRemotePathIDLabel = (sourceType: string): string => {
-  if (sourceType === '115') {
-    return '远端父目录 ID'
-  }
-  if (sourceType === 'openlist') {
-    return '远端父目录路径'
-  }
-  return '远端父目录'
 }
 
 export const buildUploadTaskDetailGroups = (
@@ -454,33 +503,47 @@ export const buildUploadTaskDetailGroups = (
       fullWidth: true,
     })
   }
-  if (hasText(task.remote_file_id)) {
+  const hasRemoteIdentity = task.source_type !== 'local' && task.source_type !== 'emby_media'
+  if (hasRemoteIdentity && hasText(task.remote_full_path)) {
     locationFields.push({
-      key: 'remote-target',
-      label: '远端目标',
-      value: task.remote_file_id,
+      key: 'remote-full-path',
+      label: '远端完整路径',
+      value: task.remote_full_path,
       fullWidth: true,
     })
   }
-  if (hasText(task.remote_path_id)) {
+  if (task.source_type === '115' && hasText(task.remote_path_id)) {
     locationFields.push({
       key: 'remote-path-id',
-      label: getRemotePathIDLabel(task.source_type),
+      label: '远端父目录 ID',
       value: task.remote_path_id,
     })
   }
-  if (hasText(task.completed_remote_file_id)) {
+  if (hasRemoteIdentity && hasText(task.remote_file_id)) {
     locationFields.push({
-      key: 'completed-remote-file-id',
+      key: 'remote-file-id',
       label: '远端文件 ID',
-      value: task.completed_remote_file_id,
+      value: task.remote_file_id,
     })
   }
-  if (task.source_type === '115' && hasText(task.completed_pick_code)) {
+  if (task.source_type === '115' && hasText(task.remote_pick_code)) {
     locationFields.push({
-      key: 'completed-pick-code',
+      key: 'remote-pick-code',
       label: 'PickCode',
-      value: task.completed_pick_code,
+      value: task.remote_pick_code,
+    })
+  }
+  if (hasRemoteIdentity && supportsRemoteSHA1(task.source_type) && hasText(task.remote_sha1)) {
+    locationFields.push({ key: 'remote-sha1', label: 'SHA1', value: task.remote_sha1 })
+  }
+  if (hasRemoteIdentity && supportsRemoteMD5(task.source_type) && hasText(task.remote_md5)) {
+    locationFields.push({ key: 'remote-md5', label: 'MD5', value: task.remote_md5 })
+  }
+  if (hasRemoteIdentity && hasText(task.replaced_remote_file_id)) {
+    locationFields.push({
+      key: 'replaced-remote-file-id',
+      label: '旧文件 ID',
+      value: task.replaced_remote_file_id,
     })
   }
 

@@ -144,13 +144,14 @@ OAuth 回调参数收集：
 - `QueueTaskDetailField`、`QueueTaskDetailGroup`
 - `buildDownloadTaskDetailGroups(task)`
 - `buildUploadTaskDetailGroups(task)`
+- `getQueueRemotePathSummary(remoteFullPath)`、`getDownloadQueueLocationSummary(task)`、`getUploadQueueLocationSummary(task)`
 - 下载 / 上传状态文案与标签类型映射
 - `getUploadStageSummaryLabel(task)`、`getUploadStageResultTagType(task)`
 - `getUploadTransportDetailRows(task)`、`getUploadTransportDetailSummary(task)`
 
-这些函数只把接口已返回的队列字段组织为摘要或展开详情，且省略不适用或空值字段；不修改队列状态、请求、SSE payload 或本地列表。展开详情使用轻量的纵向标签布局，并按分组独立指定列数：基本信息紧凑排列，上传传输信息优先并列展示大小、阶段和结果，文件信息中的路径独占整行，执行时间包含开始、结束和可计算的耗时。上传信息优先并列展示断点续传、源文件清理和相对监控根目录。上传传输详情 Tooltip 会同时包含续传、分片、目录监控源文件清理信息和实际存在的完整失败原因。
+这些函数只把接口已返回的队列字段组织为摘要或展开详情，且省略不适用或空值字段；不修改队列状态、请求、SSE payload 或本地列表。`getQueueRemotePathSummary` 仅接受远端完整路径，历史记录缺失时返回明确的未知路径文案，不会把文件 ID 回退显示为路径。下载与上传摘要函数都会排除不应作为远端身份展示的字段；本地复制上传以“复制到”明确展示本地目标。展开详情使用轻量的纵向标签布局，并按分组独立指定列数：基本信息紧凑排列，上传传输信息优先并列展示大小、阶段和结果，文件信息中的路径独占整行，执行时间包含开始、结束和可计算的耗时。上传信息优先并列展示断点续传、源文件清理和相对监控根目录。上传传输详情 Tooltip 会同时包含续传、分片、目录监控源文件清理信息和实际存在的完整失败原因。
 
-下载任务的 `remote_file_id` 依据 `source_type` 标注其实际含义：`115` 为 PickCode，`local` 为本地源文件路径，其他普通来源为远端文件 ID；`emby_media` 保持提取地址的专用展示。
+详情将远端目录路径、远端完整路径、远端文件 ID 和 PickCode 分别展示。文件 ID、PickCode、SHA1 / MD5 和覆盖旧文件 ID 只在来源语义成立且值非空时显示；OpenList 可展示可用对象 ID 和明确的哈希，local 与 Emby 不展示远端身份，下载直链和其他隐藏执行字段绝不进入摘要或详情。
 
 ## sourceTypeUtils.ts
 
