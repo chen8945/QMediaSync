@@ -426,7 +426,7 @@ func TestUpload115FilePersistsResultAndEnqueuesStrmTask(t *testing.T) {
 		FileSize:          13,
 		LocalMtimeNs:      info.ModTime().UnixNano(),
 		SourceFingerprint: BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()),
-		RemoteFileId:      "/remote/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "100",
 		Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
 	}
@@ -462,8 +462,8 @@ func TestUpload115FilePersistsResultAndEnqueuesStrmTask(t *testing.T) {
 	if gotTask.UploadResult != UploadResultMultipartUploaded ||
 		gotTask.ResumeState != UploadResumeStateResumedSession ||
 		gotTask.UploadedBytes != 13 ||
-		gotTask.CompletedRemoteFileId != "file-1" ||
-		gotTask.CompletedPickCode != "pick-1" {
+		gotTask.RemoteFileId != "file-1" ||
+		gotTask.RemotePickCode != "pick-1" {
 		t.Fatalf("上传结果字段 = %+v，期望保存完成结果和续传状态", gotTask)
 	}
 

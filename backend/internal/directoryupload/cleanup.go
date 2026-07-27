@@ -75,7 +75,7 @@ func cleanupSourceAfterStrmSuccess(uploadTaskID uint) (bool, error) {
 			rule.ID,
 			task.LocalFullPath,
 			task.UploadResult,
-			task.CompletedRemoteFileId,
+			task.RemoteFileId,
 		)
 	}
 	if err := removeEmptyParents(filepath.Dir(task.LocalFullPath), rule.MonitorPath, task.ID, rule.ID); err != nil {
@@ -217,9 +217,9 @@ func isSafeCleanupUploadTask(task *models.DbUploadTask) bool {
 	}
 	switch task.UploadResult {
 	case models.UploadResultRapidUpload, models.UploadResultMultipartUploaded:
-		return task.CompletedRemoteFileId != "" || task.CompletedPickCode != ""
+		return task.RemoteFileId != "" || task.RemotePickCode != ""
 	case models.UploadResultRemoteExists:
-		return task.CompletedRemoteFileId != "" || task.CompletedPickCode != ""
+		return task.RemoteFileId != "" || task.RemotePickCode != ""
 	default:
 		return false
 	}

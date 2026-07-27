@@ -667,7 +667,7 @@ func (service *Service) handleStableFile(ctx context.Context, rule *models.Direc
 		LocalFullPath:       filePath,
 		RelativePath:        filepath.ToSlash(rel),
 		SourceFingerprint:   sourceState.sourceFingerprint,
-		RemoteFileId:        remoteFilePath,
+		RemoteFullPath:      remoteFilePath,
 		RemotePathId:        remoteDir.ID,
 		FileName:            fileName,
 		Status:              models.UploadStatusPending,
@@ -690,8 +690,9 @@ func (service *Service) handleStableFile(ctx context.Context, rule *models.Direc
 			task.Status = models.UploadStatusCompleted
 			task.UploadResult = models.UploadResultRemoteExists
 			task.UploadedBytes = info.Size()
-			task.CompletedRemoteFileId = remoteFile.ID
-			task.CompletedPickCode = remoteFile.PickCode
+			task.RemoteFileId = remoteFile.ID
+			task.RemotePickCode = remoteFile.PickCode
+			task.RemoteSha1 = remoteFile.SHA1
 			task.EndTime = service.now().Unix()
 			created, err := service.createDirectoryUploadTaskWithProcessedClaim(task, rule, rel, filePath, sourceState, options)
 			if err != nil {
@@ -727,6 +728,7 @@ func (service *Service) handleStableFile(ctx context.Context, rule *models.Direc
 			if err := remoteClient.DeleteFile(ctx, remoteDir.ID, remoteFile.ID); err != nil {
 				return fmt.Errorf("删除远端同名文件失败：%w", err)
 			}
+			task.ReplacedRemoteFileId = remoteFile.ID
 		default:
 			return fmt.Errorf("%w：不支持的同名文件处理方式：%s", errStableFileNoRetry, rule.OverwriteMode)
 		}
@@ -870,7 +872,7 @@ func logDirectoryUploadTaskCreated(rule *models.DirectoryUploadRule, task *model
 		rule.ID,
 		task.ID,
 		task.LocalFullPath,
-		task.RemoteFileId,
+		task.RemoteFullPath,
 		task.RemotePathId,
 		task.FileSize,
 		task.SourceCleanupStatus,
@@ -887,8 +889,8 @@ func logDirectoryUploadRemoteExistsStrmTask(rule *models.DirectoryUploadRule, ta
 		task.ID,
 		strmTaskID,
 		task.LocalFullPath,
+		task.RemoteFullPath,
 		task.RemoteFileId,
-		task.CompletedRemoteFileId,
 	)
 }
 

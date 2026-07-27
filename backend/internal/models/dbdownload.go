@@ -2,10 +2,15 @@ package models
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -39,24 +44,68 @@ const (
 // 数据库下载队列
 type DbDownloadTask struct {
 	BaseModel
-	AccountId     uint           `json:"account_id"`
-	SyncFileId    uint           `json:"sync_file_id"`                           // 115 文件 ID
-	SyncPathId    uint           `json:"sync_path_id" gorm:"index"`              // 所属同步目录 ID
-	SourceType    SourceType     `json:"source_type"`                            // 任务来源类型
-	RemoteFileId  string         `json:"remote_file_id" gorm:"index:idx_source"` // 远程文件 ID，用来提取实际下载链接，或者这本身就是下载链接
-	FileName      string         `json:"file_name"`                              // 文件名，用来显示
-	RemotePath    string         `json:"remote_path"`                            // 远程路径，不含文件名
-	LocalFullPath string         `json:"local_full_path"`                        // 本地文件路径，下载到这个位置，如果已存在不覆盖，下载前先检查
-	Source        DownloadSource `json:"source" gorm:"index:idx_source"`         // 下载来源存储值，展示文案由前端映射
-	Status        DownloadStatus `json:"status" gorm:"index:idx_status"`         // 下载状态
-	Size          int64          `json:"size"`                                   // 文件大小
-	StartTime     int64          `json:"start_time"`                             // 开始时间
-	EndTime       int64          `json:"end_time"`                               // 结束时间
-	Error         string         `json:"error"`                                  // 错误信息
-	MTime         int64          `json:"mtime"`                                  // 文件修改时间，下载完文件后要设置为这个时间
-	RetryCount    int            `json:"retry_count" gorm:"default:0"`           // 已重试次数
-	LastRetryTime int64          `json:"last_retry_time" gorm:"default:0"`       // 最近重试时间
-	Account       *Account       `json:"-" gorm:"-"`                             // 账户信息
+	AccountId         uint           `json:"account_id"`
+	SyncFileId        uint           `json:"sync_file_id"`                           // 115 文件 ID
+	SyncPathId        uint           `json:"sync_path_id" gorm:"index"`              // 所属同步目录 ID
+	SourceType        SourceType     `json:"source_type"`                            // 任务来源类型
+	RemoteFileId      string         `json:"remote_file_id" gorm:"index:idx_source"` // 远端服务返回的稳定文件 ID
+	FileName          string         `json:"file_name"`                              // 文件名，用来显示
+	RemotePath        string         `json:"remote_path"`                            // 远程路径，不含文件名
+	RemoteFullPath    string         `json:"remote_full_path"`                       // 创建任务时确定的远端完整路径，包含文件名
+	RemotePickCode    string         `json:"remote_pick_code"`                       // 115 PickCode
+	RemoteSha1        string         `json:"remote_sha1"`                            // 远端明确返回的 SHA1
+	RemoteMd5         string         `json:"remote_md5"`                             // 远端明确返回的 MD5
+	RemoteDownloadUrl string         `json:"-"`                                      // 下载执行使用的直链或提取地址，不暴露给前端
+	EmbyItemId        string         `json:"-"`                                      // Emby 媒体提取执行定位，不暴露给前端
+	LocalSourcePath   string         `json:"-"`                                      // 本地复制任务源路径，不暴露给前端
+	DedupScopeHash    string         `json:"-"`                                      // 活跃任务去重范围摘要，不暴露给前端
+	DedupLocatorHash  string         `json:"-"`                                      // 活跃任务去重定位摘要，不暴露给前端
+	LocalFullPath     string         `json:"local_full_path"`                        // 本地文件路径，下载到这个位置，如果已存在不覆盖，下载前先检查
+	Source            DownloadSource `json:"source" gorm:"index:idx_source"`         // 下载来源存储值，展示文案由前端映射
+	Status            DownloadStatus `json:"status" gorm:"index:idx_status"`         // 下载状态
+	Size              int64          `json:"size"`                                   // 文件大小
+	StartTime         int64          `json:"start_time"`                             // 开始时间
+	EndTime           int64          `json:"end_time"`                               // 结束时间
+	Error             string         `json:"error"`                                  // 错误信息
+	MTime             int64          `json:"mtime"`                                  // 文件修改时间，下载完文件后要设置为这个时间
+	RetryCount        int            `json:"retry_count" gorm:"default:0"`           // 已重试次数
+	LastRetryTime     int64          `json:"last_retry_time" gorm:"default:0"`       // 最近重试时间
+	Account           *Account       `json:"-" gorm:"-"`                             // 账户信息
+}
+
+var errActiveDownloadTaskExists = errors.New("任务已存在")
+
+func activeDownloadTaskStatuses() []DownloadStatus {
+	return []DownloadStatus{
+		DownloadStatusPending,
+		DownloadStatusDownloading,
+	}
+}
+
+func activeDownloadTaskExistsError(task *DbDownloadTask) error {
+	if task == nil {
+		return errActiveDownloadTaskExists
+	}
+	switch task.Status {
+	case DownloadStatusPending:
+		return fmt.Errorf("%w，状态为待下载", errActiveDownloadTaskExists)
+	case DownloadStatusDownloading:
+		return fmt.Errorf("%w，状态为下载中", errActiveDownloadTaskExists)
+	default:
+		return errActiveDownloadTaskExists
+	}
+}
+
+func isActiveDownloadTaskUniqueConstraintError(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, activeDownloadTaskUniqueIndexName) ||
+		strings.Contains(message, "unique constraint failed: db_download_tasks.source, db_download_tasks.source_type, db_download_tasks.account_id, db_download_tasks.dedup_scope_hash, db_download_tasks.dedup_locator_hash")
 }
 
 // CanRetry 判断下载任务是否还能重试
@@ -191,10 +240,10 @@ func (task *DbDownloadTask) Download() {
 		// Emby 媒体信息提取，从 Emby 下载
 		task.DownloadEmbyMedia()
 	case DownloadSourceLocalFile:
-		// 复制本地文件到指定位置
+		// 复制本地文件到指定位置。
 		// 标记为下载中
 		task.Downloading()
-		err := helpers.CopyFile(task.RemoteFileId, task.LocalFullPath)
+		err := helpers.CopyFile(task.LocalSourcePath, task.LocalFullPath)
 		if err != nil {
 			helpers.AppLogger.Warnf("[下载] 复制文件失败：%s", err.Error())
 			task.Fail(err)
@@ -243,14 +292,28 @@ func (task *DbDownloadTask) Download115File() {
 	// 查询下载链接
 	v115Client := account.Get115Client()
 	// 首先获取到下载链接
-	url := v115Client.GetDownloadUrl(context.Background(), task.RemoteFileId, v115open.DEFAULTUA, false)
-	if url == "" {
-		helpers.AppLogger.Warnf("[下载] 获取下载链接失败：%s", task.RemoteFileId)
-		task.Fail(fmt.Errorf("获取 %s => %s 的下载链接失败", task.RemoteFileId, task.FileName))
+	result := v115Client.GetDownloadUrlResult(context.Background(), task.RemotePickCode, v115open.DEFAULTUA, false)
+	if result == nil || result.URL == "" {
+		helpers.AppLogger.Warnf("[下载] 获取下载链接失败：%s", task.RemotePickCode)
+		task.Fail(fmt.Errorf("获取 %s => %s 的下载链接失败", task.RemotePickCode, task.FileName))
 		return
 	}
+	updates := map[string]any{}
+	if result.PickCode != "" {
+		task.RemotePickCode = result.PickCode
+		updates["remote_pick_code"] = task.RemotePickCode
+	}
+	if result.Sha1 != "" {
+		task.RemoteSha1 = result.Sha1
+		updates["remote_sha1"] = task.RemoteSha1
+	}
+	if len(updates) > 0 {
+		if err := db.Db.Model(task).Updates(updates).Error; err != nil {
+			helpers.AppLogger.Warnf("[下载] 保存 115 远端身份信息失败：%s", err.Error())
+		}
+	}
 	// 下载文件到指定位置
-	downloadErr := helpers.DownloadFile(url, task.LocalFullPath, v115open.DEFAULTUA)
+	downloadErr := helpers.DownloadFile(result.URL, task.LocalFullPath, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
@@ -290,7 +353,11 @@ func (task *DbDownloadTask) DownloadOpenListFile() {
 	// 	url += "?sign=" + syncFile.OpenlistSign
 	// }
 	// 下载文件到指定位置
-	downloadErr := helpers.DownloadFile(task.RemoteFileId, task.LocalFullPath, v115open.DEFAULTUA)
+	if task.RemoteDownloadUrl == "" {
+		task.Fail(errors.New("OpenList 下载地址为空"))
+		return
+	}
+	downloadErr := helpers.DownloadFile(task.RemoteDownloadUrl, task.LocalFullPath, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
@@ -347,7 +414,11 @@ func (task *DbDownloadTask) DownloadEmbyMedia() {
 	client := &http.Client{
 		Timeout: 30 * time.Second, // 30 秒超时
 	}
-	req, err := http.NewRequest(http.MethodPost, task.RemoteFileId, nil)
+	if task.RemoteDownloadUrl == "" {
+		task.Fail(errors.New("Emby 提取地址为空"))
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, task.RemoteDownloadUrl, nil)
 	if err != nil {
 		helpers.AppLogger.Errorf("[下载] 创建 %s 的 HTTP request 失败：%v", task.FileName, err)
 		task.Fail(err)
@@ -355,68 +426,231 @@ func (task *DbDownloadTask) DownloadEmbyMedia() {
 	}
 	req.Header.Set("User-Agent", v115open.DEFAULTUA)
 	// 发送请求
-	_, doErr := client.Do(req)
+	resp, doErr := client.Do(req)
 	if doErr != nil {
-		helpers.AppLogger.Errorf("[Emby 媒体信息提取] 失败，名称：%s，Emby Item ID：%s，错误：%v", task.FileName, task.RemoteFileId, doErr)
+		helpers.AppLogger.Errorf("[Emby 媒体信息提取] 失败，名称：%s，Emby Item ID：%s，错误：%v", task.FileName, task.EmbyItemId, doErr)
 		task.Fail(doErr)
 		return
 	}
+	closeEmbyResponseBody(resp)
 	if helpers.IsRelease {
-		helpers.AppLogger.Infof("[Emby 媒体信息提取] 成功，名称：%s，Emby Item ID：%s", task.FileName, task.RemoteFileId)
+		helpers.AppLogger.Infof("[Emby 媒体信息提取] 成功，名称：%s，Emby Item ID：%s", task.FileName, task.EmbyItemId)
 	}
 	task.Complete()
 }
 
-// 检查任务是否已经存在，通过 Source + RemoteFileId
-func CheckDownloadTaskExist(source DownloadSource, remoteFileId string) *DbDownloadTask {
+// closeEmbyResponseBody 读取并关闭不需要解析的 Emby 提取响应，允许 HTTP 连接复用。
+func closeEmbyResponseBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// downloadTaskScope 表示下载任务去重的远端存储范围。
+// 相同远端文件可以在不同账号或同步目录中分别下载到各自的本地目标。
+type downloadTaskScope struct {
+	source        DownloadSource
+	sourceType    SourceType
+	accountID     uint
+	syncPathID    uint
+	localFullPath string
+}
+
+func newDownloadTaskScope(source DownloadSource, file *SyncFile) downloadTaskScope {
+	if file == nil {
+		return downloadTaskScope{source: source}
+	}
+	return downloadTaskScope{
+		source:        source,
+		sourceType:    file.SourceType,
+		accountID:     file.AccountId,
+		syncPathID:    file.SyncPathId,
+		localFullPath: file.LocalFilePath,
+	}
+}
+
+func checkDownloadTaskExist(scope downloadTaskScope, remoteFileID string) *DbDownloadTask {
+	return checkDownloadTaskExistByColumn(scope, "remote_file_id", remoteFileID)
+}
+
+func checkDownloadTaskExistByColumn(scope downloadTaskScope, column string, value string) *DbDownloadTask {
+	if value == "" {
+		return nil
+	}
 	var task *DbDownloadTask
-	err := db.Db.Model(&DbDownloadTask{}).
-		Where("source = ? AND remote_file_id = ?", source, remoteFileId).
-		First(&task).Error
+	query := db.Db.Model(&DbDownloadTask{}).
+		Where("source = ? AND source_type = ? AND account_id = ? AND "+column+" = ?", scope.source, scope.sourceType, scope.accountID, value).
+		Where("status IN ?", activeDownloadTaskStatuses())
+	if scope.syncPathID > 0 {
+		query = query.Where("sync_path_id = ?", scope.syncPathID)
+	} else if scope.localFullPath != "" {
+		// 临时同步没有持久化的同步目录 ID，使用本地目标保证不同目标不会相互阻塞。
+		query = query.Where("sync_path_id = ? AND local_full_path = ?", 0, scope.localFullPath)
+	} else {
+		query = query.Where("sync_path_id = ?", 0)
+	}
+	err := query.First(&task).Error
 	if err != nil {
 		return nil
 	}
 	return task
 }
 
+func setDownloadTaskDeduplicationKeys(task *DbDownloadTask) {
+	if task == nil {
+		return
+	}
+
+	scope := fmt.Sprintf("sync_path:%d", task.SyncPathId)
+	if task.SyncPathId == 0 && task.LocalFullPath != "" {
+		scope = "local_full_path:" + task.LocalFullPath
+	}
+
+	var locator string
+	switch task.SourceType {
+	case SourceTypeOpenList:
+		if task.RemoteFileId != "" {
+			locator = "remote_file_id:" + task.RemoteFileId
+		} else {
+			locator = "remote_download_url:" + task.RemoteDownloadUrl
+		}
+	case SourceTypeLocal:
+		locator = "local_source_path:" + task.LocalSourcePath
+	case SourceTypeEmbyMedia:
+		locator = "remote_download_url:" + task.RemoteDownloadUrl
+	default:
+		locator = "remote_file_id:" + task.RemoteFileId
+	}
+	if locator == "remote_file_id:" || locator == "remote_download_url:" || locator == "local_source_path:" {
+		task.DedupScopeHash = ""
+		task.DedupLocatorHash = ""
+		return
+	}
+
+	scopeHash := sha256.Sum256([]byte(scope))
+	locatorHash := sha256.Sum256([]byte(locator))
+	task.DedupScopeHash = hex.EncodeToString(scopeHash[:])
+	task.DedupLocatorHash = hex.EncodeToString(locatorHash[:])
+}
+
+func findActiveDownloadTaskByDeduplicationKeys(task *DbDownloadTask) *DbDownloadTask {
+	if task == nil {
+		return nil
+	}
+	setDownloadTaskDeduplicationKeys(task)
+	if task.DedupScopeHash == "" || task.DedupLocatorHash == "" {
+		return nil
+	}
+
+	var existing DbDownloadTask
+	err := db.Db.Model(&DbDownloadTask{}).
+		Where("source = ? AND source_type = ? AND account_id = ? AND dedup_scope_hash = ? AND dedup_locator_hash = ?", task.Source, task.SourceType, task.AccountId, task.DedupScopeHash, task.DedupLocatorHash).
+		Where("status IN ?", activeDownloadTaskStatuses()).
+		First(&existing).Error
+	if err != nil {
+		return nil
+	}
+	return &existing
+}
+
+// createDownloadTaskWithDB 创建下载任务，并将数据库层的活跃目标唯一约束转换为业务错误。
+func createDownloadTaskWithDB(tx *gorm.DB, task *DbDownloadTask) error {
+	setDownloadTaskDeduplicationKeys(task)
+	if err := tx.Create(task).Error; err != nil {
+		if isActiveDownloadTaskUniqueConstraintError(err) {
+			return errActiveDownloadTaskExists
+		}
+		return err
+	}
+	return nil
+}
+
 // 添加任务
 func AddDownloadTaskFromSyncFile(file *SyncFile) error {
-	// 先检查是否存在
-	if task := CheckDownloadTaskExist(DownloadSourceStrm, file.PickCode); task != nil {
-		if task.Status == DownloadStatusPending {
-			return errors.New("任务已存在，状态为待下载")
-		}
-		if task.Status == DownloadStatusDownloading {
-			return errors.New("任务已存在，状态为下载中")
-		}
-	}
-	if file.SyncPath == nil {
-		file.SyncPath = GetSyncPathById(file.SyncPathId)
-	}
 	source := DownloadSourceStrm
 	switch file.SourceType {
 	case SourceTypeLocal:
 		source = DownloadSourceLocalFile
-	case SourceTypeOpenList:
-		// OpenList 文件，直接使用远程路径作为下载链接
+	}
+	scope := newDownloadTaskScope(source, file)
 
+	// 先在当前远端存储范围内检查是否存在。稳定文件 ID 缺失时，OpenList 和本地复制任务使用仅供执行的定位值去重。
+	uniqueRemoteID := file.FileId
+	if file.SourceType == SourceTypeOpenList {
+		uniqueRemoteID = file.OpenlistObjectId
+	}
+	if file.SourceType == SourceTypeBaiduPan {
+		uniqueRemoteID = file.PickCode
+	}
+	var existing *DbDownloadTask
+	switch file.SourceType {
+	case SourceTypeOpenList:
+		if uniqueRemoteID != "" {
+			existing = checkDownloadTaskExist(scope, uniqueRemoteID)
+		} else {
+			existing = checkDownloadTaskExistByColumn(scope, "remote_download_url", file.PickCode)
+		}
+	case SourceTypeLocal:
+		existing = checkDownloadTaskExistByColumn(scope, "local_source_path", file.PickCode)
+	default:
+		existing = checkDownloadTaskExist(scope, uniqueRemoteID)
+	}
+	if task := existing; task != nil {
+		return activeDownloadTaskExistsError(task)
+	}
+	if file.SyncPath == nil {
+		file.SyncPath = GetSyncPathById(file.SyncPathId)
 	}
 	// 插入新纪录
 	task := &DbDownloadTask{
-		AccountId:     file.AccountId,
-		SyncFileId:    file.ID,
-		SyncPathId:    file.SyncPathId,
-		RemoteFileId:  file.PickCode,
-		FileName:      file.FileName,
-		RemotePath:    file.Path,
-		LocalFullPath: file.LocalFilePath,
-		Source:        DownloadSource(source),
-		Status:        DownloadStatusPending,
-		Size:          file.FileSize,
-		SourceType:    file.SourceType,
-		MTime:         file.MTime,
+		AccountId:      file.AccountId,
+		SyncFileId:     file.ID,
+		SyncPathId:     file.SyncPathId,
+		RemoteFileId:   uniqueRemoteID,
+		FileName:       file.FileName,
+		RemotePath:     file.Path,
+		RemoteFullPath: remoteFullPath(file.Path, file.FileName),
+		LocalFullPath:  file.LocalFilePath,
+		Source:         DownloadSource(source),
+		Status:         DownloadStatusPending,
+		Size:           file.FileSize,
+		SourceType:     file.SourceType,
+		MTime:          file.MTime,
 	}
-	err := db.Db.Save(task).Error
+	if file.SourceType == SourceType115 {
+		task.RemotePickCode = file.PickCode
+		task.RemoteSha1 = file.Sha1
+	}
+	if file.SourceType == SourceTypeBaiduPan {
+		task.RemotePickCode = ""
+		task.RemoteSha1 = ""
+		task.RemoteMd5 = file.Sha1
+	}
+	if file.SourceType == SourceTypeOpenList {
+		task.RemoteDownloadUrl = file.PickCode
+		task.RemoteFileId = file.OpenlistObjectId
+		task.RemotePickCode = ""
+		task.RemoteSha1 = ""
+		task.RemoteMd5 = file.OpenlistMD5
+		if file.OpenlistSHA1 != "" {
+			task.RemoteSha1 = file.OpenlistSHA1
+		}
+	}
+	if file.SourceType == SourceTypeLocal {
+		task.RemoteFileId = ""
+		task.RemotePickCode = ""
+		task.RemoteSha1 = ""
+		task.RemoteMd5 = ""
+		task.RemotePath = ""
+		task.RemoteFullPath = ""
+		task.LocalSourcePath = file.PickCode
+	}
+	err := createDownloadTaskWithDB(db.Db, task)
+	if errors.Is(err, errActiveDownloadTaskExists) {
+		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
+	}
 	if err == nil {
 		publishDownloadQueueChanged(task, "created")
 	}
@@ -425,31 +659,37 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 
 func AddDownloadTaskFromEmbyMedia(url, itemId, itemName string) error {
 	// 先检查是否存在
-	if task := CheckDownloadTaskExist(DownloadSourceEmbyMedia, url); task != nil {
-		if task.Status == DownloadStatusPending {
-			return errors.New("任务已存在，状态为待下载")
-		}
-		if task.Status == DownloadStatusDownloading {
-			return errors.New("任务已存在，状态为下载中")
-		}
+	scope := downloadTaskScope{source: DownloadSourceEmbyMedia, sourceType: SourceTypeEmbyMedia}
+	if task := checkDownloadTaskExistByColumn(scope, "remote_download_url", url); task != nil {
+		return activeDownloadTaskExistsError(task)
 	}
 	// 插入新纪录
 	task := &DbDownloadTask{
-		AccountId:     0,
-		RemoteFileId:  url,
-		FileName:      itemName,
-		RemotePath:    itemId,
-		LocalFullPath: "",
-		Source:        DownloadSourceEmbyMedia,
-		Status:        DownloadStatusPending,
-		Size:          0,
-		SourceType:    SourceTypeEmbyMedia,
+		AccountId:         0,
+		RemoteDownloadUrl: url,
+		EmbyItemId:        itemId,
+		FileName:          itemName,
+		LocalFullPath:     "",
+		Source:            DownloadSourceEmbyMedia,
+		Status:            DownloadStatusPending,
+		Size:              0,
+		SourceType:        SourceTypeEmbyMedia,
 	}
-	err := db.Db.Save(task).Error
+	err := createDownloadTaskWithDB(db.Db, task)
+	if errors.Is(err, errActiveDownloadTaskExists) {
+		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
+	}
 	if err == nil {
 		publishDownloadQueueChanged(task, "created")
 	}
 	return err
+}
+
+func remoteFullPath(remotePath string, fileName string) string {
+	if remotePath == "" || fileName == "" {
+		return ""
+	}
+	return path.Join(remotePath, fileName)
 }
 
 func GetPendingDownloadTasks(limit int) []*DbDownloadTask {
@@ -472,20 +712,50 @@ func GetDownloadingCount() int64 {
 
 // RetryFailedDownloadTasks 重试失败的下载任务
 func RetryFailedDownloadTasks(maxRetry int) error {
-	updateData := map[string]interface{}{
-		"status":          DownloadStatusPending,
-		"error":           "",
-		"retry_count":     gorm.Expr("retry_count + 1"),
-		"last_retry_time": time.Now().Unix(),
-	}
-	err := db.Db.Model(&DbDownloadTask{}).
+	var failedTasks []DbDownloadTask
+	if err := db.Db.
 		Where("status = ? AND retry_count < ?", DownloadStatusFailed, maxRetry).
-		Updates(updateData).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("重试失败的下载任务失败：%v", err)
+		Find(&failedTasks).Error; err != nil {
+		helpers.AppLogger.Errorf("查询待重试下载任务失败：%v", err)
 		return err
 	}
-	helpers.AppLogger.Infof("重试失败的下载任务成功")
+
+	retried, skipped := 0, 0
+	for i := range failedTasks {
+		task := &failedTasks[i]
+		setDownloadTaskDeduplicationKeys(task)
+		updateData := map[string]interface{}{
+			"status":          DownloadStatusPending,
+			"error":           "",
+			"retry_count":     gorm.Expr("retry_count + 1"),
+			"last_retry_time": time.Now().Unix(),
+		}
+		query := db.Db.Model(&DbDownloadTask{}).
+			Where("id = ? AND status = ? AND retry_count < ?", task.ID, DownloadStatusFailed, maxRetry)
+		if task.DedupScopeHash != "" && task.DedupLocatorHash != "" {
+			updateData["dedup_scope_hash"] = task.DedupScopeHash
+			updateData["dedup_locator_hash"] = task.DedupLocatorHash
+			query = query.Where(`NOT EXISTS (
+				SELECT 1 FROM db_download_tasks
+				WHERE source = ? AND source_type = ? AND account_id = ? AND dedup_scope_hash = ? AND dedup_locator_hash = ? AND status IN ?
+			)`, task.Source, task.SourceType, task.AccountId, task.DedupScopeHash, task.DedupLocatorHash, activeDownloadTaskStatuses())
+		}
+		result := query.Updates(updateData)
+		if result.Error != nil {
+			if isActiveDownloadTaskUniqueConstraintError(result.Error) {
+				skipped++
+				continue
+			}
+			helpers.AppLogger.Errorf("重试失败的下载任务 %d 失败：%v", task.ID, result.Error)
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			skipped++
+			continue
+		}
+		retried++
+	}
+	helpers.AppLogger.Infof("重试失败的下载任务完成：成功 %d 个，因活跃同目标或状态变化跳过 %d 个", retried, skipped)
 	publishDownloadQueueChanged(nil, "retry_failed")
 	return nil
 }

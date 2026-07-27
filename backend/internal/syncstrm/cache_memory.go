@@ -40,7 +40,10 @@ type SyncFileCache struct {
 	ThumbUrl string `json:"thumb_url"`
 
 	// OpenList 特有字段
-	OpenlistSign string `json:"openlist_sign"`
+	OpenlistSign     string `json:"openlist_sign"`
+	OpenlistObjectId string `json:"-"`
+	OpenlistSHA1     string `json:"-"`
+	OpenlistMD5      string `json:"-"`
 
 	SourceType models.SourceType         `json:"source_path"`
 	Paths      []v115open.FileDetailPath `json:"paths"` // 父目录
@@ -138,23 +141,26 @@ func (b *SyncFileCache) GetLocalFilePath(targetPath, sourcePath string) string {
 // 将 SyncFileCache 转换为 models.SyncFile
 func (d *SyncFileCache) GetSyncFile(s *SyncStrm, openlistBaseUrl string) *models.SyncFile {
 	syncFile := &models.SyncFile{
-		AccountId:     s.Account.ID,
-		SyncPathId:    s.SyncPathId,
-		SourceType:    d.SourceType,
-		FileId:        d.GetFileId(),
-		ParentId:      d.ParentId,
-		Path:          d.GetPath(),
-		FileName:      d.FileName,
-		FileSize:      d.FileSize,
-		FileType:      d.FileType,
-		MTime:         d.MTime,
-		PickCode:      d.GetPickCode(openlistBaseUrl),
-		OpenlistSign:  d.OpenlistSign,
-		ThumbUrl:      d.ThumbUrl,
-		Sha1:          d.Sha1,
-		IsVideo:       d.IsVideo,
-		IsMeta:        d.IsMeta,
-		LocalFilePath: d.GetLocalFilePath(s.TargetPath, s.SourcePath),
+		AccountId:        s.Account.ID,
+		SyncPathId:       s.SyncPathId,
+		SourceType:       d.SourceType,
+		FileId:           d.GetFileId(),
+		ParentId:         d.ParentId,
+		Path:             d.GetPath(),
+		FileName:         d.FileName,
+		FileSize:         d.FileSize,
+		FileType:         d.FileType,
+		MTime:            d.MTime,
+		PickCode:         d.GetPickCode(openlistBaseUrl),
+		OpenlistSign:     d.OpenlistSign,
+		OpenlistObjectId: d.OpenlistObjectId,
+		OpenlistSHA1:     d.OpenlistSHA1,
+		OpenlistMD5:      d.OpenlistMD5,
+		ThumbUrl:         d.ThumbUrl,
+		Sha1:             d.Sha1,
+		IsVideo:          d.IsVideo,
+		IsMeta:           d.IsMeta,
+		LocalFilePath:    d.GetLocalFilePath(s.TargetPath, s.SourcePath),
 	}
 	return syncFile
 }

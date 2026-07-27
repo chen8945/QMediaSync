@@ -68,3 +68,16 @@ func TestFileListRefreshDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestKnownHashesOnlyUsesExplicitAlgorithms(t *testing.T) {
+	sha1, md5 := KnownHashes(map[string]string{
+		" SHA1 ":     " remote-sha1 ",
+		"md5":        "remote-md5",
+		"hashinfo":   "vendor-value",
+		"unknown":    "unknown-value",
+		"sha-1-like": "not-sha1",
+	})
+	if sha1 != "remote-sha1" || md5 != "remote-md5" {
+		t.Fatalf("KnownHashes() = (%q, %q)，期望只返回明确算法键", sha1, md5)
+	}
+}

@@ -56,3 +56,43 @@ func TestOpenClient_UploadInitUsesOfficialPreID(t *testing.T) {
 		t.Fatalf("不应发送非官方字段 pre_id，got %s", got)
 	}
 }
+
+func TestOpenClient_GetDownloadUrlResultPreservesRemoteIdentity(t *testing.T) {
+	transport := newCaptureOpenAPITransport(`{
+		"state": true,
+		"code": 0,
+		"data": {
+			"file-id": {
+				"file_name": "movie.mkv",
+				"file_size": "123",
+				"pick_code": "pick-code",
+				"sha1": "remote-sha1",
+				"url": {"url": "https://download.example/movie.mkv"}
+			}
+		}
+	}`)
+	client := newTestOpenClient(transport)
+
+	result := client.GetDownloadUrlResult(context.Background(), "pick-code", "test-agent", false)
+	if result == nil {
+		t.Fatal("获取下载地址结果为空")
+	}
+	if result.URL != "https://download.example/movie.mkv" || result.FileName != "movie.mkv" || result.PickCode != "pick-code" || result.Sha1 != "remote-sha1" {
+		t.Fatalf("下载地址结果 = %+v", result)
+	}
+
+	req := receiveCapturedRequest(t, transport)
+	if req.Method != http.MethodPost {
+		t.Fatalf("请求方法 = %s，want %s", req.Method, http.MethodPost)
+	}
+	if gotPath := mustParseURLPath(t, req.URL); gotPath != "/open/ufile/downurl" {
+		t.Fatalf("请求路径 = %s，want /open/ufile/downurl", gotPath)
+	}
+	form, err := url.ParseQuery(req.Body)
+	if err != nil {
+		t.Fatalf("解析下载地址表单失败：%v", err)
+	}
+	if got := form.Get("pick_code"); got != "pick-code" {
+		t.Fatalf("pick_code = %s，want pick-code", got)
+	}
+}

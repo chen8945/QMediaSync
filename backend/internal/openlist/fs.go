@@ -17,15 +17,17 @@ import (
 )
 
 type FileListItemInfo struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	IsDir    bool   `json:"is_dir"`
-	Modified string `json:"modified"`
-	Created  string `json:"created"`
-	Sign     string `json:"sign"`
-	Thumb    string `json:"thumb"`
-	Type     int    `json:"type"`
-	HashInfo string `json:"hashinfo"`
+	Name        string            `json:"name"`
+	Size        int64             `json:"size"`
+	IsDir       bool              `json:"is_dir"`
+	Modified    string            `json:"modified"`
+	Created     string            `json:"created"`
+	Sign        string            `json:"sign"`
+	Thumb       string            `json:"thumb"`
+	Type        int               `json:"type"`
+	HashInfo    string            `json:"hashinfo"`
+	ID          string            `json:"id"`
+	HashInfoMap map[string]string `json:"hash_info"`
 }
 
 type FileListResp struct {
@@ -55,19 +57,34 @@ type FileListResp struct {
 //	    "related": null
 //	  }
 type FileDetail struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	IsDir    bool   `json:"is_dir"`
-	Modified string `json:"modified"`
-	Created  string `json:"created"`
-	Sign     string `json:"sign"`
-	Thumb    string `json:"thumb"`
-	Type     int    `json:"type"`
-	HashInfo string `json:"hashinfo"`
-	RawURL   string `json:"raw_url"`
-	Readme   string `json:"readme"`
-	Header   string `json:"header"`
-	Provider string `json:"provider"`
+	Name        string            `json:"name"`
+	Size        int64             `json:"size"`
+	IsDir       bool              `json:"is_dir"`
+	Modified    string            `json:"modified"`
+	Created     string            `json:"created"`
+	Sign        string            `json:"sign"`
+	Thumb       string            `json:"thumb"`
+	Type        int               `json:"type"`
+	HashInfo    string            `json:"hashinfo"`
+	ID          string            `json:"id"`
+	HashInfoMap map[string]string `json:"hash_info"`
+	RawURL      string            `json:"raw_url"`
+	Readme      string            `json:"readme"`
+	Header      string            `json:"header"`
+	Provider    string            `json:"provider"`
+}
+
+// KnownHashes 只读取 OpenList hash_info 中算法名明确的哈希值；hashinfo 是供应商私有字段，不能猜测其格式。
+func KnownHashes(hashInfo map[string]string) (sha1 string, md5 string) {
+	for algorithm, value := range hashInfo {
+		switch strings.ToLower(strings.TrimSpace(algorithm)) {
+		case "sha1":
+			sha1 = strings.TrimSpace(value)
+		case "md5":
+			md5 = strings.TrimSpace(value)
+		}
+	}
+	return sha1, md5
 }
 
 //	"task": {

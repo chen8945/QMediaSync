@@ -1262,22 +1262,22 @@ func TestHandleStableFileRetriesStrmEnqueueWithoutNewUpload(t *testing.T) {
 	}
 	fingerprint := models.BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano())
 	task := &models.DbUploadTask{
-		Source:                models.UploadSourceDirectoryMonitor,
-		AccountId:             rule.AccountId,
-		SyncPathId:            rule.SyncPathId,
-		SourceType:            models.SourceType115,
-		LocalFullPath:         filePath,
-		RelativePath:          "movie.mkv",
-		SourceFingerprint:     fingerprint,
-		RemoteFileId:          "/remote/movie.mkv",
-		RemotePathId:          "remote-root",
-		FileName:              "movie.mkv",
-		Status:                models.UploadStatusCompleted,
-		FileSize:              info.Size(),
-		LocalMtimeNs:          info.ModTime().UnixNano(),
-		UploadResult:          models.UploadResultMultipartUploaded,
-		CompletedRemoteFileId: "remote-file",
-		CompletedPickCode:     "pick-code",
+		Source:            models.UploadSourceDirectoryMonitor,
+		AccountId:         rule.AccountId,
+		SyncPathId:        rule.SyncPathId,
+		SourceType:        models.SourceType115,
+		LocalFullPath:     filePath,
+		RelativePath:      "movie.mkv",
+		SourceFingerprint: fingerprint,
+		RemoteFullPath:    "/remote/movie.mkv",
+		RemotePathId:      "remote-root",
+		FileName:          "movie.mkv",
+		Status:            models.UploadStatusCompleted,
+		FileSize:          info.Size(),
+		LocalMtimeNs:      info.ModTime().UnixNano(),
+		UploadResult:      models.UploadResultMultipartUploaded,
+		RemoteFileId:      "remote-file",
+		RemotePickCode:    "pick-code",
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
@@ -1402,8 +1402,8 @@ func TestHandleStableFileReprocessesAwaitingStrmWhenUploadTaskMissing(t *testing
 	task := tasks[0]
 	if task.Status != models.UploadStatusCompleted ||
 		task.UploadResult != models.UploadResultRemoteExists ||
-		task.CompletedRemoteFileId != "remote-file" ||
-		task.CompletedPickCode != "pick-code" {
+		task.RemoteFileId != "remote-file" ||
+		task.RemotePickCode != "pick-code" {
 		t.Fatalf("上传任务 = %+v，期望远端已存在完成任务", task)
 	}
 	var processed models.DirectoryUploadProcessedFile
@@ -1483,8 +1483,8 @@ func TestHandleStableFileScopeChangeUsesRelativeMemoryCacheUntilForce(t *testing
 	if err := db.Db.Where("source = ? AND local_full_path = ?", models.UploadSourceDirectoryMonitor, filePath).First(&task).Error; err != nil {
 		t.Fatalf("强制重扫范围变更后应创建新上传任务: %v", err)
 	}
-	if task.RemoteFileId != "/remote/new/movie.mkv" {
-		t.Fatalf("新上传任务 remote_file_id = %q，期望使用新远端范围", task.RemoteFileId)
+	if task.RemoteFullPath != "/remote/new/movie.mkv" {
+		t.Fatalf("新上传任务 remote_full_path = %q，期望使用新远端范围", task.RemoteFullPath)
 	}
 	newScopeHash := models.BuildDirectoryUploadScopeHash(rule)
 	newSourceKey := models.BuildDirectoryUploadSourceKey(newScopeHash, "movie.mkv")
@@ -1659,16 +1659,16 @@ func TestServiceSkipsStableFileWhenActiveUploadTaskExists(t *testing.T) {
 			writeFileWithMtime(t, filePath, []byte("movie"), time.Unix(350, 0))
 			_, rule := createDirectoryUploadRuleForTest(t, monitorPath)
 			existing := &models.DbUploadTask{
-				Source:        models.UploadSourceDirectoryMonitor,
-				AccountId:     rule.AccountId,
-				SyncPathId:    rule.SyncPathId,
-				SourceType:    models.SourceType115,
-				LocalFullPath: filePath,
-				RemoteFileId:  "/remote/movie.mkv",
-				FileName:      "movie.mkv",
-				Status:        tt.status,
-				FileSize:      int64(len("movie")),
-				UploadResult:  models.UploadResultUnknown,
+				Source:         models.UploadSourceDirectoryMonitor,
+				AccountId:      rule.AccountId,
+				SyncPathId:     rule.SyncPathId,
+				SourceType:     models.SourceType115,
+				LocalFullPath:  filePath,
+				RemoteFullPath: "/remote/movie.mkv",
+				FileName:       "movie.mkv",
+				Status:         tt.status,
+				FileSize:       int64(len("movie")),
+				UploadResult:   models.UploadResultUnknown,
 			}
 			if err := db.Db.Create(existing).Error; err != nil {
 				t.Fatalf("创建已有上传任务失败: %v", err)
@@ -1780,16 +1780,16 @@ func TestHandleStableFileForceKeepsActiveTaskDedup(t *testing.T) {
 			writeFileWithMtime(t, filePath, []byte("movie"), time.Unix(370, 0))
 			_, rule := createDirectoryUploadRuleForTest(t, monitorPath)
 			existing := &models.DbUploadTask{
-				Source:        models.UploadSourceDirectoryMonitor,
-				AccountId:     rule.AccountId,
-				SyncPathId:    rule.SyncPathId,
-				SourceType:    models.SourceType115,
-				LocalFullPath: filePath,
-				RemoteFileId:  "/remote/movie.mkv",
-				FileName:      "movie.mkv",
-				Status:        tt.status,
-				FileSize:      int64(len("movie")),
-				UploadResult:  models.UploadResultUnknown,
+				Source:         models.UploadSourceDirectoryMonitor,
+				AccountId:      rule.AccountId,
+				SyncPathId:     rule.SyncPathId,
+				SourceType:     models.SourceType115,
+				LocalFullPath:  filePath,
+				RemoteFullPath: "/remote/movie.mkv",
+				FileName:       "movie.mkv",
+				Status:         tt.status,
+				FileSize:       int64(len("movie")),
+				UploadResult:   models.UploadResultUnknown,
 			}
 			if err := db.Db.Create(existing).Error; err != nil {
 				t.Fatalf("创建已有上传任务失败: %v", err)
@@ -1852,8 +1852,8 @@ func TestServiceSkipsUploadWhenRemoteFileAlreadyExists(t *testing.T) {
 	}
 	if task.Status != models.UploadStatusCompleted ||
 		task.UploadResult != models.UploadResultRemoteExists ||
-		task.CompletedRemoteFileId != "remote-file" ||
-		task.CompletedPickCode != "pick-code" {
+		task.RemoteFileId != "remote-file" ||
+		task.RemotePickCode != "pick-code" {
 		t.Fatalf("上传任务 = %+v，期望远端已存在完成任务", task)
 	}
 	info, err := os.Stat(filePath)

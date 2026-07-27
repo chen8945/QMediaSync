@@ -8,9 +8,13 @@
 >
 > 相关代码：`backend/internal/models/dbdownload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/synccron/`、`backend/internal/realtime/`、`backend/internal/controllers/file.go`、`frontend/src/utils/taskSourceUtils.ts`、`frontend/src/utils/sourceTypeUtils.ts`。
 
-下载和上传队列表都会持久化 `source` 与 `source_type`。`source` 表示创建任务的业务流程，用于来源级查询、去重和后处理分支；`source_type` 表示关联的账号 / 存储后端类型，完整稳定值见 [数据库 schema 与迁移](database-schema.md#常用枚举)。两者不能互相推导：例如 `strm_sync` 可以对应多种存储后端，而 Emby 媒体信息提取下载任务同时使用 `source=emby_media` 与 `source_type=emby_media`。
+下载和上传队列表都会持久化 `source` 与 `source_type`。`source` 表示创建任务的业务流程，用于来源级查询、去重和后处理分支；`source_type` 表示关联的账号 / 存储后端类型，完整稳定值见 [数据库 schema 与迁移](database-schema.md#常用枚举)。两者不能互相推导：例如 `strm_sync` 可以对应多种存储后端，而 Emby 媒体信息提取下载任务同时使用 `source=emby_media` 与 `source_type=emby_media`。上传任务只在同一 `source + source_type + account_id + remote_full_path` 范围内对活跃状态去重；`remote_full_path` 已是实际目标，因此不以 `sync_path_id` 额外切分。
 
-下载队列详情中的 `remote_file_id` 是按来源复用的存储字段：`source_type=115` 时为 PickCode，`source_type=local` 时为本地源文件路径，其他普通来源时为远端文件 ID；`source_type=emby_media` 使用提取地址的专用展示。前端必须按此语义标注，不能一律显示为远端文件 ID。
+下载和上传队列把远端位置与身份分开存储：`remote_full_path` 是创建任务时确定、包含文件名的远端完整路径，`remote_file_id` 只表示服务实际返回的稳定文件 ID，115 PickCode 只存 `remote_pick_code`。摘要始终按传输方向使用完整路径；历史任务无法可靠回填时显示“远端路径未知（历史记录未保存）”，不得把 ID 回退显示为路径。local 上传例外地将该字段作为受配置源根目录约束的本地复制目标路径保存；它不是远端身份，前端不会以远端路径展示。
+
+下载任务保留 `remote_path` 作为不含文件名的远端目录路径。OpenList 只在 API 提供非空对象 ID 时写入文件 ID，带签名的下载直链只存入隐藏的 `remote_download_url`；Emby 提取地址、Emby 条目 ID 和本地复制源路径同样只使用隐藏执行字段。Emby 提取请求不解析响应内容，但必须排空并关闭响应体。local 与 Emby 不伪造远端身份字段。SHA1 和 MD5 仅在对应远端响应明确声明算法时写入和展示；115 使用 SHA1，百度使用 MD5。
+
+上传覆盖时，只有旧远端文件已删除成功才会在 `replaced_remote_file_id` 记录和展示旧文件 ID：115 使用文件 ID，百度使用 `fs_id`，OpenList 使用非空对象 ID。新文件上传、删除失败的覆盖，以及没有稳定 ID 的来源都不会显示该字段。
 
 同步队列的 `task_type` 不写入数据库，但参与队列路由、去重 key、取消和状态查询。STRM 生成任务的 `source` 和 `task_type` 会写入数据库。
 
@@ -66,6 +70,7 @@
 
 - 不要把展示文案直接写入任务来源字段或同步队列任务类型。
 - 新增任务来源或队列任务类型时，同步更新后端常量、前端展示映射和本文档。
+- 版本 `60 → 61` 的队列身份迁移不补查远端服务：只能从已有任务和 `sync_files` 回填可靠字段，隐藏执行定位从旧字段迁入，两个旧上传完成字段会被删除。升级前备份数据库，且不得让依赖旧字段的二进制与新版本混合运行。
 - 当前兼容迁移仅在数据库版本 `43 → 44` 执行：下载 `source` 的 `strm同步`、`本地文件`、`emby媒体信息提取` 分别迁移为 `strm_sync`、`local_file`、`emby_media`；下载 `source_type` 的 `emby媒体信息提取` 迁移为 `emby_media`；上传 `source` 的 `strm同步`、`刮削整理` 分别迁移为 `strm_sync`、`scrape_organize`。未知或自定义值保持不变，不得在无明确迁移设计时擅自归一化。
 - 仅存在于内存队列的任务类型不需要数据库迁移，但需要测试队列 key 和状态输出是否使用机器值。
 - `frontend/src/utils/sourceTypeUtils.ts` 面向同步目录和账号来源；任务队列来源使用 `frontend/src/utils/taskSourceUtils.ts`，不要混用两套 `local` 文案。

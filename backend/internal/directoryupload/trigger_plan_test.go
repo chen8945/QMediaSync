@@ -122,16 +122,16 @@ func TestBuildTriggerPlanForceKeepsActiveUploadTaskDedup(t *testing.T) {
 	_, rule := createDirectoryUploadRuleForTest(t, monitorPath)
 	info := statFileForTriggerPlanTest(t, filePath)
 	if err := db.Db.Create(&models.DbUploadTask{
-		Source:        models.UploadSourceDirectoryMonitor,
-		AccountId:     rule.AccountId,
-		SyncPathId:    rule.SyncPathId,
-		SourceType:    models.SourceType115,
-		LocalFullPath: filePath,
-		RemoteFileId:  "/remote/movie.mkv",
-		FileName:      "movie.mkv",
-		Status:        models.UploadStatusUploading,
-		FileSize:      info.Size(),
-		UploadResult:  models.UploadResultUnknown,
+		Source:         models.UploadSourceDirectoryMonitor,
+		AccountId:      rule.AccountId,
+		SyncPathId:     rule.SyncPathId,
+		SourceType:     models.SourceType115,
+		LocalFullPath:  filePath,
+		RemoteFullPath: "/remote/movie.mkv",
+		FileName:       "movie.mkv",
+		Status:         models.UploadStatusUploading,
+		FileSize:       info.Size(),
+		UploadResult:   models.UploadResultUnknown,
 	}).Error; err != nil {
 		t.Fatalf("创建活跃上传任务失败: %v", err)
 	}

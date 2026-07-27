@@ -124,16 +124,23 @@ func (d *BaiduPanDriver) GetFilesByPathId(ctx context.Context, rootPathId string
 	return nil, nil
 }
 
-// 所有文件详情，含路径
-func (d *BaiduPanDriver) DetailByFileId(ctx context.Context, fileId string) (*SyncFileCache, error) {
-	resp, err := d.client.FileExists(ctx, fileId)
+// 所有文件详情，含路径。百度 FileExists 按完整路径列举父目录并匹配文件名。
+func (d *BaiduPanDriver) DetailByFileId(ctx context.Context, pathLocator string) (*SyncFileCache, error) {
+	resp, err := d.client.FileExists(ctx, pathLocator)
 	if err != nil {
 		return nil, err
 	}
-	parentId := filepath.ToSlash(filepath.Dir(fileId))
+	if resp == nil {
+		return nil, fmt.Errorf("远端文件不存在：%s", pathLocator)
+	}
+	filePath := filepath.ToSlash(resp.Path)
+	if filePath == "" {
+		filePath = filepath.ToSlash(pathLocator)
+	}
+	parentId := filepath.ToSlash(filepath.Dir(filePath))
 	// 生成 SyncFileCache
 	fileItem := &SyncFileCache{
-		FileId:     fileId,
+		FileId:     filePath,
 		FileName:   resp.ServerFilename,
 		FileType:   v115open.TypeFile,
 		SourceType: models.SourceTypeBaiduPan,

@@ -62,14 +62,18 @@ mainloop:
 				} else {
 					mtime = t.Unix() // 转换为 Unix 时间戳（秒）
 				}
+				sha1, md5 := openlist.KnownHashes(file.HashInfoMap)
 				fileItem := SyncFileCache{
-					ParentId:     parentPathId,
-					FileName:     file.Name,
-					FileType:     v115open.TypeFile,
-					FileSize:     file.Size,
-					MTime:        mtime,
-					OpenlistSign: file.Sign,
-					SourceType:   models.SourceTypeOpenList,
+					ParentId:         parentPathId,
+					FileName:         file.Name,
+					FileType:         v115open.TypeFile,
+					FileSize:         file.Size,
+					MTime:            mtime,
+					OpenlistSign:     file.Sign,
+					OpenlistObjectId: file.ID,
+					OpenlistSHA1:     sha1,
+					OpenlistMD5:      md5,
+					SourceType:       models.SourceTypeOpenList,
 				}
 				if file.IsDir {
 					fileItem.FileType = v115open.TypeDir
@@ -188,18 +192,23 @@ func (d *openListDriver) DetailByFileId(ctx context.Context, fileId string) (*Sy
 	} else {
 		mtime = t.Unix() // 转换为 Unix 时间戳（秒）
 	}
+	sha1, md5 := openlist.KnownHashes(fsDetail.HashInfoMap)
 	fileItem := &SyncFileCache{
-		FileId:     fileId,
-		FileName:   fsDetail.Name,
-		FileType:   v115open.TypeFile,
-		SourceType: models.SourceTypeOpenList,
-		Path:       parentId,
-		ParentId:   parentId,
-		MTime:      mtime,
-		FileSize:   int64(fsDetail.Size),
-		IsVideo:    false,
-		IsMeta:     false,
-		Paths:      []v115open.FileDetailPath{},
+		FileId:           fileId,
+		FileName:         fsDetail.Name,
+		FileType:         v115open.TypeFile,
+		SourceType:       models.SourceTypeOpenList,
+		Path:             parentId,
+		ParentId:         parentId,
+		MTime:            mtime,
+		FileSize:         int64(fsDetail.Size),
+		IsVideo:          false,
+		IsMeta:           false,
+		Paths:            []v115open.FileDetailPath{},
+		OpenlistSign:     fsDetail.Sign,
+		OpenlistObjectId: fsDetail.ID,
+		OpenlistSHA1:     sha1,
+		OpenlistMD5:      md5,
 	}
 	if fsDetail.IsDir {
 		fileItem.FileType = v115open.TypeDir

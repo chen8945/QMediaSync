@@ -67,6 +67,7 @@ func TestBuild115RapidUploadCompleteResultFillsRemoteMtime(t *testing.T) {
 		got.PickCode != "pick-detail" ||
 		got.ParentId != "parent-1" ||
 		got.Sha1 != "sha1-detail" ||
+		got.RemoteSha1 != "sha1-detail" ||
 		got.Size != 2048 ||
 		got.Mtime != 123456 {
 		t.Fatalf("秒传完成结果 = %+v，期望补齐远端详情和 mtime", got)
@@ -96,9 +97,236 @@ func TestBuild115RapidUploadCompleteResultFallsBackForDirectoryMonitor(t *testin
 		got.PickCode != "pick-init" ||
 		got.ParentId != "parent-1" ||
 		got.Sha1 != "sha1-local" ||
+		got.RemoteSha1 != "" ||
 		got.Size != 1024 ||
 		got.Mtime != 0 {
 		t.Fatalf("兜底秒传完成结果 = %+v", got)
+	}
+}
+
+func TestApplyUpload115TaskResultOnlyPersistsRemoteSHA1(t *testing.T) {
+	task := &DbUploadTask{}
+	task.applyUpload115TaskResult(upload115TaskResult{
+		CompletedRemoteFileId: "remote-file",
+		CompletedPickCode:     "remote-pick",
+		CompletedSha1:         "local-checkpoint-sha1",
+	})
+	if task.RemoteSha1 != "" {
+		t.Fatalf("不应将内部 checkpoint SHA1 写入任务公开字段，got %q", task.RemoteSha1)
+	}
+
+	task.applyUpload115TaskResult(upload115TaskResult{
+		CompletedRemoteFileId: "remote-file",
+		CompletedPickCode:     "remote-pick",
+		CompletedSha1:         "local-checkpoint-sha1",
+		RemoteSha1:            "remote-sha1",
+	})
+	if task.RemoteFileId != "remote-file" || task.RemotePickCode != "remote-pick" || task.RemoteSha1 != "remote-sha1" {
+		t.Fatalf("上传完成身份 = %+v", task)
+	}
+}
+
+func TestEnqueueHistoricalStrmUploadResolvesPathWithoutBackfillingTask(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&UploadSession{}, &StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移上传会话和 STRM 任务表失败: %v", err)
+	}
+	oldResolver := get115FileDetailByCid
+	get115FileDetailByCid = func(_ context.Context, _ *v115open.OpenClient, fileID string) (*v115open.FileDetail, error) {
+		if fileID != "completed-file-id" {
+			t.Fatalf("查询文件 ID = %s，期望 completed-file-id", fileID)
+		}
+		return &v115open.FileDetail{FileId: fileID, FileName: "movie.mkv", Path: "/remote/show/movie.mkv"}, nil
+	}
+	t.Cleanup(func() {
+		get115FileDetailByCid = oldResolver
+	})
+
+	task := &DbUploadTask{
+		Source:         UploadSourceStrm,
+		SourceType:     SourceType115,
+		SyncPathId:     1,
+		AccountId:      1,
+		RemoteFileId:   "completed-file-id",
+		RemotePickCode: "completed-pick-code",
+		FileName:       "movie.mkv",
+		UploadResult:   UploadResultMultipartUploaded,
+		Account:        &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115},
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建上传任务失败: %v", err)
+	}
+
+	strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+	if err != nil {
+		t.Fatalf("历史 STRM 上传创建后处理任务失败: %v", err)
+	}
+	if strmTask == nil || strmTask.Path != "/remote/show" {
+		t.Fatalf("STRM 任务 = %+v，期望使用远端详情目录", strmTask)
+	}
+	if task.RemoteFullPath != "" {
+		t.Fatalf("历史查询不应回写上传任务远端完整路径，got %q", task.RemoteFullPath)
+	}
+}
+
+func TestEnqueueHistoricalStrmUploadFailsWithoutCreatingInvalidPathTask(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&UploadSession{}, &StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移上传会话和 STRM 任务表失败: %v", err)
+	}
+	oldResolver := get115FileDetailByCid
+	get115FileDetailByCid = func(context.Context, *v115open.OpenClient, string) (*v115open.FileDetail, error) {
+		return nil, errors.New("remote detail unavailable")
+	}
+	t.Cleanup(func() {
+		get115FileDetailByCid = oldResolver
+	})
+
+	task := &DbUploadTask{
+		Source:       UploadSourceStrm,
+		SourceType:   SourceType115,
+		SyncPathId:   1,
+		AccountId:    1,
+		RemoteFileId: "completed-file-id",
+		FileName:     "movie.mkv",
+		UploadResult: UploadResultMultipartUploaded,
+		Account:      &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115},
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建上传任务失败: %v", err)
+	}
+
+	if _, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db); err == nil {
+		t.Fatal("远端详情查询失败时应拒绝创建 STRM 任务")
+	}
+	var count int64
+	if err := db.Db.Model(&StrmGenerationTask{}).Count(&count).Error; err != nil {
+		t.Fatalf("统计 STRM 任务失败: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("不应创建使用空路径或文件 ID 路径的 STRM 任务，got %d", count)
+	}
+}
+
+func TestEnqueuePathBasedStrmUploadAllowsPathOnlyCompletion(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移 STRM 任务表失败: %v", err)
+	}
+
+	for _, sourceType := range []SourceType{SourceTypeBaiduPan, SourceTypeOpenList} {
+		t.Run(string(sourceType), func(t *testing.T) {
+			task := &DbUploadTask{
+				Source:         UploadSourceStrm,
+				SourceType:     sourceType,
+				SyncPathId:     1,
+				AccountId:      1,
+				RemoteFullPath: "/remote/show/movie.mkv",
+				FileName:       "movie.mkv",
+				UploadResult:   UploadResultMultipartUploaded,
+			}
+			if err := db.Db.Create(task).Error; err != nil {
+				t.Fatalf("创建路径型上传任务失败: %v", err)
+			}
+
+			strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+			if err != nil {
+				t.Fatalf("路径型完成任务创建 STRM 后处理失败: %v", err)
+			}
+			if strmTask == nil {
+				t.Fatal("缺少稳定 ID 但有完整路径时仍应创建 STRM 后处理任务")
+			}
+			if strmTask.FileId != "" || strmTask.Path != "/remote/show" {
+				t.Fatalf("路径型 STRM 任务 = %+v，期望保留空稳定 ID 和远端父路径", strmTask)
+			}
+		})
+	}
+}
+
+func TestEnqueueBaiduStrmUploadUsesImmediateUploadMetadata(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移 STRM 任务表失败: %v", err)
+	}
+
+	task := &DbUploadTask{
+		Source:           UploadSourceStrm,
+		SourceType:       SourceTypeBaiduPan,
+		SyncPathId:       1,
+		AccountId:        1,
+		RemoteFileId:     "baidu-new-fs-id",
+		RemoteFullPath:   "/remote/show/movie.mkv",
+		FileName:         "movie.mkv",
+		FileSize:         2048,
+		UploadResult:     UploadResultMultipartUploaded,
+		baiduUploadMtime: 234567,
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建百度上传任务失败: %v", err)
+	}
+
+	strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+	if err != nil {
+		t.Fatalf("百度上传创建 STRM 后处理失败: %v", err)
+	}
+	if strmTask == nil {
+		t.Fatal("百度上传缺少 STRM 后处理任务")
+	}
+	if strmTask.FileId != "baidu-new-fs-id" ||
+		strmTask.PickCode != "baidu-new-fs-id" ||
+		strmTask.ParentId != "/remote/show" ||
+		strmTask.Path != "/remote/show" ||
+		strmTask.Mtime != 234567 {
+		t.Fatalf("百度 STRM 任务 = %+v，期望使用上传响应 fs_id、mtime 和完整路径", strmTask)
+	}
+	if task.RemotePickCode != "" || task.RemotePathId != "" {
+		t.Fatalf("百度公开上传字段不应复用内部 STRM 定位值: %+v", task)
+	}
+}
+
+func TestEnqueueHistoricalPathBasedStrmUploadUsesSyncFilePath(t *testing.T) {
+	for _, sourceType := range []SourceType{SourceTypeBaiduPan, SourceTypeOpenList} {
+		t.Run(string(sourceType), func(t *testing.T) {
+			setupUpload115ProcessedTestDB(t)
+			if err := db.Db.AutoMigrate(&SyncFile{}, &StrmGenerationTask{}); err != nil {
+				t.Fatalf("迁移 SyncFile 和 STRM 任务表失败: %v", err)
+			}
+
+			syncFile := &SyncFile{
+				SyncPathId: 1,
+				AccountId:  1,
+				SourceType: sourceType,
+				FileId:     "stable-file-id",
+				ParentId:   "stable-parent-id",
+				Path:       "/remote/show",
+				FileName:   "movie.mkv",
+				FileSize:   2048,
+			}
+			if err := db.Db.Create(syncFile).Error; err != nil {
+				t.Fatalf("创建关联 SyncFile 失败: %v", err)
+			}
+
+			task := &DbUploadTask{
+				Source:       UploadSourceStrm,
+				SourceType:   sourceType,
+				SyncFileId:   syncFile.ID,
+				UploadResult: UploadResultMultipartUploaded,
+			}
+			if err := db.Db.Create(task).Error; err != nil {
+				t.Fatalf("创建历史路径型上传任务失败: %v", err)
+			}
+
+			strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+			if err != nil {
+				t.Fatalf("历史路径型任务使用关联 SyncFile 路径创建 STRM 失败: %v", err)
+			}
+			if strmTask == nil {
+				t.Fatal("历史路径型任务有关联 SyncFile 路径时仍应创建 STRM 后处理")
+			}
+			if strmTask.Path != "/remote/show" || strmTask.FileName != "movie.mkv" {
+				t.Fatalf("STRM 任务路径 = %+v，期望使用关联 SyncFile 路径", strmTask)
+			}
+		})
 	}
 }
 
@@ -169,7 +397,7 @@ func TestUpload115CompletionMarksDirectoryMonitorProcessedUploaded(t *testing.T)
 				SyncPathId:        1,
 				AccountId:         1,
 				LocalFullPath:     localPath,
-				RemoteFileId:      "/remote/movie.mkv",
+				RemoteFullPath:    "/remote/movie.mkv",
 				RemotePathId:      "parent-1",
 				FileName:          "movie.mkv",
 				SourceFingerprint: fingerprint,
@@ -238,7 +466,7 @@ func TestUpload115CompletionDoesNotAdvanceDirectoryLedgerWhenFinalizePersistFail
 		SyncPathId:        1,
 		AccountId:         1,
 		LocalFullPath:     localPath,
-		RemoteFileId:      "/remote/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "parent-1",
 		FileName:          "movie.mkv",
 		SourceFingerprint: BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()),
@@ -398,20 +626,20 @@ func TestUpload115SkippedAfterRapidWaitDoesNotMarkDirectoryMonitorProcessedUploa
 func TestUpload115StrmEnqueueFailureDoesNotMarkDirectoryMonitorProcessedFailed(t *testing.T) {
 	setupUpload115ProcessedTestDB(t)
 	task := &DbUploadTask{
-		Source:                UploadSourceDirectoryMonitor,
-		SourceType:            SourceType115,
-		SyncPathId:            1,
-		AccountId:             1,
-		LocalFullPath:         "/watch/movie.mkv",
-		RemoteFileId:          "/remote/movie.mkv",
-		RemotePathId:          "parent-1",
-		FileName:              "movie.mkv",
-		FileSize:              1024,
-		SourceFingerprint:     "v1:1024:100",
-		Status:                UploadStatusUploading,
-		UploadResult:          UploadResultRapidUpload,
-		CompletedRemoteFileId: "file-rapid",
-		CompletedPickCode:     "pick-rapid",
+		Source:            UploadSourceDirectoryMonitor,
+		SourceType:        SourceType115,
+		SyncPathId:        1,
+		AccountId:         1,
+		LocalFullPath:     "/watch/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
+		RemotePathId:      "parent-1",
+		FileName:          "movie.mkv",
+		FileSize:          1024,
+		SourceFingerprint: "v1:1024:100",
+		Status:            UploadStatusUploading,
+		UploadResult:      UploadResultRapidUpload,
+		RemoteFileId:      "file-rapid",
+		RemotePickCode:    "pick-rapid",
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
@@ -460,20 +688,20 @@ func TestUpload115StrmEnqueueUsesUploadTaskScopedShortRequestHash(t *testing.T) 
 		t.Fatalf("创建旧上传任务失败: %v", err)
 	}
 	task := &DbUploadTask{
-		Source:                UploadSourceDirectoryMonitor,
-		SourceType:            SourceType115,
-		SyncPathId:            1,
-		AccountId:             1,
-		LocalFullPath:         "/watch/movie.mkv",
-		RemoteFileId:          "/remote/movie.mkv",
-		RemotePathId:          "parent-1",
-		FileName:              "movie.mkv",
-		FileSize:              1024,
-		SourceFingerprint:     "v1:1024:100",
-		Status:                UploadStatusCompleted,
-		UploadResult:          UploadResultMultipartUploaded,
-		CompletedRemoteFileId: "file-reuse",
-		CompletedPickCode:     "pick-reuse",
+		Source:            UploadSourceDirectoryMonitor,
+		SourceType:        SourceType115,
+		SyncPathId:        1,
+		AccountId:         1,
+		LocalFullPath:     "/watch/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
+		RemotePathId:      "parent-1",
+		FileName:          "movie.mkv",
+		FileSize:          1024,
+		SourceFingerprint: "v1:1024:100",
+		Status:            UploadStatusCompleted,
+		UploadResult:      UploadResultMultipartUploaded,
+		RemoteFileId:      "file-reuse",
+		RemotePickCode:    "pick-reuse",
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建当前上传任务失败: %v", err)
@@ -557,7 +785,7 @@ func TestUpload115StrmEnqueueFailureMarksRemoteExistsProcessedFailed(t *testing.
 		SyncPathId:        1,
 		AccountId:         1,
 		LocalFullPath:     localPath,
-		RemoteFileId:      "/remote/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "parent-1",
 		FileName:          "movie.mkv",
 		FileSize:          1024,
@@ -612,7 +840,7 @@ func TestUpload115MissingCompletedRemoteInfoMarksDirectoryMonitorProcessedStrmEn
 		SyncPathId:        1,
 		AccountId:         1,
 		LocalFullPath:     "/watch/movie.mkv",
-		RemoteFileId:      "/remote/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "parent-1",
 		FileName:          "movie.mkv",
 		FileSize:          1024,
@@ -729,7 +957,7 @@ func TestUploadSkipsDirectoryMonitorSymlinkChangedOutsideBeforeUpload(t *testing
 		LocalFullPath:     linkPath,
 		RelativePath:      "movie.mkv",
 		SourceFingerprint: fingerprint,
-		RemoteFileId:      "/remote/movie.mkv",
+		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "parent-1",
 		FileName:          "movie.mkv",
 		Status:            UploadStatusPending,

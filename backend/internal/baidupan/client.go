@@ -264,14 +264,17 @@ func (c *Client) GetFileDetail(ctx context.Context, fileId string, dlink int32) 
 	}
 	resp, r, err := req.Execute()
 	// 统一处理错误
-	if c.handleError(err, r, resp) != nil {
+	if err := c.handleError(err, r, resp); err != nil {
 		return nil, err
 	}
 	// 解码 resp
-	var fileDetail *FileDetailResponse
+	var fileDetail FileDetailResponse
 	err = json.Unmarshal([]byte(resp), &fileDetail)
 	if err != nil {
 		return nil, err
+	}
+	if len(fileDetail.List) == 0 || fileDetail.List[0] == nil {
+		return nil, fmt.Errorf("百度网盘文件详情为空")
 	}
 	return fileDetail.List[0], nil
 }

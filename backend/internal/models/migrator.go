@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
@@ -18,7 +20,13 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 60
+var MaxVersionCode = 61
+
+const (
+	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
+	activeUploadTaskUniqueIndexName   = "idx_db_upload_tasks_active_target"
+)
+
 var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
@@ -674,7 +682,465 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加同步目录幂等记录和 Emby 刷新任务键")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	if migrator.VersionCode == 60 {
+		if err := migrateTransferRemoteIdentity(db.Db); err != nil {
+			helpers.AppLogger.Errorf("迁移传输队列远端身份字段失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已迁移传输队列远端身份字段并删除旧完成字段")
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == MaxVersionCode {
+		if err := ensureActiveTransferTaskUniqueIndexes(db.Db); err != nil {
+			helpers.AppLogger.Errorf("补齐活跃传输任务唯一索引失败：%v", err)
+			return
+		}
+	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)
+}
+
+type legacyUploadRemoteIdentity struct {
+	ID                    uint
+	Source                UploadSource
+	SourceType            SourceType
+	SyncFileId            uint
+	RemoteFileId          string
+	RemotePathId          string
+	FileName              string
+	CompletedRemoteFileId string
+	CompletedPickCode     string
+}
+
+type legacyDownloadRemoteIdentity struct {
+	ID             uint
+	Source         DownloadSource
+	SourceType     SourceType
+	SyncFileId     uint
+	RemoteFileId   string
+	RemotePickCode string
+	RemotePath     string
+	FileName       string
+}
+
+func migrateTransferRemoteIdentity(dbConn *gorm.DB) error {
+	if err := dbConn.AutoMigrate(SyncFile{}, DbDownloadTask{}, DbUploadTask{}); err != nil {
+		return fmt.Errorf("添加传输远端身份字段失败：%w", err)
+	}
+	if err := migrateLegacyDownloadRemoteIdentity(dbConn); err != nil {
+		return err
+	}
+	if err := migrateLegacyUploadRemoteIdentity(dbConn); err != nil {
+		return err
+	}
+	for _, column := range []string{"completed_remote_file_id", "completed_pick_code"} {
+		if dbConn.Migrator().HasColumn("db_upload_tasks", column) {
+			// 目标列名来自固定版本补丁；直接 DDL 规避 SQLite 驱动重建表时对原始列引用格式的解析差异。
+			if err := dbConn.Exec("ALTER TABLE db_upload_tasks DROP COLUMN " + column).Error; err != nil {
+				return fmt.Errorf("删除 db_upload_tasks.%s 失败：%w", column, err)
+			}
+		}
+	}
+	return ensureActiveTransferTaskUniqueIndexes(dbConn)
+}
+
+func ensureActiveTransferTaskUniqueIndexes(dbConn *gorm.DB) error {
+	if err := ensureActiveDownloadTaskUniqueIndex(dbConn); err != nil {
+		return err
+	}
+	return ensureActiveUploadTaskUniqueIndex(dbConn)
+}
+
+// ensureActiveDownloadTaskUniqueIndex 让同一来源、存储类型、账号、下载范围和远端定位最多存在一个活跃下载任务。
+// 远端定位不足以可靠去重的历史任务不参与约束；迁移时下载中的任务优先于待下载任务，同状态保留最早创建的任务。
+func ensureActiveDownloadTaskUniqueIndex(dbConn *gorm.DB) error {
+	if dbConn == nil {
+		return errors.New("数据库连接为空")
+	}
+	if !dbConn.Migrator().HasColumn(&DbDownloadTask{}, "dedup_scope_hash") || !dbConn.Migrator().HasColumn(&DbDownloadTask{}, "dedup_locator_hash") {
+		if err := dbConn.AutoMigrate(&DbDownloadTask{}); err != nil {
+			return fmt.Errorf("补齐下载任务去重字段失败：%w", err)
+		}
+	}
+
+	indexExists := dbConn.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName)
+	needsBackfill, err := downloadTaskDeduplicationBackfillNeeded(dbConn)
+	if err != nil {
+		return err
+	}
+	if indexExists && !needsBackfill {
+		return nil
+	}
+
+	return dbConn.Transaction(func(tx *gorm.DB) error {
+		if tx.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName) {
+			if err := tx.Exec("DROP INDEX IF EXISTS " + activeDownloadTaskUniqueIndexName).Error; err != nil {
+				return fmt.Errorf("重建活跃下载任务唯一索引前删除旧索引失败：%w", err)
+			}
+		}
+		if err := tx.Table("db_download_tasks").Where("status IS NULL").Update("status", DownloadStatusPending).Error; err != nil {
+			return fmt.Errorf("初始化旧下载任务状态失败：%w", err)
+		}
+		if err := tx.Table("db_download_tasks").Where("account_id IS NULL").Update("account_id", 0).Error; err != nil {
+			return fmt.Errorf("初始化旧下载任务账号失败：%w", err)
+		}
+		if err := backfillDownloadTaskDeduplicationKeys(tx); err != nil {
+			return err
+		}
+		if err := cancelDuplicateActiveDownloadTasks(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_db_download_tasks_active_target
+			ON db_download_tasks (source, source_type, account_id, dedup_scope_hash, dedup_locator_hash)
+			WHERE dedup_scope_hash IS NOT NULL AND dedup_scope_hash <> ''
+				AND dedup_locator_hash IS NOT NULL AND dedup_locator_hash <> ''
+				AND status IN (0, 1)`).Error; err != nil {
+			return fmt.Errorf("创建活跃下载任务唯一索引失败：%w", err)
+		}
+		return nil
+	})
+}
+
+func downloadTaskDeduplicationBackfillNeeded(dbConn *gorm.DB) (bool, error) {
+	var count int64
+	err := dbConn.Model(&DbDownloadTask{}).
+		Where("(COALESCE(dedup_scope_hash, '') = '' OR COALESCE(dedup_locator_hash, '') = '') AND (COALESCE(remote_file_id, '') <> '' OR COALESCE(remote_download_url, '') <> '' OR COALESCE(local_source_path, '') <> '')").
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("检查下载任务去重键回填状态失败：%w", err)
+	}
+	return count > 0, nil
+}
+
+func backfillDownloadTaskDeduplicationKeys(dbConn *gorm.DB) error {
+	const batchSize = 500
+	var tasks []DbDownloadTask
+	return dbConn.Order("id ASC").FindInBatches(&tasks, batchSize, func(tx *gorm.DB, _ int) error {
+		for i := range tasks {
+			task := &tasks[i]
+			oldScopeHash, oldLocatorHash := task.DedupScopeHash, task.DedupLocatorHash
+			setDownloadTaskDeduplicationKeys(task)
+			if task.DedupScopeHash == oldScopeHash && task.DedupLocatorHash == oldLocatorHash {
+				continue
+			}
+			if err := tx.Model(&DbDownloadTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+				"dedup_scope_hash":   task.DedupScopeHash,
+				"dedup_locator_hash": task.DedupLocatorHash,
+			}).Error; err != nil {
+				return fmt.Errorf("回填下载任务 %d 去重键失败：%w", task.ID, err)
+			}
+		}
+		return nil
+	}).Error
+}
+
+func cancelDuplicateActiveDownloadTasks(dbConn *gorm.DB) error {
+	type downloadTaskScope struct {
+		source           DownloadSource
+		sourceType       SourceType
+		accountID        uint
+		dedupScopeHash   string
+		dedupLocatorHash string
+	}
+
+	var tasks []DbDownloadTask
+	if err := dbConn.
+		Where("dedup_scope_hash IS NOT NULL AND dedup_scope_hash <> '' AND dedup_locator_hash IS NOT NULL AND dedup_locator_hash <> '' AND status IN ?", activeDownloadTaskStatuses()).
+		Order("id ASC").
+		Find(&tasks).Error; err != nil {
+		return fmt.Errorf("读取活跃下载任务失败：%w", err)
+	}
+
+	groups := make(map[downloadTaskScope][]DbDownloadTask)
+	for _, task := range tasks {
+		scope := downloadTaskScope{
+			source:           task.Source,
+			sourceType:       task.SourceType,
+			accountID:        task.AccountId,
+			dedupScopeHash:   task.DedupScopeHash,
+			dedupLocatorHash: task.DedupLocatorHash,
+		}
+		groups[scope] = append(groups[scope], task)
+	}
+
+	for _, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		retained := group[0]
+		for _, task := range group[1:] {
+			if activeDownloadTaskStatusPriority(task.Status) > activeDownloadTaskStatusPriority(retained.Status) {
+				retained = task
+			}
+		}
+		for _, task := range group {
+			if task.ID == retained.ID {
+				continue
+			}
+			result := dbConn.Model(&DbDownloadTask{}).
+				Where("id = ? AND status IN ?", task.ID, activeDownloadTaskStatuses()).
+				Updates(map[string]any{
+					"status":   DownloadStatusCancelled,
+					"error":    fmt.Sprintf("数据库迁移时取消：同一下载目标已存在活跃下载任务 %d", retained.ID),
+					"end_time": time.Now().Unix(),
+				})
+			if result.Error != nil {
+				return fmt.Errorf("取消重复活跃下载任务 %d 失败：%w", task.ID, result.Error)
+			}
+		}
+	}
+	return nil
+}
+
+func activeDownloadTaskStatusPriority(status DownloadStatus) int {
+	switch status {
+	case DownloadStatusDownloading:
+		return 2
+	case DownloadStatusPending:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ensureActiveUploadTaskUniqueIndex 让同一来源、存储类型、账号和远端完整路径最多存在一个活跃上传任务。
+// 历史任务没有可确认的完整目标路径时不参与约束；迁移时保留最靠近完成状态的任务，同状态保留最早创建的任务。
+func ensureActiveUploadTaskUniqueIndex(dbConn *gorm.DB) error {
+	if dbConn == nil {
+		return errors.New("数据库连接为空")
+	}
+	if dbConn.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+		return nil
+	}
+	return dbConn.Transaction(func(tx *gorm.DB) error {
+		if tx.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+			return nil
+		}
+		if err := tx.Table("db_upload_tasks").Where("status IS NULL").Update("status", UploadStatusPending).Error; err != nil {
+			return fmt.Errorf("初始化旧上传任务状态失败：%w", err)
+		}
+		if err := tx.Table("db_upload_tasks").Where("account_id IS NULL").Update("account_id", 0).Error; err != nil {
+			return fmt.Errorf("初始化旧上传任务账号失败：%w", err)
+		}
+		if err := cancelDuplicateActiveUploadTasks(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_db_upload_tasks_active_target
+			ON db_upload_tasks (source, source_type, account_id, remote_full_path)
+			WHERE remote_full_path IS NOT NULL AND remote_full_path <> '' AND status IN (0, 1, 5, 6)`).Error; err != nil {
+			return fmt.Errorf("创建活跃上传任务唯一索引失败：%w", err)
+		}
+		return nil
+	})
+}
+
+func cancelDuplicateActiveUploadTasks(dbConn *gorm.DB) error {
+	type uploadTaskScope struct {
+		source         UploadSource
+		sourceType     SourceType
+		accountID      uint
+		remoteFullPath string
+	}
+	var tasks []DbUploadTask
+	if err := dbConn.
+		Where("remote_full_path IS NOT NULL AND remote_full_path <> '' AND status IN ?", activeUploadTaskStatuses()).
+		Order("id ASC").
+		Find(&tasks).Error; err != nil {
+		return fmt.Errorf("读取活跃上传任务失败：%w", err)
+	}
+
+	groups := make(map[uploadTaskScope][]DbUploadTask)
+	for _, task := range tasks {
+		scope := uploadTaskScope{
+			source:         task.Source,
+			sourceType:     task.SourceType,
+			accountID:      task.AccountId,
+			remoteFullPath: task.RemoteFullPath,
+		}
+		groups[scope] = append(groups[scope], task)
+	}
+
+	for _, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		retained := group[0]
+		for _, task := range group[1:] {
+			if activeUploadTaskStatusPriority(task.Status) > activeUploadTaskStatusPriority(retained.Status) {
+				retained = task
+			}
+		}
+		for _, task := range group {
+			if task.ID == retained.ID {
+				continue
+			}
+			result := dbConn.Model(&DbUploadTask{}).
+				Where("id = ? AND status IN ?", task.ID, activeUploadTaskStatuses()).
+				Updates(map[string]any{
+					"status":   UploadStatusCancelled,
+					"error":    fmt.Sprintf("数据库迁移时取消：同一远端目标已存在活跃上传任务 %d", retained.ID),
+					"end_time": time.Now().Unix(),
+				})
+			if result.Error != nil {
+				return fmt.Errorf("取消重复活跃上传任务 %d 失败：%w", task.ID, result.Error)
+			}
+		}
+	}
+	return nil
+}
+
+func activeUploadTaskStatusPriority(status UploadStatus) int {
+	switch status {
+	case UploadStatusRemoteCompletedFinalizing:
+		return 4
+	case UploadStatusRemoteCompletedPendingFinalize:
+		return 3
+	case UploadStatusUploading:
+		return 2
+	case UploadStatusPending:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func migrateLegacyDownloadRemoteIdentity(dbConn *gorm.DB) error {
+	var tasks []legacyDownloadRemoteIdentity
+	if err := dbConn.Table("db_download_tasks").Find(&tasks).Error; err != nil {
+		return fmt.Errorf("读取旧下载任务远端身份失败：%w", err)
+	}
+	for _, legacy := range tasks {
+		updates := map[string]any{}
+		if legacy.SourceType != SourceTypeLocal && legacy.SourceType != SourceTypeEmbyMedia && legacy.RemotePath != "" && legacy.FileName != "" {
+			updates["remote_full_path"] = remoteFullPath(legacy.RemotePath, legacy.FileName)
+		}
+		switch legacy.SourceType {
+		case SourceType115:
+			// 旧 remote_file_id 存的是 PickCode；没有关联同步文件时无法可靠补齐文件 ID。
+			updates["remote_file_id"] = ""
+			// 部分完成迁移重试时，优先保留已迁入的新 PickCode；首次迁移才从旧字段回填。
+			pickCode := legacy.RemotePickCode
+			if pickCode == "" {
+				pickCode = legacy.RemoteFileId
+			}
+			if pickCode != "" {
+				updates["remote_pick_code"] = pickCode
+			}
+			var syncFile SyncFile
+			if legacy.SyncFileId > 0 && dbConn.First(&syncFile, legacy.SyncFileId).Error == nil {
+				updates["remote_file_id"] = syncFile.FileId
+				// 仅使用关联记录中实际存在的 PickCode，避免空值破坏旧任务的可执行定位信息。
+				if syncFile.PickCode != "" {
+					updates["remote_pick_code"] = syncFile.PickCode
+				}
+				updates["remote_sha1"] = syncFile.Sha1
+				updates["remote_full_path"] = remoteFullPath(syncFile.Path, syncFile.FileName)
+			}
+		case SourceTypeBaiduPan:
+			// 旧下载任务写入的是路径型 FileId；只有 SyncFile.PickCode 中的 fs_id 可作为稳定文件 ID。
+			updates["remote_file_id"] = ""
+			var syncFile SyncFile
+			if legacy.SyncFileId > 0 && dbConn.First(&syncFile, legacy.SyncFileId).Error == nil {
+				if syncFile.PickCode != "" {
+					updates["remote_file_id"] = syncFile.PickCode
+				}
+				// 百度驱动历史上将远端 MD5 存在 SyncFile.Sha1 中，不能回填为 SHA1。
+				updates["remote_md5"] = syncFile.Sha1
+			}
+		case SourceTypeOpenList:
+			// 部分完成迁移重试时，直链已迁入隐藏字段而旧字段已清空。
+			if legacy.RemoteFileId != "" {
+				updates["remote_download_url"] = legacy.RemoteFileId
+			}
+			updates["remote_file_id"] = ""
+		case SourceTypeEmbyMedia:
+			if legacy.RemoteFileId != "" {
+				updates["remote_download_url"] = legacy.RemoteFileId
+			}
+			if legacy.RemotePath != "" {
+				updates["emby_item_id"] = legacy.RemotePath
+			}
+			updates["remote_file_id"] = ""
+			updates["remote_path"] = ""
+		case SourceTypeLocal:
+			if legacy.RemoteFileId != "" {
+				updates["local_source_path"] = legacy.RemoteFileId
+			}
+			updates["remote_file_id"] = ""
+			updates["remote_path"] = ""
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := dbConn.Table("db_download_tasks").Where("id = ?", legacy.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("回填下载任务 %d 远端身份失败：%w", legacy.ID, err)
+		}
+	}
+	return nil
+}
+
+func migrateLegacyUploadRemoteIdentity(dbConn *gorm.DB) error {
+	hasLegacyCompletedRemoteFileID := dbConn.Migrator().HasColumn("db_upload_tasks", "completed_remote_file_id")
+	var tasks []legacyUploadRemoteIdentity
+	if err := dbConn.Table("db_upload_tasks").Find(&tasks).Error; err != nil {
+		return fmt.Errorf("读取旧上传任务远端身份失败：%w", err)
+	}
+	for _, legacy := range tasks {
+		updates := map[string]any{}
+		isPath := isLegacyRemoteFullPath(legacy.RemoteFileId, legacy.FileName)
+		// 旧字段在上传前可能是目标路径、覆盖时可能是旧文件 ID，无法作为新任务的完成文件 ID 保留。
+		// 仅在旧完成 ID 列仍存在时清空。若升级已在两个 DROP COLUMN 之间中断，必须保留已回填的新文件 ID。
+		if hasLegacyCompletedRemoteFileID {
+			updates["remote_file_id"] = ""
+		}
+		if isPath {
+			updates["remote_full_path"] = filepath.ToSlash(legacy.RemoteFileId)
+		}
+		var syncFile SyncFile
+		if legacy.SyncFileId > 0 && dbConn.First(&syncFile, legacy.SyncFileId).Error == nil {
+			if !isPath && syncFile.Path != "" && syncFile.FileName != "" {
+				updates["remote_full_path"] = remoteFullPath(syncFile.Path, syncFile.FileName)
+			}
+			if legacy.SourceType == SourceTypeBaiduPan && syncFile.Sha1 != "" {
+				updates["remote_md5"] = syncFile.Sha1
+			}
+		}
+		if hasLegacyCompletedRemoteFileID && legacy.CompletedRemoteFileId != "" {
+			updates["remote_file_id"] = legacy.CompletedRemoteFileId
+		}
+		if legacy.SourceType == SourceType115 && legacy.CompletedPickCode != "" {
+			updates["remote_pick_code"] = legacy.CompletedPickCode
+		}
+		if legacy.SourceType != SourceType115 {
+			updates["remote_pick_code"] = ""
+		}
+		// 旧 STRM 覆盖流程在删除旧文件成功后才创建上传任务。即使新上传尚未完成，
+		// 旧 remote_file_id 仍是可审计的旧文件 ID，不能随着旧列删除而丢失。
+		// 若新 ID 已回填且旧列仍未删除，两者相同，不能把新 ID 错记为旧覆盖文件。
+		legacyRemoteFileIDIsOld := hasLegacyCompletedRemoteFileID &&
+			legacy.Source == UploadSourceStrm &&
+			!isPath &&
+			legacy.RemoteFileId != "" &&
+			(legacy.CompletedRemoteFileId == "" || legacy.RemoteFileId != legacy.CompletedRemoteFileId)
+		if legacyRemoteFileIDIsOld {
+			updates["replaced_remote_file_id"] = legacy.RemoteFileId
+		}
+		if legacy.SourceType != SourceType115 {
+			updates["remote_path_id"] = ""
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := dbConn.Table("db_upload_tasks").Where("id = ?", legacy.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("回填上传任务 %d 远端身份失败：%w", legacy.ID, err)
+		}
+	}
+	return nil
+}
+
+func isLegacyRemoteFullPath(value string, fileName string) bool {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	fileName = strings.TrimSpace(fileName)
+	return value != "" && fileName != "" && filepath.Base(value) == fileName
 }
 
 // migrateEmbyLibraryRefreshTaskKeys 将 item 刷新任务的去重键从 library_id 拆分到 task_key。
@@ -748,7 +1214,10 @@ func BatchCreateTable() error {
 			lastErr = err
 		}
 	}
-	return lastErr
+	if lastErr != nil {
+		return lastErr
+	}
+	return ensureActiveTransferTaskUniqueIndexes(db.Db)
 }
 
 func InitMigrationTable(version int) {

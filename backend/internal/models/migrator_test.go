@@ -1,8 +1,10 @@
 package models
 
 import (
+	"encoding/json"
 	"io"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +28,9 @@ func TestBatchCreateTableCreatesMigratorTable(t *testing.T) {
 	}
 	if !db.Db.Migrator().HasTable(Migrator{}) {
 		t.Fatal("批量建表应创建 migrator 表")
+	}
+	if !db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+		t.Fatal("批量建表应创建活跃上传任务唯一索引")
 	}
 }
 
@@ -392,10 +397,10 @@ func TestMigrateTaskSourceEnumValues(t *testing.T) {
 	assertDownloadTaskSource(t, "download-emby", "emby_media", "emby_media")
 	assertDownloadTaskSource(t, "download-already-new", "strm_sync", "115")
 	assertDownloadTaskSource(t, "download-unknown", "custom_source", "custom_type")
-	assertUploadTaskSource(t, "upload-strm", "strm_sync")
-	assertUploadTaskSource(t, "upload-scrape", "scrape_organize")
-	assertUploadTaskSource(t, "upload-already-new", "strm_sync")
-	assertUploadTaskSource(t, "upload-unknown", "custom_source")
+	assertUploadTaskSource(t, "/tmp/strm.nfo", "strm_sync")
+	assertUploadTaskSource(t, "/tmp/scrape.nfo", "scrape_organize")
+	assertUploadTaskSource(t, "/tmp/already-new.nfo", "strm_sync")
+	assertUploadTaskSource(t, "/tmp/unknown.nfo", "custom_source")
 }
 
 func TestMigrateVersion49AddsEmbySyncStateAndBatchFields(t *testing.T) {
@@ -945,6 +950,570 @@ func TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey(t *testing.T
 	}
 }
 
+func TestMigrateVersion60SeparatesTransferRemoteIdentityFields(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 60}).Error; err != nil {
+		t.Fatalf("创建迁移版本记录失败: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE sync_files (
+			id integer primary key,
+			source_type text,
+			file_id text,
+			pick_code text,
+			sha1 text,
+			path text,
+			file_name text
+		)`,
+		`CREATE TABLE db_download_tasks (
+			id integer primary key,
+			source text,
+			source_type text,
+			sync_file_id integer,
+			remote_file_id text,
+			remote_path text,
+			file_name text
+		)`,
+		`CREATE TABLE db_upload_tasks (
+			id integer primary key,
+			source text,
+			source_type text,
+			sync_file_id integer,
+			remote_file_id text,
+			remote_path_id text,
+			file_name text,
+			completed_remote_file_id text,
+			completed_pick_code text
+		)`,
+	} {
+		if err := db.Db.Exec(statement).Error; err != nil {
+			t.Fatalf("创建版本 60 测试表失败: %v", err)
+		}
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO sync_files (id, source_type, file_id, pick_code, sha1, path, file_name) VALUES
+			(1, '115', '115-file-id', '115-pick-code', '115-sha1', '/remote/115', 'movie.mkv'),
+			(2, 'baidupan', '/remote/baidu/baidu.mkv', 'baidu-fs-id', 'baidu-md5', '/remote/baidu', 'baidu.mkv')
+	`).Error; err != nil {
+		t.Fatalf("写入旧同步文件失败: %v", err)
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO db_download_tasks (id, source, source_type, sync_file_id, remote_file_id, remote_path, file_name) VALUES
+			(1, 'strm_sync', '115', 1, 'legacy-115-pick-code', '/legacy/115', 'old.mkv'),
+			(2, 'strm_sync', 'openlist', 0, 'https://openlist.example/d/open.mkv?sign=secret', '/remote/open', 'open.mkv'),
+			(3, 'emby_media', 'emby_media', 0, 'https://emby.example/extract', 'emby-item-id', 'emby.mkv'),
+			(4, 'local_file', 'local', 0, '/source/local.mkv', '/not-a-remote-path', 'local.mkv'),
+			(5, 'strm_sync', 'baidupan', 2, '/legacy/baidu/baidu.mkv', '/remote/baidu', 'baidu.mkv'),
+			(6, 'strm_sync', '115', 0, 'legacy-pick-without-sync-file', '/legacy/unknown', 'unknown.mkv')
+	`).Error; err != nil {
+		t.Fatalf("写入旧下载任务失败: %v", err)
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO db_upload_tasks (id, source, source_type, sync_file_id, remote_file_id, remote_path_id, file_name, completed_remote_file_id, completed_pick_code) VALUES
+			(1, 'strm_sync', '115', 1, '/remote/upload/movie.mkv', '115-parent', 'movie.mkv', 'completed-115-id', 'completed-115-pick'),
+			(2, 'strm_sync', '115', 1, 'replaced-115-id', '115-parent', 'movie.mkv', 'new-115-id', 'new-115-pick'),
+			(3, 'directory_monitor', '115', 0, 'directory-old-id', '115-parent', 'directory.mkv', 'directory-new-id', 'directory-new-pick'),
+			(4, 'scrape_organize', 'baidupan', 2, '/remote/upload/baidu.mkv', '/remote/upload', 'baidu.mkv', '', 'legacy-baidu-pick-code'),
+			(5, 'strm_sync', '115', 1, 'pending-replaced-115-id', '115-parent', 'movie.mkv', '', '')
+	`).Error; err != nil {
+		t.Fatalf("写入旧上传任务失败: %v", err)
+	}
+
+	Migrate()
+
+	var migrator Migrator
+	if err := db.Db.First(&migrator).Error; err != nil {
+		t.Fatalf("读取迁移版本失败: %v", err)
+	}
+	if migrator.VersionCode != MaxVersionCode {
+		t.Fatalf("迁移版本 = %d，期望 %d", migrator.VersionCode, MaxVersionCode)
+	}
+	if !db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+		t.Fatal("60 到 61 迁移应创建活跃上传任务唯一索引")
+	}
+	if !db.Db.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName) {
+		t.Fatal("60 到 61 迁移应创建活跃下载任务唯一索引")
+	}
+	for _, column := range []string{"completed_remote_file_id", "completed_pick_code"} {
+		if db.Db.Migrator().HasColumn("db_upload_tasks", column) {
+			var tableSQL string
+			if err := db.Db.Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", "db_upload_tasks").Scan(&tableSQL).Error; err != nil {
+				t.Fatalf("读取 db_upload_tasks DDL 失败: %v", err)
+			}
+			t.Fatalf("迁移后不应保留 db_upload_tasks.%s，DDL=%s", column, tableSQL)
+		}
+	}
+
+	var download115 DbDownloadTask
+	if err := db.Db.First(&download115, 1).Error; err != nil {
+		t.Fatalf("读取 115 下载任务失败: %v", err)
+	}
+	if download115.RemoteFileId != "115-file-id" || download115.RemotePickCode != "115-pick-code" || download115.RemoteSha1 != "115-sha1" || download115.RemoteFullPath != "/remote/115/movie.mkv" {
+		t.Fatalf("115 下载迁移结果 = %+v", download115)
+	}
+	if download115.DedupScopeHash == "" || download115.DedupLocatorHash == "" {
+		t.Fatalf("115 下载任务应回填去重键: %+v", download115)
+	}
+	var download115WithoutSyncFile DbDownloadTask
+	if err := db.Db.First(&download115WithoutSyncFile, 6).Error; err != nil {
+		t.Fatalf("读取无关联同步文件的 115 下载任务失败: %v", err)
+	}
+	if download115WithoutSyncFile.RemoteFileId != "" || download115WithoutSyncFile.RemotePickCode != "legacy-pick-without-sync-file" {
+		t.Fatalf("无关联同步文件的 115 下载迁移结果 = %+v", download115WithoutSyncFile)
+	}
+
+	var downloadOpenList DbDownloadTask
+	if err := db.Db.First(&downloadOpenList, 2).Error; err != nil {
+		t.Fatalf("读取 OpenList 下载任务失败: %v", err)
+	}
+	if downloadOpenList.RemoteFileId != "" || downloadOpenList.RemoteDownloadUrl == "" || downloadOpenList.RemoteFullPath != "/remote/open/open.mkv" {
+		t.Fatalf("OpenList 下载迁移结果 = %+v", downloadOpenList)
+	}
+
+	var downloadEmby DbDownloadTask
+	if err := db.Db.First(&downloadEmby, 3).Error; err != nil {
+		t.Fatalf("读取 Emby 下载任务失败: %v", err)
+	}
+	if downloadEmby.RemoteFileId != "" || downloadEmby.RemotePath != "" || downloadEmby.RemoteFullPath != "" || downloadEmby.RemoteDownloadUrl == "" || downloadEmby.EmbyItemId != "emby-item-id" {
+		t.Fatalf("Emby 下载迁移结果 = %+v", downloadEmby)
+	}
+
+	var downloadLocal DbDownloadTask
+	if err := db.Db.First(&downloadLocal, 4).Error; err != nil {
+		t.Fatalf("读取本地下载任务失败: %v", err)
+	}
+	if downloadLocal.RemoteFileId != "" || downloadLocal.RemotePath != "" || downloadLocal.RemoteFullPath != "" || downloadLocal.LocalSourcePath != "/source/local.mkv" {
+		t.Fatalf("本地下载迁移结果 = %+v", downloadLocal)
+	}
+
+	var downloadBaidu DbDownloadTask
+	if err := db.Db.First(&downloadBaidu, 5).Error; err != nil {
+		t.Fatalf("读取百度下载任务失败: %v", err)
+	}
+	if downloadBaidu.RemoteFileId != "baidu-fs-id" || downloadBaidu.RemoteSha1 != "" || downloadBaidu.RemoteMd5 != "baidu-md5" {
+		t.Fatalf("百度下载迁移结果 = %+v", downloadBaidu)
+	}
+
+	var uploadCompleted DbUploadTask
+	if err := db.Db.First(&uploadCompleted, 1).Error; err != nil {
+		t.Fatalf("读取完成上传任务失败: %v", err)
+	}
+	if uploadCompleted.RemoteFullPath != "/remote/upload/movie.mkv" || uploadCompleted.RemoteFileId != "completed-115-id" || uploadCompleted.RemotePickCode != "completed-115-pick" || uploadCompleted.ReplacedRemoteFileId != "" {
+		t.Fatalf("完成上传迁移结果 = %+v", uploadCompleted)
+	}
+
+	var uploadReplaced DbUploadTask
+	if err := db.Db.First(&uploadReplaced, 2).Error; err != nil {
+		t.Fatalf("读取覆盖上传任务失败: %v", err)
+	}
+	if uploadReplaced.RemoteFullPath != "/remote/115/movie.mkv" || uploadReplaced.RemoteFileId != "new-115-id" || uploadReplaced.RemotePickCode != "new-115-pick" || uploadReplaced.ReplacedRemoteFileId != "replaced-115-id" {
+		t.Fatalf("覆盖上传迁移结果 = %+v", uploadReplaced)
+	}
+
+	var uploadPendingReplacement DbUploadTask
+	if err := db.Db.First(&uploadPendingReplacement, 5).Error; err != nil {
+		t.Fatalf("读取待上传覆盖任务失败: %v", err)
+	}
+	if uploadPendingReplacement.RemoteFullPath != "/remote/115/movie.mkv" || uploadPendingReplacement.RemoteFileId != "" || uploadPendingReplacement.ReplacedRemoteFileId != "pending-replaced-115-id" {
+		t.Fatalf("待上传覆盖任务迁移结果 = %+v", uploadPendingReplacement)
+	}
+	if uploadReplaced.Status != UploadStatusPending || uploadPendingReplacement.Status != UploadStatusCancelled {
+		t.Fatalf("同一范围的旧活跃重复任务应保留最早任务并取消其余任务: 保留=%+v，取消=%+v", uploadReplaced, uploadPendingReplacement)
+	}
+
+	var uploadDirectory DbUploadTask
+	if err := db.Db.First(&uploadDirectory, 3).Error; err != nil {
+		t.Fatalf("读取目录上传任务失败: %v", err)
+	}
+	if uploadDirectory.RemoteFileId != "directory-new-id" || uploadDirectory.ReplacedRemoteFileId != "" {
+		t.Fatalf("目录上传旧文件 ID 不应被误迁移为覆盖记录: %+v", uploadDirectory)
+	}
+
+	var uploadBaidu DbUploadTask
+	if err := db.Db.First(&uploadBaidu, 4).Error; err != nil {
+		t.Fatalf("读取百度上传任务失败: %v", err)
+	}
+	if uploadBaidu.RemoteFullPath != "/remote/upload/baidu.mkv" || uploadBaidu.RemoteFileId != "" || uploadBaidu.RemotePickCode != "" || uploadBaidu.RemoteMd5 != "baidu-md5" || uploadBaidu.RemotePathId != "" {
+		t.Fatalf("百度上传迁移结果 = %+v", uploadBaidu)
+	}
+
+	serialized, err := json.Marshal(downloadEmby)
+	if err != nil {
+		t.Fatalf("序列化隐藏下载字段失败: %v", err)
+	}
+	for _, hiddenField := range []string{"remote_download_url", "emby_item_id", "local_source_path"} {
+		if strings.Contains(string(serialized), hiddenField) {
+			t.Fatalf("下载任务 JSON 不应包含 %s: %s", hiddenField, serialized)
+		}
+	}
+}
+
+func TestMigrateVersion61BackfillsActiveUploadTaskUniqueIndex(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&DbDownloadTask{}, &DbUploadTask{}); err != nil {
+		t.Fatalf("创建传输任务表失败: %v", err)
+	}
+	if err := db.Db.Create(&Migrator{VersionCode: MaxVersionCode}).Error; err != nil {
+		t.Fatalf("创建当前版本迁移记录失败: %v", err)
+	}
+	if db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+		t.Fatal("测试前不应已有活跃上传任务唯一索引")
+	}
+	if db.Db.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName) {
+		t.Fatal("测试前不应已有活跃下载任务唯一索引")
+	}
+
+	Migrate()
+
+	if !db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
+		t.Fatal("当前版本数据库应补齐活跃上传任务唯一索引")
+	}
+	if !db.Db.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName) {
+		t.Fatal("当前版本数据库应补齐活跃下载任务唯一索引")
+	}
+}
+
+func TestMigrateVersion61BackfillsActiveDownloadTaskDeduplicationFields(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.Exec(`CREATE TABLE db_download_tasks (
+		id integer primary key,
+		source text,
+		source_type text,
+		account_id integer,
+		sync_path_id integer,
+		remote_file_id text,
+		remote_download_url text,
+		local_source_path text,
+		local_full_path text,
+		status integer
+	)`).Error; err != nil {
+		t.Fatalf("创建缺少下载去重字段的版本 61 表失败: %v", err)
+	}
+	if err := db.Db.AutoMigrate(&DbUploadTask{}); err != nil {
+		t.Fatalf("创建上传任务表失败: %v", err)
+	}
+	if err := db.Db.Exec(`INSERT INTO db_download_tasks (id, source, source_type, account_id, sync_path_id, remote_file_id, status)
+		VALUES (1, 'strm_sync', '115', 1, 10, '115-file-id', 0)`).Error; err != nil {
+		t.Fatalf("写入旧下载任务失败: %v", err)
+	}
+	if err := db.Db.Create(&Migrator{VersionCode: MaxVersionCode}).Error; err != nil {
+		t.Fatalf("创建当前版本迁移记录失败: %v", err)
+	}
+
+	Migrate()
+
+	if !db.Db.Migrator().HasIndex(&DbDownloadTask{}, activeDownloadTaskUniqueIndexName) {
+		t.Fatal("当前版本数据库应补齐活跃下载任务唯一索引")
+	}
+	var task DbDownloadTask
+	if err := db.Db.First(&task, 1).Error; err != nil {
+		t.Fatalf("读取补迁移后的下载任务失败: %v", err)
+	}
+	if task.RemoteFileId != "115-file-id" || task.DedupScopeHash == "" || task.DedupLocatorHash == "" {
+		t.Fatalf("当前版本补迁移应保留远端定位并回填去重键: %+v", task)
+	}
+}
+
+func TestEnsureActiveUploadTaskUniqueIndexKeepsMostAdvancedDuplicate(t *testing.T) {
+	setupQueueStatusTestDB(t)
+	pending := &DbUploadTask{
+		Source:         UploadSourceStrm,
+		SourceType:     SourceType115,
+		AccountId:      1,
+		RemoteFullPath: "/remote/target/movie.mkv",
+		Status:         UploadStatusPending,
+	}
+	uploading := &DbUploadTask{
+		Source:         UploadSourceStrm,
+		SourceType:     SourceType115,
+		AccountId:      1,
+		RemoteFullPath: "/remote/target/movie.mkv",
+		Status:         UploadStatusUploading,
+	}
+	if err := db.Db.Create([]*DbUploadTask{pending, uploading}).Error; err != nil {
+		t.Fatalf("创建旧活跃重复上传任务失败: %v", err)
+	}
+
+	if err := ensureActiveUploadTaskUniqueIndex(db.Db); err != nil {
+		t.Fatalf("迁移活跃上传任务唯一索引失败: %v", err)
+	}
+
+	var gotPending, gotUploading DbUploadTask
+	if err := db.Db.First(&gotPending, pending.ID).Error; err != nil {
+		t.Fatalf("读取待上传任务失败: %v", err)
+	}
+	if err := db.Db.First(&gotUploading, uploading.ID).Error; err != nil {
+		t.Fatalf("读取上传中任务失败: %v", err)
+	}
+	if gotPending.Status != UploadStatusCancelled || gotUploading.Status != UploadStatusUploading {
+		t.Fatalf("迁移应保留进度最高的任务: pending=%+v, uploading=%+v", gotPending, gotUploading)
+	}
+}
+
+func TestEnsureActiveDownloadTaskUniqueIndexKeepsDownloadingDuplicate(t *testing.T) {
+	setupQueueStatusTestDB(t)
+	pending := &DbDownloadTask{
+		Source:       DownloadSourceStrm,
+		SourceType:   SourceType115,
+		AccountId:    1,
+		SyncPathId:   10,
+		RemoteFileId: "115-file-id",
+		Status:       DownloadStatusPending,
+	}
+	downloading := &DbDownloadTask{
+		Source:       DownloadSourceStrm,
+		SourceType:   SourceType115,
+		AccountId:    1,
+		SyncPathId:   10,
+		RemoteFileId: "115-file-id",
+		Status:       DownloadStatusDownloading,
+	}
+	if err := db.Db.Create([]*DbDownloadTask{pending, downloading}).Error; err != nil {
+		t.Fatalf("创建旧活跃重复下载任务失败: %v", err)
+	}
+
+	if err := ensureActiveDownloadTaskUniqueIndex(db.Db); err != nil {
+		t.Fatalf("迁移活跃下载任务唯一索引失败: %v", err)
+	}
+
+	var gotPending, gotDownloading DbDownloadTask
+	if err := db.Db.First(&gotPending, pending.ID).Error; err != nil {
+		t.Fatalf("读取待下载任务失败: %v", err)
+	}
+	if err := db.Db.First(&gotDownloading, downloading.ID).Error; err != nil {
+		t.Fatalf("读取下载中任务失败: %v", err)
+	}
+	if gotPending.Status != DownloadStatusCancelled || gotDownloading.Status != DownloadStatusDownloading {
+		t.Fatalf("迁移应保留进度最高的任务: pending=%+v, downloading=%+v", gotPending, gotDownloading)
+	}
+	if gotPending.DedupScopeHash == "" || gotPending.DedupLocatorHash == "" || gotDownloading.DedupScopeHash == "" || gotDownloading.DedupLocatorHash == "" {
+		t.Fatalf("迁移应回填下载去重键: pending=%+v, downloading=%+v", gotPending, gotDownloading)
+	}
+}
+
+func TestMigrateVersion60KeepsLegacy115PickCodeWhenSyncFilePickCodeIsEmpty(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 60}).Error; err != nil {
+		t.Fatalf("创建迁移版本记录失败: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE sync_files (
+			id integer primary key,
+			source_type text,
+			file_id text,
+			pick_code text,
+			sha1 text,
+			path text,
+			file_name text
+		)`,
+		`CREATE TABLE db_download_tasks (
+			id integer primary key,
+			source text,
+			source_type text,
+			sync_file_id integer,
+			remote_file_id text,
+			remote_path text,
+			file_name text
+		)`,
+	} {
+		if err := db.Db.Exec(statement).Error; err != nil {
+			t.Fatalf("创建版本 60 测试表失败: %v", err)
+		}
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO sync_files (id, source_type, file_id, pick_code, sha1, path, file_name)
+		VALUES (1, '115', '115-file-id', '', '115-sha1', '/remote/115', 'movie.mkv')
+	`).Error; err != nil {
+		t.Fatalf("写入 PickCode 为空的同步文件失败: %v", err)
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO db_download_tasks (id, source, source_type, sync_file_id, remote_file_id, remote_path, file_name)
+		VALUES (1, 'strm_sync', '115', 1, 'legacy-115-pick-code', '/legacy/115', 'old.mkv')
+	`).Error; err != nil {
+		t.Fatalf("写入旧 115 下载任务失败: %v", err)
+	}
+
+	Migrate()
+
+	var task DbDownloadTask
+	if err := db.Db.First(&task, 1).Error; err != nil {
+		t.Fatalf("读取迁移后的 115 下载任务失败: %v", err)
+	}
+	if task.RemoteFileId != "115-file-id" || task.RemotePickCode != "legacy-115-pick-code" || task.RemoteSha1 != "115-sha1" || task.RemoteFullPath != "/remote/115/movie.mkv" {
+		t.Fatalf("关联记录 PickCode 为空时应保留旧任务 PickCode，实际 %+v", task)
+	}
+}
+
+func TestMigrateVersion60RetriesAfterCompletedRemoteFileIDColumnWasDropped(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 60}).Error; err != nil {
+		t.Fatalf("创建迁移版本记录失败: %v", err)
+	}
+	if err := db.Db.Exec(`
+		CREATE TABLE db_upload_tasks (
+			id integer primary key,
+			source text,
+			source_type text,
+			remote_file_id text,
+			remote_full_path text,
+			remote_pick_code text,
+			remote_path_id text,
+			file_name text,
+			completed_pick_code text
+		)
+	`).Error; err != nil {
+		t.Fatalf("创建部分完成迁移的上传任务表失败: %v", err)
+	}
+	if err := db.Db.Exec(`
+		INSERT INTO db_upload_tasks (id, source, source_type, remote_file_id, remote_full_path, remote_pick_code, remote_path_id, file_name, completed_pick_code)
+		VALUES (1, 'strm_sync', '115', 'already-migrated-file-id', '/remote/movie.mkv', 'already-migrated-pick-code', 'parent-id', 'movie.mkv', 'already-migrated-pick-code')
+	`).Error; err != nil {
+		t.Fatalf("写入部分完成迁移的上传任务失败: %v", err)
+	}
+
+	Migrate()
+
+	var task DbUploadTask
+	if err := db.Db.First(&task, 1).Error; err != nil {
+		t.Fatalf("读取迁移后的上传任务失败: %v", err)
+	}
+	if task.RemoteFileId != "already-migrated-file-id" || task.RemotePickCode != "already-migrated-pick-code" || task.ReplacedRemoteFileId != "" {
+		t.Fatalf("部分迁移重试不应清空已回填身份: %+v", task)
+	}
+	if db.Db.Migrator().HasColumn("db_upload_tasks", "completed_pick_code") {
+		t.Fatal("重试后应删除剩余的 completed_pick_code 列")
+	}
+}
+
+func TestMigrateTransferRemoteIdentityPreservesAlreadyMovedDownloadLocators(t *testing.T) {
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	if err := db.Db.AutoMigrate(SyncFile{}, DbDownloadTask{}, DbUploadTask{}); err != nil {
+		t.Fatalf("创建当前传输任务表失败: %v", err)
+	}
+	if err := db.Db.Create(&SyncFile{
+		BaseModel:  BaseModel{ID: 1},
+		SourceType: SourceType115,
+		FileId:     "already-migrated-file-id",
+	}).Error; err != nil {
+		t.Fatalf("创建 PickCode 为空的已关联同步文件失败: %v", err)
+	}
+
+	tasks := []DbDownloadTask{
+		{
+			Source:         DownloadSourceStrm,
+			SourceType:     SourceType115,
+			SyncFileId:     1,
+			FileName:       "115.mkv",
+			RemoteFileId:   "already-migrated-file-id",
+			RemotePickCode: "legacy-115-pick-code",
+			LocalFullPath:  "/library/115.mkv",
+			Status:         DownloadStatusPending,
+		},
+		{
+			Source:            DownloadSourceStrm,
+			SourceType:        SourceTypeOpenList,
+			FileName:          "openlist.mkv",
+			RemoteDownloadUrl: "https://openlist.example/d/openlist.mkv?sign=secret",
+			LocalFullPath:     "/library/openlist.mkv",
+			Status:            DownloadStatusPending,
+		},
+		{
+			Source:            DownloadSourceEmbyMedia,
+			SourceType:        SourceTypeEmbyMedia,
+			FileName:          "emby.mkv",
+			RemoteDownloadUrl: "https://emby.example/extract",
+			EmbyItemId:        "emby-item-id",
+			Status:            DownloadStatusPending,
+		},
+		{
+			Source:          DownloadSourceLocalFile,
+			SourceType:      SourceTypeLocal,
+			FileName:        "local.mkv",
+			LocalSourcePath: "/source/local.mkv",
+			LocalFullPath:   "/library/local.mkv",
+			Status:          DownloadStatusPending,
+		},
+	}
+	if err := db.Db.Create(&tasks).Error; err != nil {
+		t.Fatalf("创建部分完成迁移下载任务失败: %v", err)
+	}
+
+	if err := migrateTransferRemoteIdentity(db.Db); err != nil {
+		t.Fatalf("重试传输身份迁移失败: %v", err)
+	}
+
+	var got115, gotOpenList, gotEmby, gotLocal DbDownloadTask
+	for _, result := range []struct {
+		task *DbDownloadTask
+		id   uint
+	}{
+		{task: &got115, id: tasks[0].ID},
+		{task: &gotOpenList, id: tasks[1].ID},
+		{task: &gotEmby, id: tasks[2].ID},
+		{task: &gotLocal, id: tasks[3].ID},
+	} {
+		if err := db.Db.First(result.task, result.id).Error; err != nil {
+			t.Fatalf("读取重试后的下载任务失败: %v", err)
+		}
+	}
+	if got115.RemotePickCode != "legacy-115-pick-code" || got115.RemoteFileId != "already-migrated-file-id" {
+		t.Fatalf("115 已迁入 PickCode 被重试破坏: %+v", got115)
+	}
+	if gotOpenList.RemoteDownloadUrl != "https://openlist.example/d/openlist.mkv?sign=secret" || gotOpenList.RemoteFileId != "" {
+		t.Fatalf("OpenList 已迁入直链被重试破坏: %+v", gotOpenList)
+	}
+	if gotEmby.RemoteDownloadUrl != "https://emby.example/extract" || gotEmby.EmbyItemId != "emby-item-id" || gotEmby.RemoteFileId != "" || gotEmby.RemotePath != "" {
+		t.Fatalf("Emby 已迁入执行定位被重试破坏: %+v", gotEmby)
+	}
+	if gotLocal.LocalSourcePath != "/source/local.mkv" || gotLocal.RemoteFileId != "" || gotLocal.RemotePath != "" {
+		t.Fatalf("本地已迁入源路径被重试破坏: %+v", gotLocal)
+	}
+}
+
 func syncPathIdempotencyColumnNames(t *testing.T) map[string]struct{} {
 	t.Helper()
 	columns, err := db.Db.Migrator().ColumnTypes(&SyncPathIdempotencyRecord{})
@@ -961,7 +1530,16 @@ func syncPathIdempotencyColumnNames(t *testing.T) map[string]struct{} {
 func assertDownloadTaskSource(t *testing.T, remoteFileId string, wantSource string, wantSourceType string) {
 	t.Helper()
 	var task DbDownloadTask
-	if err := db.Db.Where("remote_file_id = ?", remoteFileId).First(&task).Error; err != nil {
+	column := "remote_file_id"
+	switch remoteFileId {
+	case "download-strm", "download-already-new":
+		column = "remote_pick_code"
+	case "download-local":
+		column = "local_source_path"
+	case "download-emby":
+		column = "remote_download_url"
+	}
+	if err := db.Db.Where(column+" = ?", remoteFileId).First(&task).Error; err != nil {
 		t.Fatalf("读取下载任务 %s 失败: %v", remoteFileId, err)
 	}
 	if string(task.Source) != wantSource {
@@ -972,13 +1550,13 @@ func assertDownloadTaskSource(t *testing.T, remoteFileId string, wantSource stri
 	}
 }
 
-func assertUploadTaskSource(t *testing.T, remoteFileId string, wantSource string) {
+func assertUploadTaskSource(t *testing.T, localFullPath string, wantSource string) {
 	t.Helper()
 	var task DbUploadTask
-	if err := db.Db.Where("remote_file_id = ?", remoteFileId).First(&task).Error; err != nil {
-		t.Fatalf("读取上传任务 %s 失败: %v", remoteFileId, err)
+	if err := db.Db.Where("local_full_path = ?", localFullPath).First(&task).Error; err != nil {
+		t.Fatalf("读取上传任务 %s 失败: %v", localFullPath, err)
 	}
 	if string(task.Source) != wantSource {
-		t.Fatalf("上传任务 %s source = %s，期望 %s", remoteFileId, task.Source, wantSource)
+		t.Fatalf("上传任务 %s source = %s，期望 %s", localFullPath, task.Source, wantSource)
 	}
 }

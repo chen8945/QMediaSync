@@ -23,6 +23,14 @@ type DownloadUrlResp struct {
 	RespBaseBool[map[string]DownloadUrlData]
 }
 
+// DownloadUrlResult 是 115 下载地址接口返回、可供队列持久化的非敏感文件信息。
+type DownloadUrlResult struct {
+	URL      string
+	FileName string
+	PickCode string
+	Sha1     string
+}
+
 // ├─file_id	string	文件 ID
 // ├─parent_id	string	文件父目录 ID
 // ├─file_name	string	文件名称
@@ -128,6 +136,15 @@ type UploadMultipartInput struct {
 // 获取文件下载地址
 // POST 域名 + /open/ufile/downurl
 func (c *OpenClient) GetDownloadUrl(ctx context.Context, pickCode string, userAgent string, bypassRateLimit bool) string {
+	result := c.GetDownloadUrlResult(ctx, pickCode, userAgent, bypassRateLimit)
+	if result == nil {
+		return ""
+	}
+	return result.URL
+}
+
+// GetDownloadUrlResult 获取下载地址及 115 明确返回的文件身份信息。
+func (c *OpenClient) GetDownloadUrlResult(ctx context.Context, pickCode string, userAgent string, bypassRateLimit bool) *DownloadUrlResult {
 	params := map[string]string{
 		"pick_code": pickCode,
 	}
@@ -139,12 +156,12 @@ func (c *OpenClient) GetDownloadUrl(ctx context.Context, pickCode string, userAg
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, config, nil)
 	if err != nil {
 		helpers.V115Log.Errorf("获取文件下载地址失败：%v", err)
-		return ""
+		return nil
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
 	if jsonErr != nil || !respData.State {
 		helpers.V115Log.Errorf("获取文件下载地址失败：%v", jsonErr)
-		return ""
+		return nil
 	}
 	data := respData.Data
 	var first DownloadUrlData
@@ -152,7 +169,15 @@ func (c *OpenClient) GetDownloadUrl(ctx context.Context, pickCode string, userAg
 		first = v
 		break
 	}
-	return first.Url.Url
+	if first.Url.Url == "" {
+		return nil
+	}
+	return &DownloadUrlResult{
+		URL:      first.Url.Url,
+		FileName: first.FileName,
+		PickCode: first.PickCode,
+		Sha1:     first.Sha1,
+	}
 }
 
 // 获取视频播放链接

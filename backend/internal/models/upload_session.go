@@ -100,12 +100,13 @@ type UploadSessionLocalSignature struct {
 
 // UploadSessionCompleteResult 是上传完成后的远端定位结果。
 type UploadSessionCompleteResult struct {
-	FileId   string
-	PickCode string
-	ParentId string
-	Sha1     string
-	Size     int64
-	Mtime    int64
+	FileId     string
+	PickCode   string
+	ParentId   string
+	Sha1       string
+	RemoteSha1 string // 仅携带远端响应确认的 SHA1；Sha1 仍可为恢复所需的本地 checkpoint 值。
+	Size       int64
+	Mtime      int64
 }
 
 // Save 保存上传会话。

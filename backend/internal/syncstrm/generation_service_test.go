@@ -204,6 +204,269 @@ func TestStrmGenerationServiceGenerateCompletesDetailByFileID(t *testing.T) {
 	}
 }
 
+func TestStrmGenerationServiceGenerateUsesFullPathLocatorForPathBasedSources(t *testing.T) {
+	tests := []struct {
+		name               string
+		sourceType         models.SourceType
+		remoteFileID       string
+		wantSyncFileID     string
+		wantOpenListObject string
+	}{
+		{
+			name:           "百度使用完整路径查询并持久化路径型 SyncFile ID",
+			sourceType:     models.SourceTypeBaiduPan,
+			remoteFileID:   "baidu-fs-id",
+			wantSyncFileID: "/remote/show/movie.mkv",
+		},
+		{
+			name:               "OpenList 使用完整路径查询并持久化补全身份",
+			sourceType:         models.SourceTypeOpenList,
+			remoteFileID:       "openlist-object-id",
+			wantSyncFileID:     "/remote/show/movie.mkv",
+			wantOpenListObject: "openlist-object-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account, syncPath := setupStrmGenerationServiceTestDB(t)
+			account.SourceType = tt.sourceType
+			syncPath.SourceType = tt.sourceType
+			if err := db.Db.Save(account).Error; err != nil {
+				t.Fatalf("更新测试账号来源失败: %v", err)
+			}
+			if err := db.Db.Save(syncPath).Error; err != nil {
+				t.Fatalf("更新测试同步目录来源失败: %v", err)
+			}
+
+			service := newTestGenerationService(t, syncPath, account)
+			service.detailByFileID = func(_ context.Context, _ *SyncStrm, locator string) (*SyncFileCache, error) {
+				if locator != "/remote/show/movie.mkv" {
+					t.Fatalf("路径型来源详情定位 = %q，期望完整路径", locator)
+				}
+				return &SyncFileCache{
+					FileId:           tt.remoteFileID,
+					ParentId:         "/remote/show",
+					FileType:         v115open.TypeFile,
+					FileName:         "movie.mkv",
+					Path:             "/remote/show",
+					FileSize:         2048,
+					MTime:            234567,
+					PickCode:         "baidu-fs-id",
+					OpenlistObjectId: tt.wantOpenListObject,
+					OpenlistSHA1:     "openlist-sha1",
+					OpenlistMD5:      "openlist-md5",
+					SourceType:       tt.sourceType,
+				}, nil
+			}
+			service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
+			service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
+			service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+
+			if _, err := service.Generate(context.Background(), StrmGenerationInput{
+				Task: &models.StrmGenerationTask{
+					Source:     models.StrmGenerationSourceUploadCompleted,
+					TaskType:   models.StrmGenerationTaskTypeFile,
+					SyncPathId: syncPath.ID,
+					AccountId:  account.ID,
+					FileId:     tt.remoteFileID,
+					ParentId:   "/remote/show",
+					Path:       "/remote/show",
+					FileName:   "movie.mkv",
+				},
+			}); err != nil {
+				t.Fatalf("生成 STRM 失败: %v", err)
+			}
+
+			var syncFile models.SyncFile
+			if err := db.Db.Where("sync_path_id = ? AND file_name = ?", syncPath.ID, "movie.mkv").First(&syncFile).Error; err != nil {
+				t.Fatalf("读取生成的 SyncFile 失败: %v", err)
+			}
+			if syncFile.FileId != tt.wantSyncFileID {
+				t.Fatalf("SyncFile.file_id = %q，期望 %q", syncFile.FileId, tt.wantSyncFileID)
+			}
+			if tt.sourceType == models.SourceTypeBaiduPan && syncFile.PickCode != "baidu-fs-id" {
+				t.Fatalf("百度 SyncFile.pick_code = %q，期望 fs_id baidu-fs-id", syncFile.PickCode)
+			}
+			if tt.sourceType == models.SourceTypeOpenList &&
+				(syncFile.OpenlistObjectId != tt.wantOpenListObject ||
+					syncFile.OpenlistSHA1 != "openlist-sha1" ||
+					syncFile.OpenlistMD5 != "openlist-md5") {
+				t.Fatalf("OpenList SyncFile 身份补全丢失: %+v", syncFile)
+			}
+		})
+	}
+}
+
+func TestStrmGenerationServiceGenerateSkipsDetailForCompleteBaiduUpload(t *testing.T) {
+	account, syncPath := setupStrmGenerationServiceTestDB(t)
+	account.SourceType = models.SourceTypeBaiduPan
+	syncPath.SourceType = models.SourceTypeBaiduPan
+	if err := db.Db.Save(account).Error; err != nil {
+		t.Fatalf("更新测试账号来源失败: %v", err)
+	}
+	if err := db.Db.Save(syncPath).Error; err != nil {
+		t.Fatalf("更新测试同步目录来源失败: %v", err)
+	}
+
+	service := newTestGenerationService(t, syncPath, account)
+	service.detailByFileID = func(context.Context, *SyncStrm, string) (*SyncFileCache, error) {
+		t.Fatal("百度上传元数据齐全时不应查询完整路径详情")
+		return nil, nil
+	}
+	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
+	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
+	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+
+	if _, err := service.Generate(context.Background(), StrmGenerationInput{
+		Task: &models.StrmGenerationTask{
+			Source:     models.StrmGenerationSourceUploadCompleted,
+			TaskType:   models.StrmGenerationTaskTypeFile,
+			SyncPathId: syncPath.ID,
+			AccountId:  account.ID,
+			FileId:     "baidu-new-fs-id",
+			ParentId:   "/remote/show",
+			PickCode:   "baidu-new-fs-id",
+			Path:       "/remote/show",
+			FileName:   "movie.mkv",
+			FileSize:   2048,
+			Mtime:      234567,
+		},
+	}); err != nil {
+		t.Fatalf("百度上传元数据齐全时生成 STRM 失败: %v", err)
+	}
+
+	var syncFile models.SyncFile
+	if err := db.Db.Where("sync_path_id = ? AND file_name = ?", syncPath.ID, "movie.mkv").First(&syncFile).Error; err != nil {
+		t.Fatalf("读取百度 SyncFile 失败: %v", err)
+	}
+	if syncFile.FileId != "/remote/show/movie.mkv" || syncFile.PickCode != "baidu-new-fs-id" {
+		t.Fatalf("百度完整上传保存的 SyncFile = %+v，期望路径型 file_id 和 fs_id pick_code", syncFile)
+	}
+}
+
+func TestStrmGenerationServiceGenerateUsesFullPathWhenBaiduMtimeIsMissing(t *testing.T) {
+	account, syncPath := setupStrmGenerationServiceTestDB(t)
+	account.SourceType = models.SourceTypeBaiduPan
+	syncPath.SourceType = models.SourceTypeBaiduPan
+	if err := db.Db.Save(account).Error; err != nil {
+		t.Fatalf("更新测试账号来源失败: %v", err)
+	}
+	if err := db.Db.Save(syncPath).Error; err != nil {
+		t.Fatalf("更新测试同步目录来源失败: %v", err)
+	}
+
+	service := newTestGenerationService(t, syncPath, account)
+	detailCalled := false
+	service.detailByFileID = func(_ context.Context, _ *SyncStrm, locator string) (*SyncFileCache, error) {
+		detailCalled = true
+		if locator != "/remote/show/movie.mkv" {
+			t.Fatalf("百度缺少 mtime 时详情定位 = %q，期望完整路径", locator)
+		}
+		return &SyncFileCache{
+			FileId:     "baidu-new-fs-id",
+			ParentId:   "/remote/show",
+			FileType:   v115open.TypeFile,
+			FileName:   "movie.mkv",
+			Path:       "/remote/show",
+			FileSize:   2048,
+			MTime:      234567,
+			PickCode:   "baidu-new-fs-id",
+			SourceType: models.SourceTypeBaiduPan,
+		}, nil
+	}
+	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
+	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
+	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+
+	if _, err := service.Generate(context.Background(), StrmGenerationInput{
+		Task: &models.StrmGenerationTask{
+			Source:     models.StrmGenerationSourceUploadCompleted,
+			TaskType:   models.StrmGenerationTaskTypeFile,
+			SyncPathId: syncPath.ID,
+			AccountId:  account.ID,
+			FileId:     "baidu-new-fs-id",
+			ParentId:   "/remote/show",
+			PickCode:   "baidu-new-fs-id",
+			Path:       "/remote/show",
+			FileName:   "movie.mkv",
+			FileSize:   2048,
+		},
+	}); err != nil {
+		t.Fatalf("百度缺少 mtime 时生成 STRM 失败: %v", err)
+	}
+	if !detailCalled {
+		t.Fatal("百度缺少 mtime 时应按完整路径补详情")
+	}
+}
+
+func TestStrmGenerationServiceGenerateUsesFullPathWhenOpenListObjectIDIsAbsent(t *testing.T) {
+	account, syncPath := setupStrmGenerationServiceTestDB(t)
+	account.SourceType = models.SourceTypeOpenList
+	syncPath.SourceType = models.SourceTypeOpenList
+	if err := db.Db.Save(account).Error; err != nil {
+		t.Fatalf("更新测试账号来源失败: %v", err)
+	}
+	if err := db.Db.Save(syncPath).Error; err != nil {
+		t.Fatalf("更新测试同步目录来源失败: %v", err)
+	}
+
+	service := newTestGenerationService(t, syncPath, account)
+	detailCalled := false
+	service.detailByFileID = func(_ context.Context, _ *SyncStrm, locator string) (*SyncFileCache, error) {
+		detailCalled = true
+		if locator != "/remote/show/movie.mkv" {
+			t.Fatalf("OpenList 无对象 ID 时详情定位 = %q，期望完整路径", locator)
+		}
+		return &SyncFileCache{
+			FileId:     "/remote/show/movie.mkv",
+			ParentId:   "/remote/show",
+			FileType:   v115open.TypeFile,
+			FileName:   "movie.mkv",
+			Path:       "/remote/show",
+			FileSize:   2048,
+			MTime:      234567,
+			PickCode:   "/remote/show/movie.mkv",
+			SourceType: models.SourceTypeOpenList,
+		}, nil
+	}
+	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
+	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
+	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+
+	if _, err := service.Generate(context.Background(), StrmGenerationInput{
+		Task: &models.StrmGenerationTask{
+			Source:     models.StrmGenerationSourceUploadCompleted,
+			TaskType:   models.StrmGenerationTaskTypeFile,
+			SyncPathId: syncPath.ID,
+			AccountId:  account.ID,
+			ParentId:   "/remote/show",
+			Path:       "/remote/show",
+			FileName:   "movie.mkv",
+		},
+	}); err != nil {
+		t.Fatalf("OpenList 无对象 ID 时生成 STRM 失败: %v", err)
+	}
+	if !detailCalled {
+		t.Fatal("OpenList 无对象 ID 时仍应使用完整路径补齐远端详情")
+	}
+}
+
+func TestRemoteDetailLocatorRejectsStableParentIDForPathSources(t *testing.T) {
+	for _, sourceType := range []models.SourceType{models.SourceTypeBaiduPan, models.SourceTypeOpenList} {
+		t.Run(string(sourceType), func(t *testing.T) {
+			_, err := remoteDetailLocator(&SyncFileCache{
+				SourceType: sourceType,
+				ParentId:   "stable-parent-id",
+				FileName:   "movie.mkv",
+			})
+			if err == nil {
+				t.Fatal("路径型来源缺少父路径时不应将稳定父目录 ID 当作详情查询路径")
+			}
+		})
+	}
+}
+
 func TestStrmGenerationServiceGenerateCompletesRemoteDetailWhenMtimeMissing(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
@@ -1635,21 +1898,21 @@ func TestProcessPendingStrmGenerationTasksCopiesDirectoryUploadMetadataBeforeCle
 	}
 
 	uploadTask := &models.DbUploadTask{
-		Source:                models.UploadSourceDirectoryMonitor,
-		AccountId:             account.ID,
-		SyncPathId:            syncPath.ID,
-		SourceType:            models.SourceType115,
-		LocalFullPath:         sourcePath,
-		RelativePath:          "show/Season 01/episode.nfo",
-		RemoteFileId:          "/remote/show/Season 01/episode.nfo",
-		RemotePathId:          "parent-meta",
-		FileName:              "episode.nfo",
-		Status:                models.UploadStatusCompleted,
-		FileSize:              int64(len(content)),
-		UploadResult:          models.UploadResultMultipartUploaded,
-		CompletedRemoteFileId: "file-meta",
-		CompletedPickCode:     "pick-meta",
-		SourceCleanupStatus:   models.UploadSourceCleanupStatusPending,
+		Source:              models.UploadSourceDirectoryMonitor,
+		AccountId:           account.ID,
+		SyncPathId:          syncPath.ID,
+		SourceType:          models.SourceType115,
+		LocalFullPath:       sourcePath,
+		RelativePath:        "show/Season 01/episode.nfo",
+		RemoteFullPath:      "/remote/show/Season 01/episode.nfo",
+		RemotePathId:        "parent-meta",
+		FileName:            "episode.nfo",
+		Status:              models.UploadStatusCompleted,
+		FileSize:            int64(len(content)),
+		UploadResult:        models.UploadResultMultipartUploaded,
+		RemoteFileId:        "file-meta",
+		RemotePickCode:      "pick-meta",
+		SourceCleanupStatus: models.UploadSourceCleanupStatusPending,
 	}
 	if err := db.Db.Create(uploadTask).Error; err != nil {
 		t.Fatalf("创建目录监控上传任务失败: %v", err)

@@ -362,12 +362,18 @@ func (service *StrmGenerationService) buildFileCache(ctx context.Context, syncer
 	if file.SourceType == "" && account != nil {
 		file.SourceType = account.SourceType
 	}
-	if fileNeedsRemoteDetail(file) && task.FileId != "" {
-		detail, err := service.detailByFileID(ctx, syncer, task.FileId)
+	if fileNeedsRemoteDetail(file) {
+		locator, err := remoteDetailLocator(file)
 		if err != nil {
-			return nil, fmt.Errorf("补齐远端文件详情失败：%w", err)
+			return nil, err
 		}
-		mergeFileCache(file, detail)
+		if locator != "" {
+			detail, err := service.detailByFileID(ctx, syncer, locator)
+			if err != nil {
+				return nil, fmt.Errorf("补齐远端文件详情失败：%w", err)
+			}
+			mergeFileCache(file, detail)
+		}
 	}
 	if file.Path == "" {
 		file.Path = syncPath.RemotePath
@@ -379,6 +385,11 @@ func (service *StrmGenerationService) buildFileCache(ctx context.Context, syncer
 	file.IsMeta = syncer.IsValidMetaExt(file.FileName)
 	if file.FileName == "" {
 		return nil, errors.New("STRM 生成任务缺少文件名")
+	}
+	if file.SourceType == models.SourceTypeBaiduPan && file.Path != "" {
+		// 百度普通扫描以完整路径作为 SyncFile.file_id；fs_id 保留在 PickCode，
+		// 避免 STRM 后处理产生无法被后续扫描协调的 ID 形式。
+		file.FileId = pathpkg.Join(file.Path, file.FileName)
 	}
 	if file.GetFileId() == "" && file.PickCode == "" {
 		return nil, errors.New("STRM 生成任务缺少远端文件标识")
@@ -637,6 +648,28 @@ func fileNeedsRemoteDetail(file *SyncFileCache) bool {
 	return file.SourceType == models.SourceType115 && file.Sha1 == ""
 }
 
+// remoteDetailLocator 返回驱动查询详情时所需的定位值。
+// 百度网盘和 OpenList 的当前详情实现按完整路径查询；115 保持按文件 ID 查询。
+func remoteDetailLocator(file *SyncFileCache) (string, error) {
+	if file == nil {
+		return "", errors.New("STRM 生成任务缺少远端文件信息")
+	}
+	if !usesPathRemoteDetailLocator(file.SourceType) {
+		return strings.TrimSpace(file.FileId), nil
+	}
+
+	parentPath := strings.TrimSpace(file.Path)
+	fileName := strings.TrimSpace(file.FileName)
+	if parentPath == "" || fileName == "" {
+		return "", errors.New("路径型来源的 STRM 生成任务缺少远端完整路径")
+	}
+	return pathpkg.Join(parentPath, fileName), nil
+}
+
+func usesPathRemoteDetailLocator(sourceType models.SourceType) bool {
+	return sourceType == models.SourceTypeBaiduPan || sourceType == models.SourceTypeOpenList
+}
+
 func mergeFileCache(target *SyncFileCache, detail *SyncFileCache) {
 	if target == nil || detail == nil {
 		return
@@ -673,6 +706,15 @@ func mergeFileCache(target *SyncFileCache, detail *SyncFileCache) {
 	}
 	if detail.OpenlistSign != "" {
 		target.OpenlistSign = detail.OpenlistSign
+	}
+	if detail.OpenlistObjectId != "" {
+		target.OpenlistObjectId = detail.OpenlistObjectId
+	}
+	if detail.OpenlistSHA1 != "" {
+		target.OpenlistSHA1 = detail.OpenlistSHA1
+	}
+	if detail.OpenlistMD5 != "" {
+		target.OpenlistMD5 = detail.OpenlistMD5
 	}
 	if detail.SourceType != "" {
 		target.SourceType = detail.SourceType

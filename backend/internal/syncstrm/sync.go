@@ -623,21 +623,46 @@ func (s *SyncStrm) AddDownloadTaskFromMemCache() {
 
 func (s *SyncStrm) pendingDownloadFileIDs() map[string]bool {
 	existingDownloads := make(map[string]bool)
+	if s == nil || s.Account == nil || s.SyncPathId == 0 {
+		// 临时同步需要按每个文件的本地目标去重，由 AddDownloadTaskFromSyncFile 处理。
+		return existingDownloads
+	}
+	source := models.DownloadSourceStrm
+	if s.Account.SourceType == models.SourceTypeLocal {
+		source = models.DownloadSourceLocalFile
+	}
 	offset := 0
 	limit := 1000
 	type existDownloadTask struct {
-		RemoteFileId string `json:"remote_file_id"`
+		SourceType        models.SourceType `json:"source_type"`
+		RemoteFileId      string            `json:"remote_file_id"`
+		RemotePickCode    string            `json:"remote_pick_code"`
+		RemoteDownloadUrl string            `json:"remote_download_url"`
+		LocalSourcePath   string            `json:"local_source_path"`
 	}
 	for {
 		var batch []existDownloadTask
-		err := db.Db.Model(models.DbDownloadTask{}).Select("remote_file_id").Where("source_type = ? AND status IN ?", s.Account.SourceType, []int{int(models.DownloadStatusPending), int(models.DownloadStatusDownloading)}).
+		err := db.Db.Model(models.DbDownloadTask{}).Select("source_type, remote_file_id, remote_pick_code, remote_download_url, local_source_path").Where("source = ? AND source_type = ? AND account_id = ? AND sync_path_id = ? AND status IN ?", source, s.Account.SourceType, s.Account.ID, s.SyncPathId, []int{int(models.DownloadStatusPending), int(models.DownloadStatusDownloading)}).
 			Offset(offset).Limit(limit).Order("id ASC").Find(&batch).Error
 		if err != nil {
 			s.Sync.Logger.Errorf("获取未完成的下载任务失败：%v", err)
 			break
 		}
 		for _, item := range batch {
-			existingDownloads[item.RemoteFileId] = true
+			switch item.SourceType {
+			case models.SourceType115:
+				pickCode := item.RemotePickCode
+				if pickCode == "" {
+					pickCode = item.RemoteFileId
+				}
+				existingDownloads[pickCode] = true
+			case models.SourceTypeOpenList:
+				existingDownloads[item.RemoteDownloadUrl] = true
+			case models.SourceTypeLocal:
+				existingDownloads[item.LocalSourcePath] = true
+			default:
+				existingDownloads[item.RemoteFileId] = true
+			}
 		}
 		if len(batch) == 0 || len(batch) < limit {
 			break
@@ -784,6 +809,11 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								remotePath = fmt.Sprintf("%s/%s", existsPath.Path, existsPath.FileName)
 							}
 						}
+						if s.Account.SourceType == models.SourceTypeLocal {
+							// 本地缓存的 Path 为空时，已有子目录只会以“/目录名”进入这里。
+							// 上传任务仍须保存实际的本地目标父目录，不能丢失受限源根目录。
+							remotePath = localUploadParentPath(sourceRootPath, remotePath)
+						}
 						// 加入上传队列
 						db115File := &models.SyncFile{
 							AccountId:     s.Account.ID,
@@ -801,11 +831,6 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							LocalFilePath: filepath.Join(parentPath, info.Name()),
 						}
 						s.Sync.Logger.Infof("准备添加上传任务，路径检查：文件 ID=%s，路径=%s，文件名=%s", db115File.FileId, db115File.Path, db115File.FileName)
-						if s.Account.SourceType != models.SourceTypeLocal {
-							db115File.FileId = filepath.ToSlash(filepath.Join(db115File.Path, db115File.FileName))
-						} else {
-							db115File.FileId = filepath.Join(sourceRootPath, db115File.Path, db115File.FileName)
-						}
 						models.AddUploadTaskFromSyncFile(db115File)
 						atomic.AddInt64(&s.NewUpload, 1)
 						s.PublishProgress(false)
@@ -856,6 +881,24 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		})
 	}
 	return nil
+}
+
+// localUploadParentPath 将本地来源的相对或被缓存截短的目录补回配置的源根目录。
+// 已是该根目录下的完整路径时原样保留，避免重复拼接。
+func localUploadParentPath(sourceRoot string, remotePath string) string {
+	sourceRoot = filepath.ToSlash(filepath.Clean(strings.TrimSpace(sourceRoot)))
+	remotePath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(remotePath)))
+	if sourceRoot == "" || sourceRoot == "." || remotePath == "" || remotePath == "." {
+		return remotePath
+	}
+	if remotePath == sourceRoot {
+		return sourceRoot
+	}
+	rootPrefix := strings.TrimSuffix(sourceRoot, "/") + "/"
+	if strings.HasPrefix(remotePath, rootPrefix) {
+		return remotePath
+	}
+	return filepath.ToSlash(filepath.Join(sourceRoot, strings.TrimPrefix(remotePath, "/")))
 }
 
 func (s *SyncStrm) decideMetadataMtimeAction(path string, info os.FileInfo, remote *SyncFileCache) metadataMtimeAction {
@@ -952,15 +995,18 @@ func (s *SyncStrm) handleTempTableDiff() error {
 				// 双方都有，更新 SyncFile 记录
 				// 主要更新 name、size、m_time、path、local_file_path 等数据
 				udpateData := map[string]interface{}{
-					"file_name":       syncFileCache.FileName,
-					"file_size":       syncFileCache.FileSize,
-					"m_time":          syncFileCache.MTime,
-					"path":            syncFileCache.GetPath(),
-					"local_file_path": syncFileCache.LocalFilePath,
-					"thumb_url":       syncFileCache.ThumbUrl,
-					"openlist_sign":   syncFileCache.OpenlistSign,
-					"sha1":            syncFileCache.Sha1,
-					"parent_id":       syncFileCache.ParentId,
+					"file_name":          syncFileCache.FileName,
+					"file_size":          syncFileCache.FileSize,
+					"m_time":             syncFileCache.MTime,
+					"path":               syncFileCache.GetPath(),
+					"local_file_path":    syncFileCache.LocalFilePath,
+					"thumb_url":          syncFileCache.ThumbUrl,
+					"openlist_sign":      syncFileCache.OpenlistSign,
+					"openlist_object_id": syncFileCache.OpenlistObjectId,
+					"openlist_sha1":      syncFileCache.OpenlistSHA1,
+					"openlist_md5":       syncFileCache.OpenlistMD5,
+					"sha1":               syncFileCache.Sha1,
+					"parent_id":          syncFileCache.ParentId,
 				}
 				err := db.Db.Model(&models.SyncFile{}).Where("id = ?", file.ID).Updates(udpateData).Error
 				if err != nil {

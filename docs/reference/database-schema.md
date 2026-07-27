@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `60`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `61`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -91,8 +91,9 @@
 | 57 | 58 | `sync_paths` 新增 `directory_upload_enabled`，作为目录监控上传同步目录总开关，并按已有启用规则回填。 |
 | 58 | 59 | `settings` 新增 115 直链缓存有效性检查开关和总超时。 |
 | 59 | 60 | 新增 `sync_path_idempotency_records`，用于同步目录创建的幂等重试；`emby_library_refresh_tasks` 新增 `task_key` 用于任务去重，item 定向刷新任务的 `library_id` 回填为真实媒体库 ID 或为空。 |
+| 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
 
-当前数据库版本是 `60`。
+当前数据库版本是 `61`。
 
 ## 不变量
 
@@ -150,6 +151,8 @@
 | `api_keys.key_hash` | 唯一；`user_id` 索引 | API Key 只保存哈希，且归属用户可查询。 |
 | `user_sessions.session_id`、`token_id` | 分别唯一；`user_id`、`expires_at`、`last_seen_at`、`revoked_at` 索引 | 浏览器会话票据和 JWT `jti` 不可重复，并支持有效会话查询。 |
 | `upload_sessions.upload_task_id` | 唯一；`account_id`、`status` 索引 | 每个上传任务最多保留一个恢复会话。 |
+| `db_download_tasks(source, source_type, account_id, dedup_scope_hash, dedup_locator_hash)` | 部分唯一索引 `idx_db_download_tasks_active_target` | 两个摘要非空且状态为等待下载或下载中时，同一下载来源和定位范围只能有一个任务；终态记录不参与约束。 |
+| `db_upload_tasks(source, source_type, account_id, remote_full_path)` | 部分唯一索引 `idx_db_upload_tasks_active_target` | `remote_full_path` 非空且状态为等待上传、上传中、等待完成处理或正在完成处理时，同一上传来源和存储范围只能有一个任务；终态记录不参与约束。 |
 | `sync_path_idempotency_records.key_hash` | 唯一；`sync_path_id`、`status` 索引 | 同步目录创建请求的幂等键不能重复。 |
 | `emby_library_sync_paths(library_id, sync_path_id)` | 联合唯一 | Emby 媒体库与同步目录的关联不能重复。 |
 | 各 `*_channel_configs.channel_id` | 唯一 | 一条通知渠道基础记录至多关联一份同类型配置。 |
@@ -164,7 +167,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `60`。
+- `version_code`：当前数据库版本号，当前值为 `61`。
 
 ### `users`
 
@@ -375,6 +378,8 @@ STRM 相关字段：
 - `is_video`：是否视频文件。
 - `is_meta`：是否元数据文件。
 - `openlist_sign`：OpenList 文件签名。
+- `openlist_object_id`：OpenList API 返回的可选对象 ID；`file_id` 仍保存既有路径语义，创建下载任务时才复制该字段到远端文件 ID。
+- `openlist_sha1` / `openlist_md5`：OpenList `hash_info` 中明确命名为 SHA1 / MD5 的值；`hashinfo` 私有字符串不解析。
 - `uploaded`：是否已上传完成。
 - `thumb_url`：缩略图地址。
 - `processed`：是否已处理。
@@ -750,9 +755,16 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `sync_file_id`：对应同步文件 ID。
 - `sync_path_id`：STRM 同步下载任务所属同步目录 ID，用于 Emby 刷新任务判断对应目录是否仍有未完成下载；旧数据可能为 `0` 或 `NULL`，系统会回退到 `sync_file_id` 关联 `sync_files` 判断。
 - `source_type`：任务来源账号类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
-- `remote_file_id`：远程文件 ID 或下载链接。
+- `remote_file_id`：远端服务实际返回的稳定文件 ID。115 为文件 ID，OpenList 仅在 API 返回非空对象 ID 时填写，百度为 `fs_id`；不支持或不可得时为空。
 - `file_name`：文件名。
-- `remote_path`：远程路径。
+- `remote_path`：远端目录路径，不含文件名。
+- `remote_full_path`：创建任务时确定的远端完整文件路径，包含文件名；后续远端改名或移动不会回写历史任务。
+- `remote_pick_code`：115 PickCode；仅 115 使用。
+- `remote_sha1` / `remote_md5`：远端响应明确声明算法的 SHA1 / MD5，不使用本地计算值或算法未知的哈希兜底；当前仅 115 与 OpenList 可写入 SHA1，百度可写入 MD5，其他未确认支持的来源保持空。
+- `remote_download_url`：OpenList 签名直链或 Emby 媒体提取地址，仅下载 worker 使用，序列化时排除，HTTP / SSE 和前端均不可见。
+- `emby_item_id`：Emby 媒体提取运行定位，仅 worker 使用，序列化时排除。
+- `local_source_path`：本地复制任务的源路径，仅 worker 使用，序列化时排除。
+- `dedup_scope_hash`、`dedup_locator_hash`：活跃下载任务去重范围和来源定位值的 SHA-256 摘要，仅数据库约束、创建竞争处理和失败重试使用，序列化时排除；不重复索引 OpenList 或 Emby 的签名直链。
 - `local_full_path`：本地落盘路径。
 - `source`：下载来源，`strm_sync`、`local_file` 或 `emby_media`。
 - `status`：下载状态。
@@ -767,6 +779,9 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 
 - `source` 的存储值在版本 `43` 迁移中从展示文案统一成稳定枚举值。
 - `source_type` 仍然表示账号来源，不等于 `source`。
+- 活跃下载任务的去重范围为 `source + source_type + account_id + sync_path_id +` 来源对应的远端定位值；`sync_path_id=0` 的临时任务改以本地目标路径隔离。不同账号、存储类型或同步目录的相同远端 ID 不能互相阻止入队。范围与定位值以摘要写入部分唯一索引，`pending`、`downloading` 两种活跃状态由数据库最终保证；应用层预检查仅用于返回明确状态。
+- 定位值为 115 / 百度 / 一般来源的 `remote_file_id`，OpenList 优先对象 ID、缺失时使用隐藏直链，local 使用隐藏源路径，Emby 使用隐藏提取地址。定位为空的历史任务不参与约束；失败任务可保留为历史并创建替代任务，手动或自动重试时若已有活跃替代任务则保持失败状态和原重试信息。
+- local 和 Emby 媒体任务不伪造远端路径、文件 ID、PickCode 或哈希；OpenList 缺少对象 ID 时文件 ID 保持空，下载直链只存入隐藏字段。
 - 用户清空下载队列等待任务时，系统会取消受影响同步目录对应的待刷新媒体库任务；暂停队列和重试失败任务不会取消媒体库刷新任务。
 
 ### `db_upload_tasks`
@@ -782,8 +797,12 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `local_full_path`：本地完整路径。
 - `relative_path`：目录监控源文件相对监控根目录的路径。
 - `source_fingerprint`：目录监控源文件 fingerprint，格式为 `v1:size:mtime_ns`，不包含 ctime、inode 或文件内容 hash。
-- `remote_file_id`：远程文件 ID 或路径。
-- `remote_path_id`：父目录 CID 或父路径。
+- `remote_file_id`：本次上传完成后远端返回的稳定文件 ID；创建和传输阶段为空，不再复用为目标路径或被覆盖的旧文件 ID。
+- `remote_full_path`：创建任务时确定的远端完整目标路径，包含文件名；上传去重和后续 STRM 路径推导使用该字段。
+- `remote_path_id`：远端父目录 ID，仅来源实际提供时填写；115 为父目录 ID，其他不提供稳定 ID 的来源为空。
+- `remote_pick_code`：115 上传完成后远端返回的 PickCode。
+- `remote_sha1` / `remote_md5`：远端响应明确返回的 SHA1 / MD5。115 仅接受回调或文件详情中的 SHA1；百度上传成功时把 `xpan/file/create` 的 MD5 写入 `remote_md5`。
+- `replaced_remote_file_id`：覆盖上传且旧远端文件删除成功后记录的旧文件 ID；115 使用文件 ID，百度使用 `fs_id`，OpenList 使用非空对象 ID；非覆盖、删除失败或来源未提供稳定 ID 时为空。
 - `file_name`：上传文件名。
 - `status`：上传状态。115 上传在远端已确认完成、但本地结果落库和 STRM 入队等收尾尚未完成时，会先处于 `5`，队列阶段字段为 `remote_completed_pending_finalize`，前端显示为“等待完成处理”；执行收尾的 worker 会原子抢占为 `6`，队列阶段字段为 `remote_completed_finalizing`，前端显示为“正在完成处理”。
 - `file_size`：文件大小。
@@ -793,7 +812,6 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `upload_result`：上传结果，`unknown`、`rapid_upload`、`multipart_uploaded`、`remote_exists` 或 `skipped_after_rapid_wait`。
 - `resume_state`：断点续传状态，`none`、`new_session`、`resumed_session` 或 `session_expired_restarted`。
 - `rapid_wait_attempts` / `rapid_wait_until`：秒传等待尝试次数和截止时间。
-- `completed_remote_file_id` / `completed_pick_code`：上传完成后的远端文件定位信息。
 - `error`：错误信息。
 - `start_time`、`end_time`：开始和结束时间戳。
 - `retry_count`：重试次数。
@@ -812,8 +830,9 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 
 说明：
 
-- 115 上传任务完成后会保存 `upload_result`、`resume_state`、`uploaded_bytes`、`completed_remote_file_id`、`completed_pick_code` 和 `completed_mtime`。`upload_result=remote_exists` 表示远端同路径文件 SHA1 和大小均匹配，因此跳过真实上传；`upload_result=rapid_upload` 会在秒传成功后按 `file_id` 查询详情补齐远端 mtime。115 官方秒传返回不包含 mtime；`strm_sync` 上传依赖详情查询同步本地元数据 mtime，目录监控上传在详情查询失败时可先用 `file_id` 兜底。目录监控上传任务还会保存上传前本地文件 mtime、纳秒级 mtime 和源文件 fingerprint，上传执行前和源文件清理前都会校验当前文件 fingerprint，防止同路径文件被替换后误传或误删。目录监控上传远端结果确认后，会先把上传任务置为 `remote_completed_pending_finalize`，收尾 worker 通过条件更新抢占到 `remote_completed_finalizing` 后会清除上一次收尾错误，再保存任务最终结果、创建 STRM 任务和推进 processed 账本；如果收尾失败，会退回 `remote_completed_pending_finalize` 供上传队列重试，进程重启时遗留的 `remote_completed_finalizing` 也会恢复为等待完成处理。目录监控上传完成并保存任务最终结果后，会按 `upload_result` 把对应 `directory_upload_processed_files.result` 标记为 `uploaded_pending_strm` 或 `remote_exists_pending_strm`；STRM 入队成功后才更新为 `uploaded` 或 `remote_exists` 终态；STRM 入队失败时更新为 `strm_enqueue_failed`，后续扫描会重试 STRM 入队而不是重新上传；`skipped_after_rapid_wait` 不会写入终态。
-- 115 上传任务成功后，`strm_sync` 和 `directory_monitor` 来源会按远端文件 ID / PickCode 创建 `strm_generation_tasks` 记录；刮削整理来源仍只执行原有后处理。
+- 115 上传任务完成后会保存 `upload_result`、`resume_state`、`uploaded_bytes`、远端文件 ID、PickCode 和远端确认的 SHA1。`upload_result=remote_exists` 表示远端同路径文件 SHA1 和大小均匹配，因此跳过真实上传；`upload_result=rapid_upload` 会在秒传成功后按 `file_id` 查询详情补齐远端 mtime 和可得 SHA1。115 官方秒传返回不包含 mtime；`strm_sync` 上传依赖详情查询同步本地元数据 mtime，目录监控上传在详情查询失败时可先用 `file_id` 兜底，但不得把本地 session SHA1 写入公开任务字段。目录监控上传任务还会保存上传前本地文件 mtime、纳秒级 mtime 和源文件 fingerprint，上传执行前和源文件清理前都会校验当前文件 fingerprint，防止同路径文件被替换后误传或误删。目录监控上传远端结果确认后，会先把上传任务置为 `remote_completed_pending_finalize`，收尾 worker 通过条件更新抢占到 `remote_completed_finalizing` 后会清除上一次收尾错误，再保存任务最终结果、创建 STRM 任务和推进 processed 账本；如果收尾失败，会退回 `remote_completed_pending_finalize` 供上传队列重试，进程重启时遗留的 `remote_completed_finalizing` 也会恢复为等待完成处理。目录监控上传完成并保存任务最终结果后，会按 `upload_result` 把对应 `directory_upload_processed_files.result` 标记为 `uploaded_pending_strm` 或 `remote_exists_pending_strm`；STRM 入队成功后才更新为 `uploaded` 或 `remote_exists` 终态；STRM 入队失败时更新为 `strm_enqueue_failed`，后续扫描会重试 STRM 入队而不是重新上传；`skipped_after_rapid_wait` 不会写入终态。
+- 所有上传入口保留应用层预检查以返回明确状态，但部分唯一索引才是并发创建的最终保证。失败任务可以保留为历史记录并创建替代任务；手动或自动重试失败任务时，若同一范围已有活跃替代任务，旧任务保持失败且不递增重试次数。
+- 115 上传任务成功后，`strm_sync` 和 `directory_monitor` 来源会按远端文件 ID / PickCode 创建 `strm_generation_tasks` 记录；刮削整理来源仍只执行原有后处理。历史 `strm_sync` 上传缺少完整路径时，只能在实际入队后处理时按其新完成文件 ID 查询一次详情，结果只用于该 STRM 任务，不能回写上传任务；查询失败必须显式失败，不能把文件 ID 当路径。
 
 ### `upload_sessions`
 
@@ -843,6 +862,16 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - 有效 session 重试时会先走 115 `/open/upload/resume`，再用 OSS `upload_id` 查询已上传 part 并跳过已完成分片。
 - 本地文件大小、mtime、SHA1 或快速签名发生变化时，不复用旧 checkpoint；复用当前 session 记录写入新本地签名，清空 115 调度、OSS multipart、分片进度和完成态字段，将状态设为 `init`、恢复状态设为 `session_expired_restarted`，并在 `last_error` 留下废弃原因。上传执行会立即重新 init，不新增 session 历史记录，也不先标记上传任务失败。
 - 本地签名仍匹配但 OSS 返回 `NoSuchUpload`、`InvalidUploadId` 等 checkpoint 已失效错误时，会将当前 session 标记为 `session_expired_restarted`，清空 `upload_id`、part size、已上传字节数和分片进度，并在同一次任务中复用当前 115 调度结果创建新的 OSS multipart。
+
+### 版本 61 迁移与回退
+
+版本 `60 → 61` 先增加新列，再仅使用已有任务和关联 `sync_files` 回填可靠数据：115 下载可回填文件 ID、PickCode、SHA1 和完整路径；百度的 `sync_files.pick_code` 为可证明的 `fs_id`，回填到 `remote_file_id`，其历史 `sync_files.sha1` 语义为 MD5，只回填到 `remote_md5`；OpenList、Emby 和 local 的旧执行定位分别迁入隐藏的直链、Emby 条目 ID 和本地源路径。无法证明的路径、对象 ID、PickCode 或 SHA1 保持空，不发起远端补查。
+
+上传任务由旧完成字段回填新完成身份；旧 `remote_file_id` 只有可证明为完整目标路径时才迁入 `remote_full_path`，只有可证明为 STRM 覆盖且新旧完成 ID 不同时才迁入 `replaced_remote_file_id`。迁移会删除 `completed_remote_file_id` 和 `completed_pick_code`，但不删除 `upload_sessions` 内部 checkpoint。若迁移在任一字段回填或两列删除之间中断，重试会跳过已清空 / 删除的旧列，并保留已经迁入的 PickCode、隐藏执行定位及完成身份字段。
+
+迁移会为 `remote_full_path` 非空的活跃上传任务创建 `idx_db_upload_tasks_active_target`。若旧数据在相同 `source + source_type + account_id + remote_full_path` 范围内已有多个活跃任务，先保留进度最高的一个（正在完成处理、等待完成处理、上传中、等待上传依次优先；相同状态保留 ID 最小者），其余任务标记为已取消并写入迁移原因，再创建索引。已处于版本 `61` 但缺少该索引的数据库会在启动时补齐相同约束。
+
+升级前必须备份数据库。版本 61 删除了旧列，回退到依赖它们的旧二进制不安全；升级期间不得让新旧二进制混合连接同一个数据库。
 
 ### `directory_upload_processed_files`
 
