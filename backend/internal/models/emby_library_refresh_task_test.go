@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"qmediasync/internal/db"
 	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/taskgate"
 )
 
 func setupEmbyRefreshTestDB(t *testing.T) {
@@ -302,6 +304,79 @@ func TestRequestEmbyLibraryRefreshSkipsUnlinkedSyncPath(t *testing.T) {
 	db.Db.Model(&EmbyLibraryRefreshTask{}).Count(&total)
 	if total != 0 {
 		t.Fatalf("无关联时不应创建任务，实际 %d", total)
+	}
+}
+
+func TestTaskAdmissionGatePreventsEmbyRefreshSubmissionAndExecution(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	taskgate.BlockNewTasks()
+	t.Cleanup(taskgate.AllowNewTasks)
+
+	if err := RequestEmbyLibraryRefreshBySyncPathId(10); !errors.Is(err, taskgate.ErrTaskAdmissionBlocked) {
+		t.Fatalf("RequestEmbyLibraryRefreshBySyncPathId() error = %v，期望任务准入被拒绝", err)
+	}
+	if err := RequestEmbyRefreshTargets(10, []EmbyRefreshTarget{{TargetType: EmbyRefreshTargetTypeLibrary}}); !errors.Is(err, taskgate.ErrTaskAdmissionBlocked) {
+		t.Fatalf("RequestEmbyRefreshTargets() error = %v，期望任务准入被拒绝", err)
+	}
+	if err := RequestEmbyRefreshBySyncFile(&SyncFile{SyncPathId: 10}); !errors.Is(err, taskgate.ErrTaskAdmissionBlocked) {
+		t.Fatalf("RequestEmbyRefreshBySyncFile() error = %v，期望任务准入被拒绝", err)
+	}
+
+	var total int64
+	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Count(&total).Error; err != nil {
+		t.Fatalf("统计 Emby 刷新任务失败: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("任务准入关闭时不应创建 Emby 刷新任务，实际数量 = %d", total)
+	}
+
+	taskgate.AllowNewTasks()
+	now := nowUnix()
+	task := newPendingEmbyLibraryRefreshTask("library-1", "媒体库", []uint{10}, now-DefaultEmbyRefreshDebounceSeconds-1)
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建待刷新任务失败: %v", err)
+	}
+	taskgate.BlockNewTasks()
+	CheckPendingEmbyLibraryRefreshTasks()
+
+	var stored EmbyLibraryRefreshTask
+	if err := db.Db.First(&stored, task.ID).Error; err != nil {
+		t.Fatalf("读取待刷新任务失败: %v", err)
+	}
+	if stored.Status != EmbyLibraryRefreshStatusPending {
+		t.Fatalf("任务准入关闭时不应领取 Emby 刷新任务，status = %s", stored.Status)
+	}
+}
+
+func TestTaskAdmissionGateWaitsForEmbyRefreshTaskCommit(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	if err := db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "library-1", LibraryName: "媒体库", SyncPathId: 10}).Error; err != nil {
+		t.Fatalf("创建媒体库关联失败: %v", err)
+	}
+
+	assertTaskAdmissionWaitsForCreateCommit(t, func() error {
+		return RequestEmbyRefreshTargets(10, []EmbyRefreshTarget{{TargetType: EmbyRefreshTargetTypeLibrary}})
+	})
+}
+
+func TestCountRunningEmbyLibraryRefreshTasks(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	for index, status := range []string{
+		EmbyLibraryRefreshStatusPending,
+		EmbyLibraryRefreshStatusRefreshing,
+		EmbyLibraryRefreshStatusCompleted,
+	} {
+		task := &EmbyLibraryRefreshTask{
+			TaskKey: fmt.Sprintf("task-%d", index),
+			Status:  status,
+		}
+		if err := db.Db.Create(task).Error; err != nil {
+			t.Fatalf("创建 %s 刷新任务失败: %v", status, err)
+		}
+	}
+
+	if got := CountRunningEmbyLibraryRefreshTasks(); got != 1 {
+		t.Fatalf("CountRunningEmbyLibraryRefreshTasks() = %d，期望 1", got)
 	}
 }
 
@@ -2300,4 +2375,120 @@ func TestRefreshEmbyLibraryTaskDoesNotClaimExtendedDebounceTask(t *testing.T) {
 	if requests.Load() != 0 {
 		t.Fatalf("防抖已延长任务不应请求 Emby，实际请求=%d", requests.Load())
 	}
+}
+
+func TestRefreshEmbyLibraryTaskRegistersBeforeTaskGateBlocks(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	taskgate.AllowNewTasks()
+	t.Cleanup(taskgate.AllowNewTasks)
+
+	requestStarted := make(chan struct{})
+	allowRequest := make(chan struct{})
+	var requestStartedOnce sync.Once
+	var allowRequestOnce sync.Once
+	releaseRequest := func() {
+		allowRequestOnce.Do(func() { close(allowRequest) })
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestStartedOnce.Do(func() { close(requestStarted) })
+		<-allowRequest
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	GlobalEmbyConfig.EmbyUrl = server.URL
+
+	now := nowUnix()
+	task := newPendingEmbyLibraryRefreshTask("lib-movie", "电影库", []uint{10}, now-100)
+	task.RefreshAfterAt = now - 1
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建待刷新任务失败: %v", err)
+	}
+
+	claimUpdateStarted := make(chan struct{})
+	allowClaimCommit := make(chan struct{})
+	var claimUpdateOnce sync.Once
+	var allowClaimOnce sync.Once
+	releaseClaim := func() {
+		allowClaimOnce.Do(func() { close(allowClaimCommit) })
+	}
+	callbackName := "test:pause-refresh-claim"
+	if err := db.Db.Callback().Update().After("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != (&EmbyLibraryRefreshTask{}).TableName() {
+			return
+		}
+		claimUpdateOnce.Do(func() {
+			close(claimUpdateStarted)
+			<-allowClaimCommit
+		})
+	}); err != nil {
+		t.Fatalf("注册刷新任务 claim 暂停回调失败: %v", err)
+	}
+	refreshDone := make(chan error, 1)
+	refreshFinished := false
+	defer func() {
+		releaseClaim()
+		releaseRequest()
+		if !refreshFinished {
+			select {
+			case <-refreshDone:
+			case <-time.After(time.Second):
+				t.Error("刷新任务未在清理时退出")
+			}
+		}
+		if err := db.Db.Callback().Update().Remove(callbackName); err != nil {
+			t.Errorf("移除刷新任务 claim 暂停回调失败: %v", err)
+		}
+	}()
+
+	go func() {
+		refreshDone <- refreshEmbyLibraryTask(task)
+	}()
+	select {
+	case <-claimUpdateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("刷新任务未进入 claim 更新")
+	}
+
+	blockDone := make(chan struct{})
+	go func() {
+		taskgate.BlockNewTasks()
+		close(blockDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !taskgate.IsBlocked() {
+		if time.Now().After(deadline) {
+			t.Fatal("BlockNewTasks() 未关闭任务准入")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-blockDone:
+		t.Fatal("刷新任务 claim 提交前 BlockNewTasks() 不得返回")
+	default:
+	}
+
+	releaseClaim()
+	select {
+	case <-blockDone:
+	case <-time.After(time.Second):
+		t.Fatal("刷新任务 claim 提交后 BlockNewTasks() 未返回")
+	}
+	var registered EmbyLibraryRefreshTask
+	if err := db.Db.First(&registered, task.ID).Error; err != nil {
+		t.Fatalf("读取已领取刷新任务失败: %v", err)
+	}
+	if registered.Status != EmbyLibraryRefreshStatusRefreshing {
+		t.Fatalf("BlockNewTasks() 返回时刷新任务状态 = %s，期望 refreshing", registered.Status)
+	}
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("已领取刷新任务未请求 Emby")
+	}
+	releaseRequest()
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("刷新任务执行失败: %v", err)
+	}
+	refreshFinished = true
 }

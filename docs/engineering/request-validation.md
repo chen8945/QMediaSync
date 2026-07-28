@@ -101,7 +101,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/accounts.go` | 账号、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
 | `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、账号 ID、OAuth 回调 URL、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
 | `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串。 |
-| `requests/backup.go` | 备份创建、列表、记录 ID、恢复和配置 | 手动备份原因默认值、分页默认值、备份记录 ID、启用开关、Cron、保留天数、最大备份数、压缩开关。 |
+| `requests/backup.go` | 备份创建、列表、记录 ID、恢复和配置 | 手动备份原因默认值、本次工件密码、分页默认值、备份记录 ID、启用开关、Cron、保留天数、最大备份数，以及备份密码的长度、大小写英文、数字和 Unicode 空白字符规则。 |
 | `requests/notification.go` | Telegram、MeoW、Bark、ServerChan、自定义 Webhook 渠道 | 渠道名称、必填凭据、URL、Webhook 方法、格式、认证方式和模板格式。 |
 | `requests/users.go` | 登录、启用/关闭两步验证、当前用户用户名/密码修改 | 登录校验用户名和密码非空，用户名 20 个字符上限；创建和修改使用严格用户名 / 密码规则，用户名去除首尾空白后长度为 3 到 20 个字符且只能包含英文和数字，密码长度至少 6 个字符且不能是纯数字或纯字母；两步验证码必填。 |
 | `requests/operations.go` | 分页、ID、路径浏览、网盘文件、目录操作、队列、同步/刮削关联、日志、临时图片、版本更新 | 分页默认值和范围、HTTP path 正 ID、ID 列表、CSV ID、来源类型、文件夹名、路径穿越防护、日志文件名限制、版本号格式、日期范围。 |
@@ -124,9 +124,10 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 账号添加页面会在提交前拦截空账号备注、OpenList 访问地址、用户名、密码或 Token 等轻量问题；后端 DTO 仍是最终校验来源，并在账号接口返回前把字段级校验错误转换为面向用户的提示。
 - `CreateOpenListAccountRequest` 会自动补全缺失的 `http://` 协议，并去掉末尾 `/`。
 - `LoginRequest` 校验用户名和密码非空，并在进入限流、数据库查询和失败日志前保留用户名 20 个字符上限；实际身份校验交给登录模型。首次管理员创建和当前用户凭据修改使用严格用户名 / 密码规则。控制器仍统一返回「登录失败」，不向客户端暴露用户名、密码或验证码的具体失败原因。
-- `BackupCreateRequest` 在原因为空时默认使用「手动备份」，与旧控制器行为一致。
+- `BackupCreateRequest` 在原因为空时默认使用「手动备份」，与旧控制器行为一致。密码只来自本次请求且按不透明字符串校验，既不裁剪首尾字符也不做 Unicode 归一化；留空表示创建未加密工件，必须在同一请求传递 `confirm_unencrypted=true`，服务端绝不以定时备份密码补全。
 - `BackupListRequest` 保留旧分页兼容策略：页码小于 1 时回退为 1，每页数量小于 1 或大于 100 时回退为 20，类型为空时回退为 `all`。
 - 备份配置中 `backup_retention` 为 0 时表示不更新或使用既有值；大于 0 时限制为 1 到 365。
+- 保存启用的定时备份配置且最终没有定时备份密码时，必须在本次请求传递 `confirm_unencrypted=true`；该确认不持久化。密码更新字段未传递时保留既有本机密文，传递空字符串则清除密文。
 - `internal/migrate` 的测试连接请求允许 `database` 为空，并继续固定连接 `dbname=postgres`；保存配置请求要求 `database` 非空。
 
 ## 安全敏感校验

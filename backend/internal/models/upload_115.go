@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -1023,12 +1024,24 @@ func (task *DbUploadTask) EnqueueStrmGenerationAfterUploadAndMarkDirectoryProces
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
-	_, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
+	_, err = task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
 	return err
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed() error {
-	err := db.Db.Transaction(func(tx *gorm.DB) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
+	err = db.Db.Transaction(func(tx *gorm.DB) error {
 		strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(tx)
 		if err != nil {
 			return err

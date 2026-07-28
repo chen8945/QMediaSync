@@ -12,6 +12,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 
 	"github.com/gin-gonic/gin"
@@ -391,7 +392,12 @@ func newStrmWebhookFileTask(syncPath *models.SyncPath, parentTaskID uint, option
 }
 
 func enqueueStrmWebhookBatch(syncPath *models.SyncPath, options strmWebhookOptions, preparedFiles []strmWebhookPreparedFile, results []strmWebhookItemResult) error {
-	var err error
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
 	for attempt := 0; attempt < strmWebhookBatchTransactionMaxAttempts; attempt++ {
 		err = db.Db.Transaction(func(tx *gorm.DB) error {
 			parent, err := enqueueStrmWebhookBatchParentWithDB(tx, syncPath, options, preparedFiles)

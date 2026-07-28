@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 61
+var MaxVersionCode = 62
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -30,7 +31,7 @@ const (
 var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
-	ApiKey{}, UserSession{}, Settings{}, Sync{}, User{}, Account{},
+	User{}, ApiKey{}, UserSession{}, Settings{}, Sync{}, Account{},
 	SyncPath{}, SyncFile{}, SyncPathScrapePath{}, DirectoryUploadRule{}, DirectoryUploadProcessedFile{}, SyncPathIdempotencyRecord{},
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
@@ -346,10 +347,8 @@ func Migrate() {
 		db.Db.Save(&BackupConfig{
 			BaseModel:       BaseModel{ID: 1},
 			BackupEnabled:   0,
-			BackupPath:      "backups",
 			BackupRetention: 7,
 			BackupMaxCount:  7,
-			BackupCompress:  1,
 			BackupCron:      "0 2 * * *",
 		})
 		migrator.UpdateVersionCode(db.Db)
@@ -690,6 +689,14 @@ func Migrate() {
 		helpers.AppLogger.Info("已迁移传输队列远端身份字段并删除旧完成字段")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	if migrator.VersionCode == 61 {
+		if err := migrateBackupRecordCatalogFields(db.Db); err != nil {
+			helpers.AppLogger.Errorf("迁移备份目录字段失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加备份目录字段并标记可用旧格式备份")
+		migrator.UpdateVersionCode(db.Db)
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if err := ensureActiveTransferTaskUniqueIndexes(db.Db); err != nil {
 			helpers.AppLogger.Errorf("补齐活跃传输任务唯一索引失败：%v", err)
@@ -697,6 +704,39 @@ func Migrate() {
 		}
 	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)
+}
+
+func migrateBackupRecordCatalogFields(dbConn *gorm.DB) error {
+	if err := dbConn.AutoMigrate(BackupConfig{}, BackupRecord{}); err != nil {
+		return fmt.Errorf("补齐备份目录字段: %w", err)
+	}
+
+	var records []BackupRecord
+	if err := dbConn.Where("status = ?", BackupStatusCompleted).Find(&records).Error; err != nil {
+		return fmt.Errorf("读取既有备份记录: %w", err)
+	}
+
+	for _, record := range records {
+		if record.FilePath == "" {
+			continue
+		}
+		if _, err := os.Stat(record.FilePath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("检查既有备份文件 %q: %w", record.FilePath, err)
+		}
+		if err := dbConn.Model(&BackupRecord{}).
+			Where("id = ?", record.ID).
+			Updates(map[string]any{
+				"backup_type": BackupTypeLegacy,
+				"format":      BackupFormatLegacy,
+			}).Error; err != nil {
+			return fmt.Errorf("标记既有备份记录 %d: %w", record.ID, err)
+		}
+	}
+
+	return nil
 }
 
 type legacyUploadRemoteIdentity struct {
@@ -1767,14 +1807,23 @@ func BatchRepairTableSeq() error {
 }
 
 func ResetSequence(tableName string, columnName string) error {
+	return ResetSequenceWithDB(db.Db, tableName, columnName)
+}
+
+// ResetSequenceWithDB 在指定连接上修复自增序列。
+// 恢复与迁移会写入当前进程之外的目标数据库，因此必须显式传入连接而不是复用全局连接。
+func ResetSequenceWithDB(database *gorm.DB, tableName string, columnName string) error {
+	if database == nil {
+		return fmt.Errorf("修复序列失败：数据库连接为空")
+	}
 	var maxId int64
 	// 获取当前最大 ID，如果表为空则从 1 开始
-	db.Db.Table(tableName).Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", columnName)).Scan(&maxId)
+	database.Table(tableName).Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", columnName)).Scan(&maxId)
 	if maxId == 0 {
 		// 如果没有值则不修复
 		return nil
 	}
 	// 重置序列
 	sequenceName := fmt.Sprintf("%s_%s_seq", tableName, columnName)
-	return db.Db.Exec(fmt.Sprintf("SELECT setval('%s', ?)", sequenceName), maxId).Error
+	return database.Exec(fmt.Sprintf("SELECT setval('%s', ?)", sequenceName), maxId).Error
 }

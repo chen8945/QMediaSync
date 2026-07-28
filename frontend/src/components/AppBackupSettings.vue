@@ -12,6 +12,24 @@
         <el-switch v-model="configForm.backup_enabled" :active-value="1" :inactive-value="0" />
       </el-form-item>
 
+      <el-form-item label="定时备份密码">
+        <el-input
+          v-model="scheduledBackupPassword"
+          aria-label="定时备份密码"
+          autocomplete="new-password"
+          placeholder="留空则清除已保存的定时备份密码"
+          show-password
+          type="password"
+          @update:model-value="onScheduledPasswordChange"
+        />
+        <div v-if="scheduledBackupPasswordError" class="backup-password-error">
+          {{ scheduledBackupPasswordError }}
+        </div>
+        <div class="backup-password-hint">
+          仅用于定时备份，手动备份需每次单独输入密码。备份可能包含 TLS 私钥。
+        </div>
+      </el-form-item>
+
       <el-form-item label="定时策略" required>
         <cron-selector v-model="configForm.backup_cron" v-model:custom-value="backupCustomCron" />
         <div v-if="cronTimes.length > 0" class="cron-next-times">
@@ -62,10 +80,11 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, shallowRef } from 'vue'
 import { Check, Setting } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import type { BackupConfig } from '@/typing'
+import { validateBackupPassword } from '@/utils/backupPassword'
 import { isMobile as checkIsMobile } from '@/utils/deviceUtils'
 import CronSelector from './CronSelector.vue'
 
@@ -78,19 +97,35 @@ const configForm = reactive({
   backup_cron: '0 3 * * *',
   backup_retention: 7,
   backup_max_count: 10,
-  backup_compress: 1 as 0 | 1,
 })
 
 const configSaving = ref(false)
 const cronTimes = ref<string[]>([])
 const cronTimesLoading = ref(false)
 const backupCustomCron = shallowRef('')
+const backupEncryptionEnabled = shallowRef(false)
+const scheduledBackupPassword = shallowRef('')
+const scheduledBackupPasswordChanged = shallowRef(false)
+const scheduledBackupPasswordError = shallowRef('')
+
+type BackupConfigUpdatePayload = typeof configForm & {
+  scheduled_backup_password?: string
+  confirm_unencrypted?: boolean
+}
+
+const onScheduledPasswordChange = (value: string) => {
+  scheduledBackupPasswordChanged.value = true
+  scheduledBackupPasswordError.value = validateBackupPassword(value)
+}
 
 const loadBackupConfig = async () => {
   if (!http) return
 
   try {
-    const res = await http.get<{ code: number; data: BackupConfig }>(`${SERVER_URL}/backup/config`)
+    const res = await http.get<{ code: number; message?: string; data: BackupConfig }>(
+      `${SERVER_URL}/backup/config`,
+      { validateStatus: (status) => status === 200 || status === 503 },
+    )
 
     if (res.data.code === API_SUCCESS_CODE && res.data.data) {
       const config = res.data.data
@@ -101,10 +136,15 @@ const loadBackupConfig = async () => {
         backup_cron: cronExpression,
         backup_retention: config.backup_retention,
         backup_max_count: config.backup_max_count,
-        backup_compress: config.backup_compress,
       })
+      backupEncryptionEnabled.value = config.backup_encryption_enabled
+      scheduledBackupPassword.value = ''
+      scheduledBackupPasswordChanged.value = false
+      scheduledBackupPasswordError.value = ''
       backupCustomCron.value = cronExpression
       await loadCronTimes()
+    } else {
+      ElMessage.error(res.data.message || '加载备份配置失败')
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : '加载备份配置失败'
@@ -115,12 +155,45 @@ const loadBackupConfig = async () => {
 const saveConfig = async () => {
   if (!http) return
 
+  scheduledBackupPasswordError.value = validateBackupPassword(scheduledBackupPassword.value)
+  if (scheduledBackupPasswordError.value) return
+
+  const willUsePassword = scheduledBackupPasswordChanged.value
+    ? scheduledBackupPassword.value !== ''
+    : backupEncryptionEnabled.value
+  const payload: BackupConfigUpdatePayload = { ...configForm }
+  if (scheduledBackupPasswordChanged.value) {
+    payload.scheduled_backup_password = scheduledBackupPassword.value
+  }
+  if (configForm.backup_enabled === 1 && !willUsePassword) {
+    try {
+      await ElMessageBox.confirm(
+        '无密码定时备份不会加密，备份可能包含 TLS 私钥。是否继续保存？',
+        '确认未加密定时备份',
+        {
+          confirmButtonText: '继续保存',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+    } catch {
+      return
+    }
+    payload.confirm_unencrypted = true
+  }
+
   configSaving.value = true
   try {
-    const res = await http.put(`${SERVER_URL}/backup/config`, configForm)
+    const res = await http.put(`${SERVER_URL}/backup/config`, payload, {
+      validateStatus: (status) => status === 200 || status === 503,
+    })
 
     if (res.data.code === API_SUCCESS_CODE) {
       ElMessage.success('备份配置保存成功')
+      backupEncryptionEnabled.value = willUsePassword
+      scheduledBackupPassword.value = ''
+      scheduledBackupPasswordChanged.value = false
+      scheduledBackupPasswordError.value = ''
       await loadCronTimes()
     } else {
       ElMessage.error(res.data.message || '保存配置失败')
@@ -211,6 +284,18 @@ onMounted(() => {
 
 .cron-time-item {
   display: inline-flex;
+}
+
+.backup-password-hint {
+  margin-top: 8px;
+  color: #909399;
+  line-height: 1.5;
+}
+
+.backup-password-error {
+  margin-top: 8px;
+  color: var(--el-color-danger);
+  line-height: 1.5;
 }
 
 @media (max-width: 768px) {

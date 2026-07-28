@@ -21,6 +21,7 @@ frontend/            Vue / Vite 前端源码
   test/               受版本管理的 Vitest 测试和构建后检查
   dist/               前端生产构建输出（生成且忽略）
 docs/                面向维护者和 AI 的正式文档，索引为 docs/README.md
+reviews/             针对单次改动的审查记录，不属于正式文档，不进入 docs/README.md 索引
 scripts/release/     GitHub Actions 发布打包辅助脚本、changelog 生成脚本和发布脚本共享函数
 scripts/install/     Linux 裸机安装辅助脚本
 .github/workflows/   CI、分支镜像和正式发布工作流

@@ -83,8 +83,11 @@ type App struct {
 }
 
 func (app *App) Start() {
-	// 启动外网 302 服务
-	startEmby302()
+	// 仅诊断模式没有数据库连接，不能启动依赖业务数据的外网 302 服务
+	if !backup.DiagnosticsOnly() {
+		// 启动外网 302 服务
+		startEmby302()
+	}
 	if helpers.IsRelease {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -124,15 +127,21 @@ func (app *App) Stop() {
 	app.shutdownHTTPServers()
 	// 关闭同步任务执行队列
 	synccron.PauseAllNewSyncQueues()
-	// 关闭上传下载队列
-	models.GlobalDownloadQueue.Stop()
-	models.GlobalUploadQueue.Stop()
+	// 关闭上传下载队列（仅诊断模式没有初始化业务运行时，这里可能为空）
+	if models.GlobalDownloadQueue != nil {
+		models.GlobalDownloadQueue.Stop()
+	}
+	if models.GlobalUploadQueue != nil {
+		models.GlobalUploadQueue.Stop()
+	}
 	// 关闭目录监控上传服务
 	directoryupload.StopDirectoryUploadService()
 	// 关闭 STRM 生成 worker
 	syncstrm.StopStrmGenerationWorker()
 	// 关闭定时任务（包含备份定时任务）
-	synccron.GlobalCron.Stop()
+	if synccron.GlobalCron != nil {
+		synccron.GlobalCron.Stop()
+	}
 	// 关闭数据库
 	if app.dbManager != nil {
 		app.dbManager.Stop()
@@ -201,15 +210,23 @@ func (app *App) StartHttpServer(r *gin.Engine) {
 }
 
 func (app *App) StartDatabase(migrateMode bool) error {
+	return app.startDatabase(migrateMode, true)
+}
+
+// startDatabase 连接数据库；迁移包导入会自行在一个事务中准备 schema，
+// 因此该路径必须跳过常规模型迁移，避免导入失败时提前改变目标库。
+func (app *App) startDatabase(migrateMode bool, initializeModels bool) error {
 	// 根据配置启动数据库连接
 	if helpers.GlobalConfig.Db.Engine == helpers.DbEngineSqlite {
 		// 如果是 SQLite，直接初始化 SQLite 连接
 		sqliteFile := filepath.Join(helpers.ConfigDir, helpers.GlobalConfig.Db.SqliteFile)
 		helpers.AppLogger.Infof("SQLite 数据库文件路径：%s", sqliteFile)
 		db.Db = db.InitSqlite3(sqliteFile)
-		models.Migrate()
-		if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
-			return err
+		if initializeModels {
+			models.Migrate()
+			if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -243,25 +260,26 @@ func (app *App) StartDatabase(migrateMode bool) error {
 			return err
 		}
 		db.InitPostgres(app.dbManager.GetDB())
-
-		// 如果是迁移模式，启动迁移服务
-		if migrateMode {
-			helpers.AppLogger.Info("检测到使用内嵌 PostgreSQL，启动迁移服务…")
-			migrateServer := migrate.NewMigrateServer(app.dbManager, dbConfig)
-			if err := migrateServer.Start(); err != nil {
-				helpers.AppLogger.Errorf("启动迁移服务失败：%v", err)
-				return err
-			}
-		}
 	} else {
 		// 初始化 PostgreSQL 数据库连接
 		if err := db.ConnectPostgres(dbConfig); err != nil {
 			return err
 		}
 	}
-	models.Migrate()
-	if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
-		return err
+	if initializeModels {
+		models.Migrate()
+		if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
+			return err
+		}
+	}
+	// 迁移服务会读取当前模型的全部列导出工件，因此必须先完成内嵌源库的 schema 和数据升级。
+	if migrateMode {
+		helpers.AppLogger.Info("检测到使用内嵌 PostgreSQL，启动迁移服务…")
+		migrateServer := migrate.NewMigrateServer(app.dbManager)
+		if err := migrateServer.Start(); err != nil {
+			helpers.AppLogger.Errorf("启动迁移服务失败：%v", err)
+			return err
+		}
 	}
 	return nil
 }
@@ -550,7 +568,7 @@ func initOthers() {
 	// 下载中的任务改为待下载
 	models.UpdateDownloadingToPending()
 	helpers.Subscribe(helpers.BackupCronEevent, func(event helpers.Event) {
-		backup.Backup("定时", "定时备份")
+		backup.RunScheduledBackup("定时备份")
 	})
 	helpers.Subscribe(helpers.StrmSyncCompleteEvent, func(event helpers.Event) {
 		// 触发关联的刮削任务
@@ -590,6 +608,10 @@ func setRouter(r *gin.Engine) {
 	r.LoadHTMLFiles(filepath.Join(webStatisPath, "index.html"))
 	r.StaticFile("/favicon.ico", filepath.Join(webStatisPath, "favicon.ico")) // 提供站点图标
 	r.StaticFS("/assets", http.Dir(filepath.Join(webStatisPath, "assets")))   // 提供前端静态资源
+	// 维护屏障必须位于任何会读写业务数据库的认证链之前
+	r.Use(controllers.MaintenanceMiddleware())
+	// 备份状态查询只凭 operation ID 与请求头令牌读取外部状态，不参与 JWT 或 API Key 鉴权
+	r.GET(controllers.BackupStatusPath, controllers.GetBackupStatus)
 	// 返回前端单页应用入口
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(200, "index.html", gin.H{})
@@ -809,7 +831,6 @@ func setRouter(r *gin.Engine) {
 		api.GET("/backup/download/:id", controllers.DownloadBackup)      // 下载备份文件
 		api.GET("/backup/config", controllers.GetBackupConfig)           // 获取备份配置
 		api.PUT("/backup/config", controllers.UpdateBackupConfig)        // 更新备份配置
-		api.GET("/backup/status", controllers.GetBackupStatus)           // 获取备份状态
 
 	}
 }
@@ -887,23 +908,51 @@ func initEnv() bool {
 	newApp()
 	helpers.AppLogger.Infof("当前版本号：%s，发布日期：%s", Version, PublishDate)
 
+	// 连接数据库之前先收敛上一次备份或恢复的状态：
+	// 恢复在预恢复快照之后中断时，这里完成幂等自动回滚；回滚会替换目标数据库文件与白名单配置，
+	// 因此必须早于任何数据库连接和配置消费。
+	convergence := backup.ConvergeStartupState()
+	if convergence.ConfigRestored {
+		if err := helpers.InitConfig(); err != nil {
+			helpers.AppLogger.Errorf("自动回滚后重新加载配置失败：%v", err)
+			return false
+		}
+		helpers.AppLogger.Warnf("已按回滚结果重新加载配置")
+	}
+	if convergence.DiagnosticsOnly {
+		// 自动回滚失败：只提供备份状态诊断，不启动数据库连接与任何业务运行时。
+		// 是否以及何时重新拉起进程由部署平台或操作者决定，应用不协调平台重启。
+		helpers.AppLogger.RequiredWarnf("本次启动只提供备份状态诊断，业务服务保持不可用")
+		return true
+	}
+	// 恢复终态后由平台或操作者拉起的新进程在这里退出有序停机；应用自身不写重启标记。
+	backup.SetOrderlyExitHook(func() {
+		if QMSApp != nil {
+			QMSApp.Stop()
+		}
+		os.Exit(0)
+	})
+
 	// 检查是否需要自动恢复
 	if migrate.ShouldRestore() {
 		helpers.AppLogger.Info("检测到迁移备份文件存在且使用外部 PostgreSQL，开始自动恢复…")
+		backupPath := migrate.GetMigrateBackupPath()
+		if err := migrate.PreflightPendingMigration(backupPath); err != nil {
+			helpers.AppLogger.Errorf("迁移包预检失败，已保留原文件等待下次启动重试：%v", err)
+			return false
+		}
 		// 先启动外部数据库连接
-		if err := QMSApp.StartDatabase(false); err != nil {
+		if err := QMSApp.startDatabase(false, false); err != nil {
 			log.Printf("数据库启动失败：%v", err)
 			return false
 		}
-		// 执行恢复
-		backupPath := migrate.GetMigrateBackupPath()
-		if err := performMigrateRestore(backupPath); err != nil {
-			helpers.AppLogger.Errorf("恢复数据失败：%v", err)
+		helpers.AppLogger.Infof("开始从迁移备份恢复：%s", backupPath)
+		if err := migrate.ImportPendingMigration(backupPath); err != nil {
+			helpers.AppLogger.Errorf("迁移数据失败，已保留原文件等待下次启动重试：导入失败：%v", err)
 			return false
 		}
-		// 恢复成功，删除备份文件
-		os.Remove(backupPath)
-		helpers.AppLogger.Info("数据恢复完成，已删除迁移备份文件")
+		helpers.AppLogger.Info("迁移恢复完成")
+		helpers.AppLogger.Info("迁移数据完成，已删除迁移备份文件")
 	} else {
 		// 检查是否需要启动迁移服务
 		needMigrate := migrate.ShouldMigrate()
@@ -925,6 +974,8 @@ func initEnv() bool {
 
 	db.InitCache() // 初始化内存缓存
 	initOthers()
+	// 备份列表的目录清点只在后台进行：启动与列表请求都只触发它，不在请求内同步扫描。
+	backup.TriggerInventoryScan()
 	return true
 }
 
@@ -1141,21 +1192,6 @@ func isInRestrictedDirectory() (bool, string) {
 	}
 
 	return false, ""
-}
-
-func performMigrateRestore(backupPath string) error {
-	helpers.AppLogger.Infof("开始从迁移备份恢复：%s", backupPath)
-
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		return fmt.Errorf("备份文件不存在：%s", backupPath)
-	}
-
-	if err := backup.Restore(backupPath); err != nil {
-		return fmt.Errorf("恢复失败：%v", err)
-	}
-
-	helpers.AppLogger.Info("迁移恢复完成")
-	return nil
 }
 
 func StartConfigWebServer() {

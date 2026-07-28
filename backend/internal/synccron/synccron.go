@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/scrape"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 
 	"github.com/robfig/cron/v3"
@@ -47,6 +48,9 @@ func selectScheduledEmbySyncMode(config *models.EmbyConfig, now time.Time) strin
 }
 
 func StartSyncCron() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	// 查询所有同步目录
 	syncPaths, _ := models.GetSyncPathList(1, 10000000, true, "")
 	if len(syncPaths) == 0 {
@@ -79,6 +83,9 @@ func StartSyncCron() {
 
 // 开始刮削整理任务（通用定时任务）
 func startScrapeCron() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	// 查询所有刮削目录
 	scrapePaths := models.GetScrapePathes("")
 	if len(scrapePaths) == 0 {
@@ -116,6 +123,9 @@ func startScrapeCron() {
 }
 
 func RefreshOAuthAccessToken() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	// 检查是否已在运行，防止并发执行
 	if !atomic.CompareAndSwapInt32(&tokenRefreshRunning, 0, 1) {
 		helpers.AppLogger.Warn("Token 刷新任务已在运行，跳过本次执行")
@@ -268,6 +278,11 @@ func StartScrapeRollbackCron() {
 }
 
 func InitTokenCron() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	if TokenCron != nil {
 		TokenCron.Stop()
 	}
@@ -281,6 +296,11 @@ func InitTokenCron() {
 
 // 初始化定时任务
 func InitCron() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	if GlobalCron != nil {
 		GlobalCron.Stop()
 	}
@@ -365,6 +385,11 @@ func InitSyncCron() {
 
 // InitSyncCronWithError 初始化 STRM 同步目录定时任务并返回配置错误。
 func InitSyncCronWithError() error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	if SyncCron != nil {
 		helpers.AppLogger.Info("已存在同步目录的定时任务，先停止")
 		SyncCron.Stop()
@@ -408,6 +433,11 @@ func InitSyncCronWithError() error {
 
 // 初始化刮削目录的自定义定时任务
 func InitScrapeCron() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	if ScrapeCron != nil {
 		helpers.AppLogger.Info("已存在刮削目录的定时任务，先停止")
 		ScrapeCron.Stop()

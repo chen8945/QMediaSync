@@ -15,6 +15,7 @@ import (
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -801,6 +802,11 @@ func ensureGeneratedStrmPathWithinRoot(rootPath string, targetPath string) error
 
 // InitStrmGenerationWorker 初始化 STRM 生成队列 worker。
 func InitStrmGenerationWorker() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	if err := models.ResetRunningStrmGenerationTasks(); err != nil {
 		helpers.AppLogger.Errorf("恢复 STRM 生成任务失败：%v", err)
 	}

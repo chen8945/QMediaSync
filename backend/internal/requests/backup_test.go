@@ -3,12 +3,12 @@ package requests
 import "testing"
 
 func TestBackupConfigRequestValidate(t *testing.T) {
+	validPassword := "BackupPass123"
 	valid := BackupConfigUpdateRequest{
 		BackupEnabled:   1,
 		BackupCron:      "0 4 * * *",
 		BackupRetention: 30,
 		BackupMaxCount:  10,
-		BackupCompress:  1,
 	}
 
 	tests := []struct {
@@ -22,7 +22,8 @@ func TestBackupConfigRequestValidate(t *testing.T) {
 		{name: "保留天数为 0 通过", mutate: func(r *BackupConfigUpdateRequest) { r.BackupRetention = 0 }},
 		{name: "保留天数大于 365 失败", mutate: func(r *BackupConfigUpdateRequest) { r.BackupRetention = 366 }, wantErr: true},
 		{name: "最大数量大于 1000 失败", mutate: func(r *BackupConfigUpdateRequest) { r.BackupMaxCount = 1001 }, wantErr: true},
-		{name: "压缩开关枚举错误失败", mutate: func(r *BackupConfigUpdateRequest) { r.BackupCompress = 2 }, wantErr: true},
+		{name: "合法定时备份密码通过", mutate: func(r *BackupConfigUpdateRequest) { r.ScheduledBackupPassword = &validPassword }},
+		{name: "不合规定时备份密码失败", mutate: func(r *BackupConfigUpdateRequest) { password := "short"; r.ScheduledBackupPassword = &password }, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -95,8 +96,13 @@ func TestBackupRestoreRequestValidate(t *testing.T) {
 		req     BackupRestoreRequest
 		wantErr bool
 	}{
-		{name: "合法备份记录 ID 通过", req: BackupRestoreRequest{RecordID: 1}},
-		{name: "备份记录 ID 为空失败", req: BackupRestoreRequest{}, wantErr: true},
+		{name: "记录预检通过", req: BackupRestoreRequest{Phase: BackupRestorePhasePreflight, RecordID: 1}},
+		{name: "上传预检通过", req: BackupRestoreRequest{Phase: BackupRestorePhasePreflight}},
+		{name: "确认恢复通过", req: BackupRestoreRequest{Phase: BackupRestorePhaseConfirm, RecordID: 1, PreflightID: "preflight", ConfirmOverwrite: true}},
+		{name: "缺少阶段失败", req: BackupRestoreRequest{RecordID: 1}, wantErr: true},
+		{name: "确认缺少预检标识失败", req: BackupRestoreRequest{Phase: BackupRestorePhaseConfirm, RecordID: 1, ConfirmOverwrite: true}, wantErr: true},
+		{name: "确认未覆盖确认失败", req: BackupRestoreRequest{Phase: BackupRestorePhaseConfirm, RecordID: 1, PreflightID: "preflight"}, wantErr: true},
+		{name: "密码含空白失败", req: BackupRestoreRequest{Phase: BackupRestorePhasePreflight, RecordID: 1, Password: "Backup Pass123"}, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -65,6 +65,8 @@ fsnotify 文件事件候选在通过递归、忽略规则和扩展名过滤后�
 
 目录监控上传只创建 `db_upload_tasks.source = directory_monitor` 的上传任务，真实上传仍由全局上传队列执行。任务会写入 `sync_path_id`、`relative_path`、`source_fingerprint`、`local_mtime_ns`、创建时确定的 `remote_full_path` 和 115 父目录 ID `remote_path_id`，其中 `source_fingerprint` 使用 `v1:size:mtime_ns`。远端同名且内容一致时会直接写入该远端文件的 ID、PickCode 和 SHA1；`replace_conflict` 只有在旧远端文件删除成功后才写入 `replaced_remote_file_id`，删除失败不伪造覆盖记录。与此同时会写入 `directory_upload_processed_files`：待上传任务记录为 `queued`；远端上传结果确认后，任务会先进入 `remote_completed_pending_finalize`，收尾 worker 通过数据库条件更新抢占为 `remote_completed_finalizing`，并清除上一次收尾错误后才推进本地账本和 STRM 入队；上传完成并保存上传任务最终结果后按 `upload_result` 先更新为 `uploaded_pending_strm` 或 `remote_exists_pending_strm`；STRM 入队成功后才更新为终态 `uploaded` 或 `remote_exists`；STRM 入队失败时记录为 `strm_enqueue_failed`，后续扫描同一 fingerprint 时只重试 STRM 入队，不重新上传源文件。收尾失败会退回 `remote_completed_pending_finalize` 供队列重试，进程重启时遗留的 `remote_completed_finalizing` 也会恢复为等待完成处理。`replace_conflict` 删除远端冲突文件前会先写入 `pending_replace`，创建上传任务后再推进为 `queued`。`skipped_after_rapid_wait` 不写入终态。远端同名且内容一致时创建完成态上传任务并进入同一 STRM 入队流程，按 `skip_same` 跳过远端冲突时记录为 `skipped_existing`。因此任务会出现在上传队列页面。
 
+备份或恢复等待既有任务静止时，目录扫描和稳定性队列都不再启动；目录监控上传任务的事务写入也会在落库前被同一准入屏障拒绝，不能绕过扫描器直接新增 `db_upload_tasks`。已有任务不被取消，仍由备份协调器等待至静止后再进入维护。
+
 目录监控成功创建待上传任务后，会向 `app.log` 写入 `[目录上传] 已创建上传任务` INFO 日志，包含规则 ID、上传任务 ID、本地路径、远端目标路径、远端父目录 ID、文件大小和源文件清理状态。远端已存在同内容文件时不会记录为真实上传，而是在 STRM 后处理任务创建成功后写入 `[目录上传] 远端已存在同内容文件，已创建 STRM 后处理任务`，包含上传任务 ID、STRM 任务 ID 和远端文件 ID。
 
 创建任务前会检查远端同目录同名文件。只有远端文件大小和 SHA1 都与本地文件一致时，才把上传任务直接标记为 `completed`，`upload_result = remote_exists`，并创建后续 STRM 生成任务。该行为是远端已存在跳过，不是断点续传。

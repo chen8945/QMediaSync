@@ -9,7 +9,28 @@ import (
 	"time"
 
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 )
+
+func TestScanExecutorDoesNotStartNewScanWhileTaskAdmissionBlocked(t *testing.T) {
+	taskgate.BlockNewTasks()
+	t.Cleanup(taskgate.AllowNewTasks)
+
+	executor := newScanExecutorWithScanFunc(1, func(context.Context, *models.DirectoryUploadRule, string) (int, error) {
+		t.Fatal("任务准入关闭时不应执行目录扫描")
+		return 0, nil
+	})
+	executor.Enqueue(context.Background(), scanRequest{
+		rule: &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 99}},
+		root: t.TempDir(),
+	})
+
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.running || len(executor.queue) != 0 || len(executor.inflight) != 0 {
+		t.Fatalf("准入关闭时目录扫描被接受：running=%t queue=%d inflight=%d", executor.running, len(executor.queue), len(executor.inflight))
+	}
+}
 
 func TestScanExecutorMergesSameRuleAndRoot(t *testing.T) {
 	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 7}}

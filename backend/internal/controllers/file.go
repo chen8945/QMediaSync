@@ -5,6 +5,7 @@ import (
 
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
+	"qmediasync/internal/taskgate"
 
 	"github.com/gin-gonic/gin"
 )
@@ -150,6 +151,10 @@ func RetryFailedDownloadTasks(ctx *gin.Context) {
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func StartUploadQueue(ctx *gin.Context) {
+	if taskgate.IsBlocked() {
+		ctx.JSON(http.StatusConflict, APIResponse[any]{Code: BadRequest, Message: taskgate.ErrTaskAdmissionBlocked.Error()})
+		return
+	}
 	// 调用全局上传队列的 Start 方法
 	models.GlobalUploadQueue.Restart()
 
@@ -270,6 +275,10 @@ func ClearPendingDownloadTasks(ctx *gin.Context) {
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func StartDownloadQueue(ctx *gin.Context) {
+	if taskgate.IsBlocked() {
+		ctx.JSON(http.StatusConflict, APIResponse[any]{Code: BadRequest, Message: taskgate.ErrTaskAdmissionBlocked.Error()})
+		return
+	}
 	// 调用全局下载队列的 Start 方法
 	models.GlobalDownloadQueue.Restart()
 

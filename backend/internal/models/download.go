@@ -8,6 +8,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/realtime"
+	"qmediasync/internal/taskgate"
 
 	"golang.org/x/time/rate"
 )
@@ -20,6 +21,7 @@ type DQ struct {
 	running        bool                 // 队列是否正在运行
 	limiter        *rate.Limiter        // 限速器，控制 QPS
 	retryTriggered bool                 // 当前空闲周期是否已触发失败重试
+	workerWG       sync.WaitGroup       // 等待已派发任务在维护屏障前退出
 }
 
 const DefaultQueueRetryMax = 1
@@ -68,6 +70,11 @@ func NewDq(maxConcurrency int) *DQ {
 
 // 启动下载队列的工作协程
 func (dq *DQ) Start() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	// 重新创建 tasks 通道
 	dq.mutex.Lock()
 	dq.tasks = make(chan *DbDownloadTask, dq.numWorkers*10)
@@ -86,11 +93,19 @@ func (dq *DQ) Start() {
 
 	// 启动工作协程
 	for i := 0; i < dq.numWorkers; i++ {
-		go dq.worker()
+		dq.workerWG.Add(1)
+		go func() {
+			defer dq.workerWG.Done()
+			dq.worker()
+		}()
 	}
 
 	// 启动任务调度协程
-	go dq.taskScheduler()
+	dq.workerWG.Add(1)
+	go func() {
+		defer dq.workerWG.Done()
+		dq.taskScheduler()
+	}()
 }
 
 // Stop 停止下载队列
@@ -111,8 +126,18 @@ func (dq *DQ) Stop() {
 	helpers.AppLogger.Info("下载队列已停止")
 }
 
+// StopAndWait 停止队列并等待已派发的 worker 退出。
+// 维护屏障只有在它返回后才能开始快照，避免已从通道取出的任务继续写入。
+func (dq *DQ) StopAndWait() {
+	dq.Stop()
+	dq.workerWG.Wait()
+}
+
 // Restart 重启下载队列
 func (dq *DQ) Restart() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	dq.Stop()
 	dq.Start()
 	helpers.AppLogger.Info("下载队列已重启")
@@ -120,6 +145,11 @@ func (dq *DQ) Restart() {
 
 // UpdateConcurrency 更新并发数
 func (dq *DQ) UpdateConcurrency(newConcurrency int) {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	if newConcurrency <= 0 {
 		helpers.AppLogger.Errorf("无效的并发数：%d", newConcurrency)
 		return
@@ -140,7 +170,11 @@ func (dq *DQ) UpdateConcurrency(newConcurrency int) {
 	// 如果并发数增加了，需要启动新的 worker
 	if newConcurrency > oldConcurrency {
 		for i := oldConcurrency; i < newConcurrency; i++ {
-			go dq.worker()
+			dq.workerWG.Add(1)
+			go func() {
+				defer dq.workerWG.Done()
+				dq.worker()
+			}()
 		}
 		helpers.AppLogger.Infof("下载队列并发数从 %d 增加到 %d", oldConcurrency, newConcurrency)
 	} else if newConcurrency < oldConcurrency {

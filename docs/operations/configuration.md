@@ -62,6 +62,7 @@ emby302:
 - 115 开放平台 APP ID、TMDB API Key / Access Token、OpenAI 兼容 API Key 和 fanart.tv API Key 可以在 Web 设置中配置。
 - 默认密钥也可由 `backend/main.go` 的变量、ldflags 或环境变量 / `config/.env` 注入。`FANART_API_KEY`、`TMDB_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `SC_API_KEY` 的优先级是 Web UI > 环境变量 / `config/.env` > ldflags；`config/.env` 覆盖真实环境变量。
 - 两步验证等本机敏感数据使用首次启动自动生成的 `config/encryption.key`。`jwtSecret` 为空或仍为公开默认值时会生成 32 字节随机密钥并写回配置；修改它会使现有登录 Cookie 失效。
+- v1 备份以同一 `config/encryption.key` 绑定实例：工件内该密钥、工件头部指纹和当前实例必须匹配才可继续验证或恢复。定时备份密码密文也依赖这把本机密钥；只复制数据库或单独替换此文件都会使相关密文和工件不可用。`config/encryption.key`、未加密备份中的该文件及其中可能包含的 TLS 私钥都必须按凭据材料保护，不能写入日志或交给不受信任方。
 - OAuth 中转使用 `OAUTH_RELAY_ENCRYPTION_KEY`，可由 `main.OAuthRelayEncryptionKey` ldflags 或环境变量 / `config/.env` 注入，环境变量优先。
 
 浏览器 Cookie、CSRF、初始化管理员、API Key 和可信来源等安全契约见 [认证会话](../architecture/authentication-sessions.md)。

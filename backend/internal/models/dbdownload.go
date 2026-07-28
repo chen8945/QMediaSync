@@ -18,6 +18,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/realtime"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 )
 
@@ -569,6 +570,11 @@ func createDownloadTaskWithDB(tx *gorm.DB, task *DbDownloadTask) error {
 
 // 添加任务
 func AddDownloadTaskFromSyncFile(file *SyncFile) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	source := DownloadSourceStrm
 	switch file.SourceType {
 	case SourceTypeLocal:
@@ -647,7 +653,7 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 		task.RemoteFullPath = ""
 		task.LocalSourcePath = file.PickCode
 	}
-	err := createDownloadTaskWithDB(db.Db, task)
+	err = createDownloadTaskWithDB(db.Db, task)
 	if errors.Is(err, errActiveDownloadTaskExists) {
 		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
 	}
@@ -658,6 +664,11 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 }
 
 func AddDownloadTaskFromEmbyMedia(url, itemId, itemName string) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	// 先检查是否存在
 	scope := downloadTaskScope{source: DownloadSourceEmbyMedia, sourceType: SourceTypeEmbyMedia}
 	if task := checkDownloadTaskExistByColumn(scope, "remote_download_url", url); task != nil {
@@ -675,7 +686,7 @@ func AddDownloadTaskFromEmbyMedia(url, itemId, itemName string) error {
 		Size:              0,
 		SourceType:        SourceTypeEmbyMedia,
 	}
-	err := createDownloadTaskWithDB(db.Db, task)
+	err = createDownloadTaskWithDB(db.Db, task)
 	if errors.Is(err, errActiveDownloadTaskExists) {
 		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
 	}
@@ -712,6 +723,12 @@ func GetDownloadingCount() int64 {
 
 // RetryFailedDownloadTasks 重试失败的下载任务
 func RetryFailedDownloadTasks(maxRetry int) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
 	var failedTasks []DbDownloadTask
 	if err := db.Db.
 		Where("status = ? AND retry_count < ?", DownloadStatusFailed, maxRetry).
@@ -858,6 +875,19 @@ func ClearDownloadSuccessAndFailed() error {
 	}
 	publishDownloadQueueChanged(nil, "clear_success_failed")
 	return err
+}
+
+// CountRunningDownloadTasks 统计仍在执行的下载任务。
+// 备份和恢复以它判定下载队列是否真正静止，停止请求本身不是静止证明。
+func CountRunningDownloadTasks() int {
+	var running int64
+	if err := db.Db.Model(&DbDownloadTask{}).
+		Where("status = ?", DownloadStatusDownloading).
+		Count(&running).Error; err != nil {
+		helpers.AppLogger.Warnf("统计下载中的任务失败：%v", err)
+		return 0
+	}
+	return int(running)
 }
 
 func UpdateDownloadingToPending() error {

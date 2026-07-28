@@ -16,6 +16,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -831,12 +832,17 @@ func hasActiveDirectoryUploadTaskWithDB(tx *gorm.DB, uploadTaskID uint, filePath
 }
 
 func (service *Service) createDirectoryUploadTaskWithProcessedClaim(task *models.DbUploadTask, rule *models.DirectoryUploadRule, rel string, filePath string, state processedSourceState, options ...handleStableFileOptions) (bool, error) {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return false, err
+	}
+	defer releaseAdmission()
 	var option handleStableFileOptions
 	if len(options) > 0 {
 		option = options[0]
 	}
 	var created bool
-	err := db.Db.Transaction(func(tx *gorm.DB) error {
+	err = db.Db.Transaction(func(tx *gorm.DB) error {
 		claimed, supersededUploadTaskID, err := service.claimDirectoryUploadProcessedWithDB(tx, rule, rel, filePath, state, option)
 		if err != nil || !claimed {
 			return err

@@ -12,7 +12,9 @@
 
 数据库结构、默认数据和版本迁移由 `backend/internal/models/migrator.go` 统一处理：
 
-- `AllTables` 定义了建表、修复、备份和恢复会遍历的表集合。
+- `AllTables` 定义了建表、修复和表目录的源集合；`MasterTableCatalog()` 从它生成带稳定 ID、物理表名、导入顺序和用途策略的目录，供备份恢复与 SQLite→PostgreSQL 迁移选择表。目录顺序必须先父表后依赖表，使导入顺序和反向清理顺序都满足物理外键。
+- 迁移选择器覆盖该共享目录的全部应用表（包括 `BackupRecord`），并用稳定表 ID 而非 Go 结构体名作为迁移包清单和数据文件标识；常规备份恢复选择器排除 `BackupRecord`。迁移包的完整性与导入状态不写入业务表，因此启动重试仍可发现并验证 `migrate.zip`。
+- `models.SchemaVersion` 是写入备份工件的结构兼容版本，与 `migrator.version_code` 是两个独立概念：前者决定工件能否被当前实例恢复（高版本工件一律拒绝，低版本导入后由迁移链升级），后者驱动本地数据库的逐步升级。做出不向后兼容的表或字段变更时必须递增它。
 - `InitDB()` 负责首次启动时的全量初始化。
 - `Migrate()` 负责已有数据库的版本升级。
 - `BatchCreateTable()` 负责补齐缺失的表、字段和索引。
@@ -92,8 +94,9 @@
 | 58 | 59 | `settings` 新增 115 直链缓存有效性检查开关和总超时。 |
 | 59 | 60 | 新增 `sync_path_idempotency_records`，用于同步目录创建的幂等重试；`emby_library_refresh_tasks` 新增 `task_key` 用于任务去重，item 定向刷新任务的 `library_id` 回填为真实媒体库 ID 或为空。 |
 | 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
+| 61 | 62 | `backup_config` 新增仅供定时备份使用的本机 AES-GCM 包装密码密文；`backup_record` 新增工件格式、非敏感验证状态和目录清点缓存身份字段。升级时会把文件仍存在的已完成旧记录标记为 `legacy`，维持既有自动清理归属。 |
 
-当前数据库版本是 `61`。
+当前数据库版本是 `62`。
 
 ## 不变量
 
@@ -135,7 +138,9 @@
 | `strm_generation.status` | `pending`、`running`、`finalizing`、`waiting_children`、`completed`、`failed`、`cancelled` |
 | `emby_refresh.target_type` | `library`、`item` |
 | `backup.status` | `pending`、`running`、`completed`、`failed`、`cancelled`、`timeout` |
-| `backup.type` | `manual`、`auto` |
+| `backup.type` | `manual`、`auto`、`legacy`、`imported`、`temporary_upload` |
+| `backup.format` | `v1`、`legacy` |
+| `backup.verification_state` | `verified`、`pending_password`、`invalid` |
 | `notification.type` | `sync_finish`、`sync_error`、`scrape_finish`、`scrape_error`、`system_alert`、`media_added`、`media_removed`、`playback_start`、`playback_pause`、`playback_stop` |
 | `notification.priority` | `high`、`normal`、`low` |
 
@@ -167,7 +172,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `61`。
+- `version_code`：当前数据库版本号，当前值为 `62`。
 
 ### `users`
 
@@ -956,10 +961,10 @@ STRM 生成任务表，上传完成、远端已存在跳过和 [STRM Webhook](st
 
 - `backup_enabled`：是否启用自动备份。
 - `backup_cron`：备份 Cron 表达式。
-- `backup_path`：备份存储路径。
 - `backup_retention`：保留天数。
 - `backup_max_count`：最多保留数量。
-- `backup_compress`：是否压缩备份。
+- 旧版本升级而来的数据库可能仍有 `backup_path` 和 `backup_compress` 列。它们不是当前 `BackupConfig` 模型或 API 字段，也不会被 DDL 删除以保持已有数据库兼容；v1 工件始终使用实例配置目录下的 `backups/`，其容器和压缩策略固定。
+- `scheduled_backup_password_ciphertext`：仅用于 Cron 自动备份的本机 AES-GCM 包装密码密文；读取 API 不返回该字段。
 
 ### `backup_record`
 
@@ -972,7 +977,11 @@ STRM 生成任务表，上传完成、远端已存在跳过和 [STRM Webhook](st
 - `database_size`：数据库大小，单位字节。
 - `table_count`：备份表数量。
 - `backup_duration`：备份耗时，单位秒。
-- `backup_type`：备份类型，`manual` 或 `auto`。
+- `backup_type`：备份来源，`manual`、`auto`、`legacy`、`imported` 或 `temporary_upload`。
+- `format`：工件格式，`v1` 或 `legacy`；旧格式工件不可用于常规恢复。
+- `verification_state`：非敏感验证状态，`verified`、`pending_password` 或 `invalid`。
+- `verification_error_code`：验证失败时的稳定安全错误码。
+- `inventory_path`、`inventory_file_size`、`inventory_modified_at`：目录清点的规范路径与文件身份缓存；后两者分别为字节数和 Unix 秒修改时间。
 - `created_reason`：创建原因。
 - `failure_reason`：失败原因。
 - `compression_ratio`：压缩比。

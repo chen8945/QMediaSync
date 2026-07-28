@@ -38,6 +38,10 @@
 
 `GET /api/session` 是会话状态查询。无 Cookie、无效或过期 JWT、已撤销会话均返回 `200` 和 `data.authenticated=false`；有效会话返回用户、会话和 CSRF 数据，始终设置 `Cache-Control: no-store, private`。内部故障返回 `5xx`，不得伪装匿名状态。登录成功后前端先调用该接口确认 Cookie；只有明确返回未认证时才提示 Cookie 问题。
 
+## 备份操作状态能力
+
+`GET /api/backup/status` 是备份或恢复操作页的独立状态查询，注册在 JWT/API Key 认证之前，以便维护屏障关闭业务认证链后仍能读取终态。它不是浏览器会话或 API Key 的替代：请求必须同时带 `operation_id` 查询参数和仅在受理响应中出现一次的 `X-Backup-Operation-Token` 请求头，令牌不能写入 URL、Cookie、Web Storage、日志或普通 axios 鉴权链。该接口只读取 `config/state/backup/` 的受限状态文件，响应为 `Cache-Control: no-store`；自动回滚失败的只读诊断模式仍执行相同的双凭据校验。
+
 ## API Key、可信来源与下载代理
 
 - API Key 接受 `X-API-Key` 或 `?api_key=`，不需要 CSRF。`/emby/webhook` 默认鉴权，优先 header，保留查询参数兼容只能配置 URL 的 Emby Webhook。
@@ -54,6 +58,7 @@
 - 待确认的 TOTP 密钥不得用于登录；启用和关闭两步验证时都必须重新验证当前用户的敏感凭据，并且不得泄露 TOTP 密钥。
 - 未认证的 `/api/session` 是正常匿名状态，必须返回 `200` 与 `authenticated=false`，不能返回伪造的认证错误。
 - API Key 明文只能在创建响应出现一次，日志和数据库不得保存完整值。
+- 备份操作令牌不是登录凭据：明文只能在受理响应出现一次，持久化时只保存其 SHA-256，状态查询必须同时校验操作 ID 和请求头令牌。
 - 跨源部署必须显式配置可信来源，SSE 不作为跨源 Cookie 通道。
 
 ## 验证方式

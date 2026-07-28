@@ -10,6 +10,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 )
 
 // RuleRuntimeMode 是目录监控规则运行模式。
@@ -453,6 +454,11 @@ func InitDirectoryUploadService() {
 
 // InitDirectoryUploadServiceWithError 初始化目录监控上传服务并返回启动错误。
 func InitDirectoryUploadServiceWithError() error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	globalService.Lock()
 	defer globalService.Unlock()
 	if globalService.service != nil {
@@ -506,6 +512,9 @@ func ReloadDirectoryUploadServiceWithError() error {
 
 // ScanRuleNow 使用运行中的目录上传服务执行一次补偿扫描。
 func ScanRuleNow(ctx context.Context, rule *models.DirectoryUploadRule) (int, error) {
+	if taskgate.IsBlocked() {
+		return 0, taskgate.ErrTaskAdmissionBlocked
+	}
 	globalService.Lock()
 	service := globalService.service
 	globalService.Unlock()

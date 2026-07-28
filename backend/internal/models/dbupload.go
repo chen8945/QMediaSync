@@ -14,6 +14,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/realtime"
+	"qmediasync/internal/taskgate"
 	openapiclient "qmediasync/openxpanapi"
 
 	"gorm.io/gorm"
@@ -828,6 +829,12 @@ func replacedRemoteFileIDFromSyncFile(file *SyncFile) string {
 
 // AddDirectoryMonitorUploadTask 添加目录监控产生的上传任务。
 func AddDirectoryMonitorUploadTask(task *DbUploadTask) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
 	if err := SaveDirectoryMonitorUploadTaskWithDB(db.Db, task); err != nil {
 		return err
 	}
@@ -837,6 +844,9 @@ func AddDirectoryMonitorUploadTask(task *DbUploadTask) error {
 
 // SaveDirectoryMonitorUploadTaskWithDB 在指定事务中保存目录监控上传任务。
 func SaveDirectoryMonitorUploadTaskWithDB(tx *gorm.DB, task *DbUploadTask) error {
+	if taskgate.IsBlocked() {
+		return taskgate.ErrTaskAdmissionBlocked
+	}
 	if tx == nil {
 		return errors.New("数据库连接为空")
 	}
@@ -882,6 +892,11 @@ func PublishUploadTaskChanged(task *DbUploadTask, reason string) {
 
 // 添加 STRM 同步产生的上传任务
 func AddUploadTaskFromSyncFile(file *SyncFile) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	remoteFullPath := remoteFullPath(file.Path, file.FileName)
 	// 先检查是否存在
 	if task := CheckUploadTaskExist(UploadSourceStrm, file.SourceType, file.AccountId, remoteFullPath); task != nil {
@@ -908,7 +923,7 @@ func AddUploadTaskFromSyncFile(file *SyncFile) error {
 		// 只有覆盖已有 SyncFile 的流程才会传入已存在的远端文件 ID；新上传任务不复用它。
 		task.ReplacedRemoteFileId = replacedRemoteFileID
 	}
-	err := createUploadTaskWithDB(db.Db, task)
+	err = createUploadTaskWithDB(db.Db, task)
 	if err != nil {
 		if errors.Is(err, errActiveUploadTaskExists) {
 			return activeUploadTaskExistsError(CheckUploadTaskExist(UploadSourceStrm, file.SourceType, file.AccountId, remoteFullPath))
@@ -923,6 +938,11 @@ func AddUploadTaskFromSyncFile(file *SyncFile) error {
 
 // 添加刮削整理产生的上传任务
 func AddUploadTaskFromMediaFile(mediaFile *ScrapeMediaFile, scrapePath *ScrapePath, fileName, localFullPath, remoteFullPath, remotePathId string, isSeasonOrTvshowFile bool) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	stat, err := os.Stat(localFullPath)
 	if err != nil {
 		helpers.AppLogger.Errorf("要上传的文件 %s 无法获取到文件信息，错误：%vs", localFullPath, err.Error())
@@ -1034,6 +1054,19 @@ func ClearUploadSuccessAndFailed() error {
 	return err
 }
 
+// CountRunningUploadTasks 统计仍在执行的上传任务，包含远端已完成但仍在收尾的任务。
+// 备份和恢复以它判定上传队列是否真正静止，停止请求本身不是静止证明。
+func CountRunningUploadTasks() int {
+	var running int64
+	if err := db.Db.Model(&DbUploadTask{}).
+		Where("status IN ?", []UploadStatus{UploadStatusUploading, UploadStatusRemoteCompletedFinalizing}).
+		Count(&running).Error; err != nil {
+		helpers.AppLogger.Warnf("统计上传中的任务失败：%v", err)
+		return 0
+	}
+	return int(running)
+}
+
 func UpdateUploadingToPending() error {
 	if err := db.Db.Model(&DbUploadTask{}).
 		Where("status = ?", UploadStatusUploading).
@@ -1052,6 +1085,12 @@ func UpdateUploadingToPending() error {
 }
 
 func RetryFailedUploadTasks(maxRetry int) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+
 	var failedTasks []DbUploadTask
 	if err := db.Db.Model(&DbUploadTask{}).
 		Select("id, source, source_type, account_id, remote_full_path").

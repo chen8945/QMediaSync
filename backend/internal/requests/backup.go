@@ -1,23 +1,29 @@
 package requests
 
 import (
+	"fmt"
 	"strings"
 
 	"qmediasync/internal/validation"
 )
 
 // BackupCreateRequest 创建备份请求。
+// Password 是本次工件密码，留空表示创建未加密工件并要求 ConfirmUnencrypted。
+// 服务端绝不以定时备份密码补全它。
 type BackupCreateRequest struct {
-	Reason string `json:"reason"`
+	Reason             string `json:"reason"`
+	Password           string `json:"password"`
+	ConfirmUnencrypted bool   `json:"confirm_unencrypted"`
 }
 
 // Validate 校验创建备份请求。
+// 密码按不透明字符串处理：既不裁剪首尾字符，也不做 Unicode 归一化。
 func (r *BackupCreateRequest) Validate() error {
 	r.Reason = strings.TrimSpace(r.Reason)
 	if r.Reason == "" {
 		r.Reason = "手动备份"
 	}
-	return nil
+	return validation.BackupPassword("password", r.Password)
 }
 
 // BackupListRequest 备份列表请求。
@@ -41,23 +47,53 @@ func (r *BackupListRequest) Normalize() {
 	}
 }
 
-// BackupRestoreRequest 备份恢复请求。
+const (
+	BackupRestorePhasePreflight = "preflight"
+	BackupRestorePhaseConfirm   = "confirm"
+)
+
+// BackupRestoreRequest 是既有恢复 URL 的两阶段请求。
+// JSON 用于已保存工件；form 标签用于上传工件的 multipart 预检和无文件确认。
 type BackupRestoreRequest struct {
-	RecordID uint `json:"record_id"`
+	Phase            string `json:"phase" form:"phase"`
+	RecordID         uint   `json:"record_id" form:"record_id"`
+	Password         string `json:"password" form:"password"`
+	PreflightID      string `json:"preflight_id" form:"preflight_id"`
+	ConfirmOverwrite bool   `json:"confirm_overwrite" form:"confirm_overwrite"`
 }
 
-// Validate 校验备份恢复请求。
+// Validate 校验恢复请求的 HTTP 边界字段。密码按不透明字符串处理，不裁剪也不归一化。
 func (r BackupRestoreRequest) Validate() error {
-	return validation.PositiveID("record_id", r.RecordID)
+	if err := validation.OneOfString("phase", r.Phase, []string{BackupRestorePhasePreflight, BackupRestorePhaseConfirm}); err != nil {
+		return err
+	}
+	if r.RecordID != 0 {
+		if err := validation.PositiveID("record_id", r.RecordID); err != nil {
+			return err
+		}
+	}
+	if err := validation.BackupPassword("password", r.Password); err != nil {
+		return err
+	}
+	if r.Phase == BackupRestorePhaseConfirm {
+		if strings.TrimSpace(r.PreflightID) == "" {
+			return fmt.Errorf("preflight_id：不能为空")
+		}
+		if !r.ConfirmOverwrite {
+			return fmt.Errorf("confirm_overwrite：必须确认完整覆盖恢复")
+		}
+	}
+	return nil
 }
 
 // BackupConfigUpdateRequest 更新备份配置请求。
 type BackupConfigUpdateRequest struct {
-	BackupEnabled   int    `json:"backup_enabled"`
-	BackupCron      string `json:"backup_cron"`
-	BackupRetention int    `json:"backup_retention"`
-	BackupMaxCount  int    `json:"backup_max_count"`
-	BackupCompress  int    `json:"backup_compress"`
+	BackupEnabled           int     `json:"backup_enabled"`
+	BackupCron              string  `json:"backup_cron"`
+	BackupRetention         int     `json:"backup_retention"`
+	BackupMaxCount          int     `json:"backup_max_count"`
+	ScheduledBackupPassword *string `json:"scheduled_backup_password"`
+	ConfirmUnencrypted      bool    `json:"confirm_unencrypted"`
 }
 
 // Validate 校验备份配置请求。
@@ -76,5 +112,8 @@ func (r BackupConfigUpdateRequest) Validate() error {
 	if err := validation.RangeInt("backup_max_count", r.BackupMaxCount, 0, 1000); err != nil {
 		return err
 	}
-	return validation.OneOfInt("backup_compress", r.BackupCompress, []int{0, 1})
+	if r.ScheduledBackupPassword != nil {
+		return validation.BackupPassword("scheduled_backup_password", *r.ScheduledBackupPassword)
+	}
+	return nil
 }

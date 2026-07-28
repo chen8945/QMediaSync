@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,6 +33,67 @@ func TestBatchCreateTableCreatesMigratorTable(t *testing.T) {
 	}
 	if !db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
 		t.Fatal("批量建表应创建活跃上传任务唯一索引")
+	}
+}
+
+func TestMigrateBackupRecordCatalogFieldsMarksOnlyExistingCompletedFiles(t *testing.T) {
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	if err := testDB.AutoMigrate(&BackupConfig{}, &BackupRecord{}); err != nil {
+		t.Fatalf("创建备份表失败: %v", err)
+	}
+
+	existingPath := filepath.Join(t.TempDir(), "existing.zip")
+	if err := os.WriteFile(existingPath, []byte("backup"), 0o600); err != nil {
+		t.Fatalf("创建测试备份文件失败: %v", err)
+	}
+	records := []BackupRecord{
+		{
+			Status:     BackupStatusCompleted,
+			FilePath:   existingPath,
+			BackupType: BackupTypeManual,
+			Format:     BackupFormatV1,
+		},
+		{
+			Status:     BackupStatusCompleted,
+			FilePath:   filepath.Join(t.TempDir(), "missing.zip"),
+			BackupType: BackupTypeManual,
+			Format:     BackupFormatV1,
+		},
+		{
+			Status:     BackupStatusFailed,
+			FilePath:   existingPath,
+			BackupType: BackupTypeManual,
+			Format:     BackupFormatV1,
+		},
+	}
+	if err := testDB.Create(&records).Error; err != nil {
+		t.Fatalf("创建测试备份记录失败: %v", err)
+	}
+
+	if err := migrateBackupRecordCatalogFields(testDB); err != nil {
+		t.Fatalf("迁移备份目录字段失败: %v", err)
+	}
+
+	var migrated, missing, failed BackupRecord
+	if err := testDB.First(&migrated, records[0].ID).Error; err != nil {
+		t.Fatalf("读取已迁移记录失败: %v", err)
+	}
+	if err := testDB.First(&missing, records[1].ID).Error; err != nil {
+		t.Fatalf("读取缺失文件记录失败: %v", err)
+	}
+	if err := testDB.First(&failed, records[2].ID).Error; err != nil {
+		t.Fatalf("读取失败记录失败: %v", err)
+	}
+	if migrated.BackupType != BackupTypeLegacy || migrated.Format != BackupFormatLegacy {
+		t.Fatalf("现存已完成记录 = type %q format %q，期望 legacy", migrated.BackupType, migrated.Format)
+	}
+	for _, record := range []BackupRecord{missing, failed} {
+		if record.BackupType != BackupTypeManual || record.Format != BackupFormatV1 {
+			t.Fatalf("不应迁移的记录 = type %q format %q", record.BackupType, record.Format)
+		}
 	}
 }
 

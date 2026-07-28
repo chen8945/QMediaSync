@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/db"
 	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/taskgate"
 )
 
 const (
@@ -258,6 +259,9 @@ func RequestEmbyLibraryRefreshBySyncPathId(syncPathId uint) error {
 		helpers.AppLogger.Infof("临时同步路径不触发 Emby 媒体库刷新")
 		return nil
 	}
+	if taskgate.IsBlocked() {
+		return taskgate.ErrTaskAdmissionBlocked
+	}
 	if GlobalEmbyConfig == nil || GlobalEmbyConfig.EmbyUrl == "" || GlobalEmbyConfig.EmbyApiKey == "" || GlobalEmbyConfig.EnableRefreshLibrary == 0 {
 		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
 		return nil
@@ -292,6 +296,11 @@ func RequestEmbyRefreshTargets(syncPathId uint, targets []EmbyRefreshTarget) err
 		helpers.AppLogger.Infof("临时同步路径不触发 Emby 媒体库刷新")
 		return nil
 	}
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	if !isEmbyLibraryRefreshEnabled() {
 		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
 		return nil
@@ -800,6 +809,9 @@ func RequestEmbyRefreshBySyncFile(syncFile *SyncFile) error {
 	if syncFile == nil {
 		return nil
 	}
+	if taskgate.IsBlocked() {
+		return taskgate.ErrTaskAdmissionBlocked
+	}
 	if !isEmbyLibraryRefreshEnabled() {
 		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
 		return nil
@@ -811,6 +823,11 @@ func RequestEmbyRefreshBySyncFile(syncFile *SyncFile) error {
 	if target.TargetType != EmbyRefreshTargetTypeItem || target.ItemID == "" {
 		return RequestEmbyLibraryRefreshBySyncPathId(syncFile.SyncPathId)
 	}
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	if err := upsertEmbyItemRefreshTask(target, syncFile.SyncPathId, nowUnix()); err != nil {
 		return err
 	}
@@ -1590,6 +1607,9 @@ func runEmbyLibraryRefreshScanner() {
 }
 
 func CheckPendingEmbyLibraryRefreshTasks() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	if !isEmbyLibraryRefreshEnabled() {
 		if markEmbyRefreshScannerConfigState(false) {
 			helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，暂停待刷新任务扫描")
@@ -1650,16 +1670,26 @@ func CheckPendingEmbyLibraryRefreshTasks() {
 }
 
 func refreshEmbyLibraryTask(task *EmbyLibraryRefreshTask) error {
-	if GlobalEmbyConfig == nil || GlobalEmbyConfig.EmbyUrl == "" || GlobalEmbyConfig.EmbyApiKey == "" || GlobalEmbyConfig.EnableRefreshLibrary == 0 {
+	if task == nil {
 		return nil
 	}
-	if task == nil {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return nil
+	}
+	defer releaseAdmission()
+
+	if taskgate.IsBlocked() {
+		return nil
+	}
+	if GlobalEmbyConfig == nil || GlobalEmbyConfig.EmbyUrl == "" || GlobalEmbyConfig.EmbyApiKey == "" || GlobalEmbyConfig.EnableRefreshLibrary == 0 {
 		return nil
 	}
 	claimed, err := claimEmbyRefreshTaskForExecution(task)
 	if err != nil || !claimed {
 		return err
 	}
+	releaseAdmission()
 
 	client := embyclientrestgo.NewClient(GlobalEmbyConfig.EmbyUrl, GlobalEmbyConfig.EmbyApiKey)
 	if executeErr := executeEmbyRefreshTask(client, task); executeErr != nil {
@@ -1669,6 +1699,19 @@ func refreshEmbyLibraryTask(task *EmbyLibraryRefreshTask) error {
 		return executeErr
 	}
 	return markEmbyRefreshTaskCompleted(task)
+}
+
+// CountRunningEmbyLibraryRefreshTasks 统计已经领取、仍在调用 Emby 的刷新任务。
+// 备份和恢复在停止新任务准入后以它等待既有刷新完成。
+func CountRunningEmbyLibraryRefreshTasks() int {
+	var running int64
+	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).
+		Where("status = ?", EmbyLibraryRefreshStatusRefreshing).
+		Count(&running).Error; err != nil {
+		helpers.AppLogger.Warnf("统计运行中的 Emby 媒体库刷新任务失败：%v", err)
+		return 0
+	}
+	return int(running)
 }
 
 func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask) (bool, error) {

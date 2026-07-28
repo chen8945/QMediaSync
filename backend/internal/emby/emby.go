@@ -14,6 +14,7 @@ import (
 	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 )
 
 var embySyncRunning int32
@@ -25,7 +26,7 @@ const (
 
 // IsEmbySyncRunning 检查是否有 Emby 条目同步任务正在运行。
 func IsEmbySyncRunning() bool {
-	return atomic.LoadInt32(&embySyncRunning) == 1 || models.IsEmbySyncRunningInDB()
+	return taskgate.IsBlocked() || atomic.LoadInt32(&embySyncRunning) == 1 || models.IsEmbySyncRunningInDB()
 }
 
 func SetEmbySyncRunning(running bool) {
@@ -44,6 +45,13 @@ type embySyncTask struct {
 
 // PerformEmbySync 全量同步 Emby 条目到本地数据库。
 func PerformEmbySync() (result int, err error) {
+	releaseAdmission, admissionErr := taskgate.Admit()
+	if admissionErr != nil {
+		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+		return 0, nil
+	}
+	defer releaseAdmission()
+
 	// 检查是否已有任务在运行，避免并发执行
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
@@ -72,6 +80,7 @@ func PerformEmbySync() (result int, err error) {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return 0, nil
 	}
+	releaseAdmission()
 	var processed int64
 	defer func() {
 		atomic.StoreInt32(&embySyncRunning, 0)
@@ -253,6 +262,13 @@ func buildMinDateLastSaved(cursor int64, overlapSeconds int64) string {
 
 // PerformEmbyIncrementalSync 增量同步 Emby 条目到本地数据库。
 func PerformEmbyIncrementalSync() (result int, err error) {
+	releaseAdmission, admissionErr := taskgate.Admit()
+	if admissionErr != nil {
+		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+		return 0, nil
+	}
+	defer releaseAdmission()
+
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return 0, nil
@@ -281,6 +297,7 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return 0, nil
 	}
+	releaseAdmission()
 	var processed int64
 	defer func() {
 		atomic.StoreInt32(&embySyncRunning, 0)
@@ -410,6 +427,13 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 	if strings.TrimSpace(itemID) == "" {
 		return false, nil
 	}
+	releaseAdmission, admissionErr := taskgate.Admit()
+	if admissionErr != nil {
+		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过 Webhook 单条同步：%s", itemID)
+		return false, nil
+	}
+	defer releaseAdmission()
+
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过 Webhook 单条同步：%s", itemID)
 		return false, nil
@@ -437,6 +461,7 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过 Webhook 单条同步：%s", itemID)
 		return false, nil
 	}
+	releaseAdmission()
 
 	var processed int64
 	defer func() {
@@ -598,6 +623,13 @@ func isEmbyLibrarySelected(config *models.EmbyConfig, libraryID string) bool {
 
 // IncrementalSyncEmbyMediaItems 按 item ID 同步 Emby 条目到本地。
 func IncrementalSyncEmbyMediaItems(itemId string) (err error) {
+	releaseAdmission, admissionErr := taskgate.Admit()
+	if admissionErr != nil {
+		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+		return nil
+	}
+	defer releaseAdmission()
+
 	// 检查是否已有任务在运行，避免并发执行
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
@@ -626,6 +658,7 @@ func IncrementalSyncEmbyMediaItems(itemId string) (err error) {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return nil
 	}
+	releaseAdmission()
 	var processed int64
 	defer func() {
 		atomic.StoreInt32(&embySyncRunning, 0)

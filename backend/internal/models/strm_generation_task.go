@@ -12,6 +12,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/taskgate"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -105,11 +106,21 @@ func writeStrmRequestHashField(builder *strings.Builder, value string) {
 
 // EnqueueStrmGenerationTask 创建 STRM 生成任务，request_hash 非空时做幂等去重。
 func EnqueueStrmGenerationTask(task *StrmGenerationTask) (*StrmGenerationTask, error) {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseAdmission()
 	return EnqueueStrmGenerationTaskWithDB(db.Db, task)
 }
 
 // EnqueueStrmGenerationTaskWithLegacyHashes 创建 STRM 生成任务，并允许复用旧格式活跃 request_hash。
 func EnqueueStrmGenerationTaskWithLegacyHashes(task *StrmGenerationTask, legacyRequestHashes ...string) (*StrmGenerationTask, error) {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseAdmission()
 	return EnqueueStrmGenerationTaskWithDBAndLegacyHashes(db.Db, task, legacyRequestHashes...)
 }
 
@@ -120,6 +131,9 @@ func EnqueueStrmGenerationTaskWithDB(tx *gorm.DB, task *StrmGenerationTask) (*St
 
 // EnqueueStrmGenerationTaskWithDBAndLegacyHashes 在指定事务中创建 STRM 任务，并允许复用旧格式活跃 request_hash。
 func EnqueueStrmGenerationTaskWithDBAndLegacyHashes(tx *gorm.DB, task *StrmGenerationTask, legacyRequestHashes ...string) (*StrmGenerationTask, error) {
+	if taskgate.IsBlocked() {
+		return nil, taskgate.ErrTaskAdmissionBlocked
+	}
 	if tx == nil {
 		return nil, errors.New("数据库连接为空")
 	}
@@ -529,6 +543,19 @@ func GetPendingStrmGenerationTasks(limit int) ([]*StrmGenerationTask, error) {
 }
 
 // ResetRunningStrmGenerationTasks 将进程退出前的运行中任务恢复为待处理。
+// CountRunningStrmGenerationTasks 统计仍在执行的 STRM 生成任务。
+// 备份和恢复以它判定生成 worker 是否真正静止，停止请求本身不是静止证明。
+func CountRunningStrmGenerationTasks() int {
+	var running int64
+	if err := db.Db.Model(&StrmGenerationTask{}).
+		Where("status = ?", StrmGenerationStatusRunning).
+		Count(&running).Error; err != nil {
+		helpers.AppLogger.Warnf("统计执行中的 STRM 生成任务失败：%v", err)
+		return 0
+	}
+	return int(running)
+}
+
 func ResetRunningStrmGenerationTasks() error {
 	return db.Db.Model(&StrmGenerationTask{}).
 		Where("status = ?", StrmGenerationStatusRunning).

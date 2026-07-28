@@ -24,6 +24,7 @@
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
 | 配置、密钥或数据库迁移 | `helpers`、`models` 或相关控制器包测试 | 配置、数据库 schema 与运维 |
+| SQLite→PostgreSQL 迁移包 | `internal/migrate`、`models` 及启动编排的测试；有 PostgreSQL 15+ 时执行手工迁移验证 | 数据库 schema 与运维 |
 | Vue 组件、组合式函数或 HTTP 客户端 | `pnpm run test`、`pnpm lint`、`pnpm format:check`、`pnpm run type-check` | AI 协作说明、请求校验 |
 | 前端生产集成 | `pnpm run test`、`pnpm run build`、`pnpm run check:build` | 本地开发、发布流程 |
 | 后端可执行文件或发布配置 | `go build` 或发布文档中的对应构建命令 | 发布流程 |
@@ -39,6 +40,7 @@
 (cd backend && go test ./internal/helpers/)
 (cd backend && go test ./internal/models/)
 (cd backend && go test ./internal/synccron/)
+(cd backend && go test ./internal/migrate/)
 
 # 指定测试
 (cd backend && go test ./internal/helpers/ -run TestExtractFilename)
@@ -48,11 +50,16 @@
 (cd backend && go test -cover ./...)
 (cd backend && go vet ./...)
 
+# 竞态检测：改动并发代码（goroutine、共享状态、后台任务）时按受影响包运行
+(cd backend && go test -race ./internal/backup/ ./internal/controllers/ ./internal/directoryupload/ ./internal/models/ ./internal/synccron/ ./internal/taskgate/)
+
 # 统一维护 import 分组
 (cd backend && goimports -local qmediasync -w .)
 ```
 
 项目没有配置 Go lint 工具。Go 文件的 import 以 `goimports -local qmediasync` 的实际输出为准；仅在用户请求或本次变更确实需要格式化时运行会写入文件的命令，并检查不会带入无关改动。
+
+`-race` 不在 CI 的验证门槛内，全量 `go test -race ./...` 也会让部分依赖固定等待时间的用例超时（例如 `internal/controllers` 的凭据会话并发用例）。因此按改动涉及的包运行，而不是全量运行。
 
 ## 前端命令
 
@@ -97,6 +104,10 @@ docker build -f docker/source.Dockerfile -t qmediasync .
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。
 - 仅依赖构建产物的检查使用 `*.check.mjs`，通过独立脚本在 `pnpm run build` 后执行，不能使用 Vitest 测试文件后缀。
 - 当包内 Go 测试、前端测试、lint、类型检查和生产构建都无法覆盖明确的长期风险时，优先补充对应测试；无法自动覆盖时，在对应契约文档中写明人工检查步骤和剩余风险。
+
+### PostgreSQL 迁移手工验证
+
+本仓库不在 CI 中提供 PostgreSQL 服务。具备 PostgreSQL 15+ 的 embedded 与 external 环境时，按以下步骤验证迁移：从包含代表性数据的内嵌数据库创建 `migrate.zip`，配置外部目标并重启；确认共享表目录中的全部表、行数据、`migrator.version_code` 和后续自增写入均正确，再确认包已删除。随后分别以缺失目标表、篡改表 ID/清单和强制插入失败重试，确认启动被阻断、`migrate.zip` 保留且修复后能从同一包完成迁移。没有该环境时，必须把 embedded/external 的真实事务与序列行为记录为未验证风险，不能以 SQLite 单元测试替代。
 
 ## 文档验证
 

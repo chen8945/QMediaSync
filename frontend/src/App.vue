@@ -130,39 +130,33 @@
     <div class="backup-progress-content">
       <!-- 进度条 -->
       <el-progress
-        :percentage="backupStore.progress?.progress || 0"
+        :percentage="backupStore.progressPercent"
         :status="getProgressStatus()"
         :stroke-width="20"
       />
 
       <!-- 当前步骤 -->
-      <div v-if="backupStore.progress?.current_step" class="progress-step">
+      <div v-if="backupStore.operation?.progress?.message" class="progress-step">
         <el-icon class="is-loading">
           <Loading />
         </el-icon>
-        <span>{{ backupStore.progress.current_step }}</span>
+        <span>{{ backupStore.operation.progress.message }}</span>
       </div>
 
       <!-- 表处理进度 -->
-      <div v-if="backupStore.progress?.total_tables" class="progress-tables">
+      <div v-if="backupStore.operation?.progress?.total" class="progress-tables">
         <span
-          >已处理：{{ backupStore.progress.processed_tables || 0 }} /
-          {{ backupStore.progress.total_tables }} 个表</span
+          >已处理：{{ backupStore.operation.progress.completed }} /
+          {{ backupStore.operation.progress.total }} 个表</span
         >
       </div>
 
       <!-- 时间信息 -->
-      <div v-if="backupStore.progress?.elapsed_seconds !== undefined" class="progress-time">
+      <div v-if="backupStore.operation" class="progress-time">
         <div class="time-item">
           <span class="label">已耗时：</span>
-          <span class="value">{{ formatDuration(backupStore.progress.elapsed_seconds) }}</span>
-        </div>
-        <div v-if="backupStore.progress.estimated_seconds" class="time-item">
-          <span class="label">预计剩余：</span>
           <span class="value">{{
-            formatDuration(
-              backupStore.progress.estimated_seconds - backupStore.progress.elapsed_seconds,
-            )
+            formatDuration(backupStore.operation.updated_at - backupStore.operation.started_at)
           }}</span>
         </div>
       </div>
@@ -431,12 +425,10 @@ const defaultOpeneds = computed(() => {
 
 // 获取进度状态样式
 const getProgressStatus = () => {
-  if (!backupStore.progress?.status) return undefined
-  switch (backupStore.progress.status) {
+  switch (backupStore.operation?.state) {
     case 'completed':
       return 'success'
     case 'failed':
-    case 'timeout':
       return 'exception'
     case 'cancelled':
       return 'warning'

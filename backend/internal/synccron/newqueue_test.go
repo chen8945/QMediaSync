@@ -1,6 +1,7 @@
 package synccron
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -8,7 +9,41 @@ import (
 	"time"
 
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 )
+
+func TestTaskAdmissionGateBlocksSyncEnqueueAndNewSourceQueue(t *testing.T) {
+	taskgate.BlockNewTasks()
+	t.Cleanup(taskgate.AllowNewTasks)
+
+	queue := NewQueuePerType(models.SourceType115)
+	if queue.status != QueueStatusPaused {
+		t.Fatalf("准入关闭时新来源队列状态 = %s，期望 %s", queue.status, QueueStatusPaused)
+	}
+
+	err := queue.AddTask(&NewSyncTask{ID: 1, TaskType: SyncTaskTypeStrm})
+	if !errors.Is(err, taskgate.ErrTaskAdmissionBlocked) {
+		t.Fatalf("AddTask() error = %v，期望任务准入被拒绝", err)
+	}
+}
+
+func TestTaskAdmissionGateBlocksCronInitialization(t *testing.T) {
+	oldSyncCron, oldScrapeCron := SyncCron, ScrapeCron
+	SyncCron, ScrapeCron = nil, nil
+	t.Cleanup(func() {
+		SyncCron, ScrapeCron = oldSyncCron, oldScrapeCron
+	})
+	taskgate.BlockNewTasks()
+	t.Cleanup(taskgate.AllowNewTasks)
+
+	if err := InitSyncCronWithError(); !errors.Is(err, taskgate.ErrTaskAdmissionBlocked) {
+		t.Fatalf("InitSyncCronWithError() error = %v，期望任务准入被拒绝", err)
+	}
+	InitScrapeCron()
+	if SyncCron != nil || ScrapeCron != nil {
+		t.Fatal("任务准入关闭时不能创建 Cron 调度器")
+	}
+}
 
 func TestNewSyncQueuePerType(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
@@ -212,6 +247,28 @@ func TestPauseResume(t *testing.T) {
 	}
 
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestPauseKeepsBufferedTaskWaiting(t *testing.T) {
+	queue := NewQueuePerType(models.SourceType115)
+	queue.Pause()
+	task := &NewSyncTask{ID: 1, TaskType: SyncTaskTypeStrm}
+	queue.waitingQueue[task.Key()] = task
+	queue.taskChan <- task
+
+	go queue.process()
+	t.Cleanup(queue.Stop)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if len(queue.taskChan) == 0 && queue.CheckTaskStatus(task.ID, task.TaskType) == TaskStatusWaiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("暂停后已缓冲的任务不应进入运行状态")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestNewSyncQueueManager(t *testing.T) {

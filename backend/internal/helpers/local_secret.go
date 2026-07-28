@@ -102,6 +102,16 @@ func DecryptLocalSecret(encrypted string) (string, error) {
 	return string(plaintext), nil
 }
 
+// LocalEncryptionKeyText 返回本机加密密钥的有效文本。
+// 备份工件以它的 UTF-8 字节散列作为实例指纹，因此这里必须与 InitEncryptionKey 读取到的
+// 去空白文本完全一致，不能返回解码后的密钥字节。
+func LocalEncryptionKeyText() (string, error) {
+	if err := InitEncryptionKey(); err != nil {
+		return "", err
+	}
+	return localEncryptionKey, nil
+}
+
 func localSecretGCM() (cipher.AEAD, error) {
 	key := localSecretKey()
 	block, err := aes.NewCipher(key)

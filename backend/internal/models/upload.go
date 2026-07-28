@@ -7,6 +7,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/realtime"
+	"qmediasync/internal/taskgate"
 )
 
 // UploadQueue 上传队列
@@ -16,6 +17,7 @@ type UQ struct {
 	mutex          sync.RWMutex       // 读写锁，保护 TaskMap
 	running        bool               // 队列是否正在运行
 	retryTriggered bool               // 当前空闲周期是否已触发失败重试
+	workerWG       sync.WaitGroup     // 等待已派发任务在维护屏障前退出
 }
 
 // 全局上传队列实例
@@ -44,6 +46,11 @@ func NewUq(maxConcurrency int) *UQ {
 
 // Start 启动上传队列
 func (uq *UQ) Start() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	uq.mutex.Lock()
 	if uq.running {
 		uq.mutex.Unlock()
@@ -56,11 +63,19 @@ func (uq *UQ) Start() {
 	realtime.BroadcastQueueStatusChanged(realtime.EventUploadQueueStatusChanged, true)
 	// 启动工作协程
 	for i := 0; i < uq.numWorkers; i++ {
-		go uq.worker()
+		uq.workerWG.Add(1)
+		go func() {
+			defer uq.workerWG.Done()
+			uq.worker()
+		}()
 	}
 
 	// 启动任务调度协程
-	go uq.taskScheduler()
+	uq.workerWG.Add(1)
+	go func() {
+		defer uq.workerWG.Done()
+		uq.taskScheduler()
+	}()
 }
 
 // worker 执行上传任务
@@ -203,8 +218,18 @@ func (uq *UQ) Stop() {
 	helpers.AppLogger.Info("上传队列已停止")
 }
 
+// StopAndWait 停止队列并等待已派发的 worker 退出。
+// 维护屏障只有在它返回后才能开始快照，避免已从通道取出的任务继续写入。
+func (uq *UQ) StopAndWait() {
+	uq.Stop()
+	uq.workerWG.Wait()
+}
+
 // Restart 重启上传队列
 func (uq *UQ) Restart() {
+	if taskgate.IsBlocked() {
+		return
+	}
 	uq.Stop()
 	uq.Start()
 	helpers.AppLogger.Info("上传队列已重启")

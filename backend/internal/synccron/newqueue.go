@@ -12,6 +12,7 @@ import (
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/scrape"
 	"qmediasync/internal/syncstrm"
+	"qmediasync/internal/taskgate"
 )
 
 type SyncTaskType string
@@ -104,11 +105,17 @@ type NewSyncQueuePerType struct {
 
 func NewQueuePerType(sourceType models.SourceType) *NewSyncQueuePerType {
 	ctx, cancel := context.WithCancel(context.Background())
+	status := QueueStatusRunning
+	if taskgate.IsBlocked() {
+		// 新 source type 也必须继承当前准入状态，不能因为此前没有队列
+		// 而绕过 PauseAll 创建一个默认运行的 worker。
+		status = QueueStatusPaused
+	}
 	return &NewSyncQueuePerType{
 		sourceType:   sourceType,
 		taskChan:     make(chan *NewSyncTask, 50),
 		waitingQueue: make(map[string]*NewSyncTask),
-		status:       QueueStatusRunning,
+		status:       status,
 		ctx:          ctx,
 		cancelFunc:   cancel,
 	}
@@ -131,6 +138,11 @@ func (q *NewSyncQueuePerType) isTaskExists(task *NewSyncTask) bool {
 }
 
 func (q *NewSyncQueuePerType) AddTask(task *NewSyncTask) error {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
 	q.processorStartMu.Lock()
 	defer q.processorStartMu.Unlock()
 
@@ -213,6 +225,11 @@ func (q *NewSyncQueuePerType) startProcessorIfNotRunningUnsafe() {
 }
 
 func (q *NewSyncQueuePerType) StartProcessor() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	q.processorStartMu.Lock()
 	defer q.processorStartMu.Unlock()
 
@@ -241,6 +258,10 @@ func (q *NewSyncQueuePerType) process() {
 
 			if _, exists := q.waitingQueue[task.Key()]; !exists {
 				logInfo("任务已被取消，跳过处理：类型=%s，ID=%d", task.TaskType.DisplayName(), task.ID)
+				q.mutex.Unlock()
+				continue
+			}
+			if q.status != QueueStatusRunning {
 				q.mutex.Unlock()
 				continue
 			}
@@ -463,6 +484,11 @@ func (q *NewSyncQueuePerType) Pause() {
 }
 
 func (q *NewSyncQueuePerType) Resume() {
+	releaseAdmission, err := taskgate.Admit()
+	if err != nil {
+		return
+	}
+	defer releaseAdmission()
 	q.processorStartMu.Lock()
 	defer q.processorStartMu.Unlock()
 
@@ -538,12 +564,6 @@ func InitNewSyncQueueManager() *NewSyncQueueManager {
 	GlobalNewSyncQueueManager = &NewSyncQueueManager{
 		queues: make(map[models.SourceType]*NewSyncQueuePerType),
 	}
-	models.PauseSyncQueuesFunc = func() {
-		PauseAllNewSyncQueues()
-	}
-	models.ResumeSyncQueuesFunc = func() {
-		ResumeAllNewSyncQueues()
-	}
 	models.IsStrmSyncTaskActiveFunc = func(syncPathId uint) bool {
 		status := CheckNewTaskStatus(syncPathId, SyncTaskTypeStrm)
 		return status == TaskStatusWaiting || status == TaskStatusRunning
@@ -575,6 +595,9 @@ func (m *NewSyncQueueManager) getQueue(sourceType models.SourceType) *NewSyncQue
 }
 
 func (m *NewSyncQueueManager) AddSyncTask(task *NewSyncTask) error {
+	if taskgate.IsBlocked() {
+		return taskgate.ErrTaskAdmissionBlocked
+	}
 	// var sourceType models.SourceType
 
 	// switch task.TaskType {
@@ -696,6 +719,9 @@ func (m *NewSyncQueueManager) GetQueueStatus(sourceType models.SourceType) map[s
 }
 
 func AddNewSyncTask(task *NewSyncTask) error {
+	if taskgate.IsBlocked() {
+		return taskgate.ErrTaskAdmissionBlocked
+	}
 	if GlobalNewSyncQueueManager == nil {
 		InitNewSyncQueueManager()
 	}

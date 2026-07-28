@@ -87,58 +87,65 @@ interface CloudAccount {
 // 备份相关类型定义
 type BackupTaskType = 'backup' | 'restore' | null
 type BackupStatus = 'pending' | 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed'
-type BackupType = 'manual' | 'auto'
+type BackupType = 'manual' | 'auto' | 'legacy' | 'imported' | 'temporary_upload'
+type BackupFormat = 'v1' | 'legacy'
+type BackupVerificationState = 'verified' | 'pending_password' | 'invalid' | ''
+
+// 备份与恢复操作的状态机取值，与后端协调器保持一致
+type BackupOperationKind = 'backup' | 'restore'
+type BackupOperationState =
+  | 'queued'
+  | 'waiting_for_tasks'
+  | 'validating'
+  | 'running'
+  | 'rolling_back'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+type BackupRollbackState = 'not_started' | 'succeeded' | 'failed'
+
+interface BackupOperationProgress {
+  message?: string
+  completed: number
+  total: number
+}
+
+// 状态查询返回的操作视图，只能通过 operation ID 与一次性令牌读取
+interface BackupOperationView {
+  operation_id: string
+  kind: BackupOperationKind
+  state: BackupOperationState
+  progress: BackupOperationProgress
+  error_code?: string
+  rollback_state?: BackupRollbackState
+  started_at: number
+  updated_at: number
+  completed_at?: number
+}
+
+// 受理响应；token 只出现一次，仅可保存在操作页内存中
+interface BackupOperationAccepted {
+  operation_id: string
+  token: string
+}
+
+// 运行中的任务摘要，冲突响应用它说明为什么不能立即备份或恢复
+interface BackupRunningTask {
+  kind: string
+  name: string
+  running: number
+}
 
 // 备份配置接口
 interface BackupConfig {
   id: number
   backup_enabled: 0 | 1
   backup_cron: string
-  backup_path: string
   backup_retention: number
   backup_max_count: number
-  backup_compress: 0 | 1
+  backup_encryption_enabled: boolean
   created_at: number
   updated_at: number
-}
-
-// 备份状态接口
-interface BackupStatusInfo {
-  is_running: boolean
-  backup_dir: string
-  config: BackupConfig
-}
-
-// 备份进度接口
-interface BackupProgress {
-  running: boolean
-  status?: BackupStatus
-  progress?: number
-  elapsed_seconds?: number
-  estimated_seconds?: number
-  current_step?: string
-  processed_tables?: number
-  total_tables?: number
-}
-
-// 备份记录接口
-interface BackupRecord {
-  id: number
-  created_at: number
-  updated_at: number
-  task_id: number
-  status: BackupStatus
-  file_path: string
-  file_size: number
-  database_size: number
-  table_count: number
-  backup_duration: number
-  backup_type: BackupType
-  created_reason: string
-  failure_reason: string
-  compression_ratio: number
-  is_compressed: 0 | 1
-  completed_at: number
 }
 
 // 备份记录列表项接口（列表用）
@@ -149,6 +156,9 @@ interface BackupRecordListItem {
   file_path: string
   file_size: number
   backup_type: BackupType
+  format: BackupFormat
+  verification_state: BackupVerificationState
+  verification_error_code: string
   backup_duration: number
   created_reason: string
 }
@@ -159,6 +169,16 @@ interface BackupRecordsResponse {
   total: number
   page: number
   page_size: number
+  inventory_status: 'ready' | 'scanning'
+  latest_operation?: BackupTerminalOperation
+}
+
+interface BackupTerminalOperation {
+  kind: BackupOperationKind
+  state: Extract<BackupOperationState, 'completed' | 'failed' | 'cancelled'>
+  completed_at: number
+  error_code?: string
+  rollback_state?: BackupRollbackState
 }
 
 // 文件管理器相关类型定义
@@ -221,11 +241,16 @@ export type {
   BackupStatus,
   BackupType,
   BackupConfig,
-  BackupStatusInfo,
-  BackupProgress,
-  BackupRecord,
+  BackupOperationKind,
+  BackupOperationState,
+  BackupRollbackState,
+  BackupOperationProgress,
+  BackupOperationView,
+  BackupOperationAccepted,
+  BackupRunningTask,
   BackupRecordListItem,
   BackupRecordsResponse,
+  BackupTerminalOperation,
   FileType,
   FileOperationType,
   FileSystemItem,

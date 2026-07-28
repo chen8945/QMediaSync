@@ -9,6 +9,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/taskgate"
 )
 
 const defaultScanConcurrency = 2
@@ -59,7 +60,7 @@ func newScanExecutorWithScanFunc(concurrency int, scan scanFunc) *scanExecutor {
 }
 
 func (executor *scanExecutor) Enqueue(ctx context.Context, request scanRequest) {
-	if executor == nil || ctx == nil || ctx.Err() != nil {
+	if executor == nil || ctx == nil || ctx.Err() != nil || taskgate.IsBlocked() {
 		return
 	}
 	key, root, ok := request.scanKey()

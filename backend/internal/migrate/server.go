@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"time"
 
-	"qmediasync/internal/backup"
 	"qmediasync/internal/db"
 	"qmediasync/internal/db/database"
 	"qmediasync/internal/helpers"
@@ -30,22 +29,18 @@ func SetMigrateFiles(fs embed.FS) {
 }
 
 type MigrateServer struct {
-	config      *database.Config
 	dbManager   *database.EmbeddedManager
 	httpServer  *http.Server
 	backupPath  string
 	isCompleted bool
 }
 
-func NewMigrateServer(dbManager *database.EmbeddedManager, config *database.Config) *MigrateServer {
+func NewMigrateServer(dbManager *database.EmbeddedManager) *MigrateServer {
 	return &MigrateServer{
-		config:     config,
 		dbManager:  dbManager,
 		backupPath: filepath.Join(helpers.ConfigDir, "backups", "migrate.zip"),
 	}
 }
-
-const MigrateBackupPath = "migrate.zip"
 
 func (s *MigrateServer) Start() error {
 	if helpers.IsRelease {
@@ -113,14 +108,7 @@ func (s *MigrateServer) getCurrentStep() int {
 }
 
 func (s *MigrateServer) handleBackup(c *gin.Context) {
-	if backup.IsRunning() {
-		c.JSON(200, gin.H{
-			"success": false,
-			"error":   "备份任务正在运行",
-		})
-		return
-	}
-
+	catalog := models.SQLitePostgresMigrationTableCatalog()
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		c.JSON(200, gin.H{
@@ -129,9 +117,16 @@ func (s *MigrateServer) handleBackup(c *gin.Context) {
 		})
 		return
 	}
+	if !startProgress("backup", "开始迁移备份", len(catalog)) {
+		c.JSON(200, gin.H{
+			"success": false,
+			"error":   "备份任务正在运行",
+		})
+		return
+	}
 
 	go func() {
-		if err := s.performMigrateBackup(); err != nil {
+		if err := s.performMigrateBackup(catalog); err != nil {
 			log.Printf("迁移备份失败：%v", err)
 		}
 	}()
@@ -142,144 +137,30 @@ func (s *MigrateServer) handleBackup(c *gin.Context) {
 	})
 }
 
-func (s *MigrateServer) performMigrateBackup() error {
-	totalTable := 35
+func (s *MigrateServer) performMigrateBackup(catalog []models.TableCatalogEntry) (err error) {
 	count := 0
+	defer func() {
+		if err != nil {
+			finishProgress("迁移备份失败", err.Error())
+			return
+		}
+		finishProgress("备份完成", "")
+	}()
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		helpers.AppLogger.Errorf("创建备份目录失败：%v", err)
 		return err
 	}
-	if backup.IsRunning() {
-		return fmt.Errorf("备份任务正在运行")
-	}
-	backup.SetRunning(true)
-	defer backup.SetRunning(false)
-	backup.SetRunningResult("backup", "开始迁移备份", totalTable, count, "", true)
 
-	backupRecordDir := filepath.Join(backupDir, "migrate_temp")
-	if err := os.MkdirAll(backupRecordDir, 0755); err != nil {
-		backup.SetRunningResult("backup", "创建备份目录失败", totalTable, count, err.Error(), false)
-		return err
-	}
-	defer os.RemoveAll(backupRecordDir)
-
-	if err := backupToJsonFile(backupRecordDir, "Account", totalTable, &count, models.Account{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "Migrator", totalTable, &count, models.Migrator{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ApiKey", totalTable, &count, models.ApiKey{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "DbDownloadTask", totalTable, &count, models.DbDownloadTask{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "DbUploadTask", totalTable, &count, models.DbUploadTask{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "Settings", totalTable, &count, models.Settings{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "User", totalTable, &count, models.User{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "Sync", totalTable, &count, models.Sync{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "SyncPath", totalTable, &count, models.SyncPath{}); err != nil {
+	if err := writeMigrationArchive(s.backupPath, db.Db, catalog, func(completed int, description string) {
+		count = completed
+		updateProgress(description, count, "")
+	}); err != nil {
+		updateProgress("打包备份失败", count, err.Error())
 		return err
 	}
 
-	if err := backupToJsonFile(backupRecordDir, "ScrapePathCategories", totalTable, &count, models.ScrapePathCategory{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "MovieCategories", totalTable, &count, models.MovieCategory{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "TvShowCategories", totalTable, &count, models.TvShowCategory{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "Media", totalTable, &count, models.Media{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "MediaSeason", totalTable, &count, models.MediaSeason{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "MediaEpisode", totalTable, &count, models.MediaEpisode{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ScrapeStrmPath", totalTable, &count, models.ScrapeStrmPath{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "EmbyConfig", totalTable, &count, models.EmbyConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "EmbyLibrary", totalTable, &count, models.EmbyLibrary{}); err != nil {
-		return err
-	}
-	// if err := backupToJsonFile(backupRecordDir, "EmbyMediaItem", totalTable, &count, models.EmbyMediaItem{}); err != nil {
-	// 	return err
-	// }
-	if err := backupToJsonFile(backupRecordDir, "EmbyMediaSyncFile", totalTable, &count, models.EmbyMediaSyncFile{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "EmbyLibrarySyncPath", totalTable, &count, models.EmbyLibrarySyncPath{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "RequestStat", totalTable, &count, models.RequestStat{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "BackupConfig", totalTable, &count, models.BackupConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "BackupRecord", totalTable, &count, models.BackupRecord{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "BarkChannelConfig", totalTable, &count, models.BarkChannelConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "CustomWebhookChannelConfig", totalTable, &count, models.CustomWebhookChannelConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "MeowChannelConfig", totalTable, &count, models.MeoWChannelConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "TelegramChannelConfig", totalTable, &count, models.TelegramChannelConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "NotificationChannel", totalTable, &count, models.NotificationChannel{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ServerChanChannelConfig", totalTable, &count, models.ServerChanChannelConfig{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "NotificationRule", totalTable, &count, models.NotificationRule{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "SyncPathScrapePath", totalTable, &count, models.SyncPathScrapePath{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ScrapePath", totalTable, &count, models.ScrapePath{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "SyncFile", totalTable, &count, models.SyncFile{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ScrapeSettings", totalTable, &count, models.ScrapeSettings{}); err != nil {
-		return err
-	}
-	if err := backupToJsonFile(backupRecordDir, "ScrapeMediaFile", totalTable, &count, models.ScrapeMediaFile{}); err != nil {
-		return err
-	}
-
-	if err := helpers.ZipDir(backupRecordDir, s.backupPath); err != nil {
-		backup.SetRunningResult("backup", "打包备份失败", totalTable, count, err.Error(), false)
-		return err
-	}
-
-	backup.SetRunningResult("backup", "备份完成，正在停止内嵌数据库…", totalTable, count, "", false)
+	updateProgress("备份完成，正在停止内嵌数据库…", count, "")
 	helpers.AppLogger.Infof("迁移备份完成，文件保存到：%s", s.backupPath)
 
 	if s.dbManager != nil {
@@ -290,52 +171,11 @@ func (s *MigrateServer) performMigrateBackup() error {
 		}
 	}
 
-	backup.SetRunningResult("backup", "备份完成", totalTable, count, "", false)
-	return nil
-}
-
-func backupToJsonFile[T any](backupDir string, modelName string, totalTable int, count *int, model T) error {
-	backupFilePath := filepath.Join(backupDir, modelName+".json")
-	backupFile, err := os.OpenFile(backupFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		helpers.AppLogger.Errorf("创建 %s 备份文件失败：%v", modelName, err)
-		return err
-	}
-	defer backupFile.Close()
-
-	pageSize := 100
-	page := 0
-	totalCount := 0
-	for {
-		var records []T
-		if err := db.Db.Model(&model).Offset(page * pageSize).Limit(pageSize).Find(&records).Error; err != nil {
-			helpers.AppLogger.Errorf("查询 %s 失败：%v", modelName, err)
-			break
-		}
-		if len(records) == 0 {
-			helpers.AppLogger.Infof("查询 %s 完成", modelName)
-			break
-		}
-
-		for _, record := range records {
-			jsonStr := helpers.JsonString(record)
-			if _, err := backupFile.WriteString(jsonStr + "\n"); err != nil {
-				helpers.AppLogger.Errorf("写入 %s 备份文件失败：%v", modelName, err)
-				return err
-			}
-			totalCount++
-		}
-		page++
-	}
-
-	*count++
-	backup.SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "", false)
 	return nil
 }
 
 func (s *MigrateServer) handleBackupStatus(c *gin.Context) {
-	result := backup.GetRunningResult()
-	c.JSON(200, result)
+	c.JSON(200, CurrentProgress())
 }
 
 func (s *MigrateServer) handleTestDB(c *gin.Context) {
