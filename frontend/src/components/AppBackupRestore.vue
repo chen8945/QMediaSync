@@ -19,7 +19,14 @@
     />
 
     <el-alert
-      title="恢复说明：仅支持 .sql 或 .zip 格式的备份文件，文件大小不超过 1 GB"
+      title="重要提示：当前备份与恢复功能仍在完善，建议同时使用外部方式备份重要数据；后续将持续完善。"
+      type="warning"
+      :closable="false"
+      style="margin-bottom: 20px"
+    />
+
+    <el-alert
+      title="恢复说明：仅支持 .zip 格式的备份文件，文件大小不超过 1 GB"
       type="info"
       :closable="false"
       style="margin-bottom: 20px"
@@ -30,7 +37,7 @@
       action="#"
       :auto-upload="false"
       :limit="1"
-      accept=".sql,.zip"
+      accept=".zip"
       :on-change="handleFileChange"
       :on-exceed="handleExceed"
       :disabled="backupStore.isRunning"
@@ -39,7 +46,7 @@
       <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
       <div class="el-upload__text">将备份文件拖到此处，或<em>点击选择文件</em></div>
       <template #tip>
-        <div class="el-upload__tip">只支持 .sql / .zip 文件，且不超过 1 GB</div>
+        <div class="el-upload__tip">只支持 .zip 文件，且不超过 1 GB</div>
       </template>
     </el-upload>
 
@@ -71,9 +78,7 @@
         <el-descriptions-item label="文件大小">
           {{ formatFileSize(selectedFile.size) }}
         </el-descriptions-item>
-        <el-descriptions-item label="文件类型">
-          {{ selectedFile.name.endsWith('.zip') ? 'ZIP 压缩' : 'SQL' }}
-        </el-descriptions-item>
+        <el-descriptions-item label="文件类型"> ZIP 压缩 </el-descriptions-item>
         <el-descriptions-item label="最后修改">
           {{ formatTimestamp(selectedFile.lastModified / 1000) }}
         </el-descriptions-item>
@@ -108,11 +113,10 @@ const handleFileChange = (uploadFile: UploadFile) => {
     return
   }
 
-  const validExtensions = ['.sql', '.zip']
-  const isValidFormat = validExtensions.some((ext) => file.name.toLowerCase().endsWith(ext))
+  const isValidFormat = file.name.toLowerCase().endsWith('.zip')
 
   if (!isValidFormat) {
-    ElMessage.error('只支持 .sql 或 .zip 格式的文件')
+    ElMessage.error('只支持 .zip 格式的文件')
     uploadRef.value?.clearFiles()
     return
   }

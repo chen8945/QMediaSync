@@ -1,10 +1,14 @@
 <script setup lang="ts" generic="TRow">
 import type { RecordDetailField } from '@/types/recordTable'
 
-const props = defineProps<{
-  row: TRow
-  fields: RecordDetailField<TRow>[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    row: TRow
+    fields: RecordDetailField<TRow>[]
+    columns?: 1 | 2 | 3
+  }>(),
+  { columns: 2 },
+)
 
 const getValue = (field: RecordDetailField<TRow>) => {
   const value = field.value(props.row)
@@ -13,12 +17,17 @@ const getValue = (field: RecordDetailField<TRow>) => {
 </script>
 
 <template>
-  <el-descriptions class="record-detail" :column="2" border size="small">
+  <el-descriptions
+    :class="['record-detail', { 'record-detail--three-columns': columns === 3 }]"
+    :column="columns"
+    border
+    size="small"
+  >
     <el-descriptions-item
       v-for="field in fields"
       :key="field.key"
       :label="field.label"
-      :span="field.span ?? 1"
+      :span="columns === 1 ? 1 : (field.span ?? 1)"
     >
       <span :class="['record-detail__value', { 'record-detail__value--long': field.isLongText }]">
         {{ getValue(field) }}
@@ -34,5 +43,9 @@ const getValue = (field: RecordDetailField<TRow>) => {
 
 .record-detail__value--long {
   overflow-wrap: anywhere;
+}
+
+.record-detail--three-columns :deep(.el-descriptions__table) {
+  table-layout: fixed;
 }
 </style>

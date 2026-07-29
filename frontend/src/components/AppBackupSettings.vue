@@ -7,12 +7,24 @@
       <span>备份配置</span>
     </div>
 
-    <el-form :model="configForm" label-width="120px" :label-position="isMobile ? 'top' : 'right'">
+    <el-alert
+      title="重要提示：当前备份与恢复功能仍在完善，建议同时使用外部方式备份重要数据；后续将持续完善。"
+      type="warning"
+      :closable="false"
+      style="margin-bottom: 20px"
+    />
+
+    <el-form
+      :model="configForm"
+      label-width="120px"
+      :label-position="isMobile ? 'top' : 'left'"
+      hide-required-asterisk
+    >
       <el-form-item label="启用自动备份">
         <el-switch v-model="configForm.backup_enabled" :active-value="1" :inactive-value="0" />
       </el-form-item>
 
-      <el-form-item label="定时策略" required>
+      <el-form-item label="定时策略" required class="backup-cron-field">
         <cron-selector v-model="configForm.backup_cron" v-model:custom-value="backupCustomCron" />
         <div v-if="cronTimes.length > 0" class="cron-next-times">
           <p><strong>下 5 次执行时间：</strong></p>
@@ -44,7 +56,7 @@
         <span style="margin-left: 8px; color: #909399">个</span>
       </el-form-item>
 
-      <el-form-item>
+      <el-form-item class="backup-settings-actions">
         <el-button
           type="success"
           size="large"
@@ -95,6 +107,7 @@ const loadBackupConfig = async () => {
     if (res.data.code === API_SUCCESS_CODE && res.data.data) {
       const config = res.data.data
       const cronExpression = config.backup_cron || '0 3 * * *'
+      const cronChanged = configForm.backup_cron !== cronExpression
 
       Object.assign(configForm, {
         backup_enabled: config.backup_enabled,
@@ -104,7 +117,9 @@ const loadBackupConfig = async () => {
         backup_compress: config.backup_compress,
       })
       backupCustomCron.value = cronExpression
-      await loadCronTimes()
+      if (!cronChanged) {
+        await loadCronTimes()
+      }
     }
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : '加载备份配置失败'
@@ -198,6 +213,10 @@ onMounted(() => {
   border-radius: 4px;
 }
 
+.backup-cron-field :deep(.el-form-item__content) {
+  max-width: 720px;
+}
+
 .cron-next-times p {
   margin: 0 0 8px 0;
   color: #606266;
@@ -213,9 +232,17 @@ onMounted(() => {
   display: inline-flex;
 }
 
+.backup-settings-actions :deep(.el-form-item__content) {
+  margin-left: 0 !important;
+}
+
 @media (max-width: 768px) {
   .backup-settings-container {
     padding: 10px;
+  }
+
+  .backup-cron-field :deep(.el-form-item__content) {
+    max-width: none;
   }
 }
 </style>

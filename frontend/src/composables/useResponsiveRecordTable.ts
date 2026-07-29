@@ -5,6 +5,7 @@ interface UseResponsiveRecordTableOptions<TRow> {
   columns: MaybeRefOrGetter<RecordColumn<TRow>[]>
   density: MaybeRefOrGetter<RecordTableDensity>
   isMobile: MaybeRefOrGetter<boolean>
+  showAllDetails?: MaybeRefOrGetter<boolean>
 }
 
 export function useResponsiveRecordTable<TRow>(options: UseResponsiveRecordTableOptions<TRow>) {
@@ -17,8 +18,15 @@ export function useResponsiveRecordTable<TRow>(options: UseResponsiveRecordTable
   })
 
   const detailFields = computed<RecordDetailField<TRow>[]>(() => {
+    const columns = toValue(options.columns)
+    if (options.showAllDetails && toValue(options.showAllDetails)) {
+      return columns
+        .filter((column) => column.detailField)
+        .map((column) => column.detailField as RecordDetailField<TRow>)
+    }
+
     const visibleKeys = new Set(visibleColumns.value.map((column) => column.key))
-    return toValue(options.columns)
+    return columns
       .filter(
         (column) =>
           column.detailField && (!visibleKeys.has(column.key) || column.priority === 'detail'),

@@ -1,5 +1,12 @@
 <template>
   <div class="backup-records-container">
+    <el-alert
+      title="重要提示：当前备份与恢复功能仍在完善，建议同时使用外部方式备份重要数据；后续将持续完善。"
+      type="warning"
+      :closable="false"
+      style="margin-bottom: 20px"
+    />
+
     <div class="action-section">
       <el-button
         type="primary"
@@ -19,77 +26,31 @@
     <div class="records-section">
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
         <el-tab-pane label="备份记录" name="records">
-          <el-table
-            :data="backupRecords"
-            v-loading="recordsLoading"
-            :height="isMobile ? 'auto' : 400"
-            style="width: 100%"
+          <ResponsiveRecordTable
+            :rows="backupRecords"
+            :columns="backupRecordColumns"
+            :actions="backupRecordActions"
+            :row-key="getBackupRecordRowKey"
+            :loading="recordsLoading"
+            :is-mobile="isMobile"
+            show-all-details
+            :detail-columns="3"
+            @action="handleBackupRecordAction"
           >
-            <el-table-column type="expand" width="42">
-              <template #default="{ row }">
-                <el-descriptions :column="isMobile ? 1 : 2" border size="small">
-                  <el-descriptions-item label="文件路径" :span="2">
-                    <span class="backup-detail-long">{{ row.file_path || '-' }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="文件大小">
-                    {{ row.file_size ? formatFileSize(row.file_size) : '-' }}
-                  </el-descriptions-item>
-                  <el-descriptions-item label="耗时">
-                    {{ row.backup_duration ? formatDuration(row.backup_duration) : '-' }}
-                  </el-descriptions-item>
-                  <el-descriptions-item label="原因" :span="2">
-                    <span class="backup-detail-long">{{ row.created_reason || '-' }}</span>
-                  </el-descriptions-item>
-                </el-descriptions>
-              </template>
-            </el-table-column>
-            <el-table-column prop="id" label="ID" width="80" />
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="getStatusTagType(row.status)" size="small">
-                  {{ getStatusText(row.status) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="backup_type" label="类型" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.backup_type === 'manual' ? 'primary' : 'info'" size="small">
-                  {{ row.backup_type === 'manual' ? '手动' : '自动' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="创建时间" :width="isMobile ? 100 : 180">
-              <template #default="{ row }">
-                {{ formatTimestamp(row.created_at) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" :width="isMobile ? 168 : 190" align="center">
-              <template #default="{ row }">
-                <el-button
-                  v-if="row.status === 'completed'"
-                  type="primary"
-                  size="small"
-                  link
-                  @click="downloadBackup(row.id, getFilenameFromPath(row.file_path))"
-                >
-                  下载
-                </el-button>
-                <el-button
-                  v-if="row.status === 'completed'"
-                  type="warning"
-                  size="small"
-                  link
-                  :disabled="restoringBackup"
-                  @click="handleRestoreBackup(row)"
-                >
-                  恢复
-                </el-button>
-                <el-button type="danger" size="small" link @click="deleteBackupRecord(row.id)">
-                  删除
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
+            <template #cell-status="{ row }">
+              <el-tag :type="getStatusTagType(row.status)" size="small">
+                {{ getStatusText(row.status) }}
+              </el-tag>
+            </template>
+            <template #cell-backup_type="{ row }">
+              <el-tag :type="row.backup_type === 'manual' ? 'primary' : 'info'" size="small">
+                {{ row.backup_type === 'manual' ? '手动' : '自动' }}
+              </el-tag>
+            </template>
+            <template #cell-created_at="{ row }">
+              {{ formatTimestamp(row.created_at) }}
+            </template>
+          </ResponsiveRecordTable>
 
           <ResponsivePagination
             v-model:current-page="currentPage"
@@ -109,6 +70,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
+import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -116,6 +78,7 @@ import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import { useBackupStore } from '@/stores/backup'
 import type { BackupRecordListItem, BackupRecordsResponse, BackupStatus } from '@/typing'
+import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/recordTable'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp, formatDuration } from '@/utils/timeUtils'
 
@@ -132,6 +95,107 @@ const backupRecords = ref<BackupRecordListItem[]>([])
 const currentPage = ref(1)
 const pageSize = ref(20)
 const totalRecords = ref(0)
+
+const backupRecordColumns: RecordColumn<BackupRecordListItem>[] = [
+  {
+    key: 'id',
+    label: 'ID',
+    priority: 'primary',
+    width: 80,
+    align: 'center',
+    detailField: { key: 'id', label: 'ID', value: (row) => row.id },
+  },
+  {
+    key: 'status',
+    label: '状态',
+    priority: 'primary',
+    width: 80,
+    align: 'center',
+    detailField: { key: 'status', label: '状态', value: (row) => getStatusText(row.status) },
+  },
+  {
+    key: 'backup_type',
+    label: '类型',
+    priority: 'primary',
+    width: 100,
+    align: 'center',
+    detailField: {
+      key: 'backup_type',
+      label: '类型',
+      value: (row) => (row.backup_type === 'manual' ? '手动' : '自动'),
+    },
+  },
+  {
+    key: 'created_at',
+    label: '创建时间',
+    priority: 'primary',
+    width: 180,
+    detailField: {
+      key: 'created_at',
+      label: '创建时间',
+      value: (row) => formatTimestamp(row.created_at),
+    },
+  },
+  {
+    key: 'backup_duration',
+    label: '耗时',
+    priority: 'detail',
+    detailField: {
+      key: 'backup_duration',
+      label: '耗时',
+      value: (row) => formatDuration(row.backup_duration),
+    },
+  },
+  {
+    key: 'file_size',
+    label: '文件大小',
+    priority: 'detail',
+    detailField: {
+      key: 'file_size',
+      label: '文件大小',
+      value: (row) => (row.file_size ? formatFileSize(row.file_size) : '-'),
+    },
+  },
+  {
+    key: 'file_path',
+    label: '文件路径',
+    priority: 'secondary',
+    minWidth: 320,
+    detailField: {
+      key: 'file_path',
+      label: '文件路径',
+      value: (row) => row.file_path,
+      span: 3,
+      isLongText: true,
+    },
+  },
+  {
+    key: 'created_reason',
+    label: '原因',
+    priority: 'detail',
+    detailField: {
+      key: 'created_reason',
+      label: '原因',
+      value: (row) => row.created_reason,
+      span: 3,
+      isLongText: true,
+    },
+  },
+]
+
+const backupRecordActions: RecordAction<BackupRecordListItem>[] = [
+  { key: 'download', label: '下载', type: 'primary', visible: (row) => row.status === 'completed' },
+  {
+    key: 'restore',
+    label: '恢复',
+    type: 'warning',
+    visible: (row) => row.status === 'completed',
+    disabled: () => restoringBackup.value,
+  },
+  { key: 'delete', label: '删除', type: 'danger' },
+]
+
+const getBackupRecordRowKey = (row: BackupRecordListItem) => row.id
 
 const startManualBackup = async () => {
   if (!http) return
@@ -198,9 +262,26 @@ const handleTabChange = () => {
   loadBackupRecords()
 }
 
+const handleBackupRecordAction = ({
+  actionKey,
+  row,
+}: RecordActionPayload<BackupRecordListItem>) => {
+  if (actionKey === 'download') {
+    void downloadBackup(row.id, getFilenameFromPath(row.file_path))
+    return
+  }
+  if (actionKey === 'restore') {
+    void handleRestoreBackup(row)
+    return
+  }
+  if (actionKey === 'delete') {
+    void deleteBackupRecord(row.id)
+  }
+}
+
 const getFilenameFromPath = (filePath: string): string => {
-  if (!filePath) return 'backup.sql.zip'
-  return filePath.split('/').pop() || 'backup.sql.zip'
+  if (!filePath) return 'backup.zip'
+  return filePath.split('/').pop() || 'backup.zip'
 }
 
 const downloadBackup = async (recordId: number, filename: string) => {
@@ -352,10 +433,6 @@ onMounted(() => {
 
 .action-section {
   margin-bottom: 20px;
-  padding: 16px;
-  background: #f5f7fa;
-  border-radius: 4px;
-  max-width: 1200px;
 }
 
 .records-section {
@@ -363,17 +440,9 @@ onMounted(() => {
   max-width: 1400px;
 }
 
-.backup-detail-long {
-  overflow-wrap: anywhere;
-}
-
 @media (max-width: 768px) {
   .backup-records-container {
     padding: 10px;
-  }
-
-  .action-section {
-    padding: 12px;
   }
 }
 </style>

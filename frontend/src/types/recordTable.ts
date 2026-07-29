@@ -13,7 +13,7 @@ export interface RecordDetailField<TRow> {
   key: string
   label: string
   value: (row: TRow) => string | number | null | undefined
-  span?: 1 | 2
+  span?: 1 | 2 | 3
   isLongText?: boolean
 }
 

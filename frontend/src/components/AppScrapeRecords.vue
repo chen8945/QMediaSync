@@ -93,6 +93,7 @@
           :loading="initialLoading || queryLoading"
           :is-mobile="isMobileView"
           :expanded-row-keys="pageState.expandedRowKeys"
+          show-all-details
           show-selection
           @selection-change="handleSelectionChange"
           @expand-change="handleExpandChange"
@@ -692,7 +693,17 @@ function canMarkAsFinished(row: ScrapeRecord) {
 
 const scrapeRecordColumns: RecordColumn<ScrapeRecord>[] = [
   { key: 'path_is_scraping', label: '运行状态', priority: 'primary', width: 96, align: 'center' },
-  { key: 'status', label: '文件状态', priority: 'primary', minWidth: 132 },
+  {
+    key: 'status',
+    label: '文件状态',
+    priority: 'primary',
+    minWidth: 132,
+    detailField: {
+      key: 'status',
+      label: '文件状态',
+      value: (row) => getStatusName(row.status),
+    },
+  },
   { key: 'type', label: '类型', priority: 'secondary', width: 88, align: 'center' },
   { key: 'source_type', label: '来源', priority: 'secondary', width: 88, align: 'center' },
   {

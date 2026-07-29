@@ -25,6 +25,8 @@ const props = withDefaults(
     expandedRowKeys?: RecordRowKey[]
     showSelection?: boolean
     selectable?: (row: TRow) => boolean
+    showAllDetails?: boolean
+    detailColumns?: 2 | 3
   }>(),
   {
     actions: () => [],
@@ -36,6 +38,8 @@ const props = withDefaults(
     expandedRowKeys: () => [],
     showSelection: false,
     selectable: undefined,
+    showAllDetails: false,
+    detailColumns: 2,
   },
 )
 
@@ -49,6 +53,7 @@ const { visibleColumns, detailFields, rowHeightClass } = useResponsiveRecordTabl
   columns: computed(() => props.columns),
   density: computed(() => props.density),
   isMobile: computed(() => props.isMobile),
+  showAllDetails: computed(() => props.showAllDetails),
 })
 
 const hasDetails = computed(() => detailFields.value.length > 0)
@@ -59,60 +64,70 @@ const handleExpandChange = (row: TRow, expandedRows: TRow[]) => {
 </script>
 
 <template>
-  <el-table
-    v-loading="loading"
-    :data="rows"
-    :row-key="rowKey"
-    :expand-row-keys="expandedRowKeys"
-    :height="height"
-    :empty-text="emptyText"
-    :class="['record-table', rowHeightClass]"
-    :show-overflow-tooltip="true"
-    stripe
-    style="width: 100%"
-    @selection-change="emit('selectionChange', $event)"
-    @expand-change="handleExpandChange"
-  >
-    <el-table-column
-      v-if="showSelection"
-      type="selection"
-      width="44"
-      align="center"
-      :selectable="selectable"
-    />
-    <el-table-column v-if="hasDetails" type="expand" width="42">
-      <template #default="{ row }">
-        <RecordDetailDescriptions :row="row" :fields="detailFields" />
-      </template>
-    </el-table-column>
-    <el-table-column
-      v-for="column in visibleColumns"
-      :key="column.key"
-      :label="column.label"
-      :width="column.width"
-      :min-width="column.minWidth"
-      :align="column.align"
-      :class-name="column.className"
-      show-overflow-tooltip
+  <div :class="{ 'record-table-scroll': isMobile }">
+    <el-table
+      v-loading="loading"
+      :data="rows"
+      :row-key="rowKey"
+      :expand-row-keys="expandedRowKeys"
+      :height="height"
+      :empty-text="emptyText"
+      :class="['record-table', rowHeightClass]"
+      :show-overflow-tooltip="true"
+      :style="{ width: isMobile ? 'max-content' : '100%' }"
+      stripe
+      @selection-change="emit('selectionChange', $event)"
+      @expand-change="handleExpandChange"
     >
-      <template #default="{ row }">
-        <slot :name="`cell-${column.key}`" :row="row">
-          {{ getCellValue(row, column.key) }}
-        </slot>
-      </template>
-    </el-table-column>
-    <el-table-column v-if="actions.length > 0" label="操作" width="132" align="center">
-      <template #default="{ row }">
-        <RecordActionButtons :row="row" :actions="actions" @action="emit('action', $event)" />
-      </template>
-    </el-table-column>
-  </el-table>
+      <el-table-column
+        v-if="showSelection"
+        type="selection"
+        width="44"
+        align="center"
+        :selectable="selectable"
+      />
+      <el-table-column v-if="hasDetails" type="expand" width="42">
+        <template #default="{ row }">
+          <RecordDetailDescriptions
+            :row="row"
+            :fields="detailFields"
+            :columns="isMobile ? 1 : detailColumns"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column
+        v-for="column in visibleColumns"
+        :key="column.key"
+        :label="column.label"
+        :width="column.width"
+        :min-width="column.minWidth"
+        :align="column.align"
+        :class-name="column.className"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">
+          <slot :name="`cell-${column.key}`" :row="row">
+            {{ getCellValue(row, column.key) }}
+          </slot>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="actions.length > 0" label="操作" width="132" align="center">
+        <template #default="{ row }">
+          <RecordActionButtons :row="row" :actions="actions" @action="emit('action', $event)" />
+        </template>
+      </el-table-column>
+    </el-table>
+  </div>
 </template>
 
 <style scoped>
+.record-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .record-table {
-  width: 100%;
-  overflow-x: hidden;
+  min-width: 100%;
 }
 
 .record-table :deep(.cell) {
