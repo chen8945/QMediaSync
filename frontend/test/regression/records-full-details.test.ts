@@ -48,4 +48,10 @@ describe('记录页完整详情', () => {
 
     expect(source).toMatch(/\.sync-table\s+:deep\(\.record-table\)\s*\{\s*font-size:\s*12px/)
   })
+
+  it('同步路径单元格不重复显示移动端任务 ID', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components/AppSyncRecords.vue'), 'utf8')
+
+    expect(source).not.toContain('sync-path-cell__id')
+  })
 })

@@ -73,9 +73,6 @@
         </template>
         <template #cell-local_path="{ row }">
           <div class="sync-path-cell">
-            <el-text type="primary" class="sync-path-cell__id show-on-mobile"
-              >#{{ row.id }}</el-text
-            >
             <span class="sync-path-cell__route">
               {{ row.remote_path || '-' }} => {{ row.local_path || '-' }}
             </span>
@@ -842,10 +839,6 @@ watch(batchMode, (val) => {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.sync-path-cell__id {
-  flex: 0 0 auto;
 }
 
 .sync-path-cell__route {
