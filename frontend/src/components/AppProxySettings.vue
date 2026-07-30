@@ -7,15 +7,16 @@
       :label-width="120"
       class="proxy-form"
     >
-      <el-form-item label="HTTP 代理地址" prop="proxy_url">
+      <el-form-item label="代理地址" prop="proxy_url">
         <el-input
           v-model="proxyData.proxy_url"
-          placeholder="例如：http://127.0.0.1:7890 或 http://proxy.example.com:8080"
+          placeholder="例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
           :disabled="proxyLoading"
           clearable
         />
         <div class="form-help">
-          支持 HTTP 代理，格式：http://[用户名:密码@]主机:端口，留空表示不使用代理
+          支持 HTTP 和 SOCKS5 代理，格式：协议://[用户名:密码@]主机:端口，可用协议为
+          http、https、socks5 和 socks5h，留空表示不使用代理
         </div>
       </el-form-item>
       <el-form-item>
@@ -90,10 +91,42 @@ const proxyData = reactive<ProxyData>({
   proxy_url: '',
 })
 
+// 与后端 validation.ProxyURL 保持一致的协议白名单
+const PROXY_SCHEMES = ['http:', 'https:', 'socks5:', 'socks5h:']
+
+// 校验代理地址，返回错误提示；地址合法时返回 null
+// 规则与后端 validation.ProxyURL 对齐：协议白名单、必须有主机名、端口落在 1-65535
+const validateProxyUrl = (raw: string): string | null => {
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return '代理地址格式无效，请填写“协议://主机:端口”'
+  }
+  if (!parsed.hostname) {
+    return '代理地址缺少主机名'
+  }
+  if (!PROXY_SCHEMES.includes(parsed.protocol)) {
+    return '只支持 http、https、socks5 或 socks5h 协议'
+  }
+  // URL 已挡掉非数字和大于 65535 的端口，这里补上 0 的情况
+  if (parsed.port !== '' && Number(parsed.port) < 1) {
+    return '端口必须在 1-65535 之间'
+  }
+  return null
+}
+
 // 测试代理连接
 const testProxy = async () => {
-  if (!proxyData.proxy_url.trim()) {
+  const trimmedUrl = proxyData.proxy_url.trim()
+  if (!trimmedUrl) {
     ElMessage.warning('请输入代理服务器地址')
+    return
+  }
+
+  const validationError = validateProxyUrl(trimmedUrl)
+  if (validationError) {
+    ElMessage.error(validationError)
     return
   }
 
@@ -101,8 +134,9 @@ const testProxy = async () => {
     testingProxy.value = true
     proxyStatus.value = null
 
+    // 与校验用的是同一份规范化结果，否则带首尾空白的地址会通过校验但在后端解析失败
     const requestData = {
-      http_proxy: proxyData.proxy_url,
+      http_proxy: trimmedUrl,
     }
 
     const response = await http.post(`${SERVER_URL}/setting/test-http-proxy`, requestData, {
@@ -138,12 +172,22 @@ const testProxy = async () => {
 
 // 保存代理设置
 const saveProxy = async () => {
+  const trimmedUrl = proxyData.proxy_url.trim()
+  // 留空表示清除代理，不做协议校验
+  if (trimmedUrl) {
+    const validationError = validateProxyUrl(trimmedUrl)
+    if (validationError) {
+      ElMessage.error(validationError)
+      return
+    }
+  }
+
   try {
     proxyLoading.value = true
     proxyStatus.value = null
 
     const requestData = {
-      http_proxy: proxyData.proxy_url,
+      http_proxy: trimmedUrl,
     }
 
     const response = await http.post(`${SERVER_URL}/setting/http-proxy`, requestData, {
@@ -153,11 +197,13 @@ const saveProxy = async () => {
     })
 
     if (response?.data.code === 200) {
+      // 已保存的是去除首尾空白后的地址，输入框同步为实际生效值
+      proxyData.proxy_url = trimmedUrl
       proxyStatus.value = {
         title: '代理设置已保存',
         type: 'success',
-        description: proxyData.proxy_url
-          ? `已设置代理服务器：${proxyData.proxy_url}`
+        description: trimmedUrl
+          ? `已设置代理服务器：${trimmedUrl}`
           : '已清除代理设置，使用直连网络',
       }
     } else {

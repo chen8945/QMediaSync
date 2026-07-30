@@ -1,6 +1,9 @@
 package validation
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRangeInt(t *testing.T) {
 	tests := []struct {
@@ -151,9 +154,18 @@ func TestProxyURL(t *testing.T) {
 	}{
 		{name: "HTTP 通过", raw: "http://127.0.0.1:7890"},
 		{name: "HTTPS 通过", raw: "https://proxy.example.com"},
+		{name: "SOCKS5 通过", raw: "socks5://127.0.0.1:1080"},
+		{name: "SOCKS5H 通过", raw: "socks5h://127.0.0.1:1080"},
+		{name: "带认证的 SOCKS5 通过", raw: "socks5://user:pass@127.0.0.1:1080"},
+		{name: "IPv6 通过", raw: "socks5://[::1]:1080"},
+		{name: "首尾空白通过", raw: "  socks5://127.0.0.1:1080  "},
 		{name: "允许空值", raw: "", allowEmpty: true},
 		{name: "缺少协议失败", raw: "127.0.0.1:7890", wantErr: true},
-		{name: "SOCKS 失败", raw: "socks5://127.0.0.1:7890", wantErr: true},
+		{name: "SOCKS4 失败", raw: "socks4://127.0.0.1:1080", wantErr: true},
+		{name: "缺少主机名失败", raw: "http://:1080", wantErr: true},
+		{name: "只有协议失败", raw: "socks5://", wantErr: true},
+		{name: "端口超范围失败", raw: "socks5://127.0.0.1:99999", wantErr: true},
+		{name: "端口为零失败", raw: "socks5://127.0.0.1:0", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +175,30 @@ func TestProxyURL(t *testing.T) {
 				t.Fatalf("ProxyURL() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestProxySchemeSupported 锁定传输层共用的白名单入口。
+// 协议来自 url.Parse，它会统一转小写，因此这里只覆盖小写形态。
+func TestProxySchemeSupported(t *testing.T) {
+	for _, scheme := range []string{"http", "https", "socks5", "socks5h"} {
+		if !ProxySchemeSupported(scheme) {
+			t.Fatalf("期望协议 %q 受支持，实际被拒绝", scheme)
+		}
+	}
+	for _, scheme := range []string{"socks4", "socks", "ftp", ""} {
+		if ProxySchemeSupported(scheme) {
+			t.Fatalf("期望协议 %q 被拒绝，实际受支持", scheme)
+		}
+	}
+}
+
+// TestProxySchemeHintCoversWhitelist 确认提示文案随白名单生成，新增协议时不会漏改文案。
+func TestProxySchemeHintCoversWhitelist(t *testing.T) {
+	for _, scheme := range proxySchemes {
+		if !strings.Contains(ProxySchemeHint, scheme) {
+			t.Fatalf("提示文案 %q 未包含协议 %q", ProxySchemeHint, scheme)
+		}
 	}
 }
 

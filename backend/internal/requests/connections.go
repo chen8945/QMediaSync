@@ -12,6 +12,12 @@ type HTTPProxyRequest struct {
 	Detailed  int    `form:"detailed" json:"detailed"`
 }
 
+// NormalizedHTTPProxy 返回去除首尾空白后的代理地址。
+// 校验层对副本做 TrimSpace，保存和拨号必须用同一份规范化结果，否则带首尾空白的地址会通过校验但解析失败。
+func (r HTTPProxyRequest) NormalizedHTTPProxy() string {
+	return strings.TrimSpace(r.HTTPProxy)
+}
+
 // ValidateSave 校验保存 HTTP 代理请求。
 func (r HTTPProxyRequest) ValidateSave() error {
 	if err := validation.ProxyURL("http_proxy", r.HTTPProxy, true); err != nil {

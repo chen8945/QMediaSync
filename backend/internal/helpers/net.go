@@ -300,10 +300,10 @@ func DownloadFileWithProgress(ctx context.Context, proxyUrl, downloadUrl string,
 	if proxyUrl != "" {
 		proxy, perr := url.Parse(proxyUrl)
 		if perr != nil {
-			AppLogger.Warnf("[下载] 解析代理 URL 失败：%v，将不使用代理", perr)
+			AppLogger.Warnf("[下载] 解析代理 URL 失败：%v，将不使用代理", proxyParseError(perr))
 		} else {
 			transport.Proxy = http.ProxyURL(proxy)
-			AppLogger.Infof("[下载] 使用代理：%s", proxyUrl)
+			AppLogger.Infof("[下载] 使用代理：%s", proxy.Redacted())
 		}
 	}
 
@@ -423,10 +423,10 @@ func TestURLConnection(proxyUrl, testUrl string, timeout int) (bool, error) {
 	if proxyUrl != "" {
 		proxy, perr := url.Parse(proxyUrl)
 		if perr != nil {
-			AppLogger.Warnf("[网络测试] 解析代理 URL 失败：%v，将不使用代理", perr)
+			AppLogger.Warnf("[网络测试] 解析代理 URL 失败：%v，将不使用代理", proxyParseError(perr))
 		} else {
 			transport.Proxy = http.ProxyURL(proxy)
-			AppLogger.Infof("[网络测试] 使用代理：%s", proxyUrl)
+			AppLogger.Infof("[网络测试] 使用代理：%s", proxy.Redacted())
 		}
 	}
 

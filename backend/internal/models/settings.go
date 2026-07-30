@@ -77,7 +77,7 @@ type Settings struct {
 	MeoWName         string `json:"meow_name"`          // @deprecated 已迁移到 MeoWChannelConfig MeoW 昵称，用于发送 MeoW 消息
 	EmbyUrl          string `json:"emby_url"`           // @deprecated 已迁移到 EmbyConfig Emby 的主机地址
 	EmbyApiKey       string `json:"emby_api_key"`       // @deprecated 已迁移到 EmbyConfig Emby 的 API Key
-	HttpProxy        string `json:"http_proxy"`         // HTTP 代理地址
+	HttpProxy        string `json:"http_proxy"`         // 出站代理地址，支持 http、https、socks5 和 socks5h
 	// LocalProxy       int    `json:"local_proxy" gorm:"default:0"` // 是否启用本地代理，0 表示不启用，1 表示启用
 }
 

@@ -2,14 +2,35 @@ package helpers
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
+
+	"qmediasync/internal/validation"
 )
 
-// TestHttpProxy 测试 HTTP 代理连接
+// checkProxyScheme 校验代理协议是否受支持，白名单和文案都取自 validation 包，保持与请求校验层一致。
+func checkProxyScheme(scheme string) error {
+	if validation.ProxySchemeSupported(scheme) {
+		return nil
+	}
+	return fmt.Errorf("不支持的代理协议：%s，%s", scheme, validation.ProxySchemeHint)
+}
+
+// proxyParseError 剥掉 url.Error 中回显的原始地址。
+// url.Error.Error() 会打印 parse "<原串>"，代理地址常带用户名密码，直接外抛会把凭据写进日志和接口响应。
+func proxyParseError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("代理 URL 格式无效：%v", urlErr.Err)
+	}
+	return fmt.Errorf("代理 URL 格式无效：%v", err)
+}
+
+// TestHttpProxy 测试代理连接
 func TestHttpProxy(proxyURL string) (bool, error) {
 	if proxyURL == "" {
 		return false, fmt.Errorf("代理 URL 不能为空")
@@ -18,15 +39,15 @@ func TestHttpProxy(proxyURL string) (bool, error) {
 	// 验证代理 URL 格式
 	parsedProxy, err := url.Parse(proxyURL)
 	if err != nil {
-		return false, fmt.Errorf("代理 URL 格式无效：%v", err)
+		return false, proxyParseError(err)
 	}
 
 	// 检查协议
-	if parsedProxy.Scheme != "http" && parsedProxy.Scheme != "https" {
-		return false, fmt.Errorf("不支持的代理协议：%s，仅支持 HTTP/HTTPS 协议", parsedProxy.Scheme)
+	if err := checkProxyScheme(parsedProxy.Scheme); err != nil {
+		return false, err
 	}
 
-	// 创建 HTTP 客户端，使用 HTTP 代理
+	// 创建 HTTP 客户端，使用配置的代理
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy:           http.ProxyURL(parsedProxy),
@@ -39,6 +60,9 @@ func TestHttpProxy(proxyURL string) (bool, error) {
 		Timeout: 30 * time.Second,
 	}
 
+	// 日志和回显都使用脱敏地址，避免代理 URL 里的用户名密码明文落盘
+	redactedProxy := parsedProxy.Redacted()
+
 	// 测试 URL 列表，按优先级排序
 	testURLs := []string{
 		"https://api.github.com",  // GitHub API，稳定可靠
@@ -50,7 +74,7 @@ func TestHttpProxy(proxyURL string) (bool, error) {
 	var lastError error
 
 	for _, testURL := range testURLs {
-		AppLogger.Infof("使用代理 %s 测试连接到 %s", proxyURL, testURL)
+		AppLogger.Infof("使用代理 %s 测试连接到 %s", redactedProxy, testURL)
 
 		req, err := http.NewRequest("GET", testURL, nil)
 		if err != nil {
@@ -94,7 +118,6 @@ func TestHttpProxy(proxyURL string) (bool, error) {
 // TestHttpProxyAdvanced 高级代理测试，返回更详细的信息
 func TestHttpProxyAdvanced(proxyURL string) (*ProxyTestResult, error) {
 	result := &ProxyTestResult{
-		ProxyURL:    proxyURL,
 		TestTime:    time.Now(),
 		TestResults: make([]TestURLResult, 0),
 	}
@@ -108,22 +131,25 @@ func TestHttpProxyAdvanced(proxyURL string) (*ProxyTestResult, error) {
 	// 验证代理 URL 格式
 	parsedProxy, err := url.Parse(proxyURL)
 	if err != nil {
+		parseErr := proxyParseError(err)
 		result.Success = false
-		result.ErrorMessage = fmt.Sprintf("代理 URL 格式无效：%v", err)
-		return result, err
+		result.ErrorMessage = parseErr.Error()
+		return result, parseErr
 	}
 
+	// 回显脱敏后的地址，Host 本身不含 userinfo，可直接使用
+	result.ProxyURL = parsedProxy.Redacted()
 	result.ProxyScheme = parsedProxy.Scheme
 	result.ProxyHost = parsedProxy.Host
 
 	// 检查协议
-	if parsedProxy.Scheme != "http" && parsedProxy.Scheme != "https" {
+	if err := checkProxyScheme(parsedProxy.Scheme); err != nil {
 		result.Success = false
-		result.ErrorMessage = fmt.Sprintf("不支持的代理协议：%s，仅支持 HTTP/HTTPS 协议", parsedProxy.Scheme)
-		return result, fmt.Errorf("不支持的代理协议：%s", parsedProxy.Scheme)
+		result.ErrorMessage = err.Error()
+		return result, err
 	}
 
-	// 创建 HTTP 客户端，使用 HTTP 代理
+	// 创建 HTTP 客户端，使用配置的代理
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(parsedProxy),
@@ -224,15 +250,15 @@ func createProxyTransport(proxyURL string) (*http.Transport, error) {
 	// 解析代理 URL
 	parsedProxy, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("代理 URL 格式无效：%v", err)
+		return nil, proxyParseError(err)
 	}
 
-	// 检查是否为 HTTP 代理
-	if parsedProxy.Scheme != "http" && parsedProxy.Scheme != "https" {
-		return nil, fmt.Errorf("不支持的代理协议：%s，仅支持 HTTP/HTTPS 协议", parsedProxy.Scheme)
+	// 检查代理协议
+	if err := checkProxyScheme(parsedProxy.Scheme); err != nil {
+		return nil, err
 	}
 
-	// 创建 HTTP 代理传输配置
+	// 创建代理传输配置
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(parsedProxy),
 		// TLS 设置

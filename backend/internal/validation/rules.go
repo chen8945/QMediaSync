@@ -2,6 +2,8 @@ package validation
 
 import (
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -104,6 +106,19 @@ func PositiveID(field string, value uint) error {
 	return nil
 }
 
+// proxySchemes 出站代理支持的协议。SOCKS5 由 Go net/http 的 Transport 原生拨号，socks5 与 socks5h 等价，域名都交给代理端解析。
+// 这里是唯一来源，传输层通过 ProxySchemeSupported 和 ProxySchemeHint 共用，避免两层白名单各自漂移。
+var proxySchemes = []string{"http", "https", "socks5", "socks5h"}
+
+// ProxySchemeHint 协议不受支持时的统一提示文案，随 proxySchemes 自动生成。
+var ProxySchemeHint = "只支持 " + strings.Join(proxySchemes, "、")
+
+// ProxySchemeSupported 判断代理协议是否在白名单内。
+// 传入的协议应当来自 url.Parse，它会将 scheme 统一转为小写。
+func ProxySchemeSupported(scheme string) bool {
+	return slices.Contains(proxySchemes, scheme)
+}
+
 func ProxyURL(field string, raw string, allowEmpty bool) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -113,11 +128,19 @@ func ProxyURL(field string, raw string, allowEmpty bool) error {
 		return New(field, "不能为空")
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
+	// 用 Hostname 而非 Host：形如 http://:1080 的地址 Host 非空但没有主机名，存下来每次出站都会失败。
+	if err != nil || parsed.Hostname() == "" {
 		return New(field, "必须是有效的代理 URL")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return New(field, "只支持 http 或 https")
+	if !ProxySchemeSupported(parsed.Scheme) {
+		return New(field, ProxySchemeHint)
+	}
+	// url.Parse 只校验端口是数字，不校验范围。
+	if port := parsed.Port(); port != "" {
+		number, convErr := strconv.Atoi(port)
+		if convErr != nil || number < 1 || number > 65535 {
+			return New(field, "端口必须在 1-65535 之间")
+		}
 	}
 	return nil
 }

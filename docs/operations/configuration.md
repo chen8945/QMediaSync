@@ -55,6 +55,8 @@ emby302:
 
 历史 `log.file` 仍可读取；当 `log.app` 为空且 `log.file` 有值时使用旧路径，新保存统一写 `log.app`。全局日志按写入触发轮转并压缩旧文件；同步任务日志不轮转，随同步记录清理删除。`QLogger` 在写入前脱敏 `api_key`、Token、Cookie、密码、STS 密钥等常见敏感字段，脱敏值统一显示为 `******`。
 
+`QLogger` 的脱敏基于键值对匹配，不识别 URL 里的 `用户名:密码@` 段。凡是可能带凭据的 URL（例如出站代理地址），必须在调用点用 `url.URL.Redacted()` 处理后再写日志或回传接口，不能依赖 `QLogger` 兜底；`url.Parse` 失败时也不能直接外抛 `url.Error`，它会回显整个原始地址。
+
 `QMS_UNSAFE_SENSITIVE_LOG=1` 只在本地调试时临时启用 `SensitiveDebug` 日志；它可能写出 API Key、Token、Cookie 或密码，不能在生产环境长期使用或分享相关日志。`backend/emby302.yaml` 默认关闭 ANSI 颜色，避免控制字符进入日志。
 
 ## 第三方密钥与本机敏感数据

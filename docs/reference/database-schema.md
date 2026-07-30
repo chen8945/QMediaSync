@@ -269,7 +269,7 @@ STRM 相关字段：
 
 - `use_telegram`、`telegram_bot_token`、`telegram_chat_id`、`meow_name`：旧通知配置，已迁移。
 - `emby_url`、`emby_api_key`：旧 Emby 配置，已迁移。
-- `http_proxy`：HTTP 代理地址。
+- `http_proxy`：出站代理地址，列名保持历史命名，取值支持 `http`、`https`、`socks5` 和 `socks5h`。
 
 ### `sync_paths`
 

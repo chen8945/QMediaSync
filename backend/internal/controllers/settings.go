@@ -231,13 +231,13 @@ func ParseEmby(c *gin.Context) {
 // 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 Telegram Bot 设置成功", Data: telegramBot})
 // }
 
-// UpdateHttpProxy 更新 HTTP 代理设置。
-// @Summary 更新 HTTP 代理
-// @Description 更新系统使用的 HTTP 代理配置
+// UpdateHttpProxy 更新出站代理设置。
+// @Summary 更新出站代理
+// @Description 更新系统出站请求使用的代理配置，支持 http、https、socks5 和 socks5h
 // @Tags 系统设置
 // @Accept json
 // @Produce json
-// @Param http_proxy body string false "HTTP 代理地址"
+// @Param http_proxy body string false "代理地址，支持 http、https、socks5 和 socks5h"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /setting/http-proxy [post]
@@ -253,30 +253,19 @@ func UpdateHttpProxy(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	httpProxy := req.HTTPProxy
+	httpProxy := req.NormalizedHTTPProxy()
 	// 更新设置
 	if !models.SettingsGlobal.UpdateHttpProxy(httpProxy) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新 HTTP 代理设置失败", Data: nil})
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新出站代理设置失败", Data: nil})
 		return
 	}
 	github.UpdateConfig(httpProxy) // 更新 GitHub 配置
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "HTTP 代理设置已更新", Data: nil})
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "出站代理设置已更新", Data: nil})
 }
 
-// GetHttpProxy 获取 HTTP 代理设置。
-// @Summary 获取 HTTP 代理
-// @Description 获取当前生效的 HTTP 代理配置
-// @Tags 系统设置
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /setting/http-proxy [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-// GetHttpProxy 获取 HTTP 代理设置。
-// @Summary 获取 HTTP 代理
-// @Description 获取当前系统配置的 HTTP 代理
+// GetHttpProxy 获取出站代理设置。
+// @Summary 获取出站代理
+// @Description 获取当前生效的出站代理配置
 // @Tags 系统设置
 // @Accept json
 // @Produce json
@@ -290,16 +279,16 @@ func GetHttpProxy(c *gin.Context) {
 	models.LoadSettings() // 确保设置已加载
 	httpProxy := make(map[string]string)
 	httpProxy["http_proxy"] = models.SettingsGlobal.HttpProxy
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 HTTP 代理设置成功", Data: httpProxy})
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取出站代理设置成功", Data: httpProxy})
 }
 
-// TestHttpProxy 测试 HTTP 代理连接。
-// @Summary 测试 HTTP 代理
-// @Description 测试指定 HTTP 代理的连接有效性
+// TestHttpProxy 测试出站代理连接。
+// @Summary 测试出站代理
+// @Description 测试指定代理的连接有效性，支持 http、https、socks5 和 socks5h
 // @Tags 系统设置
 // @Accept json
 // @Produce json
-// @Param http_proxy body string true "HTTP 代理地址"
+// @Param http_proxy body string true "代理地址，支持 http、https、socks5 和 socks5h"
 // @Param detailed body integer false "是否返回详细测试结果，1 返回 0 不返回"
 // @Success 200 {object} object
 // @Failure 200 {object} object
@@ -317,7 +306,7 @@ func TestHttpProxy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	httpProxy := req.HTTPProxy
+	httpProxy := req.NormalizedHTTPProxy()
 	detailed := req.Detailed == 1
 
 	if detailed {
@@ -329,7 +318,7 @@ func TestHttpProxy(c *gin.Context) {
 		}
 
 		if result.Success {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "HTTP 代理连接测试成功", Data: result})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "出站代理连接测试成功", Data: result})
 		} else {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + result.ErrorMessage, Data: nil})
 		}
@@ -342,9 +331,9 @@ func TestHttpProxy(c *gin.Context) {
 		}
 
 		if success {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "HTTP 代理连接测试成功", Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "出站代理连接测试成功", Data: nil})
 		} else {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "HTTP 代理连接测试失败", Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "出站代理连接测试失败", Data: nil})
 		}
 	}
 }

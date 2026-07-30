@@ -41,6 +41,8 @@ DTO 负责：
 - 将外部字段转换为模型输入，例如 `ToModel()`、`StrmSettingModel()`、`NormalizedIDs()`。
 - 与请求兼容性相关的规范化，例如 OpenList URL 自动补全协议、分页默认值、旧字段映射。
 
+当校验规则内部做了规范化（例如 `TrimSpace`）时，DTO 必须暴露对应的 `NormalizedXxx()` 方法，控制器落库和调用外部依赖只使用该方法的返回值。直接使用原始字段会让「校验通过但实际取值非法」成为可能，例如 `NormalizedHTTPProxy()` 之于带首尾空白的代理地址。
+
 控制器仍负责：
 
 - 调用 `ShouldBind`、`ShouldBindJSON` 或 `ShouldBindQuery`。
@@ -66,7 +68,7 @@ DTO 负责：
 | `RangeInt` / `RangeInt64` | 整数必须落在闭区间内。 |
 | `OneOfInt` / `OneOfString` | 值必须属于显式枚举。 |
 | `HTTPURL` | 可配置是否允许空值；非空时必须是 `http` 或 `https` URL，并包含 Host。 |
-| `ProxyURL` | HTTP 代理 URL 校验，当前只允许 `http` 或 `https`。 |
+| `ProxyURL` | 出站代理 URL 校验，允许 `http`、`https`、`socks5` 或 `socks5h`；必须含主机名，端口须落在 1-65535。协议白名单由 `ProxySchemeSupported` 和 `ProxySchemeHint` 对外暴露，`helpers` 的传输层复用同一份，不得各自维护。 |
 | `DownloadProxyURL` | 网盘下载反代 URL 校验，只允许 `115cdn.net`、其子域名、`d.pcs.baidu.com`、`baidupcs.com` 及其子域名。 |
 | `Cron` | 使用 `robfig/cron/v3` 的标准 5 段 Cron 解析。 |
 | `ExtList` | 扩展名数组可配置是否允许空；非空项必须以 `.` 开头，且不能包含空白字符。 |
