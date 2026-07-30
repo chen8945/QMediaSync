@@ -10,7 +10,7 @@
 
 更新日志由 [git-cliff](https://git-cliff.org/) 从 git 提交记录自动生成，因此提交信息需遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 
-当前 `cliff.toml` 只把 `feat:`、`fix:`、`perf:`、`revert:` 写入 changelog；`docs:`、`chore:`、`ci:`、`test:` 等开发类提交不会进入发布说明，除非调整 `cliff.toml`。不规范的提交（如 `Merge`、自由文案）会被自动忽略。
+当前 `cliff.toml` 把 `feat:`、`fix:`、`perf:`、`refactor:`、`style:` 和 `revert:` 写入 changelog；`docs:`、`chore:`、`ci:`、`test:` 等其余开发类提交不会进入发布说明，除非调整 `cliff.toml`。不规范的提交（如 `Merge`、自由文案）会被自动忽略。
 
 ## 持续集成与预发布镜像
 

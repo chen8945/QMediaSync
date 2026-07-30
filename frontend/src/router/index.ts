@@ -382,9 +382,9 @@ const routes = [
   {
     path: '/database',
     name: 'database',
-    component: AppBackupSettings,
+    redirect: '/database/backup/settings',
     meta: {
-      title: '备份恢复',
+      title: '备份管理',
       requiresAuth: true,
       icon: 'DataAnalysis',
       showInMenu: true,
@@ -398,6 +398,7 @@ const routes = [
       title: '备份设置',
       requiresAuth: true,
       parent: 'database',
+      icon: 'Tools',
       showInMenu: true,
     },
   },
@@ -426,9 +427,21 @@ const routes = [
     },
   },
   {
+    path: '/database/repair',
+    name: 'database-repair',
+    component: AppDatabaseRepair,
+    meta: {
+      title: '数据库修复',
+      requiresAuth: true,
+      parent: 'database',
+      icon: 'DataLine',
+      showInMenu: true,
+    },
+  },
+  {
     path: '/settings',
     name: 'settings',
-    component: AppUserSettings,
+    redirect: '/settings/user',
     meta: {
       title: '系统设置',
       requiresAuth: true,
@@ -521,8 +534,8 @@ const routes = [
     },
   },
   {
-    path: '/proxy',
-    name: 'proxy',
+    path: '/settings/proxy',
+    name: 'settings-proxy',
     component: AppProxySettings,
     meta: {
       title: '网络代理',
@@ -541,18 +554,6 @@ const routes = [
       requiresAuth: true,
       parent: 'settings',
       icon: 'Upload',
-      showInMenu: true,
-    },
-  },
-  {
-    path: '/settings/database-repair',
-    name: 'settings-database-repair',
-    component: AppDatabaseRepair,
-    meta: {
-      title: '数据库修复',
-      requiresAuth: true,
-      parent: 'settings',
-      icon: 'DataLine',
       showInMenu: true,
     },
   },

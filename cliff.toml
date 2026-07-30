@@ -29,16 +29,16 @@ filter_commits = false
 tag_pattern = "v[0-9]*"
 # 提交按时间从新到旧
 sort_commits = "newest"
-# 类型 -> 中文分组。只保留对用户有意义的类型；分组顺序由组名前的 <!-- N --> 排序前缀控制
-# （模板里用 striptags 去掉该前缀）。开发类提交默认注释掉即丢弃，需要时取消注释即可。
+# 类型 -> 中文分组。分组顺序由组名前的 <!-- N --> 排序前缀控制
+# （模板里用 striptags 去掉该前缀）。未启用的开发类提交默认丢弃，需要时取消注释即可。
 commit_parsers = [
     { message = "^feat", group = "<!-- 0 -->新功能" },
     { message = "^fix", group = "<!-- 1 -->修复" },
     { message = "^perf", group = "<!-- 2 -->性能" },
-    { message = "^revert", group = "<!-- 3 -->回滚" },
-    # { message = "^refactor", group = "<!-- 4 -->重构" },
-    # { message = "^docs", group = "<!-- 5 -->文档" },
-    # { message = "^style", group = "<!-- 6 -->样式" },
+    { message = "^refactor", group = "<!-- 3 -->重构" },
+    { message = "^style", group = "<!-- 4 -->样式" },
+    { message = "^revert", group = "<!-- 5 -->回滚" },
+    # { message = "^docs", group = "<!-- 6 -->文档" },
     # { message = "^test", group = "<!-- 7 -->测试" },
     # { message = "^ci", group = "<!-- 8 -->CI" },
     # { message = "^build", group = "<!-- 9 -->构建" },
