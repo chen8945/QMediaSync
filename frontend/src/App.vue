@@ -13,7 +13,12 @@
       <!-- 侧边栏 -->
       <el-aside
         :width="isMobile ? '250px' : '200px'"
-        :class="{ 'mobile-aside': isMobile, 'mobile-aside-open': isMobile && isMenuOpen }"
+        :class="{
+          'mobile-aside': isMobile,
+          'mobile-aside-open': isMobile && isMenuOpen,
+          'is-menu-scrolling': isMenuScrolling,
+        }"
+        @wheel.passive="handleMenuWheel"
       >
         <!-- 用户信息 -->
         <div class="user-info">
@@ -64,7 +69,6 @@
               <span>{{ menu.meta.title }}</span>
             </el-menu-item>
           </template>
-          <!-- 使用帮助 -->
           <!-- 使用帮助 -->
           <el-menu-item index="help" @click="openHelp">
             <el-icon>
@@ -398,6 +402,20 @@ const toggleMenu = () => {
   isMenuOpen.value = !isMenuOpen.value
 }
 
+// 滚轮滚动期间关闭菜单命中测试，避免每帧重算 hover 触发重绘；触摸和拖动滚动条不触发 wheel。
+// 空闲阈值要覆盖滚轮事件之间的间隔，又不能长到滚动停止后仍吞掉点击。
+const MENU_SCROLL_IDLE_MS = 120
+const isMenuScrolling = ref(false)
+let menuScrollIdleTimer: ReturnType<typeof setTimeout> | undefined
+
+const handleMenuWheel = () => {
+  isMenuScrolling.value = true
+  clearTimeout(menuScrollIdleTimer)
+  menuScrollIdleTimer = setTimeout(() => {
+    isMenuScrolling.value = false
+  }, MENU_SCROLL_IDLE_MS)
+}
+
 // 处理菜单选择，移动端选择后关闭菜单
 const handleMenuSelect = () => {
   if (isMobile.value) {
@@ -481,14 +499,13 @@ watch(isMobile, (nextIsMobile) => {
 onUnmounted(() => {
   // 清理轮询定时器
   backupStore.stopProgressPolling()
+  clearTimeout(menuScrollIdleTimer)
 })
 </script>
 
 <style>
 #app {
   font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   color: #2c3e50;
   height: 100vh;
   overflow: hidden;
@@ -508,6 +525,9 @@ onUnmounted(() => {
 }
 
 .el-aside {
+  --submenu-fade-in: 0.3s;
+  --submenu-fade-out: 0.2s;
+
   background-color: rgb(244 244 245);
   z-index: 1000;
   display: flex;
@@ -565,6 +585,33 @@ onUnmounted(() => {
   flex: 1;
   /* 规避 Chromium 缺陷：菜单整体位移后图标 <path> 会被跳过绘制，提升为独立合成层修复 */
   will-change: transform;
+}
+
+.el-aside .el-menu-item,
+.el-aside .el-sub-menu__title {
+  transition: none;
+}
+
+.el-aside.is-menu-scrolling .el-menu-vertical {
+  pointer-events: none;
+}
+
+.el-aside .el-collapse-transition-enter-active {
+  transition: none;
+  animation: submenu-fade var(--submenu-fade-in) ease-out;
+}
+
+.el-aside .el-collapse-transition-leave-active {
+  /* 只有 max-height 需要推迟：Element Plus 的内联子菜单没有上下内边距，padding 是 0 到 0 */
+  transition: max-height 0s var(--submenu-fade-out);
+  animation: submenu-fade var(--submenu-fade-out) ease-out reverse;
+}
+
+@keyframes submenu-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
 }
 
 .main-content {
@@ -666,6 +713,12 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .mobile-aside {
     transition: none;
+  }
+
+  .el-aside .el-collapse-transition-enter-active,
+  .el-aside .el-collapse-transition-leave-active {
+    transition: none;
+    animation: none;
   }
 }
 

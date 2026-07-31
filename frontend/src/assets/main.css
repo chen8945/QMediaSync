@@ -21,13 +21,6 @@ body {
 
 /* 移动端全局优化 */
 @media (max-width: 768px) {
-  body {
-    margin: 0;
-    padding: 0;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-
   * {
     box-sizing: border-box;
   }

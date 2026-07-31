@@ -30,6 +30,11 @@
 - `meta.parent` 是归属关系的唯一来源，不得用路径前缀推断归属。路由路径与所属一级菜单可以不一致，例如 `/settings/strm` 归属 `sync`，`/settings/tmdb`、`/settings/ai` 和 `/settings/category-strategy` 归属 `scrape`。
 - 侧边栏展开状态按 `route.meta.parent` 解析出一级菜单的 `path` 后再展开。Element Plus 的 `el-menu` 只在初始化时读取一次 `default-openeds` 且不监听该 prop，因此该 prop 只负责首屏展开；SPA 内跳转到 `showInMenu` 为 `false` 的详情页或表单页时，必须通过菜单实例的 `open()` 补上展开，不能只依赖计算属性。
 - 详情页和表单页即使 `showInMenu` 为 `false`，也要设置 `meta.parent`，否则进入这些页面时所属一级菜单不会展开。
+- 侧边栏为滚动和展开性能覆盖了 Element Plus 的默认过渡，覆盖必须用 `.el-aside` 限定，`el-main` 内的 `el-collapse` 仍使用原生折叠动画。菜单项和子菜单标题不得重新引入基于 `background-color` 的悬停过渡。
+- 滚轮滚动期间由 `is-menu-scrolling` 关闭菜单的 `pointer-events`，避免指针静止时每帧重算 hover 触发重绘；触摸和拖动滚动条不触发 `wheel`，不进入该状态。
+- 子菜单展开和收起不使用 Element Plus 的 `max-height` 折叠动画（逐帧触发布局），改为高度一次性到位、由 `opacity` 和 `transform` 提供过渡；收起用 `transition-delay` 把高度塌陷推迟到动画结束，该延迟必须与收起动画时长取自同一个自定义属性，两者不一致会出现淡出被裁断或塌陷前空等。时长只影响合成器插值帧数，不增加布局和重绘成本，可按观感调整。`prefers-reduced-motion: reduce` 下必须同时关闭 `animation` 和 `transition`，只关 `animation` 会保留收起延迟。
+- 侧边栏动效以 144Hz 显示器（帧预算 6.94ms）为基准。Element Plus 原生折叠动画实测展开和收起的中位帧时间约 180ms 和 167ms（约 6fps），高度一次性到位后回到 6.9ms 满帧；`contain: paint` 和菜单容器的 `flex` 取值实测均无影响，不要以性能为由改动它们。`text-rendering: optimizeLegibility` 实测同样无影响，且现代浏览器默认就开启 kerning 和常用连字（`font-kerning` 初始值 `auto`、`font-variant-ligatures` 初始值 `normal`），该声明在本项目是空操作，已从 `base.css` 移除；本项目正文用 `微软雅黑`、`Arial` 和等宽字体，中文字体没有 kern pair，等宽字体不做连字，删除前后渲染一致。
+- 帧时间无法自动化验证（`frontend/test/regression/sidebar-menu-motion.test.ts` 只对滚动态的进入和退出做行为断言，动效本身仍只锁源码契约），调整侧边栏动效后需人工复核：开启绘制闪烁时滚轮滚动菜单不应持续闪绿，用 `requestAnimationFrame` 采样展开和收起的中位帧间隔应接近显示器刷新周期。测量须在页面保持焦点、没有浏览器扩展注入的窗口进行并丢弃起始若干帧，否则 rAF 起始延迟会产生刷新周期整数倍的假尖峰。
 - `.el-menu-vertical` 上的 `will-change: transform` 是 Chromium 绘制缺陷的规避手段，不是性能优化，不能删。上方子菜单展开使菜单项整体位移后，图标 `<svg>` 内 `<path>` 的绘制会被持续跳过：元素盒、背景和 outline 都正常绘制，计算样式、几何、命名空间和 `d` 均正常，hover 或改背景色这类普通重绘修不好，只有改变页面缩放才恢复；`--disable-gpu` 和 Firefox 下均不复现。把菜单提升为独立合成层可稳定规避，该规则若在后续 Chromium 版本失效，备选为 `.el-aside .el-icon { backface-visibility: hidden }`。
 
 ## 路由与浏览器历史
