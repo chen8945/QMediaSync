@@ -2,42 +2,13 @@ import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+import { extractMediaBlock, extractRule } from '../support/css'
+
 const appVue = readFileSync(resolve(__dirname, '../../src/App.vue'), 'utf8')
 const fileManagerVue = readFileSync(
   resolve(__dirname, '../../src/components/AppFileManager.vue'),
   'utf8',
 )
-
-function extractMediaBlock(css: string, query: string) {
-  const start = css.indexOf(query)
-  expect(start).toBeGreaterThanOrEqual(0)
-
-  const blockStart = css.indexOf('{', start)
-  expect(blockStart).toBeGreaterThanOrEqual(0)
-
-  let depth = 0
-  for (let index = blockStart; index < css.length; index += 1) {
-    const char = css[index]
-    if (char === '{') {
-      depth += 1
-    }
-    if (char === '}') {
-      depth -= 1
-      if (depth === 0) {
-        return css.slice(blockStart + 1, index)
-      }
-    }
-  }
-
-  throw new Error(`未找到 ${query} 的完整样式块`)
-}
-
-function extractClassBlock(css: string, className: string) {
-  const pattern = new RegExp(`\\.${className}\\s*\\{([^}]+)\\}`)
-  const match = css.match(pattern)
-  expect(match).toBeTruthy()
-  return match?.[1] ?? ''
-}
 
 function getMarginBottom(block: string) {
   const margin = block.match(/margin:\s*([^;]+);/)
@@ -107,14 +78,14 @@ function getBoxBottom(block: string, property: 'margin' | 'padding') {
 describe('移动端文件管理器顶部间距', () => {
   test('移动端顶部栏和首个内容之间不保留大块空白', () => {
     const mobileBlock = extractMediaBlock(appVue, '@media (max-width: 768px)')
-    const mobileHeaderBlock = extractClassBlock(mobileBlock, 'mobile-header')
+    const mobileHeaderBlock = extractRule(mobileBlock, '.mobile-header')
 
     expect(getMarginBottom(mobileHeaderBlock)).toBeLessThanOrEqual(8)
   })
 
   test('小屏移动端顶部栏和首个内容之间不保留大块空白', () => {
     const smallMobileBlock = extractMediaBlock(appVue, '@media (max-width: 480px)')
-    const mobileHeaderBlock = extractClassBlock(smallMobileBlock, 'mobile-header')
+    const mobileHeaderBlock = extractRule(smallMobileBlock, '.mobile-header')
 
     expect(getMarginBottom(mobileHeaderBlock)).toBeLessThanOrEqual(8)
   })
