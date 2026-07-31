@@ -4,9 +4,9 @@
 >
 > 权威范围：本文档维护前端实现与协作边界；请求字段和校验见 [请求校验约定](request-validation.md)，SSE 协议见 [实时事件](../architecture/realtime-events.md)，上传和 STRM 状态机见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md)。
 >
-> 修改时机：修改 HTTP 客户端注入、实时刷新策略、路由历史、通用响应式组件、通知渠道热刷新或全局交互约定时必须更新本文档。
+> 修改时机：修改 HTTP 客户端注入、实时刷新策略、路由表结构、路由历史、侧边栏菜单、通用响应式组件、通知渠道热刷新或全局交互约定时必须更新本文档。
 >
-> 相关代码：`frontend/src/http/`、`frontend/src/api/`、`frontend/src/composables/`、`frontend/src/router/`、`frontend/src/components/common/`、`frontend/src/utils/`、`backend/internal/controllers/notification.go`、`backend/internal/notificationmanager/`。
+> 相关代码：`frontend/src/http/`、`frontend/src/api/`、`frontend/src/composables/`、`frontend/src/router/`、`frontend/src/App.vue`、`frontend/src/components/common/`、`frontend/src/utils/`、`backend/internal/controllers/notification.go`、`backend/internal/notificationmanager/`。
 
 ## 组件和请求边界
 
@@ -24,8 +24,17 @@
 - 长任务优先使用现有事件流；HTTP 状态接口用于首次加载、手动刷新和断线恢复。115 OAuth、二维码授权等短生命周期外部流程沿用各自轮询，不并入通用队列事件。
 - 新增轮询必须在页面隐藏时暂停，避免请求重叠，并在卸载时清理定时器和事件监听。若定时器回调会等待 HTTP 请求完成后续排，卸载还必须使该回调失效，避免飞行中请求完成后在已离开的页面重新创建轮询。
 
+## 路由表结构与侧边栏菜单
+
+- 侧边栏一级菜单由 `meta.showInMenu` 为 `true` 且没有 `meta.parent` 的路由生成，子菜单由 `meta.parent` 指向该一级菜单的 `name` 生成。一级菜单只做导航容器，不注册自己的页面组件，必须用 `redirect` 指向其首个子页面；例如 `/settings` 重定向到 `/settings/user`、`/database` 重定向到 `/database/backup/settings`。
+- `meta.parent` 是归属关系的唯一来源，不得用路径前缀推断归属。路由路径与所属一级菜单可以不一致，例如 `/settings/strm` 归属 `sync`，`/settings/tmdb`、`/settings/ai` 和 `/settings/category-strategy` 归属 `scrape`。
+- 侧边栏展开状态按 `route.meta.parent` 解析出一级菜单的 `path` 后再展开。Element Plus 的 `el-menu` 只在初始化时读取一次 `default-openeds` 且不监听该 prop，因此该 prop 只负责首屏展开；SPA 内跳转到 `showInMenu` 为 `false` 的详情页或表单页时，必须通过菜单实例的 `open()` 补上展开，不能只依赖计算属性。
+- 详情页和表单页即使 `showInMenu` 为 `false`，也要设置 `meta.parent`，否则进入这些页面时所属一级菜单不会展开。
+
 ## 路由与浏览器历史
 
+- 重命名或移动已发布的路由路径时，必须保留旧路径的 `redirect` 记录，保证书签、浏览器历史和外部链接继续可用；旧路径记录不设置 `meta`，因此不会进入侧边栏菜单。
+- 路由表末尾必须保留 `/:pathMatch(.*)*` 兜底记录并重定向到首页。没有兜底记录时，未知路径匹配不到任何记录，`to.meta.requiresAuth` 为 `undefined` 会让鉴权守卫整体失效，页面只剩布局和空白正文；重定向到首页可以让首页的 `requiresAuth` 继续触发守卫，未登录时仍然跳转登录页。
 - 页面标题只在 Vue Router 成功完成导航后更新，避免把目标页标题写入上一条浏览器历史记录。
 - 业务页面保留按需加载时，使用 `router/asyncRoute.ts` 的同步路由壳：导航应先完成并显示目标页标题、加载中指示和骨架占位，再由壳内部加载页面模块；不得把 `defineAsyncComponent()` 返回值直接注册为路由 `component`。路由壳名称必须保持原页面组件名，确保 KeepAlive 包含名单不变。
 - 登录成功、退出、认证失效和鉴权守卫跳转使用 `router.replace` 或带 `replace: true` 的重定向，避免登录页、失效页或被拦截页滞留在历史栈。

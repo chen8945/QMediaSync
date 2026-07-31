@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/github"
+	"qmediasync/internal/validation"
 )
 
 // 获取本机网卡 IP
@@ -300,10 +301,11 @@ func DownloadFileWithProgress(ctx context.Context, proxyUrl, downloadUrl string,
 	if proxyUrl != "" {
 		proxy, perr := url.Parse(proxyUrl)
 		if perr != nil {
-			AppLogger.Warnf("[下载] 解析代理 URL 失败：%v，将不使用代理", proxyParseError(perr))
+			AppLogger.Warnf("[下载] 解析代理 URL 失败：%v，将不使用代理", validation.ProxyParseError(perr))
 		} else {
 			transport.Proxy = http.ProxyURL(proxy)
-			AppLogger.Infof("[下载] 使用代理：%s", proxy.Redacted())
+			// url.URL.Redacted() 只遮蔽密码，用户名仍是明文，这里统一用代理专用脱敏
+			AppLogger.Infof("[下载] 使用代理：%s", validation.RedactParsedProxyURL(proxy))
 		}
 	}
 
@@ -423,10 +425,11 @@ func TestURLConnection(proxyUrl, testUrl string, timeout int) (bool, error) {
 	if proxyUrl != "" {
 		proxy, perr := url.Parse(proxyUrl)
 		if perr != nil {
-			AppLogger.Warnf("[网络测试] 解析代理 URL 失败：%v，将不使用代理", proxyParseError(perr))
+			AppLogger.Warnf("[网络测试] 解析代理 URL 失败：%v，将不使用代理", validation.ProxyParseError(perr))
 		} else {
 			transport.Proxy = http.ProxyURL(proxy)
-			AppLogger.Infof("[网络测试] 使用代理：%s", proxy.Redacted())
+			// url.URL.Redacted() 只遮蔽密码，用户名仍是明文，这里统一用代理专用脱敏
+			AppLogger.Infof("[网络测试] 使用代理：%s", validation.RedactParsedProxyURL(proxy))
 		}
 	}
 

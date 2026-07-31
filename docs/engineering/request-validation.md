@@ -67,13 +67,27 @@ DTO 负责：
 | `PositiveID` | `uint` ID 必须大于 0。 |
 | `RangeInt` / `RangeInt64` | 整数必须落在闭区间内。 |
 | `OneOfInt` / `OneOfString` | 值必须属于显式枚举。 |
-| `HTTPURL` | 可配置是否允许空值；非空时必须是 `http` 或 `https` URL，并包含 Host。 |
-| `ProxyURL` | 出站代理 URL 校验，允许 `http`、`https`、`socks5` 或 `socks5h`；必须含主机名，端口须落在 1-65535。协议白名单由 `ProxySchemeSupported` 和 `ProxySchemeHint` 对外暴露，`helpers` 的传输层复用同一份，不得各自维护。 |
-| `DownloadProxyURL` | 网盘下载反代 URL 校验，只允许 `115cdn.net`、其子域名、`d.pcs.baidu.com`、`baidupcs.com` 及其子域名。 |
+| `HTTPURL` | 可配置是否允许空值；非空时必须是 `http` 或 `https` URL，并包含 Host，显式端口须落在 1-65535。 |
+| `ProxyURL` | 出站代理 URL 校验，允许 `http`、`https`、`socks5` 或 `socks5h`；必须包含 Host，显式端口须落在 1-65535。协议白名单由 `ProxySchemeSupported` 和 `ProxySchemeHint` 对外暴露，`helpers` 的传输层复用同一份，不得各自维护。 |
+| `DownloadProxyURL` | 网盘下载反代 URL 校验，只允许 `115cdn.net`、其子域名、`d.pcs.baidu.com`、`baidupcs.com` 及其子域名，显式端口须落在 1-65535。 |
+| `PortInRange` | 校验已解析 URL 的显式端口落在 1-65535，供上面三个 URL 规则共用。 |
 | `Cron` | 使用 `robfig/cron/v3` 的标准 5 段 Cron 解析。 |
 | `ExtList` | 扩展名数组可配置是否允许空；非空项必须以 `.` 开头，且不能包含空白字符。 |
 
 通用错误使用 `validation.Error`，错误文本格式为 `字段：原因`。新增规则时应同时补充 `backend/internal/validation` 的 table-driven 测试。
+
+### URL 校验边界
+
+三个 URL 规则共用同一套判断顺序：先看 `url.Parse` 是否成功且 Host 段非空，再看协议白名单，最后用 `PortInRange` 校验显式端口。
+
+- 空主机名合法。形如 `http://:1080`、`http://:8096` 的地址 `Hostname()` 为空但 `Host` 非空，Go 会按本机处理，实测经这类代理出站可以拿到 200 响应；这是本地代理和本机服务的常用简写，前后端都必须放行，不得改回要求主机名非空。
+- Host 段为空才是非法。`socks5://`、`http:///path`、`socks5://user:pass@` 没有拨号目标；漏写 `//` 的 `localhost:1080`、`proxy.example.com:8080` 会被 `url.Parse` 当作协议或 opaque，Host 同样为空，一并按格式错误拒绝。
+- 端口范围必须显式校验。`url.Parse` 只保证端口是数字，`:0` 和 `:99999` 都能解析通过，因此 `HTTPURL`、`ProxyURL`、`DownloadProxyURL` 都调用 `PortInRange`；不写端口时按协议默认端口处理，不做检查。
+- 端口越界返回端口专属提示而不是通用格式错误，避免用户照着「格式无效」去改协议。
+
+`ProxyURL` 的协议白名单是唯一来源，`helpers` 传输层通过 `ProxySchemeSupported` 和 `ProxySchemeHint` 复用；`TestProxySchemeSupported` 和 `TestProxySchemeHintCoversWhitelist` 钉住白名单与提示文案的同步。
+
+`helpers.createProxyTransport` 不止复用白名单，而是整体调用 `validation.ProxyURL`，一次拿到协议、Host 和端口范围三层校验与统一中文文案。构造出站传输是唯一入口，`TestHttpProxyWithContext` 和 `TestHttpProxyAdvancedWithContext` 也走它，因此「测试代理」按钮与真实出站用同一套校验和同一份传输配置。传输层不得自行拼装代理地址校验，否则 `socks5://h:99999` 这类地址会被请求层拒绝、被传输层放过，直到拨号阶段才报底层错误。
 
 ### Cron 表达式边界
 
@@ -101,7 +115,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/scrape_path.go` | 刮削路径保存 | 创建和更新分场景校验；更新时使用旧记录补齐不可编辑的来源类型、账号和媒体类型；刮削类型、整理方式、源路径、按场景要求的目标路径、扩展名、最小文件大小、线程上限、Cron。 |
 | `requests/scrape_settings.go` | TMDB、AI、分类和 TMDB 搜索 | URL、语言代码、国家代码、AI 动作枚举、模型名长度、超时范围、分类名称、Genre ID、年份范围。 |
 | `requests/accounts.go` | 账号、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
-| `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、账号 ID、OAuth 回调 URL、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
+| `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、`preserve_proxy_credentials` 的显式凭据保留意图、账号 ID、OAuth 回调 URL、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
 | `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串。 |
 | `requests/backup.go` | 备份创建、列表、记录 ID、恢复和配置 | 手动备份原因默认值、分页默认值、备份记录 ID、启用开关、Cron、保留天数、最大备份数、压缩开关。 |
 | `requests/notification.go` | Telegram、MeoW、Bark、ServerChan、自定义 Webhook 渠道 | 渠道名称、必填凭据、URL、Webhook 方法、格式、认证方式和模板格式。 |
@@ -123,6 +137,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - `ParsePositiveIDRequest` 用于解析 HTTP path 中的正整数 `id`，控制器仍按各自模块既有响应格式返回错误。
 - `QueueListRequest.Status` 当前只绑定为 `int`，不做枚举限制，继续兼容现有前端和模型状态值。
 - `AISettingsRequest.EnableAI` 允许空值，避免旧前端或局部保存请求被误拒。
+- `HTTPProxyRequest.PreserveProxyCredentials` 是可空布尔值：当前前端保存或测试脱敏代理地址时必须显式提交。`true` 仅在提交地址与当前存储地址的协议和 `host:port` 一致时保留用户名和密码；端点变化时忽略该标志，使用 `http_proxy` 中的凭据，避免将已存凭据转发给其他代理。`false` 表示将 `http_proxy` 中的凭据作为新值；字段缺失仅为兼容未升级前端，继续沿用历史的脱敏字符串匹配行为。
 - 账号添加页面会在提交前拦截空账号备注、OpenList 访问地址、用户名、密码或 Token 等轻量问题；后端 DTO 仍是最终校验来源，并在账号接口返回前把字段级校验错误转换为面向用户的提示。
 - `CreateOpenListAccountRequest` 会自动补全缺失的 `http://` 协议，并去掉末尾 `/`。
 - `LoginRequest` 校验用户名和密码非空，并在进入限流、数据库查询和失败日志前保留用户名 20 个字符上限；实际身份校验交给登录模型。首次管理员创建和当前用户凭据修改使用严格用户名 / 密码规则。控制器仍统一返回「登录失败」，不向客户端暴露用户名、密码或验证码的具体失败原因。
@@ -133,7 +148,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 
 ## 安全敏感校验
 
-- `/proxy-115` 使用 `Proxy115Request` 和 `DownloadProxyURL` 限制目标下载域名，并在重定向时重新校验 Location，避免通过跳转绕过反代白名单。
+- `/proxy-115` 使用 `Proxy115Request` 和 `DownloadProxyURL` 限制目标下载域名和端口范围，并在重定向时重新校验 Location，避免通过跳转绕过反代白名单。
 - 日志读取相关请求接受根日志文件名或 `libs/<日志文件名>`；拒绝绝对路径、路径穿越、非白名单子目录和多级子目录。
 - 同步任务详情实时流 `/api/sync/tasks/:id/stream` 不接受客户端传入日志路径，只使用 `ParsePositiveIDRequest` 校验路径 `id`，再由后端根据 `sync_id` 派生同步任务日志路径。
 - 临时图片读取请求只接受相对路径，并拒绝绝对路径和路径穿越。
@@ -172,6 +187,9 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 - `STRM_GLOBAL_OPTIONS` 和 `STRM_CUSTOM_OPTIONS`：全局配置与自定义配置的 STRM 开关枚举；`add_path` 全局值为 `1` 添加完整路径、`2` 只添加文件名、`3` 不添加，同步目录自定义配置额外支持 `-1` 继承全局 STRM 设置。
 - `HTTP_URL_PATTERN`：前端 URL 输入提示使用，后端仍以 `validation.HTTPURL` 为准。
 - `CRON_DEFAULTS`：前端默认 Cron 值。
+- `PROXY_SCHEMES`、`PROXY_PORT_RANGE`：与后端 `proxySchemes` 和 `PortInRange` 对齐的代理协议白名单和端口范围。`PROXY_SCHEME_HINT`、`PROXY_URL_HELP` 和 `PROXY_URL_MESSAGES` 由白名单派生，协议名不得在组件里重复手写；后端新增协议时只改这一处。`PROXY_URL_PLACEHOLDER` 里的示例端口是各协议的社区惯例，与白名单无关，直接写字面量。
+
+`AppProxySettings` 的 `validateProxyUrl` 与 `validation.ProxyURL` 的判断顺序一致：先拒绝空白和控制字符，再判断格式，然后是协议白名单，最后是端口范围。这里不能直接依赖 `new URL()`：它对 `proxy.example.com:8080` 不抛错（会把主机名当协议），会把 `\t`、`\n` 静默删掉，对越界端口直接抛错而拿不到端口专属提示，因此协议、Host 段和端口都要在交给 `URL` 之前自行切分判断。`scheme://:port` 在前端同样放行。
 
 备份定时策略选择器将当前生效的 Cron 和自定义 Cron 草稿拆成两个前端状态；提交配置时仍只保存 `backup_cron`，避免预设策略覆盖尚未提交的自定义表达式。
 

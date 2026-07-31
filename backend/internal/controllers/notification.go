@@ -11,6 +11,7 @@ import (
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/requests"
+	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -1096,6 +1097,8 @@ func GetTelegramChannel(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "配置不存在", "data": nil})
 		return
 	}
+	// ProxyURL 由迁移从 settings.HttpProxy 复制而来，可能带凭据，与 GetHttpProxy 用同一个脱敏函数
+	cfg.ProxyURL = validation.RedactProxyURL(cfg.ProxyURL)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "获取成功", "data": gin.H{
 		"channel": toNotificationChannelResponse(channel),
 		"config":  cfg,

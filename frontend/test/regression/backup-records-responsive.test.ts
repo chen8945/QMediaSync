@@ -69,11 +69,14 @@ describe('AppBackupRecords responsive layout', () => {
       'utf8',
     )
 
-    expect(source).toContain("priority: 'secondary',\n    minWidth: 320")
-    expect(source).toContain("key: 'id',\n    label: 'ID',\n    priority: 'primary'")
-    expect(source).toContain("key: 'backup_type',\n    label: '类型',\n    priority: 'primary'")
-    expect(source).toContain(
-      "key: 'created_at',\n    label: '创建时间',\n    priority: 'primary',\n    width: 180",
+    // 不钉缩进和属性顺序：只要求这几列的优先级和宽度约束还在，格式化改动不应该让回归测试变红
+    expect(source).toMatch(
+      /key: 'file_path',[\s\S]{0,280}priority: 'secondary',[\s\S]{0,80}minWidth: 320/,
+    )
+    expect(source).toMatch(/key: 'id',[\s\S]{0,80}priority: 'primary'/)
+    expect(source).toMatch(/key: 'backup_type',[\s\S]{0,80}priority: 'primary'/)
+    expect(source).toMatch(
+      /key: 'created_at',[\s\S]{0,120}priority: 'primary',[\s\S]{0,80}width: 180/,
     )
   })
 })

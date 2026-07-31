@@ -8,6 +8,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
+	"qmediasync/internal/validation"
 
 	"gorm.io/gorm"
 )
@@ -127,7 +128,8 @@ func (m *EnhancedNotificationManager) createChannelHandler(channel *notification
 		if m.getProxyURL != nil {
 			proxyURL = m.getProxyURL()
 		}
-		helpers.AppLogger.Infof("为 Telegram 渠道使用代理：%s", proxyURL)
+		// 代理地址可能带用户名密码，QLogger 只按键值对脱敏、识别不了 URL 里的 userinfo，必须在调用点遮蔽
+		helpers.AppLogger.Infof("为 Telegram 渠道使用代理：%s", validation.RedactProxyURL(proxyURL))
 		var handler *TelegramChannelHandler
 		if proxyURL != "" {
 			handler = NewTelegramChannelHandlerWithProxy(&config, proxyURL)

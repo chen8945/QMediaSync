@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"qmediasync/internal/validation"
 )
 
 // ConnectionType 连接类型枚举
@@ -23,9 +25,23 @@ const (
 type GitHubAccess struct {
 	Type       ConnectionType // 当前使用的连接类型
 	Client     *http.Client   // HTTP 客户端
-	ProxyURL   string         // 代理 URL（仅记录类型，不记录密码）
+	ProxyURL   string         // 代理 URL，已遮蔽用户名和密码，仅供展示与排查；实际拨号用 Client 内的 Transport
 	LastTested time.Time      // 上次测试时间
 	Cached     bool           // 是否为缓存结果
+}
+
+// logPrintf 本包的日志出口。
+// 默认走 stdlib log，因为 helpers/net.go 已经导入本包，直接引用 helpers.AppLogger 会形成 import 循环。
+// 调用方（helpers 初始化 QLogger 后）可通过 SetLogPrintf 注入 AppLogger.Infof，使本包日志并入 QLogger。
+var logPrintf = log.Printf
+
+// SetLogPrintf 注入日志输出函数，用于把本包日志接入 QLogger。传 nil 时恢复 stdlib log。
+func SetLogPrintf(printf func(format string, args ...any)) {
+	if printf == nil {
+		logPrintf = log.Printf
+		return
+	}
+	logPrintf = printf
 }
 
 // Manager GitHub 访问管理器
@@ -63,7 +79,7 @@ func UpdateConfig(httpProxy string) {
 
 	// 清除缓存，以便使用新配置
 	defaultManager.current = nil
-	log.Printf("GitHub 管理器配置已更新，缓存已清除")
+	logPrintf("GitHub 管理器配置已更新，缓存已清除")
 }
 
 // GetManager 获取管理器实例
@@ -86,7 +102,8 @@ func (m *Manager) TestConnection(connType ConnectionType, proxyURL string) bool 
 	if connType == ConnectionTypeProxy && proxyURL != "" {
 		proxy, err := url.Parse(proxyURL)
 		if err != nil {
-			log.Printf("代理 URL 解析失败：%v", err)
+			// 不能直接打印 err：url.Error 会回显整个原始地址，代理地址常带用户名密码
+			logPrintf("代理 URL 解析失败：%v", validation.ProxyParseError(err))
 			return false
 		}
 		transport = &http.Transport{
@@ -96,7 +113,7 @@ func (m *Manager) TestConnection(connType ConnectionType, proxyURL string) bool 
 		// GitHub 代理 URL 模式：将请求发送到代理服务器
 		proxy, err := url.Parse(proxyURL)
 		if err != nil {
-			log.Printf("GitHub 代理 URL 解析失败：%v", err)
+			logPrintf("GitHub 代理 URL 解析失败：%v", validation.ProxyParseError(err))
 			return false
 		}
 		transport = &http.Transport{
@@ -124,7 +141,7 @@ func (m *Manager) GetBestConnection() (*GitHubAccess, error) {
 	if m.current != nil && time.Since(m.current.LastTested) < m.cacheValid {
 		m.RUnlock()
 		m.current.Cached = true // 标记为缓存
-		log.Printf("使用缓存的 GitHub 连接：%s", m.current.Type)
+		logPrintf("使用缓存的 GitHub 连接：%s", m.current.Type)
 		return m.current, nil
 	}
 	m.RUnlock()
@@ -149,17 +166,19 @@ func (m *Manager) GetBestConnection() (*GitHubAccess, error) {
 						Timeout:   30 * time.Second,
 						Transport: &http.Transport{Proxy: http.ProxyURL(proxy)},
 					},
-					ProxyURL:   m.httpProxy,
+					// 只保留脱敏地址：该字段会被展示和写日志，拨号由上面的 Transport 承担
+					ProxyURL:   validation.RedactParsedProxyURL(proxy),
 					LastTested: time.Now(),
 					Cached:     false,
 				}
-				log.Printf("GitHub 连接方式：用户代理")
+				logPrintf("GitHub 连接方式：用户代理")
 				return m.current, nil
 			}
 		}
 		// 如果用户配置了代理但代理不可用，直接返回错误
 		// 参考原始 TestGitHub 逻辑：如果 proxy != ""，返回 failed
-		return nil, fmt.Errorf("用户配置的代理不可用：%s", m.httpProxy)
+		// 该错误会被上层写进日志（helpers.TestGithub），必须使用脱敏地址
+		return nil, fmt.Errorf("用户配置的代理不可用：%s", validation.RedactProxyURL(m.httpProxy))
 	}
 
 	// 2. 测试直连
@@ -170,7 +189,7 @@ func (m *Manager) GetBestConnection() (*GitHubAccess, error) {
 			LastTested: time.Now(),
 			Cached:     false,
 		}
-		log.Printf("GitHub 连接方式：直连")
+		logPrintf("GitHub 连接方式：直连")
 		return m.current, nil
 	}
 
@@ -189,7 +208,7 @@ func (m *Manager) GetBestConnection() (*GitHubAccess, error) {
 				LastTested: time.Now(),
 				Cached:     false,
 			}
-			log.Printf("GitHub 连接方式：GitHub 代理 URL（%s）", GithubProxyURL)
+			logPrintf("GitHub 连接方式：GitHub 代理 URL（%s）", GithubProxyURL)
 			return m.current, nil
 		}
 	}
@@ -224,5 +243,5 @@ func (m *Manager) ClearCache() {
 	m.Lock()
 	defer m.Unlock()
 	m.current = nil
-	log.Printf("GitHub 连接缓存已清除")
+	logPrintf("GitHub 连接缓存已清除")
 }

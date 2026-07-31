@@ -50,6 +50,10 @@ func TestHTTPURL(t *testing.T) {
 		{name: "空值不允许", raw: "", wantErr: true},
 		{name: "缺少协议失败", raw: "127.0.0.1:8096", wantErr: true},
 		{name: "FTP 失败", raw: "ftp://example.com", wantErr: true},
+		{name: "省略主机名通过", raw: "http://:8096"},
+		{name: "端口边界通过", raw: "http://emby.example.com:65535"},
+		{name: "端口超范围失败", raw: "https://emby.example.com:99999", wantErr: true},
+		{name: "端口为零失败", raw: "http://emby.example.com:0", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -162,10 +166,14 @@ func TestProxyURL(t *testing.T) {
 		{name: "允许空值", raw: "", allowEmpty: true},
 		{name: "缺少协议失败", raw: "127.0.0.1:7890", wantErr: true},
 		{name: "SOCKS4 失败", raw: "socks4://127.0.0.1:1080", wantErr: true},
-		{name: "缺少主机名失败", raw: "http://:1080", wantErr: true},
+		// 省略主机名是本地代理的常用简写，Go 会解析为本机，实测经它出站可拿到 200，不能拒绝。
+		{name: "省略主机名的 HTTP 通过", raw: "http://:1080"},
+		{name: "省略主机名的 SOCKS5 通过", raw: "socks5://:1080"},
 		{name: "只有协议失败", raw: "socks5://", wantErr: true},
+		{name: "端口边界通过", raw: "socks5://127.0.0.1:65535"},
 		{name: "端口超范围失败", raw: "socks5://127.0.0.1:99999", wantErr: true},
 		{name: "端口为零失败", raw: "socks5://127.0.0.1:0", wantErr: true},
+		{name: "省略主机名端口超范围失败", raw: "http://:99999", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -175,6 +183,18 @@ func TestProxyURL(t *testing.T) {
 				t.Fatalf("ProxyURL() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestProxyURLPortMessage 端口越界必须给出端口专属提示，
+// 否则用户会照着"格式无效"去改协议而不是改端口。
+func TestProxyURLPortMessage(t *testing.T) {
+	err := ProxyURL("http_proxy", "socks5://127.0.0.1:99999", false)
+	if err == nil {
+		t.Fatal("ProxyURL() 期望端口越界报错")
+	}
+	if !strings.Contains(err.Error(), "端口必须在 1-65535 之间") {
+		t.Fatalf("ProxyURL() error = %q，期望包含端口范围提示", err.Error())
 	}
 }
 
@@ -211,9 +231,12 @@ func TestDownloadProxyURL(t *testing.T) {
 		{name: "115 CDN 域名通过", raw: "https://cdn.115cdn.net/file.mp4"},
 		{name: "百度 PCS 域名通过", raw: "https://d.pcs.baidu.com/file.mp4"},
 		{name: "百度 PCS 子域通过", raw: "https://foo.baidupcs.com/file.mp4"},
+		{name: "显式端口通过", raw: "https://cdn.115cdn.net:443/file.mp4"},
 		{name: "空值失败", raw: "", wantErr: true},
 		{name: "非 HTTP 失败", raw: "ftp://cdn.115cdn.net/file.mp4", wantErr: true},
 		{name: "未知域名失败", raw: "https://example.com/file.mp4", wantErr: true},
+		{name: "端口超范围失败", raw: "https://115cdn.net:99999/file.mp4", wantErr: true},
+		{name: "端口为零失败", raw: "https://d.pcs.baidu.com:0/file.mp4", wantErr: true},
 	}
 
 	for _, tt := range tests {

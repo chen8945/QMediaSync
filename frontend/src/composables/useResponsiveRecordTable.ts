@@ -18,18 +18,14 @@ export function useResponsiveRecordTable<TRow>(options: UseResponsiveRecordTable
   })
 
   const detailFields = computed<RecordDetailField<TRow>[]>(() => {
-    const columns = toValue(options.columns)
-    if (options.showAllDetails && toValue(options.showAllDetails)) {
-      return columns
-        .filter((column) => column.detailField)
-        .map((column) => column.detailField as RecordDetailField<TRow>)
-    }
-
+    const showAll = toValue(options.showAllDetails)
     const visibleKeys = new Set(visibleColumns.value.map((column) => column.key))
-    return columns
+    // 展开详情默认只补表格里看不到的列；showAllDetails 时把所有带 detailField 的列都列出来
+    return toValue(options.columns)
       .filter(
         (column) =>
-          column.detailField && (!visibleKeys.has(column.key) || column.priority === 'detail'),
+          column.detailField &&
+          (showAll || !visibleKeys.has(column.key) || column.priority === 'detail'),
       )
       .map((column) => column.detailField as RecordDetailField<TRow>)
   })

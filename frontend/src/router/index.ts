@@ -236,6 +236,7 @@ const routes = [
     meta: {
       title: '同步任务详情',
       requiresAuth: true,
+      parent: 'sync',
       showInMenu: false,
     },
   },
@@ -556,6 +557,20 @@ const routes = [
       icon: 'Upload',
       showInMenu: true,
     },
+  },
+  // 旧路径重定向：保持外部书签、历史记录和旧文档链接可用
+  {
+    path: '/proxy',
+    redirect: '/settings/proxy',
+  },
+  {
+    path: '/settings/database-repair',
+    redirect: '/database/repair',
+  },
+  // 未知路径统一回首页，由首页的 requiresAuth 继续走鉴权守卫
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/',
   },
 ]
 

@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 
 	"qmediasync/internal/emby"
 	"qmediasync/internal/github"
@@ -9,9 +11,19 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
+	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
 )
+
+// github 包不能引用 helpers（helpers/net.go 已导入 github，反向依赖会形成 import 循环），
+// 默认只能写 stdlib log、绕过 QLogger 的级别控制和脱敏。这里从同时依赖两者的 controllers 侧注入。
+// 用闭包而非 helpers.AppLogger.Infof 方法值：AppLogger 在日志初始化时会被重新赋值，必须每次调用时再读。
+func init() {
+	github.SetLogPrintf(func(format string, args ...any) {
+		helpers.AppLogger.Infof(format, args...)
+	})
+}
 
 // LogSettingResponse 日志设置响应。
 type LogSettingResponse struct {
@@ -231,13 +243,56 @@ func ParseEmby(c *gin.Context) {
 // 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 Telegram Bot 设置成功", Data: telegramBot})
 // }
 
+// resolveSubmittedHTTPProxy 按请求的显式意图保留当前代理凭据。
+//
+// GetHttpProxy 只回传脱敏地址。前端未编辑输入框时显式传 preserveProxyCredentials，
+// 只有提交地址与已存地址的端点一致，才可以替换 User 字段。
+func resolveSubmittedHTTPProxy(submitted string, preserveProxyCredentials bool) string {
+	if submitted == "" || !preserveProxyCredentials || models.SettingsGlobal.HttpProxy == "" {
+		return submitted
+	}
+
+	stored, err := url.Parse(models.SettingsGlobal.HttpProxy)
+	if err != nil {
+		return submitted
+	}
+	if stored.User == nil {
+		return submitted
+	}
+	parsed, err := url.Parse(submitted)
+	if err != nil {
+		return submitted
+	}
+	if !sameHTTPProxyEndpoint(stored, parsed) {
+		return submitted
+	}
+	parsed.User = stored.User
+	return parsed.String()
+}
+
+// sameHTTPProxyEndpoint 判断两个代理 URL 是否指向相同的协议、主机和端口。
+// User 信息、路径和查询参数不参与端点比较，避免将存储凭据转发到其他代理端点。
+func sameHTTPProxyEndpoint(left *url.URL, right *url.URL) bool {
+	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
+}
+
+// shouldPreserveProxyCredentials 兼容未升级的前端：它们不会提交显式标志，
+// 仍按历史约定将当前脱敏回传值视为未编辑。新前端始终提交该字段，因此不再依赖字符串相等推断意图。
+func shouldPreserveProxyCredentials(req requests.HTTPProxyRequest) bool {
+	if req.PreserveProxyCredentials != nil {
+		return *req.PreserveProxyCredentials
+	}
+	return req.NormalizedHTTPProxy() != "" && req.NormalizedHTTPProxy() == validation.RedactProxyURL(models.SettingsGlobal.HttpProxy)
+}
+
 // UpdateHttpProxy 更新出站代理设置。
 // @Summary 更新出站代理
-// @Description 更新系统出站请求使用的代理配置，支持 http、https、socks5 和 socks5h
+// @Description 更新系统出站请求使用的代理配置，支持 http、https、socks5 和 socks5h。preserve_proxy_credentials 为 true 且端点一致时保留当前凭据
 // @Tags 系统设置
 // @Accept json
 // @Produce json
 // @Param http_proxy body string false "代理地址，支持 http、https、socks5 和 socks5h"
+// @Param preserve_proxy_credentials body boolean false "端点一致时是否保留当前代理用户名和密码"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /setting/http-proxy [post]
@@ -253,7 +308,7 @@ func UpdateHttpProxy(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	httpProxy := req.NormalizedHTTPProxy()
+	httpProxy := resolveSubmittedHTTPProxy(req.NormalizedHTTPProxy(), shouldPreserveProxyCredentials(req))
 	// 更新设置
 	if !models.SettingsGlobal.UpdateHttpProxy(httpProxy) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新出站代理设置失败", Data: nil})
@@ -265,7 +320,7 @@ func UpdateHttpProxy(c *gin.Context) {
 
 // GetHttpProxy 获取出站代理设置。
 // @Summary 获取出站代理
-// @Description 获取当前生效的出站代理配置
+// @Description 获取当前生效的出站代理配置，地址中的用户名和密码已脱敏
 // @Tags 系统设置
 // @Accept json
 // @Produce json
@@ -277,8 +332,17 @@ func UpdateHttpProxy(c *gin.Context) {
 func GetHttpProxy(c *gin.Context) {
 	// 获取设置
 	models.LoadSettings() // 确保设置已加载
-	httpProxy := make(map[string]string)
-	httpProxy["http_proxy"] = models.SettingsGlobal.HttpProxy
+	stored := models.SettingsGlobal.HttpProxy
+	// 代理地址可带凭据，接口一律回传脱敏结果；前端用显式 preserve_proxy_credentials 标志还原当前凭据。
+	redacted := validation.RedactProxyURL(stored)
+	credentialsMasked := "0"
+	if redacted != stored {
+		credentialsMasked = "1"
+	}
+	httpProxy := map[string]string{
+		"http_proxy":         redacted,
+		"credentials_masked": credentialsMasked,
+	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取出站代理设置成功", Data: httpProxy})
 }
 
@@ -290,6 +354,7 @@ func GetHttpProxy(c *gin.Context) {
 // @Produce json
 // @Param http_proxy body string true "代理地址，支持 http、https、socks5 和 socks5h"
 // @Param detailed body integer false "是否返回详细测试结果，1 返回 0 不返回"
+// @Param preserve_proxy_credentials body boolean false "端点一致时是否保留当前代理用户名和密码"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /setting/test-http-proxy [post]
@@ -306,12 +371,13 @@ func TestHttpProxy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	httpProxy := req.NormalizedHTTPProxy()
+	// 用户不修改地址直接点测试时，前端显式要求保留凭据，再用当前真实凭据拨号。
+	httpProxy := resolveSubmittedHTTPProxy(req.NormalizedHTTPProxy(), shouldPreserveProxyCredentials(req))
 	detailed := req.Detailed == 1
 
 	if detailed {
 		// 使用高级测试，返回详细结果
-		result, err := helpers.TestHttpProxyAdvanced(httpProxy)
+		result, err := helpers.TestHttpProxyAdvancedWithContext(c.Request.Context(), httpProxy)
 		if err != nil {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + err.Error(), Data: nil})
 			return
@@ -324,7 +390,7 @@ func TestHttpProxy(c *gin.Context) {
 		}
 	} else {
 		// 使用简单测试
-		success, err := helpers.TestHttpProxy(httpProxy)
+		success, err := helpers.TestHttpProxyWithContext(c.Request.Context(), httpProxy)
 		if err != nil {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + err.Error(), Data: nil})
 			return

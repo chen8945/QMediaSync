@@ -31,6 +31,7 @@
         </div>
 
         <el-menu
+          ref="menuRef"
           :default-active="$route.path"
           :default-openeds="defaultOpeneds"
           router
@@ -207,7 +208,15 @@ import {
   VideoPlay,
   View,
 } from '@element-plus/icons-vue'
-import { ref, onUnmounted, computed, markRaw, watch, type Component as VueComponent } from 'vue'
+import {
+  ref,
+  onUnmounted,
+  computed,
+  markRaw,
+  useTemplateRef,
+  watch,
+  type Component as VueComponent,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBackupStore } from '@/stores/backup'
@@ -218,7 +227,7 @@ import {
   realtimeConnectionState,
   realtimeSupported,
 } from '@/composables/useRealtimeEvents'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type MenuInstance } from 'element-plus'
 import { formatDuration } from '@/utils/timeUtils'
 
 const route = useRoute()
@@ -227,6 +236,7 @@ const authStore = useAuthStore()
 const backupStore = useBackupStore()
 const { isMobile } = useDeviceType()
 const isMenuOpen = ref(false)
+const menuRef = useTemplateRef<MenuInstance>('menuRef')
 
 // KeepAlive include 匹配组件名，不匹配路由名
 const cachedComponentNames = [
@@ -417,17 +427,29 @@ const getCurrentPageTitle = (): string => {
   return (route.meta.title as string) || '首页'
 }
 
+// 当前页所属一级菜单的 index（即父级路由 path）。以 route.meta.parent 为准，
+// 因为存在 /settings/strm 归属 sync、/settings/tmdb 归属 scrape 这类路径前缀与父菜单不一致的路由。
+// 只有真正渲染成 el-sub-menu 的一级菜单才可展开，因此要求父菜单存在子菜单。
+const activeParentMenuIndex = computed(() => {
+  const parentName = route.meta.parent
+  if (!parentName) return ''
+  const parentMenu = menuItems.value.find((menu) => menu.name === parentName)
+  if (!parentMenu?.children?.length) return ''
+  return parentMenu.path
+})
+
+// el-menu 只在初始化时读取一次 default-openeds，之后不再监听该 prop，
+// 因此它只决定首屏（硬刷新、登录后首次进入）的展开状态。
 const defaultOpeneds = computed(() => {
-  const openeds: string[] = []
-  if (route.path.startsWith('/settings')) openeds.push('/settings')
-  if (route.path.startsWith('/instant-upload') || route.path.startsWith('/media-import'))
-    openeds.push('/instant')
-  if (route.path.startsWith('/sync')) openeds.push('/sync')
-  if (route.path.startsWith('/scrape')) openeds.push('/scrape')
-  if (route.path.includes('upload-queue') || route.path.includes('download-queue'))
-    openeds.push('/transfer')
-  if (route.path.startsWith('/database')) openeds.push('/database')
-  return openeds
+  const index = activeParentMenuIndex.value
+  return index ? [index] : []
+})
+
+// SPA 内跳转时，Element Plus 只能根据 default-active 命中的 el-menu-item 自行展开其祖先子菜单；
+// 详情页和表单页这类 showInMenu 为 false 的路由没有对应菜单项，必须由这里补上展开。
+watch(activeParentMenuIndex, (index) => {
+  if (!index) return
+  menuRef.value?.open(index)
 })
 
 // 获取进度状态样式

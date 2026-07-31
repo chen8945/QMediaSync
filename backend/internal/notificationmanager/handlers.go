@@ -14,6 +14,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
+	"qmediasync/internal/validation"
 )
 
 // ChannelHandler 通知渠道处理器接口
@@ -85,7 +86,8 @@ func (h *TelegramChannelHandler) Send(ctx context.Context, notification *notific
 	var bot *helpers.TelegramBot
 	var err error
 	if h.proxyURL != "" {
-		helpers.AppLogger.Debugf("使用系统代理发送 Telegram 消息：%s", h.proxyURL)
+		// 代理地址可能带用户名密码，QLogger 识别不了 URL 里的 userinfo，必须在调用点遮蔽
+		helpers.AppLogger.Debugf("使用系统代理发送 Telegram 消息：%s", validation.RedactProxyURL(h.proxyURL))
 		bot, err = helpers.NewTelegramBotWithProxy(h.config.BotToken, h.config.ChatID, h.proxyURL)
 		if err != nil {
 			return fmt.Errorf("创建代理 Telegram 机器人失败：%v", err)

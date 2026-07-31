@@ -96,6 +96,24 @@ func (s *ScrapeSettings) ApplyKeyOverrides() {
 	helpers.HTTP_PROXY = s.GetProxyUrl()
 }
 
+// RefreshProxyConsumers 刷新直读生效代理的下游刮削客户端，供代理地址或代理开关变更后调用。
+//
+// 两类下游都不会自己感知变更：
+//   - Fanart 客户端每次构造都读 helpers.HTTP_PROXY，而该变量只由 ApplyKeyOverrides 赋值；
+//   - TMDB 是全局单例（tmdb.GlobalTmdbClient），不重新走构造函数就不会更新 resty 的代理设置。
+//
+// 不刷新会导致：切换代理后 Fanart 继续拨已下线的旧代理；清空代理或关闭代理开关后
+// TMDB 继续把 API Key 从用户已撤销的代理隧道里送出去。
+func RefreshProxyConsumers() {
+	if GlobalScrapeSettings == nil {
+		return
+	}
+	GlobalScrapeSettings.ApplyKeyOverrides()
+	if tmdb.GlobalTmdbClient != nil {
+		tmdb.GlobalTmdbClient.SetProxyUrl(GlobalScrapeSettings.GetProxyUrl())
+	}
+}
+
 func (s *ScrapeSettings) GetTmdbLanguage() string {
 	if s.TmdbLanguage == "" {
 		return helpers.DEFAULT_TMDB_LANGUAGE
@@ -171,6 +189,8 @@ func (s *ScrapeSettings) SaveTmdb(apiKey, accessToken string, apiUrl string, ima
 	}
 
 	helpers.AppLogger.Infof("TMDB 设置已成功更新，ID=%d，影响行数=%d", s.ID, result.RowsAffected)
+	// 代理开关是 GetProxyUrl 的入参，改完必须刷新下游：否则关闭开关后 TMDB 单例仍走旧代理
+	RefreshProxyConsumers()
 	return nil
 }
 

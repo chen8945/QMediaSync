@@ -35,6 +35,22 @@ emby302:
 
 启用 `emby302.insecure_skip_verify` 后，出站 HTTPS 请求会接受无法验证的证书，程序会写入风险提示日志。该模式存在中间人攻击风险，不适合公网或长期生产环境。
 
+## 出站代理
+
+出站代理地址保存在 `settings.http_proxy`，支持 `http`、`https`、`socks5` 和 `socks5h`，可带 `用户名:密码@` 凭据。它由 Web 设置的「出站代理」保存，不读取环境变量。
+
+保存代理时必须维护以下不变量：
+
+- 只有写库成功后才更新内存全局值 `models.SettingsGlobal.HttpProxy`。写库失败必须还原旧值：GORM 的 `Updates(map)` 在生成 SQL 阶段就会把 map 里的值回写进模型字段，因此仅调整赋值顺序不够，`models.Settings.UpdateHttpProxy` 显式保存并回滚旧值。若不回滚，内存持新地址而数据库、GitHub 管理器和通知管理器仍持旧地址，接口却已报告保存失败，重启后又静默回退。
+- 保存成功后必须刷新所有直读生效值的下游客户端，由 `models.RefreshProxyConsumers` 统一完成：`helpers.HTTP_PROXY`（Fanart 客户端每次构造都直读）和 TMDB 全局单例 `tmdb.GlobalTmdbClient`。刮削设置里的「是否启用 TMDB 代理」开关同样是 `ScrapeSettings.GetProxyUrl` 的入参，改动后也要刷新。
+- 清空代理或关闭代理开关时，TMDB 单例必须调用 resty 的 `RemoveProxy()` 显式清除；只在地址非空时 `SetProxy` 会让"清空"变成空操作，请求会继续带 API Key 走用户已撤销的隧道。
+
+`GET /setting/http-proxy` 一律回传脱敏地址，不回传明文凭据，任何 JWT 或 API Key 持有者都读不到代理密码。响应额外带 `credentials_masked`（`"1"` 表示地址里的凭据已被遮蔽），前端据此提示输入框里的 `xxxxx` 是占位串。
+
+这带来一个必须成对维护的回环：前端把回传值直接载入输入框，并在尚未编辑脱敏值时自动提交 `preserve_proxy_credentials=true`；一旦用户编辑输入框则提交 `false`。保存和测试接口只有在提交地址与当前已存地址的端点一致时，才以该标志保留当前用户名和密码。端点由协议和 `host:port`（不区分大小写）组成，User 信息、路径和查询参数不参与比较；协议、主机或端口改变时忽略保留标志，绝不把已存凭据转发给新端点。因此 `xxxxx` 始终可以作为真实凭据保存，不再从最终字符串猜测用户意图。为兼容未升级的前端，缺少该字段时仍按旧的脱敏字符串回传规则处理；新的 API 调用方必须显式提交该字段。
+
+代理地址写日志或回传接口前的脱敏要求见下一节。
+
 ## 日志行为与脱敏
 
 日志路径由 `config/config.yaml` 的 `log` 配置决定，默认相对于配置目录：
@@ -55,7 +71,15 @@ emby302:
 
 历史 `log.file` 仍可读取；当 `log.app` 为空且 `log.file` 有值时使用旧路径，新保存统一写 `log.app`。全局日志按写入触发轮转并压缩旧文件；同步任务日志不轮转，随同步记录清理删除。`QLogger` 在写入前脱敏 `api_key`、Token、Cookie、密码、STS 密钥等常见敏感字段，脱敏值统一显示为 `******`。
 
-`QLogger` 的脱敏基于键值对匹配，不识别 URL 里的 `用户名:密码@` 段。凡是可能带凭据的 URL（例如出站代理地址），必须在调用点用 `url.URL.Redacted()` 处理后再写日志或回传接口，不能依赖 `QLogger` 兜底；`url.Parse` 失败时也不能直接外抛 `url.Error`，它会回显整个原始地址。
+`QLogger` 的脱敏基于键值对匹配，不识别 URL 里的 `用户名:密码@` 段。凡是可能带凭据的 URL（例如出站代理地址），必须在调用点用 `validation.RedactProxyURL`（入参为原始字符串）或 `validation.RedactParsedProxyURL`（入参为已解析的 `*url.URL`）处理后再写日志或回传接口，不能依赖 `QLogger` 兜底。
+
+不要使用标准库的 `url.URL.Redacted()`：它只替换密码，用户名仍是明文（企业代理常带域账号，形如 `http://DOMAIN\jsmith:pw@proxy.corp:8080`）；并且它对缺少 `//` 的 opaque 地址（形如 `socks5:user:secret@host:1080`）完全不生效，会把密码原样输出。上面两个函数同时遮蔽用户名和密码，覆盖 opaque 地址，并在 `url.Parse` 失败时返回占位符而不是原串。
+
+`url.Parse` 失败时也不能直接外抛 `url.Error`，它的 `Error()` 会渲染成 `parse "<整个原始地址>"`，等于把凭据原样写进日志或接口响应，统一用 `validation.ProxyParseError` 剥掉原串。
+
+这三个函数放在 `internal/validation`（纯 stdlib 叶子包）而不是 `helpers`：`helpers/net.go` 已导入 `internal/github`，`github` 无法反向引用 `helpers`。需要脱敏代理地址的包一律引用 `validation`，不得再复制一份实现。
+
+`GET /setting/notification/channels/telegram/{id}` 回传的 `config.proxy_url` 同样脱敏：该字段由历史迁移从 `settings.http_proxy` 复制而来，可能带凭据。凡是把含 `proxy_url` 的配置结构体整体写进响应的接口都要先脱敏。
 
 `QMS_UNSAFE_SENSITIVE_LOG=1` 只在本地调试时临时启用 `SensitiveDebug` 日志；它可能写出 API Key、Token、Cookie 或密码，不能在生产环境长期使用或分享相关日志。`backend/emby302.yaml` 默认关闭 ANSI 颜色，避免控制字符进入日志。
 

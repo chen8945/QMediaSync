@@ -8,6 +8,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notificationmanager"
+	"qmediasync/internal/validation"
 )
 
 var V115Login bool
@@ -289,15 +290,24 @@ func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
 // }
 
 func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
-	settings.HttpProxy = httpProxy
+	// 写库失败必须回滚内存值，否则形成脑裂：内存持新地址（GetProxyUrl、TestGithub 立即生效），
+	// 而数据库、GitHub 管理器和通知管理器仍持旧地址，重启后又静默回退到那个刚被告知"未保存成功"的代理。
+	// 注意不能只靠"把赋值挪到写库之后"：GORM 的 Updates(map) 在生成 SQL 阶段就会把 map 里的值
+	// 回写进模型字段（callbacks/update.go 的 assignValue），所以这里显式保存旧值并在失败时还原。
+	previousProxy := settings.HttpProxy
 	updateData := make(map[string]interface{})
 	updateData["http_proxy"] = httpProxy
 	err := db.Db.Model(settings).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
+		settings.HttpProxy = previousProxy
 		helpers.AppLogger.Errorf("更新 HTTP 代理失败：%v", err)
 		return false
 	}
+	settings.HttpProxy = httpProxy
 	InitNotificationManager()
+	// 代理属于出站链路的全局配置，保存后必须刷新直读生效值的下游客户端，否则 Fanart 会继续拨旧代理、
+	// TMDB 单例会继续走用户已撤销的隧道。
+	RefreshProxyConsumers()
 	return true
 }
 
@@ -337,11 +347,12 @@ func InitNotificationManager() {
 	// 初始化增强通知管理器
 	// 传入代理获取回调函数，避免循环依赖
 	enhancedManager := notificationmanager.NewEnhancedNotificationManager(db.Db, func() string {
-		helpers.AppLogger.Infof("获取 HTTP 代理：%+v", SettingsGlobal.HttpProxy)
-		if SettingsGlobal != nil {
-			return SettingsGlobal.HttpProxy
+		if SettingsGlobal == nil {
+			return ""
 		}
-		return ""
+		// 代理地址可能带用户名密码，QLogger 识别不了 URL 里的 userinfo，必须在调用点遮蔽
+		helpers.AppLogger.Infof("获取 HTTP 代理：%s", validation.RedactProxyURL(SettingsGlobal.HttpProxy))
+		return SettingsGlobal.HttpProxy
 	})
 	if err := enhancedManager.LoadChannels(); err != nil {
 		helpers.AppLogger.Warnf("加载通知渠道失败：%v", err)

@@ -8,8 +8,9 @@ import (
 
 // HTTPProxyRequest HTTP 代理请求。
 type HTTPProxyRequest struct {
-	HTTPProxy string `form:"http_proxy" json:"http_proxy"`
-	Detailed  int    `form:"detailed" json:"detailed"`
+	HTTPProxy                string `form:"http_proxy" json:"http_proxy"`
+	Detailed                 int    `form:"detailed" json:"detailed"`
+	PreserveProxyCredentials *bool  `form:"preserve_proxy_credentials" json:"preserve_proxy_credentials"`
 }
 
 // NormalizedHTTPProxy 返回去除首尾空白后的代理地址。

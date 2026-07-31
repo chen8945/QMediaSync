@@ -1,6 +1,10 @@
 package requests
 
-import "testing"
+import (
+	"encoding/json"
+	"net/url"
+	"testing"
+)
 
 func TestConnectionRequestValidate(t *testing.T) {
 	t.Run("保存 HTTP 代理允许空", func(t *testing.T) {
@@ -30,6 +34,84 @@ func TestConnectionRequestValidate(t *testing.T) {
 			t.Fatalf("Validate() error = %v", err)
 		}
 	})
+}
+
+// TestNormalizedHTTPProxy 校验层对副本做 TrimSpace，保存和拨号必须用同一份规范化结果，
+// 否则带首尾空白的地址会通过校验但解析失败。控制器改回直接用 req.HTTPProxy 时本测试必须失败。
+func TestNormalizedHTTPProxy(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "去掉首尾空格", raw: "  http://127.0.0.1:7890  ", want: "http://127.0.0.1:7890"},
+		{name: "去掉制表符和换行", raw: "\t socks5://127.0.0.1:1080 \n", want: "socks5://127.0.0.1:1080"},
+		{name: "纯空白规范化为空", raw: "   ", want: ""},
+		{name: "空串保持为空", raw: "", want: ""},
+		{name: "无空白保持原样", raw: "socks5h://user:pass@10.0.0.5:1080", want: "socks5h://user:pass@10.0.0.5:1080"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := HTTPProxyRequest{HTTPProxy: tc.raw}
+			if got := req.NormalizedHTTPProxy(); got != tc.want {
+				t.Fatalf("NormalizedHTTPProxy() = %q，期望 %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizedHTTPProxy与校验结果一致 带首尾空白的地址应能通过校验，且规范化结果可直接解析。
+func TestNormalizedHTTPProxy与校验结果一致(t *testing.T) {
+	req := HTTPProxyRequest{HTTPProxy: "  socks5://127.0.0.1:1080  "}
+	if err := req.ValidateSave(); err != nil {
+		t.Fatalf("ValidateSave() error = %v", err)
+	}
+	parsed, err := url.Parse(req.NormalizedHTTPProxy())
+	if err != nil {
+		t.Fatalf("规范化后的地址应可解析，实际 error = %v", err)
+	}
+	if parsed.Host != "127.0.0.1:1080" {
+		t.Fatalf("解析出的 Host = %q，期望 127.0.0.1:1080", parsed.Host)
+	}
+	// 未规范化的原串会把空白带进 Host，出站必然失败
+	if raw, rawErr := url.Parse(req.HTTPProxy); rawErr == nil && raw.Host == "127.0.0.1:1080" {
+		t.Fatal("原串不应与规范化结果等价，否则本测试无法拦截回退")
+	}
+}
+
+func TestHTTPProxyRequestPreserveProxyCredentialsBinding(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want *bool
+	}{
+		{name: "显式保留", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":true}`, want: boolPtr(true)},
+		{name: "显式替换", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":false}`, want: boolPtr(false)},
+		{name: "兼容旧客户端缺省字段", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req HTTPProxyRequest
+			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if tc.want == nil {
+				if req.PreserveProxyCredentials != nil {
+					t.Fatalf("PreserveProxyCredentials = %v，期望 nil", *req.PreserveProxyCredentials)
+				}
+				return
+			}
+			if req.PreserveProxyCredentials == nil || *req.PreserveProxyCredentials != *tc.want {
+				t.Fatalf("PreserveProxyCredentials = %v，期望 %v", req.PreserveProxyCredentials, *tc.want)
+			}
+		})
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func TestOAuthRequestValidate(t *testing.T) {

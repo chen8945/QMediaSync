@@ -75,11 +75,25 @@ func (c *Client) SetAuthToken(accessToken string) {
 	c.resty.SetAuthToken(c.accessToken)
 }
 
+// SetProxyUrl 设置或清除客户端代理。
+// 必须有 else 分支：Client 是全局单例，只在非空时 SetProxy 会让"清空代理"和"关闭 TMDB 代理开关"变成空操作，
+// 请求会继续带 API Key 走用户已撤销的代理隧道。
 func (c *Client) SetProxyUrl(proxyUrl string) {
 	c.proxyUrl = proxyUrl
 	if proxyUrl != "" {
 		c.resty.SetProxy(proxyUrl)
+	} else {
+		c.resty.RemoveProxy()
 	}
+}
+
+// ProxyURL 返回底层 HTTP 客户端实际生效的代理地址，空字符串表示直连。
+// 读的是 resty 的传输配置而非本结构体字段，代理是否真的被清除只能由它证明。
+func (c *Client) ProxyURL() string {
+	if proxy := c.resty.ProxyURL(); proxy != nil {
+		return proxy.String()
+	}
+	return ""
 }
 
 func (c *Client) SetBaseUrl(baseUrl string) {
