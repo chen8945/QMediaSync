@@ -563,6 +563,8 @@ onUnmounted(() => {
   background-color: rgb(244 244 245);
   /* border-right: none; */
   flex: 1;
+  /* 规避 Chromium 缺陷：菜单整体位移后图标 <path> 会被跳过绘制，提升为独立合成层修复 */
+  will-change: transform;
 }
 
 .main-content {

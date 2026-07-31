@@ -30,6 +30,7 @@
 - `meta.parent` 是归属关系的唯一来源，不得用路径前缀推断归属。路由路径与所属一级菜单可以不一致，例如 `/settings/strm` 归属 `sync`，`/settings/tmdb`、`/settings/ai` 和 `/settings/category-strategy` 归属 `scrape`。
 - 侧边栏展开状态按 `route.meta.parent` 解析出一级菜单的 `path` 后再展开。Element Plus 的 `el-menu` 只在初始化时读取一次 `default-openeds` 且不监听该 prop，因此该 prop 只负责首屏展开；SPA 内跳转到 `showInMenu` 为 `false` 的详情页或表单页时，必须通过菜单实例的 `open()` 补上展开，不能只依赖计算属性。
 - 详情页和表单页即使 `showInMenu` 为 `false`，也要设置 `meta.parent`，否则进入这些页面时所属一级菜单不会展开。
+- `.el-menu-vertical` 上的 `will-change: transform` 是 Chromium 绘制缺陷的规避手段，不是性能优化，不能删。上方子菜单展开使菜单项整体位移后，图标 `<svg>` 内 `<path>` 的绘制会被持续跳过：元素盒、背景和 outline 都正常绘制，计算样式、几何、命名空间和 `d` 均正常，hover 或改背景色这类普通重绘修不好，只有改变页面缩放才恢复；`--disable-gpu` 和 Firefox 下均不复现。把菜单提升为独立合成层可稳定规避，该规则若在后续 Chromium 版本失效，备选为 `.el-aside .el-icon { backface-visibility: hidden }`。
 
 ## 路由与浏览器历史
 
