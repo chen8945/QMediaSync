@@ -354,7 +354,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
-          name: Release ${{ needs.metadata.outputs.tag }}
+          name: ${{ needs.metadata.outputs.tag }}
           body_path: release_notes.md
           files: release-assets/*
           fail_on_unmatched_files: false
