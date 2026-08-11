@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppFileManager from '@/components/AppFileManager.vue'
 import { httpKey } from '@/http/client'
+import { createDeferred } from '../support/deferred'
 
 const storageKey = 'qmediasync-page-state'
 
@@ -48,15 +49,6 @@ function createFilesResponse(page: number, total = 305) {
       },
     },
   }
-}
-
-function createDeferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve
-  })
-
-  return { promise, resolve }
 }
 
 describe('AppFileManager 分页总数', () => {

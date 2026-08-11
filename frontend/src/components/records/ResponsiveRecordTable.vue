@@ -104,7 +104,7 @@ const handleExpandChange = (row: TRow, expandedRows: TRow[]) => {
         :min-width="column.minWidth"
         :align="column.align"
         :class-name="column.className"
-        show-overflow-tooltip
+        :show-overflow-tooltip="column.showOverflowTooltip ?? true"
       >
         <template #default="{ row }">
           <slot :name="`cell-${column.key}`" :row="row">

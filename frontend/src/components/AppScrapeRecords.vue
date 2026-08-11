@@ -1,7 +1,14 @@
 <template>
   <div class="scrape-records-container" ref="pageContainerRef">
     <div class="header-section">
-      <h2 class="page-title hide-on-mobile">刮削记录</h2>
+      <div class="card-header">
+        <div>
+          <h2 class="hide-on-mobile">刮削记录</h2>
+          <p class="queue-description">
+            刮削时会把临时文件放在 config/tmp/刮削临时文件/，方便排查问题，刮削完成后会自动删除。
+          </p>
+        </div>
+      </div>
 
       <div class="top-actions">
         <div class="action-group">
@@ -120,19 +127,18 @@
             </span>
           </template>
           <template #cell-status="{ row }">
-            <el-tooltip
-              :content="getStatusTooltip(row.status)"
-              placement="top"
-              popper-class="qms-contained-tooltip"
-              :append-to="pageContainerRef ?? undefined"
-            >
-              <el-tag :type="getStatusTagType(row.status)">
-                <el-icon>
-                  <Warning />
-                </el-icon>
-                {{ getStatusName(row.status) }}
-              </el-tag>
-            </el-tooltip>
+            <div class="scrape-status-cell">
+              <el-tooltip
+                :content="getStatusTooltip(row.status)"
+                placement="top"
+                popper-class="qms-contained-tooltip"
+                :append-to="pageContainerRef ?? undefined"
+              >
+                <el-tag :type="getStatusTagType(row.status)" class="scrape-status-tag">
+                  {{ getStatusName(row.status) }}
+                </el-tag>
+              </el-tooltip>
+            </div>
           </template>
           <template #cell-type="{ row }">
             <el-tag :type="getTypeTagType(row.type)">
@@ -145,16 +151,23 @@
             </el-tag>
           </template>
           <template #cell-path="{ row }">
-            <div class="scrape-path-cell">
-              <p class="path-text">{{ row.source_full_path }}</p>
-              <p class="scrape-path-cell__rename">
-                <el-tag :type="getRenameTypeTagType(row.rename_type)">
-                  {{ getRenameTypeName(row.rename_type) }}
-                </el-tag>
-                <span>到</span>
-              </p>
-              <p class="path-text">{{ row.dest_full_path }}</p>
-            </div>
+            <el-tooltip
+              :content="getPathTooltip(row)"
+              placement="top"
+              popper-class="qms-contained-tooltip"
+              :append-to="pageContainerRef ?? undefined"
+            >
+              <div class="scrape-path-cell">
+                <p class="path-text">{{ row.source_full_path }}</p>
+                <p class="scrape-path-cell__rename">
+                  <el-tag :type="getRenameTypeTagType(row.rename_type)">
+                    {{ getRenameTypeName(row.rename_type) }}
+                  </el-tag>
+                  <span>到</span>
+                </p>
+                <p class="path-text">{{ row.dest_full_path }}</p>
+              </div>
+            </el-tooltip>
           </template>
         </ResponsiveRecordTable>
 
@@ -401,18 +414,6 @@
         </div>
       </template>
     </el-dialog>
-
-    <div class="bottom-tips">
-      <el-alert type="info" :closable="false">
-        <template #title>
-          <span class="tips-text">
-            当前刮削产生的临时文件存放在
-            <strong>config/tmp/刮削临时文件/</strong>
-            目录下，可用于排查异常情况；刮削完成后，相关临时文件会自动删除
-          </span>
-        </template>
-      </el-alert>
-    </div>
 
     <!-- 回滚对话框 -->
     <el-dialog
@@ -711,7 +712,9 @@ const scrapeRecordColumns: RecordColumn<ScrapeRecord>[] = [
     key: 'status',
     label: '文件状态',
     priority: 'primary',
-    minWidth: 132,
+    width: 132,
+    align: 'center',
+    showOverflowTooltip: false,
     detailField: {
       key: 'status',
       label: '文件状态',
@@ -725,6 +728,7 @@ const scrapeRecordColumns: RecordColumn<ScrapeRecord>[] = [
     label: '文件路径',
     priority: 'primary',
     minWidth: 320,
+    showOverflowTooltip: false,
     detailField: {
       key: 'path',
       label: '文件路径',
@@ -854,14 +858,16 @@ function applyLoadedScrapeRecords(rows: ScrapeRecord[]) {
   records.value = mergeStableList(records.value, visibleRows, (row) => row.id)
 }
 
-function clearRecordsForQuerySwitch() {
+function clearRecordsForReload({ resetTotal }: { resetTotal: boolean }) {
   queryLoading.value = true
   scrapeRecordsRequestGate.invalidate()
   invalidateRecordActionContext()
   invalidateScrapeRecordsMutationContext()
   records.value = []
   originalRecords.value = []
-  total.value = 0
+  if (resetTotal) {
+    total.value = 0
+  }
   selectedRecords.value = []
   isMerged.value = false
   pageStateStore.setExpandedRowKeys('scrape-records', [])
@@ -874,7 +880,12 @@ function finishRecordsQuerySwitchLoading() {
 }
 
 async function loadRecordsForQuerySwitch() {
-  clearRecordsForQuerySwitch()
+  clearRecordsForReload({ resetTotal: true })
+  await loadRecords()
+}
+
+async function loadRecordsForPageChange() {
+  clearRecordsForReload({ resetTotal: false })
   await loadRecords()
 }
 
@@ -1017,12 +1028,12 @@ const resetFilter = () => {
 // 分页处理
 const handleSizeChange = (size: number) => {
   pageStateStore.setPagination('scrape-records', 1, size)
-  loadRecordsForQuerySwitch() // 重新加载数据
+  loadRecordsForPageChange()
 }
 
 const handleCurrentChange = (current: number) => {
   pageStateStore.setPagination('scrape-records', current, pageState.pageSize)
-  loadRecordsForQuerySwitch() // 重新加载数据
+  loadRecordsForPageChange()
 }
 
 // 处理选择变化
@@ -1541,6 +1552,9 @@ const getStatusTooltip = (status: string): string => {
   }
 }
 
+const getPathTooltip = (row: ScrapeRecord): string =>
+  [row.source_full_path || '-', '到', row.dest_full_path || '-'].join('\n')
+
 // 获取类型标签类型
 const getTypeTagType = (type: string): string => {
   switch (type) {
@@ -1759,11 +1773,22 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.page-title {
-  font-size: 20px;
-  font-weight: bold;
-  margin-bottom: 20px;
-  color: #303133;
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.queue-description {
+  margin: 0;
+  font-size: 14px;
+  color: #909399;
 }
 
 .top-actions {
@@ -1826,10 +1851,6 @@ onUnmounted(() => {
   display: block;
 }
 
-.bottom-tips {
-  margin-top: 20px;
-}
-
 .scrape-record-table {
   width: 100%;
 }
@@ -1840,21 +1861,31 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.scrape-status-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 24px;
+}
+
+.scrape-status-tag {
+  width: 84px;
+  justify-content: center;
+}
+
+.path-text {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .scrape-path-cell__rename {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   margin: 0;
-}
-
-.tips-text {
-  font-size: 13px;
-  color: #606266;
-}
-
-.tips-text strong {
-  color: #303133;
 }
 
 .error-reason-text {
@@ -2074,9 +2105,15 @@ onUnmounted(() => {
     width: 100%;
   }
 
-  .page-title {
-    font-size: 18px;
-    margin-bottom: 12px;
+  .card-header p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .scrape-records-container {

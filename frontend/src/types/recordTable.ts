@@ -24,6 +24,7 @@ export interface RecordColumn<TRow> {
   minWidth?: number
   width?: number
   align?: 'left' | 'center' | 'right'
+  showOverflowTooltip?: boolean
   className?: string
   detailField?: RecordDetailField<TRow>
   render?: Component
