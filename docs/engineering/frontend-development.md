@@ -55,6 +55,13 @@
 
 ## 交互和响应式布局
 
+### 长内容 Tooltip
+
+- 页面级长路径、长错误原因和帮助说明使用 `qms-contained-tooltip`；需要稳定目标的组件通过 `append-to="body"` 挂载，必须局部挂载的组件使用已挂载的 `HTMLElement` 引用，不使用尚未插入 `document` 的页面根节点选择器。共享样式保留文本换行并允许连续路径断行。
+- 共享 `ResponsiveRecordTable` 的表格溢出 Tooltip 通过 `tooltip-options` 统一使用 `qms-contained-tooltip` 和 `strategy: 'fixed'`，不得覆盖为 `absolute`，避免弹出层被表格 wrapper 裁剪。
+- 目录选择器和网盘文件管理中的目录选择树不添加路径 Tooltip；当前目录位置由面包屑展示，不使用原生 `title` 或全局容器选择器。
+- 短按钮提示继续使用 Element Plus 默认 Tooltip，避免全局覆盖菜单、下拉框和其他浮层样式。
+
 - 设置页保存类主操作使用 `type="success"`；启动和恢复等正向动作使用 `success`；暂停、停止、重试、恢复备份和数据库修复等有风险但非删除动作使用 `warning`；删除、清空和撤销使用 `danger` 并保留确认步骤；测试、搜索、生成和添加等中性主动作使用 `primary`。
 - 设置页底部主操作使用 `size="large"`；工具栏使用默认尺寸；表格行内操作使用 `size="small"`、`link` 或 `text`。普通动作按钮优先使用 Element Plus 的 `:icon` 属性；下拉箭头、后缀状态图标等非主动作图标可以使用手写 `<el-icon class="el-icon--right">`。
 - 已使用页面内状态提示（例如底部 `el-alert`）展示保存成功时，不再额外弹出成功 toast；错误、校验失败、复制、测试连接和启动任务等短生命周期反馈可以使用 `ElMessage`。

@@ -81,6 +81,7 @@
       :data="queueData"
       style="width: 100%"
       v-loading="initialLoading || queryLoading"
+      :show-header="queueData.length > 0"
       empty-text="暂无下载任务"
       :row-key="(row: DownloadTask) => String(row.id)"
       :expand-row-keys="pageState.expandedRowKeys"
@@ -199,7 +200,12 @@
       <el-table-column label="任务" width="320">
         <template #default="scope">
           <div class="desktop-task-summary">
-            <el-tooltip :content="getDownloadTaskTooltipContent(scope.row)" placement="top">
+            <el-tooltip
+              :content="getDownloadTaskTooltipContent(scope.row)"
+              placement="top"
+              popper-class="qms-contained-tooltip"
+              append-to="body"
+            >
               <div class="desktop-task-summary-text">
                 <span class="desktop-task-file-name">{{ getDownloadTaskName(scope.row) }}</span>
                 <span class="desktop-task-meta">
@@ -224,7 +230,12 @@
       <el-table-column prop="status" label="状态" width="104">
         <template #default="scope">
           <div v-if="scope.row.error">
-            <el-tooltip :content="scope.row.error" placement="top">
+            <el-tooltip
+              :content="scope.row.error"
+              placement="top"
+              popper-class="qms-contained-tooltip"
+              append-to="body"
+            >
               <el-tag :type="getDownloadStatusTagType(scope.row.status)">
                 <el-icon>
                   <WarningFilled />
@@ -251,6 +262,8 @@
             v-if="getDownloadQueueLocationSummary(scope.row)"
             :content="getDownloadQueueLocationSummary(scope.row)"
             placement="top"
+            popper-class="qms-contained-tooltip"
+            append-to="body"
           >
             <span class="desktop-location-summary">
               <template
@@ -938,6 +951,7 @@ onUnmounted(() => {
 }
 
 .download-queue-container {
+  position: relative;
   width: 100%;
   padding: 20px;
   box-sizing: border-box;

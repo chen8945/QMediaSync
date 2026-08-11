@@ -284,6 +284,8 @@
                   v-if="account.token_failed_reason && !account.token"
                   :content="account.token_failed_reason"
                   placement="top"
+                  popper-class="qms-contained-tooltip"
+                  append-to="body"
                 >
                   <el-icon class="error-help-icon">
                     <QuestionFilled />
@@ -1286,6 +1288,7 @@ onMounted(() => {
 
 <style scoped>
 .cloud-accounts-page {
+  position: relative;
   min-height: 100%;
   background: #f5f7fa;
   padding: 0;

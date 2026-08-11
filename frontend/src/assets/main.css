@@ -19,6 +19,13 @@ body {
   margin-left: 2px;
 }
 
+/* 长文本浮层保留换行和路径摘要的连续断行。 */
+.qms-contained-tooltip {
+  max-width: 90%;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
 /* 移动端全局优化 */
 @media (max-width: 768px) {
   * {

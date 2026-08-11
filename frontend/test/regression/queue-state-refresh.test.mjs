@@ -581,11 +581,6 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     assertQueueDetailPresentation(source, messagePrefix)
     assert.doesNotMatch(
       source,
-      /popper-class=/,
-      `${messagePrefix} should use Element Plus default Tooltip styles`,
-    )
-    assert.doesNotMatch(
-      source,
       /detailExpansionInitialized/,
       `${messagePrefix} should not automatically initialize expanded rows`,
     )
@@ -621,18 +616,11 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
   const downloadSource = readSource('src/components/AppDownloadQueue.vue')
   const queueTaskDetailUtilsSource = readSource('src/utils/queueTaskDetailUtils.ts')
   const expandButtonSource = readSource('src/components/queue/QueueTaskExpandButton.vue')
-  const mainStyles = readSource('src/assets/main.css')
 
   assert.match(
     expandButtonSource,
     /:icon="CaretRight"[\s\S]*?:aria-expanded="expanded"[\s\S]*?@click\.stop="emit\('toggle'\)"/,
     '共享展开按钮应使用可访问的图标控件并向父组件发出切换事件',
-  )
-
-  assert.doesNotMatch(
-    mainStyles,
-    /\.queue-(?:upload-detail-tooltip|summary-tooltip|status-error-tooltip)/,
-    '队列 Tooltip 不应保留覆盖 Element Plus 默认样式的全局选择器',
   )
 
   assert.match(

@@ -127,6 +127,8 @@
                     effect="dark"
                     content="开启后会根据 STRM 设置中的 Cron 表达式定时同步数据，如果该同步目录内的资源变动概率较小，建议关闭定时同步"
                     placement="top"
+                    popper-class="qms-contained-tooltip"
+                    append-to="body"
                   >
                     <span class="info-label with-tooltip">
                       定时同步
@@ -1057,6 +1059,7 @@ onMounted(() => {
 
 <style scoped>
 .sync-directories-page {
+  position: relative;
   min-height: 100%;
   background: #f5f7fa;
   padding: 0;

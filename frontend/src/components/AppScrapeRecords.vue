@@ -6,7 +6,12 @@
       <div class="top-actions">
         <div class="action-group">
           <div class="action-buttons">
-            <el-tooltip content="将所选识别错误记录导出为文件，方便反馈问题" placement="top">
+            <el-tooltip
+              content="将所选识别错误记录导出为文件，方便反馈问题"
+              placement="top"
+              popper-class="qms-contained-tooltip"
+              :append-to="pageContainerRef ?? undefined"
+            >
               <el-button
                 type="primary"
                 @click="handleExportErrors"
@@ -17,6 +22,8 @@
             <el-tooltip
               content="删除刮削记录后，对应文件会在下次扫描时重新识别和刮削。"
               placement="top"
+              popper-class="qms-contained-tooltip"
+              :append-to="pageContainerRef ?? undefined"
             >
               <el-button
                 type="danger"
@@ -28,6 +35,8 @@
             <el-tooltip
               content="请选择整理失败的记录；所选记录会被标记为待整理，并在下次整理时重试。"
               placement="top"
+              popper-class="qms-contained-tooltip"
+              :append-to="pageContainerRef ?? undefined"
             >
               <el-button
                 type="warning"
@@ -111,7 +120,12 @@
             </span>
           </template>
           <template #cell-status="{ row }">
-            <el-tooltip :content="getStatusTooltip(row.status)" placement="top">
+            <el-tooltip
+              :content="getStatusTooltip(row.status)"
+              placement="top"
+              popper-class="qms-contained-tooltip"
+              :append-to="pageContainerRef ?? undefined"
+            >
               <el-tag :type="getStatusTagType(row.status)">
                 <el-icon>
                   <Warning />
@@ -1734,6 +1748,7 @@ onUnmounted(() => {
 
 <style scoped>
 .scrape-records-container {
+  position: relative;
   padding: 20px;
   display: flex;
   flex-direction: column;

@@ -29,7 +29,7 @@
       <el-icon class="folder-icon">
         <Folder />
       </el-icon>
-      <span class="node-label" :title="node.path || node.name">{{ node.name }}</span>
+      <span class="node-label">{{ node.name }}</span>
       <el-icon v-if="loadState === 'loading'" class="is-loading loading-icon" aria-hidden="true">
         <Loading />
       </el-icon>
