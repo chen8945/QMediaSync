@@ -1,6 +1,8 @@
 <template>
   <!-- 网络代理设置部分 -->
   <div class="main-content-container proxy-section">
+    <PageHeader />
+
     <el-form
       :model="proxyData"
       :label-position="checkIsMobile ? 'top' : 'left'"
@@ -78,6 +80,7 @@ import { Connection, Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { isMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 const checkIsMobile = ref(isMobile())
 interface ProxyData {
   proxy_url: string

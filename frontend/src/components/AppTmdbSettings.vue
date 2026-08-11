@@ -1,5 +1,7 @@
 <template>
   <div class="main-content-container tmdb-settings-container">
+    <PageHeader />
+
     <el-form
       :model="formData"
       :label-position="checkIsMobile ? 'top' : 'left'"
@@ -144,6 +146,7 @@ import { Check, Refresh } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
 import { isMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 interface TmdbSettings {
   tmdbUrl: string

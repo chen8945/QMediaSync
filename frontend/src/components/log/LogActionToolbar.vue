@@ -36,6 +36,7 @@ const emit = defineEmits<{
         <el-button
           type="primary"
           :icon="Connection"
+          aria-label="连接实时日志"
           size="small"
           :disabled="connected || connectDisabled"
           @click="emit('connect')"
@@ -47,6 +48,7 @@ const emit = defineEmits<{
         <el-button
           type="danger"
           :icon="Close"
+          aria-label="断开实时日志"
           size="small"
           :disabled="!connected || disconnectDisabled"
           @click="emit('disconnect')"
@@ -58,6 +60,7 @@ const emit = defineEmits<{
         <el-button
           type="info"
           :icon="Delete"
+          aria-label="清空当前显示日志"
           size="small"
           :disabled="clearDisabled"
           @click="emit('clear')"
@@ -70,6 +73,7 @@ const emit = defineEmits<{
       <el-button
         type="success"
         :icon="Download"
+        aria-label="下载日志文件"
         size="small"
         :disabled="downloadDisabled"
         @click="emit('download')"

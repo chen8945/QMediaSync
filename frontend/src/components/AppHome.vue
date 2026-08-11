@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, ref, useTemplateRef } from 'vue'
 import { Document } from '@element-plus/icons-vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import VersionManager from './VersionManager.vue'
 import QueueStatsCard from './QueueStatsCard.vue'
 import AnnouncementCard from './AnnouncementCard.vue'
@@ -19,15 +20,22 @@ const handleLogDialogClose = () => {
 <template>
   <div class="home-container">
     <div class="header-section">
-      <div class="header-title">
-        <h1>控制台</h1>
-        <p>系统运行状态监控与管理</p>
-      </div>
-      <div class="home-header__actions">
-        <el-button type="primary" @click="showLogDialog = true" :icon="Document" round>
-          运行日志
-        </el-button>
-      </div>
+      <PageHeader class="home-page-header" icon="" :show-identity-on-mobile="true">
+        <template #actions>
+          <div class="home-header__actions">
+            <el-button
+              type="primary"
+              size="large"
+              class="home-log-button"
+              @click="showLogDialog = true"
+              :icon="Document"
+              round
+            >
+              运行日志
+            </el-button>
+          </div>
+        </template>
+      </PageHeader>
     </div>
     <AnnouncementCard />
 
@@ -128,22 +136,41 @@ const handleLogDialogClose = () => {
   color: white;
 }
 
-.header-title h1 {
-  margin: 0 0 4px 0;
-  font-size: 28px;
-  font-weight: 700;
+.header-section :deep(.qms-page-header) {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
 }
 
-.header-title p {
-  margin: 0;
-  font-size: 14px;
+.header-section :deep(.qms-page-header__top) {
+  align-items: center;
+}
+
+.header-section :deep(.qms-page-header__title) {
+  color: white;
+}
+
+.header-section :deep(.qms-page-header__description) {
+  margin-top: 4px;
+  color: white;
   opacity: 0.9;
 }
 
 .home-header__actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 12px;
+}
+
+.home-log-button {
+  min-width: 116px;
+  box-shadow: 0 2px 6px rgba(64, 158, 255, 0.22);
+  font-weight: 500;
+}
+
+.home-log-button:hover {
+  box-shadow: 0 4px 10px rgba(64, 158, 255, 0.28);
 }
 
 .stats-section {
@@ -277,13 +304,21 @@ const handleLogDialogClose = () => {
 @media (max-width: 768px) {
   .header-section {
     flex-direction: column;
-    gap: 16px;
     text-align: center;
     padding: 16px;
   }
 
-  .header-title h1 {
-    font-size: 24px;
+  .home-header__actions {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .home-page-header :deep(.qms-page-header__identity) {
+    justify-content: center;
+  }
+
+  .home-page-header :deep(.qms-page-header__copy) {
+    text-align: center;
   }
 
   .info-grid {

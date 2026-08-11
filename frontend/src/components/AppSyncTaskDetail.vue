@@ -1,17 +1,20 @@
 <template>
   <div class="sync-task-detail-container">
-    <!-- 任务详情卡片 -->
     <el-card class="task-detail-card" shadow="hover">
       <template #header>
-        <div class="card-header">
-          <div class="header-left">
+        <PageHeader
+          :title="`同步任务详情 #${taskId}`"
+          actions-position="start"
+          actions-layout="stacked"
+          icon=""
+          show-identity-on-mobile
+        >
+          <template #actions>
             <el-button type="primary" :icon="ArrowLeft" @click="goBack" size="small" link>
               返回同步记录
             </el-button>
-            <h2 class="card-title">同步任务详情 #{{ taskId }}</h2>
-            <p class="card-subtitle">查看同步任务的执行情况和详细信息</p>
-          </div>
-        </div>
+          </template>
+        </PageHeader>
       </template>
 
       <div class="task-content">
@@ -155,6 +158,7 @@ import {
 } from '@element-plus/icons-vue'
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import PageHeader from '@/components/common/PageHeader.vue'
 import SyncTaskLogPanel from '@/components/sync-task/SyncTaskLogPanel.vue'
 import { useLogFileActions } from '@/composables/useLogFileActions'
 import { useSyncTaskStream } from '@/composables/useSyncTaskStream'
@@ -417,7 +421,7 @@ const getTimelineItems = () => {
   max-width: none;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 0;
   padding: 0;
 }
 
@@ -427,28 +431,8 @@ const getTimelineItems = () => {
   margin: 0;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-}
-
-.header-left {
-  flex: 1;
-}
-
-.card-title {
-  margin: 8px 0 8px 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.card-subtitle {
-  margin: 0;
-  font-size: 14px;
-  color: #909399;
+.task-detail-card :deep(.qms-page-header) {
+  margin-bottom: 0;
 }
 
 .task-content {
@@ -677,20 +661,6 @@ const getTimelineItems = () => {
 
 /* 移动端适配 */
 @media (max-width: 768px) {
-  .card-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 16px;
-  }
-
-  .card-title {
-    font-size: 20px;
-  }
-
-  .card-subtitle {
-    font-size: 13px;
-  }
-
   .task-info h3,
   .task-logs h3 {
     font-size: 16px;
@@ -736,13 +706,6 @@ const getTimelineItems = () => {
 
   .step-connector {
     top: 16px;
-  }
-}
-
-/* 小屏移动设备 */
-@media (max-width: 480px) {
-  .card-title {
-    font-size: 18px;
   }
 }
 </style>

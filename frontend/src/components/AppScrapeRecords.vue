@@ -1,14 +1,7 @@
 <template>
   <div class="scrape-records-container" ref="pageContainerRef">
     <div class="header-section">
-      <div class="card-header">
-        <div>
-          <h2 class="hide-on-mobile">刮削记录</h2>
-          <p class="queue-description">
-            刮削时会把临时文件放在 config/tmp/刮削临时文件/，方便排查问题，刮削完成后会自动删除。
-          </p>
-        </div>
-      </div>
+      <PageHeader class="scrape-records-page-header" />
 
       <div class="top-actions">
         <div class="action-group">
@@ -437,6 +430,7 @@
 </template>
 
 <script setup lang="ts">
+import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
 import { SERVER_URL } from '@/const'
@@ -1769,26 +1763,12 @@ onUnmounted(() => {
   height: calc(100vh - 40px);
 }
 
+.scrape-records-container :deep(.scrape-records-page-header) {
+  margin-bottom: 0;
+}
+
 .header-section {
   flex-shrink: 0;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header h2 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.queue-description {
-  margin: 0;
-  font-size: 14px;
-  color: #909399;
 }
 
 .top-actions {
@@ -2103,17 +2083,6 @@ onUnmounted(() => {
 
   .search-filter-section .el-button {
     width: 100%;
-  }
-
-  .card-header p {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .card-header {
-    flex-direction: column;
-    align-items: flex-start;
   }
 
   .scrape-records-container {

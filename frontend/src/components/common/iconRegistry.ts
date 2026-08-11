@@ -1,0 +1,56 @@
+import {
+  DataAnalysis,
+  DataLine,
+  Cloudy,
+  DocumentCopy,
+  Download,
+  Film,
+  Folder,
+  FolderOpened,
+  House,
+  Key,
+  Link,
+  List,
+  Monitor,
+  Operation,
+  Promotion,
+  RefreshLeft,
+  Setting,
+  Tools,
+  Upload,
+  User,
+  UserFilled,
+  VideoPlay,
+  View,
+} from '@element-plus/icons-vue'
+import { markRaw, type Component } from 'vue'
+
+const iconRegistry: Record<string, Component> = {
+  DataAnalysis: markRaw(DataAnalysis),
+  DataLine: markRaw(DataLine),
+  Cloudy: markRaw(Cloudy),
+  DocumentCopy: markRaw(DocumentCopy),
+  Download: markRaw(Download),
+  Film: markRaw(Film),
+  Folder: markRaw(Folder),
+  FolderOpened: markRaw(FolderOpened),
+  House: markRaw(House),
+  Key: markRaw(Key),
+  Link: markRaw(Link),
+  List: markRaw(List),
+  Monitor: markRaw(Monitor),
+  Operation: markRaw(Operation),
+  Promotion: markRaw(Promotion),
+  RefreshLeft: markRaw(RefreshLeft),
+  Setting: markRaw(Setting),
+  Tools: markRaw(Tools),
+  Upload: markRaw(Upload),
+  User: markRaw(User),
+  UserFilled: markRaw(UserFilled),
+  VideoPlay: markRaw(VideoPlay),
+  View: markRaw(View),
+}
+
+export const getIconComponent = (icon?: string): Component => {
+  return iconRegistry[icon ?? ''] ?? iconRegistry.Setting
+}

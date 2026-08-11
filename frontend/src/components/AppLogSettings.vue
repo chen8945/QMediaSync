@@ -7,6 +7,7 @@ import { useHttpClient } from '@/http/client'
 import { ElMessage } from 'element-plus'
 import { Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, shallowRef } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 interface APIResponse<T> {
   code: number
@@ -170,6 +171,8 @@ onMounted(() => {
 
 <template>
   <div class="main-content-container log-settings-container">
+    <PageHeader />
+
     <el-form
       :model="formData"
       :label-position="checkIsMobile ? 'top' : 'left'"

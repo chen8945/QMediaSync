@@ -19,13 +19,15 @@ describe('AppBackupRecords responsive layout', () => {
     expect(source).not.toContain(':height="isMobile ? \'auto\' : 400"')
   })
 
-  it('keeps the manual-backup action visually unboxed', () => {
+  it('keeps the manual-backup action visually unboxed in the shared header', () => {
     const source = readFileSync(
       resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
       'utf8',
     )
 
-    expect(source).toMatch(/\.action-section\s*\{\s*margin-bottom:\s*20px;/)
+    expect(source).toContain('<template #actions>')
+    expect(source).toContain('<div class="action-section">')
+    expect(source).not.toMatch(/\.action-section\s*\{[^}]*margin-bottom:/)
     expect(source).not.toMatch(/\.action-section\s*\{[^}]*background:/)
   })
 

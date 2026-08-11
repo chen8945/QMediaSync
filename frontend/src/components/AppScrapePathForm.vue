@@ -1,14 +1,14 @@
 <template>
   <div class="scrape-path-form-page" :class="{ 'is-mobile': checkIsMobile }">
-    <el-button type="primary" :icon="ArrowLeft" @click="goBack" size="large" link>
-      返回刮削目录
-    </el-button>
+    <PageHeader actions-position="start">
+      <template #actions>
+        <el-button type="primary" :icon="ArrowLeft" @click="goBack" size="large" link>
+          返回刮削目录
+        </el-button>
+      </template>
+    </PageHeader>
 
     <template v-if="checkIsMobile">
-      <div class="mobile-form-header">
-        <h3>{{ isEditMode ? '编辑刮削目录' : '添加刮削目录' }}</h3>
-      </div>
-
       <el-form
         ref="formRef"
         :model="form"
@@ -377,12 +377,6 @@
     </template>
 
     <el-card v-else class="form-card">
-      <template #header>
-        <div class="card-header">
-          <h3>{{ isEditMode ? '编辑刮削目录' : '添加刮削目录' }}</h3>
-        </div>
-      </template>
-
       <el-form
         ref="formRef"
         :model="form"
@@ -778,6 +772,7 @@
 
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { SCRAPE_THREAD_LIMITS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
 import { onMounted, ref, reactive, watch, useTemplateRef } from 'vue'
@@ -1213,19 +1208,6 @@ onMounted(async () => {
   margin-top: 16px;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
 .form-footer {
   display: flex;
   justify-content: flex-end;
@@ -1290,19 +1272,6 @@ onMounted(async () => {
 
 .scrape-path-form-page.is-mobile {
   padding: 12px;
-}
-
-.mobile-form-header {
-  margin: 12px 0;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.mobile-form-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
 }
 
 .mobile-form-footer {

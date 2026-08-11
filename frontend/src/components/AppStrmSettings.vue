@@ -1,6 +1,8 @@
 <template>
-  <!-- STRM 设置卡片 -->
   <div class="main-content-container strm-content">
+    <PageHeader />
+
+    <!-- STRM 设置卡片 -->
     <el-form
       :model="strmData"
       :rules="formRules"
@@ -250,6 +252,7 @@ import { Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { isMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 import MetadataExtInput from './MetadataExtInput.vue'
 interface StrmData {
   video_ext_arr: string[]

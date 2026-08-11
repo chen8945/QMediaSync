@@ -60,7 +60,7 @@ describe('createAsyncRouteComponent', () => {
     expect(router.currentRoute.value.path).toBe('/target')
     expect(loader).toHaveBeenCalledTimes(1)
     expect(wrapper.get('[data-testid="route-loading"]').text()).toContain('慢速页面')
-    expect(wrapper.get('[data-testid="route-loading"]').text()).toContain('加载中')
+    expect(wrapper.get('[data-testid="route-loading"]').text()).toContain('加载中…')
     expect(warn.mock.calls.flat().join(' ')).not.toContain('VUE_ROUTER_R0029')
 
     deferred.resolve(defineComponent({ template: '<div data-testid="loaded-page">已加载</div>' }))

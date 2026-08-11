@@ -1,27 +1,29 @@
 <template>
   <div class="backup-records-container">
+    <PageHeader>
+      <template #actions>
+        <div class="action-section">
+          <el-button
+            type="primary"
+            size="large"
+            :icon="Upload"
+            :loading="backupStarting"
+            :disabled="backupStore.isRunning"
+            @click="startManualBackup"
+          >
+            <span>手动备份</span>
+          </el-button>
+          <span v-if="backupStore.isRunning" class="backup-progress-label"> 备份正在进行中… </span>
+        </div>
+      </template>
+    </PageHeader>
+
     <el-alert
       title="重要提示：当前备份与恢复功能仍在完善，建议同时使用外部方式备份重要数据；后续将持续完善。"
       type="warning"
       :closable="false"
       style="margin-bottom: 20px"
     />
-
-    <div class="action-section">
-      <el-button
-        type="primary"
-        size="large"
-        :icon="Upload"
-        :loading="backupStarting"
-        :disabled="backupStore.isRunning"
-        @click="startManualBackup"
-      >
-        <span>手动备份</span>
-      </el-button>
-      <span v-if="backupStore.isRunning" style="margin-left: 12px; color: #909399">
-        备份正在进行中…
-      </span>
-    </div>
 
     <div class="records-section">
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
@@ -77,6 +79,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import { useBackupStore } from '@/stores/backup'
+import PageHeader from '@/components/common/PageHeader.vue'
 import type { BackupRecordListItem, BackupRecordsResponse, BackupStatus } from '@/typing'
 import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/recordTable'
 import { formatFileSize } from '@/utils/fileSizeUtils'
@@ -432,7 +435,14 @@ onMounted(() => {
 }
 
 .action-section {
-  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.backup-progress-label {
+  color: #909399;
 }
 
 .records-section {

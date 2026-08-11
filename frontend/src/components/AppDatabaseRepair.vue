@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
 const loading = ref(false)
@@ -26,18 +27,10 @@ const repairDatabase = async () => {
 </script>
 
 <template>
-  <div class="database-repair-container">
-    <div class="page-header">
-      <div class="header-content">
-        <p>补齐缺失表结构并检查主键序列</p>
-      </div>
-    </div>
+  <div class="main-content-container database-repair-container">
+    <PageHeader />
 
     <div class="section-card">
-      <div class="section-header">
-        <span class="section-icon">🔧</span>
-        <span>数据库修复</span>
-      </div>
       <div class="repair-content">
         <p class="repair-description">
           本操作会补齐缺失的数据表、字段和索引，不会删除已存在的表和数据；PostgreSQL
@@ -62,29 +55,10 @@ const repairDatabase = async () => {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  padding: 0;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 16px;
-  color: white;
-}
-
-.header-content h1 {
-  margin: 0 0 4px 0;
-  font-size: 28px;
-  font-weight: 700;
-}
-
-.header-content p {
-  margin: 0;
-  font-size: 14px;
-  opacity: 0.9;
+.database-repair-container :deep(.qms-page-header) {
+  margin-bottom: 0;
 }
 
 .section-card {
@@ -92,23 +66,7 @@ const repairDatabase = async () => {
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  border: 1px solid #f0f0f0;
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.section-icon {
-  font-size: 20px;
+  border: 1px solid #dcdfe6;
 }
 
 .repair-content {

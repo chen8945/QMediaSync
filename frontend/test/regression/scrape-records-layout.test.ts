@@ -7,20 +7,23 @@ import { describe, expect, it } from 'vitest'
 const readSource = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8')
 
 describe('刮削记录页面布局与 Tooltip', () => {
-  it('沿用队列页面的标题层级，并把临时文件说明放在标题下方', () => {
+  it('使用共享页面头部，并把批量操作放在页面头部之后', () => {
     const source = readSource('src/components/AppScrapeRecords.vue')
+    const pageHeaderStart = source.indexOf('<PageHeader')
+    const topActionsStart = source.indexOf('class="top-actions"')
 
-    expect(source.indexOf('class="card-header"')).toBeGreaterThan(-1)
-    expect(source.indexOf('class="card-header"')).toBeLessThan(
-      source.indexOf('class="top-actions"'),
+    expect(pageHeaderStart).toBeGreaterThan(-1)
+    expect(pageHeaderStart).toBeLessThan(topActionsStart)
+    expect(source).toContain('<PageHeader class="scrape-records-page-header" />')
+    expect(source).not.toContain('class="hide-on-mobile"')
+    expect(source).toContain("import PageHeader from '@/components/common/PageHeader.vue'")
+
+    expect(source).toMatch(
+      /\.top-actions\s*\{[\s\S]*?padding: 16px;[\s\S]*?background: linear-gradient\([\s\S]*?border-radius: 8px;/,
     )
     expect(source).toMatch(
-      /<div class="card-header">\s*<div>\s*<h2 class="hide-on-mobile">刮削记录<\/h2>\s*<p class="queue-description">/,
+      /\.scrape-records-container :deep\(\.scrape-records-page-header\)\s*\{[\s\S]*?margin-bottom: 0;/,
     )
-    expect(source).toContain('刮削时会把临时文件放在')
-    expect(source).toContain('刮削完成后会自动删除')
-    expect(source).not.toContain('class="page-title hide-on-mobile"')
-    expect(source).not.toMatch(/\.page-title\s*\{/)
   })
 
   it('路径 Tooltip 显式保留“到”关系词，并为缺失路径使用占位符', () => {

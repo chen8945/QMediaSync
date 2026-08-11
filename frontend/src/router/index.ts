@@ -1,8 +1,9 @@
-import { createRouter } from 'vue-router'
+import { createRouter, type RouteRecordRaw } from 'vue-router'
 import { createQMediaSyncHashHistory } from './history'
 import { createAsyncRouteComponent } from './asyncRoute'
 import { useAuthStore } from '@/stores/auth'
 import { http } from '@/http/client'
+import type { PageMeta } from './pageMeta'
 
 const AppHome = createAsyncRouteComponent('AppHome', () => import('@/components/AppHome.vue'))
 const AppLogin = createAsyncRouteComponent('AppLogin', () => import('@/components/AppLogin.vue'))
@@ -124,10 +125,11 @@ declare module 'vue-router' {
     parent?: string
     icon?: string
     showInMenu?: boolean
+    page?: PageMeta
   }
 }
 
-const routes = [
+const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'login',
@@ -144,6 +146,12 @@ const routes = [
     component: AppHome,
     meta: {
       title: '首页',
+      page: {
+        title: '控制台',
+        description: '系统运行状态监控与管理',
+        icon: 'House',
+        variant: 'management',
+      },
       requiresAuth: true,
       icon: 'House',
       showInMenu: true,
@@ -155,8 +163,14 @@ const routes = [
     component: AppCloudAccounts,
     meta: {
       title: '网盘账号',
+      page: {
+        title: '网盘账号管理',
+        description: '管理网盘账号授权与绑定',
+        icon: 'Cloudy',
+        variant: 'management',
+      },
       requiresAuth: true,
-      icon: 'User',
+      icon: 'Cloudy',
       showInMenu: true,
     },
   },
@@ -177,6 +191,12 @@ const routes = [
     component: AppSyncDirectories,
     meta: {
       title: 'STRM 同步目录',
+      page: {
+        title: '同步目录管理',
+        description: '管理云盘与本地目录的同步配置',
+        icon: 'FolderOpened',
+        variant: 'management',
+      },
       requiresAuth: true,
       parent: 'sync',
       icon: 'FolderOpened',
@@ -189,6 +209,11 @@ const routes = [
     component: AppSyncDirectoryForm,
     meta: {
       title: '添加同步目录',
+      page: {
+        description: '配置云盘或本地目录的同步规则',
+        icon: 'Folder',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'sync',
       showInMenu: false,
@@ -200,6 +225,11 @@ const routes = [
     component: AppSyncDirectoryForm,
     meta: {
       title: '编辑同步目录',
+      page: {
+        description: '配置云盘或本地目录的同步规则',
+        icon: 'Folder',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'sync',
       showInMenu: false,
@@ -211,6 +241,11 @@ const routes = [
     component: AppSyncRecords,
     meta: {
       title: 'STRM 同步记录',
+      page: {
+        description: '只会保留 7 天的记录，每天 0 点会删除 7 天前的所有记录',
+        icon: 'List',
+        variant: 'compact',
+      },
       requiresAuth: true,
       parent: 'sync',
       icon: 'List',
@@ -223,6 +258,11 @@ const routes = [
     component: AppStrmSettings,
     meta: {
       title: 'STRM 设置',
+      page: {
+        description: '配置 STRM 文件生成、同步和 Webhook 行为',
+        icon: 'Setting',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'sync',
       icon: 'Setting',
@@ -235,6 +275,11 @@ const routes = [
     component: AppSyncTaskDetail,
     meta: {
       title: '同步任务详情',
+      page: {
+        description: '查看同步任务的执行情况和详细信息',
+        icon: 'List',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'sync',
       showInMenu: false,
@@ -257,6 +302,12 @@ const routes = [
     component: AppScrapePathes,
     meta: {
       title: '刮削目录',
+      page: {
+        title: '刮削目录管理',
+        description: '管理媒体文件的刮削和整理规则',
+        icon: 'FolderOpened',
+        variant: 'management',
+      },
       requiresAuth: true,
       parent: 'scrape',
       icon: 'FolderOpened',
@@ -269,6 +320,11 @@ const routes = [
     component: AppScrapePathForm,
     meta: {
       title: '添加刮削目录',
+      page: {
+        description: '配置媒体文件的刮削和整理规则',
+        icon: 'Folder',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'scrape',
       showInMenu: false,
@@ -280,6 +336,11 @@ const routes = [
     component: AppScrapePathForm,
     meta: {
       title: '编辑刮削目录',
+      page: {
+        description: '配置媒体文件的刮削和整理规则',
+        icon: 'Folder',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'scrape',
       showInMenu: false,
@@ -291,6 +352,11 @@ const routes = [
     component: AppScrapeRecords,
     meta: {
       title: '刮削记录',
+      page: {
+        description: '查看媒体文件的刮削和整理记录',
+        icon: 'List',
+        variant: 'compact',
+      },
       requiresAuth: true,
       parent: 'scrape',
       icon: 'List',
@@ -303,6 +369,11 @@ const routes = [
     component: AppTmdbSettings,
     meta: {
       title: '刮削设置',
+      page: {
+        description: '配置 TMDB 和 fanart.tv 的媒体数据服务',
+        icon: 'Film',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'scrape',
       icon: 'Film',
@@ -315,6 +386,11 @@ const routes = [
     component: AppAiSettings,
     meta: {
       title: 'AI 识别设置',
+      page: {
+        description: '配置 AI 识别服务和模型参数',
+        icon: 'View',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'scrape',
       icon: 'View',
@@ -327,6 +403,11 @@ const routes = [
     component: AppCategoryStrategy,
     meta: {
       title: '二级分类设置',
+      page: {
+        description: '配置电影和电视剧的二级分类规则',
+        icon: 'Operation',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'scrape',
       icon: 'Operation',
@@ -351,6 +432,11 @@ const routes = [
     component: AppUploadQueue,
     meta: {
       title: '上传队列',
+      page: {
+        description: '查看 STRM 同步和刮削流程产生的元数据上传任务',
+        icon: 'Upload',
+        variant: 'compact',
+      },
       requiresAuth: true,
       parent: 'transfer',
       icon: 'Upload',
@@ -363,6 +449,11 @@ const routes = [
     component: AppDownloadQueue,
     meta: {
       title: '下载队列',
+      page: {
+        description: '查看 STRM 同步产生的下载任务和处理进度',
+        icon: 'Download',
+        variant: 'compact',
+      },
       requiresAuth: true,
       parent: 'transfer',
       icon: 'Download',
@@ -375,6 +466,11 @@ const routes = [
     component: AppFileManager,
     meta: {
       title: '网盘文件管理',
+      page: {
+        description: '浏览和管理媒体文件，支持 STRM 生成、刮削整理和 ED2K 生成操作',
+        icon: 'Folder',
+        variant: 'management',
+      },
       requiresAuth: true,
       icon: 'Folder',
       showInMenu: true,
@@ -397,6 +493,11 @@ const routes = [
     component: AppBackupSettings,
     meta: {
       title: '备份设置',
+      page: {
+        description: '配置数据库自动备份策略',
+        icon: 'Tools',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'database',
       icon: 'Tools',
@@ -409,6 +510,11 @@ const routes = [
     component: AppBackupRecords,
     meta: {
       title: '备份记录',
+      page: {
+        description: '查看数据库备份任务的执行记录',
+        icon: 'List',
+        variant: 'compact',
+      },
       requiresAuth: true,
       parent: 'database',
       icon: 'List',
@@ -421,6 +527,11 @@ const routes = [
     component: AppBackupRestore,
     meta: {
       title: '备份恢复',
+      page: {
+        description: '从备份文件恢复数据库',
+        icon: 'RefreshLeft',
+        variant: 'detail',
+      },
       requiresAuth: true,
       parent: 'database',
       icon: 'RefreshLeft',
@@ -433,6 +544,11 @@ const routes = [
     component: AppDatabaseRepair,
     meta: {
       title: '数据库修复',
+      page: {
+        description: '补齐缺失表结构并检查主键序列',
+        icon: 'DataLine',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'database',
       icon: 'DataLine',
@@ -456,6 +572,11 @@ const routes = [
     component: AppUserSettings,
     meta: {
       title: '用户管理',
+      page: {
+        description: '管理用户资料和安全设置',
+        icon: 'UserFilled',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'UserFilled',
@@ -468,6 +589,11 @@ const routes = [
     component: AppApiKeys,
     meta: {
       title: 'API Key',
+      page: {
+        description: '管理用于外部调用的 API Key',
+        icon: 'Key',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Key',
@@ -480,6 +606,11 @@ const routes = [
     component: AppLoginSessions,
     meta: {
       title: '登录设备',
+      page: {
+        description: '查看和撤销已登录的设备',
+        icon: 'Monitor',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Monitor',
@@ -492,6 +623,11 @@ const routes = [
     component: AppNotificationChannels,
     meta: {
       title: '通知管理',
+      page: {
+        description: '管理系统通知渠道和推送规则',
+        icon: 'Promotion',
+        variant: 'management',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Promotion',
@@ -504,6 +640,11 @@ const routes = [
     component: AppEmbySettings,
     meta: {
       title: 'Emby',
+      page: {
+        description: '配置 Emby 服务器、通知链接和同步行为',
+        icon: 'VideoPlay',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'VideoPlay',
@@ -516,6 +657,11 @@ const routes = [
     component: AppThreadSettings,
     meta: {
       title: '接口速率',
+      page: {
+        description: '调整下载、网盘接口和 OpenList 的请求速率',
+        icon: 'Operation',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Operation',
@@ -528,6 +674,11 @@ const routes = [
     component: AppLogSettings,
     meta: {
       title: '日志设置',
+      page: {
+        description: '配置日志等级和日志文件保留策略',
+        icon: 'List',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'List',
@@ -540,6 +691,11 @@ const routes = [
     component: AppProxySettings,
     meta: {
       title: '网络代理',
+      page: {
+        description: '配置访问外部服务时使用的网络代理',
+        icon: 'Link',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Link',
@@ -552,6 +708,11 @@ const routes = [
     component: AppUpdate,
     meta: {
       title: '版本更新',
+      page: {
+        description: '检查版本、查看更新说明并执行升级',
+        icon: 'Upload',
+        variant: 'settings',
+      },
       requiresAuth: true,
       parent: 'settings',
       icon: 'Upload',

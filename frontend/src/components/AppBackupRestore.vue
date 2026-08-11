@@ -1,8 +1,6 @@
 <template>
   <div class="backup-restore-container">
-    <div class="page-header">
-      <span>数据库恢复</span>
-    </div>
+    <PageHeader />
 
     <el-alert
       title="警告：数据库恢复操作将覆盖当前数据库，请谨慎操作！"
@@ -97,6 +95,7 @@ import { useBackupStore } from '@/stores/backup'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp } from '@/utils/timeUtils'
 import { isMobile as checkIsMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
 const backupStore = useBackupStore()
@@ -198,14 +197,6 @@ const startRestore = async () => {
 .backup-restore-container {
   padding: 20px;
   max-width: 1000px;
-}
-
-.page-header {
-  font-weight: 600;
-  font-size: 18px;
-  margin-bottom: 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e4e7ed;
 }
 
 .action-buttons {

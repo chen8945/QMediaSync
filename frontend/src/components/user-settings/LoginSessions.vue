@@ -5,6 +5,7 @@ import { Delete, Refresh } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import { formatDateTime } from '@/utils/timeUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 interface LoginSession {
   session_id: string
@@ -76,10 +77,14 @@ onMounted(() => {
 
 <template>
   <div class="main-content-container login-sessions-container">
-    <div class="action-bar">
-      <el-button :icon="Refresh" :loading="loading" @click="loadSessions">刷新</el-button>
-      <el-button type="danger" plain @click="revokeOthers">撤销其他设备</el-button>
-    </div>
+    <PageHeader>
+      <template #actions>
+        <div class="action-bar">
+          <el-button :icon="Refresh" :loading="loading" @click="loadSessions">刷新</el-button>
+          <el-button type="danger" plain @click="revokeOthers">撤销其他设备</el-button>
+        </div>
+      </template>
+    </PageHeader>
 
     <el-table :data="sessions" v-loading="loading" border stripe empty-text="暂无登录设备">
       <el-table-column label="状态" width="120">
@@ -126,10 +131,18 @@ onMounted(() => {
   padding: 0 10px 10px;
 }
 
+.login-sessions-container :deep(.qms-page-header) {
+  margin-bottom: 0;
+}
+
 .action-bar {
   display: flex;
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.action-bar :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 </style>

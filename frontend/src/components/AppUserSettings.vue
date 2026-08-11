@@ -1,5 +1,7 @@
 <template>
   <div class="main-content-container user-settings-container">
+    <PageHeader />
+
     <el-form
       :model="formData"
       :label-position="checkIsMobile ? 'top' : 'left'"
@@ -88,6 +90,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import TwoFactorSettings from '@/components/user-settings/TwoFactorSettings.vue'
 import { validatePassword, validateUsername } from '@/utils/userCredentials'
+import PageHeader from '@/components/common/PageHeader.vue'
 interface UserSettings {
   username: string
   password: string
@@ -261,7 +264,7 @@ const loadCurrentUsername = async () => {
 }
 
 .user-form {
-  margin-top: 20px;
+  margin-top: 0;
   width: 100%;
 }
 
@@ -311,5 +314,11 @@ const loadCurrentUsername = async () => {
 
 .warning-section {
   margin-top: 16px;
+}
+
+@media (max-width: 768px) {
+  .user-form {
+    margin-top: 20px;
+  }
 }
 </style>

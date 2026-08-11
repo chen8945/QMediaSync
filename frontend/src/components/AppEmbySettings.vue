@@ -1,5 +1,7 @@
 <template>
   <div class="main-content-container emby-content">
+    <PageHeader />
+
     <div class="emby-settings-wrapper">
       <el-form
         :model="embyData"
@@ -16,7 +18,7 @@
                 <el-icon :size="24"><Monitor /></el-icon>
               </div>
               <div class="card-header-content">
-                <h3 class="card-title">Emby 服务器配置</h3>
+                <h2 class="card-title">Emby 服务器配置</h2>
                 <p class="card-subtitle">配置 Emby 服务器连接信息</p>
               </div>
             </div>
@@ -731,6 +733,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { computed, onMounted, ref, reactive, onBeforeUnmount, useTemplateRef } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveActionBar from '@/components/common/ResponsiveActionBar.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { copyText } from '@/utils/clipboard'
@@ -1185,8 +1188,8 @@ onBeforeUnmount(() => {
 
 <style scoped lang="css">
 .emby-content {
-  /* padding: 20px; */
-  background: linear-gradient(135deg, #f5f7fa 0%, #e4e7ed 100%);
+  display: block;
+  background: transparent;
 }
 
 .emby-settings-wrapper {
@@ -1201,16 +1204,34 @@ onBeforeUnmount(() => {
   margin-bottom: 24px;
 }
 
-.settings-card {
+.settings-card,
+.sync-management-card {
   border-radius: 12px;
-  border: none;
+  border: 1px solid #dcdfe6;
+  background: #fff;
   overflow: hidden;
-  transition: transform 0.2s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
   width: 100%;
 }
 
-.settings-card:hover {
+.settings-card:hover,
+.sync-management-card:hover {
   transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.settings-card :deep(.el-card__header),
+.sync-management-card :deep(.el-card__header) {
+  padding: 18px 20px;
+  border-bottom: 1px solid #dcdfe6;
+}
+
+.settings-card :deep(.el-card__body),
+.sync-management-card :deep(.el-card__body) {
+  background: #fff;
 }
 
 .card-header-wrapper {
@@ -1484,8 +1505,6 @@ onBeforeUnmount(() => {
 }
 
 .sync-management-card {
-  border-radius: 12px;
-  border: none;
   margin-bottom: 20px;
   width: 100%;
 }
@@ -1655,11 +1674,13 @@ onBeforeUnmount(() => {
     gap: 16px;
   }
 
-  .settings-card {
+  .settings-card,
+  .sync-management-card {
     border-radius: 8px;
   }
 
-  .settings-card:hover {
+  .settings-card:hover,
+  .sync-management-card:hover {
     transform: none;
   }
 

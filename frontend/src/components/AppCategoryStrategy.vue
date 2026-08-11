@@ -1,12 +1,6 @@
 <template>
   <div class="main-content-container category-strategy-container full-width-container">
-    <div class="card-header">
-      <div class="header-left">
-        <p class="card-subtitle">
-          如果默认设置不符合要求再修改；确认规则含义后再操作，添加或修改只会影响后续新文件，已有文件不会受到影响。
-        </p>
-      </div>
-    </div>
+    <PageHeader />
 
     <el-tabs v-model="activeTab" @tab-change="handleTabChange" type="card">
       <!-- 电影分类 tab -->
@@ -255,6 +249,7 @@ import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
 import { Plus, Edit, Delete, Folder } from '@element-plus/icons-vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 // 响应式数据
 const activeTab = ref('movie')
@@ -540,6 +535,11 @@ onMounted(async () => {
   padding: 0;
 }
 
+.category-strategy-container.full-width-container {
+  margin-top: 0 !important;
+  padding-top: 20px !important;
+}
+
 .full-width-card {
   border-radius: 0;
   box-shadow: none;
@@ -643,5 +643,11 @@ onMounted(async () => {
 
 .text-muted {
   color: #909399;
+}
+
+@media (max-width: 768px) {
+  .category-strategy-container.full-width-container {
+    padding-top: 10px !important;
+  }
 }
 </style>

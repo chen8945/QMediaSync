@@ -30,6 +30,7 @@ describe('LoginSessions', () => {
       global: {
         provide: { [httpKey]: http },
         stubs: {
+          PageHeader: true,
           'el-button': { template: '<button @click="$emit(\'click\')"><slot /></button>' },
           'el-table': {
             props: ['data'],

@@ -1,59 +1,54 @@
 <template>
   <div class="sync-directories-page">
-    <div class="page-header">
-      <div class="header-content">
-        <div class="header-title-section">
-          <h1 class="page-title">
-            <el-icon class="title-icon"><FolderOpened /></el-icon>
-            同步目录管理
-          </h1>
-          <p class="page-subtitle">管理云盘与本地目录的同步配置</p>
-        </div>
+    <PageHeader>
+      <template #actions>
         <div class="header-actions">
           <el-button type="primary" class="add-btn" :icon="Plus" @click="handleAdd">
             <span class="btn-text">添加同步目录</span>
           </el-button>
         </div>
-      </div>
-      <div class="stats-bar mobile-hidden">
-        <div class="stat-item">
-          <div class="stat-icon total">
-            <el-icon><Files /></el-icon>
+      </template>
+      <template #stats>
+        <div class="stats-bar">
+          <div class="stat-item">
+            <div class="stat-icon total">
+              <el-icon><Files /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ directories.length }}</span>
+              <span class="stat-label">总目录数</span>
+            </div>
           </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ directories.length }}</span>
-            <span class="stat-label">总目录数</span>
+          <div class="stat-item">
+            <div class="stat-icon running">
+              <el-icon><Loading /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ runningCount }}</span>
+              <span class="stat-label">运行中</span>
+            </div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-icon waiting">
+              <el-icon><Clock /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ waitingCount }}</span>
+              <span class="stat-label">等待中</span>
+            </div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-icon cron">
+              <el-icon><Timer /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ cronEnabledCount }}</span>
+              <span class="stat-label">定时同步</span>
+            </div>
           </div>
         </div>
-        <div class="stat-item">
-          <div class="stat-icon running">
-            <el-icon><Loading /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ runningCount }}</span>
-            <span class="stat-label">运行中</span>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon waiting">
-            <el-icon><Clock /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ waitingCount }}</span>
-            <span class="stat-label">等待中</span>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon cron">
-            <el-icon><Timer /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ cronEnabledCount }}</span>
-            <span class="stat-label">定时同步</span>
-          </div>
-        </div>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="directories-content">
       <div class="directories-grid" v-if="directories.length > 0">
@@ -364,6 +359,7 @@
 
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import { useHttpClient } from '@/http/client'
 import {
@@ -1061,53 +1057,11 @@ onMounted(() => {
 .sync-directories-page {
   position: relative;
   min-height: 100%;
-  background: #f5f7fa;
-  padding: 0;
-}
-
-.page-header {
-  background: #fff;
-  padding: 24px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.header-title-section {
-  flex: 1;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 8px 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.title-icon {
-  font-size: 28px;
-  color: #409eff;
-}
-
-.page-subtitle {
-  margin: 0;
-  font-size: 14px;
-  color: #909399;
+  padding: 0 24px 24px;
 }
 
 .header-actions {
   display: flex;
-  gap: 12px;
 }
 
 .add-btn {
@@ -1187,7 +1141,7 @@ onMounted(() => {
 }
 
 .directories-content {
-  padding: 24px;
+  padding: 0;
 }
 
 .directories-grid {
@@ -1201,6 +1155,7 @@ onMounted(() => {
   background: #fff;
   border-radius: 16px;
   overflow: hidden;
+  border: 1px solid #dcdfe6;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   transition:
     transform 0.2s ease,
@@ -1214,6 +1169,7 @@ onMounted(() => {
 }
 
 .directory-card.is-running {
+  border-color: #b3e19d;
   box-shadow: 0 2px 12px rgba(103, 194, 58, 0.2);
 }
 
@@ -1222,6 +1178,7 @@ onMounted(() => {
 }
 
 .directory-card.is-waiting {
+  border-color: #f3d19e;
   box-shadow: 0 2px 12px rgba(230, 162, 60, 0.2);
 }
 
@@ -1268,7 +1225,7 @@ onMounted(() => {
   align-items: flex-start;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid #dcdfe6;
 }
 
 .card-title-wrapper {
@@ -1416,7 +1373,7 @@ onMounted(() => {
   gap: 8px;
   padding-top: 16px;
   margin-top: 12px;
-  border-top: 1px solid #f0f2f5;
+  border-top: 1px solid #dcdfe6;
 }
 
 .card-footer__primary,
@@ -1449,6 +1406,7 @@ onMounted(() => {
   padding: 60px 20px;
   background: #fff;
   border-radius: 16px;
+  border: 1px solid #dcdfe6;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   margin-bottom: 24px;
 }
@@ -1626,25 +1584,17 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .page-header {
-    padding: 12px;
-    background: #fff;
-  }
-
-  .header-title-section {
-    display: none;
-  }
-
-  .header-content {
-    margin-bottom: 0;
+  .sync-directories-page {
+    padding: 0 8px 8px;
   }
 
   .header-actions {
+    width: max-content;
     justify-content: stretch;
   }
 
   .header-actions .add-btn {
-    width: 100%;
+    width: auto;
     background: #409eff !important;
     border-color: #409eff !important;
     color: #fff !important;
@@ -1654,14 +1604,6 @@ onMounted(() => {
     background: #66b1ff !important;
     border-color: #66b1ff !important;
     transform: none;
-  }
-
-  .mobile-hidden {
-    display: none !important;
-  }
-
-  .directories-content {
-    padding: 12px;
   }
 
   .directories-grid {

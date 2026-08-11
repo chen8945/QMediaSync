@@ -31,6 +31,7 @@ describe('AppBackupSettings', () => {
       global: {
         provide: { [httpKey]: { get } as unknown as AxiosInstance },
         stubs: {
+          PageHeader: true,
           ElIcon: { template: '<span><slot /></span>' },
           ElForm: { template: '<form><slot /></form>' },
           ElFormItem: { template: '<div><slot /></div>' },

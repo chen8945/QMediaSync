@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { getPageTitle } from '@/router/pageMeta'
 
 const { error } = defineProps<{ error: Error }>()
 const route = useRoute()
-const pageTitle = computed(() => (typeof route.meta.title === 'string' ? route.meta.title : '页面'))
+const pageTitle = computed(() => getPageTitle(route.meta))
 const reload = () => window.location.reload()
 </script>
 
 <template>
   <section class="route-load-error" data-testid="route-load-error" role="alert">
-    <h2 class="route-load-error-title">{{ pageTitle }}</h2>
+    <h1 class="route-load-error-title">{{ pageTitle }}</h1>
     <p v-if="error" class="route-load-error-message">页面加载失败</p>
-    <button class="route-load-error-retry" type="button" @click="reload">重新加载</button>
+    <button class="route-load-error-retry" type="button" aria-label="重新加载页面" @click="reload">
+      重新加载
+    </button>
   </section>
 </template>
 
@@ -52,5 +55,11 @@ const reload = () => window.location.reload()
 .route-load-error-retry:focus-visible {
   outline: 2px solid #409eff;
   outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .route-load-error-title {
+    display: none;
+  }
 }
 </style>

@@ -12,6 +12,7 @@
 
       <!-- 侧边栏 -->
       <el-aside
+        id="mobile-navigation"
         :width="isMobile ? '250px' : '200px'"
         :class="{
           'mobile-aside': isMobile,
@@ -84,11 +85,25 @@
         <!-- 移动端顶部栏 -->
         <div v-if="isMobile" class="mobile-header">
           <div class="left-section">
-            <el-button link class="menu-toggle" :icon="Menu" @click="toggleMenu" />
-            <h2 class="page-title">{{ getCurrentPageTitle() }}</h2>
+            <el-button
+              link
+              class="menu-toggle"
+              :icon="Menu"
+              :aria-label="isMenuOpen ? '关闭菜单' : '打开菜单'"
+              :aria-expanded="isMenuOpen"
+              aria-controls="mobile-navigation"
+              @click="toggleMenu"
+            />
+            <h1 class="page-title">{{ getCurrentPageTitle() }}</h1>
           </div>
           <el-dropdown class="user-dropdown">
-            <el-button link class="user-btn" :icon="User" />
+            <el-button
+              link
+              class="user-btn"
+              :icon="User"
+              aria-label="打开用户菜单"
+              aria-haspopup="menu"
+            />
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item>{{ authStore.user?.username }}</el-dropdown-item>
@@ -185,38 +200,11 @@
 </template>
 
 <script setup lang="ts">
-import {
-  DataAnalysis,
-  DataLine,
-  DocumentCopy,
-  Download,
-  Film,
-  Folder,
-  FolderOpened,
-  House,
-  Key,
-  Link,
-  List,
-  Loading,
-  Menu,
-  Monitor,
-  Operation,
-  Promotion,
-  QuestionFilled,
-  RefreshLeft,
-  Setting,
-  Tools,
-  Upload,
-  User,
-  UserFilled,
-  VideoPlay,
-  View,
-} from '@element-plus/icons-vue'
+import { Loading, Menu, QuestionFilled, User } from '@element-plus/icons-vue'
 import {
   ref,
   onUnmounted,
   computed,
-  markRaw,
   useTemplateRef,
   watch,
   type Component as VueComponent,
@@ -233,6 +221,8 @@ import {
 } from '@/composables/useRealtimeEvents'
 import { ElMessage, ElMessageBox, type MenuInstance } from 'element-plus'
 import { formatDuration } from '@/utils/timeUtils'
+import { getIconComponent } from '@/components/common/iconRegistry'
+import type { PageMeta } from '@/router/pageMeta'
 
 const route = useRoute()
 const router = useRouter()
@@ -266,35 +256,6 @@ const getRouteViewKey = (routeName: unknown, fullPath: string) => {
   return fullPath
 }
 
-const menuIconMap = {
-  DataAnalysis: markRaw(DataAnalysis),
-  DataLine: markRaw(DataLine),
-  DocumentCopy: markRaw(DocumentCopy),
-  Download: markRaw(Download),
-  Film: markRaw(Film),
-  Folder: markRaw(Folder),
-  FolderOpened: markRaw(FolderOpened),
-  House: markRaw(House),
-  Key: markRaw(Key),
-  Link: markRaw(Link),
-  List: markRaw(List),
-  Monitor: markRaw(Monitor),
-  Operation: markRaw(Operation),
-  Promotion: markRaw(Promotion),
-  RefreshLeft: markRaw(RefreshLeft),
-  Setting: markRaw(Setting),
-  Tools: markRaw(Tools),
-  Upload: markRaw(Upload),
-  User: markRaw(User),
-  UserFilled: markRaw(UserFilled),
-  VideoPlay: markRaw(VideoPlay),
-  View: markRaw(View),
-} as const
-
-const getMenuIcon = (icon?: string) => {
-  return menuIconMap[icon as keyof typeof menuIconMap] || Setting
-}
-
 // 定义菜单项类型
 interface MenuItem {
   path: string
@@ -321,6 +282,7 @@ const menuItems = computed(() => {
       parent?: string
       icon?: string
       showInMenu?: boolean
+      page?: PageMeta
     }
     redirect?: string
   }
@@ -350,7 +312,7 @@ const menuItems = computed(() => {
               showInMenu: parentRoute.meta.showInMenu || false,
               parent: parentRoute.meta.parent,
             },
-            iconComponent: getMenuIcon(parentRoute.meta.icon),
+            iconComponent: getIconComponent(parentRoute.meta.icon),
             children: [],
           }
           menuMap.set(route.meta.parent, parentMenuItem)
@@ -368,7 +330,7 @@ const menuItems = computed(() => {
             showInMenu: route.meta.showInMenu || false,
             parent: route.meta.parent,
           },
-          iconComponent: getMenuIcon(route.meta.icon),
+          iconComponent: getIconComponent(route.meta.icon),
         }
         menuMap.get(route.meta.parent)?.children?.push(childMenuItem)
       }
@@ -385,7 +347,7 @@ const menuItems = computed(() => {
             showInMenu: route.meta.showInMenu || false,
             parent: route.meta.parent,
           },
-          iconComponent: getMenuIcon(route.meta.icon),
+          iconComponent: getIconComponent(route.meta.icon),
           children: [],
         }
         menuMap.set(routeNameKey, menuItem)
@@ -442,7 +404,7 @@ const handleLogout = async () => {
 
 // 获取当前页面标题
 const getCurrentPageTitle = (): string => {
-  return (route.meta.title as string) || '首页'
+  return typeof route.meta.title === 'string' && route.meta.title.trim() ? route.meta.title : '首页'
 }
 
 // 当前页所属一级菜单的 index（即父级路由 path）。以 route.meta.parent 为准，
@@ -659,8 +621,10 @@ onUnmounted(() => {
 
   .mobile-header {
     display: flex;
+    min-width: 0;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     background-color: #fff;
     padding: 10px 15px;
     margin: -10px -10px 8px -10px;
@@ -671,28 +635,35 @@ onUnmounted(() => {
   .mobile-header .left-section {
     display: flex;
     align-items: center;
-    flex: 1;
+    min-width: 0;
+    flex: 1 1 auto;
   }
 
   .menu-toggle {
-    margin-right: 15px;
+    flex: 0 0 auto;
+    margin-right: 10px;
     font-size: 18px;
     color: #545c64 !important;
   }
 
   .page-title {
+    min-width: 0;
     margin: 0;
     font-size: 18px;
     font-weight: 500;
     color: #303133;
-    flex: 1;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .user-dropdown {
-    margin-left: 10px;
+    flex: 0 0 auto;
+    margin-left: 0;
   }
 
   .user-btn {
+    flex: 0 0 auto;
     color: #545c64 !important;
     font-size: 18px;
   }

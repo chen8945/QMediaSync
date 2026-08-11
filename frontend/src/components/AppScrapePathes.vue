@@ -1,59 +1,54 @@
 <template>
   <div class="scrape-pathes-page">
-    <div class="page-header">
-      <div class="header-content">
-        <div class="header-title-section">
-          <h1 class="page-title">
-            <el-icon class="title-icon"><Film /></el-icon>
-            刮削目录管理
-          </h1>
-          <p class="page-subtitle">管理媒体文件的刮削和整理规则</p>
-        </div>
+    <PageHeader>
+      <template #actions>
         <div class="header-actions">
           <el-button type="primary" class="add-btn" :icon="Plus" @click="goToAdd">
             <span class="btn-text">添加刮削目录</span>
           </el-button>
         </div>
-      </div>
-      <div class="stats-bar mobile-hidden">
-        <div class="stat-item">
-          <div class="stat-icon total">
-            <el-icon><FolderOpened /></el-icon>
+      </template>
+      <template #stats>
+        <div class="stats-bar">
+          <div class="stat-item">
+            <div class="stat-icon total">
+              <el-icon><FolderOpened /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ pathes.length }}</span>
+              <span class="stat-label">总目录数</span>
+            </div>
           </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ pathes.length }}</span>
-            <span class="stat-label">总目录数</span>
+          <div class="stat-item">
+            <div class="stat-icon running">
+              <el-icon><Loading /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ runningCount }}</span>
+              <span class="stat-label">运行中</span>
+            </div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-icon waiting">
+              <el-icon><Clock /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ waitingCount }}</span>
+              <span class="stat-label">等待中</span>
+            </div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-icon cron">
+              <el-icon><Timer /></el-icon>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ cronEnabledCount }}</span>
+              <span class="stat-label">定时任务</span>
+            </div>
           </div>
         </div>
-        <div class="stat-item">
-          <div class="stat-icon running">
-            <el-icon><Loading /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ runningCount }}</span>
-            <span class="stat-label">运行中</span>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon waiting">
-            <el-icon><Clock /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ waitingCount }}</span>
-            <span class="stat-label">等待中</span>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon cron">
-            <el-icon><Timer /></el-icon>
-          </div>
-          <div class="stat-info">
-            <span class="stat-value">{{ cronEnabledCount }}</span>
-            <span class="stat-label">定时任务</span>
-          </div>
-        </div>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="pathes-content">
       <div class="pathes-grid" v-if="pathes.length > 0">
@@ -345,6 +340,7 @@
 
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { useHttpClient } from '@/http/client'
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
@@ -705,53 +701,11 @@ onMounted(async () => {
 <style scoped>
 .scrape-pathes-page {
   min-height: 100%;
-  background: #f5f7fa;
-  padding: 0;
-}
-
-.page-header {
-  background: #fff;
-  padding: 24px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.header-title-section {
-  flex: 1;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 8px 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.title-icon {
-  font-size: 28px;
-  color: #409eff;
-}
-
-.page-subtitle {
-  margin: 0;
-  font-size: 14px;
-  color: #909399;
+  padding: 0 24px 24px;
 }
 
 .header-actions {
   display: flex;
-  gap: 12px;
 }
 
 .add-btn {
@@ -831,7 +785,7 @@ onMounted(async () => {
 }
 
 .pathes-content {
-  padding: 24px;
+  padding: 0;
 }
 
 .pathes-grid {
@@ -845,6 +799,7 @@ onMounted(async () => {
   background: #fff;
   border-radius: 16px;
   overflow: hidden;
+  border: 1px solid #dcdfe6;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   transition:
     transform 0.2s ease,
@@ -858,6 +813,7 @@ onMounted(async () => {
 }
 
 .path-card.is-running {
+  border-color: #b3e19d;
   box-shadow: 0 2px 12px rgba(103, 194, 58, 0.2);
 }
 
@@ -866,6 +822,7 @@ onMounted(async () => {
 }
 
 .path-card.is-waiting {
+  border-color: #f3d19e;
   box-shadow: 0 2px 12px rgba(230, 162, 60, 0.2);
 }
 
@@ -912,7 +869,7 @@ onMounted(async () => {
   align-items: flex-start;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid #dcdfe6;
 }
 
 .card-title-wrapper {
@@ -1046,7 +1003,7 @@ onMounted(async () => {
   gap: 8px;
   padding-top: 16px;
   margin-top: 12px;
-  border-top: 1px solid #f0f2f5;
+  border-top: 1px solid #dcdfe6;
 }
 
 .card-footer .el-button {
@@ -1062,6 +1019,7 @@ onMounted(async () => {
   padding: 60px 20px;
   background: #fff;
   border-radius: 16px;
+  border: 1px solid #dcdfe6;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   margin-bottom: 24px;
 }
@@ -1235,25 +1193,17 @@ onMounted(async () => {
 }
 
 @media (max-width: 768px) {
-  .page-header {
-    padding: 12px;
-    background: #fff;
-  }
-
-  .header-title-section {
-    display: none;
-  }
-
-  .header-content {
-    margin-bottom: 0;
+  .scrape-pathes-page {
+    padding: 0 8px 8px;
   }
 
   .header-actions {
+    width: max-content;
     justify-content: stretch;
   }
 
   .header-actions .add-btn {
-    width: 100%;
+    width: auto;
     background: #409eff !important;
     border-color: #409eff !important;
     color: #fff !important;
@@ -1263,14 +1213,6 @@ onMounted(async () => {
     background: #66b1ff !important;
     border-color: #66b1ff !important;
     transform: none;
-  }
-
-  .mobile-hidden {
-    display: none !important;
-  }
-
-  .pathes-content {
-    padding: 12px;
   }
 
   .pathes-grid {

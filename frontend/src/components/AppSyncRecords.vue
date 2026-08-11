@@ -1,24 +1,6 @@
 <template>
   <div class="sync-records-container" ref="pageContainerRef">
-    <!-- 同步记录卡片 -->
-    <div class="sync-records-card">
-      <div class="header-left">
-        <h2 class="card-title hide-on-mobile">同步记录</h2>
-        <p class="card-subtitle">只会保留 7 天的记录，每天 0 点会删除 7 天前的所有记录</p>
-      </div>
-      <div class="header-right">
-        <!-- <el-button
-              type="primary"
-              @click="startManualSync"
-              :loading="syncLoading"
-              :disabled="hasRunningSyncTask"
-              size="large"
-            >
-              <el-icon><Refresh /></el-icon>
-              手动同步
-            </el-button> -->
-      </div>
-    </div>
+    <PageHeader class="sync-records-page-header" />
 
     <div class="sync-content" v-loading="queryLoading">
       <!-- 批量删除控制 -->
@@ -96,6 +78,7 @@
 </template>
 
 <script setup lang="ts">
+import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
 import { SERVER_URL } from '@/const'
@@ -790,39 +773,8 @@ watch(batchMode, (val) => {
   box-sizing: border-box;
 }
 
-.sync-records-card {
-  width: 100%;
-  max-width: none;
-  margin: 0;
-  border: 0;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.header-left {
-  flex: 1;
-}
-
-.header-right {
-  flex-shrink: 0;
-}
-
-.card-title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.card-subtitle {
-  margin: 0;
-  font-size: 14px;
-  color: #909399;
+.sync-records-container :deep(.sync-records-page-header) {
+  margin-bottom: 0;
 }
 
 .sync-content {
@@ -856,37 +808,8 @@ watch(batchMode, (val) => {
     padding: 12px;
   }
 
-  .card-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 16px;
-  }
-
-  .header-right {
-    width: 100%;
-  }
-
-  .header-right .el-button {
-    width: 100%;
-  }
-
-  .card-title {
-    font-size: 20px;
-  }
-
-  .card-subtitle {
-    font-size: 13px;
-  }
-
   .sync-table :deep(.record-table) {
     font-size: 12px;
-  }
-}
-
-/* 小屏移动设备 */
-@media (max-width: 480px) {
-  .card-title {
-    font-size: 18px;
   }
 }
 </style>

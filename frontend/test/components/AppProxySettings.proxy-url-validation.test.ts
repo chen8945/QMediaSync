@@ -32,6 +32,7 @@ const mountProxySettings = async (httpProxy = '', credentialsMasked = '0') => {
     global: {
       provide: { [httpKey]: http },
       stubs: {
+        PageHeader: true,
         ElForm: { template: '<form><slot /></form>' },
         ElFormItem: { template: '<div><slot /></div>' },
         ElInput: {

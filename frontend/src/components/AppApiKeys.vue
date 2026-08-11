@@ -1,16 +1,22 @@
 <template>
   <div class="main-content-container api-keys-container">
+    <PageHeader>
+      <template #actions>
+        <div class="action-bar">
+          <el-button type="primary" :icon="Plus" @click="openCreateDialog">
+            生成 API Key
+          </el-button>
+          <el-button :icon="Refresh" @click="loadKeys" :loading="loading"> 刷新 </el-button>
+        </div>
+      </template>
+    </PageHeader>
+
     <el-alert type="info" :closable="false" show-icon>
       <template #title>
         API Key 认证已启用，推荐在请求头中使用 X-API-Key，也可以在 URL 中追加 api_key 参数。
       </template>
       <p class="alert-tip">完整密钥仅在创建时显示一次，请妥善保存。</p>
     </el-alert>
-
-    <div class="action-bar">
-      <el-button type="primary" :icon="Plus" @click="openCreateDialog"> 生成 API Key </el-button>
-      <el-button :icon="Refresh" @click="loadKeys" :loading="loading"> 刷新 </el-button>
-    </div>
 
     <el-table
       :data="apiKeys"
@@ -130,6 +136,7 @@ import { SERVER_URL } from '@/const'
 import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/timeUtils'
 import { isMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 interface ApiKey {
   id: number
@@ -289,10 +296,18 @@ onMounted(() => {
   padding: 0 10px 10px 10px;
 }
 
+.api-keys-container :deep(.qms-page-header) {
+  margin-bottom: 0;
+}
+
 .action-bar {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.action-bar :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .alert-tip {

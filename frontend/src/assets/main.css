@@ -19,6 +19,14 @@ body {
   margin-left: 2px;
 }
 
+/* 页面 shell 内的管理列表和设置页统一保留标题顶部空间。 */
+.main-content > .main-content-container:not(.full-width-container),
+.main-content > .cloud-accounts-page,
+.main-content > .sync-directories-page,
+.main-content > .scrape-pathes-page {
+  padding-top: 20px !important;
+}
+
 /* 长文本浮层保留换行和路径摘要的连续断行。 */
 .qms-contained-tooltip {
   max-width: 90%;
@@ -54,6 +62,13 @@ body {
   .el-card {
     margin-bottom: 12px;
   }
+
+  .main-content > .main-content-container:not(.full-width-container),
+  .main-content > .cloud-accounts-page,
+  .main-content > .sync-directories-page,
+  .main-content > .scrape-pathes-page {
+    padding-top: 10px !important;
+  }
 }
 
 /* 小屏设备优化 */
@@ -74,9 +89,10 @@ body {
 }
 
 /* 横屏优化 */
-@media (max-height: 500px) and (orientation: landscape) {
+@media (max-width: 768px) and (max-height: 500px) and (orientation: landscape) {
   .mobile-header {
     padding: 6px 12px !important;
+    margin: -8px -8px 8px -8px !important;
   }
 
   .main-content {

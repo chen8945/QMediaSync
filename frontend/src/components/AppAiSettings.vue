@@ -1,5 +1,7 @@
 <template>
   <div class="main-content-container ai-settings-container">
+    <PageHeader />
+
     <!-- <el-alert title="" type="error" :closable="false" style="margin-bottom: 20px">
       <template #default>
         推荐
@@ -133,6 +135,7 @@ import { Check, Refresh } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
 import { isMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 interface AiSettings {
   aiBaseUrl: string

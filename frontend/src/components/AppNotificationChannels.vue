@@ -1,34 +1,25 @@
 <template>
   <div class="notification-page">
-    <div class="page-header">
-      <div class="header-content">
-        <div class="header-icon">
-          <el-icon :size="32"><Bell /></el-icon>
+    <PageHeader class="notification-page-header">
+      <template #actions>
+        <div class="header-actions">
+          <ResponsiveIconButton
+            type="primary"
+            :icon="Plus"
+            label="添加渠道"
+            :is-mobile="checkIsMobile"
+            @click="showCreateDialog"
+          />
+          <ResponsiveIconButton
+            :icon="Refresh"
+            label="刷新"
+            :is-mobile="checkIsMobile"
+            :loading="loading"
+            @click="loadChannels"
+          />
         </div>
-        <div class="header-text">
-          <h2>通知管理</h2>
-          <p class="header-desc">
-            管理系统的通知渠道，支持 Telegram、MeoW、Bark、Server酱、Webhook 等多种推送方式
-          </p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <ResponsiveIconButton
-          type="primary"
-          :icon="Plus"
-          label="添加渠道"
-          :is-mobile="checkIsMobile"
-          @click="showCreateDialog"
-        />
-        <ResponsiveIconButton
-          :icon="Refresh"
-          label="刷新"
-          :is-mobile="checkIsMobile"
-          :loading="loading"
-          @click="loadChannels"
-        />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="main-content-container notification-channels-container">
       <div v-if="channels.length === 0 && !loading" class="empty-state">
@@ -523,6 +514,7 @@ import {
 } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveIconButton from '@/components/common/ResponsiveIconButton.vue'
 import WebhookHeadersEditor from '@/components/notification/WebhookHeadersEditor.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
@@ -1148,45 +1140,9 @@ onMounted(() => {
   padding: 0;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.notification-page :deep(.notification-page-header) {
+  margin-bottom: 0;
   padding: 20px 24px;
-  background: var(--el-bg-color);
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.header-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--el-color-primary-light-5), var(--el-color-primary));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-}
-
-.header-text h2 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.header-desc {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
 }
 
 .header-actions {
@@ -1401,19 +1357,13 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .page-header {
-    padding: 12px 16px;
-    flex-direction: row;
-    justify-content: center;
-    gap: 12px;
-  }
-
-  .header-content {
-    display: none;
+  .notification-page :deep(.notification-page-header) {
+    padding: 10px 12px;
   }
 
   .header-actions {
     display: flex;
+    width: 100%;
     justify-content: center;
     gap: 8px;
   }
@@ -1445,10 +1395,6 @@ onMounted(() => {
 }
 
 @media (max-width: 480px) {
-  .page-header {
-    padding: 10px 12px;
-  }
-
   .header-actions {
     gap: 8px;
   }

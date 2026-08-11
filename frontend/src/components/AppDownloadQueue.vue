@@ -1,52 +1,45 @@
 <template>
   <div class="download-queue-container">
-    <div class="card-header">
-      <div>
-        <h2 class="hide-on-mobile">下载队列</h2>
-        <p class="queue-description">
-          STRM 同步会把需要的元数据加入下载队列，可在这里查看进度、重试失败任务或清理已完成记录。
-        </p>
-        <p class="queue-description">
-          来源为“Emby 媒体信息提取”的记录只用于触发提取流程，不会产生实际文件下载。
-        </p>
-      </div>
-      <div class="header-actions">
-        <div class="queue-control-actions">
-          <el-button
-            type="info"
-            :size="queueControlSize"
-            @click="refreshQueue"
-            :loading="backgroundRefreshing"
-            >刷新</el-button
-          >
-          <el-button
-            type="warning"
-            :size="queueControlSize"
-            @click="pauseAllTasks"
-            :disabled="!canPauseAllTasks"
-            >全部暂停</el-button
-          >
-          <el-button
-            type="success"
-            :size="queueControlSize"
-            @click="resumeAllTasks"
-            :disabled="!canResumeAllTasks"
-            >全部恢复</el-button
-          >
+    <PageHeader class="download-queue-page-header">
+      <template #actions>
+        <div class="header-actions">
+          <div class="queue-control-actions">
+            <el-button
+              type="info"
+              :size="queueControlSize"
+              @click="refreshQueue"
+              :loading="backgroundRefreshing"
+              >刷新</el-button
+            >
+            <el-button
+              type="warning"
+              :size="queueControlSize"
+              @click="pauseAllTasks"
+              :disabled="!canPauseAllTasks"
+              >全部暂停</el-button
+            >
+            <el-button
+              type="success"
+              :size="queueControlSize"
+              @click="resumeAllTasks"
+              :disabled="!canResumeAllTasks"
+              >全部恢复</el-button
+            >
+          </div>
+          <div class="queue-cleanup-actions">
+            <el-button type="warning" :size="queueControlSize" @click="retryFailedTasks"
+              >重试失败</el-button
+            >
+            <el-button type="warning" :size="queueControlSize" @click="clearQueue"
+              >清空等待</el-button
+            >
+            <el-button type="danger" :size="queueControlSize" @click="clearSuccessAndFailedTasks"
+              >清空完成/失败</el-button
+            >
+          </div>
         </div>
-        <div class="queue-cleanup-actions">
-          <el-button type="warning" :size="queueControlSize" @click="retryFailedTasks"
-            >重试失败</el-button
-          >
-          <el-button type="warning" :size="queueControlSize" @click="clearQueue"
-            >清空等待</el-button
-          >
-          <el-button type="danger" :size="queueControlSize" @click="clearSuccessAndFailedTasks"
-            >清空完成/失败</el-button
-          >
-        </div>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="queue-toolbar-row">
       <div class="filter-container">
@@ -322,6 +315,7 @@ import {
   useTemplateRef,
 } from 'vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
 import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
@@ -957,23 +951,15 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
+.download-queue-container :deep(.download-queue-page-header) {
+  margin-bottom: 0;
+}
+
 .download-queue-card {
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header h2 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 600;
 }
 
 .header-actions {
@@ -993,11 +979,6 @@ onUnmounted(() => {
 
 .header-actions :deep(.el-button + .el-button) {
   margin-left: 0;
-}
-
-.queue-description {
-  margin: 0;
-  color: #606266;
 }
 
 .queue-toolbar-row {
@@ -1150,17 +1131,6 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .download-queue-container {
     padding: 12px;
-  }
-
-  .card-header p {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .card-header {
-    flex-direction: column;
-    align-items: flex-start;
   }
 
   .header-actions {

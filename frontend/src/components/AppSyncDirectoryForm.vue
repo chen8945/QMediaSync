@@ -1,14 +1,14 @@
 <template>
   <div class="sync-directory-form-page" :class="{ 'is-mobile': checkIsMobile }">
-    <el-button type="primary" :icon="ArrowLeft" @click="goBack" size="large" link>
-      返回 STRM 同步目录
-    </el-button>
+    <PageHeader actions-position="start">
+      <template #actions>
+        <el-button type="primary" :icon="ArrowLeft" @click="goBack" size="large" link>
+          返回 STRM 同步目录
+        </el-button>
+      </template>
+    </PageHeader>
 
     <template v-if="checkIsMobile">
-      <div class="mobile-form-header">
-        <h3>{{ isEditMode ? '编辑同步目录' : '添加同步目录' }}</h3>
-      </div>
-
       <el-form
         ref="formRef"
         :model="form"
@@ -537,12 +537,6 @@
     </template>
 
     <el-card v-else class="form-card">
-      <template #header>
-        <div class="card-header">
-          <h3>{{ isEditMode ? '编辑同步目录' : '添加同步目录' }}</h3>
-        </div>
-      </template>
-
       <el-form
         ref="formRef"
         :model="form"
@@ -1096,6 +1090,7 @@
 
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { STRM_CUSTOM_OPTIONS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
 import { computed, onMounted, ref, reactive, watch, useTemplateRef, type Ref } from 'vue'
@@ -2077,19 +2072,6 @@ onMounted(async () => {
   margin-top: 16px;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
 .form-footer {
   display: flex;
   justify-content: flex-end;
@@ -2261,25 +2243,6 @@ onMounted(async () => {
 
 .sync-directory-form-page.is-mobile {
   padding: 12px;
-}
-
-.mobile-form-header {
-  margin: 12px 0;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.mobile-form-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
-@media (max-width: 768px) {
-  .mobile-form-header {
-    display: none;
-  }
 }
 
 .mobile-form-footer {

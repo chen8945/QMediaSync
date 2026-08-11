@@ -3,20 +3,8 @@
     class="main-content-container file-manager-container full-width-container"
     ref="pageContainerRef"
   >
+    <PageHeader />
     <el-card shadow="none" class="full-width-card">
-      <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <h2 class="card-title hide-on-mobile">
-              网盘文件浏览器（已支持：查看列表、创建文件夹、删除）
-            </h2>
-            <p class="card-subtitle">
-              浏览和管理媒体文件，支持 STRM 生成、刮削整理和 ED2K 生成操作
-            </p>
-          </div>
-        </div>
-      </template>
-
       <!-- 左右布局 -->
       <div class="file-manager-layout">
         <!-- 左侧：网盘账号列表 -->
@@ -361,6 +349,7 @@ import { getFileType, getFileIconByName } from '@/utils/fileIconUtils'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import { SERVER_URL } from '@/const'
+import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import DirectorySelector from './DirectorySelector.vue'
 
@@ -1431,28 +1420,6 @@ onUnmounted(() => {
   min-height: 400px;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.header-left .card-title {
-  margin: 0 0 8px 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.header-left .card-subtitle {
-  margin: 4px 0;
-  font-size: 13px;
-  color: #909399;
-  line-height: 1.4;
-}
-
 @media (max-width: 768px) {
   .file-manager-layout {
     flex-direction: column;
@@ -1480,15 +1447,6 @@ onUnmounted(() => {
 
   .file-manager-container :deep(.el-card__body) {
     padding: 0 10px 10px;
-  }
-
-  .card-header {
-    gap: 8px;
-  }
-
-  .header-left .card-subtitle {
-    font-size: 12px;
-    line-height: 1.4;
   }
 
   .sidebar-header {

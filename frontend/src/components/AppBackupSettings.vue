@@ -1,11 +1,6 @@
 <template>
   <div class="backup-settings-container">
-    <div class="page-header">
-      <el-icon>
-        <Setting />
-      </el-icon>
-      <span>备份配置</span>
-    </div>
+    <PageHeader />
 
     <el-alert
       title="重要提示：当前备份与恢复功能仍在完善，建议同时使用外部方式备份重要数据；后续将持续完善。"
@@ -73,12 +68,13 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, shallowRef } from 'vue'
-import { Check, Setting } from '@element-plus/icons-vue'
+import { Check } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import type { BackupConfig } from '@/typing'
 import { isMobile as checkIsMobile } from '@/utils/deviceUtils'
+import PageHeader from '@/components/common/PageHeader.vue'
 import CronSelector from './CronSelector.vue'
 
 const http = useHttpClient()
@@ -193,17 +189,6 @@ onMounted(() => {
 .backup-settings-container {
   padding: 20px;
   max-width: 1200px;
-}
-
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 18px;
-  margin-bottom: 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e4e7ed;
 }
 
 .cron-next-times {

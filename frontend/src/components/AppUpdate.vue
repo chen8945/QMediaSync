@@ -10,6 +10,7 @@ import 'github-markdown-css/github-markdown.css'
 import { CircleCheck, Refresh } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
 
@@ -94,6 +95,8 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 <template>
   <div class="update-page">
+    <PageHeader />
+
     <div class="current-version-section" v-loading="versionLoading">
       <div class="section-card">
         <div class="section-header" style="justify-content: flex-start">
@@ -270,34 +273,11 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   display: flex;
   flex-direction: column;
   gap: 24px;
-  padding: 0;
+  padding: 20px 0 0;
 }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 16px;
-  color: white;
-}
-
-.header-content h1 {
-  margin: 0 0 4px 0;
-  font-size: 28px;
-  font-weight: 700;
-}
-
-.header-content p {
-  margin: 0;
-  font-size: 14px;
-  opacity: 0.9;
-}
-
-.header-actions {
-  display: flex;
-  gap: 12px;
+.update-page :deep(.qms-page-header) {
+  margin-bottom: 0;
 }
 
 .section-card {
@@ -509,6 +489,44 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 }
 
 @media (max-width: 768px) {
+  .update-page {
+    padding-top: 10px;
+  }
+
+  .section-card {
+    padding: 16px;
+  }
+
+  .section-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .section-header-left,
+  .section-header-right,
+  .update-toolbar {
+    width: 100%;
+  }
+
+  .update-toolbar {
+    justify-content: flex-start;
+  }
+
+  .update-title-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .update-version {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .update-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .dialog-content {
     padding: 24px 12px;
   }
