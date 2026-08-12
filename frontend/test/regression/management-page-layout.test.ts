@@ -46,7 +46,7 @@ describe('管理列表页布局', () => {
       const contentStart = source.indexOf(`<div class="${page.contentClass}">`)
       const actionsSlotStart = source.indexOf('<template #actions>')
       const statsSlotStart = source.indexOf('<template #stats>')
-      const statsStart = source.indexOf('<div class="stats-bar">')
+      const statsStart = source.indexOf('<PageStats :items="stats" />')
       const statsSlotEnd = source.indexOf('</template>', statsSlotStart)
       const gridStart = source.indexOf(`<div class="${page.gridClass}"`)
 
@@ -62,15 +62,15 @@ describe('管理列表页布局', () => {
       expect(source).not.toContain('class="page-title"')
       expect(source).not.toContain('<h1')
 
+      expect(source).toContain("import PageStats from '@/components/common/PageStats.vue'")
+
       const statLabels = [
         '总目录数',
         '运行中',
         '等待中',
         page.file === 'AppSyncDirectories.vue' ? '定时同步' : '定时任务',
       ]
-      const statPositions = statLabels.map((label) =>
-        source.indexOf(`<span class="stat-label">${label}</span>`),
-      )
+      const statPositions = statLabels.map((label) => source.indexOf(`label: '${label}'`))
       expect(statPositions.every((position) => position >= 0)).toBe(true)
       expect(statPositions).toEqual([...statPositions].sort((a, b) => a - b))
 
@@ -90,13 +90,14 @@ describe('管理列表页布局', () => {
     expect(source).not.toContain('management-page-header')
     expect(source).toContain('<template #actions>')
     expect(source).toContain('<template #stats>')
-    expect(source).toContain('<div class="stats-bar">')
+    expect(source).toContain('<PageStats :items="stats" />')
+    expect(source).toContain("import PageStats from '@/components/common/PageStats.vue'")
 
     const pageHeaderEnd = source.indexOf('</PageHeader>')
     const contentStart = source.indexOf('<div class="accounts-content">')
     const statsSlotStart = source.indexOf('<template #stats>')
     const statsSlotEnd = source.indexOf('</template>', statsSlotStart)
-    const statsStart = source.indexOf('<div class="stats-bar">')
+    const statsStart = source.indexOf('<PageStats :items="stats" />')
     expect(pageHeaderEnd).toBeGreaterThan(-1)
     expect(statsSlotStart).toBeGreaterThan(-1)
     expect(statsSlotEnd).toBeGreaterThan(statsSlotStart)
@@ -108,11 +109,27 @@ describe('管理列表页布局', () => {
     expect(contentStart).toBeGreaterThan(pageHeaderEnd)
 
     for (const label of ['总账号数', '已授权', '未授权', '授权失败']) {
-      expect(source).toContain(`<span class="stat-label">${label}</span>`)
+      expect(source).toContain(`label: '${label}'`)
     }
 
     const mobileStyles = extractMediaBlock(source, '@media (max-width: 768px)')
     expect(extractRule(mobileStyles, '.cloud-accounts-page')).toContain('padding: 0 8px 8px;')
+  })
+
+  it('共享 PageStats 在桌面端保持原尺寸并在移动端使用紧凑两列布局', () => {
+    const source = readFileSync(resolve('src/components/common/PageStats.vue'), 'utf8')
+    const mobileStyles = extractMediaBlock(source, '@media (max-width: 768px)')
+
+    expect(source).toContain('items: readonly PageStatItem[]')
+    expect(extractRule(source, '.qms-page-stats__item')).toContain('min-width: 140px;')
+    expect(extractRule(source, '.qms-page-stats__icon')).toContain('flex: 0 0 40px;')
+    expect(extractRule(source, '.qms-page-stats__value')).toContain('font-size: 20px;')
+    expect(extractRule(mobileStyles, '.qms-page-stats')).toContain(
+      'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    )
+    expect(extractRule(mobileStyles, '.qms-page-stats__item')).toContain('padding: 8px 10px;')
+    expect(extractRule(mobileStyles, '.qms-page-stats__icon')).toContain('width: 32px;')
+    expect(extractRule(mobileStyles, '.qms-page-stats__value')).toContain('font-size: 16px;')
   })
 
   it('五个目标页移除 management-page-header 并保留共享 actions', () => {

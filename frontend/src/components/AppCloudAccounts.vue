@@ -14,52 +14,7 @@
         </div>
       </template>
       <template #stats>
-        <div class="stats-bar">
-          <div class="stat-item">
-            <div class="stat-icon total">
-              <el-icon>
-                <User />
-              </el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ accounts.length }}</span>
-              <span class="stat-label">总账号数</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon authorized">
-              <el-icon>
-                <CircleCheck />
-              </el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ authorizedCount }}</span>
-              <span class="stat-label">已授权</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon unauthorized">
-              <el-icon>
-                <WarningFilled />
-              </el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ unauthorizedCount }}</span>
-              <span class="stat-label">未授权</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon failed">
-              <el-icon>
-                <CircleClose />
-              </el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ failedCount }}</span>
-              <span class="stat-label">授权失败</span>
-            </div>
-          </div>
-        </div>
+        <PageStats :items="stats" />
       </template>
     </PageHeader>
 
@@ -554,6 +509,7 @@
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
 import PageHeader from '@/components/common/PageHeader.vue'
+import PageStats from '@/components/common/PageStats.vue'
 import V115AuthorizationDialog from '@/components/cloud-auth/V115AuthorizationDialog.vue'
 import V115AppSelector from '@/components/cloud-auth/V115AppSelector.vue'
 import type { AxiosError } from 'axios'
@@ -686,6 +642,12 @@ const unauthorizedCount = computed(
 const failedCount = computed(
   () => accounts.value.filter((a) => a.token_failed_reason && !a.token).length,
 )
+const stats = computed(() => [
+  { icon: User, value: accounts.value.length, label: '总账号数', tone: 'total' },
+  { icon: CircleCheck, value: authorizedCount.value, label: '已授权', tone: 'authorized' },
+  { icon: WarningFilled, value: unauthorizedCount.value, label: '未授权', tone: 'unauthorized' },
+  { icon: CircleClose, value: failedCount.value, label: '授权失败', tone: 'failed' },
+])
 const editDialogTitle = computed(() =>
   editAccountForm.value.source_type === 'openlist' ? '编辑 OpenList 账号' : '编辑账号',
 )
@@ -1301,69 +1263,6 @@ onMounted(() => {
 .add-btn:hover {
   background: #66b1ff !important;
   border-color: #66b1ff !important;
-}
-
-.stats-bar {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.stat-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: #f5f7fa;
-  padding: 12px 16px;
-  border-radius: 8px;
-  min-width: 140px;
-}
-
-.stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-}
-
-.stat-icon.total {
-  background: #ecf5ff;
-  color: #409eff;
-}
-
-.stat-icon.authorized {
-  background: #f0f9eb;
-  color: #67c23a;
-}
-
-.stat-icon.unauthorized {
-  background: #fdf6ec;
-  color: #e6a23c;
-}
-
-.stat-icon.failed {
-  background: #fef0f0;
-  color: #f56c6c;
-}
-
-.stat-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: #303133;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #909399;
 }
 
 .accounts-content {

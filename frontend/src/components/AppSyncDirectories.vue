@@ -9,44 +9,7 @@
         </div>
       </template>
       <template #stats>
-        <div class="stats-bar">
-          <div class="stat-item">
-            <div class="stat-icon total">
-              <el-icon><Files /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ directories.length }}</span>
-              <span class="stat-label">总目录数</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon running">
-              <el-icon><Loading /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ runningCount }}</span>
-              <span class="stat-label">运行中</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon waiting">
-              <el-icon><Clock /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ waitingCount }}</span>
-              <span class="stat-label">等待中</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-icon cron">
-              <el-icon><Timer /></el-icon>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ cronEnabledCount }}</span>
-              <span class="stat-label">定时同步</span>
-            </div>
-          </div>
-        </div>
+        <PageStats :items="stats" />
       </template>
     </PageHeader>
 
@@ -360,6 +323,7 @@
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
 import PageHeader from '@/components/common/PageHeader.vue'
+import PageStats from '@/components/common/PageStats.vue'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import { useHttpClient } from '@/http/client'
 import {
@@ -469,6 +433,12 @@ const lastSyncPathEventTime = new Map<number, number>()
 const runningCount = computed(() => directories.value.filter((d) => d.is_running === 2).length)
 const waitingCount = computed(() => directories.value.filter((d) => d.is_running === 1).length)
 const cronEnabledCount = computed(() => directories.value.filter((d) => d.enable_cron).length)
+const stats = computed(() => [
+  { icon: Files, value: directories.value.length, label: '总目录数', tone: 'total' },
+  { icon: Loading, value: runningCount.value, label: '运行中', tone: 'running' },
+  { icon: Clock, value: waitingCount.value, label: '等待中', tone: 'waiting' },
+  { icon: Timer, value: cronEnabledCount.value, label: '定时同步', tone: 'cron' },
+])
 
 const getDirectoryUploadRules = (row: SyncDirectory): DirectoryUploadRuleState[] => {
   return directoryUploadRules.value[row.id] || []
@@ -1075,69 +1045,6 @@ onMounted(() => {
 .add-btn:hover {
   background: #66b1ff !important;
   border-color: #66b1ff !important;
-}
-
-.stats-bar {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.stat-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: #f5f7fa;
-  padding: 12px 16px;
-  border-radius: 8px;
-  min-width: 140px;
-}
-
-.stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-}
-
-.stat-icon.total {
-  background: #ecf5ff;
-  color: #409eff;
-}
-
-.stat-icon.running {
-  background: #f0f9eb;
-  color: #67c23a;
-}
-
-.stat-icon.waiting {
-  background: #fdf6ec;
-  color: #e6a23c;
-}
-
-.stat-icon.cron {
-  background: #f4f4f5;
-  color: #909399;
-}
-
-.stat-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: #303133;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #909399;
 }
 
 .directories-content {
