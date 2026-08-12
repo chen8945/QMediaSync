@@ -99,9 +99,11 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
     <div class="current-version-section" v-loading="versionLoading">
       <div class="section-card">
-        <div class="section-header" style="justify-content: flex-start">
-          <span class="section-icon">⚙️</span>
-          <span>当前版本</span>
+        <div class="section-header section-header--current">
+          <div class="section-header-left">
+            <span class="section-icon">⚙️</span>
+            <span>当前版本</span>
+          </div>
         </div>
         <div v-if="versionInfo" class="version-info">
           <div class="version-number">{{ versionInfo.version }}</div>
@@ -301,6 +303,13 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   border-bottom: 1px solid #f0f0f0;
 }
 
+.section-header-left {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
 .section-icon {
   font-size: 20px;
 }
@@ -364,13 +373,17 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 .update-title-row {
   display: flex;
+  min-width: 0;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   width: 100%;
 }
 
 .update-version {
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 12px;
 }
@@ -382,12 +395,15 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 }
 
 .update-version .version-date {
+  overflow-wrap: anywhere;
   font-size: 13px;
   color: #909399;
 }
 
 .update-tags {
   display: flex;
+  flex: 0 0 auto;
+  align-items: center;
   gap: 8px;
 }
 
@@ -502,10 +518,19 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
     flex-direction: column;
   }
 
+  .section-header--current {
+    flex-direction: row;
+    align-items: center;
+  }
+
   .section-header-left,
   .section-header-right,
   .update-toolbar {
     width: 100%;
+  }
+
+  .section-header--current .section-header-left {
+    width: auto;
   }
 
   .update-toolbar {
@@ -513,13 +538,21 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   }
 
   .update-title-row {
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
+  }
+
+  .update-collapse :deep(.el-collapse-item__header) {
+    height: auto;
+    min-height: 56px;
+    padding-top: 12px;
+    padding-bottom: 12px;
   }
 
   .update-version {
     min-width: 0;
     flex-wrap: wrap;
+    row-gap: 2px;
   }
 
   .update-actions {
