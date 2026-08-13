@@ -66,6 +66,8 @@ scripts/release/release.sh major
 
 后端发布二进制使用 `-trimpath -tags=nomsgpack -ldflags="-s -w"` 构建，默认关闭 Gin 的 MsgPack 绑定和渲染支持，以减少发布包体积。
 
+发布 Actions 从 GitHub Secrets 读取 `FANART_API_KEY`、`OAUTH_RELAY_ENCRYPTION_KEY`、`SC_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `TMDB_API_KEY`，分别注入发布二进制的 `ldflags` 或源码 Docker 构建参数。它们只是编译期默认值；运行时 `config/.env` / 环境变量仍按现有规则覆盖编译期值，数据库中的 UI 配置优先级也不变。
+
 GitHub Release 的标题直接使用 `v<major>.<minor>.<patch>` tag，不额外添加 `Release` 前缀；正文取自上一步提交的 `.changes/v0.xx.xx.md`。release workflow 会拒绝重复 GitHub Release 和缺失 `.changes/<tag>.md` 的发布。
 
 发布二进制包按平台保留不同的运行文件：Linux `.tar.gz` 包包含 `scripts/docker-entrypoint.sh` 和 `scripts/watch_update.sh`，供 Docker 在线更新复用；Windows `.zip` 包只包含 `QMediaSync.exe`、`web_statics/` 和 `icon.ico`（存在时），不包含 Docker 脚本。Windows 在线更新由 `QMediaSync.exe -update <目录>` 完成，不执行这些 shell 脚本。
