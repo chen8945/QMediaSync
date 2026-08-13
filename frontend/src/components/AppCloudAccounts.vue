@@ -101,7 +101,7 @@
               <template
                 v-if="
                   (account.source_type === '115' || account.source_type === 'baidupan') &&
-                  account.token
+                  account.authorized
                 "
               >
                 <div class="status-divider"></div>
@@ -217,10 +217,10 @@
 
               <div class="status-row">
                 <div class="status-indicator" :class="getStatusClass(account)">
-                  <el-icon v-if="account.token_failed_reason && !account.token">
+                  <el-icon v-if="account.token_failed_reason && !account.authorized">
                     <CircleClose />
                   </el-icon>
-                  <el-icon v-else-if="account.token">
+                  <el-icon v-else-if="account.authorized">
                     <CircleCheck />
                   </el-icon>
                   <el-icon v-else>
@@ -229,7 +229,7 @@
                   <span>{{ getStatusText(account) }}</span>
                 </div>
                 <el-tooltip
-                  v-if="account.token_failed_reason && !account.token"
+                  v-if="account.token_failed_reason && !account.authorized"
                   :content="account.token_failed_reason"
                   placement="top"
                   popper-class="qms-contained-tooltip"
@@ -569,7 +569,7 @@ interface CloudAccount {
   password: string
   base_url: string
   created_at: number
-  token: string
+  authorized: boolean
   auth_type?: string
   app_id_name?: string
   app_name?: string
@@ -632,14 +632,12 @@ const show123AuthDialog = ref(false)
 const selectedV115Account = ref<CloudAccount | null>(null)
 const showV115AuthDialog = ref(false)
 
-const authorizedCount = computed(
-  () => accounts.value.filter((a) => a.token && !a.token_failed_reason).length,
-)
+const authorizedCount = computed(() => accounts.value.filter((a) => a.authorized).length)
 const unauthorizedCount = computed(
-  () => accounts.value.filter((a) => !a.token && !a.token_failed_reason).length,
+  () => accounts.value.filter((a) => !a.authorized && !a.token_failed_reason).length,
 )
 const failedCount = computed(
-  () => accounts.value.filter((a) => a.token_failed_reason && !a.token).length,
+  () => accounts.value.filter((a) => a.token_failed_reason && !a.authorized).length,
 )
 const stats = computed(() => [
   { icon: User, value: accounts.value.length, label: '总账号数', tone: 'total' },
@@ -658,20 +656,20 @@ const canEditCustomAppName = computed(() =>
 )
 
 const getStatusClass = (account: CloudAccount) => {
-  if (account.token_failed_reason && !account.token) return 'status-failed'
-  if (account.token) return 'status-authorized'
+  if (account.token_failed_reason && !account.authorized) return 'status-failed'
+  if (account.authorized) return 'status-authorized'
   return 'status-unauthorized'
 }
 
 const getStatusText = (account: CloudAccount) => {
-  if (account.token_failed_reason && !account.token) return '授权失败'
-  if (account.token) return '已授权'
+  if (account.token_failed_reason && !account.authorized) return '授权失败'
+  if (account.authorized) return '已授权'
   return '未授权'
 }
 
 const getCardStatusClass = (account: CloudAccount) => {
-  if (account.token_failed_reason && !account.token) return 'is-failed'
-  if (account.token) return 'is-authorized'
+  if (account.token_failed_reason && !account.authorized) return 'is-failed'
+  if (account.authorized) return 'is-authorized'
   return 'is-unauthorized'
 }
 
@@ -689,7 +687,7 @@ const loadAccounts = async () => {
         user_id: item.user_id,
         username: item.username,
         created_at: item.created_at,
-        token: item.token,
+        authorized: item.authorized,
         base_url: item.base_url,
         password: item.password,
         auth_type: item.auth_type,
@@ -707,7 +705,7 @@ const loadAccounts = async () => {
       accounts.value.forEach((account) => {
         if (
           (account.source_type === '115' || account.source_type === 'baidupan') &&
-          account.token
+          account.authorized
         ) {
           loadAccountStatus(account)
         }
@@ -832,11 +830,17 @@ const handleDelete = async (row: CloudAccount) => {
   }
 }
 
+const getOpenListAuthType = (account: CloudAccount): 'password' | 'token' => {
+  if (account.auth_type === 'password' || account.auth_type === 'token') {
+    return account.auth_type
+  }
+  return account.username && account.password ? 'password' : 'token'
+}
+
 const handleEdit = (account: CloudAccount) => {
   currentEditAccount.value = account
 
-  const authType =
-    account.auth_type || (account.username && account.password ? 'password' : 'token')
+  const authType = getOpenListAuthType(account)
 
   editAccountForm.value = {
     id: account.id,
@@ -845,13 +849,37 @@ const handleEdit = (account: CloudAccount) => {
     base_url: account.base_url,
     username: account.username,
     password: account.password || '',
-    token: account.token || '',
+    token: '',
     auth_type: authType,
     token_failed_reason: account.token_failed_reason || '',
     app_id: account.app_id || '',
     app_id_name: account.app_id_name || '',
   }
   showEditAccountDialog.value = true
+}
+
+const getOpenListUpdateValidationMessage = (): string | null => {
+  const original = currentEditAccount.value
+  if (!original || editAccountForm.value.source_type !== 'openlist') {
+    return null
+  }
+
+  const originalAuthType = getOpenListAuthType(original)
+  const targetAuthType = editAccountForm.value.auth_type
+  if (targetAuthType === 'token' && originalAuthType !== 'token') {
+    if (!editAccountForm.value.token.trim()) {
+      return '切换为令牌认证时请填写新的令牌'
+    }
+  }
+  if (targetAuthType === 'password' && originalAuthType !== 'password') {
+    if (!editAccountForm.value.username.trim()) {
+      return '切换为用户名密码认证时请填写用户名'
+    }
+    if (!editAccountForm.value.password.trim()) {
+      return '切换为用户名密码认证时请填写密码'
+    }
+  }
+  return null
 }
 
 const hasOpenListConfigChanged = (): boolean => {
@@ -861,9 +889,9 @@ const hasOpenListConfigChanged = (): boolean => {
   }
   return (
     editAccountForm.value.base_url !== original.base_url ||
-    editAccountForm.value.auth_type !== original.auth_type ||
+    editAccountForm.value.auth_type !== getOpenListAuthType(original) ||
     editAccountForm.value.username !== original.username ||
-    editAccountForm.value.token !== (original.token || '') ||
+    (editAccountForm.value.auth_type === 'token' && editAccountForm.value.token.trim() !== '') ||
     editAccountForm.value.password !== ''
   )
 }
@@ -871,6 +899,12 @@ const hasOpenListConfigChanged = (): boolean => {
 const handleUpdateAccount = async () => {
   try {
     if (hasOpenListConfigChanged()) {
+      const validationMessage = getOpenListUpdateValidationMessage()
+      if (validationMessage) {
+        ElMessage.warning(validationMessage)
+        return
+      }
+
       const openListRequestData = {
         id: editAccountForm.value.id,
         base_url: editAccountForm.value.base_url,

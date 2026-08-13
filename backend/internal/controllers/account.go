@@ -137,7 +137,7 @@ func GetAccountList(c *gin.Context) {
 		RequiresEncryptionKey bool                    `json:"requires_encryption_key"`
 		Username              string                  `json:"username"`
 		UserId                string                  `json:"user_id"`
-		Token                 string                  `json:"token"`
+		Authorized            bool                    `json:"authorized"`
 		CreatedAt             int64                   `json:"created_at"`
 		TokenFailedReason     string                  `json:"token_failed_reason"`
 		BaseUrl               string                  `json:"base_url"`
@@ -155,7 +155,7 @@ func GetAccountList(c *gin.Context) {
 			DisplayName:       strings.TrimSpace(account.AppIdName),
 			Username:          account.Username,
 			UserId:            string(account.UserId),
-			Token:             account.Token,
+			Authorized:        account.Token != "" && account.TokenFailedReason == "",
 			CreatedAt:         account.CreatedAt,
 			TokenFailedReason: account.TokenFailedReason,
 			BaseUrl:           account.BaseUrl,
@@ -197,7 +197,7 @@ func GetAccountList(c *gin.Context) {
 // @Param source_type query string true "账号源类型"
 // @Param name query string true "账号名称"
 // @Param app_id query string false "APP ID（自定义时必需）"
-// @Param app_id_name query string false "选择的 115 开放平台应用（QMediaSync、Q115-STRM、MQ的媒体库、自定义 APP ID）"
+// @Param app_id_name query string false "选择的 115 开放平台应用（QMediaSync、精选应用、自定义 APP ID）"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /account/create [post]
@@ -328,7 +328,7 @@ func DeleteAccount(c *gin.Context) {
 
 // CreateOpenListAccount 创建或更新 OpenList 账号。
 // @Summary 创建或更新 OpenList 账号
-// @Description 创建新的 OpenList 账号或更新现有账号的凭证，支持直接使用 Token 认证
+// @Description 创建新的 OpenList 账号或更新现有账号的凭证，支持用户名密码和 Token 认证；同认证方式更新可复用已有凭据，切换认证方式需提交目标方式凭据
 // @Tags 账号管理
 // @Accept json
 // @Produce json
@@ -337,6 +337,7 @@ func DeleteAccount(c *gin.Context) {
 // @Param username query string true "用户名"
 // @Param password query string true "密码"
 // @Param token query string false "直接提供的访问 Token（优先使用）"
+// @Param auth_type query string false "认证方式（password 或 token）"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /account/openlist [post]
@@ -358,7 +359,7 @@ func CreateOpenListAccount(c *gin.Context) {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("查询 OpenList 账号失败：%s", err.Error()), Data: nil})
 			return
 		}
-		if err := account.UpdateOpenList(req.BaseURL, req.Username, req.Password, req.Token); err != nil {
+		if err := account.UpdateOpenList(req.BaseURL, req.Username, req.Password, req.Token, req.AuthType); err != nil {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("更新 OpenList 账号失败：%s", err.Error()), Data: nil})
 			return
 		}

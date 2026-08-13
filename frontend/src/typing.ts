@@ -81,7 +81,7 @@ interface CloudAccount {
   user_id: string
   username: string
   created_at: number
-  token: string
+  authorized: boolean
 }
 
 // 备份相关类型定义

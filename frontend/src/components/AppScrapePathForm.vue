@@ -48,7 +48,7 @@
           >
             <template v-for="account in accounts">
               <el-option
-                v-if="account.source_type === form.source_type && account.token !== ''"
+                v-if="account.source_type === form.source_type && account.authorized"
                 :key="account.id"
                 :label="account.name"
                 :value="account.id"
@@ -416,7 +416,7 @@
           >
             <template v-for="account in accounts">
               <el-option
-                v-if="account.source_type === form.source_type && account.token !== ''"
+                v-if="account.source_type === form.source_type && account.authorized"
                 :key="account.id"
                 :label="account.name"
                 :value="account.id"
@@ -793,7 +793,7 @@ interface CloudAccount {
   user_id: string
   username: string
   created_at: number
-  token: string
+  authorized: boolean
 }
 
 interface ScrapePath {

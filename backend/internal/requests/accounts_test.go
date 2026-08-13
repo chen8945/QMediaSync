@@ -67,6 +67,39 @@ func TestOpenListAccountRequestValidate(t *testing.T) {
 			t.Fatal("Validate() error = nil, want error")
 		}
 	})
+
+	t.Run("新建 Token 认证账号缺少令牌失败", func(t *testing.T) {
+		req := CreateOpenListAccountRequest{
+			BaseURL:  "https://openlist.example.com",
+			AuthType: "token",
+		}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+
+	t.Run("更新 Token 认证账号可复用已有凭据", func(t *testing.T) {
+		req := CreateOpenListAccountRequest{
+			ID:       1,
+			BaseURL:  "https://openlist.example.com",
+			AuthType: "token",
+		}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("更新用户名密码账号可省略密码以复用已有凭据", func(t *testing.T) {
+		req := CreateOpenListAccountRequest{
+			ID:       1,
+			BaseURL:  "https://openlist.example.com",
+			AuthType: "password",
+			Username: "user",
+		}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
 }
 
 func TestAPIKeyRequestValidate(t *testing.T) {

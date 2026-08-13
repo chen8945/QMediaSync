@@ -105,19 +105,26 @@ func (r *CreateOpenListAccountRequest) Validate() error {
 	}
 
 	r.AuthType = strings.TrimSpace(r.AuthType)
+	hasToken := strings.TrimSpace(r.Token) != ""
 	switch r.AuthType {
 	case "":
-		if strings.TrimSpace(r.Token) != "" {
+		if hasToken {
 			return nil
 		}
 	case "password":
-		if strings.TrimSpace(r.Token) != "" {
+		if hasToken {
 			return nil
 		}
 	case "token":
-		return validation.NonBlank("token", r.Token)
+		if !hasToken && r.ID == 0 {
+			return validation.NonBlank("token", r.Token)
+		}
 	default:
 		return validation.New("auth_type", "不是允许的取值")
+	}
+
+	if r.ID != 0 {
+		return nil
 	}
 
 	if strings.TrimSpace(r.Token) == "" {

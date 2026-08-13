@@ -62,7 +62,7 @@ func (c *Client) GetUserInfo(token string) (*UserInfoResp, error) {
 		SetHeader("Authorization", token).
 		SetMethod(http.MethodGet).
 		SetResult(&result)
-	_, err := c.doRequest("/api/me", req, MakeRequestConfig(0, 1, 5))
+	_, err := c.doRequest("/api/me", req, MakeRequestConfig(1, 1, 5))
 	if err != nil {
 		helpers.OpenListLog.Errorf("验证 Token 失败：%s", err.Error())
 		return nil, err

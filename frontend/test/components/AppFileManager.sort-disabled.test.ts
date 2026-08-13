@@ -52,7 +52,7 @@ describe('AppFileManager 排序入口临时隐藏', () => {
                   username: 'media',
                   user_id: 'u1',
                   source_type: '115',
-                  token: 'token',
+                  authorized: true,
                   created_at: 1,
                 },
               ],

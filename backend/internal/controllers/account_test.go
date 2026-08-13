@@ -106,6 +106,67 @@ func TestGetAccountList_ReturnsCustom115AppNameAndAppId(t *testing.T) {
 	}
 }
 
+func TestGetAccountListReturnsAuthorizationStateWithoutToken(t *testing.T) {
+	setupAccountControllerTest(t)
+	accounts := []models.Account{
+		{
+			Name:       "已授权账号",
+			SourceType: models.SourceType115,
+			AppId:      "custom-app-id",
+			AppIdName:  "家庭影音",
+			Token:      "secret-token",
+		},
+		{
+			Name:              "失效账号",
+			SourceType:        models.SourceType115,
+			AppId:             "custom-app-id-2",
+			AppIdName:         "家庭影音2",
+			TokenFailedReason: "访问凭证已失效",
+		},
+	}
+	for i := range accounts {
+		if err := db.Db.Create(&accounts[i]).Error; err != nil {
+			t.Fatalf("创建测试账号失败: %v", err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/account/list", nil)
+
+	GetAccountList(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
+	}
+	var response struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("解析账号列表响应失败: %v，响应: %s", err, w.Body.String())
+	}
+	if len(response.Data) != 2 {
+		t.Fatalf("账号列表数量 = %d，期望 2", len(response.Data))
+	}
+	byName := make(map[string]map[string]any, len(response.Data))
+	for _, item := range response.Data {
+		if _, ok := item["token"]; ok {
+			t.Fatalf("账号列表不应返回原始 Token: %#v", item)
+		}
+		name, ok := item["name"].(string)
+		if !ok {
+			t.Fatalf("账号列表缺少账号名称: %#v", item)
+		}
+		byName[name] = item
+	}
+	if authorized, ok := byName["已授权账号"]["authorized"].(bool); !ok || !authorized {
+		t.Fatalf("已授权账号 authorized = %#v，期望 true", byName["已授权账号"]["authorized"])
+	}
+	if authorized, ok := byName["失效账号"]["authorized"].(bool); !ok || authorized {
+		t.Fatalf("失效账号 authorized = %#v，期望 false", byName["失效账号"]["authorized"])
+	}
+}
+
 func TestUpdateAccountInfo_UpdatesRemarkAndCustomAppNameOnly(t *testing.T) {
 	setupAccountControllerTest(t)
 	account := models.Account{

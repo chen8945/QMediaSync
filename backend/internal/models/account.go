@@ -34,24 +34,12 @@ type Account struct {
 }
 
 const (
-	BuiltIn115AppQ115STRM       = "Q115-STRM"
-	BuiltIn115AppMQMediaLibrary = "MQ的媒体库"
-	BuiltIn115AppQMediaSync     = "QMediaSync"
-	Custom115AppName            = "自定义"
+	openListAuthTypePassword = "password"
+	openListAuthTypeToken    = "token"
 )
 
 func (account *Account) TableName() string {
 	return "account"
-}
-
-// IsBuiltIn115AppId 判断是否为系统内置 115 开放平台应用标识。
-func IsBuiltIn115AppId(appId string) bool {
-	switch appId {
-	case BuiltIn115AppQ115STRM, BuiltIn115AppMQMediaLibrary, BuiltIn115AppQMediaSync:
-		return true
-	default:
-		return false
-	}
 }
 
 // 更新 Token 和 refreshToken
@@ -159,49 +147,130 @@ func (account *Account) ClearToken(reason string) {
 	}
 }
 
-func (account *Account) UpdateOpenList(baseUrl string, username string, password string, token string) error {
+func (account *Account) UpdateOpenList(baseUrl string, username string, password string, token string, authType string) error {
 	oldUsername := account.Username
 	oldPassword := account.Password
 	oldBaseUrl := account.BaseUrl
 	oldToken := account.Token
+	oldUserId := account.UserId
+	restore := func() {
+		account.BaseUrl = oldBaseUrl
+		account.Username = oldUsername
+		account.Password = oldPassword
+		account.Token = oldToken
+		account.UserId = oldUserId
+	}
+
+	token = strings.TrimSpace(token)
+	authType = strings.TrimSpace(authType)
+	if authType == "" {
+		switch {
+		case token != "":
+			authType = openListAuthTypeToken
+		case strings.TrimSpace(username) != "" || strings.TrimSpace(password) != "":
+			authType = openListAuthTypePassword
+		case oldPassword != "":
+			authType = openListAuthTypePassword
+		default:
+			authType = openListAuthTypeToken
+		}
+	}
+	if authType != openListAuthTypePassword && authType != openListAuthTypeToken {
+		return fmt.Errorf("不支持的 OpenList 认证方式：%s", authType)
+	}
+
+	usernameProvided := strings.TrimSpace(username) != ""
+	passwordProvided := strings.TrimSpace(password) != ""
+	if strings.TrimSpace(username) == "" {
+		username = oldUsername
+	}
+	oldAuthType := openListAuthTypeToken
+	if oldPassword != "" {
+		oldAuthType = openListAuthTypePassword
+	}
 	account.BaseUrl = baseUrl
 	account.Username = username
-	account.Password = password
-	account.Token = token
 	var userInfo *openlist.UserInfoResp
-	// 如果提供了 Token，优先使用 Token，否则如果用户名或密码改变则重新获取 Token
-	if token != "" {
-		client := account.GetOpenListClient()
+	var client *openlist.Client
+	switch authType {
+	case openListAuthTypeToken:
+		if token == "" {
+			if oldPassword != "" {
+				restore()
+				return fmt.Errorf("切换为 Token 认证需要提供新的 Token")
+			}
+			token = oldToken
+		}
+		if token == "" {
+			restore()
+			return fmt.Errorf("OpenList Token 不能为空")
+		}
+		// Token 认证不保留旧密码，避免账号列表和 Token 刷新流程误判为密码认证。
+		account.Password = ""
+		account.Token = token
+		client = account.GetOpenListClient()
 		var err error
-		if userInfo, err = client.GetUserInfo(token); err != nil {
+		if userInfo, err = client.GetUserInfo(account.Token); err != nil {
 			helpers.AppLogger.Errorf("验证 OpenList Token 失败：%v", err)
+			restore()
 			return err
 		}
 		helpers.AppLogger.Infof("使用提供的 Token 更新 OpenList 账号成功")
-	} else if oldUsername != account.Username || oldPassword != account.Password {
-		// 重新获取 Token
-		client := account.GetOpenListClient()
-		tokenData, err := client.GetToken()
-		if err != nil {
-			helpers.AppLogger.Errorf("更新 OpenList 账号 Token 失败：%v", err)
-			// 还原账号信息
-			account.BaseUrl = oldBaseUrl
-			account.Username = oldUsername
-			account.Password = oldPassword
+	case openListAuthTypePassword:
+		if oldAuthType != openListAuthTypePassword && !usernameProvided {
+			restore()
+			return fmt.Errorf("切换为用户名密码认证需要提供用户名")
+		}
+		if oldAuthType != openListAuthTypePassword && !passwordProvided {
+			restore()
+			return fmt.Errorf("切换为用户名密码认证需要提供密码")
+		}
+		if strings.TrimSpace(password) == "" {
+			password = oldPassword
+		}
+		if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
+			restore()
+			return fmt.Errorf("OpenList 用户名和密码不能为空")
+		}
+		account.Password = password
+		credentialsChanged := oldAuthType != openListAuthTypePassword || username != oldUsername || password != oldPassword
+		needsNewToken := credentialsChanged || baseUrl != oldBaseUrl || oldToken == ""
+		if needsNewToken {
+			// 认证方式或登录凭据发生变化时重新获取 Token，避免继续使用旧 Token。
+			account.Token = ""
+		}
+		client = account.GetOpenListClient()
+		var err error
+		if needsNewToken {
+			tokenData, getTokenErr := client.GetToken()
+			if getTokenErr != nil {
+				helpers.AppLogger.Errorf("更新 OpenList 账号 Token 失败：%v", getTokenErr)
+				restore()
+				return getTokenErr
+			}
+			account.Token = tokenData.Token
+		} else {
+			// 同为密码认证且配置未变化时复用已有 Token，避免编辑备注时重复登录。
 			account.Token = oldToken
-			return err
 		}
-		account.Token = tokenData.Token
-		if userInfo, err = client.GetUserInfo(token); err != nil {
+		if userInfo, err = client.GetUserInfo(account.Token); err != nil {
 			helpers.AppLogger.Errorf("获取 OpenList 用户信息失败：%v", err)
+			restore()
 			return err
 		}
+		// GetUserInfo 遇到过期 Token 时会在 client 内自动刷新，保存刷新后的实际 Token。
+		account.Token = client.AccessToken
+	}
+	if userInfo == nil {
+		restore()
+		return fmt.Errorf("更新 OpenList 账号需要提供有效凭据")
 	}
 	account.UserId = fmt.Sprintf("%d", userInfo.ID)
 	// 保存到数据库
 	err := db.Db.Save(account).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("更新 OpenList 账号失败：%v", err)
+		restore()
 		return err
 	}
 	return nil

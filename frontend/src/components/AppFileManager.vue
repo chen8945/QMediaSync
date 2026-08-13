@@ -359,7 +359,7 @@ interface NetdiskAccount {
   username: string
   user_id: string
   source_type: '115' | '123' | 'openlist' | 'baidupan'
-  token: string
+  authorized: boolean
   created_at: number
   base_url?: string
   password?: string
@@ -749,7 +749,7 @@ async function loadAccountList() {
         username: item.username,
         user_id: item.user_id,
         source_type: item.source_type,
-        token: item.token,
+        authorized: item.authorized,
         created_at: item.created_at,
         base_url: item.base_url,
         password: item.password,

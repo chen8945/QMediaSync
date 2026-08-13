@@ -2,6 +2,7 @@ package openlist
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -10,6 +11,11 @@ import (
 	"qmediasync/internal/helpers"
 
 	"resty.dev/v3"
+)
+
+var (
+	errTokenExpired   = errors.New("token expired")
+	errTokenRefreshed = errors.New("token refreshed")
 )
 
 // Client OpenList 客户端
@@ -79,10 +85,13 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 			return resp, nil
 		}
 		lastErr = err
-		// 如果是 Token 过期错误，等待 Token 刷新完成后重试
-		if err.Error() == "token expired" {
+		// 只有凭据刷新成功后才重试，避免无效 Token 被重复请求。
+		if errors.Is(err, errTokenRefreshed) {
 			helpers.OpenListLog.Warn("访问凭证已过期，正在刷新")
 			continue
+		}
+		if errors.Is(err, errTokenExpired) {
+			return nil, lastErr
 		}
 		// 其他错误开始重试
 		if attempt < options.MaxRetries {
@@ -131,11 +140,14 @@ func (c *Client) request(url string, req *resty.Request) (*resty.Response, error
 	if data != nil && jsonResult != nil {
 		switch jsonResult["code"].(float64) {
 		case http.StatusUnauthorized:
-			// Token 过期，发布刷新事件，只有用户名和密码登录才需要刷新 Token
-			if c.Username != "" && c.Password != "" {
-				c.GetToken()
+			// Token 过期时，只有用户名和密码登录才尝试刷新凭据。
+			if c.Username == "" || c.Password == "" {
+				return response, errTokenExpired
 			}
-			return response, fmt.Errorf("token expired")
+			if _, err := c.GetToken(); err != nil {
+				return response, errTokenExpired
+			}
+			return response, errTokenRefreshed
 		}
 		if jsonResult["code"].(float64) != http.StatusOK {
 			helpers.OpenListLog.Errorf("OpenList 请求 %s %s 失败：%s", req.Method, req.URL, jsonResult["message"].(string))
