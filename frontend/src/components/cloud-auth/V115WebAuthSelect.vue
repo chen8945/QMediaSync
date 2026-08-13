@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { webAuthProviders, type V115WebAuthProviderValue } from './v115AuthSources'
+import { webAuthProviders, type V115AuthProvider } from './v115AuthSources'
 
-const selectedWebProvider = defineModel<V115WebAuthProviderValue>('selectedWebProvider', {
+const selectedWebProvider = defineModel<V115AuthProvider>('selectedWebProvider', {
   required: true,
 })
 </script>
@@ -11,9 +11,9 @@ const selectedWebProvider = defineModel<V115WebAuthProviderValue>('selectedWebPr
     <el-select v-model="selectedWebProvider" class="v115-web-auth-select">
       <el-option
         v-for="provider in webAuthProviders"
-        :key="provider.value"
+        :key="provider.provider"
         :label="provider.label"
-        :value="provider.value"
+        :value="provider.provider"
         :disabled="provider.disabled"
       />
     </el-select>

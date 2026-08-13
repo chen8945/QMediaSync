@@ -8,14 +8,9 @@ export interface CloudAccountAppInfo {
   auth_provider?: string
 }
 
-const builtInV115Apps = new Set(['Q115-STRM', 'MQ的媒体库', 'QMediaSync'])
-
 export const isCustomV115App = (account: CloudAccountAppInfo): boolean =>
   account.source_type === '115' &&
   (account.auth_source_type ? account.auth_source_type === 'custom_appid' : Boolean(account.app_id))
-
-export const isBuiltInV115App = (appName?: string): boolean =>
-  builtInV115Apps.has(appName || 'QMediaSync')
 
 export const getV115AppInfoRows = (
   account: CloudAccountAppInfo,

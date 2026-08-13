@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import V115AppIdSelect from './V115AppIdSelect.vue'
 import V115WebAuthSelect from './V115WebAuthSelect.vue'
-import type { V115AuthMode, V115SelectedQrApp, V115WebAuthProviderValue } from './v115AuthSources'
+import type { V115AuthMode, V115AuthProvider, V115SelectedQrApp } from './v115AuthSources'
 
 const authMode = defineModel<V115AuthMode>('authMode', { required: true })
 const selectedQrApp = defineModel<V115SelectedQrApp>('selectedQrApp', { required: true })
-const selectedWebProvider = defineModel<V115WebAuthProviderValue>('selectedWebProvider', {
+const selectedWebProvider = defineModel<V115AuthProvider>('selectedWebProvider', {
   required: true,
 })
 const customAppId = defineModel<string>('customAppId', { required: true })

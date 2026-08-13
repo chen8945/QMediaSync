@@ -4,27 +4,32 @@ import "testing"
 
 func TestBuiltInAppIDOrder(t *testing.T) {
 	sources := BuiltInAppIDSources()
-	want := []string{"QMediaSync", "Q115-STRM", "MQ的媒体库"}
-	for i, name := range want {
-		if sources[i].AppName != name {
-			t.Fatalf("第 %d 个内置 APP ID = %s，期望 %s", i, sources[i].AppName, name)
-		}
-		if sources[i].SourceType != SourceTypeBuiltInAppID {
-			t.Fatalf("来源类型 = %s，期望 %s", sources[i].SourceType, SourceTypeBuiltInAppID)
-		}
-		if sources[i].Provider != ProviderOfficialPKCE {
-			t.Fatalf("授权 provider = %s，期望 %s", sources[i].Provider, ProviderOfficialPKCE)
-		}
-		if sources[i].RequiresEncryptionKey {
-			t.Fatal("内置 APP ID 不应要求共享 OAUTH_RELAY_ENCRYPTION_KEY")
+	if sources[0].AppName != "QMediaSync" {
+		t.Fatalf("第一个内置 APP ID = %s，期望 QMediaSync", sources[0].AppName)
+	}
+	if sources[0].SourceType != SourceTypeBuiltInAppID {
+		t.Fatalf("来源类型 = %s，期望 %s", sources[0].SourceType, SourceTypeBuiltInAppID)
+	}
+	if sources[0].Provider != ProviderOfficialPKCE {
+		t.Fatalf("授权 provider = %s，期望 %s", sources[0].Provider, ProviderOfficialPKCE)
+	}
+	if sources[0].RequiresEncryptionKey {
+		t.Fatal("内置 APP ID 不应要求共享 OAUTH_RELAY_ENCRYPTION_KEY")
+	}
+	if !sources[0].Pinned || sources[0].Deprecated {
+		t.Fatal("QMediaSync 应置顶且不应标记为弃用")
+	}
+	for _, source := range sources {
+		if source.AppName == "Q115-STRM" || source.AppName == "MQ的媒体库" {
+			t.Fatalf("已移除的内置 APP ID 仍出现在可选目录: %s", source.AppName)
 		}
 	}
 }
 
 func TestBuiltInAppIDCatalogCompleteness(t *testing.T) {
 	sources := BuiltInAppIDSources()
-	if len(sources) != 1128 {
-		t.Fatalf("内置 APP ID 目录数量 = %d，期望 1128", len(sources))
+	if len(sources) != 1126 {
+		t.Fatalf("内置 APP ID 可选目录数量 = %d，期望 1126", len(sources))
 	}
 
 	seen := make(map[string]struct{}, len(sources))
@@ -53,6 +58,75 @@ func TestSearchBuiltInAppIDSourcesFindsTailAppID(t *testing.T) {
 	}
 	if result.Items[0].AppName != "自己文件处理2" {
 		t.Fatalf("搜索尾部 APP ID 名称 = %s，期望 自己文件处理2", result.Items[0].AppName)
+	}
+}
+
+func TestSearchBuiltInAppIDSourcesReturnsCatalogOrder(t *testing.T) {
+	result := SearchBuiltInAppIDSources("", 0, 3)
+	if result.Total != 1126 {
+		t.Fatalf("可搜索内置 APP ID 总数 = %d，期望 1126", result.Total)
+	}
+	want := []string{"100195125", "100195127", "100195129"}
+	if len(result.Items) != len(want) {
+		t.Fatalf("可搜索内置 APP ID 返回数量 = %d，期望 %d", len(result.Items), len(want))
+	}
+	for i, appID := range want {
+		if result.Items[i].AppID != appID {
+			t.Fatalf("第 %d 个可搜索内置 APP ID = %s，期望 %s", i, result.Items[i].AppID, appID)
+		}
+	}
+}
+
+func TestSearchBuiltInAppIDSourcesFindsPinnedApp(t *testing.T) {
+	result := SearchBuiltInAppIDSources("QMediaSync", 0, 50)
+	if result.Total != 1 || len(result.Items) != 1 {
+		t.Fatalf("搜索置顶应用 QMediaSync 返回了异常结果: %#v", result)
+	}
+	if result.Items[0].AppID != "100197849" || !result.Items[0].Pinned {
+		t.Fatalf("搜索置顶应用 QMediaSync 返回了异常应用: %#v", result.Items[0])
+	}
+}
+
+func TestSearchBuiltInAppIDSourcesExcludesDeprecatedApps(t *testing.T) {
+	for _, keyword := range []string{"Q115-STRM", "MQ的媒体库"} {
+		result := SearchBuiltInAppIDSources(keyword, 0, 50)
+		if result.Total != 0 || len(result.Items) != 0 {
+			t.Fatalf("搜索已移除应用 %q 返回了结果: %#v", keyword, result)
+		}
+	}
+}
+
+func TestSourceFromCreateRequestRejectsDeprecatedBuiltInAppIDs(t *testing.T) {
+	for _, appID := range []string{"100197665", "100197503"} {
+		if _, err := SourceFromCreateRequest(SourceTypeBuiltInAppID, ProviderOfficialPKCE, appID, "", ""); err == nil {
+			t.Fatalf("弃用的内置 APP ID %s 不应允许新建账号", appID)
+		}
+	}
+	for _, appID := range []string{BuiltInRelayQ115STRM, BuiltInRelayMQMediaLibrary} {
+		if _, err := SourceFromCreateRequest(SourceTypeBuiltInRelay, ProviderMQFamily, "", appID, ""); err == nil {
+			t.Fatalf("弃用的内置中转 %s 不应允许新建账号", appID)
+		}
+	}
+}
+
+func TestLegacyCreateRequestKeepsDeprecatedRelayParsing(t *testing.T) {
+	for _, appID := range []string{BuiltInRelayQ115STRM, BuiltInRelayMQMediaLibrary} {
+		source, err := SourceFromCreateRequest("", "", "", appID, "")
+		if err != nil {
+			t.Fatalf("旧内置中转字符串 %s 解析失败: %v", appID, err)
+		}
+		if source.Provider != ProviderMQFamily || !source.Deprecated {
+			t.Fatalf("旧内置中转字符串 %s 返回了异常来源: %#v", appID, source)
+		}
+	}
+}
+
+func TestResolveAccountSourceKeepsDeprecatedBuiltInAppIDForHistory(t *testing.T) {
+	for _, appID := range []string{"100197665", "100197503"} {
+		source := ResolveAccountSource(appID, "")
+		if source.AppID != appID || !source.Deprecated {
+			t.Fatalf("历史账号 APP ID %s 未保留弃用来源信息: %#v", appID, source)
+		}
 	}
 }
 
@@ -91,6 +165,9 @@ func TestResolveLegacyRelayAccount(t *testing.T) {
 		}
 		if source.Provider != tt.provider {
 			t.Fatalf("%s provider = %s，期望 %s", tt.appID, source.Provider, tt.provider)
+		}
+		if source.Deprecated != (tt.provider == ProviderMQFamily) {
+			t.Fatalf("%s 弃用标记 = %t，期望 %t", tt.appID, source.Deprecated, tt.provider == ProviderMQFamily)
 		}
 	}
 }

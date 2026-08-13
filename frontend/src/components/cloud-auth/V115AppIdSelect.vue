@@ -38,11 +38,13 @@ const defaultOptions = computed<V115AppSelectOption[]>(() => [
 ])
 const defaultOptionValues = computed(() => new Set(defaultOptions.value.map((item) => item.value)))
 const remoteOptions = computed<V115AppSelectOption[]>(() =>
-  items.value.map((item) => ({
-    label: item.display_name || item.app_name,
-    value: item.app_id,
-    appName: item.app_name,
-  })),
+  items.value
+    .filter((item) => item.deprecated !== true)
+    .map((item) => ({
+      label: item.display_name || item.app_name,
+      value: item.app_id,
+      appName: item.app_name,
+    })),
 )
 const defaultRemoteOptions = computed(() =>
   remoteOptions.value.filter((item) => !defaultOptionValues.value.has(item.value)),
@@ -57,8 +59,11 @@ const selectOptions = computed(() => {
   return [...defaultOptions.value, customOption]
 })
 const visibleRemoteCount = computed(() => {
-  if (keyword.value.trim() || showDefaultRemoteOptions.value) {
-    return items.value.length
+  if (keyword.value.trim()) {
+    return remoteOptions.value.length
+  }
+  if (showDefaultRemoteOptions.value) {
+    return defaultRemoteOptions.value.length
   }
   return 0
 })

@@ -42,6 +42,7 @@ type Source struct {
 	RedirectURI           string         `json:"redirect_uri,omitempty"`
 	RequiresEncryptionKey bool           `json:"requires_encryption_key"`
 	Pinned                bool           `json:"pinned"`
+	Deprecated            bool           `json:"deprecated"`
 }
 
 type AppIDSearchResult struct {
@@ -1005,7 +1006,7 @@ var builtInAppIDCatalog = []Source{
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197495", AppName: "cedar-api", DisplayName: "cedar-api"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197497", AppName: "迅雷影音", DisplayName: "迅雷影音"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197501", AppName: "娲众云库", DisplayName: "娲众云库"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197503", AppName: "MQ的媒体库", DisplayName: "MQ的媒体库", Pinned: true},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197503", AppName: "MQ的媒体库", DisplayName: "MQ的媒体库", Deprecated: true},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197507", AppName: "Vidora", DisplayName: "Vidora"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197509", AppName: "我的接口", DisplayName: "我的接口"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197511", AppName: "我的Openlist", DisplayName: "我的Openlist"},
@@ -1072,7 +1073,7 @@ var builtInAppIDCatalog = []Source{
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197657", AppName: "神经元", DisplayName: "神经元"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197659", AppName: "filelist", DisplayName: "filelist"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197661", AppName: "个人webdav", DisplayName: "个人webdav"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197665", AppName: "Q115-STRM", DisplayName: "Q115-STRM", Pinned: true},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197665", AppName: "Q115-STRM", DisplayName: "Q115-STRM", Deprecated: true},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197667", AppName: "观影", DisplayName: "观影"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197669", AppName: "SRY", DisplayName: "SRY"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197673", AppName: "nice", DisplayName: "nice"},
@@ -1193,13 +1194,14 @@ func init() {
 
 func BuiltInAppIDSources() []Source {
 	sources := make([]Source, 0, len(builtInAppIDCatalog))
-	for _, appID := range []string{"100197849", "100197665", "100197503"} {
-		if source, ok := builtInAppIDByID[appID]; ok {
-			sources = append(sources, source)
+	for _, source := range builtInAppIDCatalog {
+		if source.Deprecated || !source.Pinned {
+			continue
 		}
+		sources = append(sources, source)
 	}
 	for _, source := range builtInAppIDCatalog {
-		if source.Pinned {
+		if source.Deprecated || source.Pinned {
 			continue
 		}
 		sources = append(sources, source)
@@ -1210,8 +1212,8 @@ func BuiltInAppIDSources() []Source {
 func BuiltInRelaySources() []Source {
 	return []Source{
 		{SourceType: SourceTypeBuiltInRelay, Provider: ProviderQMediaSync, AppID: BuiltInRelayQMediaSync, AppName: BuiltInRelayQMediaSync, DisplayName: BuiltInRelayQMediaSync, AuthServer: "https://oauth.qmediasync.cn", RequiresEncryptionKey: true},
-		{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: BuiltInRelayQ115STRM, AppName: BuiltInRelayQ115STRM, DisplayName: BuiltInRelayQ115STRM, AuthServer: "https://api.mqfamily.top", RequiresEncryptionKey: true},
-		{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: BuiltInRelayMQMediaLibrary, AppName: BuiltInRelayMQMediaLibrary, DisplayName: BuiltInRelayMQMediaLibrary, AuthServer: "https://api.mqfamily.top", RequiresEncryptionKey: true},
+		{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: BuiltInRelayQ115STRM, AppName: BuiltInRelayQ115STRM, DisplayName: BuiltInRelayQ115STRM, AuthServer: "https://api.mqfamily.top", RequiresEncryptionKey: true, Deprecated: true},
+		{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: BuiltInRelayMQMediaLibrary, AppName: BuiltInRelayMQMediaLibrary, DisplayName: BuiltInRelayMQMediaLibrary, AuthServer: "https://api.mqfamily.top", RequiresEncryptionKey: true, Deprecated: true},
 	}
 }
 
@@ -1271,12 +1273,19 @@ func SourceFromCreateRequest(sourceType AuthSourceType, provider AuthProvider, a
 	switch sourceType {
 	case SourceTypeBuiltInAppID:
 		source, ok := FindSource(SourceTypeBuiltInAppID, ProviderOfficialPKCE, strings.TrimSpace(appID))
-		if !ok {
+		if !ok || source.Deprecated {
 			return Source{}, fmt.Errorf("不支持的内置 115 APP ID")
 		}
 		return source, nil
 	case SourceTypeBuiltInRelay:
-		return relaySourceFromProvider(provider, selectedApp)
+		source, err := relaySourceFromProvider(provider, selectedApp)
+		if err != nil {
+			return Source{}, err
+		}
+		if source.Deprecated {
+			return Source{}, fmt.Errorf("不支持的 115 内置中转")
+		}
+		return source, nil
 	case SourceTypeThirdPartyService:
 		source, ok := FindSource(SourceTypeThirdPartyService, provider, strings.TrimSpace(appID))
 		if !ok {
@@ -1319,6 +1328,9 @@ func SearchBuiltInAppIDSources(keyword string, offset int, limit int) AppIDSearc
 	}
 	matched := make([]Source, 0, len(builtInAppIDCatalog))
 	for _, source := range builtInAppIDCatalog {
+		if source.Deprecated {
+			continue
+		}
 		if keyword != "" && !strings.Contains(strings.ToLower(source.AppID), keyword) && !strings.Contains(strings.ToLower(source.AppName), keyword) {
 			continue
 		}
@@ -1341,7 +1353,7 @@ func ResolveAccountSource(appID string, appIDName string) Source {
 	case BuiltInRelayQMediaSync:
 		return Source{SourceType: SourceTypeBuiltInRelay, Provider: ProviderQMediaSync, AppID: appID, AppName: appID, DisplayName: appID, RequiresEncryptionKey: true}
 	case BuiltInRelayQ115STRM, BuiltInRelayMQMediaLibrary:
-		return Source{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: appID, AppName: appID, DisplayName: appID, RequiresEncryptionKey: true}
+		return Source{SourceType: SourceTypeBuiltInRelay, Provider: ProviderMQFamily, AppID: appID, AppName: appID, DisplayName: appID, RequiresEncryptionKey: true, Deprecated: true}
 	}
 	if source, ok := FindSource(SourceTypeBuiltInAppID, ProviderOfficialPKCE, appID); ok {
 		return source

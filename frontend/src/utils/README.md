@@ -23,7 +23,6 @@
 
 - `CloudAccountAppInfo`
 - `isCustomV115App(account)`
-- `isBuiltInV115App(appName)`
 - `getV115AppInfoRows(account)`
 
 ## deviceUtils.ts

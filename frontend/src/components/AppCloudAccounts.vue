@@ -547,7 +547,6 @@ import {
   type V115AuthProvider,
   type V115AuthSourceType,
   type V115SelectedQrApp,
-  type V115WebAuthProviderValue,
 } from '@/components/cloud-auth/v115AuthSources'
 
 const { isMobile } = useDeviceType()
@@ -607,7 +606,7 @@ const newAccountForm = ref({
   auth_type: 'password',
   auth_mode: 'qr' as V115AuthMode,
   selected_qr_app: { appId: '100197849', appName: 'QMediaSync' } as V115SelectedQrApp,
-  selected_web_provider: defaultWebAuthProviderValue as V115WebAuthProviderValue,
+  selected_web_provider: defaultWebAuthProviderValue,
   custom_v115_app_id: '',
   custom_v115_app_name: '',
 })

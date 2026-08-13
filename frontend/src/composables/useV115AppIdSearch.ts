@@ -17,6 +17,7 @@ export interface V115AppIDOption {
   app_id: string
   app_name: string
   display_name: string
+  deprecated?: boolean
 }
 
 export interface UseV115AppIdSearchOptions {

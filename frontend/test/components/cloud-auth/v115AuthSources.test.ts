@@ -13,7 +13,7 @@ describe('v115AuthSources', () => {
       buildV115CreatePayload({
         authMode: 'qr',
         selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
-        selectedWebProvider: 'built_in_relay:qmediasync:QMediaSync',
+        selectedWebProvider: 'qmediasync',
         customAppId: '',
         customAppName: '',
       }),
@@ -30,7 +30,7 @@ describe('v115AuthSources', () => {
       buildV115CreatePayload({
         authMode: 'oauth',
         selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
-        selectedWebProvider: 'third_party_service:clouddrive:CloudDrive',
+        selectedWebProvider: 'clouddrive',
         customAppId: '',
         customAppName: '',
       }),
@@ -42,38 +42,29 @@ describe('v115AuthSources', () => {
     })
   })
 
-  it('网页授权选项使用唯一 value 区分同一个 provider 下的不同应用', () => {
-    const values = webAuthProviders.map((provider) => provider.value)
-    expect(new Set(values).size).toBe(webAuthProviders.length)
+  it('网页授权选项按 provider 选择，并移除旧的 MQ 授权入口', () => {
+    expect(webAuthProviders.map((provider) => provider.provider)).toEqual([
+      'qmediasync',
+      'moviepilot',
+      'clouddrive',
+    ])
+    expect(webAuthProviders.map((provider) => provider.label)).not.toEqual(
+      expect.arrayContaining(['Q115-STRM', 'MQ的媒体库']),
+    )
 
     expect(
       buildV115CreatePayload({
         authMode: 'oauth',
         selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
-        selectedWebProvider: 'built_in_relay:mqfamily:Q115-STRM',
+        selectedWebProvider: 'clouddrive',
         customAppId: '',
         customAppName: '',
       }),
     ).toEqual({
-      auth_source_type: 'built_in_relay',
-      auth_provider: 'mqfamily',
-      app_id: '',
-      app_id_name: 'Q115-STRM',
-    })
-
-    expect(
-      buildV115CreatePayload({
-        authMode: 'oauth',
-        selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
-        selectedWebProvider: 'built_in_relay:mqfamily:MQ的媒体库',
-        customAppId: '',
-        customAppName: '',
-      }),
-    ).toEqual({
-      auth_source_type: 'built_in_relay',
-      auth_provider: 'mqfamily',
-      app_id: '',
-      app_id_name: 'MQ的媒体库',
+      auth_source_type: 'third_party_service',
+      auth_provider: 'clouddrive',
+      app_id: '100195313',
+      app_id_name: 'CloudDrive',
     })
   })
 
