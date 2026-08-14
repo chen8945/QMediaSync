@@ -894,7 +894,7 @@ var builtInAppIDCatalog = []Source{
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197051", AppName: "小马好车", DisplayName: "小马好车"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197071", AppName: "fluxa-cloud", DisplayName: "fluxa-cloud"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197089", AppName: "蕾姆player", DisplayName: "蕾姆player"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197091", AppName: "神秘播放器", DisplayName: "神秘播放器"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197091", AppName: "神秘播放器", DisplayName: "神秘播放器", Deprecated: true}, // 40140108 应用未审核通过
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197099", AppName: "emby_cms", DisplayName: "emby_cms"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197101", AppName: "CloudMediaSynC", DisplayName: "CloudMediaSynC"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197103", AppName: "Yy", DisplayName: "Yy"},
@@ -912,135 +912,135 @@ var builtInAppIDCatalog = []Source{
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197229", AppName: "openlist1322", DisplayName: "openlist1322"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197237", AppName: "夜翼阅读器", DisplayName: "夜翼阅读器"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197241", AppName: "TopoWorld", DisplayName: "TopoWorld"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197243", AppName: "MediaLibrary", DisplayName: "MediaLibrary"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197243", AppName: "MediaLibrary", DisplayName: "MediaLibrary", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197245", AppName: "115&Wen", DisplayName: "115&Wen"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197255", AppName: "115全能助手_", DisplayName: "115全能助手_"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197281", AppName: "我的英语本子", DisplayName: "我的英语本子"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197281", AppName: "我的英语本子", DisplayName: "我的英语本子", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197285", AppName: "mpv_test", DisplayName: "mpv_test"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197287", AppName: "Cinetry", DisplayName: "Cinetry"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197289", AppName: "dlhelper", DisplayName: "dlhelper"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197293", AppName: "Open-List", DisplayName: "Open-List"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197297", AppName: "bottttg", DisplayName: "bottttg"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197303", AppName: "OpenList", DisplayName: "OpenList"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197305", AppName: "emby-plus", DisplayName: "emby-plus"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197307", AppName: "ikaros-dev", DisplayName: "ikaros-dev"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197309", AppName: "ikaros", DisplayName: "ikaros"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197317", AppName: "fadsfdasf", DisplayName: "fadsfdasf"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197305", AppName: "emby-plus", DisplayName: "emby-plus", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197307", AppName: "ikaros-dev", DisplayName: "ikaros-dev", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197309", AppName: "ikaros", DisplayName: "ikaros", Deprecated: true},         // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197317", AppName: "fadsfdasf", DisplayName: "fadsfdasf", Deprecated: true},   // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197321", AppName: "EasyFileManager", DisplayName: "EasyFileManager"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197323", AppName: "Cloud Media Syn", DisplayName: "Cloud Media Syn"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197327", AppName: "自用NAS", DisplayName: "自用NAS"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197323", AppName: "Cloud Media Syn", DisplayName: "Cloud Media Syn", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197327", AppName: "自用NAS", DisplayName: "自用NAS", Deprecated: true},                     // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197329", AppName: "个人自用家庭影院", DisplayName: "个人自用家庭影院"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197331", AppName: "onelist", DisplayName: "onelist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197333", AppName: "七月测试011", DisplayName: "七月测试011"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197333", AppName: "七月测试011", DisplayName: "七月测试011", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197335", AppName: "Zdir", DisplayName: "Zdir"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197341", AppName: "摄影管理", DisplayName: "摄影管理"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197343", AppName: "HomeNetDisk", DisplayName: "HomeNetDisk"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197343", AppName: "HomeNetDisk", DisplayName: "HomeNetDisk", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197345", AppName: "openlist-cap", DisplayName: "openlist-cap"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197347", AppName: "NextcloudDAV", DisplayName: "NextcloudDAV"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197349", AppName: "CBack", DisplayName: "CBack"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197351", AppName: "zptcms", DisplayName: "zptcms"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197353", AppName: "G theater", DisplayName: "G theater"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197355", AppName: "w.openlist", DisplayName: "w.openlist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197357", AppName: "myapp", DisplayName: "myapp"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197359", AppName: "ding", DisplayName: "ding"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197361", AppName: "test333", DisplayName: "test333"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197347", AppName: "NextcloudDAV", DisplayName: "NextcloudDAV", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197349", AppName: "CBack", DisplayName: "CBack", Deprecated: true},               // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197351", AppName: "zptcms", DisplayName: "zptcms", Deprecated: true},             // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197353", AppName: "G theater", DisplayName: "G theater", Deprecated: true},       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197355", AppName: "w.openlist", DisplayName: "w.openlist", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197357", AppName: "myapp", DisplayName: "myapp", Deprecated: true},               // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197359", AppName: "ding", DisplayName: "ding", Deprecated: true},                 // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197361", AppName: "test333", DisplayName: "test333", Deprecated: true},           // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197363", AppName: "小柠檬CMS", DisplayName: "小柠檬CMS"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197365", AppName: "NAS", DisplayName: "NAS"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197367", AppName: "DevToolKit Pro", DisplayName: "DevToolKit Pro"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197369", AppName: "Aico Openlist", DisplayName: "Aico Openlist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197371", AppName: "蜂巢", DisplayName: "蜂巢"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197373", AppName: "openlist-ek", DisplayName: "openlist-ek"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197375", AppName: "My115Files", DisplayName: "My115Files"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197371", AppName: "蜂巢", DisplayName: "蜂巢", Deprecated: true},                   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197373", AppName: "openlist-ek", DisplayName: "openlist-ek", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197375", AppName: "My115Files", DisplayName: "My115Files", Deprecated: true},   // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197377", AppName: "medor", DisplayName: "medor"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197379", AppName: "Bin", DisplayName: "Bin"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197381", AppName: "OpenList_115", DisplayName: "OpenList_115"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197385", AppName: "OpenList2", DisplayName: "OpenList2"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197387", AppName: "openListLocal", DisplayName: "openListLocal"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197389", AppName: "opllist", DisplayName: "opllist"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197381", AppName: "OpenList_115", DisplayName: "OpenList_115", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197385", AppName: "OpenList2", DisplayName: "OpenList2", Deprecated: true},         // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197387", AppName: "openListLocal", DisplayName: "openListLocal", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197389", AppName: "opllist", DisplayName: "opllist", Deprecated: true},             // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197391", AppName: "文档管理", DisplayName: "文档管理"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197393", AppName: "115list", DisplayName: "115list"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197393", AppName: "115list", DisplayName: "115list", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197395", AppName: "openlisttest123", DisplayName: "openlisttest123"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197397", AppName: "zmnmax", DisplayName: "zmnmax"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197397", AppName: "zmnmax", DisplayName: "zmnmax", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197399", AppName: "Rclone-115", DisplayName: "Rclone-115"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197401", AppName: "智能元数据管理", DisplayName: "智能元数据管理"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197405", AppName: "tina-openlist", DisplayName: "tina-openlist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197407", AppName: "mylist", DisplayName: "mylist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197409", AppName: "cloudmediesync", DisplayName: "cloudmediesync"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197411", AppName: "影音使用", DisplayName: "影音使用"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197407", AppName: "mylist", DisplayName: "mylist", Deprecated: true},                 // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197409", AppName: "cloudmediesync", DisplayName: "cloudmediesync", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197411", AppName: "影音使用", DisplayName: "影音使用", Deprecated: true},                     // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197415", AppName: "AsongFastSave", DisplayName: "AsongFastSave"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197417", AppName: "115player", DisplayName: "115player"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197419", AppName: "115to123", DisplayName: "115to123"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197421", AppName: "SongmuSave", DisplayName: "SongmuSave"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197417", AppName: "115player", DisplayName: "115player", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197419", AppName: "115to123", DisplayName: "115to123", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197421", AppName: "SongmuSave", DisplayName: "SongmuSave", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197423", AppName: "六鑫", DisplayName: "六鑫"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197425", AppName: "my_openlist", DisplayName: "my_openlist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197427", AppName: "cloudplayer", DisplayName: "cloudplayer"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197429", AppName: "亲子相册", DisplayName: "亲子相册"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197433", AppName: "备份盘", DisplayName: "备份盘"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197435", AppName: "openlist-115", DisplayName: "openlist-115"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197427", AppName: "cloudplayer", DisplayName: "cloudplayer", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197429", AppName: "亲子相册", DisplayName: "亲子相册", Deprecated: true},                 // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197433", AppName: "备份盘", DisplayName: "备份盘", Deprecated: true},                   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197435", AppName: "openlist-115", DisplayName: "openlist-115", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197437", AppName: "媒体中心", DisplayName: "媒体中心"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197439", AppName: "cloudplayer2", DisplayName: "cloudplayer2"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197439", AppName: "cloudplayer2", DisplayName: "cloudplayer2", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197441", AppName: "doc仓库", DisplayName: "doc仓库"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197443", AppName: "知道乎", DisplayName: "知道乎"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197445", AppName: "Alist-HKYZF", DisplayName: "Alist-HKYZF"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197447", AppName: "禹云存储", DisplayName: "禹云存储"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197443", AppName: "知道乎", DisplayName: "知道乎", Deprecated: true},                 // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197445", AppName: "Alist-HKYZF", DisplayName: "Alist-HKYZF", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197447", AppName: "禹云存储", DisplayName: "禹云存储", Deprecated: true},               // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197449", AppName: "果友派", DisplayName: "果友派"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197451", AppName: "小鸡啄米文件管理", DisplayName: "小鸡啄米文件管理"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197451", AppName: "小鸡啄米文件管理", DisplayName: "小鸡啄米文件管理", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197453", AppName: "影视strm", DisplayName: "影视strm"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197455", AppName: "影视-strm", DisplayName: "影视-strm"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197457", AppName: "牧云webos", DisplayName: "牧云webos"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197461", AppName: "oplist", DisplayName: "oplist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197463", AppName: "我的115", DisplayName: "我的115"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197467", AppName: "nas同步", DisplayName: "nas同步"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197455", AppName: "影视-strm", DisplayName: "影视-strm", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197457", AppName: "牧云webos", DisplayName: "牧云webos", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197461", AppName: "oplist", DisplayName: "oplist", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197463", AppName: "我的115", DisplayName: "我的115", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197467", AppName: "nas同步", DisplayName: "nas同步", Deprecated: true},     // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197469", AppName: "scp云盘端口", DisplayName: "scp云盘端口"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197471", AppName: "内容使用", DisplayName: "内容使用"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197473", AppName: "cayin", DisplayName: "cayin"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197475", AppName: "个人云盘工具", DisplayName: "个人云盘工具"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197475", AppName: "个人云盘工具", DisplayName: "个人云盘工具", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197477", AppName: "拾光坞", DisplayName: "拾光坞"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197479", AppName: "星小易加速器", DisplayName: "星小易加速器"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197481", AppName: "星小易客户端", DisplayName: "星小易客户端"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197483", AppName: "wjj测试用APP", DisplayName: "wjj测试用APP"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197479", AppName: "星小易加速器", DisplayName: "星小易加速器", Deprecated: true},       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197481", AppName: "星小易客户端", DisplayName: "星小易客户端", Deprecated: true},       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197483", AppName: "wjj测试用APP", DisplayName: "wjj测试用APP", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197485", AppName: "OpenListAPI", DisplayName: "OpenListAPI"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197487", AppName: "Diggoo - oplist", DisplayName: "Diggoo - oplist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197491", AppName: "优途", DisplayName: "优途"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197487", AppName: "Diggoo - oplist", DisplayName: "Diggoo - oplist", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197491", AppName: "优途", DisplayName: "优途", Deprecated: true},                           // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197493", AppName: "audiotools", DisplayName: "audiotools"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197495", AppName: "cedar-api", DisplayName: "cedar-api"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197497", AppName: "迅雷影音", DisplayName: "迅雷影音"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197501", AppName: "娲众云库", DisplayName: "娲众云库"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197503", AppName: "MQ的媒体库", DisplayName: "MQ的媒体库", Deprecated: true},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197501", AppName: "娲众云库", DisplayName: "娲众云库", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197503", AppName: "MQ的媒体库", DisplayName: "MQ的媒体库", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197507", AppName: "Vidora", DisplayName: "Vidora"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197509", AppName: "我的接口", DisplayName: "我的接口"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197511", AppName: "我的Openlist", DisplayName: "我的Openlist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197513", AppName: "文件查看", DisplayName: "文件查看"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197509", AppName: "我的接口", DisplayName: "我的接口", Deprecated: true},             // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197511", AppName: "我的Openlist", DisplayName: "我的Openlist", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197513", AppName: "文件查看", DisplayName: "文件查看", Deprecated: true},             // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197517", AppName: "熊猫助手", DisplayName: "熊猫助手"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197519", AppName: "海异云", DisplayName: "海异云"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197521", AppName: "mlmll", DisplayName: "mlmll"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197521", AppName: "mlmll", DisplayName: "mlmll", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197523", AppName: "115闪推", DisplayName: "115闪推"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197525", AppName: "skybowen", DisplayName: "skybowen"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197527", AppName: "冰块阅读器", DisplayName: "冰块阅读器"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197529", AppName: "HKBC", DisplayName: "HKBC"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197529", AppName: "HKBC", DisplayName: "HKBC", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197531", AppName: "小水滴", DisplayName: "小水滴"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197533", AppName: "synology", DisplayName: "synology"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197535", AppName: "oplist播放", DisplayName: "oplist播放"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197537", AppName: "lds测试", DisplayName: "lds测试"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197535", AppName: "oplist播放", DisplayName: "oplist播放", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197537", AppName: "lds测试", DisplayName: "lds测试", Deprecated: true},       // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197539", AppName: "激扬工具", DisplayName: "激扬工具"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197541", AppName: "文件整理", DisplayName: "文件整理"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197543", AppName: "openlistshimoxi", DisplayName: "openlistshimoxi"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197541", AppName: "文件整理", DisplayName: "文件整理", Deprecated: true},                       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197543", AppName: "openlistshimoxi", DisplayName: "openlistshimoxi", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197545", AppName: "bound", DisplayName: "bound"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197547", AppName: "openlist-1", DisplayName: "openlist-1"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197549", AppName: "huamei", DisplayName: "huamei"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197547", AppName: "openlist-1", DisplayName: "openlist-1", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197549", AppName: "huamei", DisplayName: "huamei", Deprecated: true},         // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197551", AppName: "homedisk", DisplayName: "homedisk"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197553", AppName: "mp", DisplayName: "mp"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197555", AppName: "Openlist170", DisplayName: "Openlist170"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197553", AppName: "mp", DisplayName: "mp", Deprecated: true},                   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197555", AppName: "Openlist170", DisplayName: "Openlist170", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197557", AppName: "kingsteve.001", DisplayName: "kingsteve.001"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197559", AppName: "tgbot-115", DisplayName: "tgbot-115"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197563", AppName: "4XVR视频播放器", DisplayName: "4XVR视频播放器"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197565", AppName: "kingsteve.002", DisplayName: "kingsteve.002"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197567", AppName: "openlist920", DisplayName: "openlist920"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197565", AppName: "kingsteve.002", DisplayName: "kingsteve.002", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197567", AppName: "openlist920", DisplayName: "openlist920", Deprecated: true},     // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197569", AppName: "115_Organizatio", DisplayName: "115_Organizatio"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197571", AppName: "115视界引擎", DisplayName: "115视界引擎"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197571", AppName: "115视界引擎", DisplayName: "115视界引擎", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197573", AppName: "数据备份", DisplayName: "数据备份"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197577", AppName: "LitePan", DisplayName: "LitePan"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197581", AppName: "wlms", DisplayName: "wlms"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197581", AppName: "wlms", DisplayName: "wlms", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197583", AppName: "Mac俱乐部", DisplayName: "Mac俱乐部"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197587", AppName: "我的观影小屋", DisplayName: "我的观影小屋"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197589", AppName: "爱唯逸云存储", DisplayName: "爱唯逸云存储"},
@@ -1049,31 +1049,31 @@ var builtInAppIDCatalog = []Source{
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197597", AppName: "Edwards", DisplayName: "Edwards"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197599", AppName: "挂载助手", DisplayName: "挂载助手"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197601", AppName: "zsxldy", DisplayName: "zsxldy"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197603", AppName: "LikeTV", DisplayName: "LikeTV"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197609", AppName: "cktyun", DisplayName: "cktyun"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197611", AppName: "115文件整理", DisplayName: "115文件整理"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197613", AppName: "oma", DisplayName: "oma"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197615", AppName: "115刮削移动工具", DisplayName: "115刮削移动工具"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197603", AppName: "LikeTV", DisplayName: "LikeTV", Deprecated: true},       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197609", AppName: "cktyun", DisplayName: "cktyun", Deprecated: true},       // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197611", AppName: "115文件整理", DisplayName: "115文件整理", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197613", AppName: "oma", DisplayName: "oma", Deprecated: true},             // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197615", AppName: "115刮削移动工具", DisplayName: "115刮削移动工具", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197617", AppName: "小幻影视", DisplayName: "小幻影视"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197619", AppName: "六爻卦摊", DisplayName: "六爻卦摊"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197621", AppName: "火火火网盘", DisplayName: "火火火网盘"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197619", AppName: "六爻卦摊", DisplayName: "六爻卦摊", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197621", AppName: "火火火网盘", DisplayName: "火火火网盘", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197625", AppName: "流舟文件", DisplayName: "流舟文件"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197627", AppName: "openlist-akalin", DisplayName: "openlist-akalin"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197629", AppName: "kabishunmsgo", DisplayName: "kabishunmsgo"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197629", AppName: "kabishunmsgo", DisplayName: "kabishunmsgo", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197631", AppName: "爽快连接", DisplayName: "爽快连接"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197633", AppName: "diskfuse", DisplayName: "diskfuse"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197635", AppName: "OpenList.Mondo", DisplayName: "OpenList.Mondo"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197637", AppName: "Easy VR Player", DisplayName: "Easy VR Player"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197635", AppName: "OpenList.Mondo", DisplayName: "OpenList.Mondo", Deprecated: true}, // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197637", AppName: "Easy VR Player", DisplayName: "Easy VR Player", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197641", AppName: "embynginx助手", DisplayName: "embynginx助手"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197645", AppName: "cms-husbmv", DisplayName: "cms-husbmv"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197647", AppName: "Vide Liarary", DisplayName: "Vide Liarary"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197645", AppName: "cms-husbmv", DisplayName: "cms-husbmv", Deprecated: true},     // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197647", AppName: "Vide Liarary", DisplayName: "Vide Liarary", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197649", AppName: "PanTools", DisplayName: "PanTools"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197651", AppName: "SmartStrm", DisplayName: "SmartStrm"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197653", AppName: "云下载添加", DisplayName: "云下载添加"},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197653", AppName: "云下载添加", DisplayName: "云下载添加", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197657", AppName: "神经元", DisplayName: "神经元"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197659", AppName: "filelist", DisplayName: "filelist"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197661", AppName: "个人webdav", DisplayName: "个人webdav"},
-	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197665", AppName: "Q115-STRM", DisplayName: "Q115-STRM", Deprecated: true},
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197659", AppName: "filelist", DisplayName: "filelist", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197661", AppName: "个人webdav", DisplayName: "个人webdav", Deprecated: true},   // 40140110 应用已过期
+	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197665", AppName: "Q115-STRM", DisplayName: "Q115-STRM", Deprecated: true}, // 40140110 应用已过期
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197667", AppName: "观影", DisplayName: "观影"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197669", AppName: "SRY", DisplayName: "SRY"},
 	{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197673", AppName: "nice", DisplayName: "nice"},

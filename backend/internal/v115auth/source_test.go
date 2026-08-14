@@ -28,8 +28,8 @@ func TestBuiltInAppIDOrder(t *testing.T) {
 
 func TestBuiltInAppIDCatalogCompleteness(t *testing.T) {
 	sources := BuiltInAppIDSources()
-	if len(sources) != 1126 {
-		t.Fatalf("内置 APP ID 可选目录数量 = %d，期望 1126", len(sources))
+	if len(sources) != 1039 {
+		t.Fatalf("内置 APP ID 可选目录数量 = %d，期望 1039", len(sources))
 	}
 
 	seen := make(map[string]struct{}, len(sources))
@@ -63,8 +63,8 @@ func TestSearchBuiltInAppIDSourcesFindsTailAppID(t *testing.T) {
 
 func TestSearchBuiltInAppIDSourcesReturnsCatalogOrder(t *testing.T) {
 	result := SearchBuiltInAppIDSources("", 0, 3)
-	if result.Total != 1126 {
-		t.Fatalf("可搜索内置 APP ID 总数 = %d，期望 1126", result.Total)
+	if result.Total != 1039 {
+		t.Fatalf("可搜索内置 APP ID 总数 = %d，期望 1039", result.Total)
 	}
 	want := []string{"100195125", "100195127", "100195129"}
 	if len(result.Items) != len(want) {
