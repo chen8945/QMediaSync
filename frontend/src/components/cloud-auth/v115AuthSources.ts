@@ -35,6 +35,36 @@ export interface V115AccountAuthInfo {
   auth_provider?: V115AuthProvider
 }
 
+const webAuthorizationSourceTypes: V115AuthSourceType[] = ['built_in_relay', 'third_party_service']
+
+const legacyWebAuthorizationAppNames = ['QMediaSync', 'Q115-STRM', 'MQ的媒体库']
+
+const isV115WebAuthorizationSource = (sourceType?: V115AuthSourceType): boolean =>
+  sourceType !== undefined && webAuthorizationSourceTypes.includes(sourceType)
+
+const isLegacyV115WebAuthorizationAppName = (appName?: string, fallback = ''): boolean =>
+  legacyWebAuthorizationAppNames.includes(appName || fallback)
+
+export const getDefaultV115ChangeSelection = (
+  account: V115AccountAuthInfo,
+): V115CreateSelection => {
+  const currentProvider = account.auth_provider
+  const currentWebProvider = webAuthProviders.find(
+    (provider) => provider.provider === currentProvider,
+  )
+  const isWebAuthorization =
+    isV115WebAuthorizationSource(account.auth_source_type) ||
+    (!account.auth_source_type && isLegacyV115WebAuthorizationAppName(account.app_id_name))
+
+  return {
+    authMode: isWebAuthorization ? 'oauth' : 'qr',
+    selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
+    selectedWebProvider: currentWebProvider?.provider ?? defaultWebAuthProviderValue,
+    customAppId: '',
+    customAppName: '',
+  }
+}
+
 export type V115AuthAction = 'pkce' | 'oauth' | 'unsupported'
 
 export interface V115WebAuthProviderOption {
@@ -120,17 +150,14 @@ export const getV115AuthAction = (account: V115AccountAuthInfo): V115AuthAction 
   if (account.auth_provider === 'official_pkce') {
     return 'pkce'
   }
-  if (
-    account.auth_source_type === 'built_in_relay' ||
-    account.auth_source_type === 'third_party_service'
-  ) {
+  if (isV115WebAuthorizationSource(account.auth_source_type)) {
     return 'oauth'
   }
   if (!account.auth_source_type) {
     if (account.app_id) {
       return 'pkce'
     }
-    if (['QMediaSync', 'Q115-STRM', 'MQ的媒体库'].includes(account.app_id_name || 'QMediaSync')) {
+    if (isLegacyV115WebAuthorizationAppName(account.app_id_name, 'QMediaSync')) {
       return 'oauth'
     }
   }

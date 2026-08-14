@@ -10,6 +10,7 @@ const visible = defineModel<boolean>('visible', { required: true })
 const props = defineProps<{
   accountId: number | null
   accountName: string
+  authorizationId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -40,11 +41,12 @@ watch(
   () => visible.value,
   (isVisible) => {
     if (isVisible && props.accountId) {
-      void startAuthorization(props.accountId)
+      void startAuthorization(props.accountId, props.authorizationId ?? undefined)
       return
     }
     stopPolling()
   },
+  { immediate: true },
 )
 
 watch(status, (value) => {
@@ -55,7 +57,9 @@ watch(status, (value) => {
 })
 
 const refreshQrCode = () => {
-  if (props.accountId) void startAuthorization(props.accountId)
+  if (props.accountId) {
+    void startAuthorization(props.accountId, props.authorizationId ?? undefined)
+  }
 }
 
 const handleClosed = () => {

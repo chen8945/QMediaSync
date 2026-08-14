@@ -134,7 +134,7 @@
                     <div class="info-row" v-if="account.status.member_level">
                       <div class="info-icon member-icon">
                         <el-icon>
-                          <Postcard />
+                          <Avatar />
                         </el-icon>
                       </div>
                       <div class="info-content">
@@ -145,7 +145,7 @@
                     <div class="info-row space-row">
                       <div class="info-icon space-icon">
                         <el-icon>
-                          <Cloudy />
+                          <PieChart />
                         </el-icon>
                       </div>
                       <div class="info-content space-content">
@@ -176,7 +176,7 @@
                     <div class="info-row" v-if="account.status.member_level">
                       <div class="info-icon member-icon">
                         <el-icon>
-                          <Postcard />
+                          <Medal />
                         </el-icon>
                       </div>
                       <div class="info-content">
@@ -258,10 +258,23 @@
                 size="small"
                 plain
                 :icon="Key"
+                :disabled="authorizationFlowBusy"
                 @click="handleAuthorize(account)"
                 v-if="account.source_type !== 'openlist'"
               >
-                授权
+                {{ account.authorized ? '重新授权' : '授权' }}
+              </el-button>
+
+              <el-button
+                v-if="account.source_type === '115'"
+                type="primary"
+                size="small"
+                plain
+                :icon="RefreshRight"
+                :disabled="authorizationFlowBusy"
+                @click="handleChangeAuthorization(account)"
+              >
+                更换授权
               </el-button>
 
               <el-button
@@ -502,7 +515,14 @@
     v-model:visible="showV115AuthDialog"
     :account-id="selectedV115Account?.id ?? null"
     :account-name="selectedV115Account?.name ?? ''"
+    :authorization-id="selectedV115AuthorizationId"
     @confirmed="loadAccounts"
+  />
+
+  <V115AuthorizationChangeDialog
+    v-model:visible="showV115AuthorizationChangeDialog"
+    :account="selectedV115AuthorizationAccount"
+    @confirmed="prepareV115AuthorizationChange"
   />
 </template>
 
@@ -511,11 +531,13 @@ import { SERVER_URL } from '@/const'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageStats from '@/components/common/PageStats.vue'
 import V115AuthorizationDialog from '@/components/cloud-auth/V115AuthorizationDialog.vue'
+import V115AuthorizationChangeDialog from '@/components/cloud-auth/V115AuthorizationChangeDialog.vue'
 import V115AppSelector from '@/components/cloud-auth/V115AppSelector.vue'
 import type { AxiosError } from 'axios'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 
 import {
+  Avatar,
   WarningFilled,
   Plus,
   Loading,
@@ -528,6 +550,8 @@ import {
   CircleCheck,
   CircleClose,
   InfoFilled,
+  Medal,
+  PieChart,
   QuestionFilled,
   Postcard,
   RefreshRight,
@@ -540,9 +564,15 @@ import { useHttpClient } from '@/http/client'
 import { getV115AppInfoRows, isCustomV115App } from '@/utils/cloudAccountUtils'
 import { collectOAuthCallbackParams } from '@/utils/oauthCallback'
 import {
+  clearPendingV115Authorization,
+  loadPendingV115Authorization,
+  savePendingV115Authorization,
+} from '@/utils/v115AuthorizationSession'
+import {
   buildV115CreatePayload,
   defaultWebAuthProviderValue,
   getV115AuthAction,
+  type V115CreatePayload,
   type V115AuthMode,
   type V115AuthProvider,
   type V115AuthSourceType,
@@ -578,6 +608,7 @@ interface CloudAccount {
   auth_source_type?: V115AuthSourceType
   auth_provider?: V115AuthProvider
   requires_encryption_key?: boolean
+  deprecated?: boolean
   token_failed_reason?: string
   status?: CloudDiskStatus
   statusLoading?: boolean
@@ -631,6 +662,120 @@ const selectedAccountId = ref<number | undefined>(undefined)
 const show123AuthDialog = ref(false)
 const selectedV115Account = ref<CloudAccount | null>(null)
 const showV115AuthDialog = ref(false)
+const selectedV115AuthorizationId = ref<string | null>(null)
+const selectedV115AuthorizationAccount = ref<CloudAccount | null>(null)
+const showV115AuthorizationChangeDialog = ref(false)
+const authorizationFlowBusy = ref(false)
+
+let oauthPollingTimer: number | null = null
+let oauthPollingRunId = 0
+let oauthPollingContext: { accountId: number; authorizationId?: string } | null = null
+let oauthPollingVisibilityHandler: (() => void) | null = null
+
+const cancelAuthorizationSession = async (accountId: number, authorizationId?: string) => {
+  if (!authorizationId) return true
+  try {
+    const response = await http.post(`${SERVER_URL}/account/authorization/cancel`, {
+      account_id: accountId,
+      authorization_id: authorizationId,
+    })
+    return response?.data?.code === 200
+  } catch (error) {
+    console.error('取消 115 授权会话失败：', error)
+    return false
+  }
+}
+
+const cancelAndClearPendingAuthorization = async (accountId: number, authorizationId?: string) => {
+  if (!authorizationId) return
+  if (await cancelAuthorizationSession(accountId, authorizationId)) {
+    clearPendingV115Authorization(authorizationId)
+  }
+}
+
+const stopOAuthPolling = () => {
+  oauthPollingRunId += 1
+  if (oauthPollingTimer !== null) {
+    window.clearInterval(oauthPollingTimer)
+    oauthPollingTimer = null
+  }
+  if (oauthPollingVisibilityHandler !== null) {
+    document.removeEventListener('visibilitychange', oauthPollingVisibilityHandler)
+    oauthPollingVisibilityHandler = null
+  }
+}
+
+const finishOAuthPolling = (cancel: boolean) => {
+  const context = oauthPollingContext
+  stopOAuthPolling()
+  oauthPollingContext = null
+  authorizationFlowBusy.value = false
+  if (context?.authorizationId && selectedV115AuthorizationId.value === context.authorizationId) {
+    selectedV115AuthorizationId.value = null
+  }
+  if (context?.authorizationId) {
+    if (cancel) {
+      void cancelAndClearPendingAuthorization(context.accountId, context.authorizationId)
+    } else {
+      clearPendingV115Authorization(context.authorizationId)
+    }
+  }
+}
+
+const cancelActiveAuthorizationFlow = async () => {
+  const oauthContext = oauthPollingContext
+  const qrAccountId = selectedV115Account.value?.id
+  const qrAuthorizationId = selectedV115AuthorizationId.value
+  const pendingRedirectAuthorization = loadPendingV115Authorization()
+
+  stopOAuthPolling()
+  oauthPollingContext = null
+  authorizationFlowBusy.value = false
+  selectedV115AuthorizationId.value = null
+  showV115AuthDialog.value = false
+  showV115AuthorizationChangeDialog.value = false
+
+  const cancellations: Promise<unknown>[] = []
+  if (oauthContext?.authorizationId) {
+    cancellations.push(
+      cancelAndClearPendingAuthorization(oauthContext.accountId, oauthContext.authorizationId),
+    )
+  }
+  if (qrAccountId && qrAuthorizationId && qrAuthorizationId !== oauthContext?.authorizationId) {
+    cancellations.push(cancelAndClearPendingAuthorization(qrAccountId, qrAuthorizationId))
+  }
+  if (
+    pendingRedirectAuthorization &&
+    pendingRedirectAuthorization.authorizationId !== oauthContext?.authorizationId &&
+    pendingRedirectAuthorization.authorizationId !== qrAuthorizationId
+  ) {
+    cancellations.push(
+      cancelAndClearPendingAuthorization(
+        pendingRedirectAuthorization.accountId,
+        pendingRedirectAuthorization.authorizationId,
+      ),
+    )
+  }
+  await Promise.all(cancellations)
+}
+
+watch(showV115AuthDialog, (isVisible) => {
+  if (!isVisible) {
+    authorizationFlowBusy.value = false
+    const accountId = selectedV115Account.value?.id
+    const authorizationId = selectedV115AuthorizationId.value
+    selectedV115AuthorizationId.value = null
+    if (accountId && authorizationId) {
+      void cancelAndClearPendingAuthorization(accountId, authorizationId)
+    }
+  }
+})
+
+watch(showV115AuthorizationChangeDialog, (isVisible) => {
+  if (!isVisible && !oauthPollingContext) {
+    selectedV115AuthorizationAccount.value = null
+  }
+})
 
 const authorizedCount = computed(() => accounts.value.filter((a) => a.authorized).length)
 const unauthorizedCount = computed(
@@ -698,6 +843,7 @@ const loadAccounts = async () => {
         auth_source_type: item.auth_source_type,
         auth_provider: item.auth_provider,
         requires_encryption_key: item.requires_encryption_key,
+        deprecated: item.deprecated,
         token_failed_reason: item.token_failed_reason || '',
         status: undefined,
         statusLoading: false,
@@ -962,8 +1108,11 @@ const handleUpdateAccount = async () => {
   }
 }
 
-const handleAuthorize = (row: CloudAccount) => {
+const handleAuthorize = async (row: CloudAccount) => {
+  await cancelActiveAuthorizationFlow()
   if (row.source_type === '115') {
+    authorizationFlowBusy.value = true
+    selectedV115AuthorizationId.value = null
     const action = getV115AuthAction(row)
     if (action === 'pkce') {
       selectedV115Account.value = row
@@ -975,6 +1124,7 @@ const handleAuthorize = (row: CloudAccount) => {
       return
     }
     ElMessage.error('不支持的 115 开放平台应用')
+    authorizationFlowBusy.value = false
     return
   }
   if (row.source_type === '123') {
@@ -987,29 +1137,82 @@ const handleAuthorize = (row: CloudAccount) => {
   }
 }
 
-const handle115OAuth = async (accountId?: number) => {
+const handleChangeAuthorization = async (row: CloudAccount) => {
+  await cancelActiveAuthorizationFlow()
+  selectedV115AuthorizationAccount.value = row
+  showV115AuthorizationChangeDialog.value = true
+}
+
+const prepareV115AuthorizationChange = async (payload: V115CreatePayload) => {
+  const account = selectedV115AuthorizationAccount.value
+  if (!account) return
+  authorizationFlowBusy.value = true
+
   try {
-    await ElMessageBox.confirm(
-      '即将跳转到 115 网盘授权页面，请在新页面完成授权后返回本页面。',
-      '授权提示',
-      {
-        confirmButtonText: '前往授权',
-        cancelButtonText: '取消',
-        type: 'info',
-      },
-    )
+    const response = await http.post(`${SERVER_URL}/account/authorization/prepare`, {
+      account_id: account.id,
+      source_type: account.source_type,
+      confirmed: true,
+      ...payload,
+    })
+    const authorizationId = response?.data?.data?.authorization_id
+    if (response?.data?.code !== 200 || typeof authorizationId !== 'string') {
+      authorizationFlowBusy.value = false
+      ElMessage.error(response?.data?.message || '准备更换授权失败')
+      return
+    }
+
+    savePendingV115Authorization({ accountId: account.id, authorizationId })
+    selectedV115AuthorizationId.value = authorizationId
+    if (payload.auth_provider === 'official_pkce') {
+      selectedV115Account.value = account
+      showV115AuthDialog.value = true
+      return
+    }
+    await handle115OAuth(account.id, authorizationId, false)
+  } catch (error) {
+    authorizationFlowBusy.value = false
+    console.error('准备更换 115 授权失败：', error)
+    ElMessage.error('准备更换授权失败')
+  }
+}
+
+const handle115OAuth = async (accountId?: number, authorizationId?: string, showPrompt = true) => {
+  const cancelOnFailure = () => {
+    if (accountId && authorizationId) {
+      void cancelAndClearPendingAuthorization(accountId, authorizationId)
+    }
+    selectedV115AuthorizationId.value = null
+    authorizationFlowBusy.value = false
+  }
+  try {
+    if (showPrompt) {
+      await ElMessageBox.confirm(
+        '即将跳转到 115 网盘授权页面，请在新页面完成授权后返回本页面。',
+        '授权提示',
+        {
+          confirmButtonText: '前往授权',
+          cancelButtonText: '取消',
+          type: 'info',
+        },
+      )
+    }
 
     const redirectUrl = window.location.href.split('?')[0]
     const response = await http.get(`${SERVER_URL}/115/oauth-url`, {
       params: {
         account_id: accountId,
         redirect_url: redirectUrl,
+        ...(authorizationId ? { authorization_id: authorizationId } : {}),
       },
     })
 
     if (response?.data.code === 200 && response.data.data) {
       const data = response.data.data as V115OAuthURLData | string
       if (typeof data === 'string') {
+        if (accountId && authorizationId) {
+          savePendingV115Authorization({ accountId, authorizationId })
+        }
         window.location.href = data
         return
       }
@@ -1017,56 +1220,112 @@ const handle115OAuth = async (accountId?: number) => {
         if (data.auth_url) {
           window.open(data.auth_url, '_blank', 'noopener,noreferrer')
         }
-        poll115OAuthStatus(accountId, data.state)
+        poll115OAuthStatus(accountId, data.state, authorizationId)
         return
       }
       if (data.auth_url) {
+        if (accountId && authorizationId) {
+          savePendingV115Authorization({ accountId, authorizationId })
+        }
         window.location.href = data.auth_url
         return
       }
       ElMessage.error('授权服务未返回授权地址')
+      cancelOnFailure()
     } else {
       ElMessage.error(response?.data.message || '获取授权地址失败')
+      cancelOnFailure()
     }
   } catch (error) {
-    if (error !== 'cancel') {
+    if (error !== 'cancel' && error !== 'close') {
       console.error('115 OAuth 授权错误：', error)
       ElMessage.error('获取授权地址失败')
     }
+    cancelOnFailure()
   }
 }
 
-const poll115OAuthStatus = (accountId: number | undefined, state: string) => {
+const poll115OAuthStatus = (
+  accountId: number | undefined,
+  state: string,
+  authorizationId?: string,
+) => {
   if (!accountId) return
+  const previousContext = oauthPollingContext
+  stopOAuthPolling()
+  const runId = oauthPollingRunId
+  oauthPollingContext = { accountId, authorizationId }
+  if (
+    previousContext?.authorizationId &&
+    (previousContext.accountId !== accountId || previousContext.authorizationId !== authorizationId)
+  ) {
+    void cancelAndClearPendingAuthorization(
+      previousContext.accountId,
+      previousContext.authorizationId,
+    )
+  }
   let retries = 0
   const maxRetries = 60
-  const timer = window.setInterval(async () => {
+  let inFlight = false
+  const poll = async () => {
+    if (runId !== oauthPollingRunId || inFlight) return
+    if (document.hidden) return
+    inFlight = true
     retries += 1
     try {
       const response = await http.get(`${SERVER_URL}/115/oauth-status`, {
-        params: { account_id: accountId, state },
+        params: {
+          account_id: accountId,
+          state,
+          ...(authorizationId ? { authorization_id: authorizationId } : {}),
+        },
       })
+      if (runId !== oauthPollingRunId) return
       if (response?.data.code === 200 && response.data.data?.done) {
-        window.clearInterval(timer)
+        finishOAuthPolling(false)
         ElMessage.success('授权成功')
         await loadAccounts()
         return
       }
       if (response?.data.code !== 200) {
-        window.clearInterval(timer)
+        finishOAuthPolling(true)
         ElMessage.error(response?.data.message || '授权状态查询失败')
         return
       }
       if (retries >= maxRetries) {
-        window.clearInterval(timer)
+        finishOAuthPolling(true)
         ElMessage.error('授权等待超时')
       }
     } catch (error) {
-      window.clearInterval(timer)
+      if (runId !== oauthPollingRunId) return
+      finishOAuthPolling(true)
       console.error('115 OAuth 状态查询错误：', error)
       ElMessage.error('授权状态查询失败')
+    } finally {
+      inFlight = false
     }
-  }, 3000)
+    if (runId === oauthPollingRunId && !document.hidden && oauthPollingTimer === null) {
+      startPolling()
+    }
+  }
+  const startPolling = () => {
+    if (runId !== oauthPollingRunId || document.hidden || inFlight || oauthPollingTimer !== null) {
+      return
+    }
+    oauthPollingTimer = window.setInterval(() => void poll(), 3000)
+  }
+  oauthPollingVisibilityHandler = () => {
+    if (document.hidden) {
+      if (oauthPollingTimer !== null) {
+        window.clearInterval(oauthPollingTimer)
+        oauthPollingTimer = null
+      }
+      return
+    }
+    startPolling()
+  }
+  document.addEventListener('visibilitychange', oauthPollingVisibilityHandler)
+  startPolling()
 }
 
 const handleBaiduOAuth = async (accountId?: number) => {
@@ -1224,6 +1483,10 @@ const confirmOAuth = async (
     } else if (source === 'baidupan') {
       url = `${SERVER_URL}/baidupan/oauth-confirm`
     } else {
+      if (payload.authorization_id) {
+        void cancelAndClearPendingAuthorization(accountId, payload.authorization_id)
+      }
+      ElMessage.error('不支持的授权来源')
       return
     }
 
@@ -1232,6 +1495,7 @@ const confirmOAuth = async (
       {
         account_id: accountId,
         ...(tokenData ? { data: tokenData } : { payload }),
+        ...(payload.authorization_id ? { authorization_id: payload.authorization_id } : {}),
       },
       {
         headers: {
@@ -1241,6 +1505,7 @@ const confirmOAuth = async (
     )
 
     if (response?.data.code === 200) {
+      clearPendingV115Authorization(payload.authorization_id)
       ElMessage.success({ message: '授权成功，2 秒后将自动刷新页面', duration: 2000 })
       setTimeout(() => {
         const hash = window.location.hash
@@ -1248,9 +1513,15 @@ const confirmOAuth = async (
         window.location.href = window.location.origin + cleanHash
       }, 2000)
     } else {
+      if (payload.authorization_id) {
+        void cancelAndClearPendingAuthorization(accountId, payload.authorization_id)
+      }
       ElMessage.error(response?.data.message || '授权确认失败')
     }
   } catch (error) {
+    if (payload.authorization_id) {
+      void cancelAndClearPendingAuthorization(accountId, payload.authorization_id)
+    }
     console.error('OAuth 确认错误：', error)
     ElMessage.error('授权确认失败')
   }
@@ -1261,16 +1532,59 @@ const checkOAuthCallback = async () => {
   const accountId = urlParams.get('account_id')
   const tokenData = urlParams.get('token_data')
   const source = urlParams.get('source') || '115'
+  const callbackAuthorizationId = urlParams.get('authorization_id') || ''
+  const callbackAccountId = accountId ? Number(accountId) : 0
+  const hasValidCallbackAccountId = Number.isSafeInteger(callbackAccountId) && callbackAccountId > 0
+  const pendingRedirectAuthorization = loadPendingV115Authorization()
+  const hasCallbackData = Boolean(
+    tokenData || urlParams.get('access_token') || urlParams.get('state'),
+  )
 
-  if (accountId && (tokenData || urlParams.get('access_token') || urlParams.get('state'))) {
+  if (
+    pendingRedirectAuthorization &&
+    (pendingRedirectAuthorization.authorizationId !== callbackAuthorizationId ||
+      (accountId &&
+        (!hasValidCallbackAccountId ||
+          pendingRedirectAuthorization.accountId !== callbackAccountId)))
+  ) {
+    await cancelAndClearPendingAuthorization(
+      pendingRedirectAuthorization.accountId,
+      pendingRedirectAuthorization.authorizationId,
+    )
+    return
+  }
+
+  if (hasValidCallbackAccountId && hasCallbackData) {
     const payload = Object.fromEntries(urlParams.entries())
-    await confirmOAuth(source, parseInt(accountId), tokenData || '', payload)
+    await confirmOAuth(source, callbackAccountId, tokenData || '', payload)
+    return
+  }
+
+  if (pendingRedirectAuthorization) {
+    await cancelAndClearPendingAuthorization(
+      pendingRedirectAuthorization.accountId,
+      pendingRedirectAuthorization.authorizationId,
+    )
   }
 }
 
-onMounted(() => {
-  checkOAuthCallback()
+onMounted(async () => {
+  await checkOAuthCallback()
   loadAccounts()
+})
+
+onUnmounted(() => {
+  const qrAccountId = selectedV115Account.value?.id
+  const qrAuthorizationId = selectedV115AuthorizationId.value
+  const oauthContext = oauthPollingContext
+  stopOAuthPolling()
+  oauthPollingContext = null
+  if (oauthContext?.authorizationId) {
+    void cancelAndClearPendingAuthorization(oauthContext.accountId, oauthContext.authorizationId)
+  }
+  if (qrAccountId && qrAuthorizationId) {
+    void cancelAndClearPendingAuthorization(qrAccountId, qrAuthorizationId)
+  }
 })
 </script>
 

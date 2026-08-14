@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -292,13 +293,14 @@ func Get115UrlByPickCode(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param account_id body integer true "账号 ID"
+// @Param authorization_id body string false "更换授权会话 ID"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /auth/115-qrcode-open [post]
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func GetLoginQrCodeOpen(c *gin.Context) {
-	var req requests.AccountIDRequest
+	var req requests.QRCodeOpenRequest
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
 		return
@@ -312,17 +314,21 @@ func GetLoginQrCodeOpen(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
-	if account.V115AuthSource().Provider != v115auth.ProviderOfficialPKCE {
+	source, client, err := getV115AuthorizationTarget(account, req.AuthorizationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	if source.Provider != v115auth.ProviderOfficialPKCE {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是官方 PKCE 授权来源", Data: nil})
 		return
 	}
-	client := account.Get115Client()
 	qrCodeData, err := client.GetQrCode()
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取二维码失败：" + err.Error(), Data: nil})
 		return
 	}
-	saveOpen115AuthState(req.AccountID, qrCodeData)
+	saveOpen115AuthState(req.AccountID, qrCodeData, strings.TrimSpace(req.AuthorizationID))
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
 		Message: "获取二维码成功",
@@ -344,6 +350,7 @@ func GetLoginQrCodeOpen(c *gin.Context) {
 // @Produce json
 // @Param uid body string true "二维码 UID"
 // @Param account_id body integer true "账号 ID"
+// @Param authorization_id body string false "更换授权会话 ID"
 // @Success 200 {object} object
 // @Failure 200 {object} object
 // @Router /auth/115-qrcode-status [post]
@@ -364,12 +371,20 @@ func GetQrCodeStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "二维码授权状态不存在或已过期", Data: nil})
 		return
 	}
+	if strings.TrimSpace(req.AuthorizationID) != state.AuthorizationID {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "二维码授权会话不匹配", Data: nil})
+		return
+	}
 	account, err := models.GetAccountById(req.AccountID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
-	client := account.Get115Client()
+	source, client, err := getV115AuthorizationTarget(account, state.AuthorizationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
 	status, err := client.QrCodeScanStatus(&state.CodeData.QrCodeData)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取二维码状态失败：" + err.Error(), Data: nil})
@@ -402,23 +417,21 @@ func GetQrCodeStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: errMsg, Data: nil})
 		return
 	}
-	if !account.UpdateToken(openToken.AccessToken, openToken.RefreshToken, openToken.ExpiresIn) {
-		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存 115 访问凭证失败", Data: nil})
-		return
-	}
 	userInfo, err := client.UserInfo()
 	if err != nil {
 		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 用户信息失败：" + err.Error(), Data: nil})
 		return
 	}
-	if !account.UpdateUser(string(userInfo.UserId), userInfo.UserName) {
+	if !commitOpen115AuthState(req.AccountID, req.UID, func() bool {
+		return save115AuthorizationWithUserInfo(c, account, source, state.AuthorizationID, *openToken, *userInfo)
+	}) {
 		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新用户信息失败", Data: nil})
+		if !c.Writer.Written() {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "二维码授权状态不存在或已取消", Data: nil})
+		}
 		return
 	}
-	deleteOpen115AuthState(req.AccountID, req.UID)
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
 		Message: "",
@@ -449,7 +462,12 @@ func GetOAuthUrl(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
-	source := account.V115AuthSource()
+	authorizationID := strings.TrimSpace(req.AuthorizationID)
+	source, _, err := getV115AuthorizationTarget(account, authorizationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
 	if source.SourceType != v115auth.SourceTypeBuiltInRelay && source.SourceType != v115auth.SourceTypeThirdPartyService {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是网页授权来源", Data: nil})
 		return
@@ -460,10 +478,12 @@ func GetOAuthUrl(c *gin.Context) {
 		return
 	}
 	result, err := provider.BuildAuth(c.Request.Context(), v115auth.OAuthURLRequest{
-		AccountID:   account.ID,
-		AppID:       source.AppID,
-		RedirectURL: req.RedirectURL,
-		Provider:    source.Provider,
+		AccountID:       account.ID,
+		AppID:           source.AppID,
+		RedirectURL:     req.RedirectURL,
+		Provider:        source.Provider,
+		AuthorizationID: authorizationID,
+		Source:          source,
 	})
 	if err != nil {
 		message := "生成 OAuth 登录地址失败：" + err.Error()
@@ -496,7 +516,26 @@ func ConfirmOAuthCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
-	source := account.V115AuthSource()
+	payload := req.Payload
+	if payload == nil {
+		payload = map[string]string{}
+	}
+	if req.Data != "" {
+		payload["data"] = req.Data
+	}
+	authorizationID := strings.TrimSpace(req.AuthorizationID)
+	if callbackAuthorizationID := strings.TrimSpace(payload["authorization_id"]); callbackAuthorizationID != "" {
+		if authorizationID != "" && authorizationID != callbackAuthorizationID {
+			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+			return
+		}
+		authorizationID = callbackAuthorizationID
+	}
+	source, _, err := getV115AuthorizationTarget(account, authorizationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
 	if source.SourceType != v115auth.SourceTypeBuiltInRelay && source.SourceType != v115auth.SourceTypeThirdPartyService {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是网页授权来源", Data: nil})
 		return
@@ -506,12 +545,8 @@ func ConfirmOAuthCode(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的 115 网页授权服务", Data: nil})
 		return
 	}
-	payload := req.Payload
-	if payload == nil {
-		payload = map[string]string{}
-	}
-	if req.Data != "" {
-		payload["data"] = req.Data
+	if authorizationID != "" {
+		payload["authorization_id"] = authorizationID
 	}
 	token, err := provider.Confirm(c.Request.Context(), payload)
 	if err != nil {
@@ -522,7 +557,7 @@ func ConfirmOAuthCode(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "授权处理中", Data: nil})
 		return
 	}
-	if !save115OAuthToken(c, account, token) {
+	if !save115OAuthToken(c, account, source, authorizationID, token, "") {
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OAuth 登录已确认", Data: nil})
@@ -543,7 +578,39 @@ func GetOAuthStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
+	oauthState, ok := v115auth.GetOAuthStateForAccount(req.State, account.ID)
+	if !ok {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权状态不存在或已过期", Data: nil})
+		return
+	}
+	authorizationID := strings.TrimSpace(req.AuthorizationID)
+	if oauthState.AuthorizationID != "" {
+		if authorizationID != "" && authorizationID != oauthState.AuthorizationID {
+			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+			return
+		}
+		authorizationID = oauthState.AuthorizationID
+	} else if authorizationID != "" {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+		return
+	}
 	source := account.V115AuthSource()
+	if authorizationID != "" {
+		targetSession, sessionOK := v115auth.GetAuthorizationSession(authorizationID, account.ID)
+		if !sessionOK {
+			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "授权会话不存在或已过期", Data: nil})
+			return
+		}
+		source = targetSession.Source
+	} else if oauthState.Source.Provider != "" {
+		source = oauthState.Source
+	}
+	if source.Provider != oauthState.Provider ||
+		(oauthState.Source.Provider != "" &&
+			(source.SourceType != oauthState.Source.SourceType || source.Provider != oauthState.Source.Provider || source.AppID != oauthState.Source.AppID)) {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权服务不匹配", Data: nil})
+		return
+	}
 	provider, ok := v115auth.GetOAuthProvider(source.Provider)
 	if !ok {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的 115 网页授权服务", Data: nil})
@@ -555,27 +622,110 @@ func GetOAuthStatus(c *gin.Context) {
 		return
 	}
 	if token.Done {
-		if !save115OAuthToken(c, account, token) {
+		// PrepareAccountAuthorization 会在远端请求进行时清理旧状态；读取用户信息
+		// 或写入凭据前需要再次确认，避免更换授权开始后旧结果仍然提交。
+		currentState, stateStillActive := v115auth.GetOAuthStateForAccount(req.State, account.ID)
+		if !stateStillActive || currentState.AuthorizationID != oauthState.AuthorizationID {
+			v115auth.ReleaseOAuthState(req.State)
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权状态不存在或已取消", Data: nil})
+			return
+		}
+		if !save115OAuthToken(c, account, source, authorizationID, token, req.State) {
 			return
 		}
 	}
 	c.JSON(http.StatusOK, APIResponse[gin.H]{Code: Success, Message: "查询 OAuth 授权状态成功", Data: gin.H{"done": token.Done}})
 }
 
-func save115OAuthToken(c *gin.Context, account *models.Account, token v115auth.OAuthTokenResult) bool {
-	if !account.UpdateToken(token.AccessToken, token.RefreshToken, token.ExpiresIn) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存 115 访问凭证失败", Data: nil})
+func getV115AuthorizationTarget(account *models.Account, authorizationID string) (v115auth.Source, *v115open.OpenClient, error) {
+	source := account.V115AuthSource()
+	authorizationID = strings.TrimSpace(authorizationID)
+	if authorizationID != "" {
+		session, ok := v115auth.GetAuthorizationSession(authorizationID, account.ID)
+		if !ok {
+			return v115auth.Source{}, nil, fmt.Errorf("授权会话不存在或已过期")
+		}
+		source = session.Source
+	}
+	if source.SourceType == "" || source.Provider == "" {
+		return v115auth.Source{}, nil, fmt.Errorf("115 授权来源无效")
+	}
+	if authorizationID != "" && source.Deprecated {
+		return v115auth.Source{}, nil, fmt.Errorf("已废弃的 115 授权来源不能用于授权")
+	}
+	return source, v115open.NewClient(account.ID, source.AppID, account.Token, account.RefreshToken), nil
+}
+
+func begin115AuthorizationSession(c *gin.Context, account *models.Account, authorizationID string) (string, bool) {
+	authorizationID = strings.TrimSpace(authorizationID)
+	if authorizationID != "" && !v115auth.BeginAuthorizationSession(authorizationID, account.ID) {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权会话不存在、已过期或已取消", Data: nil})
+		return "", false
+	}
+	return authorizationID, true
+}
+
+func save115Authorization(c *gin.Context, account *models.Account, source v115auth.Source, authorizationID string, client *v115open.OpenClient, token v115open.TokenData) bool {
+	normalizedAuthorizationID, ok := begin115AuthorizationSession(c, account, authorizationID)
+	if !ok {
 		return false
 	}
-	client := account.Get115Client()
+	authorizationID = normalizedAuthorizationID
+
 	userInfo, err := client.UserInfo()
 	if err != nil {
+		if authorizationID != "" {
+			v115auth.AbortAuthorizationSession(authorizationID)
+		}
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 用户信息失败：" + err.Error(), Data: nil})
 		return false
 	}
-	if !account.UpdateUser(string(userInfo.UserId), userInfo.UserName) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新用户信息失败", Data: nil})
+	return commit115Authorization(c, account, source, authorizationID, token, *userInfo)
+}
+
+func save115AuthorizationWithUserInfo(c *gin.Context, account *models.Account, source v115auth.Source, authorizationID string, token v115open.TokenData, userInfo v115open.UserInfo) bool {
+	normalizedAuthorizationID, ok := begin115AuthorizationSession(c, account, authorizationID)
+	if !ok {
 		return false
+	}
+	authorizationID = normalizedAuthorizationID
+	return commit115Authorization(c, account, source, authorizationID, token, userInfo)
+}
+
+func commit115Authorization(c *gin.Context, account *models.Account, source v115auth.Source, authorizationID string, token v115open.TokenData, userInfo v115open.UserInfo) bool {
+	commit := func() error {
+		return account.ReplaceV115Authorization(source, token.AccessToken, token.RefreshToken, token.ExpiresIn, string(userInfo.UserId), userInfo.UserName)
+	}
+	var err error
+	if authorizationID != "" {
+		err = v115auth.CommitAuthorizationSession(authorizationID, account.ID, commit)
+	} else {
+		err = v115auth.CommitLegacyAuthorization(account.ID, func() error {
+			return account.UpdateV115Authorization(source, token.AccessToken, token.RefreshToken, token.ExpiresIn, string(userInfo.UserId), userInfo.UserName)
+		})
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存 115 授权失败：" + accountPersistenceMessage(err), Data: nil})
+		return false
+	}
+	return true
+}
+
+func save115OAuthToken(c *gin.Context, account *models.Account, source v115auth.Source, authorizationID string, token v115auth.OAuthTokenResult, oauthState string) bool {
+	client := v115open.NewClient(account.ID, source.AppID, token.AccessToken, token.RefreshToken)
+	openToken := v115open.TokenData{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		ExpiresIn:    token.ExpiresIn,
+	}
+	if !save115Authorization(c, account, source, authorizationID, client, openToken) {
+		if oauthState != "" {
+			v115auth.ReleaseOAuthState(oauthState)
+		}
+		return false
+	}
+	if oauthState != "" {
+		v115auth.ConsumeOAuthState(oauthState)
 	}
 	return true
 }

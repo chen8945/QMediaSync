@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `61`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `62`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -92,8 +92,9 @@
 | 58 | 59 | `settings` 新增 115 直链缓存有效性检查开关和总超时。 |
 | 59 | 60 | 新增 `sync_path_idempotency_records`，用于同步目录创建的幂等重试；`emby_library_refresh_tasks` 新增 `task_key` 用于任务去重，item 定向刷新任务的 `library_id` 回填为真实媒体库 ID 或为空。 |
 | 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
+| 61 | 62 | 为 `account.name` 和 `account.user_id` 创建非空条件唯一索引；迁移前检查已有重复值，发现重复时保留数据、停留在旧版本并记录诊断信息，不静默改写账号关联。 |
 
-当前数据库版本是 `61`。
+当前数据库版本是 `62`。
 
 ## 不变量
 
@@ -167,7 +168,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `61`。
+- `version_code`：当前数据库版本号，当前值为 `62`。
 
 ### `users`
 
@@ -184,7 +185,8 @@
 
 网盘 / OpenList / 115 授权账号表。
 
-- `name`：账号备注，便于人工识别。
+- `id`：本地账号稳定主键；同步目录、刮削目录、任务历史和同步文件通过该 ID 关联。
+- `name`：账号备注，便于人工识别；非空值唯一，未完成授权的临时账号允许为空。
 - `source_type`：账号来源类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
 - `app_id`：115 开放平台 APP ID。
 - `app_id_name`：自定义应用显示名。
@@ -202,6 +204,9 @@
 
 - `app_id_name` 是后加字段，用于区分自定义 115 应用。
 - `auth_source_type`、`auth_provider` 是后加字段，用于稳定描述授权来源。
+- `user_id` 的非空值唯一；空值仅表示尚未完成授权的临时账号。`name` 和非空 `user_id` 由 `idx_account_name`、`idx_account_user_id` 部分唯一索引约束，避免多个临时账号因空值冲突。
+- 115 更换授权会在同一条 `account` 记录内原子更新授权来源、应用信息、令牌、过期时间和用户信息，不修改 `id` 或其他关联表。迁移版本 62 会先检查已有重复非空值；发现重复时保留数据并停止创建唯一索引，要求管理员先处理后再升级，避免静默改写账号关联。
+- 百度网盘 OAuth 确认会在验证新凭据对应的用户信息后，把新凭据和账号用户身份放入同一事务提交；唯一性冲突时不留下凭据与身份不一致的部分更新。
 
 ### `api_keys`
 
@@ -863,7 +868,7 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - 本地文件大小、mtime、SHA1 或快速签名发生变化时，不复用旧 checkpoint；复用当前 session 记录写入新本地签名，清空 115 调度、OSS multipart、分片进度和完成态字段，将状态设为 `init`、恢复状态设为 `session_expired_restarted`，并在 `last_error` 留下废弃原因。上传执行会立即重新 init，不新增 session 历史记录，也不先标记上传任务失败。
 - 本地签名仍匹配但 OSS 返回 `NoSuchUpload`、`InvalidUploadId` 等 checkpoint 已失效错误时，会将当前 session 标记为 `session_expired_restarted`，清空 `upload_id`、part size、已上传字节数和分片进度，并在同一次任务中复用当前 115 调度结果创建新的 OSS multipart。
 
-### 版本 61 迁移与回退
+### 版本 61、62 迁移与回退
 
 版本 `60 → 61` 先增加新列，再仅使用已有任务和关联 `sync_files` 回填可靠数据：115 下载可回填文件 ID、PickCode、SHA1 和完整路径；百度的 `sync_files.pick_code` 为可证明的 `fs_id`，回填到 `remote_file_id`，其历史 `sync_files.sha1` 语义为 MD5，只回填到 `remote_md5`；OpenList、Emby 和 local 的旧执行定位分别迁入隐藏的直链、Emby 条目 ID 和本地源路径。无法证明的路径、对象 ID、PickCode 或 SHA1 保持空，不发起远端补查。
 
@@ -872,6 +877,8 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 迁移会为 `remote_full_path` 非空的活跃上传任务创建 `idx_db_upload_tasks_active_target`。若旧数据在相同 `source + source_type + account_id + remote_full_path` 范围内已有多个活跃任务，先保留进度最高的一个（正在完成处理、等待完成处理、上传中、等待上传依次优先；相同状态保留 ID 最小者），其余任务标记为已取消并写入迁移原因，再创建索引。已处于版本 `61` 但缺少该索引的数据库会在启动时补齐相同约束。
 
 升级前必须备份数据库。版本 61 删除了旧列，回退到依赖它们的旧二进制不安全；升级期间不得让新旧二进制混合连接同一个数据库。
+
+版本 `61 → 62` 不修改账号数据，只在创建唯一索引前检查 `name` 和 `user_id` 的重复非空值。发现重复时迁移保持在版本 `61`，管理员处理重复记录后可重新启动重试；已创建的唯一索引不应在存在重复数据时强制删除或改写账号。升级后回退到不识别这些唯一索引的旧二进制前，必须先确认旧版本不会写入重复身份值。
 
 ### `directory_upload_processed_files`
 

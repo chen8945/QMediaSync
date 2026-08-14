@@ -16,10 +16,12 @@ import (
 )
 
 type OAuthURLRequest struct {
-	AccountID   uint
-	AppID       string
-	RedirectURL string
-	Provider    AuthProvider
+	AccountID       uint
+	AppID           string
+	RedirectURL     string
+	Provider        AuthProvider
+	AuthorizationID string
+	Source          Source
 }
 
 type OAuthURLResult struct {
@@ -73,20 +75,26 @@ func (provider relayOAuthProvider) BuildAuth(_ context.Context, req OAuthURLRequ
 	}
 	redirectURL := strings.TrimSpace(req.RedirectURL)
 	if redirectURL != "" {
-		redirectURL = fmt.Sprintf("%s?source=115", redirectURL)
+		var err error
+		redirectURL, err = appendCallbackParams(redirectURL, url.Values{"source": []string{"115"}, "authorization_id": []string{req.AuthorizationID}})
+		if err != nil {
+			return OAuthURLResult{}, err
+		}
 	}
 	stateObj := struct {
-		State       string `json:"state"`
-		Time        int64  `json:"time"`
-		ClientId    string `json:"client_id"`
-		RedirectUrl string `json:"redirect_url"`
-		AccountId   uint   `json:"account_id"`
+		State           string `json:"state"`
+		Time            int64  `json:"time"`
+		ClientId        string `json:"client_id"`
+		RedirectUrl     string `json:"redirect_url"`
+		AccountId       uint   `json:"account_id"`
+		AuthorizationID string `json:"authorization_id,omitempty"`
 	}{
-		State:       helpers.RandStr(16),
-		Time:        time.Now().Unix(),
-		ClientId:    clientID,
-		RedirectUrl: redirectURL,
-		AccountId:   req.AccountID,
+		State:           helpers.RandStr(16),
+		Time:            time.Now().Unix(),
+		ClientId:        clientID,
+		RedirectUrl:     redirectURL,
+		AccountId:       req.AccountID,
+		AuthorizationID: req.AuthorizationID,
 	}
 	stateJSON, _ := json.Marshal(stateObj)
 	stateEncoded, err := helpers.Encrypt(string(stateJSON))
@@ -153,7 +161,14 @@ func (provider moviePilotOAuthProvider) BuildAuth(ctx context.Context, req OAuth
 	if authURL == "" || state == "" {
 		return OAuthURLResult{}, fmt.Errorf("MoviePilot 授权服务响应缺少 auth_url 或 state")
 	}
-	SaveOAuthState(OAuthState{State: state, AccountID: req.AccountID, Provider: ProviderMoviePilot, RedirectURL: req.RedirectURL})
+	SaveOAuthState(OAuthState{
+		State:           state,
+		AccountID:       req.AccountID,
+		Provider:        ProviderMoviePilot,
+		RedirectURL:     req.RedirectURL,
+		AuthorizationID: req.AuthorizationID,
+		Source:          req.Source,
+	})
 	return OAuthURLResult{AuthURL: authURL, State: state, Polling: true, ExpiresIn: OAuthStateTTLSeconds}, nil
 }
 
@@ -162,26 +177,28 @@ func (provider moviePilotOAuthProvider) Confirm(_ context.Context, _ map[string]
 }
 
 func (provider moviePilotOAuthProvider) Poll(ctx context.Context, state string) (OAuthTokenResult, error) {
-	if _, ok := GetOAuthState(state, ProviderMoviePilot); !ok {
+	if _, ok := ClaimOAuthState(state, ProviderMoviePilot); !ok {
 		return OAuthTokenResult{}, fmt.Errorf("授权状态不存在或已过期")
 	}
 	endpoint := strings.TrimRight(provider.authServer, "/") + "/u115/token?state=" + url.QueryEscape(state)
 	resp, err := httpGetJSON(ctx, provider.client, endpoint)
 	if err != nil {
+		ReleaseOAuthState(state)
 		return OAuthTokenResult{}, err
 	}
 	token := tokenResultFromMap(resp)
 	if !token.Done {
+		ReleaseOAuthState(state)
 		return OAuthTokenResult{Done: false}, nil
 	}
-	DeleteOAuthState(state)
+	// 保留占用，直到控制器完成 Token 的原子保存。
 	return token, nil
 }
 
 type cloudDriveOAuthProvider struct{}
 
 func (provider cloudDriveOAuthProvider) BuildAuth(_ context.Context, req OAuthURLRequest) (OAuthURLResult, error) {
-	state, err := cloudDriveCallbackState(req.RedirectURL, req.AccountID)
+	state, err := cloudDriveCallbackState(req.RedirectURL, req.AccountID, req.AuthorizationID)
 	if err != nil {
 		return OAuthURLResult{}, err
 	}
@@ -211,7 +228,7 @@ func (provider cloudDriveOAuthProvider) Poll(_ context.Context, _ string) (OAuth
 	return OAuthTokenResult{}, errUnsupportedOAuthOperation
 }
 
-func cloudDriveCallbackState(redirectURL string, accountID uint) (string, error) {
+func cloudDriveCallbackState(redirectURL string, accountID uint, authorizationID string) (string, error) {
 	redirectURL = strings.TrimSpace(redirectURL)
 	if redirectURL == "" {
 		return "", fmt.Errorf("CloudDrive 授权缺少回跳地址")
@@ -220,22 +237,45 @@ func cloudDriveCallbackState(redirectURL string, accountID uint) (string, error)
 	if err != nil || callbackURL.Scheme == "" || callbackURL.Host == "" {
 		return "", fmt.Errorf("CloudDrive 授权回跳地址无效")
 	}
-	values := url.Values{}
-	values.Set("source", "115")
-	values.Set("account_id", strconv.FormatUint(uint64(accountID), 10))
+	return appendCallbackParams(callbackURL.String(), url.Values{
+		"source":           []string{"115"},
+		"account_id":       []string{strconv.FormatUint(uint64(accountID), 10)},
+		"authorization_id": []string{authorizationID},
+	})
+}
+
+func appendCallbackParams(rawURL string, params url.Values) (string, error) {
+	callbackURL, err := url.Parse(rawURL)
+	if err != nil || callbackURL.Scheme == "" || callbackURL.Host == "" {
+		return "", fmt.Errorf("OAuth 回跳地址无效")
+	}
 	if callbackURL.Fragment != "" {
 		fragmentPath, fragmentQuery, hasQuery := strings.Cut(callbackURL.Fragment, "?")
+		fragmentValues := url.Values{}
 		if hasQuery {
-			values, _ = url.ParseQuery(fragmentQuery)
-			values.Set("source", "115")
-			values.Set("account_id", strconv.FormatUint(uint64(accountID), 10))
+			fragmentValues, err = url.ParseQuery(fragmentQuery)
+			if err != nil {
+				return "", err
+			}
 		}
-		callbackURL.Fragment = fragmentPath + "?" + values.Encode()
+		for key, values := range params {
+			for _, value := range values {
+				if value != "" {
+					fragmentValues.Set(key, value)
+				}
+			}
+		}
+		callbackURL.Fragment = fragmentPath + "?" + fragmentValues.Encode()
 		return callbackURL.String(), nil
 	}
 	query := callbackURL.Query()
-	query.Set("source", "115")
-	query.Set("account_id", strconv.FormatUint(uint64(accountID), 10))
+	for key, values := range params {
+		for _, value := range values {
+			if value != "" {
+				query.Set(key, value)
+			}
+		}
+	}
 	callbackURL.RawQuery = query.Encode()
 	return callbackURL.String(), nil
 }

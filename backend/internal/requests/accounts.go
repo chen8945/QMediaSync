@@ -19,6 +19,64 @@ type CreateAccountRequest struct {
 	CustomAppName  string                  `json:"custom_app_name" form:"custom_app_name"`
 }
 
+// PrepareAccountAuthorizationRequest 准备更换已有账号的授权请求。
+type PrepareAccountAuthorizationRequest struct {
+	AccountID      uint                    `json:"account_id" form:"account_id"`
+	SourceType     models.SourceType       `json:"source_type" form:"source_type"`
+	AuthSourceType v115auth.AuthSourceType `json:"auth_source_type" form:"auth_source_type"`
+	AuthProvider   v115auth.AuthProvider   `json:"auth_provider" form:"auth_provider"`
+	AppID          string                  `json:"app_id" form:"app_id"`
+	AppIDName      string                  `json:"app_id_name" form:"app_id_name"`
+	CustomAppName  string                  `json:"custom_app_name" form:"custom_app_name"`
+	Confirmed      bool                    `json:"confirmed" form:"confirmed"`
+}
+
+// CancelAccountAuthorizationRequest 取消已有账号的授权更换会话请求。
+type CancelAccountAuthorizationRequest struct {
+	AccountID       uint   `json:"account_id" form:"account_id"`
+	AuthorizationID string `json:"authorization_id" form:"authorization_id"`
+}
+
+// Validate 校验授权更换会话取消请求。
+func (r CancelAccountAuthorizationRequest) Validate() error {
+	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(r.AuthorizationID) == "" {
+		return validation.New("authorization_id", "不能为空")
+	}
+	return validateAuthorizationID(r.AuthorizationID)
+}
+
+// Validate 校验更换授权请求。
+func (r PrepareAccountAuthorizationRequest) Validate() error {
+	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
+		return err
+	}
+	if err := validation.OneOfString("source_type", string(r.SourceType), []string{
+		string(models.SourceType115),
+		string(models.SourceType123),
+		string(models.SourceTypeBaiduPan),
+		string(models.SourceTypeOpenList),
+	}); err != nil {
+		return err
+	}
+	if !r.Confirmed {
+		return validation.New("confirmed", "必须手动确认更换授权风险")
+	}
+	if strings.TrimSpace(r.CustomAppName) != "" {
+		if err := validation.Length("custom_app_name", r.CustomAppName, 1, 64); err != nil {
+			return err
+		}
+	}
+	if r.SourceType == models.SourceType115 {
+		if _, err := v115auth.SourceFromCreateRequest(r.AuthSourceType, r.AuthProvider, r.AppID, r.AppIDName, r.CustomAppName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Validate 校验创建账号请求。
 func (r CreateAccountRequest) Validate() error {
 	if err := validation.OneOfString("source_type", string(r.SourceType), []string{

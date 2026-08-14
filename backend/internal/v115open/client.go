@@ -26,6 +26,8 @@ var cachedClients map[string]*OpenClient = make(map[string]*OpenClient, 0)
 var cachedClientsMutex sync.RWMutex
 
 func UpdateToken(accountId uint, token string, refreshToken string) {
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
 	for key, client := range cachedClients {
 		if client.AccountId == accountId {
 			client.SetAuthToken(token, refreshToken)
@@ -34,16 +36,25 @@ func UpdateToken(accountId uint, token string, refreshToken string) {
 	}
 }
 
-// NewHttpClient 创建新的 HTTP 客户端
-func GetClient(accountId uint, appId string, token string, refreshToken string) *OpenClient {
-	cachedClientsMutex.RLock()
-	defer cachedClientsMutex.RUnlock()
-	clientKey := fmt.Sprintf("%d", accountId)
-	if client, exists := cachedClients[clientKey]; exists {
+// UpdateTokenIfCurrent 仅当缓存客户端仍持有预期凭据时更新令牌。
+// 远端刷新完成后，授权替换可能已经刷新了同一账号的共享客户端。
+func UpdateTokenIfCurrent(accountId uint, expectedToken string, expectedRefreshToken string, token string, refreshToken string) bool {
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
+	updated := false
+	for key, client := range cachedClients {
+		if client.AccountId != accountId || client.AccessToken != expectedToken || client.RefreshTokenStr != expectedRefreshToken {
+			continue
+		}
 		client.SetAuthToken(token, refreshToken)
-		return client
+		helpers.AppLogger.Infof("条件更新 115 客户端 %s 的 Token 成功", key)
+		updated = true
 	}
+	return updated
+}
 
+// NewClient 创建不进入共享缓存的 115 HTTP 客户端。
+func NewClient(accountId uint, appId string, token string, refreshToken string) *OpenClient {
 	client := resty.New()
 	openClient := &OpenClient{
 		client:    client,
@@ -51,6 +62,35 @@ func GetClient(accountId uint, appId string, token string, refreshToken string) 
 		AccountId: accountId,
 	}
 	openClient.SetAuthToken(token, refreshToken)
+	return openClient
+}
+
+// GetClient 获取按账号 ID 缓存的 HTTP 客户端。
+func GetClient(accountId uint, appId string, token string, refreshToken string) *OpenClient {
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
+	clientKey := fmt.Sprintf("%d", accountId)
+	if client, exists := cachedClients[clientKey]; exists {
+		client.AppId = appId
+		client.SetAuthToken(token, refreshToken)
+		return client
+	}
+
+	openClient := NewClient(accountId, appId, token, refreshToken)
+	cachedClients[clientKey] = openClient
+	return openClient
+}
+
+// GetCachedClient 获取账号共享客户端，但不使用调用方的旧账号快照覆盖已有凭据。
+func GetCachedClient(accountId uint, appId string, token string, refreshToken string) *OpenClient {
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
+	clientKey := fmt.Sprintf("%d", accountId)
+	if client, exists := cachedClients[clientKey]; exists {
+		return client
+	}
+
+	openClient := NewClient(accountId, appId, token, refreshToken)
 	cachedClients[clientKey] = openClient
 	return openClient
 }

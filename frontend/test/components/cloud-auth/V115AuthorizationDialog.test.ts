@@ -36,6 +36,7 @@ describe('V115AuthorizationDialog', () => {
         visible: true,
         accountId: 1,
         accountName: '测试账号',
+        authorizationId: 'change-session',
       },
       global: {
         provide: {
@@ -52,10 +53,42 @@ describe('V115AuthorizationDialog', () => {
       },
     })
 
+    expect(startAuthorization).toHaveBeenCalledWith(1, 'change-session')
+
     authorizationState.status.value = 'confirmed'
     await nextTick()
 
     expect(wrapper.emitted('confirmed')).toHaveLength(1)
     expect(wrapper.emitted('update:visible')).toEqual([[false]])
+  })
+
+  it('关闭弹窗时停止当前二维码轮询', async () => {
+    authorizationState.status.value = 'waiting'
+    startAuthorization.mockClear()
+    stopPolling.mockClear()
+    const wrapper = mount(V115AuthorizationDialog, {
+      props: {
+        visible: true,
+        accountId: 1,
+        accountName: '测试账号',
+      },
+      global: {
+        provide: {
+          [httpKey]: {},
+        },
+        stubs: {
+          ElDialog: { template: '<div><slot /></div>' },
+          ElSkeleton: { template: '<div />' },
+          ElTag: { template: '<div><slot /></div>' },
+          ElButton: { template: '<button><slot /></button>' },
+          ElIcon: { template: '<span><slot /></span>' },
+          V115QrCode: { template: '<canvas />' },
+        },
+      },
+    })
+
+    await wrapper.setProps({ visible: false })
+
+    expect(stopPolling).toHaveBeenCalled()
   })
 })

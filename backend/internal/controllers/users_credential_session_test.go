@@ -571,9 +571,22 @@ func findCookieValue(cookies []*http.Cookie, name string) string {
 
 func waitForCredentialTestSignal(t *testing.T, name string, signal <-chan struct{}) {
 	t.Helper()
+	waitUntil := time.Now().Add(30 * time.Second)
+	if deadline, ok := t.Deadline(); ok {
+		testLimit := deadline.Add(-time.Second)
+		if testLimit.Before(waitUntil) {
+			waitUntil = testLimit
+		}
+	}
+	waitDuration := time.Until(waitUntil)
+	if waitDuration <= 0 {
+		t.Fatalf("等待%s超时", name)
+	}
+	timer := time.NewTimer(waitDuration)
+	defer timer.Stop()
 	select {
 	case <-signal:
-	case <-time.After(5 * time.Second):
+	case <-timer.C:
 		t.Fatalf("等待%s超时", name)
 	}
 }

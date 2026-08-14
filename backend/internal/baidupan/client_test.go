@@ -35,3 +35,29 @@ func TestGetFileDetailRejectsEmptyList(t *testing.T) {
 		t.Fatalf("空文件列表错误 = %v，期望明确的文件详情为空错误", err)
 	}
 }
+
+func TestUpdateTokenIfCurrentSkipsReplacedCredentials(t *testing.T) {
+	cachedClientsMutex.Lock()
+	original := cachedClients
+	cachedClients = map[string]*Client{}
+	cachedClientsMutex.Unlock()
+	t.Cleanup(func() {
+		cachedClientsMutex.Lock()
+		cachedClients = original
+		cachedClientsMutex.Unlock()
+	})
+
+	client := NewBaiDuPanClient(12, "new-token")
+	if UpdateTokenIfCurrent(12, "old-token", "stale-token") {
+		t.Fatal("共享客户端凭据已替换时不应接受旧刷新结果")
+	}
+	if client.accessToken != "new-token" {
+		t.Fatalf("旧刷新结果改变了新共享凭据: %q", client.accessToken)
+	}
+	if !UpdateTokenIfCurrent(12, "new-token", "latest-token") {
+		t.Fatal("当前共享客户端凭据应允许条件更新")
+	}
+	if client.accessToken != "latest-token" {
+		t.Fatalf("条件更新未应用: %q", client.accessToken)
+	}
+}

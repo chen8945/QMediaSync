@@ -47,8 +47,9 @@ func (r AccountIDRequest) Validate() error {
 
 // OAuthURLRequest OAuth 登录地址请求。
 type OAuthURLRequest struct {
-	AccountID   uint   `json:"account_id" form:"account_id"`
-	RedirectURL string `json:"redirect_url" form:"redirect_url"`
+	AccountID       uint   `json:"account_id" form:"account_id"`
+	RedirectURL     string `json:"redirect_url" form:"redirect_url"`
+	AuthorizationID string `json:"authorization_id" form:"authorization_id"`
 }
 
 // Validate 校验 OAuth 登录地址请求。
@@ -56,14 +57,18 @@ func (r OAuthURLRequest) Validate() error {
 	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
 		return err
 	}
-	return validation.HTTPURL("redirect_url", r.RedirectURL, true)
+	if err := validation.HTTPURL("redirect_url", r.RedirectURL, true); err != nil {
+		return err
+	}
+	return validateAuthorizationID(r.AuthorizationID)
 }
 
 // OAuthConfirmRequest OAuth 确认请求。
 type OAuthConfirmRequest struct {
-	AccountID uint              `json:"account_id" form:"account_id"`
-	Data      string            `json:"data" form:"data"`
-	Payload   map[string]string `json:"payload" form:"payload"`
+	AccountID       uint              `json:"account_id" form:"account_id"`
+	AuthorizationID string            `json:"authorization_id" form:"authorization_id"`
+	Data            string            `json:"data" form:"data"`
+	Payload         map[string]string `json:"payload" form:"payload"`
 }
 
 // Validate 校验 OAuth 确认请求。
@@ -74,13 +79,14 @@ func (r OAuthConfirmRequest) Validate() error {
 	if strings.TrimSpace(r.Data) == "" && len(r.Payload) == 0 {
 		return validation.New("data", "data 和 payload 不能同时为空")
 	}
-	return nil
+	return validateAuthorizationID(r.AuthorizationID)
 }
 
 // OAuthStatusRequest OAuth 状态请求。
 type OAuthStatusRequest struct {
-	AccountID uint   `json:"account_id" form:"account_id"`
-	State     string `json:"state" form:"state"`
+	AccountID       uint   `json:"account_id" form:"account_id"`
+	State           string `json:"state" form:"state"`
+	AuthorizationID string `json:"authorization_id" form:"authorization_id"`
 }
 
 // Validate 校验 OAuth 状态请求。
@@ -88,13 +94,31 @@ func (r OAuthStatusRequest) Validate() error {
 	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
 		return err
 	}
-	return validation.Length("state", r.State, 1, 512)
+	if err := validation.Length("state", r.State, 1, 512); err != nil {
+		return err
+	}
+	return validateAuthorizationID(r.AuthorizationID)
+}
+
+// QRCodeOpenRequest 获取二维码请求。
+type QRCodeOpenRequest struct {
+	AccountID       uint   `json:"account_id" form:"account_id"`
+	AuthorizationID string `json:"authorization_id" form:"authorization_id"`
+}
+
+// Validate 校验获取二维码请求。
+func (r QRCodeOpenRequest) Validate() error {
+	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
+		return err
+	}
+	return validateAuthorizationID(r.AuthorizationID)
 }
 
 // QRCodeStatusRequest 二维码状态请求。
 type QRCodeStatusRequest struct {
-	UID       string `json:"uid" form:"uid"`
-	AccountID uint   `json:"account_id" form:"account_id"`
+	UID             string `json:"uid" form:"uid"`
+	AccountID       uint   `json:"account_id" form:"account_id"`
+	AuthorizationID string `json:"authorization_id" form:"authorization_id"`
 }
 
 // Validate 校验二维码状态请求。
@@ -102,7 +126,17 @@ func (r QRCodeStatusRequest) Validate() error {
 	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
 		return err
 	}
-	return validation.Length("uid", r.UID, 1, 512)
+	if err := validation.Length("uid", r.UID, 1, 512); err != nil {
+		return err
+	}
+	return validateAuthorizationID(r.AuthorizationID)
+}
+
+func validateAuthorizationID(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	return validation.Length("authorization_id", id, 1, 128)
 }
 
 // RemoteFileURLRequest 远程文件直链请求。

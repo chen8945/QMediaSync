@@ -38,13 +38,24 @@ var cachedClients map[string]*Client = make(map[string]*Client, 0)
 var cachedClientsMutex sync.RWMutex
 
 func NewBaiDuPanClient(accountId uint, accessToken string) *Client {
-	cachedClientsMutex.RLock()
-	defer cachedClientsMutex.RUnlock()
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
 	clientKey := fmt.Sprintf("%d", accountId)
 	if client, exists := cachedClients[clientKey]; exists {
 		client.accessToken = accessToken
 		return client
 	}
+	client := newBaiDuPanClient(accessToken)
+	cachedClients[clientKey] = client
+	return client
+}
+
+// NewBaiDuPanClientWithToken 创建不进入共享缓存的客户端，用于在授权凭据写入账号前验证新授权。
+func NewBaiDuPanClientWithToken(accessToken string) *Client {
+	return newBaiDuPanClient(accessToken)
+}
+
+func newBaiDuPanClient(accessToken string) *Client {
 	config := openapiclient.NewConfiguration()
 	// if !helpers.IsRelease {
 	// 	config.Debug = true
@@ -54,7 +65,6 @@ func NewBaiDuPanClient(accountId uint, accessToken string) *Client {
 		client:      apiClient,
 		accessToken: accessToken,
 	}
-	cachedClients[clientKey] = client
 	return client
 }
 
@@ -103,6 +113,19 @@ func UpdateToken(accountId uint, accessToken string) {
 	if client, exists := cachedClients[clientKey]; exists {
 		client.accessToken = accessToken
 	}
+}
+
+// UpdateTokenIfCurrent 仅当缓存客户端仍持有预期令牌时更新 access token。
+func UpdateTokenIfCurrent(accountId uint, expectedAccessToken string, accessToken string) bool {
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
+	clientKey := fmt.Sprintf("%d", accountId)
+	client, exists := cachedClients[clientKey]
+	if !exists || client.accessToken != expectedAccessToken {
+		return false
+	}
+	client.accessToken = accessToken
+	return true
 }
 
 func (c *Client) SetAuthToken(accessToken string) {

@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/v115auth"
 )
 
 func setupOpenListAccountTest(t *testing.T) {
@@ -36,6 +37,65 @@ func setupOpenListAccountTest(t *testing.T) {
 	}
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+}
+
+func TestAccountIdentityIndexesAllowTemporaryEmptyValuesAndRejectDuplicates(t *testing.T) {
+	setupOpenListAccountTest(t)
+
+	if !db.Db.Migrator().HasIndex(&Account{}, "idx_account_name") || !db.Db.Migrator().HasIndex(&Account{}, "idx_account_user_id") {
+		t.Fatal("Account 应创建 Name 和 UserId 非空唯一索引")
+	}
+	if err := db.Db.Create([]*Account{
+		{Name: "", UserId: ""},
+		{Name: "", UserId: ""},
+	}).Error; err != nil {
+		t.Fatalf("临时账号的空 Name/UserId 不应互相冲突: %v", err)
+	}
+	if err := db.Db.Create(&Account{Name: "家庭账号", UserId: "user-1"}).Error; err != nil {
+		t.Fatalf("创建首个账号失败: %v", err)
+	}
+	if err := db.Db.Create(&Account{Name: "家庭账号", UserId: "user-2"}).Error; err == nil {
+		t.Fatal("重复 Name 应被唯一索引拒绝")
+	}
+	if err := db.Db.Create(&Account{Name: "另一账号", UserId: "user-1"}).Error; err == nil {
+		t.Fatal("重复 UserId 应被唯一索引拒绝")
+	}
+}
+
+func TestReplaceV115AuthorizationRejectsDuplicateUserID(t *testing.T) {
+	setupOpenListAccountTest(t)
+	account := &Account{
+		Name:         "待更换账号",
+		SourceType:   SourceType115,
+		AppId:        "old-app",
+		Token:        "old-token",
+		RefreshToken: "old-refresh",
+		UserId:       "old-user",
+	}
+	other := &Account{Name: "其他账号", SourceType: SourceType115, UserId: "occupied-user"}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建待更换账号失败: %v", err)
+	}
+	if err := db.Db.Create(other).Error; err != nil {
+		t.Fatalf("创建其他账号失败: %v", err)
+	}
+
+	source := v115auth.Source{
+		SourceType: v115auth.SourceTypeBuiltInAppID,
+		Provider:   v115auth.ProviderOfficialPKCE,
+		AppID:      "100197849",
+		AppName:    "QMediaSync",
+	}
+	if err := account.ReplaceV115Authorization(source, "new-token", "new-refresh", 3600, "occupied-user", "新用户"); err == nil {
+		t.Fatal("重复 UserId 应阻止授权替换")
+	}
+	var saved Account
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取账号失败: %v", err)
+	}
+	if saved.AppId != "old-app" || saved.Token != "old-token" || saved.RefreshToken != "old-refresh" || saved.UserId != "old-user" {
+		t.Fatalf("唯一性冲突不应覆盖旧授权: %+v", saved)
+	}
 }
 
 func writeOpenListResponse(w http.ResponseWriter, body string) {
@@ -85,6 +145,199 @@ func TestUpdateOpenListTokenAuthClearsPassword(t *testing.T) {
 	}
 	if saved.Password != "" {
 		t.Fatalf("切换 Token 认证后数据库密码 = %q，期望为空", saved.Password)
+	}
+}
+
+func TestReplaceV115AuthorizationKeepsAccountIdentityAndUpdatesAllAuthFields(t *testing.T) {
+	setupOpenListAccountTest(t)
+
+	account := &Account{
+		Name:              "原账号",
+		SourceType:        SourceType115,
+		AppId:             "old-app",
+		AppIdName:         "旧应用",
+		AuthSourceType:    v115auth.SourceTypeBuiltInAppID,
+		AuthProvider:      v115auth.ProviderOfficialPKCE,
+		Token:             "old-token",
+		RefreshToken:      "old-refresh",
+		UserId:            "old-user",
+		Username:          "旧用户",
+		TokenFailedReason: "旧错误",
+	}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建测试账号失败: %v", err)
+	}
+	originalID := account.ID
+
+	source := v115auth.Source{
+		SourceType: v115auth.SourceTypeBuiltInAppID,
+		Provider:   v115auth.ProviderOfficialPKCE,
+		AppID:      "100197849",
+		AppName:    "QMediaSync",
+	}
+	if err := account.ReplaceV115Authorization(source, "new-token", "new-refresh", 3600, "same-or-different-user", "新用户"); err != nil {
+		t.Fatalf("替换 115 授权失败: %v", err)
+	}
+
+	var saved Account
+	if err := db.Db.First(&saved, originalID).Error; err != nil {
+		t.Fatalf("读取替换后的账号失败: %v", err)
+	}
+	if saved.ID != originalID || saved.Name != "原账号" {
+		t.Fatalf("账号身份被改变: %#v", saved)
+	}
+	if saved.AppId != source.AppID || saved.AppIdName != source.AppName || saved.AuthProvider != source.Provider ||
+		saved.Token != "new-token" || saved.RefreshToken != "new-refresh" || saved.UserId != "same-or-different-user" || saved.Username != "新用户" || saved.TokenFailedReason != "" {
+		t.Fatalf("授权字段未完整原子更新: %#v", saved)
+	}
+}
+
+func TestStaleTokenRefreshCannotOverwriteNewAuthorization(t *testing.T) {
+	setupOpenListAccountTest(t)
+	account := &Account{
+		SourceType:   SourceType115,
+		AppId:        "old-app",
+		Token:        "old-token",
+		RefreshToken: "old-refresh",
+		UserId:       "old-user",
+	}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建旧授权账号失败: %v", err)
+	}
+	staleAccount := *account
+
+	replacement := &Account{}
+	if err := db.Db.First(replacement, account.ID).Error; err != nil {
+		t.Fatalf("读取更换授权账号失败: %v", err)
+	}
+	source := v115auth.Source{
+		SourceType: v115auth.SourceTypeBuiltInAppID,
+		Provider:   v115auth.ProviderOfficialPKCE,
+		AppID:      "100197849",
+		AppName:    "QMediaSync",
+	}
+	if err := replacement.ReplaceV115Authorization(source, "new-token", "new-refresh", 3600, "new-user", "新用户"); err != nil {
+		t.Fatalf("替换授权失败: %v", err)
+	}
+
+	if staleAccount.UpdateTokenIfCurrent("stale-token", "stale-refresh", 3600) {
+		t.Fatal("旧刷新结果不应覆盖新授权")
+	}
+	if staleAccount.ClearTokenIfCurrent("旧刷新失败") {
+		t.Fatal("旧刷新失败不应清空新授权")
+	}
+
+	var saved Account
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取最终账号失败: %v", err)
+	}
+	if saved.Token != "new-token" || saved.RefreshToken != "new-refresh" || saved.UserId != "new-user" {
+		t.Fatalf("旧刷新结果改变了新授权: %#v", saved)
+	}
+}
+
+func TestReplaceV115AuthorizationRejectsDeprecatedTargetWithoutWriting(t *testing.T) {
+	setupOpenListAccountTest(t)
+	account := &Account{SourceType: SourceType115, AppId: "old-app", Token: "old-token", RefreshToken: "old-refresh"}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建测试账号失败: %v", err)
+	}
+	deprecated := v115auth.Source{SourceType: v115auth.SourceTypeBuiltInRelay, Provider: v115auth.ProviderMQFamily, AppID: v115auth.BuiltInRelayQ115STRM, Deprecated: true}
+	if err := account.ReplaceV115Authorization(deprecated, "new-token", "new-refresh", 60, "user", "name"); err == nil {
+		t.Fatal("已废弃目标应被拒绝")
+	}
+	var saved Account
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取账号失败: %v", err)
+	}
+	if saved.AppId != "old-app" || saved.Token != "old-token" || saved.UserId != "" {
+		t.Fatalf("拒绝目标时不应写入旧账号: %#v", saved)
+	}
+}
+
+func TestUpdateV115AuthorizationKeepsLegacyDeprecatedSourceUsable(t *testing.T) {
+	setupOpenListAccountTest(t)
+	account := &Account{
+		SourceType:   SourceType115,
+		AppId:        "100197665",
+		Token:        "old-token",
+		RefreshToken: "old-refresh",
+		UserId:       "old-user",
+	}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建历史账号失败: %v", err)
+	}
+	deprecated := v115auth.Source{SourceType: v115auth.SourceTypeBuiltInAppID, Provider: v115auth.ProviderOfficialPKCE, AppID: "100197665", AppName: "Q115-STRM", Deprecated: true}
+	if err := account.UpdateV115Authorization(deprecated, "new-token", "new-refresh", 60, "new-user", "新用户"); err != nil {
+		t.Fatalf("旧授权路径不应拒绝废弃来源: %v", err)
+	}
+	var saved Account
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取历史账号失败: %v", err)
+	}
+	if saved.Token != "new-token" || saved.RefreshToken != "new-refresh" || saved.UserId != "new-user" || saved.Username != "新用户" {
+		t.Fatalf("历史授权路径未完整更新凭据: %#v", saved)
+	}
+}
+
+func TestReplaceBaiDuPanAuthorizationIsAtomic(t *testing.T) {
+	setupOpenListAccountTest(t)
+	account := &Account{
+		SourceType:        SourceTypeBaiduPan,
+		AppId:             "baidu-app",
+		Token:             "old-token",
+		RefreshToken:      "old-refresh",
+		UserId:            "old-user",
+		Username:          "旧用户",
+		TokenFailedReason: "旧错误",
+	}
+	other := &Account{SourceType: SourceTypeBaiduPan, UserId: "occupied-user"}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建百度账号失败: %v", err)
+	}
+	if err := db.Db.Create(other).Error; err != nil {
+		t.Fatalf("创建其他百度账号失败: %v", err)
+	}
+
+	if err := account.ReplaceBaiDuPanAuthorization("new-token", "new-refresh", 3600, "occupied-user", "新用户"); err == nil {
+		t.Fatal("重复百度用户 ID 应阻止凭据和用户信息一起更新")
+	}
+	var saved Account
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取冲突后的百度账号失败: %v", err)
+	}
+	if saved.Token != "old-token" || saved.RefreshToken != "old-refresh" || saved.UserId != "old-user" || saved.Username != "旧用户" || saved.TokenFailedReason != "旧错误" {
+		t.Fatalf("百度授权冲突不应产生部分更新: %#v", saved)
+	}
+
+	if err := account.ReplaceBaiDuPanAuthorization("new-token", "new-refresh", 3600, "new-user", "新用户"); err != nil {
+		t.Fatalf("百度授权原子更新失败: %v", err)
+	}
+	if err := db.Db.First(&saved, account.ID).Error; err != nil {
+		t.Fatalf("读取成功后的百度账号失败: %v", err)
+	}
+	if saved.Token != "new-token" || saved.RefreshToken != "new-refresh" || saved.UserId != "new-user" || saved.Username != "新用户" || saved.TokenFailedReason != "" {
+		t.Fatalf("百度授权字段未完整更新: %#v", saved)
+	}
+}
+
+func TestCreateAccountFullReusesUniqueUserID(t *testing.T) {
+	setupOpenListAccountTest(t)
+
+	first := CreateAccountFull(SourceType115, "app", "第一个账号", "token-1", "refresh-1", "same-user", "用户", 3600)
+	second := CreateAccountFull(SourceType115, "app", "第二个账号", "token-2", "refresh-2", "same-user", "用户", 3600)
+	if first == nil || second == nil {
+		t.Fatal("相同 user_id 的账号应复用已有记录")
+	}
+	if first.ID != second.ID {
+		t.Fatalf("相同 user_id 应复用同一记录: first=%d second=%d", first.ID, second.ID)
+	}
+	var count int64
+	if err := db.Db.Model(&Account{}).Where("user_id = ?", "same-user").Count(&count).Error; err != nil {
+		t.Fatalf("统计 user_id 失败: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("相同 user_id 应只保留一条记录，实际 %d 条", count)
 	}
 }
 

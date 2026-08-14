@@ -14,9 +14,13 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
   const pollTimer = shallowRef<number | null>(null)
   const pollingActive = shallowRef(false)
   const accountId = shallowRef<number | null>(null)
+  const authorizationId = shallowRef<string | null>(null)
   const authorizationRunId = shallowRef(0)
+  let pollingRequestRunId: number | null = null
 
   const isPolling = computed(() => pollingActive.value)
+
+  const isPageHidden = () => typeof document !== 'undefined' && document.hidden
 
   const stopPolling = () => {
     authorizationRunId.value += 1
@@ -28,13 +32,22 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
   }
 
   const schedulePollStatus = (runId: number) => {
-    if (!pollingActive.value || runId !== authorizationRunId.value) return
+    if (!pollingActive.value || runId !== authorizationRunId.value || isPageHidden()) return
     pollTimer.value = window.setTimeout(() => void pollStatus(runId), V115_QR_STATUS_POLL_DELAY_MS)
   }
 
   const pollStatus = async (runId: number) => {
-    if (!accountId.value || !qrCode.value || runId !== authorizationRunId.value) return
+    if (
+      !accountId.value ||
+      !qrCode.value ||
+      runId !== authorizationRunId.value ||
+      isPageHidden() ||
+      pollingRequestRunId === runId
+    ) {
+      return
+    }
     pollTimer.value = null
+    pollingRequestRunId = runId
 
     try {
       const response = await http.post(
@@ -42,6 +55,7 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
         {
           account_id: accountId.value,
           uid: qrCode.value.uid,
+          ...(authorizationId.value ? { authorization_id: authorizationId.value } : {}),
         },
         {
           timeout: V115_QR_STATUS_TIMEOUT_MS,
@@ -68,13 +82,32 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
       status.value = 'failed'
       tip.value = error instanceof Error ? error.message : '授权状态查询失败'
       stopPolling()
+    } finally {
+      if (pollingRequestRunId === runId) {
+        pollingRequestRunId = null
+      }
     }
   }
 
-  const startAuthorization = async (nextAccountId: number) => {
+  const handleVisibilityChange = () => {
+    if (!pollingActive.value) return
+    if (isPageHidden()) {
+      if (pollTimer.value !== null) {
+        window.clearTimeout(pollTimer.value)
+        pollTimer.value = null
+      }
+      return
+    }
+    void pollStatus(authorizationRunId.value)
+  }
+
+  const startAuthorization = async (nextAccountId: number, nextAuthorizationId?: string) => {
     stopPolling()
+    const runId = authorizationRunId.value + 1
+    authorizationRunId.value = runId
     loading.value = true
     accountId.value = nextAccountId
+    authorizationId.value = nextAuthorizationId || null
     status.value = 'waiting'
     tip.value = '正在获取二维码…'
     qrCode.value = null
@@ -82,7 +115,9 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
     try {
       const response = await http.post(`${SERVER_URL}/auth/115-qrcode-open`, {
         account_id: nextAccountId,
+        ...(authorizationId.value ? { authorization_id: authorizationId.value } : {}),
       })
+      if (runId !== authorizationRunId.value) return
       if (response.data?.code !== 200 || !response.data.data) {
         status.value = 'failed'
         tip.value = response.data?.message || '获取二维码失败'
@@ -90,15 +125,16 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
       }
       qrCode.value = response.data.data as V115QrCodePayload
       tip.value = '等待扫码'
-      const runId = authorizationRunId.value + 1
-      authorizationRunId.value = runId
       pollingActive.value = true
-      void pollStatus(runId)
+      if (!isPageHidden()) {
+        void pollStatus(runId)
+      }
     } catch (error) {
+      if (runId !== authorizationRunId.value) return
       status.value = 'failed'
       tip.value = error instanceof Error ? error.message : '获取二维码失败'
     } finally {
-      loading.value = false
+      if (runId === authorizationRunId.value) loading.value = false
     }
   }
 
@@ -108,9 +144,19 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
     status.value = 'idle'
     tip.value = ''
     accountId.value = null
+    authorizationId.value = null
   }
 
-  onScopeDispose(stopPolling)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
+
+  onScopeDispose(() => {
+    stopPolling()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  })
 
   return {
     qrCode,

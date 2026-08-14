@@ -20,11 +20,13 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 61
+var MaxVersionCode = 62
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
 	activeUploadTaskUniqueIndexName   = "idx_db_upload_tasks_active_target"
+	accountNameUniqueIndexName        = "idx_account_name"
+	accountUserIDUniqueIndexName      = "idx_account_user_id"
 )
 
 var AllTables = []any{
@@ -690,13 +692,63 @@ func Migrate() {
 		helpers.AppLogger.Info("已迁移传输队列远端身份字段并删除旧完成字段")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	accountIdentityIndexesEnsured := false
+	if migrator.VersionCode == 61 {
+		if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
+			helpers.AppLogger.Errorf("迁移账号备注和用户 ID 唯一约束失败：%v", err)
+			return
+		}
+		helpers.AppLogger.Info("已添加 account.name 和 account.user_id 非空唯一约束")
+		accountIdentityIndexesEnsured = true
+		migrator.UpdateVersionCode(db.Db)
+	}
 	if migrator.VersionCode == MaxVersionCode {
+		if !accountIdentityIndexesEnsured {
+			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
+				helpers.AppLogger.Errorf("补齐账号备注和用户 ID 唯一索引失败：%v", err)
+				return
+			}
+		}
 		if err := ensureActiveTransferTaskUniqueIndexes(db.Db); err != nil {
 			helpers.AppLogger.Errorf("补齐活跃传输任务唯一索引失败：%v", err)
 			return
 		}
 	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)
+}
+
+func findDuplicateAccountValues(dbConn *gorm.DB, column string) ([]string, error) {
+	if !dbConn.Migrator().HasTable(&Account{}) {
+		return nil, nil
+	}
+	var values []string
+	query := fmt.Sprintf("SELECT %s FROM account WHERE %s <> '' GROUP BY %s HAVING COUNT(*) > 1", column, column, column)
+	if err := dbConn.Raw(query).Scan(&values).Error; err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func ensureAccountIdentityUniqueIndexes(dbConn *gorm.DB) error {
+	if !dbConn.Migrator().HasTable(&Account{}) {
+		return nil
+	}
+	for _, column := range []string{"name", "user_id"} {
+		values, err := findDuplicateAccountValues(dbConn, column)
+		if err != nil {
+			return fmt.Errorf("检查 account.%s 重复值失败：%w", column, err)
+		}
+		if len(values) > 0 {
+			return fmt.Errorf("account.%s 存在重复非空值 %q，请先合并或删除重复账号后重试升级", column, strings.Join(values, "、"))
+		}
+	}
+	if err := dbConn.AutoMigrate(&Account{}); err != nil {
+		return fmt.Errorf("创建账号唯一索引失败：%w", err)
+	}
+	if !dbConn.Migrator().HasIndex(&Account{}, accountNameUniqueIndexName) || !dbConn.Migrator().HasIndex(&Account{}, accountUserIDUniqueIndexName) {
+		return fmt.Errorf("账号唯一索引创建后仍未找到")
+	}
+	return nil
 }
 
 type legacyUploadRemoteIdentity struct {

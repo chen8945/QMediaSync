@@ -141,13 +141,18 @@ func RefreshOAuthAccessToken() {
 				continue
 			}
 			helpers.AppLogger.Infof("开始刷新 115 账号 Token，账号 ID：%d，115 用户名：%s", account.ID, account.Username)
-			// 刷新 115 的访问凭证
-			client := account.Get115Client()
+			expectedToken := account.Token
+			expectedRefreshToken := account.RefreshToken
+			// 使用快照客户端刷新，避免远端旧结果先修改共享客户端，再被条件落库拒绝。
+			client := v115open.NewClient(account.ID, account.AppId, account.Token, account.RefreshToken)
 			tokenData, err := client.RefreshToken(account.RefreshToken)
 			if err != nil {
 				helpers.AppLogger.Errorf("刷新 115 访问凭证失败：%s", err.Error())
 				// 清空 Token
-				account.ClearToken(err.Error())
+				if !account.ClearTokenIfCurrent(err.Error()) {
+					continue
+				}
+				v115open.UpdateTokenIfCurrent(account.ID, expectedToken, expectedRefreshToken, "", "")
 				ctx := context.Background()
 				notif := &models.Notification{
 					Type:      models.SystemAlert,
@@ -164,12 +169,12 @@ func RefreshOAuthAccessToken() {
 				continue
 			}
 			// 更新账号的 Token
-			if suc := account.UpdateToken(tokenData.AccessToken, tokenData.RefreshToken, tokenData.ExpiresIn); !suc {
+			if suc := account.UpdateTokenIfCurrent(tokenData.AccessToken, tokenData.RefreshToken, tokenData.ExpiresIn); !suc {
 				helpers.AppLogger.Errorf("更新 115 账号 Token 失败")
 				continue
 			}
 			// 更新其他客户端的 Token
-			v115open.UpdateToken(account.ID, tokenData.AccessToken, tokenData.RefreshToken)
+			v115open.UpdateTokenIfCurrent(account.ID, expectedToken, expectedRefreshToken, tokenData.AccessToken, tokenData.RefreshToken)
 			// 刷新成功，更新账号的 Token
 			helpers.AppLogger.Infof("刷新 115 账号 Token 成功，账号 ID：%d，新到期时间：%d => %s", account.ID, tokenData.ExpiresIn, time.Unix(account.TokenExpiriesTime, 0).Format("2006-01-02 15:04:05"))
 			continue
@@ -180,12 +185,16 @@ func RefreshOAuthAccessToken() {
 				// helpers.AppLogger.Infof("百度网盘账号 Token 未过期，账号 ID：%d，百度网盘用户名：%s，过期时间：%s", account.ID, account.Username, time.Unix(account.TokenExpiriesTime-86400, 0).Format("2006-01-02 15:04:05"))
 				continue
 			}
+			expectedToken := account.Token
 			// 向授权服务器发送刷新请求，拿到新 Token
 			resp, err := baidupan.RefreshToken(account.ID, account.RefreshToken)
 			if err != nil {
 				helpers.AppLogger.Errorf("刷新百度网盘 Token 失败：%s", err.Error())
 				// 清空 Token
-				account.ClearToken(err.Error())
+				if !account.ClearTokenIfCurrent(err.Error()) {
+					continue
+				}
+				baidupan.UpdateTokenIfCurrent(account.ID, expectedToken, "")
 				ctx := context.Background()
 				notif := &models.Notification{
 					Type:      models.SystemAlert,
@@ -202,12 +211,12 @@ func RefreshOAuthAccessToken() {
 				continue
 			}
 			// 更新账号的 Token
-			if suc := account.UpdateToken(resp.AccessToken, resp.RefreshToken, resp.ExpiresIn); !suc {
+			if suc := account.UpdateTokenIfCurrent(resp.AccessToken, resp.RefreshToken, resp.ExpiresIn); !suc {
 				helpers.AppLogger.Errorf("更新百度网盘账号 Token 失败")
 				continue
 			}
 			// 更新其他客户端的 Token
-			baidupan.UpdateToken(account.ID, resp.AccessToken)
+			baidupan.UpdateTokenIfCurrent(account.ID, expectedToken, resp.AccessToken)
 			// 刷新成功，更新账号的 Token
 			helpers.AppLogger.Infof("刷新百度网盘账号 Token 成功，账号 ID：%d，新到期时间：%d => %s", account.ID, resp.ExpiresIn, time.Unix(resp.ExpiresIn, 0).Format("2006-01-02 15:04:05"))
 			continue

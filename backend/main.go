@@ -737,11 +737,13 @@ func setRouter(r *gin.Engine) {
 		api.POST("/directory-upload/sync-paths/:sync_path_id/scan", controllers.ScanDirectoryUploadSyncPathRules) // 手动触发目录监控补偿扫描
 		api.GET("/directory-upload/runtime-status", controllers.GetDirectoryUploadRuntimeStatuses)                // 获取目录监控运行状态
 
-		api.GET("/account/list", controllers.GetAccountList)             // 获取开放平台账号列表
-		api.POST("/account/add", controllers.CreateTmpAccount)           // 创建开放平台账号
-		api.POST("/account/update", controllers.UpdateAccountInfo)       // 更新开放平台账号资料
-		api.POST("/account/delete", controllers.DeleteAccount)           // 删除开放平台账号
-		api.POST("/account/openlist", controllers.CreateOpenListAccount) // 创建 OpenList 账号
+		api.GET("/account/list", controllers.GetAccountList)                                // 获取开放平台账号列表
+		api.POST("/account/add", controllers.CreateTmpAccount)                              // 创建开放平台账号
+		api.POST("/account/authorization/prepare", controllers.PrepareAccountAuthorization) // 准备更换账号授权
+		api.POST("/account/authorization/cancel", controllers.CancelAccountAuthorization)   // 取消更换账号授权
+		api.POST("/account/update", controllers.UpdateAccountInfo)                          // 更新开放平台账号资料
+		api.POST("/account/delete", controllers.DeleteAccount)                              // 删除开放平台账号
+		api.POST("/account/openlist", controllers.CreateOpenListAccount)                    // 创建 OpenList 账号
 
 		// API Key 管理接口
 		api.POST("/api-keys", controllers.CreateAPIKey)                 // 创建 API Key

@@ -34,6 +34,7 @@
 ## 参考资料
 
 - [数据库 schema 与迁移](reference/database-schema.md)：表、字段、索引、时间策略、稳定存储值和迁移版本。
+- [账号授权与更换](reference/account-authorization.md)：账号关联、同来源校验、授权会话、QR/OAuth 传递和原子落库契约。
 - [同步目录聚合 API](reference/sync-path-api.md)：同步目录和目录监控上传规则的原子写入、幂等与错误契约。
 - [STRM Webhook](reference/strm-webhook.md)：外部程序创建 STRM 任务的 API、字段、响应和幂等边界。
 - [任务来源](reference/task-sources.md)：下载、上传和同步队列的机器值与前端映射。

@@ -2,9 +2,13 @@ package v115auth
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"qmediasync/internal/helpers"
 )
@@ -107,5 +111,45 @@ func TestOAuthProviderCloudDriveBuildAuthUsesRedirectState(t *testing.T) {
 	}
 	if query.Get("state") != "http://127.0.0.1:12333/#/cloud-accounts?account_id=4&source=115" {
 		t.Fatalf("state = %s", query.Get("state"))
+	}
+}
+
+func TestMoviePilotPollClaimsOAuthStateDuringRequest(t *testing.T) {
+	ResetOAuthStatesForTest()
+	t.Cleanup(ResetOAuthStatesForTest)
+	SaveOAuthState(OAuthState{
+		State:     "poll-state",
+		AccountID: 1,
+		Provider:  ProviderMoviePilot,
+		ExpiresAt: time.Now().Unix() + 600,
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(entered) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"done":false}`))
+	}))
+	defer server.Close()
+	provider := moviePilotOAuthProvider{authServer: server.URL, client: server.Client()}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := provider.Poll(context.Background(), "poll-state")
+		resultCh <- err
+	}()
+	<-entered
+	if _, err := provider.Poll(context.Background(), "poll-state"); err == nil {
+		t.Fatal("同一 OAuth state 的并发轮询应被拒绝")
+	}
+	close(release)
+	if err := <-resultCh; err != nil {
+		t.Fatalf("首次轮询失败: %v", err)
+	}
+	if _, ok := GetOAuthState("poll-state", ProviderMoviePilot); !ok {
+		t.Fatal("未完成授权的 OAuth state 应保留供下次轮询")
 	}
 }

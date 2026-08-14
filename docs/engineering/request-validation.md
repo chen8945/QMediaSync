@@ -114,8 +114,8 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/sync.go` | 同步路径创建和更新、自定义 STRM 配置 | 来源类型、非本地来源账号 ID、路径必填、自定义配置、继承值 `-1`、远程路径规范化。 |
 | `requests/scrape_path.go` | 刮削路径保存 | 创建和更新分场景校验；更新时使用旧记录补齐不可编辑的来源类型、账号和媒体类型；刮削类型、整理方式、源路径、按场景要求的目标路径、扩展名、最小文件大小、线程上限、Cron。 |
 | `requests/scrape_settings.go` | TMDB、AI、分类和 TMDB 搜索 | URL、语言代码、国家代码、AI 动作枚举、模型名长度、超时范围、分类名称、Genre ID、年份范围。 |
-| `requests/accounts.go` | 账号、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
-| `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、`preserve_proxy_credentials` 的显式凭据保留意图、账号 ID、OAuth 回调 URL、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
+| `requests/accounts.go` | 账号、账号授权更换/取消、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、更换授权的确认标志和来源字段、授权会话绑定、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
+| `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、`preserve_proxy_credentials` 的显式凭据保留意图、账号 ID、OAuth 回调 URL、`authorization_id` 长度、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
 | `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串。 |
 | `requests/backup.go` | 备份创建、列表、记录 ID、恢复和配置 | 手动备份原因默认值、分页默认值、备份记录 ID、启用开关、Cron、保留天数、最大备份数、压缩开关。 |
 | `requests/notification.go` | Telegram、MeoW、Bark、ServerChan、自定义 Webhook 渠道 | 渠道名称、必填凭据、URL、Webhook 方法、格式、认证方式和模板格式。 |
@@ -142,7 +142,10 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - `CreateOpenListAccountRequest` 会自动补全缺失的 `http://` 协议，并去掉末尾 `/`；新建 OpenList 账号必须提供 Token 或完整的用户名 / 密码。更新请求带有效 `id` 时，同认证方式且未提交新凭据可复用数据库中的已有凭据；切换为 Token 必须提交新 Token 并清空已保存的密码，切换为用户名密码必须提交用户名和密码并重新获取 Token，复用密码认证凭据校验时若触发自动刷新也会持久化最新 Token，实际凭据验证由模型层完成。
 - `LoginRequest` 校验用户名和密码非空，并在进入限流、数据库查询和失败日志前保留用户名 20 个字符上限；实际身份校验交给登录模型。首次管理员创建和当前用户凭据修改使用严格用户名 / 密码规则。控制器仍统一返回「登录失败」，不向客户端暴露用户名、密码或验证码的具体失败原因。
 - `BackupCreateRequest` 在原因为空时默认使用「手动备份」，与旧控制器行为一致。
-- 115 内置应用和内置中转来源的 `deprecated` 标记只阻止新格式创建请求；历史账号解析以及旧格式请求仍保留旧来源字符串兼容，避免影响已有 MQ 账号。
+- 115 内置应用和内置中转来源的 `deprecated` 标记只阻止新格式创建请求和带 `authorization_id` 的更换目标；历史账号解析以及旧格式普通授权/重新授权入口仍保留旧来源字符串兼容，避免影响已有 MQ 账号恢复授权。
+- `PrepareAccountAuthorizationRequest` 要求正的 `account_id`、允许的目标 `source_type` 和 `confirmed=true`；115 目标继续复用 `SourceFromCreateRequest` 校验，并由控制器比较目标与原账号的 `source_type`，因此跨来源更换不能只靠前端拦截。
+- `CancelAccountAuthorizationRequest` 要求正的 `account_id` 和非空 `authorization_id`；取消接口按账号绑定会话执行，并且设计为可重复调用。
+- 账号 `name` 与非空 `user_id` 的重复检查属于模型/数据库业务约束，不在 DTO 中猜测数据库状态；冲突时控制器返回面向用户的错误，授权替换事务保持旧字段不变。
 - `BackupListRequest` 保留旧分页兼容策略：页码小于 1 时回退为 1，每页数量小于 1 或大于 100 时回退为 20，类型为空时回退为 `all`。
 - 备份配置中 `backup_retention` 为 0 时表示不更新或使用既有值；大于 0 时限制为 1 到 365。
 - `internal/migrate` 的测试连接请求允许 `database` 为空，并继续固定连接 `dbname=postgres`；保存配置请求要求 `database` 非空。

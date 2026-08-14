@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,11 +14,13 @@ import (
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/v115auth"
 	"qmediasync/internal/v115open"
+
+	"gorm.io/gorm"
 )
 
 type Account struct {
 	BaseModel
-	Name              string                  `json:"name"` // 账号备注，仅供用户自己识别账号使用，唯一
+	Name              string                  `json:"name" gorm:"uniqueIndex:idx_account_name,where:name <> ''"` // 账号备注，仅供用户自己识别账号使用，非空唯一
 	SourceType        SourceType              `json:"source_type"`
 	AppId             string                  `json:"app_id"`
 	AppIdName         string                  `json:"app_id_name"` // 自定义开放平台应用显示名，内置应用不使用该字段
@@ -26,12 +29,17 @@ type Account struct {
 	Token             string                  `json:"token" gorm:"type:string;size:512"`
 	RefreshToken      string                  `json:"refresh_token" gorm:"type:string;size:512"`
 	TokenExpiriesTime int64                   `json:"token_expiries_time"`
-	UserId            string                  `json:"user_id"`                                         // 账号对应的用户 ID，唯一
-	Username          string                  `json:"username" gorm:"type:string;size:32"`             // 网盘对应的用户名或者 OpenList 登录用户名
-	Password          string                  `json:"password" gorm:"type:string;size:256"`            // OpenList 的用户密码
-	BaseUrl           string                  `json:"base_url" gorm:"type:string;size:1024"`           // OpenList 的访问地址 HTTP[s]://ip:port
-	TokenFailedReason string                  `json:"token_failed_reason" gorm:"type:string;size:256"` // 刷新 Token 失败的原因
+	UserId            string                  `json:"user_id" gorm:"uniqueIndex:idx_account_user_id,where:user_id <> ''"` // 账号对应的用户 ID，非空唯一
+	Username          string                  `json:"username" gorm:"type:string;size:32"`                                // 网盘对应的用户名或者 OpenList 登录用户名
+	Password          string                  `json:"password" gorm:"type:string;size:256"`                               // OpenList 的用户密码
+	BaseUrl           string                  `json:"base_url" gorm:"type:string;size:1024"`                              // OpenList 的访问地址 HTTP[s]://ip:port
+	TokenFailedReason string                  `json:"token_failed_reason" gorm:"type:string;size:256"`                    // 刷新 Token 失败的原因
 }
+
+var (
+	ErrAccountNameTaken   = errors.New("账号备注已存在")
+	ErrAccountUserIDTaken = errors.New("当前账号已存在，不允许添加重复账号")
+)
 
 const (
 	openListAuthTypePassword = "password"
@@ -42,46 +50,229 @@ func (account *Account) TableName() string {
 	return "account"
 }
 
-// 更新 Token 和 refreshToken
-func (account *Account) UpdateToken(token string, refreshToken string, expiresTime int64) bool {
-	now := time.Now().Unix()
+func ensureAccountIdentityAvailable(tx *gorm.DB, accountID uint, name string, userID string) error {
+	if strings.TrimSpace(name) != "" {
+		query := tx.Model(&Account{}).Where("name = ?", name)
+		if accountID != 0 {
+			query = query.Where("id <> ?", accountID)
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrAccountNameTaken
+		}
+	}
+	if strings.TrimSpace(userID) != "" {
+		query := tx.Model(&Account{}).Where("user_id = ?", userID)
+		if accountID != 0 {
+			query = query.Where("id <> ?", accountID)
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrAccountUserIDTaken
+		}
+	}
+	return nil
+}
+
+func updateAccountWithIdentity(accountID uint, userID string, updateData map[string]any) error {
+	return db.Db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureAccountIdentityAvailable(tx, accountID, "", userID); err != nil {
+			return err
+		}
+		result := tx.Model(&Account{}).Where("id = ?", accountID).Updates(updateData)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+}
+
+type accountTokenSnapshot struct {
+	token        string
+	refreshToken string
+}
+
+func persistAccountTokenFields(accountID uint, updateData map[string]any, expected *accountTokenSnapshot) error {
+	query := db.Db.Model(&Account{}).Where("id = ?", accountID)
+	if expected != nil {
+		query = query.Where("token = ? AND refresh_token = ?", expected.token, expected.refreshToken)
+	}
+	result := query.Updates(updateData)
+	if result.Error != nil {
+		return result.Error
+	}
+	if expected != nil && result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (account *Account) applyTokenFields(token string, refreshToken string, expiresAt int64, reason string) {
 	account.Token = token
 	account.RefreshToken = refreshToken
-	account.TokenExpiriesTime = now + expiresTime
-	account.TokenFailedReason = ""
+	account.TokenExpiriesTime = expiresAt
+	account.TokenFailedReason = reason
+}
 
-	updateData := make(map[string]any)
-	updateData["token"] = token
-	updateData["refresh_token"] = refreshToken
-	updateData["token_expiries_time"] = account.TokenExpiriesTime
-	updateData["token_failed_reason"] = account.TokenFailedReason
-	err := db.Db.Model(account).Where("id = ?", account.ID).Updates(updateData).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("更新开放平台登录凭据失败：%v", err)
+func (account *Account) updateToken(token string, refreshToken string, expiresTime int64, expected *accountTokenSnapshot) bool {
+	expiresAt := time.Now().Unix() + expiresTime
+	if err := persistAccountTokenFields(account.ID, map[string]any{
+		"token":               token,
+		"refresh_token":       refreshToken,
+		"token_expiries_time": expiresAt,
+		"token_failed_reason": "",
+	}, expected); err != nil {
+		if expected != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+			helpers.AppLogger.Infof("账号 %d 凭据已更新，跳过过期 Token 写入", account.ID)
+		} else {
+			helpers.AppLogger.Errorf("更新开放平台登录凭据失败：%v", err)
+		}
 		return false
 	}
+	account.applyTokenFields(token, refreshToken, expiresAt, "")
 	return true
+}
+
+// 更新 Token 和 refreshToken
+func (account *Account) UpdateToken(token string, refreshToken string, expiresTime int64) bool {
+	return account.updateToken(token, refreshToken, expiresTime, nil)
+}
+
+// UpdateTokenIfCurrent 仅当数据库中的凭据仍与当前账号快照一致时更新 Token。
+// 用于远端刷新耗时较长的场景，避免旧刷新结果覆盖后续授权。
+func (account *Account) UpdateTokenIfCurrent(token string, refreshToken string, expiresTime int64) bool {
+	expected := &accountTokenSnapshot{token: account.Token, refreshToken: account.RefreshToken}
+	return account.updateToken(token, refreshToken, expiresTime, expected)
 }
 
 // 更新开放平台账号对应的用户信息
 func (account *Account) UpdateUser(userId string, username string) bool {
-	account.UserId = userId
-	account.Username = username
-	updateData := make(map[string]any)
-	updateData["user_id"] = userId
-	updateData["username"] = username
-	err := db.Db.Model(account).Where("id = ?", account.ID).Updates(updateData).Error
+	err := updateAccountWithIdentity(account.ID, userId, map[string]any{
+		"user_id":  userId,
+		"username": username,
+	})
 	if err != nil {
 		helpers.AppLogger.Errorf("更新开放平台账号用户信息失败：%v", err)
 		return false
 	}
+	account.UserId = userId
+	account.Username = username
 	// helpers.AppLogger.Debugf("更新开放平台账号用户信息成功：%v", account)
 	return true
 }
 
+// ReplaceV115Authorization 原子替换 115 账号的授权来源、凭据和用户信息。
+// 账号 ID 及其名称、同步目录和其他关联记录不会被修改。
+func (account *Account) ReplaceV115Authorization(source v115auth.Source, token string, refreshToken string, expiresTime int64, userId string, username string) error {
+	return account.replaceV115Authorization(source, token, refreshToken, expiresTime, userId, username, true)
+}
+
+// UpdateV115Authorization 更新旧的无会话 115 授权路径。
+// 历史账号可能仍使用已废弃的来源，因此来源是否可作为更换目标不在这里判断。
+func (account *Account) UpdateV115Authorization(source v115auth.Source, token string, refreshToken string, expiresTime int64, userId string, username string) error {
+	return account.replaceV115Authorization(source, token, refreshToken, expiresTime, userId, username, false)
+}
+
+func (account *Account) replaceV115Authorization(source v115auth.Source, token string, refreshToken string, expiresTime int64, userId string, username string, rejectDeprecated bool) error {
+	if account == nil || account.ID == 0 {
+		return fmt.Errorf("账号不存在")
+	}
+	if account.SourceType != SourceType115 {
+		return fmt.Errorf("账号来源不是 115，不能替换 115 授权")
+	}
+	if rejectDeprecated && source.Deprecated {
+		return fmt.Errorf("已废弃的 115 授权来源不能作为更换目标")
+	}
+	if source.SourceType == "" || source.Provider == "" {
+		return fmt.Errorf("115 授权来源无效")
+	}
+	if strings.TrimSpace(token) == "" || strings.TrimSpace(refreshToken) == "" {
+		return fmt.Errorf("115 访问凭证不能为空")
+	}
+
+	updatedAt := time.Now().Unix() + expiresTime
+	updateData := map[string]any{
+		"app_id":              source.StorageAppID(),
+		"app_id_name":         source.StorageAppName(),
+		"auth_source_type":    source.SourceType,
+		"auth_provider":       source.Provider,
+		"token":               token,
+		"refresh_token":       refreshToken,
+		"token_expiries_time": updatedAt,
+		"user_id":             userId,
+		"username":            username,
+		"token_failed_reason": "",
+	}
+
+	if err := updateAccountWithIdentity(account.ID, userId, updateData); err != nil {
+		helpers.AppLogger.Errorf("原子替换 115 账号授权失败：%v", err)
+		return err
+	}
+
+	account.AppId = source.StorageAppID()
+	account.AppIdName = source.StorageAppName()
+	account.AuthSourceType = source.SourceType
+	account.AuthProvider = source.Provider
+	account.Token = token
+	account.RefreshToken = refreshToken
+	account.TokenExpiriesTime = updatedAt
+	account.UserId = userId
+	account.Username = username
+	account.TokenFailedReason = ""
+	// 提交成功后再刷新共享客户端，避免失败流程污染旧授权。
+	v115open.GetClient(account.ID, account.AppId, account.Token, account.RefreshToken)
+	return nil
+}
+
+// ReplaceBaiDuPanAuthorization 原子更新百度网盘凭据和用户信息。
+// 先完成用户信息校验，再在同一事务中写入凭据与身份，避免唯一冲突留下半更新。
+func (account *Account) ReplaceBaiDuPanAuthorization(token string, refreshToken string, expiresTime int64, userId string, username string) error {
+	if account == nil || account.ID == 0 {
+		return fmt.Errorf("账号不存在")
+	}
+	if account.SourceType != SourceTypeBaiduPan {
+		return fmt.Errorf("账号来源不是百度网盘")
+	}
+	if strings.TrimSpace(token) == "" || strings.TrimSpace(refreshToken) == "" {
+		return fmt.Errorf("百度网盘访问凭证不能为空")
+	}
+
+	updatedAt := time.Now().Unix() + expiresTime
+	updateData := map[string]any{
+		"token":               token,
+		"refresh_token":       refreshToken,
+		"token_expiries_time": updatedAt,
+		"user_id":             userId,
+		"username":            username,
+		"token_failed_reason": "",
+	}
+	if err := updateAccountWithIdentity(account.ID, userId, updateData); err != nil {
+		helpers.AppLogger.Errorf("原子更新百度网盘授权失败：%v", err)
+		return err
+	}
+
+	account.Token = token
+	account.RefreshToken = refreshToken
+	account.TokenExpiriesTime = updatedAt
+	account.UserId = userId
+	account.Username = username
+	account.TokenFailedReason = ""
+	baidupan.NewBaiDuPanClient(account.ID, account.Token)
+	return nil
+}
+
 // 如果是 normal 模式，创建一个新的客户端，不启用限速器
 func (account *Account) Get115Client() *v115open.OpenClient {
-	return v115open.GetClient(account.ID, account.AppId, account.Token, account.RefreshToken)
+	return v115open.GetCachedClient(account.ID, account.AppId, account.Token, account.RefreshToken)
 }
 
 func (account *Account) V115AuthSource() v115auth.Source {
@@ -134,17 +325,38 @@ func (account *Account) Delete() error {
 	return nil
 }
 
-func (account *Account) ClearToken(reason string) {
-	account.Token = ""
-	account.RefreshToken = ""
-	account.TokenExpiriesTime = 0
-	account.TokenFailedReason = reason
-	// 保存到数据库
-	err := db.Db.Save(account).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("清空开放平台访问凭证失败：%v", err)
-		return
+func (account *Account) clearToken(reason string, expected *accountTokenSnapshot) bool {
+	if err := persistAccountTokenFields(account.ID, map[string]any{
+		"token":               "",
+		"refresh_token":       "",
+		"token_expiries_time": 0,
+		"token_failed_reason": reason,
+	}, expected); err != nil {
+		if expected != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+			helpers.AppLogger.Infof("账号 %d 凭据已更新，跳过过期 Token 清理", account.ID)
+		} else {
+			helpers.AppLogger.Errorf("清空开放平台访问凭证失败：%v", err)
+		}
+		return false
 	}
+	account.applyTokenFields("", "", 0, reason)
+	return true
+}
+
+func (account *Account) ClearToken(reason string) {
+	account.clearToken(reason, nil)
+}
+
+// ClearTokenIfCurrent 仅当数据库中的凭据仍与当前账号快照一致时清空 Token。
+func (account *Account) ClearTokenIfCurrent(reason string) bool {
+	expected := &accountTokenSnapshot{token: account.Token, refreshToken: account.RefreshToken}
+	return account.clearToken(reason, expected)
+}
+
+// ClearTokenIfCredentialsMatch 仅清空仍匹配远端请求开始时凭据的账号。
+func (account *Account) ClearTokenIfCredentialsMatch(expectedToken string, expectedRefreshToken string, reason string) bool {
+	expected := &accountTokenSnapshot{token: expectedToken, refreshToken: expectedRefreshToken}
+	return account.clearToken(reason, expected)
 }
 
 func (account *Account) UpdateOpenList(baseUrl string, username string, password string, token string, authType string) error {
@@ -266,6 +478,10 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 		return fmt.Errorf("更新 OpenList 账号需要提供有效凭据")
 	}
 	account.UserId = fmt.Sprintf("%d", userInfo.ID)
+	if err := ensureAccountIdentityAvailable(db.Db, account.ID, account.Name, account.UserId); err != nil {
+		restore()
+		return err
+	}
 	// 保存到数据库
 	err := db.Db.Save(account).Error
 	if err != nil {
@@ -296,6 +512,9 @@ func CreateAccountWithAuthSource(name string, srouceType SourceType, appId strin
 	account.UserId = ""
 	account.Username = ""
 
+	if err := ensureAccountIdentityAvailable(db.Db, 0, account.Name, ""); err != nil {
+		return nil, err
+	}
 	// 插入数据库，如果插入失败则报错
 	err := db.Db.Save(account).Error
 	if err != nil {
@@ -307,19 +526,37 @@ func CreateAccountWithAuthSource(name string, srouceType SourceType, appId strin
 
 // 更新账号资料，不修改授权凭据和连接配置
 func (account *Account) UpdateInfo(name string, appIdName string) error {
-	account.Name = name
+	oldName := account.Name
+	oldAppIDName := account.AppIdName
 	updateData := map[string]any{
 		"name": name,
 	}
 	source := account.V115AuthSource()
 	if account.SourceType == SourceType115 && source.SourceType == v115auth.SourceTypeCustomAppID {
-		account.AppIdName = appIdName
 		updateData["app_id_name"] = appIdName
 	}
-	err := db.Db.Model(account).Where("id = ?", account.ID).Updates(updateData).Error
+	err := db.Db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureAccountIdentityAvailable(tx, account.ID, name, ""); err != nil {
+			return err
+		}
+		result := tx.Model(&Account{}).Where("id = ?", account.ID).Updates(updateData)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
 	if err != nil {
+		account.Name = oldName
+		account.AppIdName = oldAppIDName
 		helpers.AppLogger.Errorf("更新开放平台账号资料失败：%v", err)
 		return err
+	}
+	account.Name = name
+	if _, ok := updateData["app_id_name"]; ok {
+		account.AppIdName = appIdName
 	}
 	return nil
 }
@@ -369,6 +606,9 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 	account.Name = userInfo.Username
 
 	helpers.AppLogger.Infof("创建 OpenList 账号成功，用户 ID：%s，用户名：%s", account.UserId, account.Name)
+	if err := ensureAccountIdentityAvailable(db.Db, 0, account.Name, account.UserId); err != nil {
+		return nil, err
+	}
 
 	// 插入数据库，如果插入失败则报错
 	err := db.Db.Save(account).Error
@@ -379,21 +619,20 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 	return account, nil
 }
 
-// 创建 115 账号，如果 userId 已经存在，则更新
+// 创建 115 账号；如果 userId 已经存在，则更新已有账号。
 // token：115 账号的 Token
 // refreshToken：115 账号的 Refresh Token
 // userId：115 账号对应的用户 ID
 // username：115 账号对应的用户名
 // expiresTime：Token 的过期时间
 func CreateAccountFull(sourceType SourceType, AppId string, name string, token string, refreshToken string, userId string, username string, expiresTime int64) *Account {
-	// 先检查 userId 是否已经存在
-	account, err := GetAccountByUserId(userId)
-	updateOrCreate := "create"
-	if err == nil {
-		// 说明 userId 已经存在
-		helpers.AppLogger.Errorf("开放平台账号对应的用户 ID 已经存在：%v", userId)
-		updateOrCreate = "update"
-	} else {
+	var account *Account
+	if strings.TrimSpace(userId) != "" {
+		if existing, err := GetAccountByUserId(userId); err == nil {
+			account = existing
+		}
+	}
+	if account == nil {
 		account = &Account{}
 	}
 	now := time.Now().Unix()
@@ -405,25 +644,22 @@ func CreateAccountFull(sourceType SourceType, AppId string, name string, token s
 	account.TokenExpiriesTime = now + expiresTime
 	account.UserId = userId
 	account.Username = username
-	if updateOrCreate == "update" {
-		err := db.Db.Save(account).Error
-		if err != nil {
-			helpers.AppLogger.Errorf("保存开放平台账号失败：%v", err)
-			return nil
-		}
-		return account
-	} else {
-		err := db.Db.Save(account).Error
-		if err != nil {
-			helpers.AppLogger.Errorf("创建开放平台账号失败：%v", err)
-			return nil
-		}
-		return account
+	if err := ensureAccountIdentityAvailable(db.Db, account.ID, account.Name, account.UserId); err != nil {
+		helpers.AppLogger.Errorf("保存开放平台账号失败：%v", err)
+		return nil
 	}
+	if err := db.Db.Save(account).Error; err != nil {
+		helpers.AppLogger.Errorf("保存开放平台账号失败：%v", err)
+		return nil
+	}
+	return account
 }
 
 // 通过 userId 查询开放平台账号
 func GetAccountByUserId(userId string) (*Account, error) {
+	if strings.TrimSpace(userId) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
 	account := &Account{}
 	err := db.Db.Where("user_id = ?", userId).First(account).Error
 	if err != nil {
@@ -493,7 +729,18 @@ func HandleV115TokenInvalid(event helpers.Event) helpers.EventResult {
 			Data:    nil,
 		}
 	}
-	account.ClearToken(eventData["reason"].(string))
+	expectedToken, _ := eventData["token"].(string)
+	expectedRefreshToken, _ := eventData["refresh_token"].(string)
+	if expectedRefreshToken == "" {
+		err := fmt.Errorf("V115 访问凭证失效事件缺少原始 refresh_token")
+		helpers.AppLogger.Warnf("账号 %d %v，跳过清空凭证", account.ID, err)
+		return helpers.EventResult{Success: false, Error: err, Data: nil}
+	}
+	if !account.ClearTokenIfCredentialsMatch(expectedToken, expectedRefreshToken, eventData["reason"].(string)) {
+		helpers.AppLogger.Infof("账号 %d 凭据已更新，跳过过期凭证清理", account.ID)
+		return helpers.EventResult{Success: true, Error: nil, Data: nil}
+	}
+	v115open.UpdateTokenIfCurrent(account.ID, expectedToken, expectedRefreshToken, "", "")
 	ctx := context.Background()
 	notif := &Notification{
 		Type:      SystemAlert,

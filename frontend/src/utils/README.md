@@ -121,6 +121,18 @@ OAuth 回调参数收集：
 
 该函数会合并普通 query string 和 hash 中的 query 参数。
 
+## v115AuthorizationSession.ts
+
+115 直接跳转 OAuth 时的当前标签页临时会话：
+
+- `PendingV115Authorization`
+- `savePendingV115Authorization(pending)`
+- `loadPendingV115Authorization()`
+- `clearPendingV115Authorization(authorizationId)`
+
+只保存账号 ID 和授权会话 ID，不保存令牌。页面从第三方授权页返回后，调用方应只继续处理匹配的回调，其他情况取消并清理会话。
+完整的账号授权会话和回滚边界见 [账号授权与更换](../../../docs/reference/account-authorization.md)。
+
 ## queueStatusUtils.ts
 
 下载和上传队列状态快照的兼容和页面操作辅助：

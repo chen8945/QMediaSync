@@ -43,6 +43,61 @@ func TestAccountRequestValidate(t *testing.T) {
 	})
 }
 
+func TestPrepareAccountAuthorizationRequestValidate(t *testing.T) {
+	base := PrepareAccountAuthorizationRequest{
+		AccountID:      12,
+		SourceType:     models.SourceType115,
+		AuthSourceType: v115auth.SourceTypeBuiltInAppID,
+		AuthProvider:   v115auth.ProviderOfficialPKCE,
+		AppID:          "100197849",
+		AppIDName:      "QMediaSync",
+		Confirmed:      true,
+	}
+
+	tests := []struct {
+		name    string
+		request PrepareAccountAuthorizationRequest
+		wantErr bool
+	}{
+		{name: "有效目标", request: base},
+		{name: "未确认风险", request: func() PrepareAccountAuthorizationRequest { req := base; req.Confirmed = false; return req }(), wantErr: true},
+		{name: "已废弃内置应用", request: func() PrepareAccountAuthorizationRequest {
+			req := base
+			req.AppID = "100197665"
+			req.AppIDName = "Q115-STRM"
+			return req
+		}(), wantErr: true},
+		{name: "跨来源目标仍需由控制器拒绝但请求格式有效", request: func() PrepareAccountAuthorizationRequest {
+			req := base
+			req.SourceType = models.SourceTypeBaiduPan
+			return req
+		}()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.request.Validate(); (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCancelAccountAuthorizationRequestValidate(t *testing.T) {
+	valid := CancelAccountAuthorizationRequest{AccountID: 12, AuthorizationID: "authorization-id"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("有效取消请求校验失败: %v", err)
+	}
+	for _, request := range []CancelAccountAuthorizationRequest{
+		{AccountID: 0, AuthorizationID: "authorization-id"},
+		{AccountID: 12},
+	} {
+		if err := request.Validate(); err == nil {
+			t.Fatalf("无效取消请求未被拒绝: %+v", request)
+		}
+	}
+}
+
 func TestOpenListAccountRequestValidate(t *testing.T) {
 	t.Run("Token 认证通过并补协议", func(t *testing.T) {
 		req := CreateOpenListAccountRequest{BaseURL: "openlist.example.com/", Token: "token"}

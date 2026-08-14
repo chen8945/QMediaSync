@@ -167,6 +167,8 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 	if refreshToken == "" {
 		refreshToken = c.RefreshTokenStr
 	}
+	expectedAccessToken := c.AccessToken
+	expectedRefreshToken := refreshToken
 	// helpers.AppLogger.Infof("115 开放平台刷新访问凭证，refresh_token=%s", refreshToken)
 	data := make(map[string]string)
 	data["refresh_token"] = refreshToken
@@ -182,8 +184,10 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%v", err)
 		// 清空 Token，让用户重新授权
 		helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
-			"account_id": c.AccountId,
-			"reason":     err.Error(),
+			"account_id":    c.AccountId,
+			"reason":        err.Error(),
+			"token":         expectedAccessToken,
+			"refresh_token": expectedRefreshToken,
 		})
 		return nil, err
 	}
@@ -192,8 +196,10 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%+v", respData)
 		// 清空 Token，让用户重新授权
 		helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
-			"account_id": c.AccountId,
-			"reason":     respData.Message,
+			"account_id":    c.AccountId,
+			"reason":        respData.Message,
+			"token":         expectedAccessToken,
+			"refresh_token": expectedRefreshToken,
 		})
 		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
 	}

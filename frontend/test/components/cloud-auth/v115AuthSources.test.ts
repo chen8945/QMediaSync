@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildV115CreatePayload,
+  getDefaultV115ChangeSelection,
   getV115AuthAction,
   webAuthProviders,
   type V115AccountAuthInfo,
@@ -96,9 +97,48 @@ describe('v115AuthSources', () => {
       auth_provider: 'moviepilot',
       app_id: '100197847',
     }
+    const legacyOAuthAccount: V115AccountAuthInfo = {
+      source_type: '115',
+      app_id_name: 'MQ的媒体库',
+    }
+    const legacyQrAccount: V115AccountAuthInfo = {
+      source_type: '115',
+      app_id: 'legacy-app-id',
+      app_id_name: 'QMediaSync',
+    }
 
     expect(getV115AuthAction(qrAccount)).toBe('pkce')
     expect(getV115AuthAction(oauthAccount)).toBe('oauth')
     expect(getV115AuthAction(thirdPartyAccount)).toBe('oauth')
+    expect(getV115AuthAction(legacyOAuthAccount)).toBe('oauth')
+    expect(getV115AuthAction(legacyQrAccount)).toBe('pkce')
+  })
+
+  it('更换授权对已废弃 QR 来源默认选择有效应用', () => {
+    expect(
+      getDefaultV115ChangeSelection({
+        source_type: '115',
+        auth_source_type: 'built_in_appid',
+        auth_provider: 'official_pkce',
+        app_id: '100197665',
+        app_id_name: 'Q115-STRM',
+      }),
+    ).toMatchObject({
+      authMode: 'qr',
+      selectedQrApp: { appId: '100197849', appName: 'QMediaSync' },
+    })
+  })
+
+  it('更换网页授权时复用仍有效的 provider', () => {
+    expect(
+      getDefaultV115ChangeSelection({
+        source_type: '115',
+        auth_source_type: 'third_party_service',
+        auth_provider: 'moviepilot',
+      }),
+    ).toMatchObject({
+      authMode: 'oauth',
+      selectedWebProvider: 'moviepilot',
+    })
   })
 })

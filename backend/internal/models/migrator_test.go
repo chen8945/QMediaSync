@@ -155,12 +155,79 @@ type legacyUserWithoutSingletonKey struct {
 	Password string `gorm:"not null"`
 }
 
+type legacyAccountWithoutIdentityIndexes struct {
+	BaseModel
+	Name   string
+	UserId string `gorm:"column:user_id"`
+}
+
+func (legacyAccountWithoutIdentityIndexes) TableName() string {
+	return "account"
+}
+
 func (legacyUserWithoutSingletonKey) TableName() string {
 	return "users"
 }
 
 func (legacyUniqueNotificationChannel) TableName() string {
 	return "notification_channels"
+}
+
+func TestMigrateVersion61AddsAccountIdentityUniqueIndexes(t *testing.T) {
+	if helpers.AppLogger == nil {
+		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	}
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&legacyAccountWithoutIdentityIndexes{}); err != nil {
+		t.Fatalf("创建旧账号表失败: %v", err)
+	}
+	if err := db.Db.Create(&legacyAccountWithoutIdentityIndexes{Name: "家庭账号", UserId: "user-1"}).Error; err != nil {
+		t.Fatalf("写入旧账号失败: %v", err)
+	}
+	if err := db.Db.Create(&Migrator{VersionCode: 61}).Error; err != nil {
+		t.Fatalf("创建旧迁移版本记录失败: %v", err)
+	}
+
+	Migrate()
+
+	if !db.Db.Migrator().HasIndex(&Account{}, accountNameUniqueIndexName) || !db.Db.Migrator().HasIndex(&Account{}, accountUserIDUniqueIndexName) {
+		t.Fatal("版本 61 迁移后应创建账号唯一索引")
+	}
+	var migrated Migrator
+	if err := db.Db.First(&migrated).Error; err != nil {
+		t.Fatalf("读取迁移版本失败: %v", err)
+	}
+	if migrated.VersionCode != MaxVersionCode {
+		t.Fatalf("迁移版本 = %d，期望 %d", migrated.VersionCode, MaxVersionCode)
+	}
+}
+
+func TestEnsureAccountIdentityUniqueIndexesRejectsExistingDuplicates(t *testing.T) {
+	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	db.Db = testDb
+	if err := db.Db.AutoMigrate(&legacyAccountWithoutIdentityIndexes{}); err != nil {
+		t.Fatalf("创建旧账号表失败: %v", err)
+	}
+	if err := db.Db.Create([]*legacyAccountWithoutIdentityIndexes{
+		{Name: "重复备注", UserId: "user-1"},
+		{Name: "重复备注", UserId: "user-2"},
+	}).Error; err != nil {
+		t.Fatalf("写入重复旧账号失败: %v", err)
+	}
+	if err := ensureAccountIdentityUniqueIndexes(db.Db); err == nil {
+		t.Fatal("已有重复非空 Name 时应拒绝创建唯一索引")
+	}
+	if db.Db.Migrator().HasIndex(&Account{}, accountNameUniqueIndexName) {
+		t.Fatal("迁移失败时不应留下 Name 唯一索引")
+	}
 }
 
 func setupMigratorVersion45NotificationTestDB(t *testing.T) {

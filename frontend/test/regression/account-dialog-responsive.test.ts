@@ -40,6 +40,19 @@ describe('账号弹窗响应式布局', () => {
   })
 })
 
+describe('网盘状态图标', () => {
+  const cloudAccountsSource = readSource('src/components/AppCloudAccounts.vue')
+  const statusStart = cloudAccountsSource.indexOf('<template v-if="account.status">')
+  const statusEnd = cloudAccountsSource.indexOf('\n              </template>', statusStart)
+  const statusSource = cloudAccountsSource.slice(statusStart, statusEnd)
+
+  test('不同状态行使用对应的语义图标', () => {
+    for (const icon of ['Postcard', 'Avatar', 'PieChart', 'Medal', 'Calendar']) {
+      expect(statusSource.match(new RegExp(`<${icon} \\/>`, 'g')) ?? []).toHaveLength(1)
+    }
+  })
+})
+
 describe('115 二维码授权长错误保护', () => {
   const authorizationSource = readSource('src/components/cloud-auth/V115AuthorizationDialog.vue')
 
@@ -121,6 +134,64 @@ describe('115 二维码授权画布边框', () => {
     for (const declaration of ['border:', 'border-radius:', 'background:']) {
       expect(qrCodeBlock).not.toContain(declaration)
     }
+  })
+})
+
+describe('115 授权流程生命周期', () => {
+  const cloudAccountsSource = readSource('src/components/AppCloudAccounts.vue')
+
+  test('新授权入口会取消已有流程并暂停隐藏页面的 OAuth 轮询', () => {
+    expect(cloudAccountsSource).toContain('const cancelActiveAuthorizationFlow = async () =>')
+    expect(
+      cloudAccountsSource.match(/await cancelActiveAuthorizationFlow\(\)/g) ?? [],
+    ).toHaveLength(2)
+    expect(cloudAccountsSource.match(/:disabled="authorizationFlowBusy"/g) ?? []).toHaveLength(2)
+    expect(cloudAccountsSource).toContain(
+      "document.addEventListener('visibilitychange', oauthPollingVisibilityHandler)",
+    )
+    expect(cloudAccountsSource).toContain(
+      "document.removeEventListener('visibilitychange', oauthPollingVisibilityHandler)",
+    )
+    expect(cloudAccountsSource).toContain('if (document.hidden) {')
+  })
+
+  test('直接跳转 OAuth 会暂存会话并在回调返回后处理失效会话', () => {
+    expect(cloudAccountsSource).toContain(`v-if="account.source_type !== 'openlist'"`)
+    expect(cloudAccountsSource).not.toContain(
+      `v-if="account.source_type !== 'openlist' && !account.deprecated"`,
+    )
+    expect(cloudAccountsSource).toContain(`v-if="account.source_type === '115'"`)
+    expect(cloudAccountsSource).toContain('savePendingV115Authorization')
+    expect(cloudAccountsSource).toContain('loadPendingV115Authorization')
+    expect(cloudAccountsSource).toContain('clearPendingV115Authorization')
+    expect(cloudAccountsSource).toContain(
+      'savePendingV115Authorization({ accountId: account.id, authorizationId })',
+    )
+    expect(cloudAccountsSource).toContain('clearPendingV115Authorization(context.authorizationId)')
+    expect(cloudAccountsSource).toContain('const callbackAuthorizationId =')
+    expect(cloudAccountsSource).toContain('const callbackAccountId =')
+    expect(cloudAccountsSource).toContain('Number.isSafeInteger(callbackAccountId)')
+    expect(cloudAccountsSource).toContain(
+      'pendingRedirectAuthorization.accountId !== callbackAccountId',
+    )
+    expect(cloudAccountsSource).toContain('cancelAndClearPendingAuthorization')
+
+    const mismatchBlock = cloudAccountsSource.slice(
+      cloudAccountsSource.indexOf(
+        'pendingRedirectAuthorization.authorizationId !== callbackAuthorizationId',
+      ),
+      cloudAccountsSource.indexOf('if (hasValidCallbackAccountId && hasCallbackData)'),
+    )
+    expect(mismatchBlock).toContain('return')
+  })
+
+  test('取消授权会话会校验接口业务码后再清理暂存', () => {
+    const cancelBlock = cloudAccountsSource.slice(
+      cloudAccountsSource.indexOf('const cancelAuthorizationSession = async'),
+      cloudAccountsSource.indexOf('const cancelAndClearPendingAuthorization'),
+    )
+    expect(cancelBlock).toContain('const response = await http.post')
+    expect(cancelBlock).toContain('return response?.data?.code === 200')
   })
 })
 

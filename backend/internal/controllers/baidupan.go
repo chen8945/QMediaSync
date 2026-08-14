@@ -110,6 +110,10 @@ func GetBaiDuPanOAuthUrl(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
+	if account.SourceType != models.SourceTypeBaiduPan {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "当前账号不是百度网盘账号", Data: nil})
+		return
+	}
 
 	clientId := account.AppId
 	if clientId == "" {
@@ -179,6 +183,10 @@ func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 		return
 	}
+	if account.SourceType != models.SourceTypeBaiduPan {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "当前账号不是百度网盘账号", Data: nil})
+		return
+	}
 	// 对 req.Data 解密
 	decryptedData, err := helpers.Decrypt(req.Data)
 	if err != nil {
@@ -187,22 +195,33 @@ func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 	}
 	var data *baidupan.RefreshResponse
 	err = json.Unmarshal([]byte(decryptedData), &data)
-	if err != nil {
+	if err != nil || data == nil {
+		if err == nil {
+			err = fmt.Errorf("授权数据为空")
+		}
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
 		return
 	}
-	// 将 token 和刷新 token 保存到账号
-	account.UpdateToken(data.AccessToken, data.RefreshToken, data.ExpiresIn)
-	// 调用接口获取百度用户信息
-	client := account.GetBaiDuPanClient()
+	// 用临时客户端验证新凭据，验证成功后再和用户信息一起提交，避免
+	// 唯一性冲突时留下新 Token 配旧用户信息的半更新状态。
+	client := baidupan.NewBaiDuPanClientWithToken(data.AccessToken)
 	userInfo, err := client.GetUserInfo(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
 		return
 	}
-	rs := account.UpdateUser(helpers.Int64ToString(*userInfo.Uk), *userInfo.BaiduName)
-	if !rs {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新用户信息失败", Data: nil})
+	if userInfo == nil || userInfo.Uk == nil || userInfo.BaiduName == nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：用户信息不完整", Data: nil})
+		return
+	}
+	if err := account.ReplaceBaiDuPanAuthorization(
+		data.AccessToken,
+		data.RefreshToken,
+		data.ExpiresIn,
+		helpers.Int64ToString(*userInfo.Uk),
+		*userInfo.BaiduName,
+	); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新用户信息失败：" + accountPersistenceMessage(err), Data: nil})
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OAuth 登录已确认", Data: nil})
