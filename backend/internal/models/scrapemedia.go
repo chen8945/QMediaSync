@@ -1015,6 +1015,7 @@ func (sm *ScrapeMediaFile) ExtractSeasonEpisode(sp *ScrapePath) error {
 	}
 	if sm.SeasonNumber == -1 {
 		sm.SeasonNumber = 1
+		helpers.AppLogger.Warnf("未能从文件名、季文件夹和电视剧文件夹中识别到季数，兜底使用第 1 季，文件名：%s，电视剧路径：%s，季路径：%s", sm.VideoFilename, sm.TvshowPath, sm.Path)
 	}
 	sm.Save()
 	return nil

@@ -274,6 +274,7 @@ func (m *scanBaseImpl) ExtractSeasonEpisode(mediaFile *models.ScrapeMediaFile) e
 	}
 	if mediaFile.SeasonNumber == -1 {
 		mediaFile.SeasonNumber = 1
+		helpers.AppLogger.Warnf("未能从文件名和电视剧文件夹中识别到季数，兜底使用第 1 季，文件名：%s，电视剧路径：%s", mediaFile.VideoFilename, mediaFile.TvshowPath)
 	}
 	return nil
 }

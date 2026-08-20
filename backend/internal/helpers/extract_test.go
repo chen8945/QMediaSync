@@ -1506,6 +1506,17 @@ func TestExtractMediaInfoRe_Tvshow(t *testing.T) {
 				Episode: 8,
 			},
 		},
+		{
+			// 三位季号 + 等号形式的 TMDB ID，剧名不能把后面的集标题一起带上
+			filename: "百家讲坛：专题集{tmdbid=237020}.S100E03.历史人物的悲剧.两个错位皇帝－邱紫华.mp4",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "百家讲坛：专题集",
+				Year:    0,
+				Season:  100,
+				Episode: 3,
+				TmdbId:  237020,
+			},
+		},
 	}
 	i := 0
 	for _, tc := range testCases {
@@ -1692,6 +1703,44 @@ func TestExtractMediaInfoRe_TvshowSeasonEpisode(t *testing.T) {
 				Episode: 1,
 			},
 		},
+		{
+			// 三位季号，不能退化成 -1（上层会兜底成第 1 季）
+			filename: "百家讲坛：专题集{tmdbid=237020}.S100E03.历史人物的悲剧.两个错位皇帝－邱紫华.mp4",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "百家讲坛：专题集",
+				Year:    0,
+				Season:  100,
+				Episode: 3,
+			},
+		},
+		{
+			filename: "百家讲坛：专题集{tmdbid=237020}.S200E02.历史人物的悲剧.贵妃之死－邱紫华.mp4",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "百家讲坛：专题集",
+				Year:    0,
+				Season:  200,
+				Episode: 2,
+			},
+		},
+		{
+			filename: "某剧.S100EP12.mkv",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "某剧",
+				Year:    0,
+				Season:  100,
+				Episode: 12,
+			},
+		},
+		{
+			// 四位季号，常见于按年份分季的长寿节目
+			filename: "某剧.S2001E03.mkv",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "某剧",
+				Year:    0,
+				Season:  2001,
+				Episode: 3,
+			},
+		},
 	}
 	i := 0
 	for _, tc := range testCases {
@@ -1724,6 +1773,24 @@ func TestExtractMediaInfoRe_TvshowSeason(t *testing.T) {
 				Episode: -1,
 			},
 		},
+		{
+			filename: "S100",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "",
+				Year:    0,
+				Season:  100,
+				Episode: -1,
+			},
+		},
+		{
+			filename: "Season 100",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "",
+				Year:    0,
+				Season:  100,
+				Episode: -1,
+			},
+		},
 	}
 	i := 0
 	for _, tc := range testCases {
@@ -1735,6 +1802,46 @@ func TestExtractMediaInfoRe_TvshowSeason(t *testing.T) {
 		}
 	}
 	fmt.Printf("共测试完成 %d 个电视剧季集\n", i)
+}
+
+func TestExtractSeasonFromTvshowPath(t *testing.T) {
+	testCases := TestCases{
+		{
+			filename: "S01",
+			expectedMediaInfo: &MediaInfo{
+				Season: 1,
+			},
+		},
+		{
+			filename: "S100",
+			expectedMediaInfo: &MediaInfo{
+				Season: 100,
+			},
+		},
+		{
+			// 四位季号不能被截断成 200
+			filename: "S2001",
+			expectedMediaInfo: &MediaInfo{
+				Season: 2001,
+			},
+		},
+		{
+			filename: "百家讲坛",
+			expectedMediaInfo: &MediaInfo{
+				Season: -1,
+			},
+		},
+	}
+	i := 0
+	for _, tc := range testCases {
+		i++
+		season := ExtractSeasonFromTvshowPath(tc.filename)
+		if season != tc.expectedMediaInfo.Season {
+			t.Errorf("从电视剧目录提取季数失败：'%s', 季数 %d 与预期 %d 不符", tc.filename, season, tc.expectedMediaInfo.Season)
+			continue
+		}
+	}
+	fmt.Printf("共测试完成 %d 个电视剧目录季数\n", i)
 }
 
 func TestExtractMediaInfoRe_Tmdb(t *testing.T) {
@@ -1753,6 +1860,40 @@ func TestExtractMediaInfoRe_Tmdb(t *testing.T) {
 				Name:   "凡人修仙传",
 				Year:   2025,
 				TmdbId: 12312312,
+			},
+		},
+		{
+			// 命名模板 {tmdbid={{ tmdbid }}} 生成的等号形式，必须能回读
+			filename: "凡人修仙传 (2025) {tmdbid=12312312}",
+			expectedMediaInfo: &MediaInfo{
+				Name:   "凡人修仙传",
+				Year:   2025,
+				TmdbId: 12312312,
+			},
+		},
+		{
+			filename: "凡人修仙传 (2025) [tmdbid=12312312]",
+			expectedMediaInfo: &MediaInfo{
+				Name:   "凡人修仙传",
+				Year:   2025,
+				TmdbId: 12312312,
+			},
+		},
+		{
+			filename: "百家讲坛：专题集{tmdbid=237020}.S100E03.历史人物的悲剧.两个错位皇帝－邱紫华.mp4",
+			expectedMediaInfo: &MediaInfo{
+				Name:   "百家讲坛：专题集",
+				Year:   0,
+				TmdbId: 237020,
+			},
+		},
+		{
+			// 没有括号包裹的不能误匹配
+			filename: "凡人修仙传 (2025) tmdbid=12312312",
+			expectedMediaInfo: &MediaInfo{
+				Name:   "凡人修仙传",
+				Year:   2025,
+				TmdbId: 0,
 			},
 		},
 	}

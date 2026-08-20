@@ -58,8 +58,8 @@ type MediaInfo struct {
 
 func ExtractTmdbId(name string) int64 {
 	var tmdbPatterns = []string{
-		`[\{|\[|【]{1}tmdbid-(\d+)[\}|\]】]{1}`,
-		`[\{|\[|【]{1}tmdb-(\d+)[\}|\]】]{1}`,
+		// 同时兼容 {tmdbid-123}、{tmdbid=123} 两种写法，后者由命名模板 {tmdbid={{ tmdbid }}} 生成
+		`(?i)[\{\[【](?:tmdbid|tmdb)[-=](\d+)[\}\]】]`,
 	}
 	for _, pattern := range tmdbPatterns {
 		re := regexp.MustCompile(pattern)
@@ -307,7 +307,7 @@ func PreProcess(name string, excludePatterns ...string) string {
 func ExtractSeasonEpisode(name string) (string, int, int) {
 	// fmt.Printf("提取季集前文件名: %s\n", name)
 	patterns := []string{
-		`(?i)S(\d{1,2})E[P]?(\d{1,3})`,         // S01E01 或 S01EP01
+		`(?i)S(\d{1,4})E[P]?(\d{1,4})`,         // S01E01、S01EP01 或 S100E01 这种三位以上的季号
 		`(?i)E[P]?(\d{1,3})`,                   // E01 或者 EP01
 		`(?i)Season\s*(\d+)\s*Episode\s*(\d+)`, // Season 1 Episode 1
 		`(?i)(\d{1,2})x(\d{1,3})`,              // 1x01
@@ -677,7 +677,7 @@ func ExtractSeasonFromTvshowPath(text string) int {
 	if f == "s" {
 		text = "S" + text[1:]
 	}
-	pattern := `(?i)S(\d{1,3})`
+	pattern := `(?i)S(\d{1,4})`
 	re := regexp.MustCompile(pattern)
 	matches := re.FindStringSubmatch(text)
 	if matches != nil {
@@ -773,6 +773,10 @@ func finalProcess(title string) string {
 		if regexp.MustCompile(`[\p{Han}]+ [a-zA-Z\s]+`).MatchString(title) {
 			subTitles := strings.Split(title, " ")
 			title = subTitles[0]
+		} else if fields := strings.Fields(title); len(fields) >= 3 && !regexp.MustCompile(`[a-zA-Z]`).MatchString(title) {
+			// 纯中文且被切成 3 段以上：剧名一般是第一段，后面通常是集标题、演讲人等信息
+			// 例如 百家讲坛：专题集.S100E03.历史人物的悲剧.两个错位皇帝-邱紫华 去掉季集后剩下的部分
+			title = fields[0]
 		}
 	}
 	// 如果 title 以 [*?] 开头，则剔除
