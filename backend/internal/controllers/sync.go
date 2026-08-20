@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	pathpkg "path"
 	"strings"
 
 	"qmediasync/internal/directoryupload"
@@ -553,7 +554,7 @@ func ManualSync(c *gin.Context) {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取文件详情失败：" + err.Error(), Data: nil})
 				return
 			}
-			req.Path = fileDetail.Path
+			req.Path = resolve115ManualSyncPath(fileDetail)
 			req.IsFile = fileDetail.FileCategory == v115open.TypeFile
 		case models.SourceTypeBaiduPan:
 			client := account.GetBaiDuPanClient()
@@ -563,10 +564,37 @@ func ManualSync(c *gin.Context) {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取文件详情失败：" + err.Error(), Data: nil})
 				return
 			}
+			// 目标不存在时 FileExists 返回空详情而不是错误
+			if fileDetail == nil {
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "文件不存在：" + req.PathID, Data: nil})
+				return
+			}
 			req.Path = fileDetail.Path
 			req.IsFile = fileDetail.IsDir == 0
+		case models.SourceTypeOpenList:
+			client := account.GetOpenListClient()
+			// OpenList 以完整路径作为文件 ID，详情只用于确认存在和区分目录
+			remotePath := normalizeOpenListPath(req.PathID)
+			fileDetail, err := client.FileDetail(remotePath)
+			if err != nil {
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取文件详情失败：" + err.Error(), Data: nil})
+				return
+			}
+			if fileDetail == nil || strings.TrimSpace(fileDetail.Name) == "" {
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "文件不存在：" + remotePath, Data: nil})
+				return
+			}
+			req.Path = remotePath
+			// 归一后的路径同时作为入口 ID，避免单文件同步和队列去重用到未归一的原始值
+			req.PathID = remotePath
+			req.IsFile = !fileDetail.IsDir
 		default:
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件类型", Data: nil})
+			return
+		}
+		// 远端路径为空会让同步入口退化成网盘根目录，必须在入队前拦截
+		if req.Path == "" {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "解析远端路径失败：详情未返回有效路径", Data: nil})
 			return
 		}
 	}
@@ -586,4 +614,15 @@ func ManualSync(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "同步任务已添加到队列", Data: nil})
+}
+
+// resolve115ManualSyncPath 把 115 文件详情拼成完整远端路径。
+// 115 `/open/folder/get_info` 的 paths 只包含父目录链，漏掉自身名称会让同步入口退化成父目录，
+// 进而对父目录下的所有文件生成 STRM。
+// 名称按 115 返回的原样拼接：远端可能存在首尾空格的名称，修饰后会导致路径反查不到。
+func resolve115ManualSyncPath(detail *v115open.FileDetail) string {
+	if detail == nil || strings.TrimSpace(detail.FileName) == "" {
+		return ""
+	}
+	return pathpkg.Join(detail.Path, detail.FileName)
 }

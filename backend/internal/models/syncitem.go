@@ -44,7 +44,12 @@ type SyncFile struct {
 
 func (sf *SyncFile) GetAccount() *Account {
 	if sf.Account == nil {
-		sf.Account, _ = GetAccountById(sf.SyncPath.AccountId)
+		// 优先用行上持久化的 AccountId：SyncPath 是运行时可选的关联，临时同步任务不会回填
+		accountId := sf.AccountId
+		if accountId == 0 && sf.SyncPath != nil {
+			accountId = sf.SyncPath.AccountId
+		}
+		sf.Account, _ = GetAccountById(accountId)
 	}
 	return sf.Account
 }

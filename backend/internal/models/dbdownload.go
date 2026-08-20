@@ -600,9 +600,8 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 	if task := existing; task != nil {
 		return activeDownloadTaskExistsError(task)
 	}
-	if file.SyncPath == nil {
-		file.SyncPath = GetSyncPathById(file.SyncPathId)
-	}
+	// 不回填 file.SyncPath：下载任务不读它，而临时同步任务的 sync_path_id 没有对应行，
+	// 每个文件都会多查一次库并打出「同步路径不存在」错误日志。上传侧同理。
 	// 插入新纪录
 	task := &DbDownloadTask{
 		AccountId:      file.AccountId,

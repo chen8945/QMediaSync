@@ -392,6 +392,9 @@ func (s *SyncStrm) Start() error {
 			return errors.New(reason)
 		}
 		if newPathId != s.SourcePathId {
+			// 路径是同步入口的权威来源，ID 只是缓存。两者不一致往往意味着入口路径本身传错，
+			// 覆盖后会扫描另一个目录，必须留下线索。
+			s.Sync.Logger.Warnf("远端路径 %s 反查到的入口 ID 与任务携带的 ID 不一致，改用反查结果：%s => %s", s.SourcePath, s.SourcePathId, newPathId)
 			s.SourcePathId = newPathId
 		}
 		if !s.checkPathExists(s.TargetPath) {
@@ -432,7 +435,8 @@ func (s *SyncStrm) Start() error {
 		default:
 		}
 		// 处理完所有路径和文件后，更新最后同步时间
-		if s.SyncPathId > 0 {
+		// 临时任务的 SyncPathId 是运行时生成的，没有对应的 sync_paths 行，不需要查询
+		if s.SyncPathId > 0 && !s.TmpSyncPath {
 			syncPath := models.GetSyncPathById(s.SyncPathId)
 			if syncPath != nil {
 				syncPath.UpdateLastSync()
