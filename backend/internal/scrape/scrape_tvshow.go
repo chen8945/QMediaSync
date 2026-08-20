@@ -472,15 +472,20 @@ func (t *tvShowScrapeImpl) GenerateNewTvshowName(mediaFile *models.ScrapeMediaFi
 	if folderTemplate == "" && remotePath == "" {
 		folderTemplate = "{title} ({year})"
 	}
+	// 模板变量全部为空时保留的原名称，来源端没有电视剧文件夹时退回剧集名称
+	folderFallback := oldPathName
+	if remotePath == "" {
+		folderFallback = mediaFile.Name
+	}
 	// 根据命名规则生成文件夹名称
 	if t.scrapePath.FolderNameTemplate == "" {
 		if remotePath == "" {
-			mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(folderTemplate)
+			mediaFile.NewPathName = mediaFile.GenerateNameByTemplateOrKeep(folderTemplate, folderFallback)
 		} else {
 			mediaFile.NewPathName = oldPathName
 		}
 	} else {
-		mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(t.scrapePath.FolderNameTemplate)
+		mediaFile.NewPathName = mediaFile.GenerateNameByTemplateOrKeep(t.scrapePath.FolderNameTemplate, folderFallback)
 	}
 	mediaFile.Media.Path = filepath.Join(mediaFile.DestPath, mediaFile.CategoryName, mediaFile.NewPathName)
 	// 保存

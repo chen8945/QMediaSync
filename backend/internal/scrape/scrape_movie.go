@@ -300,20 +300,25 @@ func (m *movieScrapeImpl) GenerateNewName(mediaFile *models.ScrapeMediaFile) {
 	if m.scrapePath.FolderNameTemplate == "" && remotePath == "" {
 		folderTemplate = "{title} ({year})"
 	}
+	// 模板变量全部为空时保留的原名称，来源端没有影片文件夹时退回视频文件名
+	folderFallback := oldPathName
+	if remotePath == "" {
+		folderFallback = baseName
+	}
 	// 根据命名规则生成文件夹名称
 	if m.scrapePath.FolderNameTemplate == "" {
 		if remotePath == "" {
-			mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(folderTemplate)
+			mediaFile.NewPathName = mediaFile.GenerateNameByTemplateOrKeep(folderTemplate, folderFallback)
 		} else {
 			mediaFile.NewPathName = oldPathName
 		}
 	} else {
-		mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(m.scrapePath.FolderNameTemplate)
+		mediaFile.NewPathName = mediaFile.GenerateNameByTemplateOrKeep(m.scrapePath.FolderNameTemplate, folderFallback)
 	}
 	if m.scrapePath.FileNameTemplate == "" {
 		mediaFile.NewVideoBaseName = baseName
 	} else {
-		mediaFile.NewVideoBaseName = mediaFile.GenerateNameByTemplate(m.scrapePath.FileNameTemplate) // 不含扩展名
+		mediaFile.NewVideoBaseName = mediaFile.GenerateNameByTemplateOrKeep(m.scrapePath.FileNameTemplate, baseName) // 不含扩展名
 	}
 	mediaFile.Media.Path = filepath.Join(mediaFile.DestPath, mediaFile.CategoryName, mediaFile.NewPathName)
 	mediaFile.Media.VideoFileName = mediaFile.NewVideoBaseName + mediaFile.VideoExt

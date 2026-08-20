@@ -701,6 +701,38 @@ func (sm *ScrapeMediaFile) renderNewTemplate(template string) string {
 	return out
 }
 
+// sanitizeTemplateName 清理命名模板的渲染结果。
+// 按 / 逐层去掉首尾空白，丢弃空层级和 . 、.. 层级，
+// 避免变量为空时生成 "/番号"、"演员/" 这类残缺路径，也避免模板常量带来的路径穿越片段。
+func sanitizeTemplateName(name string) string {
+	segments := strings.Split(name, "/")
+	cleaned := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || segment == "." || segment == ".." {
+			continue
+		}
+		cleaned = append(cleaned, segment)
+	}
+	return strings.Join(cleaned, "/")
+}
+
+// GenerateNameByTemplateOrKeep 渲染命名模板，渲染结果为空时回退到 fallback。
+// 模板变量全部取不到值时（例如媒体类型为其他但 NFO 里没有番号和演员），
+// 与“模板留空保留原名称”保持一致的行为，而不是生成只剩扩展名的文件或退回目标根目录。
+func (sm *ScrapeMediaFile) GenerateNameByTemplateOrKeep(template, fallback string) string {
+	name := sanitizeTemplateName(sm.GenerateNameByTemplate(template))
+	if name != "" {
+		return name
+	}
+	keep := sanitizeTemplateName(fallback)
+	if keep == "" {
+		keep = strings.TrimSuffix(filepath.Base(sm.VideoFilename), filepath.Ext(sm.VideoFilename))
+	}
+	helpers.AppLogger.Warnf("命名模板 %s 的变量全部为空，保留原名称：%s，视频文件：%s", template, keep, sm.VideoFilename)
+	return keep
+}
+
 func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 	if template == "" {
 		template = "{title} ({year})"

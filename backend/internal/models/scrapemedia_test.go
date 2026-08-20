@@ -687,3 +687,147 @@ func TestSyntaxDetection(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeTemplateName(t *testing.T) {
+	tests := []struct {
+		name     string
+		rendered string
+		expected string
+	}{
+		{
+			name:     "正常多层级",
+			rendered: "某演员/ABC-123",
+			expected: "某演员/ABC-123",
+		},
+		{
+			name:     "首层级为空",
+			rendered: "/ABC-123",
+			expected: "ABC-123",
+		},
+		{
+			name:     "末层级为空",
+			rendered: "某演员/",
+			expected: "某演员",
+		},
+		{
+			name:     "层级只有空白",
+			rendered: "某演员/   /ABC-123",
+			expected: "某演员/ABC-123",
+		},
+		{
+			name:     "层级为当前目录",
+			rendered: "./ABC-123",
+			expected: "ABC-123",
+		},
+		{
+			name:     "层级为上级目录",
+			rendered: "某演员/../ABC-123",
+			expected: "某演员/ABC-123",
+		},
+		{
+			name:     "全部为上级目录",
+			rendered: "../..",
+			expected: "",
+		},
+		{
+			name:     "全部为空",
+			rendered: "/",
+			expected: "",
+		},
+		{
+			name:     "去掉首尾空白",
+			rendered: "  某演员 / ABC-123  ",
+			expected: "某演员/ABC-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := sanitizeTemplateName(tt.rendered); result != tt.expected {
+				t.Errorf("清理 '%s' 失败\n期望: %s\n实际: %s", tt.rendered, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestGenerateNameByTemplateOrKeep(t *testing.T) {
+	other := func() *ScrapeMediaFile {
+		return &ScrapeMediaFile{
+			MediaType:     MediaTypeOther,
+			ScrapeType:    ScrapeTypeOnlyRename,
+			VideoFilename: "ABC-123.mp4",
+			Name:          "ABC-123 测试标题",
+			Media:         &Media{Name: "ABC-123 测试标题"},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		build    func() *ScrapeMediaFile
+		template string
+		fallback string
+		expected string
+	}{
+		{
+			name: "变量齐全时使用模板结果",
+			build: func() *ScrapeMediaFile {
+				sm := other()
+				sm.Media.Num = "ABC-123"
+				sm.Media.Actors = []helpers.Actor{{Name: "某演员"}}
+				return sm
+			},
+			template: "{actors}/{num}",
+			fallback: "ABC-123",
+			expected: "某演员/ABC-123",
+		},
+		{
+			name: "番号为空时丢弃空层级",
+			build: func() *ScrapeMediaFile {
+				sm := other()
+				sm.Media.Actors = []helpers.Actor{{Name: "某演员"}}
+				return sm
+			},
+			template: "{actors}/{num}",
+			fallback: "ABC-123",
+			expected: "某演员",
+		},
+		{
+			name:     "变量全部为空时保留原名称",
+			build:    other,
+			template: "{actors}/{num}",
+			fallback: "ABC-123",
+			expected: "ABC-123",
+		},
+		{
+			name:     "新语法变量全部为空时保留原名称",
+			build:    other,
+			template: "{{actors}}/{{num}}",
+			fallback: "ABC-123",
+			expected: "ABC-123",
+		},
+		{
+			name:     "原名称也为空时退回视频文件名",
+			build:    other,
+			template: "{num}",
+			fallback: "",
+			expected: "ABC-123",
+		},
+		{
+			name:     "原名称为当前目录时退回视频文件名",
+			build:    other,
+			template: "{num}",
+			fallback: ".",
+			expected: "ABC-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := tt.build()
+			result := sm.GenerateNameByTemplateOrKeep(tt.template, tt.fallback)
+			if result != tt.expected {
+				t.Errorf("模板 '%s' 生成失败\n期望: %s\n实际: %s", tt.template, tt.expected, result)
+			}
+		})
+	}
+}

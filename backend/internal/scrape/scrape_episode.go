@@ -280,7 +280,7 @@ func (t *tvShowScrapeImpl) GenerateNewEpisodeName(mediaFile *models.ScrapeMediaF
 		return
 	}
 	if t.scrapePath.FileNameTemplate != "" {
-		baseName = mediaFile.GenerateNameByTemplate(t.scrapePath.FileNameTemplate) // 不含扩展名
+		baseName = mediaFile.GenerateNameByTemplateOrKeep(t.scrapePath.FileNameTemplate, baseName) // 不含扩展名
 	}
 	mediaFile.NewVideoBaseName = baseName
 	helpers.AppLogger.Infof("生成去掉扩展名的文件名：%s，扩展名：%s", baseName, ext)
