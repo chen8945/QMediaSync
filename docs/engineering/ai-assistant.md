@@ -56,6 +56,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 | 上传、目录监控、STRM 生成、源文件清理 | [上传与 STRM 处理](../architecture/upload-and-strm-processing.md) |
 | Emby 刷新、全量 / 增量同步、Webhook 同步 | [Emby 媒体库同步](../architecture/emby-library-sync.md) |
 | 任务来源、任务类型、展示映射或数据库机器值 | [任务来源](../reference/task-sources.md) |
+| 刮削命名模板、模板变量、NFO 解析或媒体类型为其他的信息来源 | [刮削命名模板与其他类型 NFO](../reference/scrape-rename-templates.md) |
 | 发布、CI、镜像标签或 FPK 打包 | [发布流程](../operations/release.md) |
 | 单个客户端或前端工具目录 | 对应代码目录内的 `README.md` |
 
