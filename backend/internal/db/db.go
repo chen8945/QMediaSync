@@ -33,10 +33,21 @@ func InitSqlite3(dbFile string) *gorm.DB {
 	if err != nil {
 		panic(fmt.Sprintf("failed to connect database: %v", err))
 	}
-	// sqlDB, dbError := sqliteDb.DB()
-	// if dbError != nil {
-	// 	return nil
-	// }
+
+	// 1. 限制连接池为单连接。
+	// SQLite 同一时间只允许一个写事务。多连接时，事务读取快照之后如果其他连接提交了写入，
+	// 本事务的写升级会立即失败并返回 SQLITE_BUSY（快照冲突），busy_timeout 不会重试这种错误。
+	// 单连接把所有语句串行化到进程内的连接锁上排队，写入不再返回 database is locked。
+	// 注意：事务体内不得再通过全局 db.Db 发起语句，否则会等待自己持有的连接而死锁。
+	sqlDB, dbError := sqliteDb.DB()
+	if dbError != nil {
+		panic(fmt.Errorf("获取 SQLite 连接失败：%w", dbError))
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(0)
+	sqlDB.SetConnMaxIdleTime(0)
+	helpers.AppLogger.Infof("设置 SQLite 连接池成功：最大连接数 %d", 1)
 
 	// 2. 设置 busy_timeout (例如 5000 毫秒)
 	if tx := sqliteDb.Exec("PRAGMA busy_timeout = 10000"); tx.Error != nil {

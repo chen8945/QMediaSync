@@ -4,7 +4,10 @@ import type { AxiosInstance } from 'axios'
 import { computed, onScopeDispose, shallowRef } from 'vue'
 
 export const V115_QR_STATUS_TIMEOUT_MS = 70_000
-const V115_QR_STATUS_POLL_DELAY_MS = 1_000
+// 等待扫码阶段保持较快轮询，便于及时显示扫码结果。
+export const V115_QR_STATUS_POLL_DELAY_MS = 1_000
+// 已扫码后服务端要串行完成取令牌、查用户信息和写库，降低轮询频率可减少同期数据库写入竞争。
+export const V115_QR_STATUS_SCANNED_POLL_DELAY_MS = 3_000
 
 export function useV115DeviceAuthorization(http: AxiosInstance) {
   const qrCode = shallowRef<V115QrCodePayload | null>(null)
@@ -33,7 +36,11 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
 
   const schedulePollStatus = (runId: number) => {
     if (!pollingActive.value || runId !== authorizationRunId.value || isPageHidden()) return
-    pollTimer.value = window.setTimeout(() => void pollStatus(runId), V115_QR_STATUS_POLL_DELAY_MS)
+    const delay =
+      status.value === 'scanned'
+        ? V115_QR_STATUS_SCANNED_POLL_DELAY_MS
+        : V115_QR_STATUS_POLL_DELAY_MS
+    pollTimer.value = window.setTimeout(() => void pollStatus(runId), delay)
   }
 
   const pollStatus = async (runId: number) => {

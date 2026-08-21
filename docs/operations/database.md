@@ -12,6 +12,10 @@
 
 QMediaSync 支持 SQLite 和 PostgreSQL，默认 `postgres + embedded` 由程序启动内嵌 PostgreSQL。数据库配置通过 `config/config.yaml` 保存；首次配置、端口和外部 PostgreSQL 要求见 [配置、密钥与日志](configuration.md)。
 
+SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_timeout`，并且连接池固定为一个连接（`MaxOpenConns` 和 `MaxIdleConns` 均为 1，连接不设置存活和空闲上限）。SQLite 同一时间只允许一个写事务：多连接时，事务读取快照之后如果其他连接提交了写入，本事务的写升级会立即失败并返回 `SQLITE_BUSY`（快照冲突），`busy_timeout` 不会重试这种错误。单连接把所有语句串行化到进程内的连接锁上排队，写入不再返回 `database is locked`。`MaxOpenConns` 不适用于 SQLite 引擎，只作用于 PostgreSQL。
+
+因此 SQLite 下的写事务体内不得再通过全局 `db.Db` 发起新语句，必须使用事务自身的 `tx`：单连接会让这种嵌套语句等待自己持有的连接而死锁。PostgreSQL 连接池仍按 `config/config.yaml` 的 `maxOpenConns` 和 `maxIdleConns` 配置。
+
 首次启动时，如果 `migrator` 表不存在，`InitDB()` 创建所有表、写入当前版本、初始化默认设置、刮削设置和 Emby 配置。首次空库直接初始化到当前结构版本，不逐个回放历史迁移；首个管理员通过启动日志中的初始化码创建。
 
 已有数据库启动时，`Migrate()` 按 `migrator.version_code` 顺序执行补丁并逐步推进版本。新增或修改表、字段和迁移时必须同时更新 [数据库 schema 与迁移](../reference/database-schema.md)。

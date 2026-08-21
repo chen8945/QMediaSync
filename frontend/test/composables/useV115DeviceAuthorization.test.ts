@@ -2,6 +2,8 @@ import { SERVER_URL } from '@/const'
 import { effectScope } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  V115_QR_STATUS_POLL_DELAY_MS,
+  V115_QR_STATUS_SCANNED_POLL_DELAY_MS,
   V115_QR_STATUS_TIMEOUT_MS,
   useV115DeviceAuthorization,
 } from '@/composables/useV115DeviceAuthorization'
@@ -241,6 +243,51 @@ describe('useV115DeviceAuthorization', () => {
     await vi.waitFor(() => expect(authorization!.status.value).toBe('expired'))
 
     expect(authorization!.tip.value).toBe('二维码已过期')
+    scope.stop()
+  })
+
+  it('slows QR status polling down after the code has been scanned', async () => {
+    const setTimeoutMock = vi.fn<(handler: () => void, delay?: number) => number>(() => 1)
+    vi.stubGlobal('window', {
+      setTimeout: setTimeoutMock,
+      clearTimeout: vi.fn(),
+    })
+
+    const post = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: {
+          code: 200,
+          data: { uid: 'qr-uid', time: 1, sign: 'sign', qrcode: '115://auth', expires: 300 },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { code: 200, data: { status: 'waiting', tip: '等待扫码' } },
+      })
+      .mockResolvedValueOnce({
+        data: { code: 200, data: { status: 'scanned', tip: '已扫码，请在 115 客户端确认' } },
+      })
+
+    const scope = effectScope()
+    const authorization = scope.run(() => useV115DeviceAuthorization({ post } as never))
+
+    await authorization!.startAuthorization(12)
+    await vi.waitFor(() => expect(authorization!.status.value).toBe('waiting'))
+    expect(setTimeoutMock).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      V115_QR_STATUS_POLL_DELAY_MS,
+    )
+
+    // 手动触发下一次轮询，模拟计时器到期后进入已扫码阶段。
+    const scheduledPoll = setTimeoutMock.mock.calls.at(-1)?.[0]
+    scheduledPoll?.()
+    await vi.waitFor(() => expect(authorization!.status.value).toBe('scanned'))
+
+    expect(setTimeoutMock).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      V115_QR_STATUS_SCANNED_POLL_DELAY_MS,
+    )
+    expect(V115_QR_STATUS_SCANNED_POLL_DELAY_MS).toBeGreaterThan(V115_QR_STATUS_POLL_DELAY_MS)
     scope.stop()
   })
 })

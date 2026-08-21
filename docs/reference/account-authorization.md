@@ -53,6 +53,7 @@
 - `POST /api/auth/115-qrcode-open` 接收 `account_id` 和可选 `authorization_id`。
 - `POST /api/auth/115-qrcode-status` 接收 `account_id`、`uid` 和可选 `authorization_id`。
 - 二维码状态绑定账号、二维码 UID 和会话 ID，有效期为 300 秒；轮询请求的会话 ID 必须与生成二维码时一致。
+- 前端在等待扫码阶段每 1 秒轮询一次；状态变为已扫码后轮询间隔放宽到 3 秒。已扫码后服务端要串行完成取令牌、查用户信息和写库，降低这一阶段的轮询频率可以减少同期数据库写入竞争。
 - 二维码状态过期或取消后会从内存清理；用户关闭二维码弹窗时前端会使飞行中的请求失效并通知后端取消会话。准备新的更换会话会清理旧的普通二维码状态，旧状态的最终提交和会话失效操作互斥。
 - 更换流程使用目标 APP ID 创建临时客户端，不提前覆盖旧账号的缓存客户端或数据库字段。页面刷新或关闭时即使卸载通知未送达，重新进入账号页也会读取当前标签页的暂存会话并回收服务端状态。
 
@@ -81,6 +82,8 @@
 
 共享 115 客户端命中已有账号 ID 时必须同时更新 `AppId` 和令牌；待授权校验使用不进入共享缓存的临时客户端。
 
+授权事务先查询账号名和 `user_id` 唯一性再更新目标行，属于先读后写事务。SQLite 下这类事务在多连接时会因为读快照后其他连接提交写入而返回 `database is locked`，因此 SQLite 连接池固定为一个连接，把并发写入串行化；连接池边界见 [数据库运维](../operations/database.md)。
+
 百度网盘 OAuth 也遵循相同的失败保护：先使用新 access token 的临时客户端获取用户信息，再在一个事务中同时写入新凭据和 `user_id`/`username`。如果用户 ID 唯一性冲突或事务失败，旧凭据和旧用户信息保持不变。
 
 ## 前端确认
@@ -105,13 +108,14 @@
 - 更换会话创建成功后，旧的无会话 OAuth state 不能在新授权提交后再次写入账号；无会话旧授权提交必须通过同一账号会话锁。
 - 直接跳转 OAuth 的待处理会话在页面返回时必须与回调中的会话 ID 匹配；无回调或失败回调不能留下活动会话。
 - 授权结果必须在新令牌和用户信息都验证成功后原子写入；失败不能产生部分授权更新。
+- 授权落库不得因为 SQLite 并发写入返回 `database is locked`；SQLite 连接池必须保持单连接。
 - 不带 `authorization_id` 的既有授权请求保持原有行为。
 - 历史废弃来源仅禁止新建和带会话的更换目标，不阻断已有账号的无会话普通授权/重新授权入口。
 
 ## 验证方式
 
-- 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers`。
+- 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。
-- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
+- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
 - 前端授权生命周期回归：`frontend/test/regression/account-dialog-responsive.test.ts` 覆盖新入口取消旧流程和 OAuth 隐藏页面暂停约定。
 - 真实 115 二维码、第三方 OAuth 和跨用户远端路径有效性需要人工使用可撤销测试账号验证；自动化测试不访问真实云盘，也不能证明新用户下旧远端 ID 仍然存在。
