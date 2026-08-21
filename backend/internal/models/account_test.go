@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -86,8 +87,12 @@ func TestReplaceV115AuthorizationRejectsDuplicateUserID(t *testing.T) {
 		AppID:      "100197849",
 		AppName:    "QMediaSync",
 	}
-	if err := account.ReplaceV115Authorization(source, "new-token", "new-refresh", 3600, "occupied-user", "新用户"); err == nil {
+	err := account.ReplaceV115Authorization(source, "new-token", "new-refresh", 3600, "occupied-user", "新用户")
+	if err == nil {
 		t.Fatal("重复 UserId 应阻止授权替换")
+	}
+	if !errors.Is(err, ErrAccountUserIDTaken) {
+		t.Fatalf("重复 UserId 错误 = %v，期望 ErrAccountUserIDTaken", err)
 	}
 	var saved Account
 	if err := db.Db.First(&saved, account.ID).Error; err != nil {
@@ -299,8 +304,12 @@ func TestReplaceBaiDuPanAuthorizationIsAtomic(t *testing.T) {
 		t.Fatalf("创建其他百度账号失败: %v", err)
 	}
 
-	if err := account.ReplaceBaiDuPanAuthorization("new-token", "new-refresh", 3600, "occupied-user", "新用户"); err == nil {
+	err := account.ReplaceBaiDuPanAuthorization("new-token", "new-refresh", 3600, "occupied-user", "新用户")
+	if err == nil {
 		t.Fatal("重复百度用户 ID 应阻止凭据和用户信息一起更新")
+	}
+	if !errors.Is(err, ErrAccountUserIDTaken) {
+		t.Fatalf("重复百度用户 ID 错误 = %v，期望 ErrAccountUserIDTaken", err)
 	}
 	var saved Account
 	if err := db.Db.First(&saved, account.ID).Error; err != nil {

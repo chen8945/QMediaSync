@@ -288,9 +288,13 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 		Method:      req.Method,
 	})
 
-	// 异步写入数据库（如果设置了回调函数）
-	if qe.statSaver != nil {
-		go qe.statSaver(time.Now().Unix(), req.URL, req.Method, duration, isThrottled)
+	// 非阻塞提交请求统计（如果设置了回调函数）。生产回调应使用有界队列，
+	// 不能让单个请求启动独立 goroutine 或阻塞当前 115 请求 worker。
+	qe.RLock()
+	statSaver := qe.statSaver
+	qe.RUnlock()
+	if statSaver != nil {
+		statSaver(time.Now().Unix(), req.URL, req.Method, duration, isThrottled)
 	}
 
 	// 发送响应

@@ -49,6 +49,7 @@ var Update bool = false
 
 var AppName string = "QMediaSync"
 var QMSApp *App
+var requestStatWriter *models.RequestStatWriter
 
 func parseBuildUnixTime(value string) int64 {
 	if value == "" {
@@ -133,6 +134,10 @@ func (app *App) Stop() {
 	syncstrm.StopStrmGenerationWorker()
 	// 关闭定时任务（包含备份定时任务）
 	synccron.GlobalCron.Stop()
+	// 停止统计写入 worker，并在关闭数据库前尽量刷完已入队记录。
+	if requestStatWriter != nil {
+		requestStatWriter.Close()
+	}
 	// 关闭数据库
 	if app.dbManager != nil {
 		app.dbManager.Stop()
@@ -507,23 +512,12 @@ func initOthers() {
 	models.GetEmbyConfig()               // 加载 Emby 配置
 	helpers.SubscribeSync(helpers.V115TokenInValidEvent, models.HandleV115TokenInvalid)
 	helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, models.HandleOpenListTokenSaveSync)
-	models.FailAllRunningSyncTasks()   // 将所有运行中的同步任务设置为失败状态
-	synccron.RefreshOAuthAccessToken() // 启动时刷新一次 115 的访问凭证，避免过期 Token 导致同步失败
+	models.FailAllRunningSyncTasks() // 将所有运行中的同步任务设置为失败状态
 
-	// 设置 115 请求队列的统计保存回调函数
-	v115open.SetGlobalExecutorStatSaver(func(requestTime int64, url, method string, duration int64, isThrottled bool) {
-		stat := &models.RequestStat{
-			RequestTime: requestTime,
-			URL:         url,
-			Method:      method,
-			Duration:    duration,
-			IsThrottled: isThrottled,
-			AccountID:   0, // 可以后续扩展传入账号 ID
-		}
-		if err := models.CreateRequestStat(stat); err != nil {
-			helpers.V115Log.Errorf("写入请求统计失败：%v", err)
-		}
-	})
+	// 设置 115 请求队列的非阻塞统计写入回调。
+	requestStatWriter = models.NewRequestStatWriter()
+	v115open.SetGlobalExecutorStatSaver(requestStatWriter.Enqueue)
+	synccron.RefreshOAuthAccessToken() // 启动时刷新一次 115 的访问凭证，避免过期 Token 导致同步失败
 
 	// 启动同步任务队列管理器
 	synccron.InitNewSyncQueueManager()
