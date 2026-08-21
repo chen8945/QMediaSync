@@ -831,3 +831,138 @@ func TestGenerateNameByTemplateOrKeep(t *testing.T) {
 		})
 	}
 }
+
+func TestOldSyntax_ActorAliasAndNewSyntaxVars(t *testing.T) {
+	sm := createTestMovieData()
+
+	tests := []struct {
+		name     string
+		template string
+		expected string
+	}{
+		{
+			name:     "actor 与 actors 取值相同",
+			template: "{title} - {actor}",
+			expected: "星际穿越 - 马修·麦康纳, 安妮·海瑟薇",
+		},
+		{
+			name:     "actors 和 actor 混用",
+			template: "{actors}/{actor}",
+			expected: "马修·麦康纳, 安妮·海瑟薇/马修·麦康纳, 安妮·海瑟薇",
+		},
+		{
+			name:     "单花括号使用新语法的分辨率变量",
+			template: "{title} [{videoFormat}] {edition}",
+			expected: "星际穿越 [1080p] FHD",
+		},
+		{
+			name:     "单花括号使用新语法的 ID 变量",
+			template: "{title} {tmdbid} {imdbid}",
+			expected: "星际穿越 157336 tt0816692",
+		},
+		{
+			name:     "单花括号使用新语法的编码和时长变量",
+			template: "{title} {videoCodec} {audioCodec} {runtime}min",
+			expected: "星际穿越 h264 aac 169min",
+		},
+		{
+			name:     "单花括号使用新语法的评分变量",
+			template: "{title} - {vote_average}",
+			expected: "星际穿越 - 8.600000",
+		},
+		{
+			name:     "单花括号使用新语法的语言和扩展名变量",
+			template: "{title}.{original_language}{fileExt}",
+			expected: "星际穿越.en.mkv",
+		},
+		{
+			name:     "tmdb_id 与 tmdbid 同时使用",
+			template: "{title} {tmdb_id} {tmdbid}",
+			expected: "星际穿越 {tmdbid-157336} 157336",
+		},
+		{
+			name:     "未定义的变量原样保留",
+			template: "{title}{unknown}",
+			expected: "星际穿越{unknown}",
+		},
+		{
+			name:     "当前媒体类型不支持的变量原样保留",
+			template: "{title}{season_episode}",
+			expected: "星际穿越{season_episode}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sm.GenerateNameByTemplate(tt.template)
+			if result != tt.expected {
+				t.Errorf("模板 '%s' 生成失败\n期望: %s\n实际: %s", tt.template, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestOldSyntax_TVShowNewSyntaxVars(t *testing.T) {
+	sm := createTestTVShowData()
+
+	tests := []struct {
+		name     string
+		template string
+		expected string
+	}{
+		{
+			name:     "单花括号使用新语法的季集变量",
+			template: "{title} S{season}E{episode}",
+			expected: "猎魔人 S2E8",
+		},
+		{
+			name:     "单花括号使用新语法的集标题变量",
+			template: "{title} {season_episode} - {episode_title}",
+			expected: "猎魔人 S02E08 - 穿越时空的界限",
+		},
+		{
+			name:     "单花括号使用新语法的季年份变量",
+			template: "{title} ({season_year})",
+			expected: "猎魔人 (2020)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sm.GenerateNameByTemplate(tt.template)
+			if result != tt.expected {
+				t.Errorf("模板 '%s' 生成失败\n期望: %s\n实际: %s", tt.template, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNewSyntax_ActorAlias(t *testing.T) {
+	sm := createTestMovieData()
+
+	tests := []struct {
+		name     string
+		template string
+		expected string
+	}{
+		{
+			name:     "actor 与 actors 取值相同",
+			template: "{{title}} - {{actor}}",
+			expected: "星际穿越 - 马修·麦康纳, 安妮·海瑟薇",
+		},
+		{
+			name:     "actor 参与条件判断",
+			template: "{{title}}{% if actor %} - {{actor}}{% endif %}",
+			expected: "星际穿越 - 马修·麦康纳, 安妮·海瑟薇",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sm.GenerateNameByTemplate(tt.template)
+			if result != tt.expected {
+				t.Errorf("模板 '%s' 生成失败\n期望: %s\n实际: %s", tt.template, tt.expected, result)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -658,6 +659,8 @@ func (sm *ScrapeMediaFile) buildTemplateContext() pongo2.Context {
 		} else {
 			ctx["actors"] = ""
 		}
+		// {{actor}} 是历史文档中的写法，取值与 {{actors}} 相同
+		ctx["actor"] = ctx["actors"]
 
 		if sm.Media.Num != "" {
 			ctx["num"] = sm.Media.Num
@@ -699,6 +702,31 @@ func (sm *ScrapeMediaFile) renderNewTemplate(template string) string {
 		return ""
 	}
 	return out
+}
+
+// 单花括号的变量占位符，只匹配纯字母和下划线，避免误伤 {tmdbid-157336} 这类输出
+var templateVarPattern = regexp.MustCompile(`\{[A-Za-z_]+\}`)
+
+// replaceNewSyntaxVars 用新语法的变量取值补齐旧语法里残留的单花括号变量，例如 {videoFormat}。
+// 旧语法专有的格式（{tmdb_id}、{bitrate}、{season_number} 等）在此之前已经替换完成，
+// 这里只处理仍然残留的占位符，取不到值的占位符原样返回。
+func (sm *ScrapeMediaFile) replaceNewSyntaxVars(name string) string {
+	ctx := sm.buildTemplateContext()
+	return templateVarPattern.ReplaceAllStringFunc(name, func(placeholder string) string {
+		value, ok := ctx[strings.Trim(placeholder, "{}")]
+		if !ok {
+			return placeholder
+		}
+		return formatTemplateValue(value)
+	})
+}
+
+// formatTemplateValue 将模板变量取值格式化为字符串，浮点数与新语法（pongo2）的输出保持一致
+func formatTemplateValue(value any) string {
+	if number, ok := value.(float64); ok {
+		return fmt.Sprintf("%f", number)
+	}
+	return fmt.Sprintf("%v", value)
 }
 
 // sanitizeTemplateName 清理命名模板的渲染结果。
@@ -776,27 +804,22 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 	} else {
 		newName = strings.ReplaceAll(newName, "{original_name}", "")
 	}
-	// 处理演员
+	// 处理演员，{actors} 是当前变量名，{actor} 是历史文档中的写法，两者取值相同
 	actorName := ""
 	if sm.Media != nil && len(sm.Media.Actors) > 0 {
-		actorCount := len(sm.Media.Actors)
-		if actorCount >= 3 {
+		if len(sm.Media.Actors) >= 3 {
 			actorName = "多人演员"
-		} else if actorCount > 1 {
-			actorNames := make([]string, 0)
+		} else {
+			actorNames := make([]string, 0, len(sm.Media.Actors))
 			for _, actor := range sm.Media.Actors {
 				actorNames = append(actorNames, actor.Name)
 			}
-			newName = strings.ReplaceAll(newName, "{actors}", strings.Join(actorNames, ", "))
-		} else if actorCount == 1 {
-			actorName = sm.Media.Actors[0].Name
+			actorName = strings.Join(actorNames, ", ")
 		}
 	}
-	if actorName != "" {
-		newName = strings.ReplaceAll(newName, "{actors}", actorName)
-	} else {
-		newName = strings.ReplaceAll(newName, "{actors}", "")
-	}
+	// {actors} 必须先替换，否则 {actors} 会被 {actor} 的替换切成 "演员s"
+	newName = strings.ReplaceAll(newName, "{actors}", actorName)
+	newName = strings.ReplaceAll(newName, "{actor}", actorName)
 	if sm.Media != nil && sm.Media.Num != "" {
 		newName = strings.ReplaceAll(newName, "{num}", sm.Media.Num)
 	} else {
@@ -824,6 +847,14 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 			newName = strings.ReplaceAll(newName, "{episode_name}", sm.MediaEpisode.EpisodeName)
 		} else {
 			newName = strings.ReplaceAll(newName, "{episode_name}", "")
+		}
+	}
+	// 旧语法残留的占位符可能是新语法的变量名，用同一份取值补齐；
+	// 仍然取不到值的占位符原样保留，只记录日志，避免改变既有模板的输出
+	if templateVarPattern.MatchString(newName) {
+		newName = sm.replaceNewSyntaxVars(newName)
+		if unresolved := templateVarPattern.FindAllString(newName, -1); len(unresolved) > 0 {
+			helpers.AppLogger.Warnf("命名模板 %s 中的变量 %s 无法取值，已原样保留", template, strings.Join(unresolved, "、"))
 		}
 	}
 	return newName

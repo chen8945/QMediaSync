@@ -115,6 +115,8 @@ func (s *scanBaseImpl) addToBuffer(task string) {
 
 func (s *scanBaseImpl) processVideoFile(parentPath, pathId string, videoFiles, picFiles, nfoFiles, subFiles []*localFile) error {
 	waitSaveFiles := make([]*models.ScrapeMediaFile, 0)
+	// 因为缺少 NFO 被跳过的视频文件名，扫描完当前目录后统一提示
+	missingNfoFiles := make([]string, 0)
 	// 记录图片、NFO、字幕文件
 	// 如果发现了视频文件，则查找对应的图片、NFO、字幕文件
 	// 如果没发现视频文件，则清空
@@ -206,7 +208,8 @@ videoloop:
 		// 生成 ScrapeMediaFiles，并加入待保存列表
 		if s.scrapePath.MediaType == models.MediaTypeOther && s.scrapePath.ScrapeType == models.ScrapeTypeOnlyRename && nfoMetaFile == nil {
 			// 其他类型仅整理必须有 NFO
-			helpers.AppLogger.Infof("其他类型仅整理模式下，文件 %s 没有对应的 NFO 文件，跳过", videoFile.Name)
+			helpers.AppLogger.Warnf("其他类型仅整理模式下，文件 %s 没有对应的 NFO 文件，跳过", videoFile.Name)
+			missingNfoFiles = append(missingNfoFiles, videoFile.Name)
 			continue videoloop
 		}
 		mediaFile := s.scrapePath.MakeScrapeMediaFile(parentPath, pathId, videoFile.Name, videoFile.Id, videoFile.PickCode)
@@ -248,6 +251,14 @@ videoloop:
 	if len(waitSaveFiles) > 0 {
 		// 批量入库
 		db.Db.Save(waitSaveFiles)
+	}
+	if len(missingNfoFiles) > 0 {
+		// 文件很多时只列出前若干个，避免单条日志过长
+		listed := missingNfoFiles
+		if len(listed) > 10 {
+			listed = listed[:10]
+		}
+		helpers.AppLogger.Warnf("目录 %s 下有 %d 个视频文件因缺少 NFO 被跳过（媒体类型为其他且仅整理时必须有 NFO），例如：%s", parentPath, len(missingNfoFiles), strings.Join(listed, "、"))
 	}
 	return nil
 }
