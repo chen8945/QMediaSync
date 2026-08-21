@@ -233,8 +233,16 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 
 	// 如果不绕过速率限制，则检查三层限制
 	if !req.BypassRateLimit {
+		// SetRateLimitConfig 会替换限速器指针。先在读锁内取得快照，避免热更新时
+		// worker 与配置写入发生数据竞争；当前请求继续使用快照，后续请求读取新配置。
+		qe.RLock()
+		qpsLimiter := qe.qpsLimiter
+		qpmLimiter := qe.qpmLimiter
+		qphLimiter := qe.qphLimiter
+		qe.RUnlock()
+
 		// 等待 QPS 限制
-		if err := qe.qpsLimiter.Wait(req.Ctx); err != nil {
+		if err := qpsLimiter.Wait(req.Ctx); err != nil {
 			req.ResponseChan <- &RequestResponse{
 				Error:    fmt.Errorf("QPS 限制错误：%w", err),
 				Duration: time.Since(startTime).Milliseconds(),
@@ -243,7 +251,7 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 		}
 
 		// 等待 QPM 限制
-		if err := qe.qpmLimiter.Wait(req.Ctx); err != nil {
+		if err := qpmLimiter.Wait(req.Ctx); err != nil {
 			req.ResponseChan <- &RequestResponse{
 				Error:    fmt.Errorf("QPM 限制错误：%w", err),
 				Duration: time.Since(startTime).Milliseconds(),
@@ -252,7 +260,7 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 		}
 
 		// 等待 QPH 限制
-		if err := qe.qphLimiter.Wait(req.Ctx); err != nil {
+		if err := qphLimiter.Wait(req.Ctx); err != nil {
 			req.ResponseChan <- &RequestResponse{
 				Error:    fmt.Errorf("QPH 限制错误：%w", err),
 				Duration: time.Since(startTime).Milliseconds(),

@@ -11,6 +11,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
+	"qmediasync/internal/v115open"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,9 @@ func init() {
 		helpers.AppLogger.Infof(format, args...)
 	})
 }
+
+// 允许控制器测试替换运行时配置应用函数，生产环境使用 115 全局执行器实现。
+var setGlobalExecutorConfig = v115open.SetGlobalExecutorConfig
 
 // LogSettingResponse 日志设置响应。
 type LogSettingResponse struct {
@@ -598,7 +602,7 @@ func GetThreads(c *gin.Context) {
 
 // UpdateThreads 更新线程配置
 // @Summary 更新线程数配置
-// @Description 更新下载和文件详情查询的线程数
+// @Description 更新下载和文件详情查询的线程数，115 接口速率保存后立即生效
 // @Tags 系统设置
 // @Accept json
 // @Produce json
@@ -629,6 +633,9 @@ func UpdateThreads(c *gin.Context) {
 
 	// 动态更新下载队列的并发数
 	models.UpdateGlobalDownloadQueueConcurrency(downloadThreads)
+	// 保存成功后立即更新 115 请求队列，后续请求使用新的接口速率配置。
+	fileDetailThreads := modelReq.FileDetailThreads
+	setGlobalExecutorConfig(fileDetailThreads, fileDetailThreads*60, fileDetailThreads*3600)
 
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新线程数成功", Data: nil})
 }

@@ -20,6 +20,7 @@
 
 - 首页「115 接口监控」的请求数、QPS、QPM、QPH、平均响应时间和限流次数来自 `request_stats` 表，重启后仍按时间窗口聚合展示。
 - 115 请求完成后只把统计记录放入有界内存队列，由固定 worker 每最多 32 条或每 500 毫秒批量写入 `request_stats`；队列容量为 2048，写入压力过高时会丢弃非关键统计并在关闭时记录丢弃数量，不阻塞 API、同步、上传或 Emby worker。统计展示因此属于尽力而为，数据库关闭前会尽量刷完已接收记录。
+- 「系统设置-接口速率」保存 `file_detail_threads` 后会立即更新进程内 115 请求队列；换算后的 QPS、QPM、QPH 对后续请求生效，不需要重启服务。正在处理或已经入队的请求不保证继续使用旧配置。
 - 当前是否限流、等待时间和剩余时间来自进程内 115 请求队列管理器。限流暂停时长为 1 分钟，重启后恢复为未限流。
 - 秒传等待策略保存于 `settings`，由 `upload_rapid_wait_interval_seconds`、`upload_rapid_wait_timeout_seconds`、`upload_rapid_wait_min_size`、`upload_rapid_wait_force_size` 和 `upload_rapid_wait_skip_upload` 控制。间隔只控制重试频率，超时字段才是最大等待上限。
 - 115 直链缓存有效性检查保存于 `settings`，默认开启，默认总超时为 3 秒、范围为 1 到 9 秒。它只影响缓存 URL 的 HEAD 检查；百度网盘和 OpenList 不使用这套机制。
