@@ -22,17 +22,13 @@ type TVShowSeason struct {
 	DateAdded     string   `xml:"dateadded,omitempty"`
 }
 
+// ReadSeasonNfo 解析季 NFO，兼容非 UTF-8 编码声明和数值标签格式异常
 func ReadSeasonNfo(r io.Reader) (*TVShowSeason, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	m := TVShowSeason{}
-	err = xml.Unmarshal(b, &m)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
+	return unmarshalNfo[TVShowSeason](b)
 }
 
 func WriteSeasonNfo(m *TVShowSeason, filename string) error {

@@ -561,31 +561,52 @@ func (m *movieScrapeImpl) CreateMediaFromNfo(mediaFile *models.ScrapeMediaFile) 
 	if err != nil {
 		return err
 	}
-	// 解析 NFO 文件
-	movie, err := helpers.ReadMovieNfo(nfoContent)
+	// 解析 NFO 文件，媒体类型为其他时 NFO 是唯一信息来源，按根节点分派解析
+	movie, err := helpers.ReadNfoAsMovie(nfoContent)
 	if err != nil {
 		helpers.AppLogger.Errorf("解析 NFO 文件 %s 路径 %s 失败：%v", mediaFile.NfoPath, mediaFile.Path, err)
 		return err
 	}
-	helpers.AppLogger.Infof("已从 NFO 文件中读取到媒体信息，名称：%s，年份：%d，番号：%s，TMDB ID：%d", movie.Title, movie.Year, movie.Num, movie.TmdbId)
+	// NFO 里没有任何可用标题时退回视频文件名，避免用空名称创建或命中其他媒体记录
+	if movie.MediaTitle() == "" {
+		movie.Title = strings.TrimSuffix(filepath.Base(mediaFile.VideoFilename), filepath.Ext(mediaFile.VideoFilename))
+		helpers.AppLogger.Warnf("NFO 文件 %s 中没有可用标题，使用视频文件名作为名称：%s", mediaFile.NfoFileName, movie.Title)
+	}
+	nfoTitle, nfoYear, nfoNum := movie.MediaTitle(), movie.MediaYear(), movie.MediaNum()
+	helpers.AppLogger.Infof("已从 NFO 文件中读取到媒体信息，名称：%s，年份：%d，番号：%s，TMDB ID：%d", nfoTitle, nfoYear, nfoNum, movie.TmdbId)
 	var media *models.Media
-	existsMedia, _ := models.GetMediaByName(models.MediaTypeMovie, movie.Title, movie.Year)
+	existsMedia, _ := models.GetMediaByName(models.MediaTypeMovie, nfoTitle, nfoYear)
 	if existsMedia != nil {
 		media = existsMedia
+		// 已存在的刮削信息可能来自旧版本或 TMDB 刮削，缺少番号和演员时用 NFO 内容补全
+		needSave := false
+		if media.Num == "" && nfoNum != "" {
+			media.Num = nfoNum
+			needSave = true
+		}
+		if len(media.Actors) == 0 && len(movie.Actor) > 0 {
+			media.Actors = movie.Actor
+			needSave = true
+		}
+		if needSave {
+			if saveErr := media.Save(); saveErr != nil {
+				helpers.AppLogger.Warnf("使用 NFO 内容补全刮削信息 %d 失败：%v", media.ID, saveErr)
+			}
+		}
 	} else {
 		media, _ = models.MakeMovieMediaFromNfo(movie)
 		err := media.Save()
 		if err != nil {
 			return err
 		}
-		helpers.AppLogger.Infof("使用 NFO 文件中的内容创建刮削信息，ID：%d，名称：%s，年份：%d，番号：%s，TMDB ID：%d", media.ID, movie.Title, movie.Year, movie.Num, movie.TmdbId)
+		helpers.AppLogger.Infof("使用 NFO 文件中的内容创建刮削信息，ID：%d，名称：%s，年份：%d，番号：%s，TMDB ID：%d", media.ID, media.Name, media.Year, media.Num, media.TmdbId)
 	}
 	mediaFile.MediaId = media.ID
 	mediaFile.Media = media
 	mediaFile.Name = media.Name
 	mediaFile.Year = media.Year
 	mediaFile.TmdbId = media.TmdbId
-	helpers.AppLogger.Infof("使用 NFO 中的信息补全刮削视频文件信息，名称：%s，年份：%d，番号：%s，TMDB ID：%d", media.Name, media.Year, movie.Num, media.TmdbId)
+	helpers.AppLogger.Infof("使用 NFO 中的信息补全刮削视频文件信息，名称：%s，年份：%d，番号：%s，TMDB ID：%d", media.Name, media.Year, media.Num, media.TmdbId)
 	fileErr := mediaFile.Save()
 	if fileErr != nil {
 		return fileErr

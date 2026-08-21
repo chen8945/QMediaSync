@@ -47,9 +47,13 @@ func setupRenameTemplateTestDB(t *testing.T) {
 }
 
 // 运行一次“其他 + 仅整理”的本地整理流程，返回目标端落地的相对文件路径
-func runOtherOnlyRename(t *testing.T, nfoContent, folderTemplate, fileTemplate string) ([]string, *models.ScrapeMediaFile) {
+// seeds 在数据库初始化之后、整理开始之前执行，用于预置已有数据
+func runOtherOnlyRename(t *testing.T, nfoContent, folderTemplate, fileTemplate string, seeds ...func(t *testing.T)) ([]string, *models.ScrapeMediaFile) {
 	t.Helper()
 	setupRenameTemplateTestDB(t)
+	for _, seed := range seeds {
+		seed(t)
+	}
 
 	root := t.TempDir()
 	sourceRoot := filepath.Join(root, "source")
@@ -219,5 +223,139 @@ func TestGenerateNewName其他类型模板变量缺失时保留原名称(t *test
 				}
 			}
 		})
+	}
+}
+
+// 媒体类型为其他时 NFO 是唯一信息来源，需要兼容常见的 NFO 形态
+func TestCreateMediaFromNfo其他类型兼容常见NFO形态(t *testing.T) {
+	tests := []struct {
+		name           string
+		nfo            string
+		folderTemplate string
+		fileTemplate   string
+		expectedFiles  []string
+		expectedName   string
+		expectedNum    string
+	}{
+		{
+			name: "剧集根节点的 NFO",
+			nfo: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<tvshow>
+  <title>某部剧集</title>
+  <year>2023</year>
+</tvshow>
+`,
+			folderTemplate: "{title} ({year})",
+			fileTemplate:   "{title}",
+			expectedFiles:  []string{"某部剧集 (2023)/某部剧集-poster.jpg", "某部剧集 (2023)/某部剧集.mp4", "某部剧集 (2023)/某部剧集.nfo"},
+			expectedName:   "某部剧集",
+		},
+		{
+			name: "番号写在 uniqueid 里",
+			nfo: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>ABC-123 测试标题</title>
+  <uniqueid type="num">ABC-123</uniqueid>
+  <year>2024</year>
+  <actor><name>某演员</name></actor>
+</movie>
+`,
+			folderTemplate: "{actors}/{num}",
+			fileTemplate:   "{num}",
+			expectedFiles:  []string{"某演员/ABC-123/ABC-123-poster.jpg", "某演员/ABC-123/ABC-123.mp4", "某演员/ABC-123/ABC-123.nfo"},
+			expectedName:   "ABC-123 测试标题",
+			expectedNum:    "ABC-123",
+		},
+		{
+			name: "运行时间带单位",
+			nfo: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>ABC-123 测试标题</title>
+  <num>ABC-123</num>
+  <runtime>120 min</runtime>
+  <actor><name>某演员</name></actor>
+</movie>
+`,
+			folderTemplate: "{actors}/{num}",
+			fileTemplate:   "{num}",
+			expectedFiles:  []string{"某演员/ABC-123/ABC-123-poster.jpg", "某演员/ABC-123/ABC-123.mp4", "某演员/ABC-123/ABC-123.nfo"},
+			expectedName:   "ABC-123 测试标题",
+			expectedNum:    "ABC-123",
+		},
+		{
+			name: "NFO 里没有标题",
+			nfo: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <num>ABC-123</num>
+</movie>
+`,
+			folderTemplate: "{title}",
+			fileTemplate:   "{title}",
+			expectedFiles:  []string{"ABC-123/ABC-123-poster.jpg", "ABC-123/ABC-123.mp4", "ABC-123/ABC-123.nfo"},
+			expectedName:   "ABC-123",
+			expectedNum:    "ABC-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files, mediaFile := runOtherOnlyRename(t, tt.nfo, tt.folderTemplate, tt.fileTemplate)
+			if !slices.Equal(files, tt.expectedFiles) {
+				t.Errorf("目标端文件不符\n期望: %v\n实际: %v", tt.expectedFiles, files)
+			}
+			if mediaFile.Name != tt.expectedName {
+				t.Errorf("名称不符\n期望: %s\n实际: %s", tt.expectedName, mediaFile.Name)
+			}
+			if mediaFile.Media == nil {
+				t.Fatal("刮削信息为空")
+			}
+			if mediaFile.Media.Num != tt.expectedNum {
+				t.Errorf("番号不符\n期望: %s\n实际: %s", tt.expectedNum, mediaFile.Media.Num)
+			}
+		})
+	}
+}
+
+// 命中已有刮削信息且其中缺少番号和演员时，用 NFO 内容补全，避免番号和演员模板失效
+func TestCreateMediaFromNfo补全已有刮削信息的番号和演员(t *testing.T) {
+	nfo := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>ABC-123 测试标题</title>
+  <num>ABC-123</num>
+  <year>2024</year>
+  <actor><name>某演员</name></actor>
+</movie>
+`
+	files, mediaFile := runOtherOnlyRename(t, nfo, "{actors}/{num}", "{num}", func(t *testing.T) {
+		existsMedia := &models.Media{
+			MediaType: models.MediaTypeMovie,
+			Name:      "ABC-123 测试标题",
+			Year:      2024,
+			Status:    models.MediaStatusUnScraped,
+		}
+		if err := db.Db.Create(existsMedia).Error; err != nil {
+			t.Fatalf("预置刮削信息失败: %v", err)
+		}
+	})
+
+	expectedFiles := []string{"某演员/ABC-123/ABC-123-poster.jpg", "某演员/ABC-123/ABC-123.mp4", "某演员/ABC-123/ABC-123.nfo"}
+	if !slices.Equal(files, expectedFiles) {
+		t.Errorf("目标端文件不符\n期望: %v\n实际: %v", expectedFiles, files)
+	}
+	if mediaFile.Media == nil {
+		t.Fatal("刮削信息为空")
+	}
+	if mediaFile.Media.Num != "ABC-123" {
+		t.Errorf("番号未补全，实际：%s", mediaFile.Media.Num)
+	}
+	if len(mediaFile.Media.Actors) != 1 {
+		t.Errorf("演员未补全，实际：%+v", mediaFile.Media.Actors)
+	}
+	var saved models.Media
+	if err := db.Db.First(&saved, mediaFile.MediaId).Error; err != nil {
+		t.Fatalf("查询刮削信息失败: %v", err)
+	}
+	if saved.Num != "ABC-123" {
+		t.Errorf("番号未写入数据库，实际：%s", saved.Num)
 	}
 }

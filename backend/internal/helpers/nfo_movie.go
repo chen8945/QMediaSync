@@ -4,7 +4,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // <fileinfo>
@@ -201,13 +203,75 @@ type Actor struct {
 	Profile string `xml:"profile,omitempty"`
 }
 
+// IMDb ID 形式：tt 开头加数字，用于区分 id、code 里的番号和 IMDb ID
+var imdbIDPattern = regexp.MustCompile(`(?i)^tt\d+$`)
+
+// ReadMovieNfo 解析电影 NFO，兼容非 UTF-8 编码声明和数值标签格式异常
 func ReadMovieNfo(b []byte) (*Movie, error) {
-	m := Movie{}
-	err := xml.Unmarshal(b, &m)
-	if err != nil {
-		return nil, err
+	return unmarshalNfo[Movie](b)
+}
+
+// MediaTitle 返回 NFO 中可用的标题，优先 title，其次 originaltitle、sorttitle
+func (m *Movie) MediaTitle() string {
+	for _, title := range []string{m.Title, m.OriginalTitle, m.SortTitle} {
+		if trimmed := strings.TrimSpace(title); trimmed != "" {
+			return trimmed
+		}
 	}
-	return &m, nil
+	return ""
+}
+
+// MediaYear 返回 NFO 中可用的年份，优先 year，其次从 premiered、releasedate、aired 中解析
+func (m *Movie) MediaYear() int {
+	if m.Year != 0 {
+		return m.Year
+	}
+	for _, date := range []string{m.Premiered, m.ReleaseDate, m.Aired} {
+		if year := ParseYearFromDate(strings.TrimSpace(date)); year != 0 {
+			return year
+		}
+	}
+	return 0
+}
+
+// MediaNum 返回 NFO 中可用的番号，优先 num，其次 uniqueid[type=num]，最后 code 和 id。
+// code 和 id 也被用于存放制作编号、IMDb ID 或 TMDB ID，因此只接受番号形式的值。
+func (m *Movie) MediaNum() string {
+	if num := strings.TrimSpace(m.Num); num != "" {
+		return num
+	}
+	for _, uid := range m.Uniqueid {
+		if !strings.EqualFold(uid.Type, "num") {
+			continue
+		}
+		if num := strings.TrimSpace(uid.Id); num != "" {
+			return num
+		}
+	}
+	for _, value := range []string{m.Code, m.Id} {
+		if trimmed := strings.TrimSpace(value); looksLikeMediaNum(trimmed) {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// looksLikeMediaNum 判断值是否为番号形式：同时包含字母和数字，且不是 IMDb ID
+func looksLikeMediaNum(value string) bool {
+	if value == "" || imdbIDPattern.MatchString(value) {
+		return false
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r):
+			hasLetter = true
+		case unicode.IsDigit(r):
+			hasDigit = true
+		}
+	}
+	return hasLetter && hasDigit
 }
 
 func WriteMovieNfo(m *Movie, filename string) error {

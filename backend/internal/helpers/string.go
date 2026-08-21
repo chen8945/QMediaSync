@@ -197,7 +197,7 @@ func FormatSeason(seasonNumber int) string {
 }
 
 func ParseYearFromDate(date string) int {
-	if date == "" {
+	if len(date) < 4 {
 		return 0
 	}
 	year, err := strconv.Atoi(date[:4])

@@ -31,17 +31,13 @@ type TVShowEpisode struct {
 	Votes  int     `xml:"votes,omitempty"`
 }
 
+// ReadEpisodeNfo 解析集 NFO，兼容非 UTF-8 编码声明和数值标签格式异常
 func ReadEpisodeNfo(r io.Reader) (*TVShowEpisode, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	m := TVShowEpisode{}
-	err = xml.Unmarshal(b, &m)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
+	return unmarshalNfo[TVShowEpisode](b)
 }
 
 func WriteEpisodeNfo(m *TVShowEpisode, filename string) error {

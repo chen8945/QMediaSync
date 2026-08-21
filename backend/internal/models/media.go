@@ -420,14 +420,10 @@ func MakeMediaFromTMDB(mediaType MediaType, tmdbInfo *TmdbInfo) (*Media, error) 
 func MakeMovieMediaFromNfo(movie *helpers.Movie) (*Media, error) {
 	var media Media
 	media.MediaType = MediaTypeMovie
-	media.Name = movie.Title
-	// 从 NFO 中提取信息
-	if movie.Title != "" {
-		media.Name = movie.Title
-	}
-	if movie.Year != 0 {
-		media.Year = movie.Year
-	}
+	// 从 NFO 中提取信息，标题、年份和番号都按可用字段依次兜底
+	media.Name = movie.MediaTitle()
+	media.Year = movie.MediaYear()
+	media.Num = movie.MediaNum()
 	// 获取 TMDB ID
 	for _, uid := range movie.Uniqueid {
 		if uid.Type == "tmdb" {
@@ -438,11 +434,14 @@ func MakeMovieMediaFromNfo(movie *helpers.Movie) (*Media, error) {
 			media.ImdbId = uid.Id
 		}
 	}
-	if movie.Num != "" {
-		media.Num = movie.Num
+	// uniqueid 里没有时，退回单独的 tmdbid、imdbid 标签
+	if media.TmdbId == 0 {
+		media.TmdbId = movie.TmdbId
+	}
+	if media.ImdbId == "" {
+		media.ImdbId = movie.ImdbId
 	}
 	media.Runtime = movie.Runtime
-	media.Num = movie.Num
 	// 提取演员
 	if movie.Actor != nil {
 		media.Actors = movie.Actor
@@ -455,6 +454,9 @@ func MakeMovieMediaFromNfo(movie *helpers.Movie) (*Media, error) {
 		media.MpaaRating = movie.MPAA
 	}
 	media.ReleaseDate = movie.Premiered
+	if media.ReleaseDate == "" {
+		media.ReleaseDate = movie.ReleaseDate
+	}
 	media.Status = MediaStatusUnScraped
 	return &media, nil
 }
