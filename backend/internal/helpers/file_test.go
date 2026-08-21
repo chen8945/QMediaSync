@@ -318,3 +318,63 @@ func TestExtractFileChunkToTemp_MultipleChunks(t *testing.T) {
 		t.Logf("分片%d: %s, 大小: %.2f MB", i, tempFile, float64(fileInfo.Size())/1024/1024)
 	}
 }
+
+func TestSanitizePathSegments(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{name: "正常多层级", path: "某演员/ABC-123", expected: "某演员/ABC-123"},
+		{name: "首层级为空", path: "/ABC-123", expected: "ABC-123"},
+		{name: "末层级为空", path: "某演员/", expected: "某演员"},
+		{name: "层级只有空白", path: "某演员/   /ABC-123", expected: "某演员/ABC-123"},
+		{name: "层级为当前目录", path: "./ABC-123", expected: "ABC-123"},
+		{name: "层级为上级目录", path: "某演员/../ABC-123", expected: "某演员/ABC-123"},
+		{name: "全部为上级目录", path: "../..", expected: ""},
+		{name: "反斜杠上级目录", path: `..\..\outside`, expected: "outside"},
+		{name: "反斜杠多层级", path: `某演员\ABC-123`, expected: "某演员/ABC-123"},
+		{name: "混合分隔符穿越", path: `../某演员\..\ABC-123`, expected: "某演员/ABC-123"},
+		{name: "绝对路径", path: "/etc/passwd", expected: "etc/passwd"},
+		{name: "去掉首尾空白", path: "  某演员 / ABC-123  ", expected: "某演员/ABC-123"},
+		{name: "全部为空", path: "/", expected: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := SanitizePathSegments(tt.path); result != tt.expected {
+				t.Errorf("清理 '%s' 失败\n期望: %s\n实际: %s", tt.path, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestEnsureWithinDir(t *testing.T) {
+	tests := []struct {
+		name        string
+		baseDir     string
+		fullPath    string
+		expectError bool
+	}{
+		{name: "子目录", baseDir: "/dest", fullPath: "/dest/影片 (2024)", expectError: false},
+		{name: "多级子目录", baseDir: "/dest", fullPath: "/dest/华语电影/影片 (2024)", expectError: false},
+		{name: "根目录本身", baseDir: "/dest", fullPath: "/dest", expectError: false},
+		{name: "根目录末尾带分隔符", baseDir: "/dest/", fullPath: "/dest/影片", expectError: false},
+		{name: "跨出根目录", baseDir: "/dest", fullPath: "/dest/../outside", expectError: true},
+		{name: "完全不同的根目录", baseDir: "/dest", fullPath: "/outside/影片", expectError: true},
+		{name: "同前缀的兄弟目录", baseDir: "/dest", fullPath: "/destination/影片", expectError: true},
+		{name: "根目录为空时跳过校验", baseDir: "", fullPath: "/outside/影片", expectError: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := EnsureWithinDir(tt.baseDir, tt.fullPath)
+			if tt.expectError && err == nil {
+				t.Errorf("期望校验失败，实际通过：base=%s path=%s", tt.baseDir, tt.fullPath)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("期望校验通过，实际失败：base=%s path=%s，错误：%v", tt.baseDir, tt.fullPath, err)
+			}
+		})
+	}
+}

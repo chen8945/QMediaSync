@@ -74,6 +74,22 @@ func (r AISettingsRequest) Validate() error {
 	return nil
 }
 
+// validateCategoryName 校验二级分类名可以作为单层目录名使用。
+// 分类名会参与目标路径拼接，不能包含路径分隔符和路径穿越片段。
+func validateCategoryName(field string, name string) error {
+	if strings.ContainsAny(name, `/\`) {
+		return validation.New(field, "不能包含路径分隔符")
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return validation.New(field, "不能为空白字符")
+	}
+	if trimmed == "." || trimmed == ".." {
+		return validation.New(field, "不能是 . 或 ..")
+	}
+	return nil
+}
+
 // MovieCategoryRequest 电影分类请求。
 type MovieCategoryRequest struct {
 	ID            uint     `json:"id" form:"id"`
@@ -85,6 +101,9 @@ type MovieCategoryRequest struct {
 // Validate 校验电影分类请求。
 func (r MovieCategoryRequest) Validate() error {
 	if err := validation.Length("name", r.Name, 1, 64); err != nil {
+		return err
+	}
+	if err := validateCategoryName("name", r.Name); err != nil {
 		return err
 	}
 	for _, language := range r.LanguageArray {
@@ -106,6 +125,9 @@ type TVShowCategoryRequest struct {
 // Validate 校验电视剧分类请求。
 func (r TVShowCategoryRequest) Validate() error {
 	if err := validation.Length("name", r.Name, 1, 64); err != nil {
+		return err
+	}
+	if err := validateCategoryName("name", r.Name); err != nil {
 		return err
 	}
 	for _, country := range r.CountryArray {

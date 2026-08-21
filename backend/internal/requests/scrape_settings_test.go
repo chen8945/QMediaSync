@@ -81,6 +81,20 @@ func TestCategoryRequestValidate(t *testing.T) {
 			t.Fatal("Validate() error = nil, want error")
 		}
 	})
+
+	t.Run("分类名含路径穿越失败", func(t *testing.T) {
+		names := []string{"../../outside", `..\..\outside`, "华语/电影", "..", ".", "   "}
+		for _, name := range names {
+			movie := MovieCategoryRequest{Name: name, LanguageArray: []string{"zh-CN"}, GenreIDArray: []int{28}}
+			if err := movie.Validate(); err == nil {
+				t.Errorf("电影分类名 %q 应该校验失败", name)
+			}
+			tvshow := TVShowCategoryRequest{Name: name, CountryArray: []string{"US"}, GenreIDArray: []int{18}}
+			if err := tvshow.Validate(); err == nil {
+				t.Errorf("电视剧分类名 %q 应该校验失败", name)
+			}
+		}
+	})
 }
 
 func TestTmdbSearchRequestValidate(t *testing.T) {

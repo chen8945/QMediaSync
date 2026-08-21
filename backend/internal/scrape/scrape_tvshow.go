@@ -237,7 +237,11 @@ func (t *tvShowScrapeImpl) ProcessTvShow(tt *tvshowTask) error {
 		// 上传电视剧的元数据
 		// 修改季下所有集的数据
 		// 将所有集加入处理队列
-		t.MakeTvshowPath(mediaFile, t.scrapePath.CategoryMap)
+		if err := t.MakeTvshowPath(mediaFile, t.scrapePath.CategoryMap); err != nil {
+			// 目标目录创建失败或目标路径不合法时不继续整理
+			t.RenamedFailedAllEdpisode(mediaFile, err.Error())
+			return err
+		}
 		// 上传所有刮削好的电视剧的元数据
 		if t.scrapePath.ScrapeType != models.ScrapeTypeOnlyRename {
 			if uerr := t.UploadTvshowScrapeFile(mediaFile); uerr != nil {
@@ -452,7 +456,8 @@ func (t *tvShowScrapeImpl) GenrateCategory(mediaFile *models.ScrapeMediaFile) er
 		mediaFile.Failed("根据流派 ID 和语言确定电视剧二级分类失败，停止刮削")
 		return errors.New("根据流派 ID 和语言确定电视剧二级分类失败")
 	}
-	mediaFile.CategoryName = categoryName
+	// 分类名参与目标路径拼接，先收敛为安全的相对路径
+	mediaFile.CategoryName = helpers.SanitizePathSegments(categoryName)
 	mediaFile.ScrapePathCategoryId = scrapePathCategory.ID
 	// 保存
 	mediaFile.Save()
@@ -596,6 +601,11 @@ func (t *tvShowScrapeImpl) MakeTvshowPath(mediaFile *models.ScrapeMediaFile, cat
 			}
 		}
 		destFullPath := mediaFile.GetDestFullTvshowPath()
+		// 创建目录前的最终防线：目标路径必须仍在目标根目录内
+		if err := helpers.EnsureWithinDir(mediaFile.DestPath, destFullPath); err != nil {
+			helpers.AppLogger.Errorf("电视剧目标路径不在目标目录内，停止整理：%v", err)
+			return err
+		}
 		helpers.AppLogger.Infof("电视剧文件夹，目标路径：%s，根目录 ID：%s", destFullPath, parentId)
 		var err error
 		newPathId, err = t.renameImpl.CheckAndMkDir(destFullPath, mediaFile.DestPath, mediaFile.DestPathId)

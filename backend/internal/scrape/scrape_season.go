@@ -121,6 +121,11 @@ func (t *tvShowScrapeImpl) MakeSeasonPath(seasonMediaFile *models.ScrapeMediaFil
 		seasonMediaFile.NewSeasonPathId = seasonMediaFile.PathId
 		return nil
 	}
+	// 创建目录前的最终防线：目标路径必须仍在目标根目录内
+	if err := helpers.EnsureWithinDir(seasonMediaFile.DestPath, destFullPath); err != nil {
+		helpers.AppLogger.Errorf("季目标路径不在目标目录内，停止整理：%v", err)
+		return err
+	}
 	// 非仅刮削需要创建目标目录
 	newPathId, err := t.renameImpl.CheckAndMkDir(destFullPath, seasonMediaFile.DestPath, seasonMediaFile.DestPathId)
 	if err != nil {

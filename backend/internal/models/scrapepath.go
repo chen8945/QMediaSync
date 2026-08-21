@@ -518,36 +518,48 @@ func (sp *ScrapePath) GenerateCategory() {
 	for _, category := range added {
 		fileId := ""
 		var err error
+		// 分类名会参与目标路径拼接，先收敛为安全的相对路径
+		categoryName := helpers.SanitizePathSegments(category.Name)
+		if categoryName == "" {
+			helpers.AppLogger.Errorf("二级分类名 %s 不是合法的目录名，跳过创建目录", category.Name)
+			continue
+		}
 		// 创建目录
 		// 根据 SourceType 调用对应接口创建目录
 		switch sp.SourceType {
 		case SourceType115:
 			// 先查询是否存在
-			categoryPath := filepath.Join(sp.DestPath, category.Name)
+			categoryPath := filepath.Join(sp.DestPath, categoryName)
 			detail, detailErr := sp.V115Client.GetFsDetailByPath(context.Background(), categoryPath)
 			if detail != nil && detailErr == nil && detail.FileId != "" {
 				helpers.AppLogger.Infof("目录 %s 已存在，目录 ID=%s，返回值：%+v", categoryPath, detail.FileId, detail)
 				fileId = detail.FileId
 			} else {
-				fileId, err = sp.V115Client.MkDir(context.Background(), sp.DestPathId, category.Name)
+				fileId, err = sp.V115Client.MkDir(context.Background(), sp.DestPathId, categoryName)
 				if err != nil {
 					helpers.AppLogger.Errorf("创建 115 目录失败：%v", err)
 					continue
 				}
 			}
 		case SourceTypeOpenList:
-			fileId = sp.DestPathId + "/" + category.Name
+			fileId = sp.DestPathId + "/" + categoryName
 			err = sp.OpenListClient.Mkdir(fileId)
 			if err != nil {
 				helpers.AppLogger.Errorf("创建 OpenList 目录失败：%v", err)
 				continue
 			}
 		case SourceTypeLocal:
-			fileId = filepath.Join(sp.DestPathId, category.Name)
+			// 落盘前再校验一次，确保分类目录仍在目标目录内
+			categoryPath, joinErr := helpers.SafeJoin(sp.DestPathId, categoryName)
+			if joinErr != nil {
+				helpers.AppLogger.Errorf("二级分类 %s 的目录不在目标目录内，跳过创建：%v", category.Name, joinErr)
+				continue
+			}
+			fileId = categoryPath
 			os.MkdirAll(fileId, 0777)
 		case SourceType123:
 		case SourceTypeBaiduPan:
-			fileId = sp.DestPathId + "/" + category.Name
+			fileId = sp.DestPathId + "/" + categoryName
 			// 先查询是否存在
 			exists, _ := sp.BaiduPanClient.PathExists(context.Background(), fileId)
 			if !exists {

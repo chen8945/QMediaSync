@@ -1,6 +1,8 @@
 package requests
 
 import (
+	"strings"
+
 	"qmediasync/internal/models"
 	"qmediasync/internal/validation"
 )
@@ -97,6 +99,12 @@ func (r SaveScrapePathRequest) validate() error {
 	if err := validateScrapePathRenameType(r.SourceType, r.ScrapeType, r.RenameType); err != nil {
 		return err
 	}
+	if err := validateNameTemplate("folder_name_template", r.FolderNameTemplate); err != nil {
+		return err
+	}
+	if err := validateNameTemplate("file_name_template", r.FileNameTemplate); err != nil {
+		return err
+	}
 	if err := validation.NonBlank("source_path", r.SourcePath); err != nil {
 		return err
 	}
@@ -122,6 +130,26 @@ func (r SaveScrapePathRequest) validate() error {
 		return validation.Cron("cron_expression", r.CronExpression, false)
 	}
 	return validation.Cron("cron_expression", r.CronExpression, true)
+}
+
+// validateNameTemplate 校验命名模板不会跨出目标根目录。
+// 模板可以用 / 分隔多级目录，但不能是绝对路径，也不能包含反斜杠和 .. 片段。
+func validateNameTemplate(field string, template string) error {
+	if template == "" {
+		return nil
+	}
+	if strings.Contains(template, `\`) {
+		return validation.New(field, "不能包含反斜杠，多级目录请使用 /")
+	}
+	if strings.HasPrefix(template, "/") {
+		return validation.New(field, "不能以 / 开头")
+	}
+	for _, segment := range strings.Split(template, "/") {
+		if strings.TrimSpace(segment) == ".." {
+			return validation.New(field, "不能包含 .. 路径片段")
+		}
+	}
+	return nil
 }
 
 func validateScrapePathRenameType(sourceType models.SourceType, scrapeType models.ScrapeType, renameType models.RenameType) error {

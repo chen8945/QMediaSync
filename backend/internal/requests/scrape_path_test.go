@@ -42,6 +42,17 @@ func TestSaveScrapePathRequestValidate(t *testing.T) {
 			r.MaxThreads = 20
 		}},
 		{name: "启用 Cron 但表达式为空失败", mutate: func(r *SaveScrapePathRequest) { r.CronExpression = "" }, wantErr: true},
+		{name: "模板留空通过", mutate: func(r *SaveScrapePathRequest) {
+			r.FolderNameTemplate = ""
+			r.FileNameTemplate = ""
+		}},
+		{name: "模板多级目录通过", mutate: func(r *SaveScrapePathRequest) { r.FolderNameTemplate = "{actors}/{num}" }},
+		{name: "文件夹模板含上级目录失败", mutate: func(r *SaveScrapePathRequest) { r.FolderNameTemplate = "../outside" }, wantErr: true},
+		{name: "文件夹模板含上级目录片段失败", mutate: func(r *SaveScrapePathRequest) { r.FolderNameTemplate = "{title}/../../outside" }, wantErr: true},
+		{name: "文件夹模板为绝对路径失败", mutate: func(r *SaveScrapePathRequest) { r.FolderNameTemplate = "/etc/qms" }, wantErr: true},
+		{name: "文件夹模板含反斜杠失败", mutate: func(r *SaveScrapePathRequest) { r.FolderNameTemplate = `..\..\outside` }, wantErr: true},
+		{name: "文件模板含上级目录失败", mutate: func(r *SaveScrapePathRequest) { r.FileNameTemplate = "../{title}" }, wantErr: true},
+		{name: "文件模板含反斜杠失败", mutate: func(r *SaveScrapePathRequest) { r.FileNameTemplate = `{title}\{num}` }, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -688,68 +688,6 @@ func TestSyntaxDetection(t *testing.T) {
 	}
 }
 
-func TestSanitizeTemplateName(t *testing.T) {
-	tests := []struct {
-		name     string
-		rendered string
-		expected string
-	}{
-		{
-			name:     "正常多层级",
-			rendered: "某演员/ABC-123",
-			expected: "某演员/ABC-123",
-		},
-		{
-			name:     "首层级为空",
-			rendered: "/ABC-123",
-			expected: "ABC-123",
-		},
-		{
-			name:     "末层级为空",
-			rendered: "某演员/",
-			expected: "某演员",
-		},
-		{
-			name:     "层级只有空白",
-			rendered: "某演员/   /ABC-123",
-			expected: "某演员/ABC-123",
-		},
-		{
-			name:     "层级为当前目录",
-			rendered: "./ABC-123",
-			expected: "ABC-123",
-		},
-		{
-			name:     "层级为上级目录",
-			rendered: "某演员/../ABC-123",
-			expected: "某演员/ABC-123",
-		},
-		{
-			name:     "全部为上级目录",
-			rendered: "../..",
-			expected: "",
-		},
-		{
-			name:     "全部为空",
-			rendered: "/",
-			expected: "",
-		},
-		{
-			name:     "去掉首尾空白",
-			rendered: "  某演员 / ABC-123  ",
-			expected: "某演员/ABC-123",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if result := sanitizeTemplateName(tt.rendered); result != tt.expected {
-				t.Errorf("清理 '%s' 失败\n期望: %s\n实际: %s", tt.rendered, tt.expected, result)
-			}
-		})
-	}
-}
-
 func TestGenerateNameByTemplateOrKeep(t *testing.T) {
 	other := func() *ScrapeMediaFile {
 		return &ScrapeMediaFile{
@@ -818,6 +756,20 @@ func TestGenerateNameByTemplateOrKeep(t *testing.T) {
 			template: "{num}",
 			fallback: ".",
 			expected: "ABC-123",
+		},
+		{
+			name:     "模板含上级目录片段时丢弃该层级",
+			build:    other,
+			template: "../../{title}",
+			fallback: "ABC-123",
+			expected: "ABC-123 测试标题",
+		},
+		{
+			name:     "模板含反斜杠上级目录时丢弃该层级",
+			build:    other,
+			template: `..\..\{title}`,
+			fallback: "ABC-123",
+			expected: "ABC-123 测试标题",
 		},
 	}
 

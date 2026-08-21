@@ -134,7 +134,11 @@ func (m *movieScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
 	}
 	// 改为整理中
 	mediaFile.Renaming()
-	m.MakeParentPath(mediaFile, m.scrapePath.CategoryMap)
+	if err := m.MakeParentPath(mediaFile, m.scrapePath.CategoryMap); err != nil {
+		// 目标目录创建失败或目标路径不合法时不继续整理
+		mediaFile.RenameFailed(err.Error())
+		return err
+	}
 	// 非仅刮削时，先移动视频文件到新目录；如果是其他类型仅整理，也移动图片和 NFO 到新目录
 	if mediaFile.ScrapeType != models.ScrapeTypeOnly {
 		if err := m.renameImpl.RenameAndMove(mediaFile, "", "", ""); err != nil {
@@ -273,7 +277,8 @@ func (m *movieScrapeImpl) GenrateCategory(mediaFile *models.ScrapeMediaFile) err
 		// 释放信号量
 		return errors.New("根据流派 ID 和语言确定电影二级分类失败")
 	}
-	mediaFile.CategoryName = categoryName
+	// 分类名参与目标路径拼接，先收敛为安全的相对路径
+	mediaFile.CategoryName = helpers.SanitizePathSegments(categoryName)
 	mediaFile.ScrapePathCategoryId = scrapePathCategory.ID
 	// 保存
 	mediaFile.Save()
@@ -499,6 +504,11 @@ func (m *movieScrapeImpl) MakeParentPath(mediaFile *models.ScrapeMediaFile, cate
 		}
 	}
 	destFullPath := mediaFile.GetDestFullMoviePath()
+	// 创建目录前的最终防线：目标路径必须仍在目标根目录内
+	if err := helpers.EnsureWithinDir(mediaFile.DestPath, destFullPath); err != nil {
+		helpers.AppLogger.Errorf("影视剧目标路径不在目标目录内，停止整理：%v", err)
+		return err
+	}
 	helpers.AppLogger.Infof("影视剧文件夹，目标路径：%s，根目录 ID：%s", destFullPath, parentId)
 	newPathId, err := m.renameImpl.CheckAndMkDir(destFullPath, mediaFile.DestPath, mediaFile.DestPathId)
 	if err != nil {

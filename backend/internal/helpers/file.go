@@ -661,6 +661,46 @@ func IsDirEmpty(dirPath string) bool {
 	return len(names) == 0
 }
 
+// SanitizePathSegments 把外部输入收敛为安全的相对路径。
+// 按 / 和 \ 逐层去掉首尾空白，丢弃空层级以及 . 和 .. 层级，返回以 / 分隔的相对路径。
+// 命名模板渲染结果、二级分类名等会参与目标路径拼接的值必须先经过这里，
+// 避免绝对路径、反斜杠和 .. 片段跨出目标根目录。
+func SanitizePathSegments(path string) string {
+	segments := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	cleaned := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || segment == "." || segment == ".." {
+			continue
+		}
+		cleaned = append(cleaned, segment)
+	}
+	return strings.Join(cleaned, "/")
+}
+
+// EnsureWithinDir 校验 fullPath 仍位于 baseDir 内，用于落盘前的最终防线。
+// baseDir 为空表示调用方没有根目录约束，跳过校验。
+func EnsureWithinDir(baseDir, fullPath string) error {
+	if baseDir == "" {
+		return nil
+	}
+	base := filepath.Clean(baseDir)
+	target := filepath.Clean(fullPath)
+	if target == base {
+		return nil
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return fmt.Errorf("无法计算 %s 相对 %s 的路径：%v", fullPath, baseDir, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("检测到路径遍历风险：%s 不在 %s 内", fullPath, baseDir)
+	}
+	return nil
+}
+
 // SafeJoin 安全地连接基础路径和用户输入的路径
 func SafeJoin(baseDir, userInput string) (string, error) {
 	// 清理用户输入

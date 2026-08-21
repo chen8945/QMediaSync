@@ -112,8 +112,8 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | --- | --- | --- |
 | `requests/settings.go` | 线程配置、全局 STRM 配置 | 线程范围、页面大小范围、115 URL 有效性检查开关和 1 到 9 秒总超时、STRM Base URL、Cron、扩展名、STRM 开关枚举。 |
 | `requests/sync.go` | 同步路径创建和更新、自定义 STRM 配置 | 来源类型、非本地来源账号 ID、路径必填、自定义配置、继承值 `-1`、远程路径规范化。 |
-| `requests/scrape_path.go` | 刮削路径保存 | 创建和更新分场景校验；更新时使用旧记录补齐不可编辑的来源类型、账号和媒体类型；刮削类型、整理方式、源路径、按场景要求的目标路径、扩展名、最小文件大小、线程上限、Cron。 |
-| `requests/scrape_settings.go` | TMDB、AI、分类和 TMDB 搜索 | URL、语言代码、国家代码、AI 动作枚举、模型名长度、超时范围、分类名称、Genre ID、年份范围。 |
+| `requests/scrape_path.go` | 刮削路径保存 | 创建和更新分场景校验；更新时使用旧记录补齐不可编辑的来源类型、账号和媒体类型；刮削类型、整理方式、源路径、按场景要求的目标路径、扩展名、最小文件大小、线程上限、Cron；文件夹和文件命名模板拒绝绝对路径、反斜杠和 `..` 片段。 |
+| `requests/scrape_settings.go` | TMDB、AI、分类和 TMDB 搜索 | URL、语言代码、国家代码、AI 动作枚举、模型名长度、超时范围、分类名称必须是单层目录名、Genre ID、年份范围。 |
 | `requests/accounts.go` | 账号、账号授权更换/取消、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、更换授权的确认标志和来源字段、授权会话绑定、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
 | `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、`preserve_proxy_credentials` 的显式凭据保留意图、账号 ID、OAuth 回调 URL、`authorization_id` 长度、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
 | `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串。 |
@@ -157,6 +157,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 同步任务详情实时流 `/api/sync/tasks/:id/stream` 不接受客户端传入日志路径，只使用 `ParsePositiveIDRequest` 校验路径 `id`，再由后端根据 `sync_id` 派生同步任务日志路径。
 - 临时图片读取请求只接受相对路径，并拒绝绝对路径和路径穿越。
 - 创建目录请求拒绝空名称、`.`、`..`、路径分隔符和控制字符。
+- 刮削路径的文件夹和文件命名模板拒绝绝对路径、反斜杠和 `..` 片段；二级分类名必须是单层目录名，拒绝路径分隔符、`.`、`..` 和纯空白。模板渲染结果和分类名在参与目标路径拼接前仍会统一清理，本地落盘前还会校验目标路径仍在根目录内，完整契约见 [刮削命名模板与其他类型 NFO](../reference/scrape-rename-templates.md)。
 - Webhook JSON 模板会先替换内置变量再做 JSON 解析；Form 模板必须符合 `key=value&key2=value2` 格式。
 - Webhook 额外请求头使用 `headers` 对象传递，Header 名称会去除首尾空白，且必须是合法 HTTP token；空 Header 名会被拒绝。
 
