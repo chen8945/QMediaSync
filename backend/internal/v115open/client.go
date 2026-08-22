@@ -153,7 +153,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 		// Token 相关错误不重试
 		if queueResp.RespData != nil {
 			switch queueResp.RespData.Code {
-			case REFRESH_TOKEN_INVALID:
+			case REFRESH_TOKEN_FORMAT_INVALID, REFRESH_TOKEN_SIGN_INVALID, REFRESH_TOKEN_INVALID, REFRESH_TOKEN_EXPIRED, REFRESH_TOKEN_CHECK_FAILED, REFRESH_TOO_FREQUENT:
 				// 转换为 RespBase 格式返回
 				respBase := &RespBase[json.RawMessage]{
 					State:   0,

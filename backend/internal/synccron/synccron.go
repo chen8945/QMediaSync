@@ -20,6 +20,13 @@ import (
 
 const syncRecordRetentionDays = 7
 
+// refreshV115Token 使用账号快照客户端刷新 115 访问凭证；变量形式便于测试注入失败场景。
+// 使用快照客户端刷新，避免远端旧结果先修改共享客户端，再被条件落库拒绝。
+var refreshV115Token = func(account models.Account) (*v115open.TokenData, error) {
+	client := v115open.NewClient(account.ID, account.AppId, account.Token, account.RefreshToken)
+	return client.RefreshToken(account.RefreshToken)
+}
+
 var GlobalCron *cron.Cron
 var SyncCron *cron.Cron
 var ScrapeCron *cron.Cron
@@ -143,10 +150,13 @@ func RefreshOAuthAccessToken() {
 			helpers.AppLogger.Infof("开始刷新 115 账号 Token，账号 ID：%d，115 用户名：%s", account.ID, account.Username)
 			expectedToken := account.Token
 			expectedRefreshToken := account.RefreshToken
-			// 使用快照客户端刷新，避免远端旧结果先修改共享客户端，再被条件落库拒绝。
-			client := v115open.NewClient(account.ID, account.AppId, account.Token, account.RefreshToken)
-			tokenData, err := client.RefreshToken(account.RefreshToken)
+			tokenData, err := refreshV115Token(account)
 			if err != nil {
+				if !v115open.IsRefreshTokenDead(err) {
+					// 网络错误或可重试的业务失败保留凭据，等待下一轮定时刷新
+					helpers.AppLogger.Warnf("刷新 115 访问凭证失败，保留凭据等待下轮重试，账号 ID：%d：%s", account.ID, err.Error())
+					continue
+				}
 				helpers.AppLogger.Errorf("刷新 115 访问凭证失败：%s", err.Error())
 				// 清空 Token
 				if !account.ClearTokenIfCurrent(err.Error()) {
@@ -281,7 +291,7 @@ func InitTokenCron() {
 		TokenCron.Stop()
 	}
 	TokenCron = cron.New()
-	TokenCron.AddFunc("*/2 * * * *", func() {
+	TokenCron.AddFunc("*/5 * * * *", func() {
 		// helpers.AppLogger.Info("定时刷新 115 的访问凭证")
 		RefreshOAuthAccessToken()
 	})

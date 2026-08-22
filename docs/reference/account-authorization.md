@@ -1,12 +1,12 @@
 # 账号授权与更换
 
-> 职责：定义云盘账号授权、更换授权的接口、来源边界、短时会话和落库语义。
+> 职责：定义云盘账号授权、更换授权的接口、来源边界、短时会话、访问凭证刷新和落库语义。
 >
-> 权威范围：本文档维护 115 账号更换授权的跨后端、前端和数据库契约；账号字段和迁移以 [数据库 schema 与迁移](database-schema.md) 为准，通用请求校验以 [请求校验约定](../engineering/request-validation.md) 为准。
+> 权威范围：本文档维护 115 账号更换授权的跨后端、前端和数据库契约，以及 115 访问凭证的定时刷新与失效边界；账号字段和迁移以 [数据库 schema 与迁移](database-schema.md) 为准，通用请求校验以 [请求校验约定](../engineering/request-validation.md) 为准。
 >
-> 修改时机：修改账号授权入口、`authorization_id` 传递、授权来源兼容性、确认提示、原子更新或失败回滚边界时必须更新本文档。
+> 修改时机：修改账号授权入口、`authorization_id` 传递、授权来源兼容性、确认提示、原子更新、访问凭证刷新策略或失败回滚边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115auth/`、`backend/internal/models/account.go`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
+> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115auth/`、`backend/internal/v115open/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
 
 ## 账号关联语义
 
@@ -86,6 +86,22 @@
 
 百度网盘 OAuth 也遵循相同的失败保护：先使用新 access token 的临时客户端获取用户信息，再用一条原子 `UPDATE` 同时写入新凭据和 `user_id`/`username`。如果用户 ID 唯一性冲突或更新失败，旧凭据和旧用户信息保持不变。
 
+## 访问凭证定时刷新与失效
+
+115 访问凭证由 `TokenCron` 每 5 分钟检查一次。账号在 `token_expiries_time` 前 30 分钟进入刷新窗口；access_token 过期后只要 refresh_token 仍存在，刷新会一直按 cron 节奏重试，直到成功或 refresh_token 被判定失效。刷新使用账号快照创建的临时客户端，成功后通过 `UpdateTokenIfCurrent` 条件写库并更新共享客户端，refresh_token 旋转语义下旧凭据不会被远端旧结果覆盖。
+
+刷新失败按 115 官方错误语义分流：
+
+| 失败类别 | 判定 | 行为 |
+| --- | --- | --- |
+| 凭证失效 | 业务码 40140116（已解除授权）、40140119（refresh_token 已过期）、40140114/40140115/40140120（格式/签名/校验失败） | 清空数据库与共享客户端凭据，写入 `token_failed_reason`，发布 `V115TokenInValidEvent` 并发送重新授权通知 |
+| 可重试失败 | 网络错误（DNS、超时、连接失败）、40140117（刷新太频繁）、40140121（刷新失败） | 保留数据库与客户端凭据，仅记录日志，等待下一轮 cron 重试 |
+
+- 刷新请求对网络类错误做请求内重试：最多 5 次、间隔 10 秒，让瞬时网络抖动在一轮内消化。
+- 40140117 与凭证失效码不做请求内重试，避免对着频控或已死亡的 refresh_token 连续发请求。
+- `v115open.IsRefreshTokenDead` 是凭证失效判定的唯一入口，`synccron` 和 `RefreshToken` 共用该判定；只有它返回 true 时才允许清空凭据或发布凭证失效事件。
+- 数据库凭据清空仍走 `ClearTokenIfCurrent` / `ClearTokenIfCredentialsMatch` 条件更新，事件处理器与定时任务并发时凭据已更新的一方获胜。
+
 ## 前端确认
 
 所有 115 账号卡片都提供“授权/重新授权”和“更换授权”入口，未授权或授权失效的账号也可以直接选择新的有效授权来源。目标选择复用新建账号的应用选择器，因此已废弃 APP ID 不进入新建或更换目标列表；历史账号的普通授权入口仍保留，用于兼容旧来源。提交准备接口前，弹窗必须要求用户勾选确认，并明确说明：
@@ -108,6 +124,9 @@
 - 更换会话创建成功后，旧的无会话 OAuth state 不能在新授权提交后再次写入账号；无会话旧授权提交必须通过同一账号会话锁。
 - 直接跳转 OAuth 的待处理会话在页面返回时必须与回调中的会话 ID 匹配；无回调或失败回调不能留下活动会话。
 - 授权结果必须在新令牌和用户信息都验证成功后原子写入；失败不能产生部分授权更新。
+- 网络错误、频控（40140117）和可重试失败（40140121）不得清空凭据、不得发布 `V115TokenInValidEvent`，也不得发送重新授权通知。
+- 只有 115 明确判定 refresh_token 无法继续使用（40140114/40140115/40140116/40140119/40140120）时才允许清空凭据并通知重新授权。
+- access_token 过期不是清空凭据的条件；只要 refresh_token 仍在，刷新任务必须继续按 cron 节奏重试。
 - 授权落库不得因为 SQLite 并发写入返回 `database is locked`；SQLite 连接池必须保持单连接。
 - 不带 `authorization_id` 的既有授权请求保持原有行为。
 - 历史废弃来源仅禁止新建和带会话的更换目标，不阻断已有账号的无会话普通授权/重新授权入口。
@@ -116,6 +135,6 @@
 
 - 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。
-- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
+- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/v115open/auth_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
 - 前端授权生命周期回归：`frontend/test/regression/account-dialog-responsive.test.ts` 覆盖新入口取消旧流程和 OAuth 隐藏页面暂停约定。
 - 真实 115 二维码、第三方 OAuth 和跨用户远端路径有效性需要人工使用可撤销测试账号验证；自动化测试不访问真实云盘，也不能证明新用户下旧远端 ID 仍然存在。

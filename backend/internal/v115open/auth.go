@@ -161,6 +161,12 @@ func (c *OpenClient) GetToken(codeData *QrCodeDataReturn) (*TokenData, error) {
 	return tokenData, nil
 }
 
+// 刷新访问凭证的请求内重试参数；使用变量便于测试缩短重试等待
+var (
+	refreshTokenRetryCount = 5
+	refreshTokenRetryDelay = 10 * time.Second
+)
+
 // 刷新 115 开放平台的 access_token
 // https://passportapi.115.com/open/refreshToken
 func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
@@ -169,39 +175,41 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 	}
 	expectedAccessToken := c.AccessToken
 	expectedRefreshToken := refreshToken
-	// helpers.AppLogger.Infof("115 开放平台刷新访问凭证，refresh_token=%s", refreshToken)
 	data := make(map[string]string)
 	data["refresh_token"] = refreshToken
 	req := c.client.R().SetFormData(data).SetMethod("POST")
 	refreshConfig := &RequestConfig{
-		MaxRetries: 0,
-		RetryDelay: 0,
+		MaxRetries: refreshTokenRetryCount,
+		RetryDelay: refreshTokenRetryDelay,
 		Timeout:    300 * time.Second,
 	}
 	_, respData, err := c.doRequest("https://passportapi.115.com/open/refreshToken", req, refreshConfig)
 	if err != nil {
-		c.SetAuthToken("", "")
-		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%v", err)
-		// 清空 Token，让用户重新授权
-		helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
-			"account_id":    c.AccountId,
-			"reason":        err.Error(),
-			"token":         expectedAccessToken,
-			"refresh_token": expectedRefreshToken,
-		})
-		return nil, err
+		refreshErr := err
+		if respData != nil && respData.Code != 0 {
+			refreshErr = NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
+		}
+		if IsRefreshTokenDead(refreshErr) {
+			c.SetAuthToken("", "")
+			helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%v", refreshErr)
+			// refresh_token 已无法使用，清空 Token，让用户重新授权
+			helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
+				"account_id":    c.AccountId,
+				"reason":        refreshErr.Error(),
+				"token":         expectedAccessToken,
+				"refresh_token": expectedRefreshToken,
+			})
+			return nil, refreshErr
+		}
+		// 网络错误或可重试的业务失败（频控、40140121 等）保留凭据，等待下一轮定时刷新
+		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试：%v", refreshErr)
+		return nil, refreshErr
 	}
 	if respData.State != 1 {
-		c.SetAuthToken("", "")
-		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%+v", respData)
-		// 清空 Token，让用户重新授权
-		helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
-			"account_id":    c.AccountId,
-			"reason":        respData.Message,
-			"token":         expectedAccessToken,
-			"refresh_token": expectedRefreshToken,
-		})
-		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
+		// 无错误码的失败响应按可重试处理，保留凭据等待下一轮定时刷新
+		refreshErr := NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
+		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试：%v", refreshErr)
+		return nil, refreshErr
 	}
 	tokenDataOrArray := StructOrArray[TokenData]{}
 	tokenDataOrArray.UnmarshalJSON(respData.Data)
