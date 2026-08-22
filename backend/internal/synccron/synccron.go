@@ -32,6 +32,34 @@ var refreshBaiduToken = func(accountId uint, refreshToken string) (*baidupan.Ref
 	return baidupan.RefreshToken(accountId, refreshToken)
 }
 
+// persistAccountToken 将轮换后的凭据写入数据库；变量形式便于测试注入落库失败场景。
+var persistAccountToken = func(account *models.Account, token string, refreshToken string, expiresIn int64) error {
+	return account.TryUpdateTokenIfCurrent(token, refreshToken, expiresIn)
+}
+
+// loadAccountsForTokenRefresh 读取全部账号；变量形式便于测试注入查询失败场景。
+var loadAccountsForTokenRefresh = models.GetAllAccount
+
+// 轮换结果落库的重试参数；使用变量便于测试缩短重试等待
+var (
+	tokenPersistRetryCount = 5
+	tokenPersistRetryDelay = 10 * time.Second
+)
+
+// pendingToken 保存刷新成功但落库失败的轮换结果，等待后续轮次补写。
+// 只在 RefreshOAuthAccessToken 单飞执行期间访问，无需加锁。
+type pendingToken struct {
+	source          models.SourceType
+	expectedToken   string // 轮换开始时的旧 access token，作为补写守卫
+	expectedRefresh string // 轮换开始时的旧 refresh token
+	token           string
+	refreshToken    string
+	expiresIn       int64
+	rotatedAt       int64 // 轮换完成时刻，补写时按它锚定过期时间
+}
+
+var pendingTokenPersists = make(map[uint]pendingToken)
+
 var GlobalCron *cron.Cron
 var SyncCron *cron.Cron
 var ScrapeCron *cron.Cron
@@ -139,9 +167,20 @@ func RefreshOAuthAccessToken() {
 
 	// 刷新 115 的访问凭证
 	// 取所有 115 类型的账号
-	accounts, _ := models.GetAllAccount()
+	accounts, err := loadAccountsForTokenRefresh()
+	if err != nil {
+		// 数据库不可读时保留待写记录原样返回，避免误清理后用旧凭据刷新
+		helpers.AppLogger.Errorf("查询账号列表失败，本轮跳过凭证刷新与待写补传：%v", err)
+		return
+	}
 	now := time.Now().Unix()
 	for _, account := range accounts {
+		// 上一轮轮换结果落库失败时优先补写，补写成功前不再发起刷新，
+		// 避免用已被轮换消费的旧 refresh_token 触发判死清空
+		if pending, ok := pendingTokenPersists[account.ID]; ok {
+			replayPendingTokenPersist(&account, pending)
+			continue
+		}
 		if account.RefreshToken == "" {
 			helpers.AppLogger.Infof("账号 %d 没有刷新 Token，跳过", account.ID)
 			continue
@@ -183,9 +222,20 @@ func RefreshOAuthAccessToken() {
 				}
 				continue
 			}
-			// 更新账号的 Token
-			if suc := account.UpdateTokenIfCurrent(tokenData.AccessToken, tokenData.RefreshToken, tokenData.ExpiresIn); !suc {
-				helpers.AppLogger.Errorf("更新 115 账号 Token 失败")
+			// 更新账号的 Token；落库失败时保留待写记录，避免轮换结果随响应丢弃
+			if err := persistTokenWithRetry(&account, tokenData.AccessToken, tokenData.RefreshToken, tokenData.ExpiresIn); err != nil {
+				if !models.IsTokenCredentialsChanged(err) {
+					pendingTokenPersists[account.ID] = pendingToken{
+						source:          models.SourceType115,
+						expectedToken:   expectedToken,
+						expectedRefresh: expectedRefreshToken,
+						token:           tokenData.AccessToken,
+						refreshToken:    tokenData.RefreshToken,
+						expiresIn:       tokenData.ExpiresIn,
+						rotatedAt:       time.Now().Unix(),
+					}
+					helpers.AppLogger.Errorf("更新 115 账号 Token 失败，已保留待写记录等待下轮补写，账号 ID：%d", account.ID)
+				}
 				continue
 			}
 			// 更新其他客户端的 Token
@@ -230,9 +280,20 @@ func RefreshOAuthAccessToken() {
 				}
 				continue
 			}
-			// 更新账号的 Token
-			if suc := account.UpdateTokenIfCurrent(resp.AccessToken, resp.RefreshToken, resp.ExpiresIn); !suc {
-				helpers.AppLogger.Errorf("更新百度网盘账号 Token 失败")
+			// 更新账号的 Token；落库失败时保留待写记录，避免轮换结果随响应丢弃
+			if err := persistTokenWithRetry(&account, resp.AccessToken, resp.RefreshToken, resp.ExpiresIn); err != nil {
+				if !models.IsTokenCredentialsChanged(err) {
+					pendingTokenPersists[account.ID] = pendingToken{
+						source:          models.SourceTypeBaiduPan,
+						expectedToken:   expectedToken,
+						expectedRefresh: account.RefreshToken,
+						token:           resp.AccessToken,
+						refreshToken:    resp.RefreshToken,
+						expiresIn:       resp.ExpiresIn,
+						rotatedAt:       time.Now().Unix(),
+					}
+					helpers.AppLogger.Errorf("更新百度网盘账号 Token 失败，已保留待写记录等待下轮补写，账号 ID：%d", account.ID)
+				}
 				continue
 			}
 			// 更新其他客户端的 Token
@@ -241,6 +302,80 @@ func RefreshOAuthAccessToken() {
 			helpers.AppLogger.Infof("刷新百度网盘账号 Token 成功，账号 ID：%d，新到期时间：%d => %s", account.ID, resp.ExpiresIn, time.Unix(resp.ExpiresIn, 0).Format("2006-01-02 15:04:05"))
 			continue
 		}
+	}
+
+	// 清理已删除账号的待写记录
+	accountIds := make(map[uint]struct{}, len(accounts))
+	for _, account := range accounts {
+		accountIds[account.ID] = struct{}{}
+	}
+	for accountId := range pendingTokenPersists {
+		if _, ok := accountIds[accountId]; !ok {
+			delete(pendingTokenPersists, accountId)
+		}
+	}
+}
+
+// persistTokenWithRetry 带重试写入轮换后的凭据；凭据被并发覆盖时重试无意义，立即返回。
+func persistTokenWithRetry(account *models.Account, token string, refreshToken string, expiresIn int64) error {
+	var err error
+	for attempt := 1; attempt <= tokenPersistRetryCount; attempt++ {
+		if err = persistAccountToken(account, token, refreshToken, expiresIn); err == nil {
+			return nil
+		}
+		if models.IsTokenCredentialsChanged(err) {
+			return err
+		}
+		if attempt < tokenPersistRetryCount {
+			time.Sleep(tokenPersistRetryDelay)
+		}
+	}
+	return err
+}
+
+// replayPendingTokenPersist 补写上一轮落库失败的轮换结果。
+// 无论补写成功、凭据已被覆盖还是仍然失败，本轮都不再发起刷新：
+// 旧的 refresh_token 已被服务端消费，再刷新只会触发判死清空。
+func replayPendingTokenPersist(account *models.Account, pending pendingToken) {
+	if account.Token == pending.token && account.RefreshToken == pending.refreshToken {
+		// 轮换结果已通过其他路径写入数据库（如写库实际成功但返回了错误）
+		syncCachedToken(account, pending)
+		delete(pendingTokenPersists, account.ID)
+		helpers.AppLogger.Infof("账号 %d 的轮换结果已写入，无需补写", account.ID)
+		return
+	}
+	if account.Token != pending.expectedToken || account.RefreshToken != pending.expectedRefresh {
+		// 凭据已被重新授权等操作覆盖，丢弃待写结果
+		delete(pendingTokenPersists, account.ID)
+		helpers.AppLogger.Infof("账号 %d 凭据已更新，丢弃待写的轮换结果", account.ID)
+		return
+	}
+	// 按轮换时刻锚定过期时间，补写延迟不得延长凭证有效期
+	expiresIn := pending.rotatedAt + pending.expiresIn - time.Now().Unix()
+	if expiresIn < 1 {
+		expiresIn = 1
+	}
+	if err := persistTokenWithRetry(account, pending.token, pending.refreshToken, expiresIn); err != nil {
+		if models.IsTokenCredentialsChanged(err) {
+			delete(pendingTokenPersists, account.ID)
+			helpers.AppLogger.Infof("账号 %d 凭据已更新，丢弃待写的轮换结果", account.ID)
+			return
+		}
+		helpers.AppLogger.Warnf("补写账号 %d Token 失败，继续保留待写记录：%v", account.ID, err)
+		return
+	}
+	delete(pendingTokenPersists, account.ID)
+	syncCachedToken(account, pending)
+	helpers.AppLogger.Infof("补写账号 %d Token 成功", account.ID)
+}
+
+// syncCachedToken 把轮换结果同步到对应来源的内存客户端缓存。
+func syncCachedToken(account *models.Account, pending pendingToken) {
+	switch account.SourceType {
+	case models.SourceType115:
+		v115open.UpdateTokenIfCurrent(account.ID, pending.expectedToken, pending.expectedRefresh, pending.token, pending.refreshToken)
+	case models.SourceTypeBaiduPan:
+		baidupan.UpdateTokenIfCurrent(account.ID, pending.expectedToken, pending.token)
 	}
 }
 

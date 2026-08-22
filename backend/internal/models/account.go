@@ -152,7 +152,7 @@ func (account *Account) applyTokenFields(token string, refreshToken string, expi
 	account.TokenFailedReason = reason
 }
 
-func (account *Account) updateToken(token string, refreshToken string, expiresTime int64, expected *accountTokenSnapshot) bool {
+func (account *Account) updateToken(token string, refreshToken string, expiresTime int64, expected *accountTokenSnapshot) error {
 	expiresAt := time.Now().Unix() + expiresTime
 	if err := persistAccountTokenFields(account.ID, map[string]any{
 		"token":               token,
@@ -165,22 +165,34 @@ func (account *Account) updateToken(token string, refreshToken string, expiresTi
 		} else {
 			helpers.AppLogger.Errorf("更新开放平台登录凭据失败：%v", err)
 		}
-		return false
+		return err
 	}
 	account.applyTokenFields(token, refreshToken, expiresAt, "")
-	return true
+	return nil
 }
 
 // 更新 Token 和 refreshToken
 func (account *Account) UpdateToken(token string, refreshToken string, expiresTime int64) bool {
-	return account.updateToken(token, refreshToken, expiresTime, nil)
+	return account.updateToken(token, refreshToken, expiresTime, nil) == nil
 }
 
 // UpdateTokenIfCurrent 仅当数据库中的凭据仍与当前账号快照一致时更新 Token。
 // 用于远端刷新耗时较长的场景，避免旧刷新结果覆盖后续授权。
 func (account *Account) UpdateTokenIfCurrent(token string, refreshToken string, expiresTime int64) bool {
 	expected := &accountTokenSnapshot{token: account.Token, refreshToken: account.RefreshToken}
+	return account.updateToken(token, refreshToken, expiresTime, expected) == nil
+}
+
+// TryUpdateTokenIfCurrent 与 UpdateTokenIfCurrent 行为一致，但返回错误，
+// 便于调用方通过 IsTokenCredentialsChanged 区分凭据被并发覆盖和数据库写入失败。
+func (account *Account) TryUpdateTokenIfCurrent(token string, refreshToken string, expiresTime int64) error {
+	expected := &accountTokenSnapshot{token: account.Token, refreshToken: account.RefreshToken}
 	return account.updateToken(token, refreshToken, expiresTime, expected)
+}
+
+// IsTokenCredentialsChanged 判断凭据写入失败是否因数据库中的凭据已被并发修改，此类失败重试无意义。
+func IsTokenCredentialsChanged(err error) bool {
+	return err != nil && errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // 更新开放平台账号对应的用户信息
