@@ -27,6 +27,11 @@ var refreshV115Token = func(account models.Account) (*v115open.TokenData, error)
 	return client.RefreshToken(account.RefreshToken)
 }
 
+// refreshBaiduToken 通过授权中转刷新百度网盘访问凭证；变量形式便于测试注入失败场景。
+var refreshBaiduToken = func(accountId uint, refreshToken string) (*baidupan.RefreshResponse, error) {
+	return baidupan.RefreshToken(accountId, refreshToken)
+}
+
 var GlobalCron *cron.Cron
 var SyncCron *cron.Cron
 var ScrapeCron *cron.Cron
@@ -197,8 +202,13 @@ func RefreshOAuthAccessToken() {
 			}
 			expectedToken := account.Token
 			// 向授权服务器发送刷新请求，拿到新 Token
-			resp, err := baidupan.RefreshToken(account.ID, account.RefreshToken)
+			resp, err := refreshBaiduToken(account.ID, account.RefreshToken)
 			if err != nil {
+				if !baidupan.IsRefreshTokenDead(err) {
+					// 网络错误或可重试的业务失败保留凭据，等待下一轮定时刷新
+					helpers.AppLogger.Warnf("刷新百度网盘 Token 失败，保留凭据等待下轮重试，账号 ID：%d：%s", account.ID, err.Error())
+					continue
+				}
 				helpers.AppLogger.Errorf("刷新百度网盘 Token 失败：%s", err.Error())
 				// 清空 Token
 				if !account.ClearTokenIfCurrent(err.Error()) {

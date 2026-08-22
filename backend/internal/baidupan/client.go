@@ -3,6 +3,7 @@ package baidupan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,9 +29,123 @@ type FileListOptions struct {
 
 // 解析响应
 type RefreshResponse struct {
-	AccessToken  string `json:"access_token"`
-	ExpiresIn    int64  `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int64  `json:"expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+// 百度 OAuth 刷新错误码（字符串），见 https://openauth.baidu.com/doc/appendix.html
+const (
+	oauthErrorInvalidGrant = "invalid_grant" // Refresh Token 无效或已撤销，需重新授权
+	oauthErrorExpiredToken = "expired_token" // Refresh Token 已过期或已使用，需重新授权
+)
+
+// OAuthError 百度 OAuth 接口返回的业务错误（字符串错误码）。
+type OAuthError struct {
+	Code        string
+	Description string
+}
+
+func (e *OAuthError) Error() string {
+	if e.Description == "" {
+		return fmt.Sprintf("百度 OAuth 错误：%s", e.Code)
+	}
+	return fmt.Sprintf("百度 OAuth 错误（%s）：%s", e.Code, e.Description)
+}
+
+// IsRefreshTokenDead 判断刷新访问凭证的错误是否表示 refresh_token 已无法继续使用。
+// 仅百度明确返回 invalid_grant（无效或已撤销）或 expired_token（已过期）时返回 true；
+// 网络错误、响应格式异常和 invalid_client 等配置类错误返回 false，调用方应保留凭据等待下次刷新。
+func IsRefreshTokenDead(err error) bool {
+	if err == nil {
+		return false
+	}
+	var oauthErr *OAuthError
+	if !errors.As(err, &oauthErr) {
+		return false
+	}
+	switch oauthErr.Code {
+	case oauthErrorInvalidGrant, oauthErrorExpiredToken:
+		return true
+	}
+	return false
+}
+
+// 刷新访问凭证的请求内重试参数与超时；使用变量便于测试缩短重试等待
+var (
+	refreshRetryCount = 5
+	refreshRetryDelay = 10 * time.Second
+)
+
+var refreshTokenHTTPClient = &http.Client{Timeout: 60 * time.Second}
+
+func RefreshToken(accountId uint, refreshToken string) (*RefreshResponse, error) {
+	// 生成 state 参数
+	type stateData struct {
+		Time         int64  `json:"time"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	stateObj := stateData{
+		Time:         time.Now().Unix(),
+		RefreshToken: refreshToken,
+	}
+	stateJson, _ := json.Marshal(stateObj)
+	stateEncoded, err := helpers.Encrypt(string(stateJson))
+	if err != nil {
+		return nil, err
+	}
+	// 构建授权 URL
+	authServerUrl := fmt.Sprintf("%s/baidupan/oauth-url", helpers.GlobalConfig.AuthServer)
+	// 注意：redirect_uri 需要与百度开放平台配置一致
+	oauthUrl := fmt.Sprintf("%s?action=refresh&state=%s", authServerUrl, stateEncoded)
+
+	var lastErr error
+	for attempt := 0; attempt <= refreshRetryCount; attempt++ {
+		if attempt > 0 {
+			time.Sleep(refreshRetryDelay)
+		}
+		// 发送 GET 请求
+		resp, err := refreshTokenHTTPClient.Get(oauthUrl)
+		if err != nil {
+			// 网络错误（DNS、超时、连接失败）保留凭据，重试
+			lastErr = err
+			continue
+		}
+		body, ioErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if ioErr != nil {
+			lastErr = ioErr
+			continue
+		}
+		var refreshResp RefreshResponse
+		if jsonErr := json.Unmarshal(body, &refreshResp); jsonErr != nil {
+			// 非 JSON 响应（如网关错误页）重试
+			excerpt := []rune(string(body))
+			if len(excerpt) > 100 {
+				excerpt = excerpt[:100]
+			}
+			lastErr = fmt.Errorf("百度刷新访问凭证响应格式异常：%s", string(excerpt))
+			continue
+		}
+		if refreshResp.Error != "" {
+			// OAuth 业务错误不重试，交由调用方按错误码分流
+			return nil, &OAuthError{Code: refreshResp.Error, Description: refreshResp.ErrorDescription}
+		}
+		if refreshResp.AccessToken == "" || refreshResp.ExpiresIn <= 0 {
+			// 缺少有效凭据字段的异常响应重试
+			lastErr = fmt.Errorf("百度刷新访问凭证响应缺少有效凭据字段")
+			continue
+		}
+		if refreshResp.RefreshToken == "" {
+			// 中转未返回新 refresh_token 时沿用旧值，避免清空仍有效的凭据
+			refreshResp.RefreshToken = refreshToken
+		}
+		// 设置新的访问凭证
+		return &refreshResp, nil
+	}
+	return nil, lastErr
 }
 
 // 全局 HTTP 客户端实例
@@ -66,44 +181,6 @@ func newBaiDuPanClient(accessToken string) *Client {
 		accessToken: accessToken,
 	}
 	return client
-}
-
-func RefreshToken(accountId uint, refreshToken string) (*RefreshResponse, error) {
-	// 生成 state 参数
-	type stateData struct {
-		Time         int64  `json:"time"`
-		RefreshToken string `json:"refresh_token"`
-	}
-	stateObj := stateData{
-		Time:         time.Now().Unix(),
-		RefreshToken: refreshToken,
-	}
-	stateJson, _ := json.Marshal(stateObj)
-	stateEncoded, err := helpers.Encrypt(string(stateJson))
-	if err != nil {
-		return nil, err
-	}
-	// 构建授权 URL
-	authServerUrl := fmt.Sprintf("%s/baidupan/oauth-url", helpers.GlobalConfig.AuthServer)
-	// 注意：redirect_uri 需要与百度开放平台配置一致
-	oauthUrl := fmt.Sprintf("%s?action=refresh&state=%s", authServerUrl, stateEncoded)
-	// 发送 GET 请求
-	resp, err := http.Get(oauthUrl)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	var refreshResp RefreshResponse
-	err = json.Unmarshal(body, &refreshResp)
-	if err != nil {
-		return nil, err
-	}
-	// 设置新的访问凭证
-	return &refreshResp, nil
 }
 
 func UpdateToken(accountId uint, accessToken string) {
@@ -164,6 +241,10 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 			if !ok {
 				msg = fmt.Sprintf("未知错误码 %d", respBody.Errno)
 			}
+		}
+		if isTokenErrno(respBody.Errno) {
+			// 凭证类错误不影响 refresh_token，等待定时任务刷新后自动恢复
+			return &TokenInvalidError{Errno: respBody.Errno, Detail: msg}
 		}
 		return fmt.Errorf("百度 SDK 请求失败：%s", msg)
 	}

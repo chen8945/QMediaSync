@@ -1,5 +1,7 @@
 package baidupan
 
+import "fmt"
+
 // 错误码	描述	排查方向
 // -1	权益已过期	权益已过期
 // -3	文件不存在	文件不存在
@@ -126,6 +128,36 @@ var ErrorMap map[int64]string = map[int64]string{
 	42214: "获取文件详情失败",
 	42905: "查询用户名失败",
 	50002: "播单 ID 不存在",
+}
+
+// 百度网盘 union 族接口（pan.baidu.com）中与访问凭证相关的 errno。
+// OAuth 族接口（openapi.baidu.com）的 110/111 在本项目中仅经授权中转间接访问，
+// 不经过 ErrorMap；111 在 union 族中始终是文件管理的异步任务语义，不参与凭证判断。
+const (
+	errnoTokenAuthFail   int64 = -6    // 身份验证失败
+	errnoTokenExpired    int64 = 20016 // access_token 已过期
+	errnoTokenInvalid    int64 = 20017 // access_token 无效（用户解绑或撤销授权）
+	errnoTokenVerifyFail int64 = 31045 // access_token 验证未通过
+)
+
+// isTokenErrno 判断 union 族接口的 errno 是否表示访问凭证问题。
+func isTokenErrno(errno int64) bool {
+	switch errno {
+	case errnoTokenAuthFail, errnoTokenExpired, errnoTokenInvalid, errnoTokenVerifyFail:
+		return true
+	}
+	return false
+}
+
+// TokenInvalidError 表示百度网盘接口判定访问凭证无效或过期。
+// 该错误不代表 refresh_token 失效，定时刷新成功后调用方即可恢复，无需重新授权。
+type TokenInvalidError struct {
+	Errno  int64
+	Detail string
+}
+
+func (e *TokenInvalidError) Error() string {
+	return fmt.Sprintf("百度网盘访问凭证无效或已过期（errno %d），等待定时刷新：%s", e.Errno, e.Detail)
 }
 
 // fs_id	uint64	文件在云端的唯一标识 ID

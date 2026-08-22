@@ -102,6 +102,21 @@
 - `v115open.IsRefreshTokenDead` 是凭证失效判定的唯一入口，`synccron` 和 `RefreshToken` 共用该判定；只有它返回 true 时才允许清空凭据或发布凭证失效事件。
 - 数据库凭据清空仍走 `ClearTokenIfCurrent` / `ClearTokenIfCredentialsMatch` 条件更新，事件处理器与定时任务并发时凭据已更新的一方获胜。
 
+### 百度网盘刷新
+
+百度网盘访问凭证由同一 `TokenCron` 检查，账号在 `token_expiries_time` 前 24 小时进入刷新窗口。refresh_token 官方有效期为 10 年，每次刷新返回新的 refresh_token。刷新不直连百度，而是经授权中转（`AuthServer` 的 `/baidupan/oauth-url?action=refresh`，refresh_token 加密在 state 参数中传递），本机不持有 App Secret。
+
+百度刷新失败按 OAuth 字符串错误码分流（`baidupan.IsRefreshTokenDead` 是唯一判定入口）：
+
+| 失败类别 | 判定 | 行为 |
+| --- | --- | --- |
+| 凭证失效 | OAuth 错误 `invalid_grant`（Refresh Token 无效或已撤销）、`expired_token`（已过期或已使用） | 清空数据库与共享客户端凭据，写入 `token_failed_reason`，发送重新授权通知 |
+| 可重试失败 | 网络错误（含中转不可达）、响应格式异常、`invalid_client` / `invalid_request` 等配置类错误 | 保留数据库与客户端凭据，仅记录日志，等待下一轮 cron 重试 |
+
+- 刷新请求对网络错误和响应格式异常做请求内重试：最多 5 次、间隔 10 秒，单次请求超时 60 秒；OAuth 业务错误不重试。
+- 缺少 `access_token` 或 `expires_in` 的响应按格式异常处理，禁止零值凭据写入数据库；中转未返回新 refresh_token 时沿用旧值，避免清空仍有效的凭据。
+- union 族接口（pan.baidu.com）的凭证类 errno（-6、20016、20017、31045）由 `handleError` 统一归类为 `TokenInvalidError`：它只代表 access_token 层面的问题，定时刷新成功后自动恢复，不触发重新授权。errno 111 在 union 族中是文件管理的异步任务语义；OAuth 族的 110/111 只出现在不经过 `ErrorMap` 的中转链路，两者均不参与凭证判断。
+
 ## 前端确认
 
 所有 115 账号卡片都提供“授权/重新授权”和“更换授权”入口，未授权或授权失效的账号也可以直接选择新的有效授权来源。目标选择复用新建账号的应用选择器，因此已废弃 APP ID 不进入新建或更换目标列表；历史账号的普通授权入口仍保留，用于兼容旧来源。提交准备接口前，弹窗必须要求用户勾选确认，并明确说明：
@@ -126,6 +141,8 @@
 - 授权结果必须在新令牌和用户信息都验证成功后原子写入；失败不能产生部分授权更新。
 - 网络错误、频控（40140117）和可重试失败（40140121）不得清空凭据、不得发布 `V115TokenInValidEvent`，也不得发送重新授权通知。
 - 只有 115 明确判定 refresh_token 无法继续使用（40140114/40140115/40140116/40140119/40140120）时才允许清空凭据并通知重新授权。
+- 百度网盘仅 OAuth 错误 `invalid_grant` / `expired_token` 允许清空凭据并通知重新授权；中转不可达、响应格式异常和 `invalid_client` 等配置类错误保留凭据等待重试。
+- 百度网盘刷新响应缺少有效凭据字段时禁止零值写入数据库；中转未返回新 refresh_token 时沿用旧值。
 - access_token 过期不是清空凭据的条件；只要 refresh_token 仍在，刷新任务必须继续按 cron 节奏重试。
 - 授权落库不得因为 SQLite 并发写入返回 `database is locked`；SQLite 连接池必须保持单连接。
 - 不带 `authorization_id` 的既有授权请求保持原有行为。
@@ -133,8 +150,8 @@
 
 ## 验证方式
 
-- 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`。
+- 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。
-- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/v115open/auth_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
+- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/v115open/auth_test.go`、`backend/internal/baidupan/refresh_test.go`、`backend/internal/baidupan/errors_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
 - 前端授权生命周期回归：`frontend/test/regression/account-dialog-responsive.test.ts` 覆盖新入口取消旧流程和 OAuth 隐藏页面暂停约定。
 - 真实 115 二维码、第三方 OAuth 和跨用户远端路径有效性需要人工使用可撤销测试账号验证；自动化测试不访问真实云盘，也不能证明新用户下旧远端 ID 仍然存在。

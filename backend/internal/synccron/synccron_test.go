@@ -1,6 +1,7 @@
 package synccron
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -49,9 +51,11 @@ func TestSyncRecordRetentionDays(t *testing.T) {
 
 func setupTokenRefreshTest(t *testing.T) {
 	t.Helper()
-	oldRefresh := refreshV115Token
+	oldV115Refresh := refreshV115Token
+	oldBaiduRefresh := refreshBaiduToken
 	t.Cleanup(func() {
-		refreshV115Token = oldRefresh
+		refreshV115Token = oldV115Refresh
+		refreshBaiduToken = oldBaiduRefresh
 	})
 	// 清空账号表，避免测试间的账号唯一键冲突
 	if err := db.Db.Where("1 = 1").Delete(&models.Account{}).Error; err != nil {
@@ -141,6 +145,81 @@ func TestRefreshOAuthAccessTokenUpdatesCredentialsOnSuccess(t *testing.T) {
 	}
 	if account.TokenFailedReason != "" {
 		t.Fatalf("刷新成功后不应保留失败原因，实际保留：%s", account.TokenFailedReason)
+	}
+	if account.TokenExpiriesTime <= time.Now().Unix() {
+		t.Fatalf("刷新成功后应更新过期时间，实际：%d", account.TokenExpiriesTime)
+	}
+}
+
+func createExpiredBaiduAccount(t *testing.T) models.Account {
+	t.Helper()
+	account := models.Account{
+		Name:              "百度网盘账号",
+		SourceType:        models.SourceTypeBaiduPan,
+		Token:             "old-access-token",
+		RefreshToken:      "old-refresh-token",
+		TokenExpiriesTime: time.Now().Unix() - 60,
+		UserId:            "baidu-user-1",
+		Username:          "百度用户",
+	}
+	if err := db.Db.Create(&account).Error; err != nil {
+		t.Fatalf("创建百度网盘账号失败: %v", err)
+	}
+	return account
+}
+
+func TestRefreshOAuthAccessTokenBaiduKeepsCredentialsOnRetryableFailure(t *testing.T) {
+	setupTokenRefreshTest(t)
+	created := createExpiredBaiduAccount(t)
+	refreshBaiduToken = func(accountId uint, refreshToken string) (*baidupan.RefreshResponse, error) {
+		return nil, fmt.Errorf("百度刷新访问凭证响应格式异常：<html>")
+	}
+
+	RefreshOAuthAccessToken()
+
+	account := reloadAccount(t, created.ID)
+	if account.Token != "old-access-token" || account.RefreshToken != "old-refresh-token" {
+		t.Fatal("可重试失败后不应清空百度网盘数据库凭据")
+	}
+	if account.TokenFailedReason != "" {
+		t.Fatalf("可重试失败不应写入失败原因，实际写入：%s", account.TokenFailedReason)
+	}
+}
+
+func TestRefreshOAuthAccessTokenBaiduClearsCredentialsOnDeadRefreshToken(t *testing.T) {
+	setupTokenRefreshTest(t)
+	created := createExpiredBaiduAccount(t)
+	refreshBaiduToken = func(accountId uint, refreshToken string) (*baidupan.RefreshResponse, error) {
+		return nil, &baidupan.OAuthError{Code: "invalid_grant", Description: "Refresh Token invalid"}
+	}
+
+	RefreshOAuthAccessToken()
+
+	account := reloadAccount(t, created.ID)
+	if account.Token != "" || account.RefreshToken != "" {
+		t.Fatal("凭证失效后应清空百度网盘数据库凭据")
+	}
+	if account.TokenFailedReason == "" {
+		t.Fatal("凭证失效后应写入失败原因")
+	}
+}
+
+func TestRefreshOAuthAccessTokenBaiduUpdatesCredentialsOnSuccess(t *testing.T) {
+	setupTokenRefreshTest(t)
+	created := createExpiredBaiduAccount(t)
+	refreshBaiduToken = func(accountId uint, refreshToken string) (*baidupan.RefreshResponse, error) {
+		return &baidupan.RefreshResponse{
+			AccessToken:  "new-access-token",
+			RefreshToken: "new-refresh-token",
+			ExpiresIn:    2592000,
+		}, nil
+	}
+
+	RefreshOAuthAccessToken()
+
+	account := reloadAccount(t, created.ID)
+	if account.Token != "new-access-token" || account.RefreshToken != "new-refresh-token" {
+		t.Fatal("刷新成功后应写入百度网盘新凭据")
 	}
 	if account.TokenExpiriesTime <= time.Now().Unix() {
 		t.Fatalf("刷新成功后应更新过期时间，实际：%d", account.TokenExpiriesTime)
