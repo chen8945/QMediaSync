@@ -9,7 +9,6 @@ import App from './App.vue'
 
 import router from './router/index'
 import { useAuthStore } from '@/stores/auth'
-import { SERVER_URL } from '@/const'
 import { configureHttpClient, http, httpKey } from '@/http/client'
 
 configureHttpClient({
@@ -31,7 +30,6 @@ const bootstrap = async () => {
 
   app.use(router)
   app.provide(httpKey, http)
-  app.provide('SERVER_URL', SERVER_URL)
 
   await router.isReady()
   app.mount('#app')

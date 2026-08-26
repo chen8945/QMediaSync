@@ -16,26 +16,6 @@ export const useBackupStore = defineStore('backup', () => {
   const API_SUCCESS_CODE = 200
 
   const isRunning = computed(() => progress.value?.running === true)
-  const canCancel = computed(
-    () => taskType.value === 'backup' && progress.value?.status === 'running',
-  )
-
-  // const checkBackupStatus = async (http: AxiosInstance) => {
-  //   if (!http) return
-
-  //   try {
-  //     const res = await http.get(`${SERVER_URL}/backup/status`)
-  //     console.log(res.data)
-  //     if (res.data.code === API_SUCCESS_CODE && res.data.data.is_running) {
-  //       progress.value = { running: true, status: 'running' }
-  //       taskType.value = 'backup'
-  //       showProgressDialog.value = true
-  //       startProgressPolling('backup', undefined, http)
-  //     }
-  //   } catch (error) {
-  //     console.error('检查备份状态失败：', error)
-  //   }
-  // }
 
   const startProgressPolling = (
     type: 'backup' | 'restore',
@@ -151,24 +131,6 @@ export const useBackupStore = defineStore('backup', () => {
     }
   }
 
-  // const cancelBackupTask = async (http: AxiosInstance) => {
-  //   try {
-  //     const res = await http.post(`${SERVER_URL}/backup/cancel`)
-
-  //     if (res.data.code === API_SUCCESS_CODE) {
-  //       ElMessage.success(res.data.message || '备份任务已取消')
-  //       stopProgressPolling()
-  //       showProgressDialog.value = false
-  //       resetState()
-  //     } else {
-  //       ElMessage.error(res.data.message || '取消备份任务失败')
-  //     }
-  //   } catch (error: unknown) {
-  //     const errorMsg = error instanceof Error ? error.message : '取消备份任务失败'
-  //     ElMessage.error(errorMsg)
-  //   }
-  // }
-
   const resetState = () => {
     progress.value = null
     taskType.value = null
@@ -181,11 +143,8 @@ export const useBackupStore = defineStore('backup', () => {
     showProgressDialog,
     errorRetryCount,
     isRunning,
-    canCancel,
-    // checkBackupStatus,
     startProgressPolling,
     stopProgressPolling,
-    // cancelBackupTask,
     resetState,
   }
 })

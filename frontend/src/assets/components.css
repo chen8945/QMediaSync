@@ -1,19 +1,11 @@
 /* 组件共享样式 */
 
 /* 与项目 768px 移动端断点一致，避免 Element Plus md（992px）断点混用。 */
-.hide-on-mobile {
-  display: block;
-}
-
 .show-on-mobile {
   display: none !important;
 }
 
 @media (max-width: 768px) {
-  .hide-on-mobile {
-    display: none !important;
-  }
-
   .show-on-mobile {
     display: initial !important;
   }
@@ -38,12 +30,6 @@
 .header-content {
   display: flex;
   align-items: flex-start;
-}
-
-.header-info {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .header-actions {
@@ -82,22 +68,6 @@
   display: flex;
   gap: 12px;
   margin-top: 24px;
-}
-
-/* 设置页面表单样式 */
-.settings-form {
-  margin-top: 20px;
-  width: 100%;
-}
-
-.settings-form .el-form-item {
-  margin-bottom: 24px;
-}
-
-.settings-form .el-form-item__label {
-  font-weight: 500;
-  color: #303133;
-  margin-bottom: 8px;
 }
 
 /* 示例样式 */
@@ -191,18 +161,6 @@
   gap: 8px;
 }
 
-.emby-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 24px;
-}
-
-/* 同步目录特定样式 */
-.sync-directories-container {
-  margin: 0;
-  padding: 0;
-}
-
 /* 全宽度容器，突破父容器的padding限制 */
 .full-width-container {
   margin: -20px !important;
@@ -222,44 +180,6 @@
   min-height: 250px;
 }
 
-.directories-table {
-  width: 100% !important;
-  margin-bottom: 20px;
-  overflow-x: auto;
-}
-
-/* 确保表格容器也占满宽度 */
-.directories-table .el-table {
-  width: 100% !important;
-}
-
-.directories-table .el-table__inner-wrapper {
-  width: 100% !important;
-}
-
-.table-cell-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.cell-label {
-  font-size: 12px;
-  color: #909399;
-  font-weight: 500;
-}
-
-.cid-text {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 13px;
-  color: #606266;
-  word-break: break-all;
-  background: #f5f7fa;
-  padding: 2px 6px;
-  border-radius: 4px;
-  display: inline-block;
-}
-
 .path-text {
   color: #303133;
   word-break: break-all;
@@ -268,14 +188,6 @@
 }
 
 /* 卡片列表基础样式 */
-.directories-card-list {
-  margin-bottom: 20px;
-}
-
-.directory-card-col {
-  margin-bottom: 20px;
-}
-
 .directory-card {
   height: 100%;
   transition:
@@ -349,12 +261,4 @@
 }
 .el-form-item__content {
   display: block !important;
-}
-
-.dir-item {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  cursor: pointer;
-  padding: 8px;
 }

@@ -54,7 +54,6 @@ export const useAuthStore = defineStore('auth', () => {
   const session = shallowRef<UserSession | null>(null)
   const csrfToken = shallowRef<string | null>(null)
   const authStatus = shallowRef<AuthStatus>('checking')
-  const isLoading = shallowRef(false)
   const isLoggingOut = shallowRef(false)
   const hasInitialized = shallowRef(false)
   let bootstrapPromise: Promise<boolean> | null = null
@@ -125,15 +124,6 @@ export const useAuthStore = defineStore('auth', () => {
     return bootstrapPromise
   }
 
-  const restoreSession = async (http: AxiosInstance) => {
-    return bootstrapAuth(http)
-  }
-
-  const initAuth = () => {
-    if (hasInitialized.value) return
-    clearAuth()
-  }
-
   const login = (payload: LoginPayload) => {
     applySession(payload)
   }
@@ -178,14 +168,11 @@ export const useAuthStore = defineStore('auth', () => {
     session,
     csrfToken,
     authStatus,
-    isLoading,
     isLoggingOut,
     hasInitialized,
     isAuthenticated,
-    initAuth,
     bootstrapAuth,
     refreshSession,
-    restoreSession,
     login,
     logout,
     logoutWithServer,

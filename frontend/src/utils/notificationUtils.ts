@@ -109,20 +109,6 @@ export function getChannelTypeName(type: ChannelType): string {
   return nameMap[type] || type
 }
 
-// 获取渠道类型颜色
-export function getChannelTypeColor(
-  type: ChannelType,
-): 'primary' | 'success' | 'info' | 'warning' | 'danger' {
-  const colorMap: Record<ChannelType, 'primary' | 'success' | 'info' | 'warning' | 'danger'> = {
-    telegram: 'primary',
-    meow: 'success',
-    bark: 'warning',
-    serverchan: 'info',
-    webhook: 'danger',
-  }
-  return colorMap[type] || 'info'
-}
-
 // 获取事件类型名称
 export function getEventTypeName(type: EventType): string {
   const nameMap: Record<EventType, string> = {
@@ -138,21 +124,4 @@ export function getEventTypeName(type: EventType): string {
     playback_stop: 'Emby 播放停止',
   }
   return nameMap[type] || type
-}
-
-// 获取事件类型描述
-export function getEventTypeDescription(type: EventType): string {
-  const descMap: Record<EventType, string> = {
-    sync_finish: '同步任务成功完成时发送通知',
-    sync_error: '同步任务出现错误时发送通知',
-    scrape_finish: '刮削任务完成时发送通知',
-    scrape_error: '刮削任务出现错误时发送通知',
-    system_alert: '系统出现重要警告时发送通知',
-    media_added: '新媒体添加到媒体库时发送通知',
-    media_removed: '媒体从媒体库移除时发送通知',
-    playback_start: '用户开始播放内容时发送通知',
-    playback_pause: '用户暂停播放时发送通知',
-    playback_stop: '用户停止播放时发送通知',
-  }
-  return descMap[type] || ''
 }
