@@ -76,8 +76,14 @@ const md = new MarkdownIt({
   linkify: true,
 })
 
+const renderedMarkdownCache = new Map<string, string>()
 const renderMarkdown = (content: string): string => {
-  return DOMPurify.sanitize(md.render(content || ''))
+  const source = content || ''
+  const cached = renderedMarkdownCache.get(source)
+  if (cached !== undefined) return cached
+  const rendered = DOMPurify.sanitize(md.render(source))
+  renderedMarkdownCache.set(source, rendered)
+  return rendered
 }
 
 const formatVersionBuildTime = (): string => {

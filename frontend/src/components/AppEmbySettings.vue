@@ -769,6 +769,10 @@ interface EmbySyncInfo {
 
 const syncInfo = ref<EmbySyncInfo | null>(null)
 let syncPollTimer: number | null = null
+let syncPollInFlight = false
+let syncPollPending = false
+let syncPollingGeneration = 0
+let syncPageActive = true
 
 const syncModeLabels: Record<Exclude<EmbySyncMode, ''>, string> = {
   idle: '空闲',
@@ -1118,9 +1122,20 @@ const startSync = async () => {
   }
 }
 
-const querySyncStatus = async () => {
+const querySyncStatus = async (generation = syncPollingGeneration) => {
+  if (!syncPageActive) return
+  if (document.hidden || syncPollInFlight) {
+    syncPollPending = true
+    return
+  }
+  syncPollInFlight = true
+  syncPollPending = false
   try {
     const response = await http.get(`${SERVER_URL}/emby/sync/status`)
+
+    if (generation !== syncPollingGeneration || !syncPageActive || document.hidden) {
+      return
+    }
 
     if (response?.data.code === 200) {
       syncInfo.value = response.data.data
@@ -1132,36 +1147,48 @@ const querySyncStatus = async () => {
       }
     }
   } catch (error) {
-    console.error('查询同步状态错误：', error)
+    if (generation === syncPollingGeneration && syncPageActive)
+      console.error('查询同步状态错误：', error)
+  } finally {
+    syncPollInFlight = false
+    if (syncPollPending && syncPageActive && !document.hidden) {
+      syncPollPending = false
+      void querySyncStatus()
+    }
   }
 }
 
 const startSyncPolling = () => {
-  if (syncPollTimer !== null) {
-    return
-  }
-  syncPollTimer = window.setInterval(async () => {
-    try {
-      const response = await http.get(`${SERVER_URL}/emby/sync/status`)
-
-      if (response?.data.code === 200) {
-        syncInfo.value = response.data.data
-        syncPolling.value = response.data.data?.is_running
-        if (!syncPolling.value) {
-          stopSyncPolling()
-        }
-      }
-    } catch (error) {
-      console.error('轮询同步状态错误：', error)
-    }
+  if (syncPollTimer !== null || !syncPageActive || document.hidden) return
+  const generation = ++syncPollingGeneration
+  syncPollTimer = window.setInterval(() => {
+    if (
+      !syncPageActive ||
+      document.hidden ||
+      generation !== syncPollingGeneration ||
+      syncPollInFlight
+    )
+      return
+    void querySyncStatus(generation)
   }, 3000)
 }
 
-const stopSyncPolling = () => {
+const stopSyncPolling = (invalidate = true) => {
+  if (invalidate) syncPollingGeneration += 1
   syncPolling.value = false
   if (syncPollTimer !== null) {
     clearInterval(syncPollTimer)
     syncPollTimer = null
+  }
+}
+
+const handleSyncVisibilityChange = () => {
+  if (document.hidden) {
+    stopSyncPolling(false)
+    return
+  }
+  if (syncPageActive && (syncPollPending || isSyncRunning.value)) {
+    void querySyncStatus()
   }
 }
 
@@ -1176,12 +1203,15 @@ const formatSyncAbsoluteTime = (timestamp: number | null | undefined) => {
 }
 
 onMounted(() => {
+  document.addEventListener('visibilitychange', handleSyncVisibilityChange)
   loadEmbyConfig()
   querySyncStatus()
   updateWebhookUrl()
 })
 
 onBeforeUnmount(() => {
+  syncPageActive = false
+  document.removeEventListener('visibilitychange', handleSyncVisibilityChange)
   stopSyncPolling()
 })
 </script>

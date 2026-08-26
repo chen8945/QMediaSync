@@ -55,6 +55,9 @@ export function useUpdate() {
   const updateChannel = ref<UpdateChannel>('github')
 
   let progressTimer: ReturnType<typeof setInterval> | null = null
+  let progressInFlight = false
+  let pollingGeneration = 0
+  let pageActive = true
   let countdownTimer: ReturnType<typeof setInterval> | null = null
 
   const loadUpdateList = async (force = false) => {
@@ -155,19 +158,25 @@ export function useUpdate() {
     }
   }
 
-  const startProgressPolling = () => {
-    if (progressTimer) {
-      clearInterval(progressTimer)
-    }
-
-    checkUpdateProgress()
-
+  const scheduleProgressPolling = (generation: number) => {
+    if (!pageActive || document.hidden || generation !== pollingGeneration || progressTimer) return
     progressTimer = setInterval(() => {
-      checkUpdateProgress()
+      if (!pageActive || document.hidden || generation !== pollingGeneration) return
+      void checkUpdateProgress(generation)
     }, 1000)
   }
 
-  const stopProgressPolling = () => {
+  const startProgressPolling = () => {
+    pollingGeneration += 1
+    const generation = pollingGeneration
+    stopProgressPolling(false)
+    if (!pageActive || document.hidden) return
+    void checkUpdateProgress(generation)
+    scheduleProgressPolling(generation)
+  }
+
+  const stopProgressPolling = (invalidate = true) => {
+    if (invalidate) pollingGeneration += 1
     if (progressTimer) {
       clearInterval(progressTimer)
       progressTimer = null
@@ -202,9 +211,13 @@ export function useUpdate() {
     window.location.reload()
   }
 
-  const checkUpdateProgress = async () => {
+  const checkUpdateProgress = async (generation = pollingGeneration) => {
+    if (!pageActive || document.hidden || generation !== pollingGeneration || progressInFlight)
+      return
+    progressInFlight = true
     try {
       const response = await http.get(`${SERVER_URL}/update/progress`)
+      if (!pageActive || document.hidden || generation !== pollingGeneration) return
 
       if (response && response.data) {
         if (response.data.code !== 200) {
@@ -273,6 +286,29 @@ export function useUpdate() {
       }
     } catch (error) {
       console.error('查询更新进度错误：', error)
+    } finally {
+      progressInFlight = false
+      if (
+        pageActive &&
+        !document.hidden &&
+        generation === pollingGeneration &&
+        isUpdating.value &&
+        !progressTimer
+      ) {
+        scheduleProgressPolling(generation)
+      }
+    }
+  }
+
+  const handleVisibilityChange = () => {
+    if (!pageActive) return
+    if (document.hidden) {
+      stopProgressPolling(false)
+    } else if (isUpdating.value) {
+      pollingGeneration += 1
+      const generation = pollingGeneration
+      void checkUpdateProgress(generation)
+      scheduleProgressPolling(generation)
     }
   }
 
@@ -305,7 +341,9 @@ export function useUpdate() {
   }
 
   const cleanup = () => {
-    stopProgressPolling()
+    pageActive = false
+    pollingGeneration += 1
+    stopProgressPolling(false)
     if (countdownTimer) {
       clearInterval(countdownTimer)
       countdownTimer = null
@@ -313,12 +351,14 @@ export function useUpdate() {
   }
 
   onMounted(() => {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     loadUpdateList().then(() => {
       checkUpdateStatusOnLoad()
     })
   })
 
   onUnmounted(() => {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
     cleanup()
   })
 

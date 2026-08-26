@@ -868,8 +868,18 @@ useRealtimeEvent('download_queue_changed', () => {
   }
 })
 
+const handleQueueVisibilityChange = () => {
+  if (!isPageActive || document.hidden) {
+    stopAutoRefresh()
+    return
+  }
+  if (hasActiveQueueWork.value) startAutoRefresh()
+  void loadQueueData()
+}
+
 // 页面生命周期
 onMounted(() => {
+  document.addEventListener('visibilitychange', handleQueueVisibilityChange)
   activateQueuePage()
 })
 
@@ -891,6 +901,7 @@ onActivated(() => {
 onDeactivated(deactivateQueuePage)
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleQueueVisibilityChange)
   isPageActive = false
   queryLoading.value = false
   pendingQueueDataRefresh.value = false
