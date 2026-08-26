@@ -73,7 +73,7 @@ emby302:
 
 历史 `log.file` 仍可读取；当 `log.app` 为空且 `log.file` 有值时使用旧路径，新保存统一写 `log.app`。全局日志按写入触发轮转并压缩旧文件；同步任务日志不轮转，随同步记录清理删除。`QLogger` 在写入前脱敏 `api_key`、Token、Cookie、密码、STS 密钥等常见敏感字段，脱敏值统一显示为 `******`。
 
-`QLogger` 的脱敏基于键值对匹配，不识别 URL 里的 `用户名:密码@` 段。凡是可能带凭据的 URL（例如出站代理地址），必须在调用点用 `validation.RedactProxyURL`（入参为原始字符串）或 `validation.RedactParsedProxyURL`（入参为已解析的 `*url.URL`）处理后再写日志或回传接口，不能依赖 `QLogger` 兜底。
+同步任务遍历本地文件时，正常的文件存在性对比和“无需处理”的原因使用 `DEBUG` 级别；实际删除本地 STRM、上传或重新下载元数据等动作使用 `INFO` 级别。对比命中远端文件时，`DEBUG` 日志会以带字段名的完整 `SyncFileCache` 结构输出，便于排查文件 ID、路径、大小、时间和来源等信息；未命中时只输出本地路径和不存在结论。`QLogger` 的脱敏基于键值对匹配，不识别 URL 里的 `用户名:密码@` 段。凡是可能带凭据的 URL（例如出站代理地址），必须在调用点用 `validation.RedactProxyURL`（入参为原始字符串）或 `validation.RedactParsedProxyURL`（入参为已解析的 `*url.URL`）处理后再写日志或回传接口，不能依赖 `QLogger` 兜底。
 
 不要使用标准库的 `url.URL.Redacted()`：它只替换密码，用户名仍是明文（企业代理常带域账号，形如 `http://DOMAIN\jsmith:pw@proxy.corp:8080`）；并且它对缺少 `//` 的 opaque 地址（形如 `socks5:user:secret@host:1080`）完全不生效，会把密码原样输出。上面两个函数同时遮蔽用户名和密码，覆盖 opaque 地址，并在 `url.Parse` 失败时返回占位符而不是原串。
 

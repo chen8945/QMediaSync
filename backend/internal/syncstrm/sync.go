@@ -492,7 +492,10 @@ func (s *SyncStrm) Start() error {
 		// 处理差异
 		go func() {
 			s.Sync.Logger.Info("115 路径和文件同步完成，开始处理 SyncFile 表和同步缓存的数据差异")
-			s.handleTempTableDiff()
+			if err := s.handleTempTableDiff(); err != nil {
+				s.Sync.Logger.Errorf("处理 SyncFile 表和同步缓存差异失败：%v", err)
+				return
+			}
 			s.Sync.Logger.Info("完成差异比对，并更新了 SyncFile 表，任务已完成")
 		}()
 	}
@@ -709,11 +712,14 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						// 如果目录是空的则删除目录
 						dirEntries, rerr := os.ReadDir(path)
 						if rerr != nil {
-							s.Sync.Logger.Errorf("读取目录 %s 的文件列表失败：%v", path, err)
+							s.Sync.Logger.Errorf("读取目录 %s 的文件列表失败：%v", path, rerr)
 							return nil
 						}
 						if len(dirEntries) == 0 {
-							os.Remove(path)
+							if err := os.Remove(path); err != nil {
+								s.Sync.Logger.Warnf("删除空目录失败：local_path=%s，错误=%v", path, err)
+								return nil
+							}
 							s.Sync.Logger.Infof("删除空目录 %s", path)
 						} else {
 							s.Sync.Logger.Infof("本地目录 %s 不是空目录，跳过删除", path)
@@ -741,14 +747,22 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 				if err != nil {
 					s.Sync.Logger.Warnf("查询同步缓存失败 %s：%v", path, err)
 				}
-				s.Sync.Logger.Infof("对比本地文件 %s，是否存在于网盘：%v", path, existsFile)
+				if existsFile == nil {
+					s.Sync.Logger.Debugf("本地文件对比完成：local_path=%s，网盘文件存在：否", path)
+				} else {
+					s.Sync.Logger.Debugf("本地文件对比完成：local_path=%s，网盘文件存在：是，file_id=%s，remote_path=%s", path, existsFile.GetFileId(), existsFile.GetFullRemotePath())
+					s.Sync.Logger.Debugf("网盘文件详细信息：%+v", *existsFile)
+				}
 				if isVideo {
 					// STRM 文件，检查文件在临时表是否存在，不存在需要删除临时文件
 					if existsFile != nil {
+						s.Sync.Logger.Infof("本地 STRM 已对应网盘文件，跳过处理：local_path=%s，file_id=%s，remote_path=%s", path, existsFile.GetFileId(), existsFile.GetFullRemotePath())
 						return nil
 					}
-					// s.Sync.Logger.Warnf("本地文件在网盘不存在，删除本地 STRM 文件：%s", path)
-					s.RemoveFileAndCheckDirEmtry(path)
+					s.Sync.Logger.Infof("本地 STRM 对应的网盘文件不存在，准备删除：local_path=%s", path)
+					if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+						s.Sync.Logger.Warnf("删除本地 STRM 文件失败：local_path=%s，错误=%v", path, err)
+					}
 					return nil
 				}
 				if isMeta {
@@ -759,7 +773,9 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					}
 					// 如果选择删除，则检查是否存在，不存在则删除
 					if s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionDelete && existsFile == nil {
-						s.RemoveFileAndCheckDirEmtry(path)
+						if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+							s.Sync.Logger.Warnf("删除本地元数据文件失败：local_path=%s，错误=%v", path, err)
+						}
 						return nil
 					}
 					// 如果允许上传，则检查是否需要上传（文件在网盘不存在）
@@ -767,7 +783,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						// 检查 dbupload 表中是否已经有对应的上传任务
 						canUpload := models.CheckCanUploadByLocalPath(models.UploadSourceStrm, path)
 						if !canUpload {
-							s.Sync.Logger.Infof("本地元数据文件 %s 由于存在上传任务所以不需要处理", path)
+							s.Sync.Logger.Debugf("本地元数据文件 %s 由于存在上传任务所以不需要处理", path)
 							return nil
 						}
 						sourceRootPath := filepath.ToSlash(filepath.Join(s.TargetPath, s.Sync.RemotePath))
@@ -791,7 +807,9 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						if existsPath == nil && parentDir != sourceRootPath {
 							if !isAllowedUploadDir {
 								s.Sync.Logger.Infof("父目录 %s 不存在网盘，进入删除流程 %s，", parentDir, path)
-								s.RemoveFileAndCheckDirEmtry(path)
+								if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+									s.Sync.Logger.Warnf("删除本地元数据文件失败：local_path=%s，错误=%v", path, err)
+								}
 								return nil
 							} else {
 								// 递归创建目录，调用对应的 driver
@@ -835,7 +853,10 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							LocalFilePath: filepath.Join(parentPath, info.Name()),
 						}
 						s.Sync.Logger.Infof("准备添加上传任务，路径检查：文件 ID=%s，路径=%s，文件名=%s", db115File.FileId, db115File.Path, db115File.FileName)
-						models.AddUploadTaskFromSyncFile(db115File)
+						if err := models.AddUploadTaskFromSyncFile(db115File); err != nil {
+							s.Sync.Logger.Warnf("添加本地元数据上传任务失败：local_path=%s，remote_path=%s，错误=%v", db115File.LocalFilePath, db115File.Path, err)
+							return nil
+						}
 						atomic.AddInt64(&s.NewUpload, 1)
 						s.PublishProgress(false)
 						return nil
@@ -852,7 +873,10 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							localMTime := info.ModTime().Unix()
 							s.Sync.Logger.Infof("本地元数据文件 %s 由于修改时间比网盘旧 %d < %d 所以需要重新下载", path, localMTime, existsFile.MTime)
 							// 1. 删除本地文件
-							s.RemoveFileAndCheckDirEmtry(path)
+							if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+								s.Sync.Logger.Warnf("删除待重新下载的本地元数据文件失败：local_path=%s，错误=%v", path, err)
+								return nil
+							}
 
 							// 2. 添加下载任务
 							if err := s.addMetaDownloadTask(existsFile.GetSyncFile(s, s.Account.BaseUrl)); err != nil {
@@ -870,7 +894,10 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								return nil
 							}
 							// 2. 添加上传任务
-							models.AddUploadTaskFromSyncFile(existsFile.GetSyncFile(s, s.Account.BaseUrl))
+							if err := models.AddUploadTaskFromSyncFile(existsFile.GetSyncFile(s, s.Account.BaseUrl)); err != nil {
+								s.Sync.Logger.Warnf("添加元数据上传任务失败：local_path=%s，file_id=%s，错误=%v", path, existsFile.GetFileId(), err)
+								return nil
+							}
 							atomic.AddInt64(&s.NewUpload, 1)
 							s.PublishProgress(false)
 
