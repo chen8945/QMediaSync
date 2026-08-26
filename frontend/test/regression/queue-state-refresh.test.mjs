@@ -462,25 +462,31 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
   }
 
   const assertQueueMutationsUseContext = (source, functionNames, messagePrefix) => {
+    const composableSource = readSource('src/composables/useQueueMutationContext.ts')
     assert.match(
-      source,
+      composableSource,
       /const\s+queueMutationContextVersion\s*=\s*ref\s*\(\s*0\s*\)/,
-      `${messagePrefix} should version queue mutation operations`,
+      'useQueueMutationContext should version queue mutation operations',
+    )
+    assert.match(
+      composableSource,
+      /const\s+activeQueueMutationContext\s*=\s*ref\s*<\s*QueueMutationContextSnapshot\s*\|\s*null\s*>\s*\(\s*null\s*\)/,
+      'useQueueMutationContext should track the active queue mutation context',
+    )
+    assert.match(
+      composableSource,
+      /const\s+isQueueMutationContextCurrent[\s\S]*?isPageActive\(\)[\s\S]*?activeQueueMutationContext\.value[\s\S]*?snapshot\.contextVersion\s*===\s*queueMutationContextVersion\.value/,
+      'useQueueMutationContext should require active page and current mutation version',
+    )
+    assert.match(
+      composableSource,
+      /const\s+invalidateQueueMutationContext\s*=\s*\(\s*\)\s*=>\s*{[\s\S]*?queueMutationContextVersion\.value\s*\+=\s*1[\s\S]*?activeQueueMutationContext\.value\s*=\s*null/,
+      'useQueueMutationContext should invalidate queue mutations by version',
     )
     assert.match(
       source,
-      /const\s+activeQueueMutationContext\s*=\s*ref\s*<\s*QueueMutationContextSnapshot\s*\|\s*null\s*>\s*\(\s*null\s*\)/,
-      `${messagePrefix} should track the active queue mutation context`,
-    )
-    assert.match(
-      getLocalFunctionBody(source, 'isQueueMutationContextCurrent'),
-      /isPageActive[\s\S]*?activeQueueMutationContext\.value[\s\S]*?snapshot\.contextVersion\s*===\s*queueMutationContextVersion\.value/,
-      `${messagePrefix} queue mutations should require active page and current mutation version`,
-    )
-    assert.match(
-      getLocalFunctionBody(source, 'invalidateQueueMutationContext'),
-      /queueMutationContextVersion\.value\s*\+=\s*1[\s\S]*?activeQueueMutationContext\.value\s*=\s*null/,
-      `${messagePrefix} should invalidate queue mutations by version`,
+      /const\s*\{[\s\S]*?invalidateQueueMutationContext[\s\S]*?startQueueMutationContext[\s\S]*?isQueueMutationContextCurrent[\s\S]*?finishQueueMutationContext[\s\S]*?\}\s*=\s*useQueueMutationContext\s*\(\s*{\s*isPageActive:\s*\(\s*\)\s*=>\s*isPageActive\s*}\s*\)/,
+      `${messagePrefix} should wire the shared mutation context to page activation`,
     )
     assert.match(
       getLocalFunctionBody(source, 'deactivateQueuePage'),

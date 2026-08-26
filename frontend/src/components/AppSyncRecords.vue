@@ -37,13 +37,16 @@
       >
         <template #cell-id="{ row }"> #{{ row.id }} </template>
         <template #cell-status="{ row }">
-          <el-tag :type="getStatusType(row.status)" :effect="row.status === 1 ? 'dark' : 'light'">
-            {{ getStatusText(row.status) }}
+          <el-tag
+            :type="getSyncTaskStatusTagType(row.status)"
+            :effect="row.status === 1 ? 'dark' : 'light'"
+          >
+            {{ getSyncTaskStatusText(row.status) }}
           </el-tag>
         </template>
         <template #cell-sub_status="{ row }">
           <el-tag v-if="row.status === 1" type="primary" size="small" effect="light">
-            {{ getSubStatusText(row.sub_status) }}
+            {{ getSyncTaskSubStatusText(row.sub_status) }}
           </el-tag>
           <span v-else class="sync-sub-status">-</span>
         </template>
@@ -87,6 +90,7 @@ import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
+import { usePageScrollRestore } from '@/composables/usePageScrollRestore'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import { usePageStateStore } from '@/stores/pageState'
 import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/recordTable'
@@ -99,13 +103,18 @@ import {
   resetSyncTaskEventSequences,
   shouldApplySyncTaskEvent,
 } from '@/utils/syncTaskEventSequence'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { getEmbyRefreshDecision } from '@/utils/syncRefreshDecision'
+import {
+  getSyncTaskStatusTagType,
+  getSyncTaskStatusText,
+  getSyncTaskSubStatusText,
+} from '@/utils/syncTaskStatusUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import { Delete, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   computed,
-  nextTick,
   onActivated,
   onDeactivated,
   onMounted,
@@ -242,52 +251,6 @@ useRealtimeEvent('sync_task_deleted', (data) => patchSyncRecordFromEvent(data, '
 useRealtimeEvent('strm_sync_task_start', onLegacySyncEvent)
 useRealtimeEvent('strm_sync_task_complete', onLegacySyncEvent)
 
-// 获取状态标签类型
-const getStatusType = (status: number) => {
-  switch (status) {
-    case 0:
-      return 'info' // 待开始
-    case 1:
-      return 'primary' // 运行中
-    case 2:
-      return 'success' // 完成
-    case 3:
-      return 'danger' // 失败
-    default:
-      return 'info'
-  }
-}
-
-// 获取状态文本
-const getStatusText = (status: number) => {
-  switch (status) {
-    case 0:
-      return '待开始'
-    case 1:
-      return '运行中'
-    case 2:
-      return '已完成'
-    case 3:
-      return '失败'
-    default:
-      return '未知'
-  }
-}
-
-// 获取子状态文本
-const getSubStatusText = (subStatus: number) => {
-  switch (subStatus) {
-    case 0:
-      return '待开始'
-    case 1:
-      return '正在处理网盘文件'
-    case 2:
-      return '正在处理本地文件'
-    default:
-      return '未知'
-  }
-}
-
 const syncRecordColumns: RecordColumn<SyncRecord>[] = [
   { key: 'id', label: '任务 ID', priority: 'primary', width: 88, align: 'center' },
   {
@@ -296,7 +259,11 @@ const syncRecordColumns: RecordColumn<SyncRecord>[] = [
     priority: 'primary',
     width: 96,
     align: 'center',
-    detailField: { key: 'status', label: '状态', value: (row) => getStatusText(row.status) },
+    detailField: {
+      key: 'status',
+      label: '状态',
+      value: (row) => getSyncTaskStatusText(row.status),
+    },
   },
   { key: 'sub_status', label: '子状态', priority: 'secondary', minWidth: 112 },
   {
@@ -589,18 +556,9 @@ onMounted(activateSyncRecordsPage)
 
 onActivated(activateSyncRecordsPage)
 
-onActivated(() => {
-  nextTick(() => {
-    const scrollContainer = getPageScrollContainer()
-    if (scrollContainer) {
-      scrollContainer.scrollTop = pageState.scrollTop
-    }
-  })
-})
-
-onDeactivated(() => {
-  const scrollContainer = getPageScrollContainer()
-  pageStateStore.setScrollTop('sync-records', scrollContainer?.scrollTop || 0)
+usePageScrollRestore({
+  pageKey: 'sync-records',
+  getScrollContainer: getPageScrollContainer,
 })
 
 onDeactivated(deactivateSyncRecordsPage)
@@ -680,15 +638,6 @@ const deleteRecord = async (id: number) => {
       finishDeleteOperationContext(operationContext, 'single')
     }
   }
-}
-
-const isMessageBoxCancelError = (error: unknown): boolean => {
-  if (error === 'cancel' || error === 'close') {
-    return true
-  }
-
-  const errorMessage = error instanceof Error ? error.message : String(error)
-  return errorMessage.includes('用户取消操作')
 }
 
 // 批量删除

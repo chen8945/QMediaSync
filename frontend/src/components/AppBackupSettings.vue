@@ -73,12 +73,12 @@ import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import type { BackupConfig } from '@/typing'
-import { isMobile as checkIsMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CronSelector from './CronSelector.vue'
 
 const http = useHttpClient()
-const isMobile = checkIsMobile()
+const { isMobile } = useDeviceType()
 const API_SUCCESS_CODE = 200
 
 const configForm = reactive({

@@ -2,7 +2,7 @@
 import { SERVER_URL } from '@/const'
 import type { LogLevel } from '@/types/log'
 import { isLogLevel, LOG_LEVEL_OPTIONS } from '@/utils/logLevel'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
 import { ElMessage } from 'element-plus'
 import { Check } from '@element-plus/icons-vue'
@@ -30,7 +30,7 @@ interface SaveStatus {
 }
 
 const http = useHttpClient()
-const checkIsMobile = shallowRef(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const loading = shallowRef(false)
 const saveStatus = shallowRef<SaveStatus | null>(null)
 const LOG_ROTATION_LIMITS = {

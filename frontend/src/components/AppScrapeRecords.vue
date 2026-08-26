@@ -439,13 +439,14 @@ import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
+import { usePageScrollRestore } from '@/composables/usePageScrollRestore'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import { usePageStateStore } from '@/stores/pageState'
 import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/recordTable'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { formatTimestamp } from '@/utils/timeUtils'
 import {
   computed,
-  nextTick,
   onActivated,
   onDeactivated,
   onMounted,
@@ -1465,15 +1466,6 @@ const handleTruncateAll = async () => {
   }
 }
 
-const isMessageBoxCancelError = (error: unknown): boolean => {
-  if (error === 'cancel' || error === 'close') {
-    return true
-  }
-
-  const errorMessage = error instanceof Error ? error.message : String(error)
-  return errorMessage.includes('用户取消操作')
-}
-
 const markAsFinished = async (record: ScrapeRecord) => {
   const operationContext = startRecordActionContext(record)
 
@@ -1728,18 +1720,9 @@ onMounted(activateScrapeRecordsPage)
 
 onActivated(activateScrapeRecordsPage)
 
-onActivated(() => {
-  nextTick(() => {
-    const scrollContainer = getPageScrollContainer()
-    if (scrollContainer) {
-      scrollContainer.scrollTop = pageState.scrollTop
-    }
-  })
-})
-
-onDeactivated(() => {
-  const scrollContainer = getPageScrollContainer()
-  pageStateStore.setScrollTop('scrape-records', scrollContainer?.scrollTop || 0)
+usePageScrollRestore({
+  pageKey: 'scrape-records',
+  getScrollContainer: getPageScrollContainer,
 })
 
 onDeactivated(deactivateScrapeRecordsPage)

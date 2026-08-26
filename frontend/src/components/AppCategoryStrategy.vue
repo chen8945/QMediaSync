@@ -555,12 +555,6 @@ onMounted(async () => {
   align-items: center;
 }
 
-.card-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-}
-
 .cards-container {
   display: flex;
   flex-wrap: wrap;

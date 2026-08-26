@@ -370,6 +370,7 @@ import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
+import { useQueueMutationContext } from '@/composables/useQueueMutationContext'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useHttpClient } from '@/http/client'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
@@ -380,6 +381,7 @@ import {
   getTaskSourceTypeTagType,
   getUploadSourceName,
 } from '@/utils/taskSourceUtils'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import {
   buildUploadTaskDetailGroups,
@@ -442,10 +444,6 @@ interface UploadTask {
   rapid_wait_attempts?: number
   relative_path?: string
   source_deleted_at?: number
-}
-
-interface QueueMutationContextSnapshot {
-  contextVersion: number
 }
 
 const http = useHttpClient()
@@ -521,48 +519,12 @@ const pendingQueueDataRefresh = ref(false)
 let isPageActive = false
 const queueDataRequestGate = createActiveRequestGate(() => isPageActive)
 const queueStatusRequestGate = createActiveRequestGate(() => isPageActive)
-const queueMutationContextVersion = ref(0)
-const activeQueueMutationContext = ref<QueueMutationContextSnapshot | null>(null)
-
-const invalidateQueueMutationContext = () => {
-  queueMutationContextVersion.value += 1
-  activeQueueMutationContext.value = null
-}
-
-const startQueueMutationContext = (): QueueMutationContextSnapshot => {
-  invalidateQueueMutationContext()
-  const snapshot = {
-    contextVersion: queueMutationContextVersion.value,
-  }
-  activeQueueMutationContext.value = snapshot
-  return snapshot
-}
-
-const isQueueMutationContextCurrent = (snapshot: QueueMutationContextSnapshot | null) => {
-  return (
-    isPageActive &&
-    !!snapshot &&
-    !!activeQueueMutationContext.value &&
-    activeQueueMutationContext.value.contextVersion === snapshot.contextVersion &&
-    snapshot.contextVersion === queueMutationContextVersion.value
-  )
-}
-
-const finishQueueMutationContext = (snapshot: QueueMutationContextSnapshot) => {
-  if (isQueueMutationContextCurrent(snapshot)) {
-    activeQueueMutationContext.value = null
-  }
-}
-
-const isMessageBoxCancelError = (error: unknown): boolean => {
-  if (error === 'cancel' || error === 'close') {
-    return true
-  }
-
-  const errorMessage = error instanceof Error ? error.message : String(error)
-  return errorMessage.includes('用户取消操作')
-}
-
+const {
+  invalidateQueueMutationContext,
+  startQueueMutationContext,
+  isQueueMutationContextCurrent,
+  finishQueueMutationContext,
+} = useQueueMutationContext({ isPageActive: () => isPageActive })
 const getUploadTaskName = (task: UploadTask): string => task.file_name || task.local_full_path
 
 const shouldShowUploadStageSummary = (task: UploadTask): boolean =>

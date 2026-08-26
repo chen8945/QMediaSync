@@ -21,7 +21,7 @@
           :key="row.id || index"
           :class="{ 'is-running': row.is_running === 2, 'is-waiting': row.is_running === 1 }"
         >
-          <div class="card-status-bar" :class="getStatusClass(row)"></div>
+          <div class="card-status-bar" :class="getDirectoryRunStatusClass(row)"></div>
           <div class="card-main">
             <div class="card-header">
               <div class="card-title-wrapper">
@@ -131,11 +131,11 @@
               </div>
 
               <div class="status-row">
-                <div class="status-indicator" :class="getStatusClass(row)">
+                <div class="status-indicator" :class="getDirectoryRunStatusClass(row)">
                   <el-icon v-if="row.is_running === 2" class="rotating"><Loading /></el-icon>
                   <el-icon v-else-if="row.is_running === 1"><Clock /></el-icon>
                   <el-icon v-else><CircleCheck /></el-icon>
-                  <span>{{ getStatusText(row) }}</span>
+                  <span>{{ getDirectoryRunStatusText(row) }}</span>
                 </div>
               </div>
             </div>
@@ -352,6 +352,10 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
+import {
+  getDirectoryRunStatusClass,
+  getDirectoryRunStatusText,
+} from '@/utils/directoryRunStatusUtils'
 import { sourceTypeTagMap, sourceTypeMap } from '@/utils/sourceTypeUtils'
 import {
   resetSyncTaskEventSequences,
@@ -470,18 +474,6 @@ const getDirectoryUploadStatusType = (
 
 const getDirectoryUploadPathText = (row: SyncDirectory): string => {
   return formatDirectoryUploadPathSummary(getDirectoryUploadRules(row))
-}
-
-const getStatusClass = (row: SyncDirectory) => {
-  if (row.is_running === 2) return 'status-running'
-  if (row.is_running === 1) return 'status-waiting'
-  return 'status-idle'
-}
-
-const getStatusText = (row: SyncDirectory) => {
-  if (row.is_running === 2) return '运行中'
-  if (row.is_running === 1) return '等待中'
-  return '空闲'
 }
 
 const getStartButtonText = (row: SyncDirectory) => {

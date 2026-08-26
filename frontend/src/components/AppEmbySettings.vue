@@ -1274,13 +1274,6 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 
-.card-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
 .card-subtitle {
   margin: 4px 0 0;
   font-size: 13px;

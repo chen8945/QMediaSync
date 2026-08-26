@@ -85,7 +85,7 @@ import { ElMessage } from 'element-plus'
 import { Check } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import TwoFactorSettings from '@/components/user-settings/TwoFactorSettings.vue'
@@ -104,7 +104,7 @@ interface SaveStatus {
 }
 const authStore = useAuthStore()
 const router = useRouter()
-const checkIsMobile = shallowRef(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
 const loading = shallowRef(false)
 const saveStatus = shallowRef<SaveStatus | null>(null)

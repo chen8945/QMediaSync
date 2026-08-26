@@ -21,7 +21,7 @@
           :key="row.id || index"
           :class="{ 'is-running': row.is_running === 2, 'is-waiting': row.is_running === 1 }"
         >
-          <div class="card-status-bar" :class="getStatusClass(row)"></div>
+          <div class="card-status-bar" :class="getDirectoryRunStatusClass(row)"></div>
           <div class="card-main">
             <div class="card-header">
               <div class="card-title-wrapper">
@@ -116,11 +116,11 @@
               </div>
 
               <div class="status-row">
-                <div class="status-indicator" :class="getStatusClass(row)">
+                <div class="status-indicator" :class="getDirectoryRunStatusClass(row)">
                   <el-icon v-if="row.is_running === 2" class="rotating"><Loading /></el-icon>
                   <el-icon v-else-if="row.is_running === 1"><Clock /></el-icon>
                   <el-icon v-else><CircleCheck /></el-icon>
-                  <span>{{ getStatusText(row) }}</span>
+                  <span>{{ getDirectoryRunStatusText(row) }}</span>
                 </div>
               </div>
             </div>
@@ -333,6 +333,10 @@ import {
   Link,
 } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/timeUtils'
+import {
+  getDirectoryRunStatusClass,
+  getDirectoryRunStatusText,
+} from '@/utils/directoryRunStatusUtils'
 import { sourceTypeTagMap, sourceTypeMap } from '@/utils/sourceTypeUtils'
 
 interface ScrapePath {
@@ -382,18 +386,6 @@ const stats = computed(() => [
   { icon: Clock, value: waitingCount.value, label: '等待中', tone: 'waiting' },
   { icon: Timer, value: cronEnabledCount.value, label: '定时任务', tone: 'cron' },
 ])
-
-const getStatusClass = (row: ScrapePath) => {
-  if (row.is_running === 2) return 'status-running'
-  if (row.is_running === 1) return 'status-waiting'
-  return 'status-idle'
-}
-
-const getStatusText = (row: ScrapePath) => {
-  if (row.is_running === 2) return '运行中'
-  if (row.is_running === 1) return '等待中'
-  return '空闲'
-}
 
 const goToAdd = () => {
   router.push('/scrape-path/add')

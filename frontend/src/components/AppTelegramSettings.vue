@@ -90,7 +90,7 @@ import { ElMessage } from 'element-plus'
 import { Message, Check } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 
 interface TelegramSettings {
   enabled: boolean
@@ -103,7 +103,7 @@ interface TestStatus {
   type: 'success' | 'warning' | 'error' | 'info'
   description: string
 }
-const checkIsMobile = ref(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
 const loading = ref(false)
 const testing = ref(false)

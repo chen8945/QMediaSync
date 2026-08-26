@@ -542,7 +542,7 @@
         :model="form"
         :rules="formRules"
         label-width="160px"
-        :label-position="checkIsMobile ? 'top' : 'left'"
+        label-position="left"
       >
         <el-form-item
           label="同步源类型"

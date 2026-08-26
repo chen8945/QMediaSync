@@ -24,8 +24,8 @@
           <el-descriptions :column="1" border>
             <el-descriptions-item label="任务 ID">{{ taskId }}</el-descriptions-item>
             <el-descriptions-item label="任务状态">
-              <el-tag v-if="taskInfo" :type="getStatusType(taskInfo.status)">
-                {{ getStatusText(taskInfo.status) }}
+              <el-tag v-if="taskInfo" :type="getSyncTaskStatusTagType(taskInfo.status)">
+                {{ getSyncTaskStatusText(taskInfo.status) }}
               </el-tag>
               <span v-else>-</span>
             </el-descriptions-item>
@@ -36,7 +36,7 @@
                 size="small"
                 effect="light"
               >
-                {{ getSubStatusText(taskInfo.sub_status) }}
+                {{ getSyncTaskSubStatusText(taskInfo.sub_status) }}
               </el-tag>
               <span v-else>-</span>
             </el-descriptions-item>
@@ -164,6 +164,11 @@ import { useLogFileActions } from '@/composables/useLogFileActions'
 import { useSyncTaskStream } from '@/composables/useSyncTaskStream'
 import { navigateBackOrReplace } from '@/utils/navigation'
 import { getEmbyRefreshDecision } from '@/utils/syncRefreshDecision'
+import {
+  getSyncTaskStatusTagType,
+  getSyncTaskStatusText,
+  getSyncTaskSubStatusText,
+} from '@/utils/syncTaskStatusUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 
 // 任务详情数据结构
@@ -245,52 +250,6 @@ const embyRefreshDecision = computed(() =>
 // 返回上一页
 const goBack = () => {
   void navigateBackOrReplace(router, { name: 'sync-records' })
-}
-
-// 获取状态标签类型
-const getStatusType = (status: number) => {
-  switch (status) {
-    case 0:
-      return 'info' // 待开始
-    case 1:
-      return 'primary' // 运行中
-    case 2:
-      return 'success' // 完成
-    case 3:
-      return 'danger' // 失败
-    default:
-      return 'info'
-  }
-}
-
-// 获取状态文本
-const getStatusText = (status: number) => {
-  switch (status) {
-    case 0:
-      return '待开始'
-    case 1:
-      return '运行中'
-    case 2:
-      return '已完成'
-    case 3:
-      return '失败'
-    default:
-      return '未知'
-  }
-}
-
-// 获取子状态文本
-const getSubStatusText = (subStatus: number) => {
-  switch (subStatus) {
-    case 0:
-      return '待开始'
-    case 1:
-      return '正在处理网盘文件'
-    case 2:
-      return '正在处理本地文件'
-    default:
-      return '未知'
-  }
 }
 
 // 计算执行时长

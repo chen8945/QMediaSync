@@ -333,7 +333,6 @@ import {
   onActivated,
   onDeactivated,
   onUnmounted,
-  nextTick,
   useTemplateRef,
 } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
@@ -343,8 +342,10 @@ import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
+import { usePageScrollRestore } from '@/composables/usePageScrollRestore'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
 import { usePageStateStore } from '@/stores/pageState'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { getFileType, getFileIconByName } from '@/utils/fileIconUtils'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatDateTime } from '@/utils/timeUtils'
@@ -663,15 +664,6 @@ function isCreateDirectoryOperationContextCurrent(
   return (
     createDirectoryOperationContext.value === snapshot && isFileOperationContextCurrent(snapshot)
   )
-}
-
-function isMessageBoxCancelError(error: unknown): boolean {
-  if (error === 'cancel' || error === 'close') {
-    return true
-  }
-
-  const errorMessage = error instanceof Error ? error.message : String(error)
-  return errorMessage.includes('用户取消操作')
 }
 
 function resetStrmTargetDialog() {
@@ -1253,18 +1245,9 @@ onMounted(activateFileManagerPage)
 
 onActivated(activateFileManagerPage)
 
-onActivated(() => {
-  nextTick(() => {
-    const scrollContainer = getPageScrollContainer()
-    if (scrollContainer) {
-      scrollContainer.scrollTop = pageState.scrollTop
-    }
-  })
-})
-
-onDeactivated(() => {
-  const scrollContainer = getPageScrollContainer()
-  pageStateStore.setScrollTop('file-manager', scrollContainer?.scrollTop || 0)
+usePageScrollRestore({
+  pageKey: 'file-manager',
+  getScrollContainer: getPageScrollContainer,
 })
 
 onDeactivated(deactivateFileManagerPage)

@@ -40,6 +40,15 @@
 const { isMobile } = useDeviceType()
 ```
 
+## directoryRunStatusUtils.ts
+
+同步目录与刮削目录运行状态的展示映射：
+
+- `getDirectoryRunStatusClass(row)`
+- `getDirectoryRunStatusText(row)`
+
+按 `is_running`（2 运行中 / 1 等待中 / 其他 空闲）返回状态类名或文本；类名对应的卡片样式由各页面自身定义。
+
 ## directoryUploadRules.ts
 
 目录监控上传规则的页面展示辅助：
@@ -84,6 +93,14 @@ const icon = getFileIconByName('movie.mp4')
 - `filterLogEntriesByLevels(entries, levels)`
 
 筛选函数返回传入列表中等级被选中的条目；空等级列表返回空数组。
+
+## messageBoxUtils.ts
+
+ElMessageBox 确认弹窗的取消判定：
+
+- `isMessageBoxCancelError(error)`
+
+同时兼容 ElMessageBox 默认 reject 的 `'cancel'` / `'close'` 和消息包含“用户取消操作”的包装错误；调用方据此跳过用户主动取消时的错误提示。
 
 ## notificationUtils.ts
 
@@ -196,6 +213,17 @@ OAuth 回调参数收集：
 - `resetSyncTaskEventSequences(sequences)`
 
 删除事件总会被接受并清除该任务水位；HTTP 快照重新收敛前必须清空水位，避免服务端 sequence 重置后丢弃新事件。
+
+## syncTaskStatusUtils.ts
+
+同步任务状态与子状态的展示映射：
+
+- `SyncTaskStatusTagType`
+- `getSyncTaskStatusTagType(status)`
+- `getSyncTaskStatusText(status)`
+- `getSyncTaskSubStatusText(subStatus)`
+
+状态机器值（0 待开始 / 1 运行中 / 2 已完成 / 3 失败）与子状态的稳定展示见 [任务来源](../../../docs/reference/task-sources.md)。
 
 ## syncRefreshDecision.ts
 

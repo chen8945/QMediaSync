@@ -79,9 +79,9 @@ import { useHttpClient } from '@/http/client'
 import { Connection, Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
-const checkIsMobile = ref(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 interface ProxyData {
   proxy_url: string
 }

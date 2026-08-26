@@ -233,7 +233,7 @@ import { Check } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { THREAD_LIMITS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface ThreadSettings {
@@ -259,7 +259,7 @@ interface SaveStatus {
   description: string
 }
 const http = useHttpClient()
-const checkIsMobile = ref(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const loading = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
 

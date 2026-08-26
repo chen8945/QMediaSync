@@ -94,12 +94,12 @@ import { SERVER_URL } from '@/const'
 import { useBackupStore } from '@/stores/backup'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp } from '@/utils/timeUtils'
-import { isMobile as checkIsMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
 const backupStore = useBackupStore()
-const isMobile = checkIsMobile()
+const { isMobile } = useDeviceType()
 const API_SUCCESS_CODE = 200
 
 const uploadRef = useTemplateRef<UploadInstance>('uploadRef')

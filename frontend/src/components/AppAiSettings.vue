@@ -134,7 +134,7 @@ import { ElMessage, type FormInstance } from 'element-plus'
 import { Check, Refresh } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface AiSettings {
@@ -150,7 +150,7 @@ interface SaveStatus {
   description: string
 }
 const http = useHttpClient()
-const checkIsMobile = ref(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const loading = ref(false)
 const testing = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)

@@ -135,7 +135,7 @@ import { useHttpClient } from '@/http/client'
 import { SERVER_URL } from '@/const'
 import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/timeUtils'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface ApiKey {
@@ -161,7 +161,7 @@ const createdKeyDialogVisible = ref(false)
 const createForm = reactive({ name: '' })
 const creating = ref(false)
 const createdKey = ref<CreatedApiKey | null>(null)
-const isMobileView = ref(isMobile())
+const { isMobile: isMobileView } = useDeviceType()
 
 const formatDateSafe = (value?: number | null) => {
   return formatDateTime(value || 0)

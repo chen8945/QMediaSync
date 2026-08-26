@@ -251,7 +251,7 @@ import { useHttpClient } from '@/http/client'
 import { Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
-import { isMobile } from '@/utils/deviceUtils'
+import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 import MetadataExtInput from './MetadataExtInput.vue'
 interface StrmData {
@@ -274,7 +274,7 @@ interface StrmStatus {
   type: 'success' | 'warning' | 'error' | 'info'
   description: string
 }
-const checkIsMobile = ref(isMobile())
+const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
 
 // 表单引用
