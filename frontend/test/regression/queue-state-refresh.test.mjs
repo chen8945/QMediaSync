@@ -12,7 +12,9 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
 
   const getLocalFunctionBody = (source, functionName) => {
     const patterns = [
-      new RegExp(`const\\s+${functionName}\\s*=\\s*async\\s*\\([^)]*\\)\\s*=>\\s*{`),
+      new RegExp(
+        `const\\s+${functionName}\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|\\([^)]*\\)\\s*:\\s*[^=]+)\\s*=>\\s*{`,
+      ),
       new RegExp(`const\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>\\s*{`),
     ]
 
@@ -397,7 +399,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      /if\s*\(\s*!\s*isPageActive\s*\)\s*{\s*return\s*}/,
+      /if\s*\(\s*!\s*isPageActive\s*\)\s*{\s*return\s+false\s*}/,
       `${messagePrefix} loadQueueData should skip inactive pages before creating requests`,
     )
     assert.notEqual(requestIdIndex, -1, `${messagePrefix} loadQueueData should create a request id`)
@@ -413,7 +415,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      /if\s*\(\s*isRefreshing\.value\s*\)\s*{[\s\S]*?pendingQueueDataRefresh\.value\s*=\s*true[\s\S]*?return\s*}/,
+      /if\s*\(\s*isRefreshing\.value\s*\)\s*{[\s\S]*?pendingQueueDataRefresh\.value\s*=\s*true[\s\S]*?return\s+queueDataRefreshPromise\s*\?\?\s*false\s*}/,
       `${messagePrefix} loadQueueData should record one pending refresh while a request is in flight`,
     )
     assert.match(
@@ -463,6 +465,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
 
   const assertQueueMutationsUseContext = (source, functionNames, messagePrefix) => {
     const composableSource = readSource('src/composables/useQueueMutationContext.ts')
+    const mutationCoordinatorSource = readSource('src/composables/useQueueMutations.ts')
     assert.match(
       composableSource,
       /const\s+queueMutationContextVersion\s*=\s*ref\s*\(\s*0\s*\)/,
@@ -499,29 +502,15 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
       `${messagePrefix} unmount should invalidate pending queue mutations`,
     )
 
-    for (const functionName of functionNames) {
-      const body = getLocalFunctionBody(source, functionName)
-      assert.match(
-        body,
-        /const\s+operationContext\s*=\s*startQueueMutationContext\s*\(\s*\)/,
-        `${messagePrefix} ${functionName} should start a mutation context`,
-      )
-      assert.match(
-        body,
-        /await[\s\S]*?if\s*\(\s*!isQueueMutationContextCurrent\s*\(\s*operationContext\s*\)\s*\)\s*{[\s\S]*?return[\s\S]*?}/,
-        `${messagePrefix} ${functionName} should re-check context after awaited work`,
-      )
-      assert.match(
-        body,
-        /catch\s*(?:\([^)]*\))?\s*{[\s\S]*?if\s*\(\s*!isQueueMutationContextCurrent\s*\(\s*operationContext\s*\)\s*\)\s*{[\s\S]*?return[\s\S]*?}/,
-        `${messagePrefix} ${functionName} catch should ignore stale mutation responses`,
-      )
-      assert.match(
-        body,
-        /finally\s*{[\s\S]*?if\s*\(\s*isQueueMutationContextCurrent\s*\(\s*operationContext\s*\)\s*\)/,
-        `${messagePrefix} ${functionName} finally should only finish the current mutation context`,
-      )
-    }
+    assert.match(
+      mutationCoordinatorSource,
+      /const\s+isQueueMutationPending\s*=\s*ref\s*\(\s*false\s*\)/,
+    )
+    assert.match(mutationCoordinatorSource, /if\s*\(\s*isQueueMutationPending\.value\s*\)/)
+    assert.match(mutationCoordinatorSource, /await\s+options\.reloadQueue\(\)/)
+    assert.match(mutationCoordinatorSource, /clearPending\s*&&\s*options\.reloadQueueStatus/)
+    assert.match(mutationCoordinatorSource, /isMessageBoxCancelError\(error\)/)
+    assert.match(mutationCoordinatorSource, /options\.onSnapshotError\?\./)
   }
 
   for (const queuePage of [

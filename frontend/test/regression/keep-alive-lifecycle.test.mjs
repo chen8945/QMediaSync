@@ -43,7 +43,9 @@ test('keep-alive 页面在激活、停用和卸载时正确收敛资源', () => 
 
   const getLocalFunctionBody = (source, functionName) => {
     const patterns = [
-      new RegExp(`const\\s+${functionName}\\s*=\\s*async\\s*\\([^)]*\\)\\s*=>\\s*{`),
+      new RegExp(
+        `const\\s+${functionName}\\s*=\\s*async\\s*\\([^)]*\\)(?:\\s*:\\s*Promise<[^>]+>)?\\s*=>\\s*{`,
+      ),
       new RegExp(`const\\s+${functionName}\\s*=\\s*\\([^)]*\\)\\s*=>\\s*{`),
       new RegExp(`async\\s+function\\s+${functionName}\\s*\\([^)]*\\)\\s*{`),
       new RegExp(`function\\s+${functionName}\\s*\\([^)]*\\)\\s*{`),
