@@ -4,7 +4,7 @@
     ref="pageContainerRef"
   >
     <PageHeader />
-    <el-card shadow="none" class="full-width-card">
+    <el-card shadow="never" class="full-width-card">
       <!-- 左右布局 -->
       <div class="file-manager-layout">
         <!-- 左侧：网盘账号列表 -->
@@ -1274,7 +1274,7 @@ onUnmounted(() => {
 .account-sidebar {
   width: 280px;
   flex-shrink: 0;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1314,7 +1314,7 @@ onUnmounted(() => {
 .sidebar-header {
   padding: 16px;
   background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--el-border-color-light);
 }
 
 .sidebar-title-row {
@@ -1328,14 +1328,14 @@ onUnmounted(() => {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .mobile-file-manager-info {
   width: 24px;
   height: 24px;
   padding: 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 :global(.file-manager-summary-popover) {
@@ -1344,7 +1344,7 @@ onUnmounted(() => {
 
 :global(.file-manager-summary-popover-text) {
   margin: 0;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -1357,7 +1357,7 @@ onUnmounted(() => {
 .account-item {
   padding: 16px;
   background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--el-border-color-light);
   cursor: pointer;
   transition:
     background-color 0.2s ease,
@@ -1365,12 +1365,12 @@ onUnmounted(() => {
 }
 
 .account-item:hover {
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
 }
 
 .account-item.active {
   background: #e6f7ff;
-  border-left: 3px solid #409eff;
+  border-left: 3px solid var(--el-color-primary);
 }
 
 .account-info {
@@ -1381,7 +1381,7 @@ onUnmounted(() => {
 
 .account-icon {
   font-size: 24px;
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .account-details {
@@ -1391,7 +1391,7 @@ onUnmounted(() => {
 .account-name {
   font-size: 14px;
   font-weight: 500;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 4px;
 }
 
@@ -1494,54 +1494,54 @@ onUnmounted(() => {
 
 .strm-target-dialog-content .dialog-tip {
   margin: 0;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 14px;
 }
 
 .strm-source-info {
   padding: 12px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   font-size: 14px;
 }
 
 .strm-source-info .source-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-right: 8px;
 }
 
 .strm-source-info .source-name {
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-weight: 500;
 }
 
 .strm-store-path {
   padding: 12px;
-  background: #f0f9eb;
+  background: var(--el-color-success-light-9);
   border-radius: 4px;
   font-size: 14px;
   border: 1px solid #e1f3d8;
 }
 
 .strm-store-path .store-label {
-  color: #67c23a;
+  color: var(--el-color-success);
   margin-right: 8px;
   font-weight: 500;
 }
 
 .strm-store-path .store-path {
-  color: #303133;
+  color: var(--el-text-color-primary);
   background: #fff;
   padding: 2px 6px;
   border-radius: 2px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   word-break: break-all;
 }
 
 .dir-selector-container {
   height: 400px;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--el-border-color-light);
   border-radius: 4px;
   padding: 12px;
 }

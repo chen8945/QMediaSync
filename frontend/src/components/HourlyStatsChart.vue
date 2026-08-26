@@ -70,16 +70,17 @@ const { hourlyStats, hourlyStatsLoading, chartOption, loadHourlyStats } = useHou
   gap: 8px;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .title-icon {
   font-size: 20px;
+  color: var(--el-color-primary);
 }
 
 .chart-period {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-weight: 400;
   margin-left: 8px;
 }
@@ -93,7 +94,11 @@ const { hourlyStats, hourlyStatsLoading, chartOption, loadHourlyStats } = useHou
 .summary-item {
   flex: 1;
   padding: 16px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #e4e7ed 100%);
+  background: linear-gradient(
+    135deg,
+    var(--el-fill-color-light) 0%,
+    var(--el-border-color-light) 100%
+  );
   border-radius: 12px;
   text-align: center;
 }
@@ -105,7 +110,7 @@ const { hourlyStats, hourlyStatsLoading, chartOption, loadHourlyStats } = useHou
 .summary-value {
   font-size: 28px;
   font-weight: 700;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 
@@ -115,7 +120,7 @@ const { hourlyStats, hourlyStatsLoading, chartOption, loadHourlyStats } = useHou
 
 .summary-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
 }
 

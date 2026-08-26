@@ -617,13 +617,13 @@ onMounted(async () => {
   justify-content: center;
   align-items: center;
   height: 200px;
-  border: 1px dashed #dcdfe6;
-  background-color: #f5f7fa;
+  border: 1px dashed var(--el-border-color);
+  background-color: var(--el-fill-color-light);
 }
 
 .empty-content {
   text-align: center;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .empty-icon {
@@ -636,7 +636,7 @@ onMounted(async () => {
 }
 
 .text-muted {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 @media (max-width: 768px) {

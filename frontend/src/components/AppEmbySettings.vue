@@ -1207,7 +1207,7 @@ onBeforeUnmount(() => {
 .settings-card,
 .sync-management-card {
   border-radius: 12px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   background: #fff;
   overflow: hidden;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
@@ -1226,7 +1226,7 @@ onBeforeUnmount(() => {
 .settings-card :deep(.el-card__header),
 .sync-management-card :deep(.el-card__header) {
   padding: 18px 20px;
-  border-bottom: 1px solid #dcdfe6;
+  border-bottom: 1px solid var(--el-border-color);
 }
 
 .settings-card :deep(.el-card__body),
@@ -1251,7 +1251,7 @@ onBeforeUnmount(() => {
 }
 
 .server-icon {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
 }
 
 .webhook-icon {
@@ -1277,7 +1277,7 @@ onBeforeUnmount(() => {
 .card-subtitle {
   margin: 4px 0 0;
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .card-header-action {
@@ -1289,28 +1289,28 @@ onBeforeUnmount(() => {
 }
 
 .webhook-input :deep(.el-input__wrapper) {
-  background-color: #f5f7fa;
+  background-color: var(--el-fill-color-light);
 }
 
 .emby-example-inline {
   margin-top: 10px;
   padding: 12px 16px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #e8eef5 100%);
+  background: linear-gradient(135deg, var(--el-fill-color-light) 0%, #e8eef5 100%);
   border-radius: 8px;
   display: flex;
   align-items: center;
   gap: 12px;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--el-border-color-light);
 }
 
 .example-label {
   font-weight: 500;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 
 .example-url {
-  color: #409eff;
+  color: var(--el-color-primary);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 13px;
   background: white;
@@ -1339,21 +1339,21 @@ onBeforeUnmount(() => {
 }
 
 .help-link {
-  color: #409eff;
+  color: var(--el-color-primary);
   text-decoration: none;
   font-weight: 500;
   transition: color 0.2s;
 }
 
 .help-link:hover {
-  color: #66b1ff;
+  color: var(--el-color-primary-light-3);
   text-decoration: underline;
 }
 
 .action-link {
   margin-left: 8px;
   padding: 2px 8px;
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
   border-radius: 4px;
   font-size: 12px;
 }
@@ -1363,12 +1363,12 @@ onBeforeUnmount(() => {
 }
 
 .inline-code {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 11px;
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .switch-wrapper {
@@ -1379,21 +1379,21 @@ onBeforeUnmount(() => {
 
 .switch-label {
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-weight: 500;
   transition: color 0.3s;
 }
 
 .switch-label.is-active {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .switch-label.is-danger {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .warning-text {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .feature-item {
@@ -1424,7 +1424,7 @@ onBeforeUnmount(() => {
 
 .feature-description {
   font-size: 13px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.8;
   margin-top: 8px;
 }
@@ -1434,7 +1434,7 @@ onBeforeUnmount(() => {
 }
 
 .feature-note {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-style: italic;
 }
 
@@ -1484,7 +1484,7 @@ onBeforeUnmount(() => {
 .delete-rules {
   margin: 12px 0 0;
   padding-left: 20px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .delete-rules li {
@@ -1516,7 +1516,7 @@ onBeforeUnmount(() => {
   padding: 20px;
   background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
   border-radius: 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   transition:
     transform 0.2s ease,
     box-shadow 0.2s ease;
@@ -1538,7 +1538,7 @@ onBeforeUnmount(() => {
 }
 
 .auto-sync-icon {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
 }
 
 .cycle-icon {
@@ -1568,29 +1568,29 @@ onBeforeUnmount(() => {
 
 .stat-label {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 
 .stat-value {
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   overflow-wrap: anywhere;
 }
 
 .stat-value.is-enabled {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .stat-value.highlight {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .stat-helper {
   margin-top: 4px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -1601,14 +1601,14 @@ onBeforeUnmount(() => {
 }
 
 .error-text {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   font-size: 14px;
 }
 
 .sync-progress {
   margin-top: 20px;
   padding: 16px;
-  background: linear-gradient(135deg, #ecf5ff 0%, #f0f9ff 100%);
+  background: linear-gradient(135deg, var(--el-color-primary-light-9) 0%, #f0f9ff 100%);
   border-radius: 8px;
   border: 1px solid #d9ecff;
 }
@@ -1617,7 +1617,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  color: #409eff;
+  color: var(--el-color-primary);
   font-weight: 500;
 }
 
@@ -1849,6 +1849,11 @@ onBeforeUnmount(() => {
 
   .stat-value {
     font-size: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sync-progress-loading-icon {
+    animation: none;
   }
 }
 </style>

@@ -2080,17 +2080,17 @@ onMounted(async () => {
 
 .form-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
 }
 
 .form-error {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .form-help {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin-top: 8px;
   line-height: 1.6;
 }
@@ -2107,7 +2107,7 @@ onMounted(async () => {
 
 .directory-upload-rule {
   padding: 14px;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
   background: #fafafa;
 }
@@ -2123,7 +2123,7 @@ onMounted(async () => {
 .directory-upload-rule__title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .directory-upload-rule__actions {
@@ -2149,22 +2149,22 @@ onMounted(async () => {
 .selected-path-inline {
   margin-top: 8px;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   font-size: 12px;
 }
 
 .path-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-weight: 500;
 }
 
 .path-url {
-  color: #606266;
+  color: var(--el-text-color-regular);
   background: #fff;
   padding: 2px 6px;
   border-radius: 2px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
@@ -2190,21 +2190,21 @@ onMounted(async () => {
 .cron-examples li {
   margin: 4px 0;
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .cron-examples code {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .cron-next-times {
   margin-top: 12px;
   padding-top: 8px;
-  border-top: 1px dashed #e4e7ed;
+  border-top: 1px dashed var(--el-border-color-light);
 }
 
 .cron-times-list {
@@ -2221,22 +2221,22 @@ onMounted(async () => {
 .strm-example-inline {
   margin-top: 8px;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   font-size: 12px;
 }
 
 .example-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-weight: 500;
 }
 
 .example-url {
-  color: #409eff;
+  color: var(--el-color-primary);
   background: #fff;
   padding: 2px 6px;
   border-radius: 2px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   word-break: break-all;
 }
@@ -2251,7 +2251,7 @@ onMounted(async () => {
   gap: 10px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .is-mobile .pan-dir-input {

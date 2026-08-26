@@ -75,8 +75,8 @@ watch(
   place-items: center;
   padding: 16px;
   text-align: center;
-  color: #f56c6c;
-  background: #fef0f0;
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
   font-size: 13px;
   line-height: 1.4;
 }

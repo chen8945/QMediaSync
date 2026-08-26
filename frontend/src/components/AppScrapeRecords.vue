@@ -1761,7 +1761,11 @@ onUnmounted(() => {
   gap: 16px;
   margin-bottom: 16px;
   padding: 16px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #e4e7ed 100%);
+  background: linear-gradient(
+    135deg,
+    var(--el-fill-color-light) 0%,
+    var(--el-border-color-light) 100%
+  );
   border-radius: 8px;
   flex-wrap: wrap;
 }
@@ -1779,7 +1783,7 @@ onUnmounted(() => {
 }
 
 .selected-count {
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 
@@ -1852,7 +1856,7 @@ onUnmounted(() => {
 }
 
 .error-reason-text {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   cursor: pointer;
 }
 
@@ -1909,13 +1913,13 @@ onUnmounted(() => {
 }
 
 .episode-label {
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 14px;
 }
 
 .search-results-section {
   margin-top: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--el-border-color-lighter);
   padding-top: 16px;
 }
 
@@ -1926,7 +1930,7 @@ onUnmounted(() => {
   margin-bottom: 12px;
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .results-list {
@@ -1942,7 +1946,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   padding: 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   background: #fafafa;
   transition:
@@ -1951,8 +1955,8 @@ onUnmounted(() => {
 }
 
 .result-item:hover {
-  border-color: #409eff;
-  background: #f5f7fa;
+  border-color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
 }
 
 .result-poster {
@@ -1961,7 +1965,7 @@ onUnmounted(() => {
   flex-shrink: 0;
   border-radius: 4px;
   overflow: hidden;
-  background: #e4e7ed;
+  background: var(--el-border-color-light);
 }
 
 .result-poster .el-image {
@@ -1987,7 +1991,7 @@ onUnmounted(() => {
 .result-title {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1996,7 +2000,7 @@ onUnmounted(() => {
 
 .result-original-title {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-bottom: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2011,7 +2015,7 @@ onUnmounted(() => {
 .result-overview {
   margin-top: 8px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;

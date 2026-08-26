@@ -1216,13 +1216,13 @@ onMounted(async () => {
 
 .form-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
 }
 
 .form-help {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin-top: 8px;
   line-height: 1.6;
 }
@@ -1244,22 +1244,22 @@ onMounted(async () => {
 .selected-path-inline {
   margin-top: 8px;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   font-size: 12px;
 }
 
 .path-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-weight: 500;
 }
 
 .path-url {
-  color: #606266;
+  color: var(--el-text-color-regular);
   background: #fff;
   padding: 2px 6px;
   border-radius: 2px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
@@ -1280,7 +1280,7 @@ onMounted(async () => {
   gap: 10px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .is-mobile .pan-dir-input {

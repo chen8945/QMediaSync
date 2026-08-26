@@ -576,7 +576,7 @@ defineExpose({
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
-@media (max-width: 767px) {
+@media (max-width: 768px) {
   .selector-toolbar {
     align-items: flex-start;
   }

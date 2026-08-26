@@ -66,7 +66,7 @@ const repairDatabase = async () => {
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
 }
 
 .repair-content {
@@ -79,7 +79,7 @@ const repairDatabase = async () => {
 
 .repair-description {
   font-size: 14px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   text-align: left;
   margin: 0;
   line-height: 1.6;

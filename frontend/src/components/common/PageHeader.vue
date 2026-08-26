@@ -125,7 +125,7 @@ const headerClasses = computed(() => [
   height: 31px;
   border-radius: 0;
   background: transparent;
-  color: var(--el-color-primary, #409eff);
+  color: var(--el-color-primary, var(--el-color-primary));
   font-size: 24px;
 }
 
@@ -135,7 +135,7 @@ const headerClasses = computed(() => [
 
 .qms-page-header__title {
   margin: 0;
-  color: var(--el-text-color-primary, #303133);
+  color: var(--el-text-color-primary, var(--el-text-color-primary));
   font-size: 24px;
   font-weight: 600;
   line-height: 1.35;
@@ -145,7 +145,7 @@ const headerClasses = computed(() => [
 .qms-page-header__description {
   max-width: 760px;
   margin: 4px 0 0;
-  color: var(--el-text-color-secondary, #606266);
+  color: var(--el-text-color-secondary, var(--el-text-color-regular));
   font-size: 14px;
   line-height: 1.5;
   overflow-wrap: anywhere;

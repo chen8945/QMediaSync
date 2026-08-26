@@ -131,7 +131,7 @@ const handleLogDialogClose = () => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
   border-radius: 16px;
   color: white;
 }
@@ -210,7 +210,7 @@ const handleLogDialogClose = () => {
   gap: 8px;
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0f0f0;
@@ -218,6 +218,7 @@ const handleLogDialogClose = () => {
 
 .info-icon {
   font-size: 18px;
+  color: var(--el-color-primary);
 }
 
 .notice-list {
@@ -231,7 +232,7 @@ const handleLogDialogClose = () => {
   align-items: flex-start;
   gap: 10px;
   font-size: 13px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.5;
 }
 
@@ -249,7 +250,7 @@ const handleLogDialogClose = () => {
   border-radius: 50%;
   font-size: 11px;
   font-weight: 600;
-  color: #606266;
+  color: var(--el-text-color-regular);
   flex-shrink: 0;
 }
 
@@ -259,7 +260,7 @@ const handleLogDialogClose = () => {
 }
 
 .notice-item a {
-  color: #409eff;
+  color: var(--el-color-primary);
   text-decoration: none;
 }
 
@@ -288,7 +289,7 @@ const handleLogDialogClose = () => {
 
 .log-dialog-content :deep(.el-dialog__header) {
   padding: 10px 20px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 @media (max-width: 1200px) {

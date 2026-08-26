@@ -312,7 +312,7 @@ onMounted(() => {
 
 .alert-tip {
   margin: 4px 0 0;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 
@@ -334,7 +334,7 @@ onMounted(() => {
 
 .key-label {
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .key-value {
@@ -347,7 +347,7 @@ onMounted(() => {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 </style>

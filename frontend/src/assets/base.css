@@ -1,3 +1,8 @@
+/* 设计令牌：品牌渐变，登录页、首页卡片、账号卡片等共用。 */
+:root {
+  --qms-gradient-brand: linear-gradient(135deg, #667eea, #764ba2);
+}
+
 @media screen and (max-width: 480px) {
   .el-card {
     width: 100%;
@@ -35,24 +40,12 @@
   font-weight: normal;
 }
 
+/* 正文字体统一在 main.css 声明为微软雅黑 + Arial。 */
 body {
   min-height: 100vh;
   color: #2c3e50;
   background: #ffffff;
   line-height: 1.6;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    Oxygen,
-    Ubuntu,
-    Cantarell,
-    'Fira Sans',
-    'Droid Sans',
-    'Helvetica Neue',
-    sans-serif;
   font-size: 15px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -115,7 +115,7 @@ const handleClosed = () => {
 .v115-auth-dialog__name {
   max-width: 100%;
   overflow-wrap: anywhere;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .v115-auth-dialog__skeleton {

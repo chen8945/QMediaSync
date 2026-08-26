@@ -85,10 +85,10 @@ describe('页面头部统一契约', () => {
     expect(source).toContain('<h3 class="card-title">通知链接配置</h3>')
     expect(source).not.toContain('<h1 class="card-title">')
     expect(source).toMatch(
-      /\.settings-card,\s*\.sync-management-card\s*\{[\s\S]*?border:\s*1px solid #dcdfe6;[\s\S]*?box-shadow:/,
+      /\.settings-card,\s*\.sync-management-card\s*\{[\s\S]*?border:\s*1px solid var\(--el-border-color\);[\s\S]*?box-shadow:/,
     )
     expect(source).toMatch(
-      /\.settings-card :deep\(\.el-card__header\),\s*\.sync-management-card :deep\(\.el-card__header\)\s*\{[\s\S]*?border-bottom:\s*1px solid #dcdfe6;/,
+      /\.settings-card :deep\(\.el-card__header\),\s*\.sync-management-card :deep\(\.el-card__header\)\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--el-border-color\);/,
     )
   })
 

@@ -110,11 +110,12 @@ const sanitizeHtml = (content: string): string => {
   gap: 8px;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .title-icon {
   font-size: 20px;
+  color: var(--el-color-primary);
 }
 
 .announcement-list {
@@ -144,14 +145,14 @@ const sanitizeHtml = (content: string): string => {
 
 .announcement-time {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   white-space: nowrap;
 }
 
 .announcement-title {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   flex: 1;
 }
 
@@ -163,7 +164,7 @@ const sanitizeHtml = (content: string): string => {
 
 .announcement-content .content-text {
   font-size: 14px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;

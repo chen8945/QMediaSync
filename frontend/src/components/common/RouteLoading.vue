@@ -28,7 +28,7 @@ const pageTitle = computed(() => getPageTitle(route.meta))
 <style scoped>
 .route-loading {
   min-height: 360px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   background: #fff;
 }
@@ -38,12 +38,12 @@ const pageTitle = computed(() => getPageTitle(route.meta))
   align-items: center;
   justify-content: space-between;
   padding: 24px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .route-loading-title {
   margin: 0;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-size: 20px;
   font-weight: 600;
 }
@@ -52,7 +52,7 @@ const pageTitle = computed(() => getPageTitle(route.meta))
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -60,7 +60,7 @@ const pageTitle = computed(() => getPageTitle(route.meta))
   width: 15px;
   height: 15px;
   border: 2px solid #c6e2ff;
-  border-top-color: #409eff;
+  border-top-color: var(--el-color-primary);
   border-radius: 50%;
   animation: route-loading-spin 0.75s linear infinite;
 }

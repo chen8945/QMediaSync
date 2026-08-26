@@ -149,7 +149,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
   padding: 20px;
 }
 
@@ -170,13 +170,13 @@ onMounted(() => {
 .login-title {
   font-size: 28px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin: 0 0 8px 0;
 }
 
 .login-subtitle {
   font-size: 16px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin: 0;
 }
 

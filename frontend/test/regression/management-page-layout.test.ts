@@ -74,9 +74,15 @@ describe('管理列表页布局', () => {
       expect(statPositions.every((position) => position >= 0)).toBe(true)
       expect(statPositions).toEqual([...statPositions].sort((a, b) => a - b))
 
-      expect(extractRule(source, `.${page.cardClass}`)).toContain('border: 1px solid #dcdfe6;')
-      expect(extractRule(source, '.card-header')).toContain('border-bottom: 1px solid #dcdfe6;')
-      expect(extractRule(source, '.card-footer')).toContain('border-top: 1px solid #dcdfe6;')
+      expect(extractRule(source, `.${page.cardClass}`)).toContain(
+        'border: 1px solid var(--el-border-color);',
+      )
+      expect(extractRule(source, '.card-header')).toContain(
+        'border-bottom: 1px solid var(--el-border-color);',
+      )
+      expect(extractRule(source, '.card-footer')).toContain(
+        'border-top: 1px solid var(--el-border-color);',
+      )
 
       const mobileStyles = extractMediaBlock(source, '@media (max-width: 768px)')
       expect(extractRule(mobileStyles, `.${page.rootClass}`)).toContain('padding: 0 8px 8px;')

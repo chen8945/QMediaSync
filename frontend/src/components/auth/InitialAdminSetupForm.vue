@@ -151,7 +151,7 @@ const handleSubmit = async () => {
 
 .setup-hint {
   margin: 0 0 18px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-size: 14px;
   text-align: center;
 }

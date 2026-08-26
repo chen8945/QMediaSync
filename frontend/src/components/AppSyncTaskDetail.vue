@@ -406,7 +406,7 @@ const getTimelineItems = () => {
   margin: 0 0 16px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .execution-timeline {
@@ -419,7 +419,7 @@ const getTimelineItems = () => {
 
 .emby-refresh-reason {
   margin-left: 8px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -427,7 +427,7 @@ const getTimelineItems = () => {
   margin: 0 0 20px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .horizontal-timeline {
@@ -448,21 +448,21 @@ const getTimelineItems = () => {
 }
 
 .timeline-step.completed .step-icon {
-  background-color: #67c23a;
-  border-color: #67c23a;
+  background-color: var(--el-color-success);
+  border-color: var(--el-color-success);
   color: #fff;
 }
 
 .timeline-step.current .step-icon {
-  background-color: #409eff;
-  border-color: #409eff;
+  background-color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
   color: #fff;
   animation: pulse 2s infinite;
 }
 
 .timeline-step:not(.completed):not(.current) .step-icon {
-  background-color: #f5f7fa;
-  border-color: #dcdfe6;
+  background-color: var(--el-fill-color-light);
+  border-color: var(--el-border-color);
   color: #c0c4cc;
 }
 
@@ -499,7 +499,7 @@ const getTimelineItems = () => {
 .step-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 4px;
   line-height: 1.4;
   word-break: break-word;
@@ -511,7 +511,7 @@ const getTimelineItems = () => {
 
 .step-time {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-bottom: 2px;
 }
 
@@ -521,7 +521,7 @@ const getTimelineItems = () => {
 
 .step-duration {
   font-size: 12px;
-  color: #67c23a;
+  color: var(--el-color-success);
   font-weight: 500;
 }
 
@@ -531,12 +531,12 @@ const getTimelineItems = () => {
   left: 50%;
   right: -50%;
   height: 2px;
-  background-color: #dcdfe6;
+  background-color: var(--el-border-color);
   z-index: 1;
 }
 
 .step-connector.active {
-  background-color: #67c23a;
+  background-color: var(--el-color-success);
 }
 
 .timeline-step:last-child .step-connector {
@@ -574,20 +574,20 @@ const getTimelineItems = () => {
 .timeline-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 4px;
 }
 
 .timeline-duration {
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .file-compare-table h3 {
   margin: 0 0 16px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .table-container {
@@ -602,7 +602,7 @@ const getTimelineItems = () => {
 
 /* 为表格列添加竖线分隔 */
 .compare-table :deep(.el-table__cell) {
-  border-right: 1px solid #ebeef5;
+  border-right: 1px solid var(--el-border-color-lighter);
 }
 
 .file-paths {
@@ -613,7 +613,7 @@ const getTimelineItems = () => {
 
 .file-path {
   font-size: 13px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   word-break: break-all;
   line-height: 1.4;
 }
@@ -665,6 +665,15 @@ const getTimelineItems = () => {
 
   .step-connector {
     top: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timeline-step.current .step-icon {
+    animation: none;
+  }
+
+  .step-icon .el-icon.loading {
+    animation: none;
   }
 }
 </style>

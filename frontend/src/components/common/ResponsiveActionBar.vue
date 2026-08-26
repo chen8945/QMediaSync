@@ -50,7 +50,7 @@ withDefaults(
 .responsive-action-bar__help :deep(p) {
   margin: 0;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   line-height: 1.6;
 }
 

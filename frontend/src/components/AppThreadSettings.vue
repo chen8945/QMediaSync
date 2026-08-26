@@ -401,7 +401,7 @@ async function saveSettings() {
 /* } */
 
 .form-help {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 5px;
 }

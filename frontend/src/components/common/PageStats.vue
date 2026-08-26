@@ -44,7 +44,7 @@ defineProps<{
   gap: 12px;
   padding: 12px 16px;
   border-radius: 8px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .qms-page-stats__icon {
@@ -59,30 +59,30 @@ defineProps<{
 }
 
 .qms-page-stats__icon--total {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 
 .qms-page-stats__icon--authorized,
 .qms-page-stats__icon--running {
-  background: #f0f9eb;
-  color: #67c23a;
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
 }
 
 .qms-page-stats__icon--unauthorized,
 .qms-page-stats__icon--waiting {
-  background: #fdf6ec;
-  color: #e6a23c;
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
 }
 
 .qms-page-stats__icon--failed {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
 }
 
 .qms-page-stats__icon--cron {
-  background: #f4f4f5;
-  color: #909399;
+  background: var(--el-color-info-light-9);
+  color: var(--el-text-color-secondary);
 }
 
 .qms-page-stats__info {
@@ -92,7 +92,7 @@ defineProps<{
 }
 
 .qms-page-stats__value {
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-size: 20px;
   font-weight: 600;
   line-height: 1.2;
@@ -100,7 +100,7 @@ defineProps<{
 
 .qms-page-stats__label {
   overflow: hidden;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;

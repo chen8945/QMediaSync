@@ -748,7 +748,7 @@ watch(batchMode, (val) => {
 }
 
 .sync-sub-status {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 /* 移动端适配 */

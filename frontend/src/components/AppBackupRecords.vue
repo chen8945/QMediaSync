@@ -342,8 +342,8 @@ const handleRestoreBackup = async (record: BackupRecordListItem) => {
         <p><strong>备份时间：</strong>${formatTimestamp(record.created_at)}</p>
         <p><strong>备份类型：</strong>${record.backup_type === 'manual' ? '手动备份' : '自动备份'}</p>
         ${record.created_reason ? `<p><strong>备份原因：</strong>${record.created_reason}</p>` : ''}
-        <p style="color: #E6A23C; font-weight: bold; margin-top: 12px;">⚠️ 警告：此操作不可逆！</p>
-        <p style="color: #F56C6C; font-weight: bold; font-size: 16px; margin-top: 8px;">⚠️ 注意：恢复成功后请重启服务让所有数据和配置生效！</p>
+        <p style="color: var(--el-color-warning); font-weight: bold; margin-top: 12px;">⚠️ 警告：此操作不可逆！</p>
+        <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">⚠️ 注意：恢复成功后请重启服务让所有数据和配置生效！</p>
       </div>`,
       '确认恢复备份',
       {
@@ -442,7 +442,7 @@ onMounted(() => {
 }
 
 .backup-progress-label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .records-section {

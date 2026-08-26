@@ -50,7 +50,7 @@ const formatBuildTime = () => {
   gap: 8px;
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0f0f0;
@@ -58,6 +58,7 @@ const formatBuildTime = () => {
 
 .info-icon {
   font-size: 18px;
+  color: var(--el-color-primary);
 }
 
 .info-content {
@@ -74,17 +75,17 @@ const formatBuildTime = () => {
 
 .info-label {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .info-value {
   font-size: 13px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-weight: 500;
 }
 
 .version-tag {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
   color: white;
   padding: 4px 12px;
   border-radius: 20px;

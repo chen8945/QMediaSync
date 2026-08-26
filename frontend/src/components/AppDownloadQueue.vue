@@ -1082,11 +1082,11 @@ onUnmounted(() => {
 }
 
 :deep(.error-row) {
-  background-color: #fef0f0;
+  background-color: var(--el-color-danger-light-9);
 }
 
 :deep(.cancelled-row) {
-  background-color: #f5f7fa;
+  background-color: var(--el-fill-color-light);
 }
 
 /* 移动端适配 */

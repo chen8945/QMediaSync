@@ -1,5 +1,11 @@
 /* 组件共享样式 */
 
+/* 键盘焦点基线：自绘可交互元素与 Element Plus 组件统一使用主色轮廓。 */
+:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
 /* 与项目 768px 移动端断点一致，避免 Element Plus md（992px）断点混用。 */
 .show-on-mobile {
   display: none !important;
@@ -42,20 +48,20 @@
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .card-subtitle {
   margin: 0;
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 /* 表单样式 */
 .form-help {
   margin-top: 8px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   line-height: 1.6;
 }
 
@@ -80,17 +86,17 @@
 
 .example-label {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-weight: 500;
 }
 
 .example-url {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 13px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   padding: 4px 8px;
   border-radius: 4px;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 /* 启用开关样式 */
@@ -139,7 +145,7 @@
 
 .telegram-form .el-form-item__label {
   font-weight: 500;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 8px;
 }
 
@@ -181,7 +187,7 @@
 }
 
 .path-text {
-  color: #303133;
+  color: var(--el-text-color-primary);
   word-break: break-all;
   font-size: 13px;
   line-height: 1.4;
@@ -196,7 +202,7 @@
 }
 
 .directory-card:hover {
-  border-color: #409eff;
+  border-color: var(--el-color-primary);
 }
 
 .card-actions {
@@ -221,12 +227,12 @@
 
 .info-label {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .info-value {
   font-size: 16px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   word-break: break-all;
   line-height: 1.5;
 }
@@ -240,7 +246,7 @@
   align-items: center;
   justify-content: center;
   min-height: 200px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   background: #fafafa;
 }
 

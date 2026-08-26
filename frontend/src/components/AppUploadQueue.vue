@@ -1180,7 +1180,7 @@ onUnmounted(() => {
   gap: 8px;
   font-size: 12px;
   line-height: 1.4;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .stage-result-cell {
@@ -1273,11 +1273,11 @@ onUnmounted(() => {
 }
 
 :deep(.error-row) {
-  background-color: #fef0f0;
+  background-color: var(--el-color-danger-light-9);
 }
 
 :deep(.cancelled-row) {
-  background-color: #f5f7fa;
+  background-color: var(--el-fill-color-light);
 }
 
 /* 移动端适配 */

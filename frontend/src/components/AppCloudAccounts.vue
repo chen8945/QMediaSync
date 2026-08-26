@@ -1600,16 +1600,16 @@ onUnmounted(() => {
 }
 
 .add-btn {
-  background: #409eff !important;
-  border-color: #409eff !important;
+  background: var(--el-color-primary) !important;
+  border-color: var(--el-color-primary) !important;
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease;
 }
 
 .add-btn:hover {
-  background: #66b1ff !important;
-  border-color: #66b1ff !important;
+  background: var(--el-color-primary-light-3) !important;
+  border-color: var(--el-color-primary-light-3) !important;
 }
 
 .accounts-content {
@@ -1627,7 +1627,7 @@ onUnmounted(() => {
   background: #fff;
   border-radius: 16px;
   overflow: hidden;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   transition:
     transform 0.2s ease,
@@ -1669,19 +1669,19 @@ onUnmounted(() => {
 
 .card-status-bar {
   height: 4px;
-  background: #e4e7ed;
+  background: var(--el-border-color-light);
 }
 
 .card-status-bar.status-authorized {
-  background: linear-gradient(90deg, #67c23a, #95d475);
+  background: linear-gradient(90deg, var(--el-color-success), #95d475);
 }
 
 .card-status-bar.status-unauthorized {
-  background: linear-gradient(90deg, #e6a23c, #f0c78a);
+  background: linear-gradient(90deg, var(--el-color-warning), #f0c78a);
 }
 
 .card-status-bar.status-failed {
-  background: linear-gradient(90deg, #f56c6c, #fab6b6);
+  background: linear-gradient(90deg, var(--el-color-danger), #fab6b6);
 }
 
 .card-main {
@@ -1705,8 +1705,8 @@ onUnmounted(() => {
 .card-id {
   display: inline-block;
   font-size: 12px;
-  color: #909399;
-  background: #f5f7fa;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
   padding: 2px 8px;
   border-radius: 4px;
   margin-right: 8px;
@@ -1715,7 +1715,7 @@ onUnmounted(() => {
 .card-name {
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   word-break: break-all;
 }
 
@@ -1740,11 +1740,11 @@ onUnmounted(() => {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   flex-shrink: 0;
 }
 
@@ -1758,12 +1758,12 @@ onUnmounted(() => {
 
 .info-label {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .info-value {
   font-size: 14px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   text-align: right;
 }
 
@@ -1780,12 +1780,12 @@ onUnmounted(() => {
   gap: 8px;
   margin-top: 8px;
   padding-top: 12px;
-  border-top: 1px dashed #ebeef5;
+  border-top: 1px dashed var(--el-border-color-lighter);
 }
 
 .status-divider {
   height: 1px;
-  background: #ebeef5;
+  background: var(--el-border-color-lighter);
   margin: 8px 0;
 }
 
@@ -1806,12 +1806,12 @@ onUnmounted(() => {
 .status-title {
   font-size: 13px;
   font-weight: 600;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .no-status {
   text-align: center;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
   padding: 8px 0;
 }
@@ -1826,11 +1826,11 @@ onUnmounted(() => {
 
 .space-text {
   font-size: 12px;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .expire-warning {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   font-weight: 500;
 }
 
@@ -1845,23 +1845,23 @@ onUnmounted(() => {
 }
 
 .status-indicator.status-authorized {
-  background: #f0f9eb;
-  color: #67c23a;
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
 }
 
 .status-indicator.status-unauthorized {
-  background: #fdf6ec;
-  color: #e6a23c;
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
 }
 
 .status-indicator.status-failed {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
 }
 
 .error-help-icon {
   font-size: 16px;
-  color: #f56c6c;
+  color: var(--el-color-danger);
   cursor: help;
 }
 
@@ -1901,7 +1901,7 @@ onUnmounted(() => {
   padding: 60px 20px;
   background: #fff;
   border-radius: 16px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   margin-bottom: 24px;
 }
@@ -1913,7 +1913,7 @@ onUnmounted(() => {
 
 .empty-icon {
   font-size: 80px;
-  color: #dcdfe6;
+  color: var(--el-border-color);
 }
 
 .empty-dots {
@@ -1927,7 +1927,7 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #dcdfe6;
+  background: var(--el-border-color);
   animation: bounce 1.4s infinite ease-in-out both;
 }
 
@@ -1955,13 +1955,13 @@ onUnmounted(() => {
   margin: 0 0 8px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .empty-description {
   margin: 0 0 24px 0;
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .loading-state {
@@ -1972,13 +1972,13 @@ onUnmounted(() => {
   padding: 60px 20px;
   background: #fff;
   border-radius: 16px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   gap: 12px;
 }
 
 .loading-icon {
   font-size: 32px;
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .page-footer-tips {
@@ -1994,7 +1994,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 14px 20px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--qms-gradient-brand);
   color: #fff;
   font-size: 15px;
   font-weight: 600;
@@ -2030,11 +2030,11 @@ onUnmounted(() => {
   border-bottom: 2px solid #f0f2f5;
   font-size: 15px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .tip-group-title .el-icon {
-  color: #e6a23c;
+  color: var(--el-color-warning);
   font-size: 18px;
 }
 
@@ -2049,7 +2049,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 8px;
   font-size: 13px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.6;
 }
 
@@ -2061,19 +2061,19 @@ onUnmounted(() => {
 }
 
 .tip-item strong {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .tip-highlight {
-  background: linear-gradient(135deg, #fdf6ec 0%, #fef8eb 100%);
+  background: linear-gradient(135deg, var(--el-color-warning-light-9) 0%, #fef8eb 100%);
   margin: 6px -12px;
   padding: 12px;
   border-radius: 8px;
-  border-left: 3px solid #e6a23c;
+  border-left: 3px solid var(--el-color-warning);
 }
 
 .tip-highlight .tip-bullet {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .tip-highlight span:last-child {
@@ -2128,14 +2128,14 @@ onUnmounted(() => {
 
   .header-actions .add-btn {
     width: auto;
-    background: #409eff !important;
-    border-color: #409eff !important;
+    background: var(--el-color-primary) !important;
+    border-color: var(--el-color-primary) !important;
     color: #fff !important;
   }
 
   .header-actions .add-btn:hover {
-    background: #66b1ff !important;
-    border-color: #66b1ff !important;
+    background: var(--el-color-primary-light-3) !important;
+    border-color: var(--el-color-primary-light-3) !important;
     transform: none;
   }
 
@@ -2326,6 +2326,15 @@ onUnmounted(() => {
   .card-footer {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rotating {
+    animation: none;
+  }
+
+  .empty-dots span {
+    animation: none;
   }
 }
 </style>

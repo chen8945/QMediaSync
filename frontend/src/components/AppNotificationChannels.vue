@@ -1210,7 +1210,7 @@ onMounted(() => {
 }
 
 .channel-type-badge.type-meow {
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: var(--qms-gradient-brand);
 }
 
 .channel-type-badge.type-bark {
@@ -1325,7 +1325,7 @@ onMounted(() => {
 }
 
 .channel-type-card.type-meow .channel-type-icon {
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: var(--qms-gradient-brand);
 }
 
 .channel-type-card.type-bark .channel-type-icon {

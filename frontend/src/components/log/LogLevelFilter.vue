@@ -74,19 +74,19 @@ function toggleLevel(level: LogLevel) {
 }
 
 .log-level-chip {
-  --level-color: #606266;
-  --level-bg: #f4f4f5;
+  --level-color: var(--el-text-color-regular);
+  --level-bg: var(--el-color-info-light-9);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-width: 68px;
   min-height: 28px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   border-radius: 999px;
   padding: 0 10px;
   background: #ffffff;
-  color: #606266;
+  color: var(--el-text-color-regular);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -124,28 +124,28 @@ function toggleLevel(level: LogLevel) {
 }
 
 .log-level-chip-all {
-  --level-color: #606266;
-  --level-bg: #f4f4f5;
+  --level-color: var(--el-text-color-regular);
+  --level-bg: var(--el-color-info-light-9);
 }
 
 .log-level-chip.is-debug {
-  --level-color: #909399;
-  --level-bg: #f4f4f5;
+  --level-color: var(--el-text-color-secondary);
+  --level-bg: var(--el-color-info-light-9);
 }
 
 .log-level-chip.is-info {
-  --level-color: #409eff;
-  --level-bg: #ecf5ff;
+  --level-color: var(--el-color-primary);
+  --level-bg: var(--el-color-primary-light-9);
 }
 
 .log-level-chip.is-warn {
-  --level-color: #e6a23c;
-  --level-bg: #fdf6ec;
+  --level-color: var(--el-color-warning);
+  --level-bg: var(--el-color-warning-light-9);
 }
 
 .log-level-chip.is-error {
-  --level-color: #f56c6c;
-  --level-bg: #fef0f0;
+  --level-color: var(--el-color-danger);
+  --level-bg: var(--el-color-danger-light-9);
 }
 
 @media (max-width: 768px) {

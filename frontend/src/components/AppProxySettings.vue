@@ -320,13 +320,13 @@ onMounted(() => {
   margin: 0 0 8px 0;
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .card-subtitle {
   margin: 0;
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .proxy-content {
@@ -345,13 +345,13 @@ onMounted(() => {
   margin: 0 0 12px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .section-description {
   margin: 0 0 16px 0;
   font-size: 14px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.5;
 }
 
@@ -365,7 +365,7 @@ onMounted(() => {
 
 .form-help {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
   line-height: 1.4;
 }

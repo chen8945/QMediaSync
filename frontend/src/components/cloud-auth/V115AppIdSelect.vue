@@ -214,7 +214,7 @@ watch(showCustomFields, (visible) => {
 }
 
 .v115-select-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 18px;
   padding: 4px 0;
@@ -229,7 +229,7 @@ watch(showCustomFields, (visible) => {
 }
 
 .v115-result-summary {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 

@@ -116,11 +116,11 @@ watch(
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .logs {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
   padding: 10px;
   height: calc(100vh - 320px);
@@ -141,7 +141,7 @@ watch(
 }
 
 .log-timestamp {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   flex: 0 0 auto;
 }
 
@@ -157,24 +157,24 @@ watch(
 }
 
 .log-level-info .log-level {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .log-level-warn .log-level {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .log-level-error .log-level {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .log-level-debug .log-level {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .empty-logs {
   padding: 32px 0;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   text-align: center;
 }
 
@@ -189,11 +189,11 @@ watch(
 }
 
 .status-indicator.connected {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .status-indicator.disconnected {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 @media (max-width: 768px) {

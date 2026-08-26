@@ -525,7 +525,7 @@ defineExpose({
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .log-content {
@@ -533,7 +533,7 @@ defineExpose({
 }
 
 .logs {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 4px;
   padding: 10px;
   height: var(--log-viewer-height);
@@ -554,7 +554,7 @@ defineExpose({
 }
 
 .log-timestamp {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-right: 12px;
   min-width: 180px;
   flex-shrink: 0;
@@ -573,49 +573,49 @@ defineExpose({
 }
 
 .log-level-info {
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .log-level-info .log-level {
-  background-color: #ecf5ff;
-  color: #409eff;
+  background-color: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 
 .log-level-warn {
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
 .log-level-warn .log-level {
-  background-color: #fdf6ec;
-  color: #e6a23c;
+  background-color: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
 }
 
 .log-level-error {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .log-level-error .log-level {
-  background-color: #fef0f0;
-  color: #f56c6c;
+  background-color: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
 }
 
 .log-level-debug {
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .log-level-debug .log-level {
-  background-color: #f4f4f5;
-  color: #909399;
+  background-color: var(--el-color-info-light-9);
+  color: var(--el-text-color-secondary);
 }
 
 .log-message {
   flex: 1;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .empty-logs {
   text-align: center;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   padding: 20px 0;
 }
 
@@ -633,19 +633,24 @@ defineExpose({
 }
 
 .status-indicator.connected {
-  color: #67c23a;
+  color: var(--el-color-success);
 }
 
 .status-indicator.disconnected {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .stream-status-message {
   margin-left: 10px;
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 
-/* 滚动条样式 */
+/* 滚动条样式：日志是高频长内容容器，保留更大的拖动目标。 */
+.logs {
+  scrollbar-width: auto;
+  scrollbar-color: #c1c1c1 #f1f1f1;
+}
+
 .logs::-webkit-scrollbar {
   width: 8px;
   height: 8px;

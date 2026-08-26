@@ -28,32 +28,32 @@ const reload = () => window.location.reload()
   gap: 12px;
   border: 1px solid #fde2e2;
   border-radius: 8px;
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
 }
 
 .route-load-error-title {
   margin: 0;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-size: 20px;
 }
 
 .route-load-error-message {
   margin: 0;
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .route-load-error-retry {
   padding: 9px 14px;
   border: 0;
   border-radius: 4px;
-  background: #409eff;
+  background: var(--el-color-primary);
   color: #fff;
   cursor: pointer;
   font: inherit;
 }
 
 .route-load-error-retry:focus-visible {
-  outline: 2px solid #409eff;
+  outline: 2px solid var(--el-color-primary);
   outline-offset: 2px;
 }
 

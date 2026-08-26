@@ -90,11 +90,12 @@ const { queueStats, queueStatsLoading } = useQueueStats()
   gap: 8px;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .title-icon {
   font-size: 20px;
+  color: var(--el-color-primary);
 }
 
 .status-badge {
@@ -136,6 +137,7 @@ const { queueStats, queueStatsLoading } = useQueueStats()
 
 .throttle-icon {
   font-size: 24px;
+  color: var(--el-color-warning);
 }
 
 .throttle-details {
@@ -153,13 +155,13 @@ const { queueStats, queueStatsLoading } = useQueueStats()
 
 .throttle-item .label {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .throttle-item .value {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .metrics-grid {
@@ -194,7 +196,7 @@ const { queueStats, queueStatsLoading } = useQueueStats()
 .metric-value {
   font-size: 24px;
   font-weight: 700;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 
@@ -208,7 +210,7 @@ const { queueStats, queueStatsLoading } = useQueueStats()
 
 .metric-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin-top: 4px;
 }
 
@@ -224,6 +226,11 @@ const { queueStats, queueStatsLoading } = useQueueStats()
 
   .metric-value {
     font-size: 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-warning {
+    animation: none;
   }
 }
 </style>

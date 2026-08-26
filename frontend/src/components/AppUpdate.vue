@@ -297,7 +297,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   gap: 8px;
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0f0f0;
@@ -312,6 +312,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 .section-icon {
   font-size: 20px;
+  color: var(--el-color-primary);
 }
 
 .update-toolbar {
@@ -334,12 +335,12 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 .version-info .version-number {
   font-size: 24px;
   font-weight: 700;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .version-info .version-date {
   font-size: 14px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .update-collapse {
@@ -391,13 +392,13 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 .update-version .version-number {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .update-version .version-date {
   overflow-wrap: anywhere;
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .update-tags {
@@ -420,7 +421,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   margin-bottom: 16px;
   font-size: 14px;
   line-height: 1.6;
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 
 .update-actions {
@@ -447,7 +448,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   flex-direction: column;
   gap: 2px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   min-width: 120px;
 }
 
@@ -468,7 +469,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 .dialog-content .el-icon {
   font-size: 48px;
-  color: #67c23a;
+  color: var(--el-color-success);
   margin-bottom: 20px;
 }
 
@@ -476,12 +477,12 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   font-size: 20px;
   font-weight: 600;
   margin-bottom: 12px;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .dialog-content p {
   font-size: 15px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin-bottom: 16px;
 }
 
@@ -493,7 +494,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 .dialog-tips p {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   margin: 0;
 }
 
@@ -501,7 +502,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
   display: flex;
   justify-content: center;
   padding: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 @media (max-width: 768px) {
@@ -594,7 +595,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 }
 
 .update-note :deep(.markdown-body a) {
-  color: #409eff;
+  color: var(--el-color-primary);
   text-decoration: none;
 }
 
@@ -619,7 +620,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
 
 .fnos-content p {
   font-size: 15px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin: 0;
   line-height: 1.6;
 }
