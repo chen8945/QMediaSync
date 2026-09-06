@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,6 +21,80 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestSyncPathAggregateRegexSaveRoundTripAndValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalFactory, originalLogger := newSyncPathConfigService, helpers.AppLogger
+	t.Cleanup(func() {
+		newSyncPathConfigService, helpers.AppLogger = originalFactory, originalLogger
+	})
+	testDB := setupControllerTestDB(t, &models.Account{}, &models.SyncPath{},
+		&models.DirectoryUploadRule{}, &models.SyncPathIdempotencyRecord{})
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	newSyncPathConfigService = func() *syncconfig.Service {
+		return syncconfig.NewService(syncconfig.ServiceOptions{
+			DB: testDB, CreateLocalDirectory: func(string) error { return nil },
+			ReloadSyncCron: func() {}, ReloadDirectoryUpload: func() {},
+		})
+	}
+	router := gin.New()
+	router.POST("/sync/paths", CreateSyncPathAggregate)
+	router.PUT("/sync/paths/:id", UpdateSyncPathAggregate)
+	router.GET("/sync/path/:id", GetSyncPathById)
+	patterns := []string{`(?i)^Sample\.[^.]+$`, `  \D{1,3};[A-Z]+,  `, " "}
+	setting := map[string]any{
+		"exclude_name_arr": []string{"SaMpLe"}, "exclude_name_regex_arr": patterns, "add_path": 3,
+	}
+	payload := map[string]any{"sync_path": map[string]any{
+		"source_type": "local", "base_cid": "/media", "remote_path": "/media",
+		"local_path": t.TempDir(), "custom_config": true, "setting": setting,
+	}}
+	save := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(method, path, bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "strm-regex-roundtrip")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	if response := save(http.MethodPost, "/sync/paths"); response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"code":200`) {
+		t.Fatalf("创建含正则的同步目录失败：%s", response.Body)
+	}
+	checkReloaded := func(want []string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sync/path/1", nil))
+		var result APIResponse[models.SyncPath]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Code != Success || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
+			t.Fatalf("同步目录读回未保留原文：%s，期望 %q", response.Body, want)
+		}
+		if !reflect.DeepEqual(result.Data.ExcludeNameArr, []string{"sample"}) {
+			t.Fatalf("原名称列表大小写行为改变：%q", result.Data.ExcludeNameArr)
+		}
+	}
+	checkReloaded(patterns)
+	setting["exclude_name_regex_arr"] = []string{`\p{UnknownClass}`}
+	response := save(http.MethodPut, "/sync/paths/1")
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), `"field":"exclude_name_regex_arr[0]"`) {
+		t.Fatalf("后端校验未返回可定位字段：HTTP %d，%s", response.Code, response.Body)
+	}
+	checkReloaded(patterns)
+	setting["exclude_name_regex_arr"] = []string{}
+	if response := save(http.MethodPut, "/sync/paths/1"); response.Code != http.StatusOK {
+		t.Fatalf("清空目录正则失败：%s", response.Body)
+	}
+	checkReloaded([]string{})
+}
 
 func TestSyncPathAggregateHandlersHaveSwaggerAnnotations(t *testing.T) {
 	content, err := os.ReadFile("sync_config.go")

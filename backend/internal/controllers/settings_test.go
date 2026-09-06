@@ -1,10 +1,13 @@
 package controllers
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,6 +17,76 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestStrmConfigRegexSaveRoundTripAndValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings, originalLogger := models.SettingsGlobal, helpers.AppLogger
+	t.Cleanup(func() {
+		models.SettingsGlobal, helpers.AppLogger = originalSettings, originalLogger
+	})
+	setupControllerTestDB(t, &models.Settings{})
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	models.SettingsGlobal = &models.Settings{SettingStrm: models.SettingStrm{Cron: "0 * * * *"}}
+	if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/setting/strm-config", UpdateStrmConfig)
+	router.GET("/setting/strm-config", GetStrmConfig)
+	patterns := []string{`(?i)^Sample\.[^.]+$`, `  \D{1,3};[A-Z]+,  `, " "}
+	save := func(t *testing.T, values []string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"strm_base_url":          "http://qms.local",
+			"cron":                   "0 * * * *",
+			"video_ext_arr":          []string{".mkv"},
+			"meta_ext_arr":           []string{".nfo"},
+			"exclude_name_arr":       []string{"SaMpLe"},
+			"exclude_name_regex_arr": values,
+			"add_path":               3,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/setting/strm-config", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	checkReloaded := func(t *testing.T, want []string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
+		var result APIResponse[models.SettingStrm]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Code != Success || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
+			t.Fatalf("设置读回未保留原文：%s，期望 %q", response.Body, want)
+		}
+		if !reflect.DeepEqual(result.Data.ExcludeNameArr, []string{"sample"}) {
+			t.Fatalf("原名称列表大小写行为改变：%q", result.Data.ExcludeNameArr)
+		}
+	}
+	if response := save(t, patterns); response.Code != http.StatusOK {
+		t.Fatalf("保存合法规则失败：%s", response.Body)
+	}
+	checkReloaded(t, patterns)
+	for _, pattern := range []string{"[", "(?=sample)", `\p{UnknownClass}`, ""} {
+		t.Run("拒绝_"+pattern, func(t *testing.T) {
+			response := save(t, []string{"sample", pattern})
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "exclude_name_regex_arr[1]") {
+				t.Fatalf("非法规则未返回下标错误：HTTP %d，%s", response.Code, response.Body)
+			}
+			checkReloaded(t, patterns)
+		})
+	}
+	if response := save(t, []string{}); response.Code != http.StatusOK {
+		t.Fatalf("清空正则失败：%s", response.Body)
+	}
+	checkReloaded(t, []string{})
+}
 
 func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -1,0 +1,308 @@
+[
+  {
+    "name": "部分匹配",
+    "pattern": "sample",
+    "valid": true
+  },
+  {
+    "name": "完整名称",
+    "pattern": "^Sample\\.mkv$",
+    "valid": true
+  },
+  {
+    "name": "开头忽略大小写",
+    "pattern": "(?i)(sample|trailer)",
+    "valid": true
+  },
+  {
+    "name": "多行标志",
+    "pattern": "(?m)^sample$",
+    "valid": true
+  },
+  {
+    "name": "单行标志",
+    "pattern": "(?s)sample.*trailer",
+    "valid": true
+  },
+  {
+    "name": "标志组合与关闭",
+    "pattern": "(?ims-U)^sample$",
+    "valid": true
+  },
+  {
+    "name": "关闭标志",
+    "pattern": "(?-im)Sample",
+    "valid": true
+  },
+  {
+    "name": "非贪婪模式",
+    "pattern": "(?U)sample.*",
+    "valid": true
+  },
+  {
+    "name": "局部标志",
+    "pattern": "(?i:abc)(?-i:XYZ)",
+    "valid": true
+  },
+  {
+    "name": "嵌套局部标志",
+    "pattern": "(?i:abc(?-i:XYZ))",
+    "valid": true
+  },
+  {
+    "name": "文件锚点",
+    "pattern": "\\A(?P<name>Sample)\\z",
+    "valid": true
+  },
+  {
+    "name": "命名分组",
+    "pattern": "(?<name>abc)",
+    "valid": true
+  },
+  {
+    "name": "重复分组名",
+    "pattern": "(?P<name>a)(?P<name>b)",
+    "valid": true
+  },
+  {
+    "name": "数字分组名",
+    "pattern": "(?P<1>abc)",
+    "valid": true
+  },
+  {
+    "name": "引用中的不兼容符号",
+    "pattern": "\\Q(?=sample)a++\\1,;\\E",
+    "valid": true
+  },
+  {
+    "name": "引用直到末尾",
+    "pattern": "\\Q(?=sample)[a++",
+    "valid": true
+  },
+  {
+    "name": "字符组中的分组符号",
+    "pattern": "[()+?=]+",
+    "valid": true
+  },
+  {
+    "name": "字符组首位右括号",
+    "pattern": "[](?=)]+",
+    "valid": true
+  },
+  {
+    "name": "字符组首位右括号取反",
+    "pattern": "[^](?=)]+",
+    "valid": true
+  },
+  {
+    "name": "POSIX 字符组",
+    "pattern": "[[:alpha:](?=)]+",
+    "valid": true
+  },
+  {
+    "name": "Unicode 属性",
+    "pattern": "\\p{Han}+",
+    "valid": true
+  },
+  {
+    "name": "Unicode 属性简写",
+    "pattern": "\\pL+",
+    "valid": true
+  },
+  {
+    "name": "Unicode 十六进制",
+    "pattern": "\\x{1001}+",
+    "valid": true
+  },
+  {
+    "name": "Unicode 字符范围",
+    "pattern": "[\\x{1001}-\\x{1003}]",
+    "valid": true
+  },
+  {
+    "name": "非 BMP 字符范围",
+    "pattern": "[😀-🙏]+",
+    "valid": true
+  },
+  {
+    "name": "字面反向引用符号",
+    "pattern": "\\\\1",
+    "valid": true
+  },
+  {
+    "name": "字面命名反向引用符号",
+    "pattern": "\\\\k<name>",
+    "valid": true
+  },
+  {
+    "name": "两位八进制",
+    "pattern": "\\12",
+    "valid": true
+  },
+  {
+    "name": "三位八进制",
+    "pattern": "\\123",
+    "valid": true
+  },
+  {
+    "name": "八进制字符范围",
+    "pattern": "[\\400-\\500]",
+    "valid": true
+  },
+  {
+    "name": "八进制零",
+    "pattern": "\\0",
+    "valid": true
+  },
+  {
+    "name": "普通重复次数",
+    "pattern": "a{1,3}",
+    "valid": true
+  },
+  {
+    "name": "重复次数上限",
+    "pattern": "a{1000}",
+    "valid": true
+  },
+  {
+    "name": "无限重复",
+    "pattern": "a{1,}",
+    "valid": true
+  },
+  {
+    "name": "惰性量词",
+    "pattern": "a{1,3}?",
+    "valid": true
+  },
+  {
+    "name": "前导零按字面匹配",
+    "pattern": "a{01001}+",
+    "valid": true
+  },
+  {
+    "name": "量词之间的标志",
+    "pattern": "a*(?i)*",
+    "valid": true
+  },
+  {
+    "name": "可重复零宽锚点",
+    "pattern": "^*",
+    "valid": true
+  },
+  {
+    "name": "可重复单词边界",
+    "pattern": "\\b+",
+    "valid": true
+  },
+  {
+    "name": "空白原文",
+    "pattern": "   ",
+    "valid": true
+  },
+  {
+    "name": "空格分隔符大小写与转义",
+    "pattern": "  (?i)Sample{1,3},Trailer;\\D+  ",
+    "valid": true
+  },
+  {
+    "name": "空规则",
+    "pattern": "",
+    "valid": false,
+    "browser_error": "不能为空"
+  },
+  {
+    "name": "未闭合字符组",
+    "pattern": "[sample",
+    "valid": false,
+    "browser_error": "格式错误"
+  },
+  {
+    "name": "前瞻",
+    "pattern": "(?=sample)",
+    "valid": false,
+    "browser_error": "前后向断言"
+  },
+  {
+    "name": "否定前瞻",
+    "pattern": "(?!sample)",
+    "valid": false,
+    "browser_error": "前后向断言"
+  },
+  {
+    "name": "后顾",
+    "pattern": "(?<=sample)",
+    "valid": false,
+    "browser_error": "前后向断言"
+  },
+  {
+    "name": "否定后顾",
+    "pattern": "(?<!sample)",
+    "valid": false,
+    "browser_error": "前后向断言"
+  },
+  {
+    "name": "数字反向引用",
+    "pattern": "(sample)\\1",
+    "valid": false,
+    "browser_error": "反向引用"
+  },
+  {
+    "name": "命名反向引用",
+    "pattern": "(?P<name>sample)\\k<name>",
+    "valid": false,
+    "browser_error": "反向引用"
+  },
+  {
+    "name": "Python 反向引用",
+    "pattern": "(?P=name)",
+    "valid": false,
+    "browser_error": "反向引用"
+  },
+  {
+    "name": "原子组",
+    "pattern": "(?>sample)",
+    "valid": false,
+    "browser_error": "原子组"
+  },
+  {
+    "name": "占有星号",
+    "pattern": "a*+",
+    "valid": false,
+    "browser_error": "占有量词"
+  },
+  {
+    "name": "占有加号",
+    "pattern": "a++",
+    "valid": false,
+    "browser_error": "占有量词"
+  },
+  {
+    "name": "占有问号",
+    "pattern": "a?+",
+    "valid": false,
+    "browser_error": "占有量词"
+  },
+  {
+    "name": "占有次数",
+    "pattern": "a{1,3}+",
+    "valid": false,
+    "browser_error": "占有量词"
+  },
+  {
+    "name": "重复次数超限",
+    "pattern": "a{1001}",
+    "valid": false,
+    "browser_error": "1000"
+  },
+  {
+    "name": "重复次数范围超限",
+    "pattern": "a{1,1001}",
+    "valid": false,
+    "browser_error": "1000"
+  },
+  {
+    "name": "Go 未知 Unicode 属性",
+    "pattern": "\\p{UnknownClass}",
+    "valid": false
+  }
+]

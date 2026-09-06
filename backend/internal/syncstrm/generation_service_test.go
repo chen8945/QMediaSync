@@ -2070,6 +2070,8 @@ func TestStrmRemotePathWithinRoot(t *testing.T) {
 type fakeDirectoryScanDriver struct {
 	filesByID   map[string][]*SyncFileCache
 	detailsByID map[string]*SyncFileCache
+	dirsByID    map[string][]pathQueueItem
+	strmContent string
 }
 
 func (driver *fakeDirectoryScanDriver) GetNetFileFiles(_ context.Context, _ string, parentPathID string) ([]*SyncFileCache, error) {
@@ -2089,7 +2091,9 @@ func (driver *fakeDirectoryScanDriver) GetPathIdByPath(_ context.Context, path s
 
 func (driver *fakeDirectoryScanDriver) SetSyncStrm(*SyncStrm) {}
 
-func (driver *fakeDirectoryScanDriver) MakeStrmContent(*SyncFileCache) string { return "" }
+func (driver *fakeDirectoryScanDriver) MakeStrmContent(*SyncFileCache) string {
+	return driver.strmContent
+}
 
 func (driver *fakeDirectoryScanDriver) CreateDirRecursively(context.Context, string) (string, string, error) {
 	return "", "", nil
@@ -2099,8 +2103,8 @@ func (driver *fakeDirectoryScanDriver) GetTotalFileCount(context.Context) (int64
 	return 0, "", nil
 }
 
-func (driver *fakeDirectoryScanDriver) GetDirsByPathId(context.Context, string) ([]pathQueueItem, error) {
-	return nil, nil
+func (driver *fakeDirectoryScanDriver) GetDirsByPathId(_ context.Context, pathID string) ([]pathQueueItem, error) {
+	return driver.dirsByID[pathID], nil
 }
 
 func (driver *fakeDirectoryScanDriver) GetFilesByPathId(context.Context, string, int, int) ([]v115open.File, error) {

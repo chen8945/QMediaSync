@@ -184,6 +184,8 @@ export default defineConfig(({ mode }) => ({
   test: {
     environment: 'happy-dom',
     include: ['test/**/*.test.{ts,mjs}'],
+    // 让真实表单校验使用 Vite 的 CJS 互操作，避免 async-validator 的 default 嵌套导出。
+    server: { deps: { inline: ['element-plus'] } },
   },
   build: {
     chunkSizeWarningLimit: 700,

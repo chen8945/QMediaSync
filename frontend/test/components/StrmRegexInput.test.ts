@@ -4,6 +4,17 @@ import { describe, expect, it } from 'vitest'
 import StrmRegexInput from '@/components/StrmRegexInput.vue'
 
 describe('正则排除名称输入', () => {
+  it('允许有意义的纯空格规则，并在输入法组合期间保留草稿', async () => {
+    const wrapper = mount(StrmRegexInput, { props: { modelValue: [] } })
+    const input = wrapper.get('input')
+    await input.setValue(' ')
+    await input.trigger('keydown', { key: 'Enter', isComposing: true })
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await input.trigger('keydown', { key: 'Enter', isComposing: false })
+    expect(wrapper.emitted('update:modelValue')).toEqual([[[' ']]])
+    wrapper.unmount()
+  })
+
   it('按回车整条添加，保留大小写、空格、分隔符和转义', async () => {
     const wrapper = mount(StrmRegexInput, { props: { modelValue: [] } })
     const pattern = String.raw`  (?i)Sample{1,3},Trailer;\D+  `

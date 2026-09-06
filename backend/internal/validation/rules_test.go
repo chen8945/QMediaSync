@@ -1,9 +1,41 @@
 package validation
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestRegexListSharedBrowserCases(t *testing.T) {
+	data, err := os.ReadFile("testdata/strm_regex_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name    string `json:"name"`
+		Pattern string `json:"pattern"`
+		Valid   bool   `json:"valid"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("前后端共享正则用例不能为空")
+	}
+	for _, tt := range cases {
+		t.Run(tt.Name, func(t *testing.T) {
+			patterns := []string{tt.Pattern}
+			err := RegexList("exclude_name_regex_arr", patterns)
+			if (err == nil) != tt.Valid {
+				t.Fatalf("RegexList(%q) = %v，期望合法 = %v", tt.Pattern, err, tt.Valid)
+			}
+			if patterns[0] != tt.Pattern {
+				t.Fatalf("后端校验修改了原文：%q", patterns[0])
+			}
+		})
+	}
+}
 
 func TestRangeInt(t *testing.T) {
 	tests := []struct {

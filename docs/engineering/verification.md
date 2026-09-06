@@ -68,6 +68,8 @@
 (cd frontend && pnpm run check:build)
 ```
 
+Vitest 对 `element-plus` 使用 Vite 内联依赖处理，让真实表单校验获得与浏览器构建一致的 `async-validator` CommonJS 互操作；否则 Node 的嵌套默认导出可能使校验异常被表单聚合逻辑忽略。该设置仅位于 `vite.config.ts` 的 `test` 配置中。
+
 ## 构建和发布命令
 
 ```bash
@@ -96,7 +98,8 @@ docker build -f docker/source.Dockerfile -t qmediasync .
 
 - 长期回归风险优先由相关 Go 包内测试保护；新增或修改测试时遵循 table-driven 模式。
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。
-- STRM 正则预检和输入行为由 `frontend/test/utils/strmRegex.test.ts` 与 `frontend/test/components/StrmRegexInput.test.ts` 保护，覆盖常用 Go 语法适配、不兼容项提示和整条原文添加；随 `pnpm run test` 执行。后端最终校验仍由 `validation`、`requests`、`models` 与 `syncstrm` 包测试保护。
+- STRM 正则预检由 `frontend/test/utils/strmRegex.test.ts` 与 Go `validation` 包共同读取 [兼容性样例](../../backend/internal/validation/testdata/strm_regex_cases.json)，保护合法 Go 表达式不被前端误拦截、明确不兼容项能提示，以及无法可靠预检的语法交由后端判断。新增样例需同时通过两端测试。
+- STRM 原文输入和保存由 `frontend/test/components/StrmRegexInput.test.ts`、`frontend/test/components/StrmSettings.regex-save.test.ts` 保护，覆盖输入法组合、大小写、空白、分隔符、转义、桌面与移动表单保存回读、服务端错误展示和清空列表；随 `pnpm run test` 执行。后端 `controllers` 包以真实保存接口和 SQLite 覆盖原文落库、失败不改旧配置及清空；`models` 包覆盖旧库迁移和迁移重试，`syncstrm` 包覆盖手动文件 / 目录生成、全局继承与自定义覆盖、115 目录缓存 / 预取 / 路径补全中的祖先目录排除。
 - 仅依赖构建产物的检查使用 `*.check.mjs`，通过独立脚本在 `pnpm run build` 后执行，不能使用 Vitest 测试文件后缀。
 - 当包内 Go 测试、前端测试、lint、类型检查和生产构建都无法覆盖明确的长期风险时，优先补充对应测试；无法自动覆盖时，在对应契约文档中写明人工检查步骤和剩余风险。
 

@@ -143,10 +143,10 @@ func TestMigrateVersion62AddsStrmRegexExclusions(t *testing.T) {
 	}
 	const originalNames = "[\"sample\",\"extras\"]"
 	for _, table := range []string{"settings", "sync_paths"} {
-		if err := db.Db.Exec("CREATE TABLE " + table + " (id integer primary key, exclude_name text)").Error; err != nil {
+		if err := db.Db.Exec("CREATE TABLE " + table + " (id integer primary key, exclude_name text, cron text, add_path integer)").Error; err != nil {
 			t.Fatalf("创建旧 %s 表失败: %v", table, err)
 		}
-		if err := db.Db.Table(table).Create(map[string]any{"id": 1, "exclude_name": originalNames}).Error; err != nil {
+		if err := db.Db.Table(table).Create(map[string]any{"id": 1, "exclude_name": originalNames, "cron": "17 * * * *", "add_path": 2}).Error; err != nil {
 			t.Fatalf("写入旧 %s 数据失败: %v", table, err)
 		}
 	}
@@ -164,12 +164,43 @@ func TestMigrateVersion62AddsStrmRegexExclusions(t *testing.T) {
 		var stored struct {
 			ExcludeName      string
 			ExcludeNameRegex string
+			Cron             string
+			AddPath          int
 		}
 		if err := db.Db.Table(table).First(&stored).Error; err != nil {
 			t.Fatalf("读取迁移后的 %s 失败: %v", table, err)
 		}
-		if stored.ExcludeName != originalNames || stored.ExcludeNameRegex != "[]" {
+		if stored.ExcludeName != originalNames || stored.ExcludeNameRegex != "[]" || stored.Cron != "17 * * * *" || stored.AddPath != 2 {
 			t.Fatalf("%s 迁移结果 = %+v，旧排除应保留、正则应为空列表", table, stored)
+		}
+	}
+
+	// 模拟加列后中断并重试：已保存正则不能被覆盖，空旧值仍应补齐。
+	const existingRegex = `["(?i)^SaMpLe$","  A{1,3};B  "]`
+	for _, table := range []string{"settings", "sync_paths"} {
+		if err := db.Db.Table(table).Where("id = 1").UpdateColumn("exclude_name_regex", existingRegex).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range []map[string]any{
+			{"id": 2, "exclude_name_regex": nil},
+			{"id": 3, "exclude_name_regex": ""},
+		} {
+			if err := db.Db.Table(table).Create(row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := db.Db.Model(&Migrator{}).Where("id = ?", version.ID).UpdateColumn("version_code", 62).Error; err != nil {
+		t.Fatal(err)
+	}
+	Migrate()
+	for _, table := range []string{"settings", "sync_paths"} {
+		var stored []string
+		if err := db.Db.Table(table).Order("id").Pluck("exclude_name_regex", &stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(stored) != 3 || stored[0] != existingRegex || stored[1] != "[]" || stored[2] != "[]" {
+			t.Fatalf("%s 迁移重试未保留配置或补齐空值：%q", table, stored)
 		}
 	}
 }
