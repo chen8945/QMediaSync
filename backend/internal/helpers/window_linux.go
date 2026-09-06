@@ -4,8 +4,12 @@
 package helpers
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+
+	"golang.org/x/sys/unix"
 )
 
 var ExitChan chan struct{} = make(chan struct{})
@@ -35,4 +39,14 @@ func OpenBrowser(url string) error {
 	}
 
 	return cmd.Start()
+}
+
+func lockInstanceFile(file *os.File) error {
+	return unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+}
+
+// ShowAdminRecoveryResult 直接向终端交付恢复结果，密码不经过日志器。
+func ShowAdminRecoveryResult(message string) error {
+	_, err := fmt.Fprintln(os.Stdout, message)
+	return err
 }

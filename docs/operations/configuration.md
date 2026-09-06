@@ -16,6 +16,8 @@
 - 代码默认数据库配置为 `postgres + embedded`。Docker 镜像安装 `postgresql15`；裸二进制和本地开发环境不携带 PostgreSQL 二进制，使用 PostgreSQL 时应安装 PostgreSQL 15 及以上、配置外部数据库，或自行保证内嵌模式依赖的命令可用。
 - 数据库引擎、备份恢复和修复操作见 [数据库运维](database.md)；表、版本和迁移语义见 [数据库 schema 与迁移](../reference/database-schema.md)。
 
+管理员恢复使用二进制参数 `--reset-admin-password` 或 `--delete-admin --yes`，可通过 `--config-dir` 指定已有配置目录；这些参数不能写入长期运行的服务配置，不新增 YAML 字段。恢复只读取配置，不补写默认 JWT 密钥或本机加密密钥。操作命令和 Compose 自动识别规则见 [管理员恢复](deployment.md#管理员恢复)。
+
 ## STRM 名称排除
 
 STRM 名称排除保存于数据库，由全局 STRM 设置和同步目录自定义设置管理，不增加 `config.yaml` 或环境变量字段。
@@ -111,6 +113,8 @@ emby302:
 `GET /setting/notification/channels/telegram/{id}` 回传的 `config.proxy_url` 同样脱敏：该字段由历史迁移从 `settings.http_proxy` 复制而来，可能带凭据。凡是把含 `proxy_url` 的配置结构体整体写进响应的接口都要先脱敏。
 
 `QMS_UNSAFE_SENSITIVE_LOG=1` 只在本地调试时临时启用 `SensitiveDebug` 日志；它可能写出 API Key、Token、Cookie 或密码，不能在生产环境长期使用或分享相关日志。`backend/emby302.yaml` 默认关闭 ANSI 颜色，避免控制字符进入日志。
+
+管理员恢复结果写入现有应用日志，成功记录不受日志等级过滤；新密码始终直接交付给终端或 Windows 系统窗口，不进入应用日志。Compose 恢复脚本还会关闭临时容器的 Docker 日志驱动。完整凭据交付契约见 [认证会话](../architecture/authentication-sessions.md#本地管理员恢复)。
 
 ## 第三方密钥与本机敏感数据
 

@@ -4,9 +4,9 @@
 >
 > 权威范围：本文档是认证、会话和 API Key 行为的唯一说明；运行配置和密钥来源见 [配置、密钥与日志](../operations/configuration.md)。
 >
-> 修改时机：修改登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
+> 修改时机：修改管理员恢复、登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`frontend/src/stores/auth.ts`。
+> 相关代码：`backend/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`frontend/src/stores/auth.ts`。
 
 ## 首次管理员
 
@@ -16,6 +16,25 @@
 
 登录失败（包括用户名、密码和 TOTP 不匹配）对客户端统一返回“登录失败”，避免枚举凭据状态。登录限流按“客户端 IP + 去除首尾空白并转小写后的用户名”统计：15 分钟窗口内累计 5 次失败后锁定 15 分钟，成功登录会清除该计数；被锁定时返回 HTTP `429` 和剩余等待秒数。限流状态只保存在当前进程内，多实例部署或进程重启不会共享该状态。
 
+## 本地管理员恢复
+
+忘记密码或无法完成两步验证时，由拥有部署主机和配置目录访问权限的维护者执行本地恢复命令；操作方法见 [部署与持久化](../operations/deployment.md#管理员恢复)。恢复不新增 Web 页面、HTTP 接口或数据库字段，也不依赖旧密码、TOTP 验证码或旧密钥能否解密。
+
+| 操作 | 认证数据变更 | 保留的数据 |
+| --- | --- | --- |
+| 重置密码 | 生成随机新密码；关闭两步验证并清空生效、待确认密钥；撤销管理员全部未撤销的浏览器会话，保留既有撤销审计 | 管理员 ID、用户名、QMS API Key，以及全部业务数据 |
+| 删除管理员 | 删除唯一管理员，并清理全部浏览器会话和 QMS API Key，包括历史孤立密钥 | 云盘账号、同步记录和业务配置；不执行恢复出厂设置 |
+
+每种操作的认证变更都在一个事务中提交，失败回滚且不交付新密码。新密码复用 `crypto/rand` 随机值生成能力和现有密码校验、bcrypt 哈希规则，当前生成 24 位 ASCII 密码。恢复必须确认数据库中恰好有一名管理员，不把单例约束键误当作管理员 ID；缺失认证表、无管理员或存在多个管理员时拒绝执行，不自动迁移或修复。
+
+删除管理员必须显式清理 API Key，因为部分 Webhook 直接校验密钥，不会再次查询管理员。恢复进程不生成初始化码；下次正常启动时重新生成初始化码并启用现有创建管理员流程。重置密码后应使用原用户名和新密码登录，并重新启用两步验证。
+
+恢复仅连接已有 SQLite 或外部 PostgreSQL 数据库，不创建数据库、不启动内嵌 PostgreSQL、配置向导、迁移或后台任务，也不生成 JWT 密钥和本机加密密钥。存在待处理的 `backups/migrate.zip` 时拒绝恢复，避免后续启动覆盖刚修改的认证数据。
+
+正常进程和恢复进程通过配置目录下的 `.qmediasync.lock` 互斥；锁由操作系统在文件关闭或进程退出时释放，不能手动删除正在使用的锁文件。正常启动必须先锁定目标配置目录，再执行 Windows 或飞牛旧目录迁移；迁移还须锁定源目录，源、目标的锁文件均保留原位。该锁保护共享同一配置目录的进程，不能代替跨主机、跨配置目录的数据库协调。执行恢复前必须停止所有连接同一数据库的 QMediaSync 实例，包括尚未支持该锁的旧版本。
+
+应用日志只记录结果、管理员 ID、会话和两步验证清理情况、API Key 是否保留，不记录新密码；连接错误也不得泄露数据库密码或完整连接 URI。事务提交后，新密码通过终端或 Windows 原生窗口交付；Compose 恢复脚本关闭临时容器的日志驱动，结果只在脚本内存中暂存并于停启结束后展示。恢复成功但服务启动失败时，仍须交付新密码并单独报告启动错误；收尾阶段忽略普通中断信号，避免已提交的结果丢失。关闭输出后不能从应用日志找回密码，需要时重新执行重置。
+
 ## TOTP 两步验证
 
 两步验证采用基于时间的一次性密码（TOTP）。`POST /api/login` 始终接收 `totp_code`；只有用户同时满足 `two_factor_enabled=true` 且存在有效加密密钥时，密码校验成功后才要求该验证码。
@@ -23,7 +42,7 @@
 - `POST /api/user/two-factor/setup` 为当前用户生成新的密钥和 `otpauth_url`，将密钥以本机 `config/encryption.key` 加密后保存为待确认值；明文只在这次响应中返回。
 - `POST /api/user/two-factor/enable` 必须用待确认密钥生成的有效验证码确认，随后将待确认密钥转为生效密钥并清空待确认值。
 - `POST /api/user/two-factor/disable` 必须同时提供当前密码和当前有效验证码，成功后清空生效与待确认密钥。
-- 启用或关闭两步验证会撤销其他浏览器会话，保留执行操作的当前会话；项目当前不提供恢复码或绕过两步验证的备用登录方式。
+- 启用或关闭两步验证会撤销其他浏览器会话，保留执行操作的当前会话；Web 端不提供恢复码或绕过两步验证的备用登录方式，无法登录时使用上述本地管理员恢复。
 
 两步验证密钥是实例本地敏感数据，不能写入日志、API Key、环境变量或数据库明文列。丢失 `config/encryption.key` 会使已加密的密钥无法解密，不能通过文档或代码假定为可恢复。
 
@@ -50,8 +69,9 @@
 
 - 浏览器认证只使用 HttpOnly Cookie，会话状态以服务端 `user_sessions` 为准；前端状态不能替代鉴权。
 - 登录失败不得向客户端区分用户名、密码或 TOTP 错误；进程内限流键必须同时包含客户端 IP 和规范化用户名。
-- 凭据变更必须撤销所有浏览器会话，API Key 不受该撤销规则影响。
-- 待确认的 TOTP 密钥不得用于登录；启用和关闭两步验证时都必须重新验证当前用户的敏感凭据，并且不得泄露 TOTP 密钥。
+- 凭据变更必须撤销所有浏览器会话；普通改密和本地重置保留 API Key，删除管理员恢复必须清理全部 QMS API Key。
+- 待确认的 TOTP 密钥不得用于登录；Web 端启用和关闭两步验证时都必须重新验证当前用户的敏感凭据，并且不得泄露 TOTP 密钥。本地恢复仅在停服并持有配置目录锁时清空两步验证。
+- 恢复的多项认证变更必须原子提交，新密码不得进入日志；恢复失败不得返回未提交的凭据。
 - 未认证的 `/api/session` 是正常匿名状态，必须返回 `200` 与 `authenticated=false`，不能返回伪造的认证错误。
 - API Key 明文只能在创建响应出现一次，日志和数据库不得保存完整值。
 - 跨源部署必须显式配置可信来源，SSE 不作为跨源 Cookie 通道。
@@ -59,5 +79,6 @@
 ## 验证方式
 
 - 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景。
+- 管理员恢复的 SQLite、PostgreSQL、命令入口及 Compose 脚本验证命令见 [验证说明](../engineering/verification.md#管理员恢复验证)，覆盖事务回滚、损坏旧凭据、非固定管理员 ID、认证清理和业务数据保留。
 - 运行 `(cd frontend && pnpm lint)`、`(cd frontend && pnpm run type-check)` 检查前端认证调用改动。
 - 代理或 Cookie 部署改动在 HTTPS 测试环境检查 `Set-Cookie`、`X-Forwarded-Proto` 和可信来源行为；真实域名与证书配置无法在单元测试中覆盖时，在变更说明中记录。

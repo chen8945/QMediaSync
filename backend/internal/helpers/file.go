@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -188,8 +189,8 @@ func IsRunningInDocker() bool {
 	return false
 }
 
-// MoveDir 将 src 目录下的所有文件和子文件夹内的文件都移动到 dst 目录
-func MoveDir(src, dst string) error {
+// MoveDir 将 src 下的文件移动到 dst，exclude 指定需要保留的相对路径。
+func MoveDir(src, dst string, exclude ...string) error {
 	// 检查源目录是否存在
 	if !PathExists(src) {
 		return fmt.Errorf("源目录不存在：%s", src)
@@ -216,6 +217,12 @@ func MoveDir(src, dst string) error {
 		relPath, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
+		}
+		if slices.Contains(exclude, relPath) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		// 计算目标路径

@@ -4,6 +4,7 @@
 package helpers
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lxn/walk"
+	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
 )
 
@@ -203,4 +205,26 @@ func Command(name string, arg ...string) *exec.Cmd {
 	}
 
 	return cmd
+}
+
+func lockInstanceFile(file *os.File) error {
+	return windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
+}
+
+// ShowAdminRecoveryResult 使用系统窗口交付恢复结果，兼容无控制台的 Windows 发布包。
+func ShowAdminRecoveryResult(message string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	title, err := windows.UTF16PtrFromString("QMediaSync 管理员恢复")
+	if err != nil {
+		return err
+	}
+	content, err := windows.UTF16PtrFromString(message + "\n\n按 Ctrl+C 可以复制本窗口内容。")
+	if err != nil {
+		return err
+	}
+	if win.MessageBox(0, content, title, win.MB_OK|win.MB_ICONINFORMATION|win.MB_SETFOREGROUND) == 0 {
+		return fmt.Errorf("无法显示管理员恢复结果窗口，请在交互式桌面重新执行恢复")
+	}
+	return nil
 }

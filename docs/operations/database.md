@@ -20,6 +20,8 @@ SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_t
 
 已有数据库启动时，`Migrate()` 按 `migrator.version_code` 顺序执行补丁并逐步推进版本。新增或修改表、字段和迁移时必须同时更新 [数据库 schema 与迁移](../reference/database-schema.md)。
 
+本地管理员恢复使用独立的已有数据库连接：SQLite 以 `mode=rw` 打开已有普通文件，外部 PostgreSQL 只连接指定数据库；两者均不建库、不迁移、不启动后台保活，连接池限制为一个连接。认证变更以单个事务提交，失败回滚。它与备份恢复、数据库修复是不同操作，具体契约见 [本地管理员恢复](../architecture/authentication-sessions.md#本地管理员恢复)，使用方法见 [部署说明](deployment.md#管理员恢复)。
+
 ## 修复与清库
 
 `POST /api/database/repair` 调用 `RepairDB()`，对 `AllTables` 执行 `AutoMigrate` 并修复 PostgreSQL 主键序列：缺失表、字段和索引会补齐，不主动删除已有数据。

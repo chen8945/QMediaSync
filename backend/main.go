@@ -50,6 +50,7 @@ var Update bool = false
 var AppName string = "QMediaSync"
 var QMSApp *App
 var requestStatWriter *models.RequestStatWriter
+var instanceLock *os.File
 
 func parseBuildUnixTime(value string) int64 {
 	if value == "" {
@@ -338,7 +339,20 @@ func getRootDir() string {
 }
 
 // 获取用户数据目录
-func getDataAndConfigDir() {
+func getDataAndConfigDir() error {
+	resolvedDir, err := resolveConfigDir("")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(resolvedDir, 0o755); err != nil {
+		return err
+	}
+	lock, err := helpers.AcquireInstanceLock(resolvedDir)
+	if err != nil {
+		return err
+	}
+	instanceLock = lock
+
 	var appData string
 	var dataDir string
 	var configDir string
@@ -366,16 +380,9 @@ func getDataAndConfigDir() {
 		helpers.ConfigDir = configDir
 		if helpers.PathExists(oldConfigDir) {
 			// 迁移旧配置
-			err := helpers.MoveDir(oldConfigDir, configDir)
+			err := helpers.MoveConfigDir(oldConfigDir, configDir)
 			if err != nil {
-				fmt.Printf("迁移旧配置目录失败：%v\n", err)
-				panic("迁移旧配置目录失败")
-			}
-			// 删除旧目录
-			err = os.RemoveAll(oldConfigDir)
-			if err != nil {
-				fmt.Printf("删除旧配置目录失败：%v\n", err)
-				panic("删除旧配置目录失败")
+				return fmt.Errorf("迁移旧配置目录失败：%w", err)
 			}
 		}
 	} else {
@@ -406,10 +413,9 @@ func getDataAndConfigDir() {
 							panic("创建配置目录失败")
 						}
 						// 迁移旧配置
-						err = helpers.MoveDir(oldConfigDir, configDir)
+						err = helpers.MoveConfigDir(oldConfigDir, configDir)
 						if err != nil {
-							log.Printf("迁移旧配置目录失败：%v\n", err)
-							panic("迁移旧配置目录失败")
+							return fmt.Errorf("迁移旧配置目录失败：%w", err)
 						}
 						needMk = false
 					}
@@ -427,6 +433,7 @@ func getDataAndConfigDir() {
 			panic("创建配置目录失败")
 		}
 	}
+	return nil
 }
 
 //go:embed emby302.yaml
@@ -836,8 +843,11 @@ func initEnv() bool {
 	helpers.DEFAULT_FANART_API_KEY = firstNonEmpty(os.Getenv("FANART_API_KEY"), FANART_API_KEY)
 	helpers.FANART_API_KEY = helpers.DEFAULT_FANART_API_KEY
 	helpers.OAuthRelayEncryptionKey = firstNonEmpty(os.Getenv("OAUTH_RELAY_ENCRYPTION_KEY"), OAuthRelayEncryptionKey)
-	initTimeZone()        // 设置东 8 区
-	getDataAndConfigDir() // 获取数据库数据目录和配置文件目录
+	initTimeZone() // 设置东 8 区
+	if err := getDataAndConfigDir(); err != nil {
+		log.Printf("初始化配置目录失败：%v", err)
+		return false
+	}
 	log.Printf("当前工作目录：%s\n", helpers.RootDir)
 	log.Printf("当前数据目录：%s\n", helpers.DataDir)
 	log.Printf("当前配置文件目录：%s\n", helpers.ConfigDir)
@@ -930,6 +940,7 @@ func parseParams() {
 	flag.StringVar(&helpers.Guid, "guid", "", "GUID 参数")
 	flag.BoolVar(&helpers.IsFnOS, "fnos", false, "是否是飞牛环境")
 	flag.StringVar(&update, "update", "", "更新参数")
+	registerAdminRecoveryFlags(flag.CommandLine, &adminRecoveryOptions{})
 	// 解析命令行参数
 	flag.Parse()
 	// 使用参数
@@ -965,12 +976,22 @@ func parseParams() {
 // @in query
 // @name api_key
 func main() {
+	if handled, code := runAdminRecoveryCommand(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	parseParams()
 	getRootDir()
 	if Update {
 		runUpdateProcess()
 		return
 	}
+	defer func() {
+		if instanceLock != nil {
+			if err := instanceLock.Close(); err != nil {
+				log.Printf("释放实例锁失败：%v", err)
+			}
+		}
+	}()
 	if !initEnv() {
 		panic("初始化环境失败")
 	}

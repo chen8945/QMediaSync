@@ -24,6 +24,7 @@
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
 | 配置、密钥或数据库迁移 | `helpers`、`models`、`db` 或相关控制器包测试 | 配置、数据库 schema 与运维 |
+| 本地管理员恢复与 Compose 脚本 | 本文“管理员恢复验证”的 Go、脚本和 PostgreSQL 检查；涉及 Windows 展示时交叉构建并人工确认窗口 | 认证会话、部署 |
 | Vue 组件、组合式函数或 HTTP 客户端 | `pnpm run test`、`pnpm lint`、`pnpm format:check`、`pnpm run type-check` | AI 协作说明、请求校验 |
 | 账号授权更换跨端流程 | `cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`；`cd frontend && pnpm run test -- test/components/cloud-auth test/composables/useV115DeviceAuthorization.test.ts`、`pnpm run type-check`、`pnpm run build` | [账号授权与更换](../reference/account-authorization.md) |
 | 前端生产集成 | `pnpm run test`、`pnpm run build`、`pnpm run check:build` | 本地开发、发布流程 |
@@ -54,6 +55,28 @@
 ```
 
 项目没有配置 Go lint 工具。Go 文件的 import 以 `goimports -local qmediasync` 的实际输出为准；仅在用户请求或本次变更确实需要格式化时运行会写入文件的命令，并检查不会带入无关改动。
+
+## 管理员恢复验证
+
+```bash
+# 命令参数、已有数据库连接、进程锁、认证事务与应用日志
+(cd backend && go test ./internal/helpers ./internal/db ./internal/models . -run 'Test(AcquireInstanceLock|OpenExisting|RecoverAdmin|ParseAdminRecoveryOptions|PerformAdminRecovery|AdminRecoveryConfigDir|StartupConfigMigrationLock)')
+
+# Docker 命令替身覆盖脚本边界，不操作真实部署；只依赖 Python 3 标准库
+python3 scripts/tests/test_recover_admin.py
+
+# 真实 PostgreSQL：使用可创建 schema 的专用测试库 URL
+(cd backend && QMS_TEST_POSTGRES_DSN='postgres://用户:密码@127.0.0.1:端口/测试库?sslmode=disable' go test -tags=integration ./internal/models -run '^TestRecoverAdminPostgres$')
+
+# Windows 无控制台发布方式的编译检查
+(cd backend && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-H=windowsgui' -o /tmp/QMediaSync-recovery.exe .)
+```
+
+PostgreSQL 测试在测试库内为每个场景创建独立 schema，并在结束后删除；不要使用生产数据库。SQLite 与 PostgreSQL 共同覆盖已有数据库连接、重置、删除、事务中途失败回滚、损坏旧凭据、非固定管理员 ID、会话审计、API Key 和业务数据保留。命令入口还覆盖数据库连接错误不泄密，以及旧配置迁移前必须持有源、目标实例锁。
+
+脚本检查覆盖当前目录发现、显式部署参数、候选歧义与自定义镜像的容器选择、管道执行时的终端交互、无效编号重试与取消、无容器或无终端、多容器、镜像和配置不一致、服务级环境文件、容器内更新、只读挂载、实际卷与网络复用、卷子目录拒绝、bind 选项保留、原运行状态保留、失败后启动原服务，以及启动失败或收尾被中断时仍交付新密码。修改 Compose 调用方式后，还应在隔离测试项目中确认真实 `config`/`run` 行为和临时容器清理。
+
+Windows 的窗口可见性和 `Ctrl+C` 复制不能由交叉编译证明，需在真实交互式桌面人工验证：先退出托盘程序，执行重置，确认能复制并登录；再次启动后确认旧会话失效。无法执行时必须记录该限制。
 
 ## 前端命令
 

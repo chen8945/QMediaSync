@@ -141,6 +141,14 @@ func HasConfigFile() bool {
 }
 
 func InitConfig() error {
+	if err := LoadExistingConfig(); err != nil {
+		return err
+	}
+	return EnsureJWTSecret()
+}
+
+// LoadExistingConfig 读取已有配置并补齐内存默认值，不生成密钥或写回配置文件。
+func LoadExistingConfig() error {
 	configPath := ExistingConfigFilePath()
 	// 从配置文件加载
 	if err := loadYaml(configPath, &GlobalConfig); err != nil {
@@ -168,9 +176,6 @@ func InitConfig() error {
 	normalizeLogConfig(&GlobalConfig.Log)
 	logLevel, _ := ParseLogLevel(GlobalConfig.Log.Level)
 	SetGlobalLogLevel(logLevel)
-	if err := EnsureJWTSecret(); err != nil {
-		return err
-	}
 	return nil
 }
 
