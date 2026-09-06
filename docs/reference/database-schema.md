@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `62`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `63`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -93,8 +93,11 @@
 | 59 | 60 | 新增 `sync_path_idempotency_records`，用于同步目录创建的幂等重试；`emby_library_refresh_tasks` 新增 `task_key` 用于任务去重，item 定向刷新任务的 `library_id` 回填为真实媒体库 ID 或为空。 |
 | 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
 | 61 | 62 | 为 `account.name` 和 `account.user_id` 创建非空条件唯一索引；迁移前检查已有重复值，发现重复时保留数据、停留在旧版本并记录诊断信息，不静默改写账号关联。 |
+| 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
 
-当前数据库版本是 `62`。
+当前数据库版本是 `63`。
+
+`62 → 63` 对已有表只添加正则列并回填空值，不整体重建表；已有正则值及其他配置均保留，迁移重试不会覆盖已保存的规则。
 
 ## 不变量
 
@@ -168,7 +171,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `62`。
+- `version_code`：当前数据库版本号，当前值为 `63`。
 
 ### `users`
 
@@ -254,7 +257,8 @@ STRM 相关字段：
 - `min_video_size`：最小视频大小，单位字节。
 - `video_ext`：视频扩展名 JSON 字符串。
 - `meta_ext`：元数据扩展名 JSON 字符串。
-- `exclude_name`：排除文件名 JSON 字符串。
+- `exclude_name`：完整匹配的排除名称 JSON 字符串，沿用保存时转小写的行为。
+- `exclude_name_regex`：正则排除名称 JSON 字符串，默认 `[]`；对应 API 字段 `exclude_name_regex_arr`，表达式原文保存，不转小写、不切分或移除首尾空格。匹配规则见 [STRM 名称排除](../operations/configuration.md#strm-名称排除)。
 - `upload_meta`：是否上传元数据。
 - `download_meta`：是否下载元数据。
 - `delete_dir`：是否删除目录。
@@ -289,6 +293,7 @@ STRM 相关字段：
 - `video_ext`
 - `meta_ext`
 - `exclude_name`
+- `exclude_name_regex`
 - `upload_meta`
 - `download_meta`
 - `delete_dir`

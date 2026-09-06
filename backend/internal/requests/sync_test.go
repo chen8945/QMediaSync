@@ -48,6 +48,10 @@ func TestSyncPathRequestValidate(t *testing.T) {
 		{name: "自定义 STRM 路径模式枚举错误失败", mutate: func(r *SyncPathRequest) { r.Setting.AddPath = 4 }, wantErr: true},
 		{name: "自定义配置 Cron 错误失败", mutate: func(r *SyncPathRequest) { r.Setting.Cron = "bad" }, wantErr: true},
 		{name: "自定义配置枚举错误失败", mutate: func(r *SyncPathRequest) { r.Setting.DownloadMeta = 3 }, wantErr: true},
+		{name: "自定义配置允许 Go 正则", mutate: func(r *SyncPathRequest) { r.Setting.ExcludeNameRegexArr = []string{"(?i:Sample)", "^A{1,3}$"} }},
+		{name: "自定义配置空正则失败", mutate: func(r *SyncPathRequest) { r.Setting.ExcludeNameRegexArr = []string{""} }, wantErr: true},
+		{name: "自定义配置非法正则失败", mutate: func(r *SyncPathRequest) { r.Setting.ExcludeNameRegexArr = []string{"["} }, wantErr: true},
+		{name: "自定义配置反向引用失败", mutate: func(r *SyncPathRequest) { r.Setting.ExcludeNameRegexArr = []string{"(a)\\1"} }, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -123,5 +127,19 @@ func TestSyncPathRequestNormalizedRemotePath(t *testing.T) {
 	got := local.NormalizedRemotePath()
 	if runtime.GOOS != "windows" && got != "/media" {
 		t.Fatalf("NormalizedRemotePath() = %q", got)
+	}
+}
+
+func TestSyncPathRequestRegexFieldCompatibility(t *testing.T) {
+	const pattern = " (?i)^Sample\\.[^.]+$ "
+	req := SyncPathRequest{
+		SyncPathStrmRequest: SyncPathStrmRequest{ExcludeNameRegexArr: []string{pattern}},
+	}
+	if got := req.StrmSettingModel().ExcludeNameRegexArr; len(got) != 1 || got[0] != pattern {
+		t.Fatalf("顶层正则字段 = %q，期望原文 %q", got, pattern)
+	}
+	req.Setting = SyncPathStrmRequest{ExcludeNameRegexArr: []string{"^Nested$"}}
+	if got := req.StrmSettingModel().ExcludeNameRegexArr; len(got) != 1 || got[0] != "^Nested$" {
+		t.Fatalf("仅包含正则的嵌套配置应优先，实际为 %q", got)
 	}
 }

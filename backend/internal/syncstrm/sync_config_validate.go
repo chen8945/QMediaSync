@@ -1,7 +1,9 @@
 package syncstrm
 
 import (
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -32,18 +34,35 @@ type SyncStrmConfig struct {
 	VideoExt              []string                      `json:"video_ext"`                 // 视频文件扩展名列表
 	MetaExt               []string                      `json:"meta_ext"`                  // 元数据文件扩展名列表
 	ExcludeNames          []string                      `json:"exclude_names"`             // 排除的文件名列表
+	ExcludeNameRegexes    []string                      `json:"exclude_name_regexes"`      // 排除名称的正则表达式原文
 	StrmUrlNeedPath       int                           `json:"strm_url_need_path"`        // STRM 链接路径模式，1 为完整路径，2 为只添加文件名，3 为不添加路径
 	DelEmptyLocalDir      bool                          `json:"del_empty_local_dir"`       // 是否删除本地空目录
 	CheckMetaMtime        int                           `json:"check_meta_mtime"`          // 是否检查元数据文件修改时间，默认 0；如果为 1，网盘新则下载，本地新则上传（UploadMeta=1 时）
+
+	excludeNameRegexes []*regexp.Regexp
+}
+
+func (config *SyncStrmConfig) compileExcludeNameRegexes() error {
+	compiled := make([]*regexp.Regexp, 0, len(config.ExcludeNameRegexes))
+	for i, pattern := range config.ExcludeNameRegexes {
+		if pattern == "" {
+			return fmt.Errorf("exclude_name_regex_arr[%d]：正则表达式不能为空", i)
+		}
+		expression, err := regexp.Compile(pattern)
+		if err != nil {
+			return fmt.Errorf("exclude_name_regex_arr[%d]：正则表达式无效：%w", i, err)
+		}
+		compiled = append(compiled, expression)
+	}
+	config.excludeNameRegexes = compiled
+	return nil
 }
 
 func (s *SyncStrm) ValidFile(file *SyncFileCache) bool {
-	// 排除在上一步已经做了
-	// // 检查文件是否被排除
-	// if s.IsExcludeName(filepath.Base(file.FileName)) {
-	// 	s.Sync.Logger.Warnf("文件 %s 被排除，跳过它和旗下所有内容", file.FileName)
-	// 	return false
-	// }
+	if s.IsExcludeName(file.FileName) || s.IsExcludePath(file.GetPath()) {
+		s.Sync.Logger.Warnf("文件 %s 的名称或父目录被排除，跳过", file.GetFullRemotePath())
+		return false
+	}
 	// 如果是文件，则进行预处理，然后插入临时表
 	file.IsVideo = s.IsValidVideoExt(file.FileName)
 	file.IsMeta = s.IsValidMetaExt(file.FileName)
@@ -96,17 +115,25 @@ func (s *SyncStrm) IsValidMetaExt(filename string) bool {
 }
 
 func (s *SyncStrm) IsExcludeName(filename string) bool {
-	if len(s.Config.ExcludeNames) == 0 {
-		return false
+	if slices.Contains(s.Config.ExcludeNames, strings.ToLower(filename)) {
+		return true
 	}
-	filename = strings.ToLower(filename)
-	return slices.Contains(s.Config.ExcludeNames, strings.ToLower(filename))
+	for _, expression := range s.Config.excludeNameRegexes {
+		if expression.MatchString(filename) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SyncStrm) IsExcludePath(path string) bool {
 	// 分隔路径
-	pathParts := strings.Split(path, "/")
+	pathParts := strings.Split(filepath.ToSlash(path), "/")
 	for _, part := range pathParts {
+		// 根路径的空段和路径导航符不是实际目录名称。
+		if part == "" || part == "." || part == ".." {
+			continue
+		}
 		if s.IsExcludeName(part) {
 			return true
 		}

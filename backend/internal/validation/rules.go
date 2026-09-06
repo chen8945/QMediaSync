@@ -1,7 +1,9 @@
 package validation
 
 import (
+	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,6 +85,20 @@ func ExtList(field string, values []string, allowEmpty bool) error {
 		}
 		if !strings.HasPrefix(item, ".") {
 			return New(field, "扩展名必须以 . 开头")
+		}
+	}
+	return nil
+}
+
+// RegexList 校验 Go 正则表达式列表，保留表达式原文并返回具体条目的错误。
+func RegexList(field string, values []string) error {
+	for i, value := range values {
+		itemField := fmt.Sprintf("%s[%d]", field, i)
+		if value == "" {
+			return New(itemField, "正则表达式不能为空")
+		}
+		if _, err := regexp.Compile(value); err != nil {
+			return New(itemField, "正则表达式无效："+err.Error())
 		}
 	}
 	return nil

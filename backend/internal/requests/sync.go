@@ -11,18 +11,19 @@ import (
 
 // SyncPathStrmRequest 同步路径自定义 STRM 配置请求。
 type SyncPathStrmRequest struct {
-	LocalProxy     int      `form:"local_proxy" json:"local_proxy"`
-	StrmBaseURL    string   `form:"strm_base_url" json:"strm_base_url"`
-	Cron           string   `form:"cron" json:"cron"`
-	MinVideoSize   int64    `form:"min_video_size" json:"min_video_size"`
-	VideoExtArr    []string `json:"video_ext_arr"`
-	MetaExtArr     []string `form:"meta_ext_arr" json:"meta_ext_arr"`
-	ExcludeNameArr []string `form:"exclude_name_arr" json:"exclude_name_arr"`
-	UploadMeta     int      `form:"upload_meta" json:"upload_meta"`
-	DownloadMeta   int      `form:"download_meta" json:"download_meta"`
-	DeleteDir      int      `form:"delete_dir" json:"delete_dir"`
-	AddPath        int      `form:"add_path" json:"add_path"`
-	CheckMetaMtime int      `form:"check_meta_mtime" json:"check_meta_mtime"`
+	LocalProxy          int      `form:"local_proxy" json:"local_proxy"`
+	StrmBaseURL         string   `form:"strm_base_url" json:"strm_base_url"`
+	Cron                string   `form:"cron" json:"cron"`
+	MinVideoSize        int64    `form:"min_video_size" json:"min_video_size"`
+	VideoExtArr         []string `json:"video_ext_arr"`
+	MetaExtArr          []string `form:"meta_ext_arr" json:"meta_ext_arr"`
+	ExcludeNameArr      []string `form:"exclude_name_arr" json:"exclude_name_arr"`
+	ExcludeNameRegexArr []string `form:"exclude_name_regex_arr" json:"exclude_name_regex_arr"`
+	UploadMeta          int      `form:"upload_meta" json:"upload_meta"`
+	DownloadMeta        int      `form:"download_meta" json:"download_meta"`
+	DeleteDir           int      `form:"delete_dir" json:"delete_dir"`
+	AddPath             int      `form:"add_path" json:"add_path"`
+	CheckMetaMtime      int      `form:"check_meta_mtime" json:"check_meta_mtime"`
 }
 
 // Validate 校验同步路径自定义 STRM 配置请求。
@@ -40,6 +41,9 @@ func (r SyncPathStrmRequest) Validate() error {
 		return err
 	}
 	if err := validation.ExtList("meta_ext_arr", r.MetaExtArr, true); err != nil {
+		return err
+	}
+	if err := validation.RegexList("exclude_name_regex_arr", r.ExcludeNameRegexArr); err != nil {
 		return err
 	}
 	if err := validation.OneOfInt("local_proxy", r.LocalProxy, []int{-1, 0, 1}); err != nil {
@@ -63,18 +67,19 @@ func (r SyncPathStrmRequest) Validate() error {
 // ToModel 转换为 STRM 配置模型。
 func (r SyncPathStrmRequest) ToModel() models.SettingStrm {
 	return models.SettingStrm{
-		LocalProxy:     r.LocalProxy,
-		StrmBaseUrl:    r.StrmBaseURL,
-		Cron:           r.Cron,
-		MinVideoSize:   r.MinVideoSize,
-		VideoExtArr:    r.VideoExtArr,
-		MetaExtArr:     r.MetaExtArr,
-		ExcludeNameArr: r.ExcludeNameArr,
-		UploadMeta:     r.UploadMeta,
-		DownloadMeta:   r.DownloadMeta,
-		DeleteDir:      r.DeleteDir,
-		AddPath:        r.AddPath,
-		CheckMetaMtime: r.CheckMetaMtime,
+		LocalProxy:          r.LocalProxy,
+		StrmBaseUrl:         r.StrmBaseURL,
+		Cron:                r.Cron,
+		MinVideoSize:        r.MinVideoSize,
+		VideoExtArr:         r.VideoExtArr,
+		MetaExtArr:          r.MetaExtArr,
+		ExcludeNameArr:      r.ExcludeNameArr,
+		ExcludeNameRegexArr: r.ExcludeNameRegexArr,
+		UploadMeta:          r.UploadMeta,
+		DownloadMeta:        r.DownloadMeta,
+		DeleteDir:           r.DeleteDir,
+		AddPath:             r.AddPath,
+		CheckMetaMtime:      r.CheckMetaMtime,
 	}
 }
 
@@ -86,6 +91,7 @@ func (r SyncPathStrmRequest) isZero() bool {
 		len(r.VideoExtArr) == 0 &&
 		len(r.MetaExtArr) == 0 &&
 		len(r.ExcludeNameArr) == 0 &&
+		len(r.ExcludeNameRegexArr) == 0 &&
 		r.UploadMeta == 0 &&
 		r.DownloadMeta == 0 &&
 		r.DeleteDir == 0 &&

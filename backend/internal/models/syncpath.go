@@ -84,20 +84,22 @@ type SyncPathScrapePath struct {
 
 func GetStrmSettingDefault() SettingStrm {
 	return SettingStrm{
-		StrmBaseUrl:    "",
-		Cron:           "",
-		MinVideoSize:   -1,
-		AddPath:        -1,
-		CheckMetaMtime: -1,
-		UploadMeta:     -1,
-		DownloadMeta:   -1,
-		DeleteDir:      -1,
-		VideoExtArr:    []string{},
-		MetaExtArr:     []string{},
-		ExcludeNameArr: []string{},
-		VideoExt:       "",
-		MetaExt:        "",
-		ExcludeName:    "",
+		StrmBaseUrl:         "",
+		Cron:                "",
+		MinVideoSize:        -1,
+		AddPath:             -1,
+		CheckMetaMtime:      -1,
+		UploadMeta:          -1,
+		DownloadMeta:        -1,
+		DeleteDir:           -1,
+		VideoExtArr:         []string{},
+		MetaExtArr:          []string{},
+		ExcludeNameArr:      []string{},
+		ExcludeNameRegexArr: []string{},
+		VideoExt:            "",
+		MetaExt:             "",
+		ExcludeName:         "",
+		ExcludeNameRegex:    "[]",
 	}
 }
 
@@ -180,6 +182,14 @@ func (sp *SyncPath) GetExcludeNameArr() []string {
 		return SettingsGlobal.ExcludeNameArr
 	}
 	return sp.ExcludeNameArr
+}
+
+// GetExcludeNameRegexArr 返回自定义正则排除名称，空列表继承全局设置。
+func (sp *SyncPath) GetExcludeNameRegexArr() []string {
+	if len(sp.ExcludeNameRegexArr) == 0 {
+		return SettingsGlobal.ExcludeNameRegexArr
+	}
+	return sp.ExcludeNameRegexArr
 }
 
 func (sp *SyncPath) GetAddPath() int {

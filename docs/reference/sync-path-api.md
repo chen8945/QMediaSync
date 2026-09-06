@@ -81,11 +81,15 @@
 | `cron` | 空值或标准 5 段 Cron / 项目支持的描述符。 |
 | `min_video_size` | 不小于 `-1`，单位字节。 |
 | `video_ext_arr`、`meta_ext_arr` | 空数组或以 `.` 开头、不含空白字符的扩展名数组。 |
+| `exclude_name_arr` | 完整匹配的排除名称数组，不区分大小写。 |
+| `exclude_name_regex_arr` | 正则排除名称数组，每项必须是非空且能由 Go `regexp` 编译的原始表达式；不转小写或裁剪，错误包含字段和规则序号。 |
 | `upload_meta` | `-1`、`0`、`1`、`2`。 |
 | `download_meta`、`delete_dir`、`check_meta_mtime` | `-1`、`0`、`1`。 |
 | `add_path` | `-1`、`1`、`2`、`3`。 |
 
 `custom_config=false` 时，服务端存储继承全局配置的默认值；调用方不应依赖传入的自定义字段被保留。
+
+两类排除列表分别继承：自定义列表非空时覆盖相应全局列表，为空时继承相应全局列表；精确名称与正则命中任意一项都会排除。名称、大小写与父目录语义见 [STRM 名称排除](../operations/configuration.md#strm-名称排除)。
 
 ### `directory_upload`
 

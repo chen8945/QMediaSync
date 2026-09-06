@@ -6,7 +6,7 @@
 >
 > 修改时机：修改配置字段、默认值、密钥来源、日志行为、Emby 302 TLS 选项或运行时监控指标时必须更新本文档和 `docs/examples/config.yaml`。
 >
-> 相关代码：`backend/internal/helpers/config.go`、`backend/internal/helpers/logger.go`、`backend/main.go`、`backend/emby302.yaml`、`docs/examples/config.yaml`。
+> 相关代码：`backend/internal/helpers/config.go`、`backend/internal/helpers/logger.go`、`backend/internal/models/settings.go`、`backend/internal/models/syncpath.go`、`backend/main.go`、`backend/emby302.yaml`、`docs/examples/config.yaml`。
 
 ## 配置文件与默认端口
 
@@ -15,6 +15,21 @@
 - 完整字段示例见 [config.yaml](../examples/config.yaml)。示例仅说明字段，运行时以 `config/config.yaml` 为准。
 - 代码默认数据库配置为 `postgres + embedded`。Docker 镜像安装 `postgresql15`；裸二进制和本地开发环境不携带 PostgreSQL 二进制，使用 PostgreSQL 时应安装 PostgreSQL 15 及以上、配置外部数据库，或自行保证内嵌模式依赖的命令可用。
 - 数据库引擎、备份恢复和修复操作见 [数据库运维](database.md)；表、版本和迁移语义见 [数据库 schema 与迁移](../reference/database-schema.md)。
+
+## STRM 名称排除
+
+STRM 名称排除保存于数据库，由全局 STRM 设置和同步目录自定义设置管理，不增加 `config.yaml` 或环境变量字段。
+
+| 设置 | 匹配方式 | 大小写 |
+| --- | --- | --- |
+| 排除名称 | 完整匹配名称，保留原有行为 | 不区分大小写 |
+| 正则排除名称 | Go `regexp` 语法，默认部分匹配；使用 `^…$` 限定完整名称 | 默认区分，使用 `(?i)` 忽略 |
+
+完整同步和网盘文件管理手动生成以文件名（包含扩展名）及路径中的各级目录名为匹配对象；两类规则任意一项命中即排除，目录命中时排除其下内容。正则不跨路径分隔符匹配，表达式和待匹配名称都保留原始大小写。输入采用原始表达式，例如 `(?i)^extras$`，不使用 JavaScript 的 `/abc/i` 包装格式。
+
+两类列表分别继承：开启目录自定义配置后，非空列表覆盖相应全局列表，空列表继承相应全局列表。网盘文件管理的手动生成直接使用全局配置，单文件生成同样检查文件名和父目录。每次创建同步器时编译正则；修改配置对后续创建的同步器生效。
+
+规则通过现有保存接口由后端最终校验，正则原文落库。字段及升级行为见 [数据库 schema 与迁移](../reference/database-schema.md)，目录保存契约见 [同步目录聚合 API](../reference/sync-path-api.md)。
 
 ## 115 运行参数
 

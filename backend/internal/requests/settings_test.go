@@ -253,6 +253,12 @@ func TestUpdateStrmConfigRequestValidate(t *testing.T) {
 		{name: "最小视频大小为负数失败", mutate: func(r *UpdateStrmConfigRequest) { r.MinVideoSize = -1 }, wantErr: true},
 		{name: "下载元数据枚举错误失败", mutate: func(r *UpdateStrmConfigRequest) { r.DownloadMeta = 2 }, wantErr: true},
 		{name: "视频扩展名缺少点失败", mutate: func(r *UpdateStrmConfigRequest) { r.VideoExtArr = []string{"mp4"} }, wantErr: true},
+		{name: "允许 Go 正则及原文空格", mutate: func(r *UpdateStrmConfigRequest) {
+			r.ExcludeNameRegexArr = []string{"(?i)^Sample\\.[^.]+$", " A{1,3};B "}
+		}},
+		{name: "空正则失败", mutate: func(r *UpdateStrmConfigRequest) { r.ExcludeNameRegexArr = []string{""} }, wantErr: true},
+		{name: "非法正则失败", mutate: func(r *UpdateStrmConfigRequest) { r.ExcludeNameRegexArr = []string{"["} }, wantErr: true},
+		{name: "不支持前瞻失败", mutate: func(r *UpdateStrmConfigRequest) { r.ExcludeNameRegexArr = []string{"(?=sample)"} }, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -266,5 +272,14 @@ func TestUpdateStrmConfigRequestValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestUpdateStrmConfigRequestPreservesRegex(t *testing.T) {
+	const pattern = " (?i)Sample\\.[A-Z]{1,3}; "
+	req := UpdateStrmConfigRequest{ExcludeNameRegexArr: []string{pattern}}
+	model := req.ToModel()
+	if len(model.ExcludeNameRegexArr) != 1 || model.ExcludeNameRegexArr[0] != pattern {
+		t.Fatalf("ToModel() 正则 = %q，期望原文 %q", model.ExcludeNameRegexArr, pattern)
 	}
 }

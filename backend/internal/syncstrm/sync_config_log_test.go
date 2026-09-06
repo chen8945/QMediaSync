@@ -41,15 +41,16 @@ func TestLogEffectiveStrmConfigUsesGlobalSources(t *testing.T) {
 	}
 
 	settingStrm := models.SettingStrm{
-		VideoExtArr:    []string{".mp4", ".mkv"},
-		MetaExtArr:     []string{".nfo", ".jpg"},
-		ExcludeNameArr: []string{"sample"},
-		MinVideoSize:   100,
-		AddPath:        3,
-		UploadMeta:     0,
-		DownloadMeta:   1,
-		DeleteDir:      1,
-		CheckMetaMtime: 1,
+		VideoExtArr:         []string{".mp4", ".mkv"},
+		MetaExtArr:          []string{".nfo", ".jpg"},
+		ExcludeNameArr:      []string{"sample"},
+		ExcludeNameRegexArr: []string{"(?i)^Global$"},
+		MinVideoSize:        100,
+		AddPath:             3,
+		UploadMeta:          0,
+		DownloadMeta:        1,
+		DeleteDir:           1,
+		CheckMetaMtime:      1,
 	}
 	encodedSettingStrm := settingStrm.EncodeArr()
 	if encodedSettingStrm == nil {
@@ -87,7 +88,7 @@ func TestLogEffectiveStrmConfigUsesGlobalSources(t *testing.T) {
 		t.Fatal("NewSyncStrmFromSyncPath() 返回 nil")
 	}
 
-	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames)
+	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames, syncStrm.Config.ExcludeNameRegexes)
 
 	logOutput := logBuf.String()
 	wantParts := []string{
@@ -95,6 +96,7 @@ func TestLogEffectiveStrmConfigUsesGlobalSources(t *testing.T) {
 		`视频扩展名=[".mp4", ".mkv"]（来源=全局 STRM 设置）`,
 		`元数据扩展名=[".nfo", ".jpg"]（来源=全局 STRM 设置）`,
 		`排除名称=["sample"]（来源=全局 STRM 设置）`,
+		`正则排除名称=["(?i)^Global$"]（来源=全局 STRM 设置）`,
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(logOutput, want) {
@@ -133,15 +135,16 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 	}
 
 	settingStrm := models.SettingStrm{
-		VideoExtArr:    []string{".mp4", ".mkv"},
-		MetaExtArr:     []string{".nfo", ".jpg"},
-		ExcludeNameArr: []string{"global-sample"},
-		MinVideoSize:   100,
-		AddPath:        3,
-		UploadMeta:     0,
-		DownloadMeta:   1,
-		DeleteDir:      1,
-		CheckMetaMtime: 1,
+		VideoExtArr:         []string{".mp4", ".mkv"},
+		MetaExtArr:          []string{".nfo", ".jpg"},
+		ExcludeNameArr:      []string{"global-sample"},
+		ExcludeNameRegexArr: []string{"(?i)^Global$"},
+		MinVideoSize:        100,
+		AddPath:             3,
+		UploadMeta:          0,
+		DownloadMeta:        1,
+		DeleteDir:           1,
+		CheckMetaMtime:      1,
 	}
 	encodedSettingStrm := settingStrm.EncodeArr()
 	if encodedSettingStrm == nil {
@@ -161,13 +164,14 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 	syncPath := &models.SyncPath{
 		BaseModel: models.BaseModel{ID: 5},
 		SettingStrm: models.SettingStrm{
-			MetaExtArr:     []string{".ass", ".srt"},
-			MinVideoSize:   -1,
-			AddPath:        -1,
-			UploadMeta:     -1,
-			DownloadMeta:   -1,
-			DeleteDir:      -1,
-			CheckMetaMtime: -1,
+			MetaExtArr:          []string{".ass", ".srt"},
+			ExcludeNameRegexArr: []string{"^Custom$"},
+			MinVideoSize:        -1,
+			AddPath:             -1,
+			UploadMeta:          -1,
+			DownloadMeta:        -1,
+			DeleteDir:           -1,
+			CheckMetaMtime:      -1,
 		},
 		CustomConfig: true,
 		LocalPath:    helpers.ConfigDir,
@@ -180,7 +184,7 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 		t.Fatal("NewSyncStrmFromSyncPath() 返回 nil")
 	}
 
-	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames)
+	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames, syncStrm.Config.ExcludeNameRegexes)
 
 	logOutput := logBuf.String()
 	wantParts := []string{
@@ -188,6 +192,7 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 		`视频扩展名=[".mp4", ".mkv"]（来源=全局 STRM 设置）`,
 		`元数据扩展名=[".ass", ".srt"]（来源=同步目录自定义设置）`,
 		`排除名称=["global-sample"]（来源=全局 STRM 设置）`,
+		`正则排除名称=["^Custom$"]（来源=同步目录自定义设置）`,
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(logOutput, want) {

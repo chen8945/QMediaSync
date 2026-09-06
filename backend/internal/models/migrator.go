@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 62
+var MaxVersionCode = 63
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -700,6 +700,28 @@ func Migrate() {
 		}
 		helpers.AppLogger.Info("已添加 account.name 和 account.user_id 非空唯一约束")
 		accountIdentityIndexesEnsured = true
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == 62 {
+		for _, model := range []any{&Settings{}, &SyncPath{}} {
+			if !db.Db.Migrator().HasTable(model) {
+				continue
+			}
+			// 只补新列，避免 SQLite 重建旧表时改写无关字段。
+			if !db.Db.Migrator().HasColumn(model, "ExcludeNameRegex") {
+				if err := db.Db.Migrator().AddColumn(model, "ExcludeNameRegex"); err != nil {
+					helpers.AppLogger.Errorf("迁移 STRM 正则排除名称设置失败：%v", err)
+					return
+				}
+			}
+			if err := db.Db.Model(model).
+				Where("exclude_name_regex IS NULL OR exclude_name_regex = ?", "").
+				UpdateColumn("exclude_name_regex", "[]").Error; err != nil {
+				helpers.AppLogger.Errorf("初始化 STRM 正则排除名称设置失败：%v", err)
+				return
+			}
+		}
+		helpers.AppLogger.Info("已添加 STRM 正则排除名称设置")
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == MaxVersionCode {

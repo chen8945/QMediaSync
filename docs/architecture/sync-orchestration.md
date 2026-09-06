@@ -14,6 +14,8 @@
 
 `POST /api/sync/manual` 是临时同步入口。它使用请求中的账号、文件或目录和目标路径，不对应保存的 `sync_paths`，运行时使用临时 ID 创建记录；不会提交 Emby 刷新，也不会触发关联刮削。临时记录可以按临时记录规则删除，但不应被当作可再次调度的同步目录。
 
+网盘文件管理通过该入口生成 STRM，使用全局 STRM 设置。单文件和目录生成都检查原有完整名称排除及正则排除，父目录命中也会跳过文件；保存型同步目录使用同一排除判断并按自定义列表继承规则取值。名称与正则语义由 [STRM 名称排除](../operations/configuration.md#strm-名称排除) 维护。
+
 完整同步与上传后单文件 STRM 处理必须分开：前者创建 `sync` 记录、进入同步队列并处理目录差异；后者由 `strm_generation_tasks` worker 执行，不创建完整同步记录。
 
 ## 触发与 Cron
@@ -81,9 +83,11 @@ HTTP / Cron / Telegram
 - 停止同步是取消信号，不是伪造“已完成”状态；最终状态必须由执行器写入记录。
 - 115 元数据的比较、下载任务和本地时间回写都使用同一官方修改时间；上传时间只可作为缺失修改时间的兼容回退。
 - 内容相同的元数据不因秒级 mtime 差异传输；哈希期间本地文件发生变化时不得上传、下载或覆盖该文件。
+- 单文件生成不能绕过名称及父目录排除；正则匹配使用原始大小写，原有完整匹配仍忽略大小写。
 
 ## 验证方式
 
 - 运行 `(cd backend && go test ./internal/synccron/)`，覆盖按来源队列、去重、暂停、恢复、取消和状态输出。
 - 运行 `(cd backend && go test ./internal/models/ -run 'Test.*(Sync|Delete)')`、`(cd backend && go test ./internal/syncstrm/)`，覆盖记录状态、启动恢复、执行和下游触发边界。
 - 修改 Cron 注册或同步目录聚合保存时，运行 `(cd backend && go test ./internal/syncconfig/)` 与相关控制器测试；在测试环境检查修改 `enable_cron` 或 `cron` 后旧计划已停止、新计划仅注册一次。
+- 修改排除规则时运行 `(cd backend && go test ./internal/syncstrm/ -run 'Test(ValidFileHonorsNameAndParentExclusions|RegexExclusionMatching|NewSyncStrmRejectsInvalidRegex)')`，验证完整匹配兼容、正则大小写及父路径排除。

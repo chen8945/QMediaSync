@@ -88,7 +88,7 @@ func (s *SyncStrm) StartOther() {
 		}
 
 		s.Sync.Logger.Infof("正在处理目录 %s 下的文件列表", pathItem.Path)
-		if s.IsExcludeName(filepath.Base(pathItem.Path)) {
+		if s.IsExcludePath(pathItem.Path) {
 			s.Sync.Logger.Warnf("目录 %s 被排除，跳过它和旗下所有内容", pathItem.Path)
 			return nil
 		}

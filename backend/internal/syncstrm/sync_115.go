@@ -102,7 +102,7 @@ func (s *SyncStrm) GetExistsPath() int64 {
 		// 将查询到的路径全部写入 existsPathes
 		for _, path := range pathes {
 			// 如果名字被排除，则不加入
-			if s.IsExcludeName(path.FileName) {
+			if s.IsExcludeName(path.FileName) || s.IsExcludePath(path.Path) {
 				s.sync115.excludePathId.Store(path.FileId, true)
 				continue
 			}

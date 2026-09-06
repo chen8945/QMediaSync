@@ -116,7 +116,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 		for _, pathItem := range pathItems {
 			s.Sync.Logger.Infof("查询路径下的子目录：%s", pathItem.Path)
 			// 检查是否被排除
-			if s.IsExcludeName(filepath.Base(pathItem.Path)) {
+			if s.IsExcludePath(pathItem.Path) {
 				s.Sync.Logger.Infof("路径 %s 名称被排除，跳过", pathItem.Path)
 				s.sync115.excludePathId.Store(pathItem.PathId, true)
 				continue

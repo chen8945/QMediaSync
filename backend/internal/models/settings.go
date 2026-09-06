@@ -29,21 +29,23 @@ type SettingThreads struct {
 }
 
 type SettingStrm struct {
-	LocalProxy     int      `form:"local_proxy" json:"local_proxy" gorm:"default:0"`           // 是否使用本地代理，-1 表示使用 STRM 设置，0 表示不使用，1 表示使用
-	StrmBaseUrl    string   `form:"strm_base_url" json:"strm_base_url"`                        // STRM 的基础 URL，用于生成网盘的流媒体播放地址
-	Cron           string   `form:"cron" json:"cron"`                                          // 定时任务表达式
-	MinVideoSize   int64    `form:"min_video_size" json:"min_video_size"`                      // 最小视频大小，单位字节，-1 表示使用 STRM 设置
-	VideoExt       string   `json:"-"`                                                         // 视频文件扩展名，JSON 格式
-	VideoExtArr    []string `json:"video_ext_arr" gorm:"-"`                                    // 视频文件扩展名数组，不参与数据库操作，仅供前端使用
-	MetaExt        string   `json:"-"`                                                         // 元数据文件扩展名，JSON 格式
-	MetaExtArr     []string `form:"meta_ext_arr" json:"meta_ext_arr" gorm:"-"`                 // 元数据文件扩展名数组，不参与数据库操作，仅供前端使用
-	ExcludeName    string   `json:"-"`                                                         // 排除的文件名，JSON 格式
-	ExcludeNameArr []string `form:"exclude_name_arr" json:"exclude_name_arr" gorm:"-"`         // 排除的文件名数组，不参与数据库操作，仅供前端使用
-	UploadMeta     int      `form:"upload_meta" json:"upload_meta" gorm:"default:0"`           // 是否上传元数据，-1 表示使用 STRM 设置，0 表示保留，1 表示上传，2 表示删除
-	DownloadMeta   int      `form:"download_meta" json:"download_meta" gorm:"default:0"`       // 是否下载元数据，-1 表示使用 STRM 设置，0 表示不下载，1 表示下载
-	DeleteDir      int      `form:"delete_dir" json:"delete_dir" gorm:"default: 1"`            // 是否删除目录，-1 表示使用 STRM 设置，0 表示不删除，1 表示删除
-	AddPath        int      `form:"add_path" json:"add_path" gorm:"default: 3"`                // STRM 链接路径模式，-1 表示使用 STRM 设置，1 表示添加完整路径，2 表示只添加文件名，3 表示不添加路径
-	CheckMetaMtime int      `form:"check_meta_mtime" json:"check_meta_mtime" gorm:"default:0"` // 是否检查元数据文件修改时间，默认 -1（使用 Settings 的值），0 表示不检查，1 表示检查
+	LocalProxy          int      `form:"local_proxy" json:"local_proxy" gorm:"default:0"`               // 是否使用本地代理，-1 表示使用 STRM 设置，0 表示不使用，1 表示使用
+	StrmBaseUrl         string   `form:"strm_base_url" json:"strm_base_url"`                            // STRM 的基础 URL，用于生成网盘的流媒体播放地址
+	Cron                string   `form:"cron" json:"cron"`                                              // 定时任务表达式
+	MinVideoSize        int64    `form:"min_video_size" json:"min_video_size"`                          // 最小视频大小，单位字节，-1 表示使用 STRM 设置
+	VideoExt            string   `json:"-"`                                                             // 视频文件扩展名，JSON 格式
+	VideoExtArr         []string `json:"video_ext_arr" gorm:"-"`                                        // 视频文件扩展名数组，不参与数据库操作，仅供前端使用
+	MetaExt             string   `json:"-"`                                                             // 元数据文件扩展名，JSON 格式
+	MetaExtArr          []string `form:"meta_ext_arr" json:"meta_ext_arr" gorm:"-"`                     // 元数据文件扩展名数组，不参与数据库操作，仅供前端使用
+	ExcludeName         string   `json:"-"`                                                             // 排除的文件名，JSON 格式
+	ExcludeNameArr      []string `form:"exclude_name_arr" json:"exclude_name_arr" gorm:"-"`             // 排除的文件名数组，不参与数据库操作，仅供前端使用
+	ExcludeNameRegex    string   `json:"-" gorm:"default:'[]'"`                                         // 排除名称的正则表达式，JSON 格式
+	ExcludeNameRegexArr []string `form:"exclude_name_regex_arr" json:"exclude_name_regex_arr" gorm:"-"` // 排除名称的正则表达式数组，保留原文
+	UploadMeta          int      `form:"upload_meta" json:"upload_meta" gorm:"default:0"`               // 是否上传元数据，-1 表示使用 STRM 设置，0 表示保留，1 表示上传，2 表示删除
+	DownloadMeta        int      `form:"download_meta" json:"download_meta" gorm:"default:0"`           // 是否下载元数据，-1 表示使用 STRM 设置，0 表示不下载，1 表示下载
+	DeleteDir           int      `form:"delete_dir" json:"delete_dir" gorm:"default: 1"`                // 是否删除目录，-1 表示使用 STRM 设置，0 表示不删除，1 表示删除
+	AddPath             int      `form:"add_path" json:"add_path" gorm:"default: 3"`                    // STRM 链接路径模式，-1 表示使用 STRM 设置，1 表示添加完整路径，2 表示只添加文件名，3 表示不添加路径
+	CheckMetaMtime      int      `form:"check_meta_mtime" json:"check_meta_mtime" gorm:"default:0"`     // 是否检查元数据文件修改时间，默认 -1（使用 Settings 的值），0 表示不检查，1 表示检查
 }
 
 type SettingUploadRapidWait struct {
@@ -134,9 +136,15 @@ func (s SettingStrm) ToMap(isDb bool, isSetting bool) map[string]any {
 			// 从配置文件中读取默认的排除的文件名
 			dataMap["exclude_name_arr"] = []string{}
 		}
+		if len(s.ExcludeNameRegexArr) > 0 {
+			dataMap["exclude_name_regex_arr"] = s.ExcludeNameRegexArr
+		} else {
+			dataMap["exclude_name_regex_arr"] = []string{}
+		}
 	} else {
 		// 数据库
 		dataMap["exclude_name"] = s.ExcludeName
+		dataMap["exclude_name_regex"] = s.ExcludeNameRegex
 		dataMap["meta_ext"] = s.MetaExt
 		dataMap["video_ext"] = s.VideoExt
 	}
@@ -201,7 +209,16 @@ func (s SettingStrm) EncodeArr() *SettingStrm {
 		helpers.AppLogger.Errorf("将排除的名字转换为 JSON 字符串失败：%v", err)
 		return nil
 	}
+	if s.ExcludeNameRegexArr == nil {
+		s.ExcludeNameRegexArr = []string{}
+	}
+	excludeNameRegexStr, err := json.Marshal(s.ExcludeNameRegexArr)
+	if err != nil {
+		helpers.AppLogger.Errorf("将排除名称正则转换为 JSON 字符串失败：%v", err)
+		return nil
+	}
 	s.ExcludeName = string(excludeNameStr)
+	s.ExcludeNameRegex = string(excludeNameRegexStr)
 	s.VideoExt = string(videoExtStr)
 	s.MetaExt = string(metaExtStr)
 	return &s
@@ -234,6 +251,15 @@ func (s SettingStrm) DecodeArr(isSetting bool) *SettingStrm {
 	}
 	if len(s.ExcludeNameArr) == 0 {
 		s.ExcludeNameArr = []string{}
+	}
+	if s.ExcludeNameRegex != "" {
+		if err := json.Unmarshal([]byte(s.ExcludeNameRegex), &s.ExcludeNameRegexArr); err != nil {
+			helpers.AppLogger.Errorf("将排除名称正则转换为数组失败：%v", err)
+			return nil
+		}
+	}
+	if len(s.ExcludeNameRegexArr) == 0 {
+		s.ExcludeNameRegexArr = []string{}
 	}
 	if s.Cron == "" && isSetting {
 		s.Cron = helpers.GlobalConfig.Strm.Cron

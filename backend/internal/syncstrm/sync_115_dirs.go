@@ -92,17 +92,17 @@ pathloop:
 			pathStr = filepath.Join(pathStr, p.Name)
 			pathStr = filepath.ToSlash(pathStr)
 		}
+		if s.IsExcludeName(p.Name) {
+			s.Sync.Logger.Infof("路径 %s 名称：%s 被排除", p.FileId, p.Name)
+			isExclude = true
+			break
+		}
 		if p.FileId == s.SourcePathId {
 			foundBase = true
 			continue
 		}
 		if !foundBase || p.Name == lastRemotePathPart {
 			continue
-		}
-		if s.IsExcludeName(p.Name) {
-			s.Sync.Logger.Infof("路径 %s 名称：%s 被排除", p.FileId, p.Name)
-			isExclude = true
-			break
 		}
 		// 检查是否已经存在
 		if _, ok := s.sync115.existsPathes.Load(p.FileId); ok {

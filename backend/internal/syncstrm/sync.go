@@ -107,6 +107,10 @@ func NewSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePat
 }
 
 func newSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePathId, targetPath string, config SyncStrmConfig, IsFullSync bool, lastSyncAt int64, isFile bool, createSyncRecord bool) *SyncStrm {
+	if err := config.compileExcludeNameRegexes(); err != nil {
+		effectiveSyncLogger().Errorf("初始化 STRM 名称排除规则失败：%v", err)
+		return nil
+	}
 	if account == nil {
 		account = &models.Account{SourceType: models.SourceTypeLocal}
 	}
@@ -273,6 +277,7 @@ func newSyncStrmFromSyncPath(syncPath *models.SyncPath, account *models.Account,
 		VideoExt:              videoExt,
 		MetaExt:               metaExt,
 		ExcludeNames:          excludeNames,
+		ExcludeNameRegexes:    syncPath.GetExcludeNameRegexArr(),
 		NetNotFoundFileAction: models.SyncTreeItemMetaAction(syncPath.GetUploadMeta()),
 		StrmUrlNeedPath:       syncPath.GetAddPath(),
 		DelEmptyLocalDir:      syncPath.GetDeleteDir() == 1,
@@ -294,15 +299,15 @@ func (s *SyncStrm) logEffectiveStrmConfig() {
 	if syncPath == nil {
 		return
 	}
-	logEffectiveStrmConfig(syncPath, s.Config.VideoExt, s.Config.MetaExt, s.Config.ExcludeNames)
+	logEffectiveStrmConfig(syncPath, s.Config.VideoExt, s.Config.MetaExt, s.Config.ExcludeNames, s.Config.ExcludeNameRegexes)
 }
 
-func logEffectiveStrmConfig(syncPath *models.SyncPath, videoExt, metaExt, excludeNames []string) {
+func logEffectiveStrmConfig(syncPath *models.SyncPath, videoExt, metaExt, excludeNames, excludeNameRegexes []string) {
 	if syncPath == nil {
 		return
 	}
 	helpers.AppLogger.Infof(
-		"同步目录 %d 生效 STRM 配置：视频扩展名=%s（来源=%s），元数据扩展名=%s（来源=%s），排除名称=%s（来源=%s）",
+		"同步目录 %d 生效 STRM 配置：视频扩展名=%s（来源=%s），元数据扩展名=%s（来源=%s），排除名称=%s（来源=%s），正则排除名称=%s（来源=%s）",
 		syncPath.ID,
 		formatStrmConfigArray(videoExt),
 		strmArrayConfigSource(syncPath.CustomConfig, syncPath.VideoExtArr),
@@ -310,6 +315,8 @@ func logEffectiveStrmConfig(syncPath *models.SyncPath, videoExt, metaExt, exclud
 		strmArrayConfigSource(syncPath.CustomConfig, syncPath.MetaExtArr),
 		formatStrmConfigArray(excludeNames),
 		strmArrayConfigSource(syncPath.CustomConfig, syncPath.ExcludeNameArr),
+		formatStrmConfigArray(excludeNameRegexes),
+		strmArrayConfigSource(syncPath.CustomConfig, syncPath.ExcludeNameRegexArr),
 	)
 }
 
@@ -339,6 +346,7 @@ func NewSyncStrmByPath(account *models.Account, sourcePath, sourcePathId string,
 		VideoExt:              models.SettingsGlobal.VideoExtArr,
 		MetaExt:               models.SettingsGlobal.MetaExtArr,
 		ExcludeNames:          models.SettingsGlobal.ExcludeNameArr,
+		ExcludeNameRegexes:    models.SettingsGlobal.ExcludeNameRegexArr,
 		NetNotFoundFileAction: models.SyncTreeItemMetaAction(models.SettingsGlobal.UploadMeta),
 		StrmUrlNeedPath:       models.SettingsGlobal.AddPath,
 		DelEmptyLocalDir:      models.SettingsGlobal.DeleteDir == 1,
