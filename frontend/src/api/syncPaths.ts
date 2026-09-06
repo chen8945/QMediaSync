@@ -9,6 +9,7 @@ export interface SyncPathSettingPayload {
   video_ext_arr: string[]
   meta_ext_arr: string[]
   exclude_name_arr: string[]
+  exclude_name_regex_arr: string[]
   upload_meta: number
   download_meta: number
   delete_dir: number

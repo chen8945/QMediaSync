@@ -11,8 +11,8 @@
       class="strm-form"
       ref="formRef"
     >
-      <!-- 排除的名称 -->
-      <el-form-item label="排除的名称" prop="exclude_name_arr">
+      <!-- 排除名称 -->
+      <el-form-item label="排除名称" prop="exclude_name_arr">
         <MetadataExtInput
           v-model="strmData.exclude_name_arr"
           placeholder="输入名称后按回车添加"
@@ -20,9 +20,12 @@
           :autoAddDot="false"
         />
         <div class="form-help">
-          <p>指定需要排除的文件名或目录名，完整匹配不支持正则表达式。</p>
-          <p>被排除的文件或目录将不会同步，其下的所有内容也都不会同步</p>
+          <p>完整匹配文件名（含扩展名）或目录名，不区分大小写；正则请填写下方“正则排除名称”。</p>
+          <p>任一排除规则命中即跳过，目录命中时也跳过其下全部内容。</p>
         </div>
+      </el-form-item>
+      <el-form-item label="正则排除名称" prop="exclude_name_regex_arr">
+        <StrmRegexInput v-model="strmData.exclude_name_regex_arr" :disabled="strmLoading" />
       </el-form-item>
       <!-- 视频文件扩展名 -->
       <el-form-item label="视频文件扩展名" prop="video_ext_arr">
@@ -248,12 +251,15 @@
 <script setup lang="ts">
 import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import type { AxiosError } from 'axios'
 import { Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 import MetadataExtInput from './MetadataExtInput.vue'
+import StrmRegexInput from './StrmRegexInput.vue'
+import { strmRegexListError } from '@/utils/strmRegex'
 interface StrmData {
   video_ext_arr: string[]
   min_video_size: number
@@ -265,6 +271,7 @@ interface StrmData {
   delete_dir: 0 | 1
   local_proxy: 0 | 1
   exclude_name_arr: string[]
+  exclude_name_regex_arr: string[]
   add_path: 1 | 2 | 3
   check_meta_mtime: 0 | 1
 }
@@ -300,7 +307,8 @@ const defaultStrmData: StrmData = {
   download_meta: 1, // 默认下载元数据
   delete_dir: 0, // 默认不删除
   local_proxy: 0, // 是否启用本地代理
-  exclude_name_arr: [], // 排除的名称列表，默认为空
+  exclude_name_arr: [], // 排除名称列表，默认为空
+  exclude_name_regex_arr: [],
   add_path: 3, // 默认不添加路径
   check_meta_mtime: 0, // 检查元数据的修改时间
 }
@@ -309,6 +317,15 @@ const strmData = reactive<StrmData>({ ...defaultStrmData })
 
 // 表单验证规则
 const formRules: FormRules = {
+  exclude_name_regex_arr: [
+    {
+      validator: (rule, value: string[], callback) => {
+        const error = strmRegexListError(value)
+        callback(error ? new Error(error) : undefined)
+      },
+      trigger: 'change',
+    },
+  ],
   video_ext_arr: [
     {
       required: true,
@@ -412,10 +429,11 @@ const saveStrmConfig = async () => {
     }
   } catch (error) {
     console.error('保存 STRM 配置错误：', error)
+    const response = (error as AxiosError<{ message?: string }>).response?.data
     strmStatus.value = {
       title: '保存设置出错',
       type: 'error',
-      description: '保存过程中发生错误，请检查网络连接',
+      description: response?.message || '保存过程中发生错误，请检查网络连接',
     }
   } finally {
     strmLoading.value = false
@@ -439,6 +457,7 @@ const loadStrmConfig = async () => {
       strmData.delete_dir = config.delete_dir
       strmData.local_proxy = config.local_proxy
       strmData.exclude_name_arr = config.exclude_name_arr
+      strmData.exclude_name_regex_arr = config.exclude_name_regex_arr || []
       strmData.add_path = config.add_path
       strmData.check_meta_mtime = config.check_meta_mtime
 

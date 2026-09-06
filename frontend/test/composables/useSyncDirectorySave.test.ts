@@ -20,6 +20,7 @@ const payload: SaveSyncPathPayload = {
       video_ext_arr: [],
       meta_ext_arr: [],
       exclude_name_arr: [],
+      exclude_name_regex_arr: [],
       upload_meta: -1,
       download_meta: -1,
       delete_dir: -1,

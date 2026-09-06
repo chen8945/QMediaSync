@@ -140,7 +140,7 @@
             :disabled="loading"
           />
           <div class="form-tip">
-            开启后可自定义视频扩展名和元数据扩展名配置，否则使用 STRM 设置中的值
+            开启后可自定义 STRM 配置，包括扩展名和排除规则；否则使用 STRM 设置中的值
           </div>
         </el-form-item>
 
@@ -245,14 +245,29 @@
             </div>
             <div class="form-tip">指定需要同步的元数据文件扩展名</div>
           </el-form-item>
-          <el-form-item label="排除文件名" prop="exclude_name">
+          <el-form-item label="排除名称" prop="exclude_name">
             <MetadataExtInput
               v-model="form.exclude_name"
               :autoAddDot="false"
-              placeholder="输入文件名后按回车添加，也可用逗号或换行分隔"
+              placeholder="输入名称后按回车添加，也可用逗号或分号分隔"
               class="meta-ext-input limited-width-input"
             />
-            <div class="form-tip">指定需要排除同步的完整名称，可填写文件夹名或文件名</div>
+            <div class="form-tip">
+              完整匹配文件名（含扩展名）或目录名，不区分大小写；目录命中时也排除其下内容。
+              列表为空时使用 STRM 设置中的排除名称；正则请填写下方“正则排除名称”。
+            </div>
+          </el-form-item>
+          <el-form-item
+            label="正则排除名称"
+            prop="exclude_name_regex"
+            :error="getSyncPathFieldError('exclude_name_regex')"
+          >
+            <StrmRegexInput
+              v-model="form.exclude_name_regex"
+              :disabled="loading"
+              inherit
+              @update:model-value="syncPathFieldErrors.exclude_name_regex = ''"
+            />
           </el-form-item>
           <el-form-item label="下载元数据" prop="download_meta">
             <el-radio-group v-model="form.download_meta">
@@ -668,7 +683,7 @@
             :disabled="loading"
           />
           <div class="form-tip">
-            开启后可自定义视频扩展名和元数据扩展名配置，否则使用 STRM 设置中的值
+            开启后可自定义 STRM 配置，包括扩展名和排除规则；否则使用 STRM 设置中的值
           </div>
         </el-form-item>
 
@@ -773,14 +788,29 @@
             </div>
             <div class="form-tip">指定需要同步的元数据文件扩展名</div>
           </el-form-item>
-          <el-form-item label="排除文件名" prop="exclude_name">
+          <el-form-item label="排除名称" prop="exclude_name">
             <MetadataExtInput
               v-model="form.exclude_name"
               :autoAddDot="false"
-              placeholder="输入文件名后按回车添加，也可用逗号或换行分隔"
+              placeholder="输入名称后按回车添加，也可用逗号或分号分隔"
               class="meta-ext-input limited-width-input"
             />
-            <div class="form-tip">指定需要排除同步的完整名称，可填写文件夹名或文件名</div>
+            <div class="form-tip">
+              完整匹配文件名（含扩展名）或目录名，不区分大小写；目录命中时也排除其下内容。
+              列表为空时使用 STRM 设置中的排除名称；正则请填写下方“正则排除名称”。
+            </div>
+          </el-form-item>
+          <el-form-item
+            label="正则排除名称"
+            prop="exclude_name_regex"
+            :error="getSyncPathFieldError('exclude_name_regex')"
+          >
+            <StrmRegexInput
+              v-model="form.exclude_name_regex"
+              :disabled="loading"
+              inherit
+              @update:model-value="syncPathFieldErrors.exclude_name_regex = ''"
+            />
           </el-form-item>
           <el-form-item label="下载元数据" prop="download_meta">
             <el-radio-group v-model="form.download_meta">
@@ -1103,6 +1133,8 @@ import { sourceTypeOptions } from '@/utils/sourceTypeUtils'
 import type { SaveSyncPathPayload } from '@/api/syncPaths'
 import { useSyncDirectorySave } from '@/composables/useSyncDirectorySave'
 import MetadataExtInput from './MetadataExtInput.vue'
+import StrmRegexInput from './StrmRegexInput.vue'
+import { strmRegexListError } from '@/utils/strmRegex'
 import DirectorySelector from './DirectorySelector.vue'
 import type {
   DirInfo,
@@ -1185,6 +1217,7 @@ const form = reactive({
   video_ext: [] as string[],
   meta_ext: [] as string[],
   exclude_name: [] as string[],
+  exclude_name_regex: [] as string[],
   remote_path: '',
   min_video_size: -1,
   upload_meta: STRM_CUSTOM_OPTIONS.uploadMeta[0] as -1 | 0 | 1 | 2,
@@ -1203,6 +1236,15 @@ function generateCreateIdempotencyKey() {
 }
 
 const formRules: FormRules = {
+  exclude_name_regex: [
+    {
+      validator: (rule, value: string[], callback) => {
+        const error = strmRegexListError(value)
+        callback(error ? new Error(error) : undefined)
+      },
+      trigger: 'change',
+    },
+  ],
   local_path: [
     { required: true, message: '请选择目标目录', trigger: 'blur' },
     { min: 1, max: 500, message: '长度在 1 到 500 个字符', trigger: 'blur' },
@@ -1263,6 +1305,13 @@ const getSyncPathFieldError = (field: keyof typeof form): string =>
   syncPathFieldErrors.value[field] || ''
 
 const setSyncPathFieldError = (field: string, message: string) => {
+  const regexField = field.match(/^exclude_name_regex_arr(?:\[(\d+)\])?$/)
+  if (regexField) {
+    syncPathFieldErrors.value.exclude_name_regex = regexField[1]
+      ? `第 ${Number(regexField[1]) + 1} 条：${message}`
+      : message
+    return
+  }
   const normalizedField = field === 'remote_path' ? 'base_cid' : field
   if (normalizedField in form) {
     syncPathFieldErrors.value[normalizedField as keyof typeof form] = message
@@ -1694,6 +1743,7 @@ const buildSaveSyncPathPayload = (): SaveSyncPathPayload => {
         video_ext_arr: form.video_ext,
         meta_ext_arr: form.meta_ext,
         exclude_name_arr: form.exclude_name,
+        exclude_name_regex_arr: form.exclude_name_regex,
         upload_meta: form.upload_meta,
         download_meta: form.download_meta,
         delete_dir: form.delete_dir,
@@ -1844,6 +1894,7 @@ const loadDirectoryData = async (id: number) => {
         form.video_ext = directory.video_ext_arr || []
         form.meta_ext = directory.meta_ext_arr || []
         form.exclude_name = directory.exclude_name_arr || []
+        form.exclude_name_regex = directory.exclude_name_regex_arr || []
         form.remote_path = directory.remote_path
         selectedDirPath.value = directory.remote_path
         form.min_video_size = directory.min_video_size

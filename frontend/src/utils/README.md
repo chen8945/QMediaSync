@@ -191,6 +191,15 @@ OAuth 回调参数收集：
 
 `123` 的展示配置仍以注释形式保留，当前不在选项、标签或名称映射中启用。完整存储来源类型和任务队列的展示差异见 [任务来源](../../../docs/reference/task-sources.md)。
 
+## strmRegex.ts
+
+STRM 正则输入的语法预检：
+
+- `precheckStrmRegex(pattern)`：返回可阻止添加的 `error`，或表示需交后端判断的 `notice`；不执行匹配，也不返回改写后的表达式。
+- `strmRegexListError(patterns)`：预检整个列表，返回第一条错误及面向用户的序号；空列表合法。
+
+原生 `RegExp` 只编译临时适配副本。语法兼容和后端最终校验边界见 [STRM 正则预检](../../../docs/engineering/request-validation.md#strm-正则预检)。
+
 ## syncRecordEvents.ts
 
 同步记录全局 SSE 事件的本地列表 patch：

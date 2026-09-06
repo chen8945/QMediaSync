@@ -15,6 +15,7 @@
 - 业务领域请求封装放在 `frontend/src/api/`；不要在其中加入 Axios 拦截器或全局客户端配置。不要为客户端设置全局 `Content-Type: application/json`：对象请求由 Axios 序列化，上传请求保留自己的 `multipart/form-data` 配置。
 - 需要响应窗口尺寸变化的组件使用 `useDeviceType()`，由 composable 统一注册和清理监听。`frontend/src/utils/README.md` 只说明 `deviceUtils.ts` 和其他工具自身的局部 API。
 - 分页页面使用 `components/common/ResponsivePagination.vue` 承担布局和事件透传；页面自身保留页码、每页数量和数据加载状态。
+- STRM 全局设置和同步目录的桌面 / 移动表单共用 `StrmRegexInput.vue`。正则输入、说明与示例由该组件维护，不能复用会裁剪空格和拆分分隔符的扩展名输入；预检与保存错误边界见 [STRM 正则预检](request-validation.md#strm-正则预检)。
 
 ## HTTP 快照、SSE 与轮询
 
