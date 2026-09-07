@@ -107,3 +107,17 @@ describe('侧边栏菜单动效源码契约', () => {
     expect(appVue).toMatch(/\.el-menu-vertical\s*\{[^}]*will-change:\s*transform/)
   })
 })
+
+describe('页面加载遮罩层级源码契约', () => {
+  it('正文局部遮罩低于移动导航遮罩和侧边栏，全屏遮罩不受覆盖', () => {
+    const sharedStyles = readFileSync(resolve(__dirname, '../../src/assets/components.css'), 'utf8')
+    const loading = extractRule(sharedStyles, '.main-content .el-loading-mask:not(.is-fullscreen)')
+    const mobile = extractMediaBlock(appVue, '@media (max-width: 768px)')
+    const zIndex = (rule: string) => Number(rule.match(/z-index:\s*(\d+)/)?.[1])
+    const overlayZIndex = zIndex(extractRule(mobile, '.mobile-overlay'))
+
+    expect(zIndex(loading)).toBeGreaterThan(0)
+    expect(zIndex(loading)).toBeLessThan(overlayZIndex)
+    expect(overlayZIndex).toBeLessThan(zIndex(extractRule(mobile, '.mobile-aside')))
+  })
+})

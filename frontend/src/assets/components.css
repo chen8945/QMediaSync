@@ -6,6 +6,11 @@
   outline-offset: 2px;
 }
 
+/* 避免局部加载遮罩盖住移动导航，全屏加载仍使用 Element Plus 层级。 */
+.main-content .el-loading-mask:not(.is-fullscreen) {
+  z-index: 10;
+}
+
 /* 与项目 768px 移动端断点一致，避免 Element Plus md（992px）断点混用。 */
 .show-on-mobile {
   display: none !important;
