@@ -19,16 +19,16 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// OpenExisting 只连接已有数据库，不建库、迁移、启动内嵌数据库或后台保活。
+// OpenExisting 只连接已有数据库，不建库、迁移或启动后台保活。
 func OpenExisting(ctx context.Context, configDir string, config helpers.ConfigDb) (*gorm.DB, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	var dialector gorm.Dialector
 	var sqlDB *sql.DB
 	var err error
 	switch config.Engine {
 	case helpers.DbEngineSqlite:
-		if strings.TrimSpace(config.SqliteFile) == "" {
-			return nil, fmt.Errorf("SQLite 数据库文件未配置")
-		}
 		path := filepath.Join(configDir, config.SqliteFile)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -43,13 +43,7 @@ func OpenExisting(ctx context.Context, configDir string, config helpers.ConfigDb
 		}
 		dialector = sqlite.Open(existingSQLiteDSN(path))
 	case helpers.DbEnginePostgres:
-		if config.PostgresType != helpers.PostgresTypeExternal {
-			return nil, fmt.Errorf("管理员恢复只支持外部 PostgreSQL；请先完成内嵌数据库迁移")
-		}
 		pg := config.PostgresConfig
-		if pg.Host == "" || pg.Port < 1 || pg.Port > 65535 || pg.User == "" || pg.Database == "" {
-			return nil, fmt.Errorf("外部 PostgreSQL 的地址、端口、用户名或数据库名未正确配置")
-		}
 		sslMode := "disable"
 		if pg.SSL {
 			sslMode = "require"
@@ -65,11 +59,11 @@ func OpenExisting(ctx context.Context, configDir string, config helpers.ConfigDb
 		}
 		sqlDB, err = sql.Open("postgres", dsn.String())
 		if err != nil {
-			return nil, fmt.Errorf("打开外部 PostgreSQL 连接失败：%w", err)
+			return nil, fmt.Errorf("打开 PostgreSQL 连接失败：%w", err)
 		}
 		dialector = postgres.New(postgres.Config{Conn: sqlDB})
 	default:
-		return nil, fmt.Errorf("管理员恢复需要已配置的 SQLite 或外部 PostgreSQL 数据库")
+		return nil, fmt.Errorf("管理员恢复需要已配置的 SQLite 或 PostgreSQL 数据库")
 	}
 
 	conn, err := gorm.Open(dialector, &gorm.Config{

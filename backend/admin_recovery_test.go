@@ -53,7 +53,7 @@ func prepareAdminRecoveryTest(t *testing.T) string {
 	})
 	dir := t.TempDir()
 	helpers.RootDir = filepath.Dir(dir)
-	config := []byte("db:\n  engine: sqlite\n  sqliteFile: existing.db\njwtSecret: QMediaSync-JWT-TOKEN-250706\nlog:\n  level: error\n")
+	config := []byte("db:\n  engine: sqlite\n  sqliteFile: existing.db\n  postgresType: embedded\njwtSecret: QMediaSync-JWT-TOKEN-250706\nlog:\n  level: error\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), config, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,9 @@ func TestPerformAdminRecoveryRedactsConnectionError(t *testing.T) {
 }
 
 func TestPerformAdminRecoveryRejectsUnsafeState(t *testing.T) {
-	for _, name := range []string{"missing config", "missing database", "running instance", "pending migration"} {
+	for _, name := range []string{
+		"missing config", "missing database", "running instance", "pending migration", "embedded database", "unknown engine",
+	} {
 		t.Run(name, func(t *testing.T) {
 			dir := prepareAdminRecoveryTest(t)
 			databasePath := filepath.Join(dir, "existing.db")
@@ -169,10 +171,28 @@ func TestPerformAdminRecoveryRejectsUnsafeState(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "backups", "migrate.zip"), []byte("pending"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			case "embedded database", "unknown engine":
+				engine := "postgres"
+				if name == "unknown engine" {
+					engine = "unknown"
+				}
+				config := "db:\n  engine: " + engine + "\n  postgresType: embedded\n"
+				if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			result, err := performAdminRecovery(t.Context(), dir, false)
 			if err == nil || result != nil {
 				t.Fatal("不安全状态不应执行管理员恢复")
+			}
+			if name == "pending migration" {
+				if !strings.Contains(err.Error(), "已不提供自动迁移") {
+					t.Fatalf("缺少迁移退役提示：%v", err)
+				}
+				content, err := os.ReadFile(filepath.Join(dir, "backups", "migrate.zip"))
+				if err != nil || string(content) != "pending" {
+					t.Fatal("拒绝恢复时修改了旧迁移包")
+				}
 			}
 			after, err := os.ReadFile(databasePath)
 			if name == "missing database" {
@@ -214,13 +234,13 @@ func TestAdminRecoveryConfigDir(t *testing.T) {
 func TestStartupConfigMigrationLock(t *testing.T) {
 	for _, held := range []string{"target", "source", "none"} {
 		t.Run(held, func(t *testing.T) {
-			oldRoot, oldConfig, oldData, oldLock := helpers.RootDir, helpers.ConfigDir, helpers.DataDir, instanceLock
+			oldRoot, oldConfig, oldLock := helpers.RootDir, helpers.ConfigDir, instanceLock
 			helpers.RootDir = t.TempDir()
 			t.Cleanup(func() {
 				if instanceLock != nil && instanceLock != oldLock {
 					instanceLock.Close()
 				}
-				helpers.RootDir, helpers.ConfigDir, helpers.DataDir, instanceLock = oldRoot, oldConfig, oldData, oldLock
+				helpers.RootDir, helpers.ConfigDir, instanceLock = oldRoot, oldConfig, oldLock
 			})
 			source := filepath.Join(helpers.RootDir, "legacy")
 			target := filepath.Join(helpers.RootDir, "share", "config")

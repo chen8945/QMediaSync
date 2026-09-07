@@ -41,21 +41,11 @@ if [ "$DATABASE_TYPE" = "sqlite" ]; then
     cat >> "$TRIM_PKGETC/config.yaml" << 'EOF'
   engine: sqlite
   sqliteFile: qmediasync.db
-  postgresType: external
-  postgresConfig:
-    host: "localhost"
-    port: 5432
-    user: "qms"
-    password: "qms123456"
-    database: "qms"
-    maxOpenConns: 25
-    maxIdleConns: 25
 EOF
 else
     cat >> "$TRIM_PKGETC/config.yaml" << EOF
   engine: postgres
   sqliteFile: qmediasync.db
-  postgresType: external
   postgresConfig:
     host: $POSTGRES_HOST
     port: $POSTGRES_PORT

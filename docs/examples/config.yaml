@@ -27,15 +27,13 @@ log:
   syncLogDir: logs/sync
 
 db:
-  # 数据库引擎，可选值：sqlite、postgres。
+  # 数据库引擎，可选值：sqlite、postgres；默认 postgres。
   engine: postgres
   # SQLite 数据库文件名；使用 SQLite 时会放在运行时配置目录下。
   sqliteFile: qmediasync.db
-  # PostgreSQL 类型，可选值：embedded、external。
-  # embedded 会使用程序管理的内嵌 PostgreSQL；external 连接外部 PostgreSQL。
-  postgresType: embedded
+  # 仅在 engine 为 postgres 时使用下列连接信息。
   postgresConfig:
-    # PostgreSQL 主机；embedded 模式通常保持 localhost。
+    # PostgreSQL 主机；Docker 部署时填写数据库服务名或可访问地址。
     host: localhost
     # PostgreSQL 端口。
     port: 5432

@@ -10,7 +10,7 @@
 
 ## 引擎与初始化
 
-QMediaSync 支持 SQLite 和 PostgreSQL，默认 `postgres + embedded` 由程序启动内嵌 PostgreSQL。数据库配置通过 `config/config.yaml` 保存；首次配置、端口和外部 PostgreSQL 要求见 [配置、密钥与日志](configuration.md)。
+QMediaSync 支持 SQLite 和 PostgreSQL，默认使用 PostgreSQL。程序和 Docker 镜像均不提供 PostgreSQL 服务进程。数据库配置通过 `config/config.yaml` 保存；首次配置、端口和 PostgreSQL 要求见 [配置、密钥与日志](configuration.md)。
 
 SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_timeout`，并且连接池固定为一个连接（`MaxOpenConns` 和 `MaxIdleConns` 均为 1，连接不设置存活和空闲上限）。SQLite 同一时间只允许一个写事务：多连接时，事务读取快照之后如果其他连接提交了写入，本事务的写升级会立即失败并返回 `SQLITE_BUSY`（快照冲突），`busy_timeout` 不会重试这种错误。单连接把所有语句串行化到进程内的连接锁上排队，写入不再返回 `database is locked`。`MaxOpenConns` 不适用于 SQLite 引擎，只作用于 PostgreSQL。
 
@@ -20,7 +20,19 @@ SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_t
 
 已有数据库启动时，`Migrate()` 按 `migrator.version_code` 顺序执行补丁并逐步推进版本。新增或修改表、字段和迁移时必须同时更新 [数据库 schema 与迁移](../reference/database-schema.md)。
 
-本地管理员恢复使用独立的已有数据库连接：SQLite 以 `mode=rw` 打开已有普通文件，外部 PostgreSQL 只连接指定数据库；两者均不建库、不迁移、不启动后台保活，连接池限制为一个连接。认证变更以单个事务提交，失败回滚。它与备份恢复、数据库修复是不同操作，具体契约见 [本地管理员恢复](../architecture/authentication-sessions.md#本地管理员恢复)，使用方法见 [部署说明](deployment.md#管理员恢复)。
+本地管理员恢复使用独立的已有数据库连接：SQLite 以 `mode=rw` 打开已有普通文件，PostgreSQL 只连接指定数据库；两者均不建库、不迁移、不启动后台保活，连接池限制为一个连接。认证变更以单个事务提交，失败回滚。它与备份恢复、数据库修复是不同操作，具体契约见 [本地管理员恢复](../architecture/authentication-sessions.md#本地管理员恢复)，使用方法见 [部署说明](deployment.md#管理员恢复)。
+
+## 旧内嵌数据库
+
+当前版本不再启动内嵌 PostgreSQL，也不提供旧库迁移网页、迁移导出或 `backups/migrate.zip` 自动导入。普通备份恢复和数据库 schema 升级仍按本文及 schema 文档执行。
+
+如需从内置 PostgreSQL 迁移，可先使用原作者的 `v0.14.23` 或本项目的 `v0.15.17` 版本完成迁移。迁移后核对数据，再使用已准备好的 SQLite 或 PostgreSQL 配置启动当前版本。当前版本遇到以下状态会拒绝继续：
+
+- PostgreSQL 配置显式指定 `postgresType: embedded`，或使用未知引擎、未知 PostgreSQL 模式。
+- 配置目录下存在 `backups/migrate.zip`：正常启动和管理员恢复均拒绝操作，不导入或删除该文件。
+- 主配置缺失但存在 `config/postgres`：拒绝进入首次配置向导，避免把旧实例当作空实例重新初始化。
+
+旧 SQLite 配置中未使用的 `postgresType: embedded` 不影响 SQLite 连接。已经切换到受支持数据库的实例可以保留旧数据目录；程序不会自动删除 `config/postgres`、`config/postgres-backup` 或旧 PostgreSQL 二进制目录。确认数据完整后，由维护者自行归档或清理，不能靠删除未完成迁移包来代替数据核对。
 
 ## 修复与清库
 

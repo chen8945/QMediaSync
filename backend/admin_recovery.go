@@ -16,7 +16,6 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/migrate"
 	"qmediasync/internal/models"
 )
 
@@ -94,14 +93,11 @@ func performAdminRecovery(ctx context.Context, configDir string, deleteAdmin boo
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
 	helpers.ConfigDir = configDir
-	if err := helpers.LoadExistingConfig(); err != nil {
+	if err := checkLegacyDatabaseState(); err != nil {
 		return nil, err
 	}
-	// 待恢复的迁移包会在下次启动时覆盖认证数据，必须先处理完该流程。
-	if _, err := os.Stat(migrate.GetMigrateBackupPath()); err == nil {
-		return nil, fmt.Errorf("存在未完成的 migrate.zip，请先完成数据库迁移恢复")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("检查迁移恢复状态失败：%w", err)
+	if err := helpers.LoadExistingConfig(); err != nil {
+		return nil, err
 	}
 	logConfig := helpers.LogConfigSnapshot()
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(configDir, logConfig.App)), 0o755); err != nil {

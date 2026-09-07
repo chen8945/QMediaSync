@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"gopkg.in/yaml.v2"
 )
+
+const testSQLiteConfig = "db:\n  engine: sqlite\n  sqliteFile: qmediasync.db\n"
 
 func TestInitConfigReadsConfigYaml(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
@@ -126,7 +129,7 @@ func TestMakeDefaultConfigDoesNotContainAdminCredentials(t *testing.T) {
 
 func TestInitConfigReadsEmby302InsecureSkipVerify(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
-		data := []byte("jwtSecret: custom-secret\nemby302:\n  insecure_skip_verify: true\n")
+		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nemby302:\n  insecure_skip_verify: true\n")
 		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
 			t.Fatalf("write test config: %v", err)
 		}
@@ -142,7 +145,7 @@ func TestInitConfigReadsEmby302InsecureSkipVerify(t *testing.T) {
 
 func TestInitConfigDefaultsMissingLogLevelToInfo(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
-		data := []byte("jwtSecret: custom-secret\nlog:\n  file: logs/app.log\n")
+		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nlog:\n  file: logs/app.log\n")
 		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
 			t.Fatalf("write test config: %v", err)
 		}
@@ -158,7 +161,7 @@ func TestInitConfigDefaultsMissingLogLevelToInfo(t *testing.T) {
 
 func TestInitConfigNormalizesInvalidLogLevelToInfo(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
-		data := []byte("jwtSecret: custom-secret\nlog:\n  level: verbose\n")
+		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nlog:\n  level: verbose\n")
 		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
 			t.Fatalf("write test config: %v", err)
 		}
@@ -174,7 +177,7 @@ func TestInitConfigNormalizesInvalidLogLevelToInfo(t *testing.T) {
 
 func TestInitConfigMigratesLegacyLogFileToApp(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
-		data := []byte("jwtSecret: custom-secret\nlog:\n  file: logs/custom-app.log\n  level: warn\n")
+		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nlog:\n  file: logs/custom-app.log\n  level: warn\n")
 		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
 			t.Fatalf("write test config: %v", err)
 		}
@@ -193,7 +196,7 @@ func TestInitConfigMigratesLegacyLogFileToApp(t *testing.T) {
 
 func TestInitConfigNormalizesInvalidLogRotationToDefaults(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
-		data := []byte("jwtSecret: custom-secret\nlog:\n  app: logs/app.log\n  maxSizeMB: 0\n  maxBackups: 101\n  maxAgeDays: 366\n")
+		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nlog:\n  app: logs/app.log\n  maxSizeMB: 0\n  maxBackups: 101\n  maxAgeDays: 366\n")
 		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
 			t.Fatalf("write test config: %v", err)
 		}
@@ -344,8 +347,94 @@ func withTempConfigDir(t *testing.T, run func(configDir string)) {
 func writeTestConfig(t *testing.T, path, jwtSecret string) {
 	t.Helper()
 
-	data := []byte("jwtSecret: " + jwtSecret + "\n")
+	data := []byte(testSQLiteConfig + "jwtSecret: " + jwtSecret + "\n")
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("write test config %s: %v", path, err)
+	}
+}
+
+func TestDatabaseConfigCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		engine    DbEngine
+		mode      PostgresType
+		wantError bool
+	}{
+		{name: "SQLite", engine: DbEngineSqlite},
+		{name: "legacy SQLite embedded field", engine: DbEngineSqlite, mode: PostgresTypeEmbedded},
+		{name: "PostgreSQL without mode", engine: DbEnginePostgres},
+		{name: "legacy external PostgreSQL", engine: DbEnginePostgres, mode: PostgresTypeExternal},
+		{name: "embedded PostgreSQL", engine: DbEnginePostgres, mode: PostgresTypeEmbedded, wantError: true},
+		{name: "unknown PostgreSQL mode", engine: DbEnginePostgres, mode: "unknown", wantError: true},
+		{name: "unknown engine", engine: "mysql", wantError: true},
+		{name: "missing engine", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempConfigDir(t, func(configDir string) {
+				cfg := MakeDefaultConfig()
+				cfg.Db.Engine = tc.engine
+				cfg.Db.PostgresType = tc.mode
+				cfg.Db.PostgresConfig.Host = "localhost"
+				cfg.Db.PostgresConfig.User = "postgres"
+				cfg.Db.PostgresConfig.Database = "qmediasync"
+				before, err := yaml.Marshal(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(configDir, ConfigFileName)
+				if err := os.WriteFile(path, before, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// 读取新配置不能沿用上一次加载的有效引擎。
+				GlobalConfig = *MakeDefaultConfig()
+				err = InitConfig()
+				if (err != nil) != tc.wantError {
+					t.Fatalf("InitConfig() error = %v, wantError %v", err, tc.wantError)
+				}
+				if tc.wantError {
+					if err := SaveConfig(cfg); err == nil {
+						t.Fatal("SaveConfig accepted an unsupported database configuration")
+					}
+					after, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatal("rejected configuration was rewritten or received a new JWT secret")
+					}
+					return
+				}
+				if GlobalConfig.Db.Engine != tc.engine {
+					t.Fatalf("loaded engine = %q, want %q", GlobalConfig.Db.Engine, tc.engine)
+				}
+				after, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(after, []byte("postgresType:")) {
+					t.Fatal("newly saved configuration contains the legacy PostgreSQL mode")
+				}
+				if GlobalConfig.Db.PostgresType != tc.mode {
+					t.Fatal("saving mutated the in-memory legacy mode")
+				}
+				if err := LoadExistingConfig(); err != nil {
+					t.Fatalf("reload saved configuration: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestDefaultDatabaseConfigUsesPostgres(t *testing.T) {
+	cfg := MakeDefaultConfig()
+	if cfg.Db.Engine != DbEnginePostgres || cfg.Db.SqliteFile == "" || cfg.Db.PostgresType != "" {
+		t.Fatalf("default database config = %+v", cfg.Db)
+	}
+	want := PostgresConfig{
+		Host: "localhost", Port: 5432, User: "qms", Password: "qms123456", Database: "qms",
+		MaxOpenConns: 25, MaxIdleConns: 25,
+	}
+	if cfg.Db.PostgresConfig != want {
+		t.Fatal("default PostgreSQL connection settings changed")
+	}
+	if err := cfg.Db.Validate(); err != nil {
+		t.Fatalf("default database config is invalid: %v", err)
 	}
 }

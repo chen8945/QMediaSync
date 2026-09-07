@@ -28,7 +28,6 @@ import (
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/migrate"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/synccron"
@@ -77,7 +76,6 @@ func parseBuildUnixTime(value string) int64 {
 
 type App struct {
 	isRelease   bool
-	dbManager   *database.EmbeddedManager
 	httpServer  *http.Server
 	httpsServer *http.Server
 	version     string
@@ -138,10 +136,6 @@ func (app *App) Stop() {
 	// 停止统计写入 worker，并在关闭数据库前尽量刷完已入队记录。
 	if requestStatWriter != nil {
 		requestStatWriter.Close()
-	}
-	// 关闭数据库
-	if app.dbManager != nil {
-		app.dbManager.Stop()
 	}
 	helpers.CloseLogger() // 关闭日志
 }
@@ -206,7 +200,10 @@ func (app *App) StartHttpServer(r *gin.Engine) {
 	}()
 }
 
-func (app *App) StartDatabase(migrateMode bool) error {
+func (app *App) StartDatabase() error {
+	if err := helpers.GlobalConfig.Db.Validate(); err != nil {
+		return err
+	}
 	// 根据配置启动数据库连接
 	if helpers.GlobalConfig.Db.Engine == helpers.DbEngineSqlite {
 		// 如果是 SQLite，直接初始化 SQLite 连接
@@ -222,48 +219,20 @@ func (app *App) StartDatabase(migrateMode bool) error {
 
 	// 初始化数据库配置
 	dbConfig := &database.Config{
-		Mode:         helpers.GlobalConfig.Db.PostgresType,
 		Host:         helpers.GlobalConfig.Db.PostgresConfig.Host,
 		Port:         helpers.GlobalConfig.Db.PostgresConfig.Port,
 		User:         helpers.GlobalConfig.Db.PostgresConfig.User,
 		Password:     helpers.GlobalConfig.Db.PostgresConfig.Password,
 		DBName:       helpers.GlobalConfig.Db.PostgresConfig.Database,
 		SSLMode:      "disable",
-		LogDir:       filepath.Join(helpers.ConfigDir, "postgres", "log"),
-		DataDir:      filepath.Join(helpers.ConfigDir, "postgres", "data"),
-		BinaryPath:   db.GetPostgresBinaryPath(helpers.DataDir),
 		MaxOpenConns: helpers.GlobalConfig.Db.PostgresConfig.MaxOpenConns,
 		MaxIdleConns: helpers.GlobalConfig.Db.PostgresConfig.MaxIdleConns,
 	}
 	if helpers.GlobalConfig.Db.PostgresConfig.SSL {
 		dbConfig.SSLMode = "require"
 	}
-	if dbConfig.Mode == helpers.PostgresTypeEmbedded {
-		// 如果使用内置数据库，则需要启动和初始化数据库
-		app.dbManager = database.NewEmbeddedManager(dbConfig)
-		// 启动数据库
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		if err := app.dbManager.Start(ctx); err != nil {
-			return err
-		}
-		db.InitPostgres(app.dbManager.GetDB())
-
-		// 如果是迁移模式，启动迁移服务
-		if migrateMode {
-			helpers.AppLogger.Info("检测到使用内嵌 PostgreSQL，启动迁移服务…")
-			migrateServer := migrate.NewMigrateServer(app.dbManager, dbConfig)
-			if err := migrateServer.Start(); err != nil {
-				helpers.AppLogger.Errorf("启动迁移服务失败：%v", err)
-				return err
-			}
-		}
-	} else {
-		// 初始化 PostgreSQL 数据库连接
-		if err := db.ConnectPostgres(dbConfig); err != nil {
-			return err
-		}
+	if err := db.ConnectPostgres(dbConfig); err != nil {
+		return err
 	}
 	models.Migrate()
 	if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
@@ -354,7 +323,6 @@ func getDataAndConfigDir() error {
 	instanceLock = lock
 
 	var appData string
-	var dataDir string
 	var configDir string
 	needMk := false
 	if runtime.GOOS == "windows" {
@@ -363,20 +331,13 @@ func getDataAndConfigDir() error {
 		if appData == "" {
 			appData = os.Getenv("APPDATA")
 		}
-		dataDir = filepath.Join(helpers.RootDir, "postgres")      // 数据库目录
 		oldConfigDir := filepath.Join(appData, AppName, "config") // 配置目录
 		configDir = filepath.Join(helpers.RootDir, "config")      // 配置目录
-		err := os.MkdirAll(dataDir, 0755)
-		if err != nil {
-			fmt.Printf("创建数据目录失败：%v\n", err)
-			panic("创建数据目录失败")
-		}
-		err = os.MkdirAll(configDir, 0755)
+		err := os.MkdirAll(configDir, 0755)
 		if err != nil {
 			fmt.Printf("创建配置目录失败：%v\n", err)
 			panic("创建配置目录失败")
 		}
-		helpers.DataDir = dataDir
 		helpers.ConfigDir = configDir
 		if helpers.PathExists(oldConfigDir) {
 			// 迁移旧配置
@@ -389,9 +350,7 @@ func getDataAndConfigDir() error {
 		if os.Getenv("TRIM_PKGETC") == "" {
 			appData = helpers.RootDir
 			configDir = filepath.Join(appData, "config") // 配置目录
-			dataDir = filepath.Join(appData, "postgres") // 数据库目录
 			needMk = true
-			helpers.DataDir = dataDir
 			helpers.ConfigDir = configDir
 		} else {
 			oldConfigDir := os.Getenv("TRIM_PKGETC")
@@ -421,8 +380,6 @@ func getDataAndConfigDir() error {
 					}
 				}
 			}
-			dataDir = filepath.Join(configDir, "postgres") // 数据库目录
-			helpers.DataDir = dataDir
 			helpers.ConfigDir = configDir
 		}
 	}
@@ -438,12 +395,7 @@ func getDataAndConfigDir() error {
 
 //go:embed emby302.yaml
 //go:embed assets/db_config.html
-//go:embed assets/migrate.html
 var embedFiles embed.FS
-
-func init() {
-	migrate.SetMigrateFiles(embedFiles)
-}
 
 func startEmby302() {
 	dataRoot := helpers.ConfigDir
@@ -827,6 +779,26 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// checkLegacyDatabaseState 在任何数据库写入前拒绝未处理的旧内嵌数据库状态。
+func checkLegacyDatabaseState() error {
+	backupPath := filepath.Join(helpers.ConfigDir, "backups", "migrate.zip")
+	if _, err := os.Lstat(backupPath); err == nil {
+		return fmt.Errorf("发现遗留迁移包 %s，此版本已不提供自动迁移，请先妥善处理旧数据；迁移包已保留", backupPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("检查旧迁移包失败：%w", err)
+	}
+	if helpers.HasConfigFile() {
+		return nil
+	}
+	postgresDir := filepath.Join(helpers.ConfigDir, "postgres")
+	if _, err := os.Lstat(postgresDir); err == nil {
+		return fmt.Errorf("缺少配置文件，但发现旧 PostgreSQL 数据目录 %s，此版本已移除内嵌数据库和自动迁移，请先妥善处理旧数据；目录已保留", postgresDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("检查旧 PostgreSQL 数据目录失败：%w", err)
+	}
+	return nil
+}
+
 func initEnv() bool {
 	log.Printf("当前版本号：%s，发布日期：%s\n", Version, PublishDate)
 	// 将版本写入 helper
@@ -849,38 +821,22 @@ func initEnv() bool {
 		return false
 	}
 	log.Printf("当前工作目录：%s\n", helpers.RootDir)
-	log.Printf("当前数据目录：%s\n", helpers.DataDir)
 	log.Printf("当前配置文件目录：%s\n", helpers.ConfigDir)
-	if err := helpers.InitEncryptionKey(); err != nil {
-		log.Printf("初始化本机加密密钥失败：%v\n", err)
+	if err := checkLegacyDatabaseState(); err != nil {
+		log.Printf("数据库状态不支持：%v", err)
 		return false
 	}
 	ipv4, _ := helpers.GetLocalIP()
 	log.Printf("本机 IPv4 地址：%s\n", ipv4)
 	// 检查配置文件是否存在
-	configPath := helpers.ExistingConfigFilePath()
 	helpers.IsFirstRun = !helpers.HasConfigFile()
 	// 如果不存在，启动一个简易 Web 服务来配置数据库连接信息
 	if helpers.IsFirstRun {
-		// 检查是否有旧的数据库配置和记录，有的话生成配置文件，跳过配置流程
-		oldPostgresDataDir := filepath.Join(helpers.ConfigDir, "postgres")
-		if helpers.PathExists(oldPostgresDataDir) {
-			log.Printf("发现旧的数据库数据目录：%s", oldPostgresDataDir)
-			// 生成新的配置文件
-			if err := helpers.MakeOldConfig(); err != nil {
-				log.Printf("生成新的配置文件失败：%v", err)
-				return false
-			}
-			configPath = helpers.ConfigFilePath()
-			log.Printf("已生成配置文件：%s", configPath)
-			helpers.IsFirstRun = false
-		} else {
-			log.Printf("配置文件不存在，启动简单配置服务：%s", helpers.ConfigFilePath())
-			StartConfigWebServer()
-			return false
-		}
+		log.Printf("配置文件不存在，启动简单配置服务：%s", helpers.ConfigFilePath())
+		StartConfigWebServer()
+		return false
 	}
-	configPath = helpers.ExistingConfigFilePath()
+	configPath := helpers.ExistingConfigFilePath()
 	log.Printf("配置文件存在，加载配置文件：%s", configPath)
 	// 如果存在，则加载配置文件，进行其他的初始化工作
 	err := helpers.InitConfig()
@@ -888,40 +844,18 @@ func initEnv() bool {
 		log.Printf("初始化配置文件失败：%v", err)
 		return false
 	}
+	if err := helpers.InitEncryptionKey(); err != nil {
+		log.Printf("初始化本机加密密钥失败：%v\n", err)
+		return false
+	}
 	initLogger()
 	// 创建 App
 	newApp()
 	helpers.AppLogger.Infof("当前版本号：%s，发布日期：%s", Version, PublishDate)
 
-	// 检查是否需要自动恢复
-	if migrate.ShouldRestore() {
-		helpers.AppLogger.Info("检测到迁移备份文件存在且使用外部 PostgreSQL，开始自动恢复…")
-		// 先启动外部数据库连接
-		if err := QMSApp.StartDatabase(false); err != nil {
-			log.Printf("数据库启动失败：%v", err)
-			return false
-		}
-		// 执行恢复
-		backupPath := migrate.GetMigrateBackupPath()
-		if err := performMigrateRestore(backupPath); err != nil {
-			helpers.AppLogger.Errorf("恢复数据失败：%v", err)
-			return false
-		}
-		// 恢复成功，删除备份文件
-		os.Remove(backupPath)
-		helpers.AppLogger.Info("数据恢复完成，已删除迁移备份文件")
-	} else {
-		// 检查是否需要启动迁移服务
-		needMigrate := migrate.ShouldMigrate()
-		// needMigrate := false
-		if err := QMSApp.StartDatabase(needMigrate); err != nil {
-			helpers.AppLogger.Errorf("数据库启动失败：%v", err)
-			return false
-		}
-		// 如果启动了迁移服务，则直接返回 false（迁移服务会自己处理退出）
-		if needMigrate {
-			return false
-		}
+	if err := QMSApp.StartDatabase(); err != nil {
+		helpers.AppLogger.Errorf("数据库启动失败：%v", err)
+		return false
 	}
 
 	if err := configureInitialAdminSetup(); err != nil {
@@ -935,9 +869,8 @@ func initEnv() bool {
 }
 
 func parseParams() {
-	// 定义 GUID 参数
 	var update string
-	flag.StringVar(&helpers.Guid, "guid", "", "GUID 参数")
+	flag.String("guid", "", "兼容旧部署参数；进程身份由启动环境决定")
 	flag.BoolVar(&helpers.IsFnOS, "fnos", false, "是否是飞牛环境")
 	flag.StringVar(&update, "update", "", "更新参数")
 	registerAdminRecoveryFlags(flag.CommandLine, &adminRecoveryOptions{})
@@ -946,17 +879,6 @@ func parseParams() {
 	// 使用参数
 	if helpers.IsFnOS {
 		log.Printf("当前环境为飞牛环境\n")
-	}
-	if helpers.Guid == "" || helpers.Guid == "0" {
-		// 检查是否有 GUID 环境变量，有的话直接使用
-		guidEnv := os.Getenv("GUID")
-		if guidEnv != "" {
-			log.Printf("使用环境变量 GUID：%s 执行操作\n", guidEnv)
-			helpers.Guid = guidEnv
-		} else {
-			log.Printf("使用 root 执行操作\n")
-			helpers.Guid = "0"
-		}
 	}
 	// 检查是否是更新模式
 	if update != "" && runtime.GOOS == "windows" {
@@ -1160,19 +1082,38 @@ func isInRestrictedDirectory() (bool, string) {
 	return false, ""
 }
 
-func performMigrateRestore(backupPath string) error {
-	helpers.AppLogger.Infof("开始从迁移备份恢复：%s", backupPath)
+type databaseConfigRequest struct {
+	Engine       helpers.DbEngine     `json:"engine"`
+	PostgresType helpers.PostgresType `json:"postgresType"` // 仅识别旧客户端提交的模式
+	Host         string               `json:"host"`
+	Port         int                  `json:"port"`
+	User         string               `json:"user"`
+	Password     string               `json:"password"`
+	Database     string               `json:"database"`
+	SSL          bool                 `json:"ssl"`
+	DropDatabase bool                 `json:"dropDatabase"`
+}
 
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		return fmt.Errorf("备份文件不存在：%s", backupPath)
+func (req databaseConfigRequest) toConfig() (*helpers.Config, error) {
+	config := helpers.MakeDefaultConfig()
+	config.Db.Engine = req.Engine
+	config.Db.PostgresType = req.PostgresType
+	if req.Engine == helpers.DbEnginePostgres {
+		config.Db.PostgresConfig = helpers.PostgresConfig{
+			Host:         req.Host,
+			Port:         req.Port,
+			User:         req.User,
+			Password:     req.Password,
+			Database:     req.Database,
+			SSL:          req.SSL,
+			MaxOpenConns: 25,
+			MaxIdleConns: 25,
+		}
 	}
-
-	if err := backup.Restore(backupPath); err != nil {
-		return fmt.Errorf("恢复失败：%v", err)
+	if err := config.Db.Validate(); err != nil {
+		return nil, err
 	}
-
-	helpers.AppLogger.Info("迁移恢复完成")
-	return nil
+	return config, nil
 }
 
 func StartConfigWebServer() {
@@ -1266,68 +1207,41 @@ func StartConfigWebServer() {
 	})
 
 	r.POST("/api/config/save", func(c *gin.Context) {
-		var req struct {
-			Engine       string `json:"engine"`
-			PostgresType string `json:"postgresType"`
-			Host         string `json:"host"`
-			Port         int    `json:"port"`
-			User         string `json:"user"`
-			Password     string `json:"password"`
-			Database     string `json:"database"`
-			SSL          bool   `json:"ssl"`
-			DropDatabase bool   `json:"dropDatabase"`
-		}
+		var req databaseConfigRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		yamlConfig := helpers.MakeDefaultConfig()
-		if req.Engine == string(helpers.DbEnginePostgres) {
-			yamlConfig.Db.PostgresType = helpers.PostgresType(req.PostgresType)
-			if req.PostgresType == string(helpers.PostgresTypeExternal) {
-				quotedDatabase, err := database.QuotePostgresIdentifier(req.Database)
-				if err != nil {
-					c.JSON(200, gin.H{"error": "数据库名不合法：" + err.Error()})
-					return
+		yamlConfig, err := req.toConfig()
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		if err := checkLegacyDatabaseState(); err != nil {
+			c.JSON(409, gin.H{"error": err.Error()})
+			return
+		}
+		if req.Engine == helpers.DbEnginePostgres {
+			quotedDatabase, err := database.QuotePostgresIdentifier(req.Database)
+			if err != nil {
+				c.JSON(200, gin.H{"error": "数据库名不合法：" + err.Error()})
+				return
+			}
+			if req.DropDatabase {
+				sslMode := "disable"
+				if req.SSL {
+					sslMode = "require"
 				}
-				if req.DropDatabase {
-					sslMode := "disable"
-					if req.SSL {
-						sslMode = "require"
-					}
-					connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-						req.Host, req.Port, req.User, req.Password, sslMode)
-					sqlDB, err := sql.Open("postgres", connStr)
-					if err == nil {
-						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancel()
-						sqlDB.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase)
-						sqlDB.Close()
-					}
-				}
-				yamlConfig.Db.PostgresConfig = helpers.PostgresConfig{
-					Host:         req.Host,
-					Port:         req.Port,
-					User:         req.User,
-					Password:     req.Password,
-					Database:     req.Database,
-					SSL:          req.SSL,
-					MaxOpenConns: 25,
-					MaxIdleConns: 25,
-				}
-			} else {
-				yamlConfig.Db.PostgresConfig = helpers.PostgresConfig{
-					Host:         "localhost",
-					Port:         5432,
-					User:         "qms",
-					Password:     "qms123456",
-					Database:     "qms",
-					MaxOpenConns: 25,
-					MaxIdleConns: 25,
+				connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
+					req.Host, req.Port, req.User, req.Password, sslMode)
+				sqlDB, err := sql.Open("postgres", connStr)
+				if err == nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					sqlDB.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase)
+					sqlDB.Close()
 				}
 			}
-		} else {
-			yamlConfig.Db.Engine = helpers.DbEngineSqlite
 		}
 
 		if err := helpers.SaveConfig(yamlConfig); err != nil {

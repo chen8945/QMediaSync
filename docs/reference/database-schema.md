@@ -23,7 +23,7 @@
 - 除 `internal/notification` 里的通知表外，项目大多数表都嵌入 `BaseModel`，主键和时间字段都是 `int64` Unix 秒。
 - `internal/notification` 里的通知表使用 `time.Time` 作为 `CreatedAt` / `UpdatedAt`。
 - 带 `gorm:"-"` 的字段不入库，只用于运行时组装、前端回传或关联对象。
-- PostgreSQL 数据库名在首次配置、外部库自动创建和内嵌库初始化时统一校验并作为 identifier 引用；名称不能为空、不能超过 63 字节、不能包含空白或控制字符。
+- PostgreSQL 数据库名在首次配置和数据库自动创建时统一校验并作为 identifier 引用；名称不能为空、不能超过 63 字节、不能包含空白或控制字符。
 
 ## 时间字段策略
 

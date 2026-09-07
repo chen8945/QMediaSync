@@ -233,7 +233,7 @@
         </div>
 
         <div id="step-postgres-config" class="step">
-            <p class="subtitle">请输入 PostgreSQL 外部连接信息：</p>
+            <p class="subtitle">请输入 PostgreSQL 连接信息：</p>
             <p style="font-size: 16px; color: #333; text-align: center; margin-bottom: 20px;">一定要输入超级管理员用户名和密码，程序会自动创建指定的数据库</p>
             <div class="form-group">
                 <label for="host">主机地址</label>
@@ -273,8 +273,7 @@
 
     <script>
         let currentConfig = {
-            engine: '',
-            postgresType: 'external'
+            engine: ''
         };
         let connectionTested = false;
         let needDropDatabase = false;
@@ -402,11 +401,10 @@
         function saveConfig() {
             const data = {
                 engine: currentConfig.engine,
-                postgresType: currentConfig.postgresType,
                 dropDatabase: needDropDatabase
             };
 
-            if (currentConfig.engine === 'postgres' && currentConfig.postgresType === 'external') {
+            if (currentConfig.engine === 'postgres') {
                 data.host = document.getElementById('host').value;
                 data.port = parseInt(document.getElementById('port').value);
                 data.user = document.getElementById('user').value;

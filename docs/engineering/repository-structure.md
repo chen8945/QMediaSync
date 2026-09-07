@@ -13,7 +13,7 @@ backend/             Go 后端
   internal/           业务控制器、模型、同步、刮削、通知和基础能力
   emby302/            嵌入的 Emby 302 代理子项目
   openxpanapi/        百度网盘 OpenAPI 客户端
-  assets/             嵌入的初始化、迁移和图标资源
+  assets/             嵌入的首次配置向导和图标资源
   FNOS/               飞牛 FPK 打包模板与素材
   web_statics/        运行时 Web UI 静态资源（生成且忽略）
 docker/              Dockerfile、容器入口脚本和在线更新监视脚本

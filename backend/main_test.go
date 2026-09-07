@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"gopkg.in/yaml.v2"
 	"gorm.io/gorm"
 )
 
@@ -91,7 +93,7 @@ func TestSyncPathAggregateWriteRoutesReplaceLegacyRoutes(t *testing.T) {
 
 func TestLegacySyncWriteHandlersRemovedFromControllerSources(t *testing.T) {
 	files := []struct {
-		path     string
+		path    string
 		removed []string
 	}{
 		{
@@ -143,5 +145,146 @@ func TestConfigureInitialAdminSetup在Error日志等级仍输出初始化码(t *
 	}
 	if !strings.Contains(got, "[WARN] 初始化码只会在本次启动日志中显示，创建管理员成功后立即失效") {
 		t.Fatalf("初始化码失效提示应随初始化码一起输出: %s", got)
+	}
+}
+
+func TestInitialDatabaseConfigSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		engine    helpers.DbEngine
+		mode      helpers.PostgresType
+		wantError bool
+	}{
+		{name: "SQLite", engine: helpers.DbEngineSqlite},
+		{name: "PostgreSQL", engine: helpers.DbEnginePostgres},
+		{name: "legacy external client", engine: helpers.DbEnginePostgres, mode: helpers.PostgresTypeExternal},
+		{name: "embedded client", engine: helpers.DbEnginePostgres, mode: helpers.PostgresTypeEmbedded, wantError: true},
+		{name: "unknown mode", engine: helpers.DbEnginePostgres, mode: "unknown", wantError: true},
+		{name: "unknown engine", engine: "mysql", wantError: true},
+		{name: "missing engine", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldDir := helpers.ConfigDir
+			helpers.ConfigDir = t.TempDir()
+			t.Cleanup(func() { helpers.ConfigDir = oldDir })
+			req := databaseConfigRequest{
+				Engine: tc.engine, PostgresType: tc.mode,
+				Host: "db.example", Port: 5433, User: "postgres", Password: "test-password",
+				Database: "qmediasync", SSL: true,
+			}
+			config, err := req.toConfig()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("toConfig() error = %v, wantError %v", err, tc.wantError)
+			}
+			if tc.wantError {
+				return
+			}
+			if err := helpers.SaveConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(helpers.ConfigFilePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved helpers.Config
+			if err := yaml.Unmarshal(data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if saved.Db.Engine != tc.engine || bytes.Contains(data, []byte("postgresType:")) {
+				t.Fatalf("saved database engine or legacy mode is wrong: %+v", saved.Db)
+			}
+			if tc.engine == helpers.DbEnginePostgres {
+				pg := saved.Db.PostgresConfig
+				if pg.Host != req.Host || pg.Port != req.Port || pg.User != req.User ||
+					pg.Password != req.Password || pg.Database != req.Database || !pg.SSL {
+					t.Fatal("saved PostgreSQL connection settings do not match the selection")
+				}
+			}
+		})
+	}
+}
+
+func TestInitEnvRejectsLegacyDatabaseState(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		config     string
+		legacyPath string
+		wantError  string
+	}{
+		{
+			name: "old database without config", legacyPath: "postgres/data/PG_VERSION",
+			wantError: "已移除内嵌数据库和自动迁移",
+		},
+		{
+			name: "pending migration", legacyPath: "backups/migrate.zip",
+			config: "db:\n  engine: sqlite\n  sqliteFile: existing.db\n", wantError: "已不提供自动迁移",
+		},
+		{
+			name: "pending migration without config", legacyPath: "backups/migrate.zip",
+			wantError: "已不提供自动迁移",
+		},
+		{
+			name: "embedded configuration", config: "db:\n  engine: postgres\n  postgresType: embedded\n",
+			wantError: "已移除内嵌 PostgreSQL",
+		},
+		{
+			name: "unknown engine", config: "db:\n  engine: unknown\n", wantError: "不支持的数据库引擎",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldRoot, oldDir, oldConfig := helpers.RootDir, helpers.ConfigDir, helpers.GlobalConfig
+			oldLock, oldDB, oldFirstRun := instanceLock, db.Db, helpers.IsFirstRun
+			oldOutput, oldTimeZone := log.Writer(), time.Local
+			t.Cleanup(func() {
+				if instanceLock != nil && instanceLock != oldLock {
+					instanceLock.Close()
+				}
+				helpers.RootDir, helpers.ConfigDir, helpers.GlobalConfig = oldRoot, oldDir, oldConfig
+				instanceLock, db.Db, helpers.IsFirstRun = oldLock, oldDB, oldFirstRun
+				log.SetOutput(oldOutput)
+				time.Local = oldTimeZone
+			})
+			t.Setenv("TRIM_PKGETC", "")
+			t.Setenv("TRIM_DATA_SHARE_PATHS", "")
+			t.Setenv("LOCALAPPDATA", t.TempDir())
+			helpers.RootDir = t.TempDir()
+			dir := filepath.Join(helpers.RootDir, "config")
+			files := map[string]string{"existing.db": "existing database contents"}
+			if tc.config != "" {
+				files["config.yaml"] = tc.config
+			}
+			if tc.legacyPath != "" {
+				files[tc.legacyPath] = "legacy data"
+			}
+			for path, content := range files {
+				path = filepath.Join(dir, path)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var output bytes.Buffer
+			log.SetOutput(&output)
+			if initEnv() || db.Db != oldDB {
+				t.Fatal("startup opened a database despite unsupported legacy state")
+			}
+			if !strings.Contains(output.String(), tc.wantError) {
+				t.Fatalf("missing error %q in startup log: %s", tc.wantError, output.String())
+			}
+			for path, before := range files {
+				after, err := os.ReadFile(filepath.Join(dir, path))
+				if err != nil || string(after) != before {
+					t.Fatalf("startup changed existing file %s", path)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "encryption.key")); !os.IsNotExist(err) {
+				t.Fatal("rejected startup generated an encryption key")
+			}
+			if tc.config == "" && helpers.HasConfigFile() {
+				t.Fatal("rejected startup generated a new configuration")
+			}
+		})
 	}
 }

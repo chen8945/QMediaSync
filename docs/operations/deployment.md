@@ -16,7 +16,7 @@
 | 发布二进制 | Windows 或直接管理 Linux 进程 | 可执行文件同级的 `config/` |
 | 飞牛 FPK | 飞牛系统 | 平台的应用共享目录下 `config/`，由安装向导和 `TRIM_*` 环境变量管理 |
 
-配置文件、SQLite 数据库、内嵌 PostgreSQL 数据、备份、日志、本机加密密钥和用户设置都依赖配置目录。升级、迁移或重建容器前必须备份并保留该目录；不能只保留可执行文件或镜像层。
+配置文件、SQLite 数据库、备份、日志、本机加密密钥和用户设置都依赖配置目录。升级、迁移或重建容器前必须备份并保留该目录；不能只保留可执行文件或镜像层。旧实例遗留的内嵌 PostgreSQL 数据也应保留，升级前按 [数据库运维](database.md#旧内嵌数据库) 完成数据处理；当前版本不提供自动迁移。
 
 默认 HTTP 端口为 `12333`。Docker 和发布二进制部署中，主程序只有在运行目录 `config/server.crt` 和 `config/server.key` 都存在时才额外监听 HTTPS `12332`。Emby 302 服务使用 `8095`（HTTP）和 `8094`（HTTPS）；仅在已配置 Emby 时启动。端口、证书和代理层细节分别见 [配置、密钥与日志](configuration.md) 与 [反向代理与 SSE](reverse-proxy.md)。
 
@@ -40,7 +40,7 @@ docker run -d \
   ghcr.io/chen8945/qmediasync:latest
 ```
 
-首次运行没有 `config/config.yaml` 时，访问 HTTP `12333` 完成配置向导。使用内置 HTTPS 时还需显式映射 `-p 12332:12332`，并将证书文件放入已挂载的 `config/` 目录。
+首次运行没有主配置且没有遗留数据库状态时，访问 HTTP `12333` 完成配置向导。默认数据库配置为 PostgreSQL；选择 PostgreSQL 时连接单独部署的数据库服务。使用内置 HTTPS 时还需显式映射 `-p 12332:12332`，并将证书文件放入已挂载的 `config/` 目录。
 
 容器入口脚本以 root 完成初始目录检查；可选环境变量 `GUID`、`GPID` 为数值 UID/GID。设置后脚本会在容器内创建对应用户或组（如不存在），并在值变化时递归修正 `/app/config` 的所有者，再以 `GUID` 运行主进程。例如：
 
@@ -58,10 +58,12 @@ docker run -d \
 
 该所有权修正不覆盖 `/media`；宿主机媒体目录的读写权限仍由部署者自行保证。不要用 `--user` 替代上述入口逻辑，否则入口无法创建用户或修正持久化目录的权限。
 
-从当前源码构建镜像使用：
+`--guid` 参数仅为兼容旧启动脚本而保留，不在应用进程中切换用户；实际运行身份由容器入口或飞牛平台决定。
+
+本地从当前源码构建和测试镜像使用：
 
 ```bash
-docker build -f docker/source.Dockerfile -t qmediasync .
+docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 ```
 
 `docker/source.local.Dockerfile` 仅为本地网络环境替换构建镜像源，产物目标与 `source.Dockerfile` 相同，不用于正式发布。
@@ -70,18 +72,18 @@ docker build -f docker/source.Dockerfile -t qmediasync .
 
 发布包解压后，从包含 `QMediaSync` 和 `web_statics/` 的目录启动程序。Linux 与 Windows 都把运行配置保存在可执行文件同级的 `config/`；因此替换程序和静态资源时不得覆盖该目录。
 
-`scripts/install/linux-init.sh` 是 Linux 上的外部 PostgreSQL 与 systemd 辅助脚本：它可安装或初始化 PostgreSQL、创建数据库和用户、写入 `/etc/qmediasync/postgres.env`，并用 `-i` 创建 `qmediasync.service`。脚本要求在发布二进制所在目录运行，并要求 root 与 systemd；它不是 Docker 或飞牛的安装入口。
+`scripts/install/linux-init.sh` 是 Linux 上的PostgreSQL 与 systemd 辅助脚本：它可安装或初始化 PostgreSQL、创建数据库和用户，并用 `-i` 创建 `qmediasync.service`。脚本要求在发布二进制所在目录运行，并要求 root 与 systemd；它不是 Docker 或飞牛的安装入口。
 
 ```bash
 sudo scripts/install/linux-init.sh -i
 systemctl status qmediasync
 ```
 
-脚本创建的服务从当前目录执行 `QMediaSync`，并从 `/etc/qmediasync/postgres.env` 读取旧式 PostgreSQL 环境变量。新实例仍应通过首次配置向导或 `config/config.yaml` 确认数据库模式和连接信息；配置文件是当前运行时的权威来源。
+脚本创建的服务从当前目录执行 `QMediaSync`，不依赖旧 `postgres.env`，也不向 shell 启动文件写入 `DB_*` 环境变量。脚本不会生成应用数据库配置；新实例应通过首次配置向导或 `config/config.yaml` 填写数据库连接信息，SSL 同样由 YAML 配置。
 
 ## 飞牛 FPK
 
-飞牛 FPK 由发布流程生成；应用安装向导负责选择 SQLite 或外部 PostgreSQL 并写入配置。飞牛运行时由平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_DATA_SHARE_PATHS` 等路径变量，程序会将实际配置目录迁移或定位到共享数据目录下的 `config/`。
+飞牛 FPK 由发布流程生成；应用安装向导负责选择 SQLite 或PostgreSQL 并写入配置。飞牛运行时由平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_DATA_SHARE_PATHS` 等路径变量，程序会将实际配置目录迁移或定位到共享数据目录下的 `config/`。
 
 不要把 Docker 的 `/app/config` 路径、`GUID`/`GPID` 约定或裸机 systemd 服务直接套用到飞牛安装；在飞牛文件管理器中保留应用共享目录下的 `config/`，再按 [数据库运维](database.md) 执行备份和恢复。
 
@@ -114,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/chen8945/QMediaSync/main/scripts/re
 
 脚本先由 Compose 解析包含服务级 `env_file` 的完整配置快照，再核对服务配置哈希、实际镜像、持久化挂载和运行身份。服务配置与实际部署不一致、标签已指向其他镜像、容器内二进制已被在线更新、存在待更新包、没有持久化配置卷或存在多个目标容器时拒绝执行。先使服务配置与部署一致，再恢复；脚本不会自动拉取镜像、构建或重建原服务。
 
-脚本只停止目标 QMediaSync 容器，外部 PostgreSQL 继续运行；然后使用配置快照创建一次性容器，直接运行恢复二进制。恢复容器锁定原镜像 ID，复用原容器的实际配置卷、网络和 UID/GID，以及配置快照中的环境；bind 挂载保留传播模式和 SELinux 选项。项目级卷名或网络名即使改变，也不能把恢复指向另一份配置或另一数据库网络。临时容器关闭日志采集、不开启正常启动脚本，退出后删除。原容器原先运行则启动原容器，原先停止则保持停止。最后显示恢复结果和新密码；启动失败也会显示已提交的新密码，并返回非零退出码。启动容器后仍应确认应用能正常访问。
+脚本只停止目标 QMediaSync 容器，PostgreSQL 继续运行；然后使用配置快照创建一次性容器，直接运行恢复二进制。恢复容器锁定原镜像 ID，复用原容器的实际配置卷、网络和 UID/GID，以及配置快照中的环境；bind 挂载保留传播模式和 SELinux 选项。项目级卷名或网络名即使改变，也不能把恢复指向另一份配置或另一数据库网络。临时容器关闭日志采集、不开启正常启动脚本，退出后删除。原容器原先运行则启动原容器，原先停止则保持停止。最后显示恢复结果和新密码；启动失败也会显示已提交的新密码，并返回非零退出码。启动容器后仍应确认应用能正常访问。
 
 删除管理员使用：
 
@@ -157,4 +159,4 @@ docker run --rm --log-driver none --network 原数据库网络 \
   ghcr.io/chen8945/qmediasync:实际版本 --reset-admin-password
 ```
 
-不要在仍运行的原容器中用 `docker exec` 直接恢复。所有连接同一数据库的 QMediaSync 实例都必须停止；同配置目录的实例锁不能协调不同目录或不同主机。配置缺失、数据库不存在、遗留内嵌 PostgreSQL 或未完成迁移时，先修复对应部署状态，恢复命令不会自动建库或迁移。
+不要在仍运行的原容器中用 `docker exec` 直接恢复。所有连接同一数据库的 QMediaSync 实例都必须停止；同配置目录的实例锁不能协调不同目录或不同主机。配置缺失、数据库不存在或存在 [旧内嵌数据库状态](database.md#旧内嵌数据库) 时，先处理对应部署状态；恢复命令不会自动建库或迁移。

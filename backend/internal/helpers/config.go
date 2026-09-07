@@ -21,7 +21,6 @@ type DbEngine string
 const (
 	DbEngineSqlite   DbEngine = "sqlite"
 	DbEnginePostgres DbEngine = "postgres"
-	DbEngineUnset    DbEngine = ""
 )
 
 type PostgresType string
@@ -58,10 +57,38 @@ type PostgresConfig struct {
 }
 
 type ConfigDb struct {
-	Engine         DbEngine       `yaml:"engine"`         // 使用的数据库引擎，可选值：sqlite, postgres
-	SqliteFile     string         `yaml:"sqliteFile"`     // SQLite 数据库文件路径
-	PostgresType   PostgresType   `yaml:"postgresType"`   // PostgreSQL 数据库类型，可选值：embedded, external
-	PostgresConfig PostgresConfig `yaml:"postgresConfig"` // PostgreSQL 数据库配置
+	Engine         DbEngine       `yaml:"engine"`                 // 使用的数据库引擎，可选值：sqlite, postgres
+	SqliteFile     string         `yaml:"sqliteFile"`             // SQLite 数据库文件路径
+	PostgresType   PostgresType   `yaml:"postgresType,omitempty"` // 仅识别旧配置，保存时不再写出
+	PostgresConfig PostgresConfig `yaml:"postgresConfig"`         // PostgreSQL 数据库配置
+}
+
+// Validate 校验当前支持的数据库配置并拒绝旧内嵌模式。
+func (config ConfigDb) Validate() error {
+	switch config.Engine {
+	case DbEngineSqlite:
+		if strings.TrimSpace(config.SqliteFile) == "" {
+			return fmt.Errorf("SQLite 数据库文件未配置")
+		}
+	case DbEnginePostgres:
+		switch config.PostgresType {
+		case "", PostgresTypeExternal:
+		case PostgresTypeEmbedded:
+			return fmt.Errorf("此版本已移除内嵌 PostgreSQL 和自动迁移，请先妥善处理旧数据库并配置 SQLite 或 PostgreSQL")
+		default:
+			return fmt.Errorf("不支持的 PostgreSQL 模式 %q", config.PostgresType)
+		}
+		pg := config.PostgresConfig
+		if strings.TrimSpace(pg.Host) == "" || strings.TrimSpace(pg.User) == "" || strings.TrimSpace(pg.Database) == "" {
+			return fmt.Errorf("PostgreSQL 的地址、用户名或数据库名未正确配置")
+		}
+		if pg.Port < 1 || pg.Port > 65535 {
+			return fmt.Errorf("PostgreSQL 端口必须在 1 到 65535 之间")
+		}
+	default:
+		return fmt.Errorf("不支持的数据库引擎 %q，请配置 sqlite 或 postgres", config.Engine)
+	}
+	return nil
 }
 
 type ConfigStrm struct {
@@ -96,12 +123,10 @@ var logConfigMu sync.RWMutex
 var RootDir string
 var ConfigDir string
 
-var DataDir string
 var SharePathes string
 var AccessiblePathes string
 var IsFnOS bool
 var IsRelease bool
-var Guid string
 var FANART_API_KEY = "" // 生效值：Fanart 客户端读取，由 ScrapeSettings.ApplyKeyOverrides 按“UI > 默认”刷新
 var HTTP_PROXY = ""     // 生效的通用刮削代理：由 ScrapeSettings.ApplyKeyOverrides 按代理开关刷新；Fanart 等直读 helpers 的客户端使用（空=直连）
 var DEFAULT_TMDB_ACCESS_TOKEN = ""
@@ -151,9 +176,14 @@ func InitConfig() error {
 func LoadExistingConfig() error {
 	configPath := ExistingConfigFilePath()
 	// 从配置文件加载
-	if err := loadYaml(configPath, &GlobalConfig); err != nil {
+	var config Config
+	if err := loadYaml(configPath, &config); err != nil {
 		return err
 	}
+	if err := config.Db.Validate(); err != nil {
+		return err
+	}
+	GlobalConfig = config
 	// 给 STRM 填充默认值
 	if len(GlobalConfig.Strm.VideoExt) == 0 {
 		GlobalConfig.Strm.VideoExt = []string{".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".3gp", ".ts"}
@@ -252,35 +282,14 @@ func loadYaml(configPath string, cfg interface{}) error {
 	return nil
 }
 
-func MakeOldConfig() error {
-	yamlConfig := MakeDefaultConfig()
-	host := os.Getenv("DB_HOST")
-	if host != "" {
-		yamlConfig.Db.PostgresConfig.Host = host
-	}
-	port := os.Getenv("DB_PORT")
-	if port != "" {
-		yamlConfig.Db.PostgresConfig.Port = StringToInt(port)
-	}
-	user := os.Getenv("DB_USER")
-	if user != "" {
-		yamlConfig.Db.PostgresConfig.User = user
-	}
-	password := os.Getenv("DB_PASSWORD")
-	if password != "" {
-		yamlConfig.Db.PostgresConfig.Password = password
-	}
-	database := os.Getenv("DB_NAME")
-	if database != "" {
-		yamlConfig.Db.PostgresConfig.Database = database
-	}
-
-	return SaveConfig(yamlConfig)
-}
-
 func SaveConfig(config *Config) error {
+	if err := config.Db.Validate(); err != nil {
+		return err
+	}
+	nextConfig := *config
+	nextConfig.Db.PostgresType = ""
 	configPath := ConfigFilePath()
-	configData, err := yaml.Marshal(config)
+	configData, err := yaml.Marshal(&nextConfig)
 	if err != nil {
 		return err
 	}
@@ -395,9 +404,8 @@ func MakeDefaultConfig() *Config {
 			SyncLogDir: "logs/sync",
 		},
 		Db: ConfigDb{
-			Engine:       DbEnginePostgres,
-			SqliteFile:   "qmediasync.db",
-			PostgresType: PostgresTypeEmbedded,
+			Engine:     DbEnginePostgres,
+			SqliteFile: "qmediasync.db",
 			PostgresConfig: PostgresConfig{
 				Host:         "localhost",
 				Port:         5432,

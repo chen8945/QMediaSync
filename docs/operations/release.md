@@ -22,6 +22,10 @@
 
 这些镜像使用 `docker/source.Dockerfile` 从源码构建，目标为 `linux/amd64` 和 `linux/arm64`。它们是预发布交付物；运行时挂载、端口和权限参数见 [部署与持久化](deployment.md)。
 
+源码镜像、正式发布镜像和本地镜像均只携带应用运行依赖，不安装 PostgreSQL 服务端、不预置旧 `DB_*` 数据库环境变量，也不创建内嵌数据库专用账号。`su-exec` 和 `inotify-tools` 仍分别用于容器运行身份和在线更新。修改运行依赖时必须同步三份 Dockerfile。
+
+本地构建和验证使用 `docker/source.local.Dockerfile` 的镜像源配置，具体命令见 [验证说明](../engineering/verification.md#数据库启动与部署验证)。
+
 ## 本地发版
 
 发版步骤推荐使用脚本：
@@ -73,6 +77,8 @@ scripts/release/release.sh major
 GitHub Release 的标题直接使用 `v<major>.<minor>.<patch>` tag，不额外添加 `Release` 前缀；正文取自上一步提交的 `.changes/v0.xx.xx.md`。release workflow 会拒绝重复 GitHub Release 和缺失 `.changes/<tag>.md` 的发布。
 
 发布二进制包按平台保留不同的运行文件：Linux `.tar.gz` 包包含 `scripts/docker-entrypoint.sh` 和 `scripts/watch_update.sh`，供 Docker 在线更新复用；Windows `.zip` 包只包含 `QMediaSync.exe`、`web_statics/` 和 `icon.ico`（存在时），不包含 Docker 脚本。Windows 在线更新由 `QMediaSync.exe -update <目录>` 完成，不执行这些 shell 脚本。
+
+发布包不携带内嵌 PostgreSQL 二进制或旧库迁移页面；正常首次数据库配置向导仍嵌入应用。升级旧内嵌实例前的数据处理要求见 [数据库运维](database.md#旧内嵌数据库)。
 
 发布流程还会使用 `GITHUB_TOKEN` 推送 GHCR 镜像 `ghcr.io/<owner>/qmediasync:<tag>` 和 `ghcr.io/<owner>/qmediasync:latest`。
 

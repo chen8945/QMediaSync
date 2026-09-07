@@ -46,20 +46,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.20
 ENV TZ=Asia/Shanghai \
-    PATH=/app:$PATH \
-    DB_HOST=localhost \
-    DB_PORT=5432 \
-    DB_USER=qms \
-    DB_PASSWORD=qms123456 \
-    DB_NAME=qms \
-    DB_SSLMODE=disable
+    PATH=/app:$PATH
 
 RUN sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.tuna.tsinghua.edu.cn/alpine#g' /etc/apk/repositories && \
-    apk add --no-cache ca-certificates tzdata inotify-tools postgresql15 su-exec && \
-    addgroup -S -g 12331 qms && \
-    adduser -S -D -H -u 12331 -G qms qms && \
-    mkdir -p /dev/shm /app/scripts && \
-    chmod 1777 /dev/shm && \
+    apk add --no-cache ca-certificates tzdata inotify-tools su-exec && \
+    mkdir -p /app/scripts && \
     chmod 777 /app
 
 WORKDIR /app

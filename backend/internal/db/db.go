@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -73,7 +71,7 @@ func InitSqlite3(dbFile string) *gorm.DB {
 	return sqliteDb
 }
 
-// 连接外部 PostgreSQL 数据库
+// 连接 PostgreSQL 数据库
 func ConnectPostgres(dbConfig *database.Config) error {
 	// 配置 Logger
 	newLogger := logger.New(
@@ -169,50 +167,6 @@ func CreatePostgresDatabase(dbConfig *database.Config) error {
 	return nil
 }
 
-func InitPostgres(sqlDB *sql.DB) {
-	if sqlDB == nil {
-		panic("数据库连接失败")
-	}
-	// 配置 Logger
-	newLogger := logger.New(
-		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
-		logger.Config{
-			SlowThreshold:             200 * time.Millisecond, // 慢 SQL 阈值
-			LogLevel:                  logger.Warn,            // 日志级别
-			IgnoreRecordNotFoundError: true,                   // 忽略 ErrRecordNotFound（记录未找到）错误
-			Colorful:                  true,                   // 禁用彩色打印
-		},
-	)
-	// 配置连接池
-	sqlDB.SetMaxOpenConns(25)                  // 最多打开 25 个连接
-	sqlDB.SetMaxIdleConns(5)                   // 最多 5 个空闲连接
-	sqlDB.SetConnMaxLifetime(60 * time.Minute) // 连接最多使用 60 分钟
-	sqlDB.SetConnMaxIdleTime(1 * time.Minute)  // 空闲超过 1 分钟则关闭
-	var err error
-	maxRetries := 3
-	for i := 0; i < maxRetries; i++ {
-		Db, err = gorm.Open(postgres.New(postgres.Config{
-			Conn: sqlDB,
-		}), &gorm.Config{})
-		if err == nil {
-			break
-		}
-		helpers.AppLogger.Warnf("数据库连接失败（第 %d 次）：%v", i+1, err)
-		if i < maxRetries-1 {
-			time.Sleep(3 * time.Second)
-		}
-	}
-	if err != nil {
-		helpers.AppLogger.Errorf("重试 %d 次后依然无法连接数据库，错误：%v", maxRetries, err)
-		panic(fmt.Sprintf("重试 %d 次后依然无法连接数据库，错误：%v", maxRetries, err))
-	}
-	// 设置全局 Logger
-	Db.Logger = newLogger
-	// 启动连接保持的 goroutine（使用 GORM 的 DB 对象）
-	go keepGormAlive()
-	helpers.AppLogger.Info("成功初始化数据库组件")
-}
-
 // keepGormAlive 使用 GORM 的原始数据库连接进行 ping
 func keepGormAlive() {
 	ticker := time.NewTicker(30 * time.Second)
@@ -237,25 +191,6 @@ func keepGormAlive() {
 // IsPostgres 判断当前使用的是否为 PostgreSQL 数据库
 func IsPostgres() bool {
 	return helpers.GlobalConfig.Db.Engine == helpers.DbEnginePostgres
-}
-
-// getPostgresBinaryPath 获取 PostgreSQL 二进制路径
-func GetPostgresBinaryPath(embeddedBasePath string) string {
-	if helpers.IsRunningInDocker() {
-		return "" // Docker 容器中的路径
-	}
-	// 根据平台返回二进制路径
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	var binDir string
-	switch goos {
-	case "windows":
-		binDir = filepath.Join(embeddedBasePath, "windows", goarch, "bin")
-	default:
-		return ""
-	}
-	return binDir
 }
 
 // func ClearDbLock(configRootPath string) {

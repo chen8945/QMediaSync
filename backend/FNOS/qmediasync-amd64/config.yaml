@@ -9,7 +9,6 @@ log:
 db:
   engine: postgres
   sqliteFile: qmediasync.db
-  postgresType: external
   postgresConfig:
     host: 192.168.31.94
     port: 15432

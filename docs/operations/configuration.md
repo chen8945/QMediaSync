@@ -10,10 +10,12 @@
 
 ## 配置文件与默认端口
 
-- 主配置为 `config/config.yaml`，兼容旧 `config.yml`。首次启动缺少主配置时会启动配置向导，当前可选择 SQLite 或外部 PostgreSQL，保存后生成 `config/config.yaml`。
+- 主配置为 `config/config.yaml`，兼容旧 `config.yml`。首次启动缺少主配置时会启动配置向导，当前可选择 SQLite 或PostgreSQL，保存后生成 `config/config.yaml`。
 - Web 默认端口：HTTP `12333`、HTTPS `12332`；Emby 302 代理默认端口：HTTP `8095`、HTTPS `8094`。
 - 完整字段示例见 [config.yaml](../examples/config.yaml)。示例仅说明字段，运行时以 `config/config.yaml` 为准。
-- 代码默认数据库配置为 `postgres + embedded`。Docker 镜像安装 `postgresql15`；裸二进制和本地开发环境不携带 PostgreSQL 二进制，使用 PostgreSQL 时应安装 PostgreSQL 15 及以上、配置外部数据库，或自行保证内嵌模式依赖的命令可用。
+- 默认数据库配置为 PostgreSQL。使用 PostgreSQL 时，应单独部署 PostgreSQL 15 及以上，并填写 `db.postgresConfig`；应用二进制和 Docker 镜像均不携带或启动 PostgreSQL 服务。
+- 新配置不再写入 `postgresType`。旧 PostgreSQL 配置中的 `external` 或缺省值均可继续使用；显式 `embedded` 会被拒绝。旧库和未完成迁移包的处理边界见 [数据库运维](database.md#旧内嵌数据库)。
+- 数据库连接信息只从主配置读取，旧 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`、`DB_SSLMODE` 环境变量不再作为数据库配置入口。
 - 数据库引擎、备份恢复和修复操作见 [数据库运维](database.md)；表、版本和迁移语义见 [数据库 schema 与迁移](../reference/database-schema.md)。
 
 管理员恢复使用二进制参数 `--reset-admin-password` 或 `--delete-admin --yes`，可通过 `--config-dir` 指定已有配置目录；这些参数不能写入长期运行的服务配置，不新增 YAML 字段。恢复只读取配置，不补写默认 JWT 密钥或本机加密密钥。操作命令和 Compose 自动识别规则见 [管理员恢复](deployment.md#管理员恢复)。

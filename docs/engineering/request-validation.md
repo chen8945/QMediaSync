@@ -123,7 +123,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/users.go` | 登录、启用/关闭两步验证、当前用户用户名/密码修改 | 登录校验用户名和密码非空，用户名 20 个字符上限；创建和修改使用严格用户名 / 密码规则，用户名去除首尾空白后长度为 3 到 20 个字符且只能包含英文和数字，密码长度至少 6 个字符且不能是纯数字或纯字母；两步验证码必填。 |
 | `requests/operations.go` | 分页、ID、路径浏览、网盘文件、目录操作、队列、同步/刮削关联、日志、临时图片、版本更新 | 分页默认值和范围、HTTP path 正 ID、ID 列表、CSV ID、来源类型、文件夹名、路径穿越防护、日志文件名限制、版本号格式、日期范围。 |
 
-迁移临时服务是启动期流程，不纳入公共 `backend/internal/requests` 目录。它在 `backend/internal/migrate` 包内使用私有 DTO 校验 PostgreSQL 测试连接和保存配置请求。
+首次数据库配置服务是启动期流程，不纳入公共 `backend/internal/requests` 目录；它只提供 SQLite 和PostgreSQL 配置，旧库迁移服务已移除。
 
 ## 重要兼容性规则
 
@@ -150,7 +150,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 账号 `name` 与非空 `user_id` 的重复检查属于模型/数据库业务约束，不在 DTO 中猜测数据库状态；冲突时控制器返回面向用户的错误，授权替换事务保持旧字段不变。
 - `BackupListRequest` 保留旧分页兼容策略：页码小于 1 时回退为 1，每页数量小于 1 或大于 100 时回退为 20，类型为空时回退为 `all`。
 - 备份配置中 `backup_retention` 为 0 时表示不更新或使用既有值；大于 0 时限制为 1 到 365。
-- `internal/migrate` 的测试连接请求允许 `database` 为空，并继续固定连接 `dbname=postgres`；保存配置请求要求 `database` 非空。
+- 首次数据库配置保存只接受 `sqlite`、`postgres` 引擎；PostgreSQL 配置中遗留的 `postgresType: embedded` 或未知模式必须被拒绝，不得静默改成外部连接。旧 SQLite 配置中的该字段不参与连接。
 
 ## 安全敏感校验
 
@@ -180,7 +180,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 - 用户会话撤销使用 `session_id` 路径参数，当前直接从 `c.Param("session_id")` 读取。
 - 同步记录、同步任务详情 HTTP 查询、同步路径列表查询仍在 `controllers/sync.go` 使用控制器内局部 Request 结构；同步任务详情实时流在 `controllers/event_stream.go` 使用 `ParsePositiveIDRequest` 解析路径 `id`，不新增 DTO。
 - 备份上传恢复使用 multipart 文件流，文件读取、扩展名和临时文件处理仍保留在控制器中。
-- 迁移临时服务 `internal/migrate/server.go` 使用独立的启动期接口和包内私有 DTO，不纳入常规 API DTO 目录。
+- 首次数据库配置服务 `backend/main.go` 使用独立的启动期接口和私有请求结构，不纳入常规 API DTO 目录。
 - 部分只读或触发型接口没有外部参数，或只做运行状态检查，不需要 DTO。
 
 新增或改造接口时，不应继续扩大这些例外；如果改动触及上述接口，可以顺手迁移到 `backend/internal/requests`，但要保持外部响应兼容。

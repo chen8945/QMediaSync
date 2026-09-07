@@ -24,6 +24,7 @@
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
 | 配置、密钥或数据库迁移 | `helpers`、`models`、`db` 或相关控制器包测试 | 配置、数据库 schema 与运维 |
+| 数据库启动、首次配置或部署模板 | 本文“数据库启动与部署验证”的 Go、镜像和脚本检查 | 数据库运维、部署、发布流程 |
 | 本地管理员恢复与 Compose 脚本 | 本文“管理员恢复验证”的 Go、脚本和 PostgreSQL 检查；涉及 Windows 展示时交叉构建并人工确认窗口 | 认证会话、部署 |
 | Vue 组件、组合式函数或 HTTP 客户端 | `pnpm run test`、`pnpm lint`、`pnpm format:check`、`pnpm run type-check` | AI 协作说明、请求校验 |
 | 账号授权更换跨端流程 | `cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`；`cd frontend && pnpm run test -- test/components/cloud-auth test/composables/useV115DeviceAuthorization.test.ts`、`pnpm run type-check`、`pnpm run build` | [账号授权与更换](../reference/account-authorization.md) |
@@ -55,6 +56,24 @@
 ```
 
 项目没有配置 Go lint 工具。Go 文件的 import 以 `goimports -local qmediasync` 的实际输出为准；仅在用户请求或本次变更确实需要格式化时运行会写入文件的命令，并检查不会带入无关改动。
+
+## 数据库启动与部署验证
+
+```bash
+# 配置读写、首次配置、旧状态拒绝、数据库连接和 schema 升级
+(cd backend && go test ./internal/helpers ./internal/db/... ./internal/models .)
+
+# 安装入口语法
+bash -n scripts/install/linux-init.sh
+bash -n backend/FNOS/qmediasync-amd64/cmd/install_callback backend/FNOS/qmediasync-arm64/cmd/install_callback
+
+# 本地源码镜像；正式发布镜像按发布流程准备独立构建上下文
+docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
+```
+
+回归须覆盖默认 PostgreSQL、两种引擎配置保存后回读、旧 SQLite 配置中无效的 `postgresType` 不影响连接，以及内嵌或未知模式在写配置、开库前被拒绝。正常启动和管理员恢复遇到 `backups/migrate.zip` 必须拒绝且保留文件；缺少主配置但存在 `config/postgres` 时不得启动空实例向导。
+
+镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。飞牛两架构分别验证 SQLite 和 PostgreSQL 配置生成；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
 
 ## 管理员恢复验证
 
@@ -105,8 +124,8 @@ Vitest 对 `element-plus` 使用 Vite 内联依赖处理，让真实表单校验
 # 注入版本信息的构建
 (cd backend && CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=v1.0.0 -X 'main.PublishDate=2026-01-01'" -o QMediaSync .)
 
-# Docker 构建
-docker build -f docker/source.Dockerfile -t qmediasync .
+# 本地 Docker 构建
+docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 ```
 
 跨平台构建、GitHub Actions 和 FPK 打包以 [发布流程](../operations/release.md) 为准。

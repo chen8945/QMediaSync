@@ -13,7 +13,6 @@ DEFAULT_DB_PORT="5432"
 DEFAULT_DB_USER="qms"
 DEFAULT_DB_PASSWORD="qms123456"
 DEFAULT_DB_NAME="qms"
-DEFAULT_DB_SSLMODE="disable"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -275,128 +274,6 @@ initialize_database() {
     log_info "数据库初始化完成"
 }
 
-# 设置环境变量
-setup_environment() {
-    local host="$1"
-    local port="$2"
-    local user="$3"
-    local password="$4"
-    local db_name="$5"
-    local sslmode="$6"
-    
-    log_info "设置环境变量..."
-    
-    # 直接设置环境变量
-    export DB_HOST="$host"
-    export DB_PORT="$port"
-    export DB_USER="$user"
-    export DB_PASSWORD="$password"
-    export DB_NAME="$db_name"
-    export DB_SSLMODE="$sslmode"
-    
-    log_info "环境变量已设置:"
-    log_info "- DB_HOST: $host"
-    log_info "- DB_PORT: $port"
-    log_info "- DB_USER: $user"
-    log_info "- DB_PASSWORD: ********"
-    log_info "- DB_NAME: $db_name"
-    log_info "- DB_SSLMODE: $sslmode"
-    
-    # 自动选择合适的配置文件
-    local config_file
-    local shell_name="$(basename "$SHELL")"
-    
-    # 根据shell类型和现有文件选择配置文件
-    if [ -f "$HOME/.bashrc" ]; then
-        config_file="$HOME/.bashrc"
-        log_info "\n检测到 .bashrc 文件，将使用该文件"
-    elif [ -f "$HOME/.profile" ]; then
-        config_file="$HOME/.profile"
-        log_info "\n检测到 .profile 文件，将使用该文件"
-    elif [ "$shell_name" = "zsh" ] && [ -f "$HOME/.zshrc" ]; then
-        config_file="$HOME/.zshrc"
-        log_info "\n检测到 .zshrc 文件，将使用该文件"
-    elif [ "$shell_name" = "bash" ]; then
-        config_file="$HOME/.bashrc"
-        log_info "\n当前shell为 bash，将使用 .bashrc 文件"
-    else
-        config_file="$HOME/.profile"
-        log_info "\n使用默认配置文件 .profile"
-    fi
-    
-    # 检查配置文件是否存在以及用户是否有写入权限
-    local has_write_perm=true
-    
-    if [ ! -f "$config_file" ]; then
-        # 尝试创建配置文件
-        if touch "$config_file" 2>/dev/null; then
-            log_info "已创建 $config_file 文件"
-        else
-            log_error "无法创建 $config_file 文件，请检查权限"
-            has_write_perm=false
-        fi
-    else
-        # 检查是否有写入权限
-        if [ ! -w "$config_file" ]; then
-            log_error "没有写入 $config_file 文件的权限"
-            has_write_perm=false
-        fi
-    fi
-    
-    if [ "$has_write_perm" = false ]; then
-        # 提供备选方案
-        log_info "\n备选方案："
-        log_info "1. 使用 sudo 重新运行脚本"
-        log_info "2. 手动将以下环境变量添加到您的配置文件："
-        echo ""
-        echo "# QMediaSync PostgreSQL 环境变量"
-        echo "export DB_HOST=$host"
-        echo "export DB_PORT=$port"
-        echo "export DB_USER=$user"
-        echo "export DB_PASSWORD=$password"
-        echo "export DB_NAME=$db_name"
-        echo "export DB_SSLMODE=$sslmode"
-        echo ""
-        log_info "环境变量设置完成（仅当前会话有效）"
-        return
-    fi
-    
-    log_info "将环境变量写入 $config_file..."
-    
-    # 先删除已存在的相同环境变量设置（如果有）
-    sed -i '/^export DB_HOST=/d' "$config_file"
-    sed -i '/^export DB_PORT=/d' "$config_file"
-    sed -i '/^export DB_USER=/d' "$config_file"
-    sed -i '/^export DB_PASSWORD=/d' "$config_file"
-    sed -i '/^export DB_NAME=/d' "$config_file"
-    sed -i '/^export DB_SSLMODE=/d' "$config_file"
-    
-    # 添加新的环境变量设置
-    cat >> "$config_file" << EOF
-
-# QMediaSync PostgreSQL 环境变量
-export DB_HOST=$host
-export DB_PORT=$port
-export DB_USER=$user
-export DB_PASSWORD=$password
-export DB_NAME=$db_name
-export DB_SSLMODE=$sslmode
-EOF
-    
-    log_info "环境变量已成功写入 $config_file"
-    
-    # 提示用户需要重新加载配置文件或重新登录
-    log_info "\n请执行以下命令立即应用环境变量："
-    log_info "source $config_file"
-    
-    # 特殊提示：如果使用的是 .profile，可能需要重新登录
-    if [ "$(basename "$config_file")" = ".profile" ]; then
-        log_info "注意：.profile 文件通常在登录时加载，可能需要重新登录才能完全生效"
-    fi
-    
-    log_info "环境变量设置完成"
-}
-
 # 检查 systemctl 是否可用
 check_systemctl() {
     if ! command -v systemctl >/dev/null 2>&1; then
@@ -438,7 +315,6 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-EnvironmentFile=/etc/qmediasync/postgres.env
 
 [Install]
 WantedBy=multi-user.target
@@ -551,28 +427,28 @@ usage() {
     echo "  -U admin      指定 PostgreSQL 管理员用户 (默认: postgres)"
     echo "  -p password   设置 QMediaSync 数据库密码 (默认: $DEFAULT_DB_PASSWORD)"
     echo "  -n name       指定 QMediaSync 数据库名称 (默认: $DEFAULT_DB_NAME)"
-    echo "  -s sslmode    指定 PostgreSQL SSL 模式 (默认: $DEFAULT_DB_SSLMODE)"
     echo "  -i            安装 QMediaSync 为系统服务并设置开机启动"
     echo "  -r            删除 QMediaSync 系统服务"
     echo "  -?            显示此帮助信息"
     echo ""
     echo "示例:"
-    echo "  $0                          # 安装默认版本 PostgreSQL 并配置环境变量"
+    echo "  $0                          # 安装默认版本 PostgreSQL 并初始化数据库"
     echo "  $0 -v 14 -p mypass          # 安装 PostgreSQL 14 并设置自定义密码"
-    echo "  $0 -h localhost -u qms -p mypass  # 仅设置环境变量（PostgreSQL 已安装）"
+    echo "  $0 -h localhost -u qms -p mypass  # 初始化数据库和用户（PostgreSQL 已安装）"
     echo "  $0 -i                       # 安装并配置 PostgreSQL，然后设置 QMediaSync 服务"
     echo "  $0 -r                       # 删除 QMediaSync 服务"
     echo ""
     echo "注意:"
     echo "  - 安装 PostgreSQL 时需要 root 权限"
-    echo "  - 如果 PostgreSQL 已安装，脚本将仅设置环境变量"
+    echo "  - 如果 PostgreSQL 已安装，脚本将检查连接并初始化数据库和用户"
+    echo "  - 完成后通过首次配置向导或 config/config.yaml 指定数据库连接"
     echo "  - 服务管理功能需要 systemd 支持"
     echo "  - 请确保在 QMediaSync 应用程序目录下运行服务相关命令"
 }
 
 # 主函数
 main() {
-    log_info "QMediaSync PostgreSQL 环境配置脚本"
+    log_info "QMediaSync PostgreSQL 安装与配置脚本"
     
     # 解析命令行参数
     local pg_version="$DEFAULT_PG_VERSION"
@@ -582,11 +458,10 @@ main() {
     local admin_user="postgres"
     local db_password="$DEFAULT_DB_PASSWORD"
     local db_name="$DEFAULT_DB_NAME"
-    local db_sslmode="$DEFAULT_DB_SSLMODE"
     local install_service=false
     local remove_service=false
     
-    while getopts "v:h:P:u:U:p:n:s:ir?" opt; do
+    while getopts "v:h:P:u:U:p:n:ir?" opt; do
         case $opt in
             v) pg_version="$OPTARG" ;;
             h) db_host="$OPTARG" ;;
@@ -595,7 +470,6 @@ main() {
             U) admin_user="$OPTARG" ;;
             p) db_password="$OPTARG" ;;
             n) db_name="$OPTARG" ;;
-            s) db_sslmode="$OPTARG" ;;
             i) install_service=true ;;
             r) remove_service=true ;;
             ?) usage; exit 0 ;;
@@ -629,7 +503,7 @@ main() {
     local installed=false
     if check_postgresql_installed; then
         installed=true
-        log_info "PostgreSQL 已安装，将仅配置环境变量"
+        log_info "PostgreSQL 已安装，将检查连接并初始化数据库和用户"
     fi
     
     # 如果 PostgreSQL 未安装，执行安装流程
@@ -652,9 +526,6 @@ main() {
     # 初始化数据库
     initialize_database "$db_host" "$db_port" "$admin_user" "$db_user" "$db_password" "$db_name"
     
-    # 设置环境变量
-    setup_environment "$db_host" "$db_port" "$db_user" "$db_password" "$db_name" "$db_sslmode"
-    
     # 安装 QMediaSync 服务（如果需要）
     if [ "$install_service" = "true" ]; then
         if install_qmediasync_service; then
@@ -667,15 +538,14 @@ main() {
     
     # 显示完成信息
     log_info "\n=== 配置完成 ==="
-    log_info "PostgreSQL 环境已配置完成"
-    log_info "QMediaSync 可通过以下环境变量连接到数据库:"
+    log_info "PostgreSQL 数据库和用户已初始化"
+    log_info "请通过首次配置向导或 config/config.yaml 填写以下数据库连接信息:"
     log_info "  主机: ${db_host}"
     log_info "  端口: ${db_port}"
     log_info "  用户: ${db_user}"
     log_info "  数据库: ${db_name}"
     log_info ""
     log_info "连接数据库命令: psql -h ${db_host} -p ${db_port} -U ${db_user} -d ${db_name}"
-    log_info "使用环境变量文件: source /etc/qmediasync/postgres.env"
     
     if [ "$install_service" = "true" ]; then
         log_info "\nQMediaSync 服务已安装并启动"
