@@ -16,6 +16,7 @@
 - 需要响应窗口尺寸变化的组件使用 `useDeviceType()`，由 composable 统一注册和清理监听。`frontend/src/utils/README.md` 只说明 `deviceUtils.ts` 和其他工具自身的局部 API。
 - 分页页面使用 `components/common/ResponsivePagination.vue` 承担布局和事件透传；页面自身保留页码、每页数量和数据加载状态。
 - STRM 全局设置和同步目录的桌面 / 移动表单共用 `StrmRegexInput.vue`。正则输入、说明与示例由该组件维护，不能复用会裁剪空格和拆分分隔符的扩展名输入；预检与保存错误边界见 [STRM 正则预检](request-validation.md#strm-正则预检)。
+- `MetadataExtInput.vue` 与 `StrmRegexInput.vue` 统一使用“已有标签 + 添加”入口，点击后展开并聚焦当前控件的输入框；添加成功后清空并收起，校验失败保留输入和错误提示。输入框使用 Element Plus 默认尺寸，桌面最大宽度为 `500px`，移动端占满可用宽度；标签统一间距与内边距，长内容允许换行，正则保留等宽字体和原始空白。匹配与继承含义常驻，正则语法细节及示例使用原生 `details` 折叠；列表编辑方式不改变各自的解析和保存语义。
 
 ## HTTP 快照、SSE 与轮询
 

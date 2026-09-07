@@ -116,6 +116,33 @@
   max-width: 500px;
 }
 
+/* 名称、扩展名和 STRM 正则共用标签布局，文本解析仍由各组件负责。 */
+.tag-input-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.tag-input-tags .el-tag {
+  max-width: 100%;
+  min-height: 24px;
+  height: auto;
+  padding-block: 2px;
+  line-height: 18px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.tag-input-tags .el-tag__content {
+  min-width: 0;
+}
+
+.tag-input-tags + .el-input {
+  margin-top: 8px;
+}
+
 /* 适配移动设备的表单布局 */
 @media (max-width: 768px) {
   .limited-width-input {

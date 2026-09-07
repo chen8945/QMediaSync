@@ -1,45 +1,39 @@
 <template>
   <div class="metadata-ext-input-container">
-    <div class="ext-tags-container">
-      <el-tag
-        v-for="(tag, index) in tags"
-        :key="index"
-        closable
-        @close="removeTag(index)"
-        class="ext-tag"
-      >
+    <div v-if="tags.length || !showInput" class="tag-input-tags">
+      <el-tag v-for="(tag, index) in tags" :key="index" closable @close="removeTag(index)">
         {{ tag }}
       </el-tag>
       <el-button
         v-if="!showInput"
+        ref="addButtonRef"
         @click="showInput = true"
         size="small"
         type="primary"
         plain
-        class="add-tag-btn"
       >
         + 添加
       </el-button>
     </div>
     <el-input
+      ref="inputRef"
       v-model="inputValue"
       :placeholder="placeholder"
-      @keyup.enter="handleEnter"
-      class="ext-input-full"
-      size="small"
+      @keydown.enter="handleEnter"
+      class="limited-width-input"
+      size="default"
       v-if="showInput"
     >
       <template #append>
-        <el-button @click="handleEnter" size="small" type="primary" :disabled="!inputValue.trim()"
-          >添加</el-button
-        >
+        <el-button @click="addTags" type="primary" :disabled="!inputValue.trim()">添加</el-button>
       </template>
     </el-input>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, type Ref } from 'vue'
+import { nextTick, ref, useTemplateRef, watch, type Ref } from 'vue'
+import type { ButtonInstance, InputInstance } from 'element-plus'
 
 // 定义组件属性
 interface Props {
@@ -65,6 +59,8 @@ const inputValue: Ref<string> = ref('')
 
 // 是否显示输入框
 const showInput: Ref<boolean> = ref(false)
+const inputRef = useTemplateRef<InputInstance>('inputRef')
+const addButtonRef = useTemplateRef<ButtonInstance>('addButtonRef')
 
 // 标签值
 const tags: Ref<string[]> = ref([])
@@ -78,8 +74,8 @@ watch(
   { deep: true, immediate: true },
 )
 
-// 处理回车事件
-const handleEnter = () => {
+// 添加标签
+const addTags = () => {
   if (!inputValue.value.trim()) {
     showInput.value = false
     return
@@ -112,56 +108,28 @@ const handleEnter = () => {
   showInput.value = false
 }
 
+const handleEnter = (event: KeyboardEvent) => {
+  if (event.isComposing) return
+  event.preventDefault()
+  addTags()
+}
+
 // 删除标签
 const removeTag = (index: number) => {
   tags.value.splice(index, 1)
   emit('update:modelValue', tags.value)
 }
 
-// // 失去焦点时隐藏输入框
-// const handleBlur = () => {
-//   if (!inputValue.value.trim()) {
-//     showInput.value = false
-//   }
-// }
-
-// 在输入框上添加失去焦点事件监听
-watch(showInput, (newVal) => {
-  if (newVal) {
-    // 延迟聚焦到输入框
-    setTimeout(() => {
-      const input = document.querySelector('.ext-input-full input') as HTMLInputElement | null
-      if (input) {
-        input.focus()
-      }
-    }, 0)
-  }
+watch(showInput, async (visible) => {
+  await nextTick()
+  if (visible) inputRef.value?.focus()
+  else addButtonRef.value?.ref?.focus()
 })
 </script>
 
 <style scoped>
 .metadata-ext-input-container {
   width: 100%;
-}
-
-.ext-tags-container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  min-height: 32px;
-}
-
-.ext-tag {
-  margin-bottom: 0;
-}
-
-.ext-input-full {
-  width: 100%;
-  margin-top: 8px;
-}
-
-.add-tag-btn {
-  margin-left: 0;
+  min-width: 0;
 }
 </style>

@@ -115,9 +115,16 @@ describe('STRM 排除规则保存与读回', () => {
     const http = createHTTP()
     const wrapper = await mountPage(page, http, width)
     const pattern = String.raw`  (?i)Sample{1,3},Trailer;\D+  `
+    expect(wrapper.find('input[aria-label="正则排除名称"]').exists()).toBe(false)
+    await wrapper
+      .get('.strm-regex-input')
+      .findAll('button')
+      .find((button) => button.text() === '+ 添加')!
+      .trigger('click')
     const input = wrapper.get('input[aria-label="正则排除名称"]')
     await input.setValue(pattern)
     await input.trigger('keydown', { key: 'Enter' })
+    expect(wrapper.find('input[aria-label="正则排除名称"]').exists()).toBe(false)
     await save(wrapper, page)
 
     const request = page === 'global' ? http.post : http.put
