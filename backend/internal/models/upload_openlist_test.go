@@ -36,23 +36,18 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 		{name: "不同账号并发", concurrency: 4, accounts: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			oldDB, oldAppLogger, oldOpenListLog := db.Db, helpers.AppLogger, helpers.OpenListLog
+			oldOpenListLog := helpers.OpenListLog
 			t.Cleanup(func() {
-				db.Db, helpers.AppLogger, helpers.OpenListLog = oldDB, oldAppLogger, oldOpenListLog
+				helpers.OpenListLog = oldOpenListLog
 			})
-			// STRM 收尾在事务内另行查询上传会话，需要可共享数据的多个连接。
-			setupConcurrentStrmGenerationTaskTestDB(t)
+			setupUpload115ProcessedTestDB(t)
 			helpers.OpenListLog = helpers.AppLogger
-			if err := db.Db.AutoMigrate(&Account{}, &DbUploadTask{}, &UploadSession{}); err != nil {
+			if err := db.Db.AutoMigrate(&Account{}, &StrmGenerationTask{}); err != nil {
 				t.Fatal(err)
 			}
-			sqlDB, err := db.Db.DB()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = sqlDB.Close() })
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
+			db.Db = db.Db.WithContext(ctx)
 
 			taskCount := 2 * tt.concurrency
 			tasks := make([]*DbUploadTask, taskCount)
@@ -152,6 +147,7 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 				}
 				tasks[i] = &DbUploadTask{
 					AccountId:      accounts[i%tt.accounts].ID,
+					SyncPathId:     1,
 					Source:         UploadSourceStrm,
 					SourceType:     SourceTypeOpenList,
 					Status:         UploadStatusPending,
@@ -214,6 +210,13 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 				}
 				if got.Status != UploadStatusCompleted || got.RemoteFileId != "object-"+task.FileName {
 					t.Fatalf("上传 %d 未正确完成：status=%s remote_file_id=%q error=%q", task.ID, got.Status.String(), got.RemoteFileId, got.Error)
+				}
+				var strmTasks []StrmGenerationTask
+				if err := db.Db.Where("upload_task_id = ?", task.ID).Find(&strmTasks).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(strmTasks) != 1 || strmTasks[0].FileId != got.RemoteFileId || strmTasks[0].Path != "/remote" {
+					t.Fatalf("上传 %d 的 STRM 任务 = %+v，期望唯一且保留远端 ID 与目录", task.ID, strmTasks)
 				}
 				requestsMu.Lock()
 				count := requests[task.RemoteFullPath]

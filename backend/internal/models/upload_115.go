@@ -1023,24 +1023,24 @@ func (task *DbUploadTask) EnqueueStrmGenerationAfterUploadAndMarkDirectoryProces
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
-	_, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
+	strmTask, err := task.prepareStrmGenerationAfterUpload()
+	if err != nil || strmTask == nil {
+		return err
+	}
+	_, err = EnqueueStrmGenerationTask(strmTask)
 	return err
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed() error {
-	err := db.Db.Transaction(func(tx *gorm.DB) error {
-		strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(tx)
-		if err != nil {
-			return err
-		}
-		if strmTask == nil {
-			return nil
-		}
-		if err := task.markDirectoryUploadProcessedAfterStrmWithDB(tx); err != nil {
-			return err
-		}
-		return nil
-	})
+	strmTask, err := task.prepareStrmGenerationAfterUpload()
+	if err == nil && strmTask != nil {
+		err = db.Db.Transaction(func(tx *gorm.DB) error {
+			if _, err := EnqueueStrmGenerationTaskWithDB(tx, strmTask); err != nil {
+				return err
+			}
+			return task.markDirectoryUploadProcessedAfterStrmWithDB(tx)
+		})
+	}
 	if err != nil {
 		if markErr := task.markDirectoryUploadProcessedStrmEnqueueFailed(); markErr != nil {
 			return errors.Join(err, markErr)
@@ -1063,8 +1063,9 @@ func (task *DbUploadTask) markDirectoryUploadProcessedStrmEnqueueFailed() error 
 	return MarkDirectoryUploadProcessedStrmEnqueueFailed(task.ID)
 }
 
-func (task *DbUploadTask) enqueueStrmGenerationAfterUploadWithDB(tx *gorm.DB) (*StrmGenerationTask, error) {
-	if tx == nil {
+// prepareStrmGenerationAfterUpload 在事务外读取恢复信息和远端详情，避免占用 SQLite 唯一连接。
+func (task *DbUploadTask) prepareStrmGenerationAfterUpload() (*StrmGenerationTask, error) {
+	if db.Db == nil {
 		return nil, errors.New("数据库连接为空")
 	}
 	if task == nil {
@@ -1167,7 +1168,7 @@ func (task *DbUploadTask) enqueueStrmGenerationAfterUploadWithDB(tx *gorm.DB) (*
 		task.RemoteFileId,
 		strmPickCode,
 	)
-	strmTask, err := EnqueueStrmGenerationTaskWithDB(tx, &StrmGenerationTask{
+	return &StrmGenerationTask{
 		Source:       source,
 		TaskType:     StrmGenerationTaskTypeFile,
 		UploadTaskId: task.ID,
@@ -1182,11 +1183,7 @@ func (task *DbUploadTask) enqueueStrmGenerationAfterUploadWithDB(tx *gorm.DB) (*
 		Sha1:         sha1,
 		Mtime:        mtime,
 		RequestHash:  requestHash,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return strmTask, nil
+	}, nil
 }
 
 func (task *DbUploadTask) hasBaiduImmediateStrmMetadata(remotePath string, fileName string, fileSize int64) bool {

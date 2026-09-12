@@ -97,6 +97,8 @@ STRM 生成 worker 会读取 `strm_generation_tasks`，复用同步目录配置�
 
 上传后的 STRM 入队从上传任务的完成文件 ID、PickCode、远端确认 SHA1 和 `remote_full_path` 的父目录读取信息。新完成的百度上传在本进程中额外保留创建文件响应的 mtime：当完整元数据齐全时，其 `fs_id` 同时作为内部 STRM 播放定位值，直接创建后处理任务，不新增数据库列；若收尾重试或进程重启，该临时 mtime 不存在，系统按完整路径补详情。历史 `strm_sync` 上传没有保存完整路径时，先使用关联 `SyncFile` 路径；仍不可得时，只在实际创建该 STRM 后处理任务时按新完成文件 ID 查询一次 115 文件详情。查询结果仅用于 STRM 任务，不回写上传任务；失败时 STRM 入队显式失败并可重试，绝不把文件 ID 作为远端路径。
 
+上传后的 STRM 收尾先在事务外读取上传会话、关联 `SyncFile`、账号及必要的远端详情，准备入队数据；随后在同一事务中完成 STRM 任务入队与目录监控处理账本更新，任一写入失败均回滚。事务中的数据库操作统一使用 `tx`，不通过全局连接查询，也不等待远端请求或 Token 保存回调。该边界适用于正常收尾与失败重试，并兼容 [SQLite 单连接配置](../operations/database.md#引擎与初始化)。
+
 目录监控规则 `upload_metadata=true` 时，元数据文件上传完成后也会进入同一 STRM 生成队列。worker 不会为元数据生成 `.strm`，而是把目录监控源文件复制到同步目录的 STRM 本地路径，文件名和扩展名保持不变，并保存对应 `SyncFile`。复制前会确认上传任务来源是 `directory_monitor`，并校验当前源文件 fingerprint 仍与上传任务记录一致；源文件不存在、已被替换或写入 STRM 本地路径失败时，STRM 任务会失败，后续源文件清理不会触发。复制发生在源文件清理之前，因此开启 `delete_source_after_success` 时不会因为先删除源文件导致元数据丢失。
 
 “同步目录生效 STRM 配置”INFO 只在完整 STRM 同步启动时输出。上传完成后的单文件后处理仍沿用当前同步目录配置，但不会为每个后处理任务重复输出配置日志。
@@ -129,6 +131,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 - 上传和下载任务的远端完整路径、文件 ID、PickCode、SHA1 / MD5 与执行直链语义互不复用；来源未提供可靠值时保持空，不以路径或下载链接代替。
 - 文件级 STRM 回退详情定位按驱动能力选择：115 使用文件 ID；百度网盘和 OpenList 使用完整远端路径。只有当前进程内、创建文件响应已确认完整元数据的百度新上传可跳过该回退查询；其余路径型任务不能以稳定 ID 替代详情查询路径。
 - 目录监控上传不能在 fsnotify / 扫描 goroutine 直接上传；稳定性、持久化账本和活跃队列共同保证幂等。
+- 上传后的 STRM 信息准备在事务外执行；STRM 入队和目录监控账本终态更新必须在同一个事务内完成。
 - 源文件只在目录监控任务、上传和 STRM 都成功、路径仍在监控根且 fingerprint 一致时删除；清理失败不得回滚远端文件或已生成 STRM。
 
 ## 验证方式
@@ -136,5 +139,6 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 - 上传并发测试须覆盖在途任务下增减并发、暂停后修改并恢复、快速暂停恢复、重复领取和已清空任务；运行相关 `models` 测试及 `-race` 检查，配置保存与迁移同时验证失败不生效和旧配置兼容。
 - OpenList 客户端测试覆盖并发创建、缓存命中、配置更新、同配置 Token 刷新去重、跨地址刷新隔离及登录 `401` 及时返回；`models/upload_openlist_test.go` 使用真实上传队列和本地 HTTP 替身覆盖单 worker 对照、同账号与不同账号并发，验证冷缓存和后续缓存命中、请求实际重叠、凭据隔离、每个文件只上传一次及任务正确完成。运行 `(cd backend && go test -race ./internal/openlist)` 和 `(cd backend && go test -race ./internal/models -run 'Test(UploadQueue|UpdateOpenList)')`。
 - 运行 `(cd backend && go test ./internal/directoryupload/)`、`(cd backend && go test ./internal/syncstrm/)` 和相关 `models` 测试。
+- STRM 收尾回归使用生产 SQLite 单连接配置，覆盖信息补齐、重复收尾去重、准备失败以及账本更新失败时的事务回滚；OpenList 真实上传队列测试也使用该配置，覆盖上传到本地收尾的完整链路。
 - 修改外部上传协议时使用 mock 覆盖 callback、part size、checkpoint 和幂等行为；真实 115 / OSS 上传仅在获得沙箱账号和远端写入授权后执行。
 - 修改前端目录监控配置时按 [验证说明](../engineering/verification.md) 选择相应验证。

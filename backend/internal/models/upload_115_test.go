@@ -16,21 +16,32 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/v115open"
 
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
 func setupUpload115ProcessedTestDB(t *testing.T) {
 	t.Helper()
+	oldDB, oldLogger := db.Db, helpers.AppLogger
 	if helpers.AppLogger == nil {
 		helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	}
-	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	testDB := db.InitSqlite3(filepath.Join(t.TempDir(), "upload.db"))
+	sqlDB, err := testDB.DB()
 	if err != nil {
-		t.Fatalf("打开测试数据库失败: %v", err)
+		t.Fatalf("读取测试数据库连接失败: %v", err)
 	}
-	db.Db = testDb
-	if err := db.Db.AutoMigrate(&DbUploadTask{}, &DirectoryUploadProcessedFile{}); err != nil {
+	// 生产 SQLite 固定单连接；用测试 deadline 将嵌套连接死锁转为可诊断失败。
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	db.Db = testDB.WithContext(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = sqlDB.Close()
+		db.Db, helpers.AppLogger = oldDB, oldLogger
+	})
+	if got := sqlDB.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("SQLite 最大连接数 = %d，期望生产配置 1", got)
+	}
+	if err := db.Db.AutoMigrate(&DbUploadTask{}, &UploadSession{}, &DirectoryUploadProcessedFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 }
@@ -128,13 +139,26 @@ func TestApplyUpload115TaskResultOnlyPersistsRemoteSHA1(t *testing.T) {
 
 func TestEnqueueHistoricalStrmUploadResolvesPathWithoutBackfillingTask(t *testing.T) {
 	setupUpload115ProcessedTestDB(t)
-	if err := db.Db.AutoMigrate(&UploadSession{}, &StrmGenerationTask{}); err != nil {
-		t.Fatalf("迁移上传会话和 STRM 任务表失败: %v", err)
+	if err := db.Db.AutoMigrate(&Account{}, &StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移账号和 STRM 任务表失败: %v", err)
+	}
+	account := &Account{SourceType: SourceType115}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatalf("创建账号失败: %v", err)
+	}
+	sqlDB, err := db.Db.DB()
+	if err != nil {
+		t.Fatal(err)
 	}
 	oldResolver := get115FileDetailByCid
+	detailCalls := 0
 	get115FileDetailByCid = func(_ context.Context, _ *v115open.OpenClient, fileID string) (*v115open.FileDetail, error) {
+		detailCalls++
 		if fileID != "completed-file-id" {
 			t.Fatalf("查询文件 ID = %s，期望 completed-file-id", fileID)
+		}
+		if got := sqlDB.Stats().InUse; got != 0 {
+			t.Fatalf("查询远端详情时占用 %d 个连接，期望在事务外准备信息", got)
 		}
 		return &v115open.FileDetail{FileId: fileID, FileName: "movie.mkv", Path: "/remote/show/movie.mkv"}, nil
 	}
@@ -146,33 +170,52 @@ func TestEnqueueHistoricalStrmUploadResolvesPathWithoutBackfillingTask(t *testin
 		Source:         UploadSourceStrm,
 		SourceType:     SourceType115,
 		SyncPathId:     1,
-		AccountId:      1,
+		AccountId:      account.ID,
 		RemoteFileId:   "completed-file-id",
 		RemotePickCode: "completed-pick-code",
 		FileName:       "movie.mkv",
 		UploadResult:   UploadResultMultipartUploaded,
-		Account:        &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
 	}
+	if err := db.Db.Create(&UploadSession{
+		UploadTaskId:      task.ID,
+		CompletedParentId: "completed-parent",
+		CompletedSize:     2048,
+		CompletedSha1:     "checkpoint-sha1",
+		CompletedMtime:    123456,
+	}).Error; err != nil {
+		t.Fatalf("创建上传会话失败: %v", err)
+	}
 
-	strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
-	if err != nil {
+	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
 		t.Fatalf("历史 STRM 上传创建后处理任务失败: %v", err)
 	}
-	if strmTask == nil || strmTask.Path != "/remote/show" {
+	var strmTask StrmGenerationTask
+	if err := db.Db.Where("upload_task_id = ?", task.ID).First(&strmTask).Error; err != nil {
+		t.Fatalf("读取 STRM 任务失败: %v", err)
+	}
+	if strmTask.Path != "/remote/show" || detailCalls != 1 {
 		t.Fatalf("STRM 任务 = %+v，期望使用远端详情目录", strmTask)
 	}
-	if task.RemoteFullPath != "" {
-		t.Fatalf("历史查询不应回写上传任务远端完整路径，got %q", task.RemoteFullPath)
+	if strmTask.ParentId != "completed-parent" || strmTask.FileSize != 2048 ||
+		strmTask.Sha1 != "checkpoint-sha1" || strmTask.Mtime != 123456 {
+		t.Fatalf("STRM 任务 = %+v，期望保留上传会话恢复信息", strmTask)
+	}
+	var gotTask DbUploadTask
+	if err := db.Db.First(&gotTask, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.RemoteFullPath != "" || task.RemoteSha1 != "" || gotTask.RemoteFullPath != "" || gotTask.RemoteSha1 != "" {
+		t.Fatalf("STRM 恢复信息不应回写上传任务路径或 SHA1，got %+v", gotTask)
 	}
 }
 
 func TestEnqueueHistoricalStrmUploadFailsWithoutCreatingInvalidPathTask(t *testing.T) {
 	setupUpload115ProcessedTestDB(t)
-	if err := db.Db.AutoMigrate(&UploadSession{}, &StrmGenerationTask{}); err != nil {
-		t.Fatalf("迁移上传会话和 STRM 任务表失败: %v", err)
+	if err := db.Db.AutoMigrate(&StrmGenerationTask{}); err != nil {
+		t.Fatalf("迁移 STRM 任务表失败: %v", err)
 	}
 	oldResolver := get115FileDetailByCid
 	get115FileDetailByCid = func(context.Context, *v115open.OpenClient, string) (*v115open.FileDetail, error) {
@@ -196,7 +239,7 @@ func TestEnqueueHistoricalStrmUploadFailsWithoutCreatingInvalidPathTask(t *testi
 		t.Fatalf("创建上传任务失败: %v", err)
 	}
 
-	if _, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db); err == nil {
+	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err == nil {
 		t.Fatal("远端详情查询失败时应拒绝创建 STRM 任务")
 	}
 	var count int64
@@ -229,12 +272,12 @@ func TestEnqueuePathBasedStrmUploadAllowsPathOnlyCompletion(t *testing.T) {
 				t.Fatalf("创建路径型上传任务失败: %v", err)
 			}
 
-			strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
-			if err != nil {
+			if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
 				t.Fatalf("路径型完成任务创建 STRM 后处理失败: %v", err)
 			}
-			if strmTask == nil {
-				t.Fatal("缺少稳定 ID 但有完整路径时仍应创建 STRM 后处理任务")
+			var strmTask StrmGenerationTask
+			if err := db.Db.Where("upload_task_id = ?", task.ID).First(&strmTask).Error; err != nil {
+				t.Fatalf("缺少稳定 ID 但有完整路径时仍应创建 STRM 后处理任务: %v", err)
 			}
 			if strmTask.FileId != "" || strmTask.Path != "/remote/show" {
 				t.Fatalf("路径型 STRM 任务 = %+v，期望保留空稳定 ID 和远端父路径", strmTask)
@@ -265,12 +308,12 @@ func TestEnqueueBaiduStrmUploadUsesImmediateUploadMetadata(t *testing.T) {
 		t.Fatalf("创建百度上传任务失败: %v", err)
 	}
 
-	strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
-	if err != nil {
+	if err := task.EnqueueStrmGenerationAfterUpload(); err != nil {
 		t.Fatalf("百度上传创建 STRM 后处理失败: %v", err)
 	}
-	if strmTask == nil {
-		t.Fatal("百度上传缺少 STRM 后处理任务")
+	var strmTask StrmGenerationTask
+	if err := db.Db.Where("upload_task_id = ?", task.ID).First(&strmTask).Error; err != nil {
+		t.Fatalf("百度上传缺少 STRM 后处理任务: %v", err)
 	}
 	if strmTask.FileId != "baidu-new-fs-id" ||
 		strmTask.PickCode != "baidu-new-fs-id" ||
@@ -316,12 +359,12 @@ func TestEnqueueHistoricalPathBasedStrmUploadUsesSyncFilePath(t *testing.T) {
 				t.Fatalf("创建历史路径型上传任务失败: %v", err)
 			}
 
-			strmTask, err := task.enqueueStrmGenerationAfterUploadWithDB(db.Db)
-			if err != nil {
+			if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
 				t.Fatalf("历史路径型任务使用关联 SyncFile 路径创建 STRM 失败: %v", err)
 			}
-			if strmTask == nil {
-				t.Fatal("历史路径型任务有关联 SyncFile 路径时仍应创建 STRM 后处理")
+			var strmTask StrmGenerationTask
+			if err := db.Db.Where("upload_task_id = ?", task.ID).First(&strmTask).Error; err != nil {
+				t.Fatalf("历史路径型任务有关联 SyncFile 路径时仍应创建 STRM 后处理: %v", err)
 			}
 			if strmTask.Path != "/remote/show" || strmTask.FileName != "movie.mkv" {
 				t.Fatalf("STRM 任务路径 = %+v，期望使用关联 SyncFile 路径", strmTask)
@@ -610,6 +653,9 @@ func TestUpload115SkippedAfterRapidWaitDoesNotMarkDirectoryMonitorProcessedUploa
 		UploadResult: UploadResultSkippedAfterRapidWait,
 	})
 	task.Complete()
+	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
+		t.Fatalf("skipped_after_rapid_wait 应跳过 STRM 入队: %v", err)
+	}
 	if err := task.markDirectoryUploadProcessedAfterStrm(); err != nil {
 		t.Fatalf("skipped_after_rapid_wait 标记 processed 失败: %v", err)
 	}
@@ -667,6 +713,96 @@ func TestUpload115StrmEnqueueFailureDoesNotMarkDirectoryMonitorProcessedFailed(t
 	}
 	if got.Result != DirectoryUploadProcessedResultStrmEnqueueFailed {
 		t.Fatalf("processed result = %s，期望 STRM 入队失败标记为 strm_enqueue_failed", got.Result)
+	}
+}
+
+func TestUpload115StrmEnqueueRollsBackWhenDirectoryLedgerUpdateFails(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&StrmGenerationTask{}); err != nil {
+		t.Fatal(err)
+	}
+	task := &DbUploadTask{
+		Source:            UploadSourceDirectoryMonitor,
+		SourceType:        SourceType115,
+		SyncPathId:        1,
+		AccountId:         1,
+		RemoteFullPath:    "/remote/movie.mkv",
+		FileName:          "movie.mkv",
+		SourceFingerprint: "v1:1024:100",
+		Status:            UploadStatusCompleted,
+		UploadResult:      UploadResultMultipartUploaded,
+		RemoteFileId:      "completed-file-id",
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Create(&DirectoryUploadProcessedFile{
+		SourceKey:         "source-key-ledger-failure",
+		SourceFingerprint: task.SourceFingerprint,
+		Result:            DirectoryUploadProcessedResultUploadedPendingStrm,
+		UploadTaskId:      task.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ledgerErr := errors.New("inject directory ledger update failure")
+	failLedger := true
+	var insertedInTransaction int64
+	callbackName := "qms:test_fail_strm_directory_ledger"
+	if err := db.Db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if !failLedger || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "DirectoryUploadProcessedFile" {
+			return
+		}
+		updates, ok := tx.Statement.Dest.(map[string]any)
+		if !ok || updates["result"] != DirectoryUploadProcessedResultUploaded {
+			return
+		}
+		if err := tx.Session(&gorm.Session{NewDB: true}).Model(&StrmGenerationTask{}).
+			Where("upload_task_id = ?", task.ID).Count(&insertedInTransaction).Error; err != nil {
+			tx.AddError(err)
+			return
+		}
+		tx.AddError(ledgerErr)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Db.Callback().Update().Remove(callbackName) })
+
+	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); !errors.Is(err, ledgerErr) {
+		t.Fatalf("账本更新失败应返回原错误，got %v", err)
+	}
+	if insertedInTransaction != 1 {
+		t.Fatalf("账本写入前事务内 STRM 任务数 = %d，期望 1", insertedInTransaction)
+	}
+	var count int64
+	if err := db.Db.Model(&StrmGenerationTask{}).Where("upload_task_id = ?", task.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("账本失败后 STRM 任务数 = %d，期望插入回滚", count)
+	}
+	var record DirectoryUploadProcessedFile
+	if err := db.Db.Where("upload_task_id = ?", task.ID).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Result != DirectoryUploadProcessedResultStrmEnqueueFailed {
+		t.Fatalf("账本状态 = %s，期望 strm_enqueue_failed", record.Result)
+	}
+
+	failLedger = false
+	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
+		t.Fatalf("账本故障恢复后重试 STRM 入队失败: %v", err)
+	}
+	if err := db.Db.Where("upload_task_id = ?", task.ID).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Result != DirectoryUploadProcessedResultUploaded {
+		t.Fatalf("重试后账本状态 = %s，期望 uploaded", record.Result)
+	}
+	if err := db.Db.Model(&StrmGenerationTask{}).Where("upload_task_id = ?", task.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("重试后 STRM 任务数 = %d，期望 1", count)
 	}
 }
 
@@ -739,8 +875,10 @@ func TestUpload115StrmEnqueueUsesUploadTaskScopedShortRequestHash(t *testing.T) 
 		t.Fatalf("创建 processed 记录失败: %v", err)
 	}
 
-	if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
-		t.Fatalf("创建 STRM 任务并标记 processed 失败: %v", err)
+	for range 2 {
+		if err := task.EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
+			t.Fatalf("创建 STRM 任务并标记 processed 失败: %v", err)
+		}
 	}
 
 	var got DirectoryUploadProcessedFile
