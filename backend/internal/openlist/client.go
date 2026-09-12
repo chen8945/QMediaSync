@@ -16,10 +16,7 @@ import (
 	"resty.dev/v3"
 )
 
-var (
-	errTokenExpired   = errors.New("token expired")
-	errTokenRefreshed = errors.New("token refreshed")
-)
+var errTokenExpired = errors.New("token expired")
 
 // Client OpenList 客户端
 // 共享后通过 NewClient 和 Token 方法读写配置，避免直接访问可变字段。
@@ -141,27 +138,49 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 		req.Header.Set("User-Agent", DEFAULTUA)
 	}
 	var lastErr error
-	for attempt := 0; attempt <= options.MaxRetries; attempt++ {
-		resp, err := c.request(path, req, &state)
+	authRetried := false
+	for attempt := 0; attempt <= options.MaxRetries; {
+		// 保留未执行的模板，让 multipart 每次重新打开文件；Clone 默认会新建 Result。
+		attemptReq := req.Clone(req.Context())
+		attemptReq.Result = req.Result
+		resp, err := c.request(path, attemptReq, &state)
 		if err == nil {
 			// 正常返回
 			return resp, nil
 		}
 		lastErr = err
-		// 只有凭据刷新成功后才重试，避免无效 Token 被重复请求。
-		if errors.Is(err, errTokenRefreshed) {
-			helpers.OpenListLog.Warn("访问凭证已过期，正在刷新")
-			continue
-		}
 		if errors.Is(err, errTokenExpired) {
-			return nil, lastErr
+			if path == "/api/auth/login" || state.username == "" || state.password == "" {
+				return nil, err
+			}
+			// 每个业务请求仅允许一次认证恢复，不消耗普通重试预算。
+			if authRetried {
+				return nil, errors.New("访问凭证刷新后仍被拒绝")
+			}
+			// 同一客户端按地址和登录凭据合并并发刷新，避免跨地址复用 Token。
+			key := strings.TrimRight(state.baseURL, "/") + "\x00" + state.username + "\x00" + state.password
+			refreshed, err, _ := c.refreshGroup.Do(key, func() (any, error) {
+				current := c.snapshot()
+				if current.sameLogin(state) && current.accessToken != "" && current.accessToken != state.accessToken {
+					return &TokenData{Token: current.accessToken}, nil
+				}
+				return c.getToken(state)
+			})
+			if err != nil {
+				return nil, errTokenExpired
+			}
+			state.accessToken = refreshed.(*TokenData).Token
+			authRetried = true
+			helpers.OpenListLog.Warn("访问凭证已更新，重新发送请求")
+			continue
 		}
 		// 其他错误开始重试
 		if attempt < options.MaxRetries {
 			// helpers.OpenListLog.Warnf("%s %s 请求失败：%+v", req.Method, req.URL, lastErr)
-			helpers.OpenListLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误：%+v", req.Method, req.URL, options.RetryDelay.Seconds(), attempt+1, lastErr)
+			helpers.OpenListLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误：%+v", attemptReq.Method, attemptReq.URL, options.RetryDelay.Seconds(), attempt+1, lastErr)
 			time.Sleep(options.RetryDelay)
 		}
+		attempt++
 	}
 	return nil, lastErr
 }
@@ -207,24 +226,7 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 	if data != nil && jsonResult != nil {
 		switch jsonResult["code"].(float64) {
 		case http.StatusUnauthorized:
-			// 登录失败不再刷新；其他请求仅在配置用户名和密码时尝试刷新 Token。
-			if path == "/api/auth/login" || state.username == "" || state.password == "" {
-				return response, errTokenExpired
-			}
-			// 同一客户端按地址和登录凭据合并并发刷新，避免跨地址复用 Token。
-			key := strings.TrimRight(state.baseURL, "/") + "\x00" + state.username + "\x00" + state.password
-			refreshed, err, _ := c.refreshGroup.Do(key, func() (any, error) {
-				current := c.snapshot()
-				if current.sameLogin(*state) && current.accessToken != "" && current.accessToken != state.accessToken {
-					return &TokenData{Token: current.accessToken}, nil
-				}
-				return c.getToken(*state)
-			})
-			if err != nil {
-				return response, errTokenExpired
-			}
-			state.accessToken = refreshed.(*TokenData).Token
-			return response, errTokenRefreshed
+			return response, errTokenExpired
 		}
 		if jsonResult["code"].(float64) != http.StatusOK {
 			helpers.OpenListLog.Errorf("OpenList 请求 %s %s 失败：%s", req.Method, req.URL, jsonResult["message"].(string))

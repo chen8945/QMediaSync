@@ -137,6 +137,57 @@ func TestClientPasswordAuthDoesNotRetryWhenLoginFails(t *testing.T) {
 	}
 }
 
+func TestGetUserInfoPasswordAuthRecoversOnce(t *testing.T) {
+	setupConcurrentClientTest(t)
+	helpers.InitEventBus()
+	t.Cleanup(helpers.InitEventBus)
+	for _, tc := range []struct {
+		name    string
+		code    int
+		wantErr string
+	}{
+		{name: "刷新后返回用户信息", code: http.StatusOK},
+		{name: "刷新后仍被拒绝", code: http.StatusUnauthorized, wantErr: "访问凭证刷新后仍被拒绝"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests, logins int
+			client := NewClient(1, "http://openlist.invalid", "user", "password", "old-token")
+			client.client.SetTransport(handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/auth/login":
+					logins++
+					_, _ = io.WriteString(w, `{"code":200,"data":{"token":"new-token"}}`)
+				case "/api/me":
+					requests++
+					code, token := http.StatusUnauthorized, "old-token"
+					if requests > 1 {
+						code, token = tc.code, "new-token"
+					}
+					if got := r.Header.Get("Authorization"); got != token {
+						t.Errorf("第 %d 次请求 Token = %q，期望 %q", requests, got, token)
+					}
+					_, _ = fmt.Fprintf(w, `{"code":%d,"message":"unauthorized","data":{"id":17,"username":"refreshed-user"}}`, code)
+				default:
+					t.Errorf("意外请求：%s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			info, err := client.GetUserInfo("old-token")
+			if requests != 2 || logins != 1 {
+				t.Errorf("用户信息请求 %d 次，登录 %d 次，期望 2、1", requests, logins)
+			}
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("认证恢复后的错误 = %v，期望 %q", err, tc.wantErr)
+				}
+			} else if err != nil || info == nil || info.ID != 17 || info.Username != "refreshed-user" {
+				t.Fatalf("认证恢复后的用户信息 = %+v，错误 = %v", info, err)
+			}
+		})
+	}
+}
+
 func TestGetTokenPreservesReplacedConfiguration(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

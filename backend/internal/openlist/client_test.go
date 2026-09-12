@@ -1,7 +1,10 @@
 package openlist
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -297,6 +300,82 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	recorder := httptest.NewRecorder()
 	h(recorder, r)
 	return recorder.Result(), nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestClientAuthenticationRetryBudget(t *testing.T) {
+	setupConcurrentClientTest(t)
+	helpers.InitEventBus()
+	t.Cleanup(helpers.InitEventBus)
+	networkErr := errors.New("connection interrupted")
+	for _, tc := range []struct {
+		name         string
+		maxRetries   int
+		codes        []int // 0 表示传输失败，其余为 OpenList 业务码。
+		transportErr error
+		wantRequests int
+		wantLogins   int
+		wantErr      error
+	}{
+		{name: "网络错误耗尽普通预算", maxRetries: 2, codes: []int{0, 0, 0, 200}, wantRequests: 3, wantErr: networkErr},
+		{name: "超时耗尽普通预算", maxRetries: 1, codes: []int{0, 0, 200}, transportErr: context.DeadlineExceeded, wantRequests: 2, wantErr: context.DeadlineExceeded},
+		{name: "其他业务错误沿用普通预算", maxRetries: 1, codes: []int{400, 200}, wantRequests: 2},
+		{name: "认证前网络错误占用普通预算", maxRetries: 1, codes: []int{0, 401, 200}, wantRequests: 3, wantLogins: 1},
+		{name: "认证后网络错误仍可普通重试", maxRetries: 1, codes: []int{401, 0, 200}, wantRequests: 3, wantLogins: 1},
+		{name: "认证前后共用普通预算", maxRetries: 1, codes: []int{0, 401, 0, 200}, wantRequests: 3, wantLogins: 1, wantErr: networkErr},
+		{name: "零普通预算仍可认证恢复", codes: []int{401, 200}, wantRequests: 2, wantLogins: 1},
+		{name: "认证重发网络失败不再额外发送", codes: []int{401, 0, 200}, wantRequests: 2, wantLogins: 1, wantErr: networkErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests, logins int
+			client := NewClient(1, "http://openlist.invalid", "user", "password", "old-token")
+			client.client.SetTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/api/me" {
+					requests++
+					if requests > len(tc.codes) {
+						t.Errorf("发生额外的用户信息请求：%d", requests)
+						return nil, networkErr
+					}
+					if tc.codes[requests-1] == 0 {
+						if tc.transportErr != nil {
+							return nil, tc.transportErr
+						}
+						return nil, networkErr
+					}
+				}
+				return handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					switch r.URL.Path {
+					case "/api/auth/login":
+						logins++
+						_, _ = io.WriteString(w, `{"code":200,"data":{"token":"new-token"}}`)
+					case "/api/me":
+						_, _ = fmt.Fprintf(w, `{"code":%d,"message":"request failed","data":{"id":17}}`, tc.codes[requests-1])
+					default:
+						t.Errorf("意外请求：%s", r.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+					}
+				}).RoundTrip(r)
+			}))
+			var result RespWrapper
+			req := client.client.R().SetMethod(http.MethodGet).SetResult(&result)
+			_, err := client.doRequest("/api/me", req, &RequestConfig{MaxRetries: tc.maxRetries, Timeout: time.Second})
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("请求错误 = %v，期望 %v", err, tc.wantErr)
+			}
+			if requests != tc.wantRequests || logins != tc.wantLogins {
+				t.Errorf("用户信息请求 %d 次，登录 %d 次，期望 %d、%d", requests, logins, tc.wantRequests, tc.wantLogins)
+			}
+			if tc.wantErr == nil && (result.Code != http.StatusOK || result.Data.ID != 17) {
+				t.Errorf("成功响应未返回到调用方：%+v", result)
+			}
+		})
+	}
 }
 
 func TestClientConcurrentTokenRefreshDeduplicatesLogins(t *testing.T) {
