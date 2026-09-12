@@ -95,6 +95,7 @@ func TestCronRequestNormalized(t *testing.T) {
 func TestUpdateThreadsRequestValidate(t *testing.T) {
 	valid := UpdateThreadsRequest{
 		DownloadThreads:                1,
+		UploadThreads:                  intPtr(1),
 		FileDetailThreads:              2,
 		OpenlistQPS:                    2,
 		OpenlistRetry:                  1,
@@ -117,6 +118,11 @@ func TestUpdateThreadsRequestValidate(t *testing.T) {
 	}{
 		{name: "合法线程配置通过"},
 		{name: "下载 QPS 为 0 失败", mutate: func(r *UpdateThreadsRequest) { r.DownloadThreads = 0 }, wantErr: true},
+		{name: "兼容省略同时上传任务数", mutate: func(r *UpdateThreadsRequest) { r.UploadThreads = nil }},
+		{name: "同时上传任务数允许 10", mutate: func(r *UpdateThreadsRequest) { r.UploadThreads = intPtr(10) }},
+		{name: "同时上传任务数为 0 失败", mutate: func(r *UpdateThreadsRequest) { r.UploadThreads = intPtr(0) }, wantErr: true},
+		{name: "同时上传任务数为负数失败", mutate: func(r *UpdateThreadsRequest) { r.UploadThreads = intPtr(-1) }, wantErr: true},
+		{name: "同时上传任务数大于 10 失败", mutate: func(r *UpdateThreadsRequest) { r.UploadThreads = intPtr(11) }, wantErr: true},
 		{name: "网盘详情 QPS 小于 2 失败", mutate: func(r *UpdateThreadsRequest) { r.FileDetailThreads = 1 }, wantErr: true},
 		{name: "OpenList QPS 大于 10 失败", mutate: func(r *UpdateThreadsRequest) { r.OpenlistQPS = 11 }, wantErr: true},
 		{name: "重试间隔小于 30 失败", mutate: func(r *UpdateThreadsRequest) { r.OpenlistRetryDelay = 29 }, wantErr: true},
@@ -147,6 +153,7 @@ func TestUpdateThreadsRequestValidate(t *testing.T) {
 func TestUpdateThreadsRequestToModelIncludesRapidWaitPolicy(t *testing.T) {
 	req := UpdateThreadsRequest{
 		DownloadThreads:                1,
+		UploadThreads:                  intPtr(3),
 		FileDetailThreads:              3,
 		OpenlistQPS:                    2,
 		OpenlistRetry:                  1,
@@ -162,8 +169,11 @@ func TestUpdateThreadsRequestToModelIncludesRapidWaitPolicy(t *testing.T) {
 		URLValidityCheckTimeoutSeconds: intPtr(9),
 	}
 
-	got := req.ToModel(models.SettingUploadRapidWait{}, models.SettingURLValidityCheck{})
+	got := req.ToModel(models.SettingThreadAndRapidWait{})
 
+	if got.UploadThreads != 3 {
+		t.Fatalf("UploadThreads = %d，期望 3", got.UploadThreads)
+	}
 	if got.UploadRapidWaitEnabled != 1 {
 		t.Fatalf("UploadRapidWaitEnabled = %d，期望 1", got.UploadRapidWaitEnabled)
 	}
@@ -212,13 +222,40 @@ func TestUpdateThreadsRequestToModelKeepsOptionalPoliciesWhenOmitted(t *testing.
 		URLValidityCheckTimeoutSeconds: 12,
 	}
 
-	got := req.ToModel(base, baseURLValidityCheck)
+	got := req.ToModel(models.SettingThreadAndRapidWait{
+		SettingThreads:          models.SettingThreads{UploadThreads: 7},
+		SettingUploadRapidWait:  base,
+		SettingURLValidityCheck: baseURLValidityCheck,
+	})
 
+	if got.UploadThreads != 7 {
+		t.Fatalf("UploadThreads = %d，期望保留 7", got.UploadThreads)
+	}
 	if got.SettingUploadRapidWait != base {
 		t.Fatalf("SettingUploadRapidWait = %+v，期望 %+v", got.SettingUploadRapidWait, base)
 	}
 	if got.SettingURLValidityCheck != baseURLValidityCheck {
 		t.Fatalf("SettingURLValidityCheck = %+v，期望 %+v", got.SettingURLValidityCheck, baseURLValidityCheck)
+	}
+}
+
+func TestUpdateThreadsRequestToModelDefaultsUploadThreads(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		base int
+	}{
+		{name: "旧配置空值", base: 0},
+		{name: "旧配置负数", base: -1},
+		{name: "旧配置超出范围", base: 11},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (UpdateThreadsRequest{}).ToModel(models.SettingThreadAndRapidWait{
+				SettingThreads: models.SettingThreads{UploadThreads: tt.base},
+			})
+			if got.UploadThreads != models.DefaultUploadThreads {
+				t.Fatalf("UploadThreads = %d，期望默认 1", got.UploadThreads)
+			}
+		})
 	}
 }
 

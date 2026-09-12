@@ -309,3 +309,126 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 		t.Fatalf("运行时配置回调执行时数据库 QPS = %d，期望已保存为 4", savedQPS)
 	}
 }
+
+func TestUpdateThreadsUploadConcurrency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldSettings, oldUploadQueue, oldDownloadQueue := models.SettingsGlobal, models.GlobalUploadQueue, models.GlobalDownloadQueue
+	oldLogger, oldSetRateConfig := helpers.AppLogger, setGlobalExecutorConfig
+	oldDownloadRunning := oldDownloadQueue != nil && oldDownloadQueue.IsRunning()
+	if oldDownloadRunning {
+		oldDownloadQueue.Stop()
+	}
+	models.GlobalDownloadQueue = nil
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() {
+		models.SettingsGlobal, models.GlobalUploadQueue, models.GlobalDownloadQueue = oldSettings, oldUploadQueue, oldDownloadQueue
+		helpers.AppLogger, setGlobalExecutorConfig = oldLogger, oldSetRateConfig
+		if oldDownloadRunning {
+			oldDownloadQueue.Start()
+		}
+	})
+
+	for _, tt := range []struct {
+		name       string
+		value      any
+		omit       bool
+		failWrite  bool
+		wantHTTP   int
+		wantUpload int
+	}{
+		{name: "允许最小值", value: 1, wantHTTP: http.StatusOK, wantUpload: 1},
+		{name: "允许最大值", value: 10, wantHTTP: http.StatusOK, wantUpload: 10},
+		{name: "旧客户端省略字段保留配置", omit: true, wantHTTP: http.StatusOK, wantUpload: 7},
+		{name: "空值沿用可选字段兼容行为", value: nil, wantHTTP: http.StatusOK, wantUpload: 7},
+		{name: "拒绝零", value: 0, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "拒绝负数", value: -1, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "拒绝大于上限", value: 11, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "拒绝小数", value: 1.5, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "拒绝字符串", value: "3", wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "拒绝布尔值", value: true, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "写入失败保留配置", value: 3, failWrite: true, wantHTTP: http.StatusOK, wantUpload: 7},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupControllerTestDB(t, &models.Settings{}, &models.DbDownloadTask{})
+			settings := &models.Settings{SettingThreads: models.SettingThreads{
+				DownloadThreads: 1, UploadThreads: 7, FileDetailThreads: 3,
+				OpenlistQPS: 2, OpenlistRetry: 1, OpenlistRetryDelay: 30, FileListPageSize: 1150,
+			}}
+			if err := db.Db.Create(settings).Error; err != nil {
+				t.Fatal(err)
+			}
+			models.SettingsGlobal = settings
+			queue := models.NewUq(7)
+			models.GlobalUploadQueue = queue
+			t.Cleanup(func() {
+				if models.GlobalDownloadQueue != nil {
+					models.GlobalDownloadQueue.Stop()
+					models.GlobalDownloadQueue = nil
+				}
+			})
+			previous := settings.ThreadAndRapidWait()
+			if tt.failWrite {
+				if err := db.Db.Exec("CREATE TRIGGER fail_threads_update BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'test write failure'); END").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			rateCalls := 0
+			setGlobalExecutorConfig = func(_, _, _ int) { rateCalls++ }
+			payload := map[string]any{
+				"download_threads": 1, "file_detail_threads": 4,
+				"openlist_qps": 2, "openlist_retry": 1, "openlist_retry_delay": 30,
+				"file_list_page_size": 1150,
+			}
+			if !tt.omit {
+				payload["upload_threads"] = tt.value
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			router := gin.New()
+			router.POST("/setting/threads", UpdateThreads)
+			router.GET("/setting/threads", GetThreads)
+			request := httptest.NewRequest(http.MethodPost, "/setting/threads", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			var result APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			wantCode := Success
+			if tt.wantHTTP != http.StatusOK || tt.failWrite {
+				wantCode = BadRequest
+				if settings.ThreadAndRapidWait() != previous || rateCalls != 0 {
+					t.Fatal("拒绝请求或保存失败后不应修改内存配置或运行时速率")
+				}
+			}
+			if response.Code != tt.wantHTTP || result.Code != wantCode {
+				t.Fatalf("保存响应 = HTTP %d，%s", response.Code, response.Body)
+			}
+			if models.GlobalUploadQueue != queue || queue.IsRunning() || queue.GetConcurrency() != tt.wantUpload {
+				t.Fatalf("应保留原暂停队列并设置并发为 %d；实际并发 %d、运行中 %t", tt.wantUpload, queue.GetConcurrency(), queue.IsRunning())
+			}
+			var saved models.Settings
+			if err := db.Db.Take(&saved, settings.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.UploadThreads != tt.wantUpload || settings.UploadThreads != tt.wantUpload {
+				t.Fatalf("数据库/内存上传并发 = %d/%d，期望 %d", saved.UploadThreads, settings.UploadThreads, tt.wantUpload)
+			}
+			if wantCode != Success && saved.ThreadAndRapidWait() != previous {
+				t.Fatal("拒绝请求或保存失败后不应修改已保存配置")
+			}
+			response = httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/threads", nil))
+			var loaded APIResponse[models.SettingThreadAndRapidWait]
+			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || loaded.Code != Success || loaded.Data.UploadThreads != tt.wantUpload {
+				t.Fatalf("上传并发读取结果不一致：%s", response.Body)
+			}
+		})
+	}
+}

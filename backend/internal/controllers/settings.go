@@ -587,7 +587,7 @@ func ValidateCron(c *gin.Context) {
 
 // GetThreads 获取线程配置
 // @Summary 获取线程数配置
-// @Description 获取当前下载和文件详情查询的线程数配置
+// @Description 获取当前下载、同时上传任务数和文件详情查询的配置
 // @Tags 系统设置
 // @Accept json
 // @Produce json
@@ -602,11 +602,12 @@ func GetThreads(c *gin.Context) {
 
 // UpdateThreads 更新线程配置
 // @Summary 更新线程数配置
-// @Description 更新下载和文件详情查询的线程数，115 接口速率保存后立即生效
+// @Description 更新下载、同时上传任务数和文件详情查询的配置；上传并发及 115 接口速率保存后生效，无需重启程序
 // @Tags 系统设置
 // @Accept json
 // @Produce json
 // @Param download_threads body integer true "下载 QPS"
+// @Param upload_threads body integer false "同时上传任务数，1 到 10；省略时保留当前值"
 // @Param file_detail_threads body integer true "115 接口 QPS"
 // @Success 200 {object} object
 // @Failure 200 {object} object
@@ -623,7 +624,7 @@ func UpdateThreads(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	modelReq := req.ToModel(models.SettingsGlobal.SettingUploadRapidWait, models.SettingsGlobal.SettingURLValidityCheck)
+	modelReq := req.ToModel(models.SettingsGlobal.ThreadAndRapidWait())
 	downloadThreads := modelReq.DownloadThreads
 	// 更新设置，传递当前的百度网盘限速值
 	if !models.SettingsGlobal.UpdateThreads(modelReq) {
@@ -633,6 +634,9 @@ func UpdateThreads(c *gin.Context) {
 
 	// 动态更新下载队列的并发数
 	models.UpdateGlobalDownloadQueueConcurrency(downloadThreads)
+	if models.GlobalUploadQueue != nil {
+		models.GlobalUploadQueue.UpdateConcurrency(modelReq.UploadThreads)
+	}
 	// 保存成功后立即更新 115 请求队列，后续请求使用新的接口速率配置。
 	fileDetailThreads := modelReq.FileDetailThreads
 	setGlobalExecutorConfig(fileDetailThreads, fileDetailThreads*60, fileDetailThreads*3600)

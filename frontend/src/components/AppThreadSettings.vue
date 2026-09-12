@@ -22,6 +22,23 @@
         </div>
       </el-form-item>
 
+      <el-form-item label="同时上传任务数量" prop="uploadThreads">
+        <el-input-number
+          v-model="formData.uploadThreads"
+          :min="THREAD_LIMITS.uploadThreads.min"
+          :max="THREAD_LIMITS.uploadThreads.max"
+          :step="1"
+          :precision="0"
+          :disabled="loading"
+          size="large"
+        />
+        <div class="form-help">
+          同时处理的上传任务数，包含准备、秒传等待和完成处理，范围 1 到 10，默认 1。
+          保存后生效，无需重启；调低时让正在处理的任务完成，暂停状态不变。 多个任务共用 115
+          接口请求上限，增加任务数不会提高每秒请求上限。
+        </div>
+      </el-form-item>
+
       <el-form-item label="网盘接口每秒请求数量" prop="fileDetailThreads">
         <el-input-number
           v-model="formData.fileDetailThreads"
@@ -238,6 +255,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 
 interface ThreadSettings {
   downloadThreads: number
+  uploadThreads: number | null | undefined
   fileDetailThreads: number
   openlistQPS: number
   openlistRetryCount: number
@@ -266,6 +284,7 @@ const saveStatus = ref<SaveStatus | null>(null)
 // 表单数据
 const formData = reactive<ThreadSettings>({
   downloadThreads: 1,
+  uploadThreads: 1,
   fileDetailThreads: 3,
   openlistQPS: 2,
   openlistRetryCount: 1,
@@ -307,6 +326,7 @@ async function fetchThreadSettings() {
     const response = await http.get(`${SERVER_URL}/setting/threads`)
 
     formData.downloadThreads = response?.data.data.download_threads
+    formData.uploadThreads = response?.data.data.upload_threads ?? 1
     formData.fileDetailThreads = response?.data.data.file_detail_threads
     formData.openlistQPS = response?.data.data.openlist_qps
     formData.openlistRetryCount = response?.data.data.openlist_retry
@@ -338,11 +358,27 @@ async function fetchThreadSettings() {
 
 // 保存线程设置
 async function saveSettings() {
+  const uploadThreads = formData.uploadThreads
+  if (
+    typeof uploadThreads !== 'number' ||
+    !Number.isInteger(uploadThreads) ||
+    uploadThreads < THREAD_LIMITS.uploadThreads.min ||
+    uploadThreads > THREAD_LIMITS.uploadThreads.max
+  ) {
+    saveStatus.value = {
+      title: '保存失败',
+      type: 'error',
+      description: `同时上传任务数必须是 ${THREAD_LIMITS.uploadThreads.min} 到 ${THREAD_LIMITS.uploadThreads.max} 的整数`,
+    }
+    return
+  }
+
   try {
     loading.value = true
 
     const payload = {
       download_threads: formData.downloadThreads,
+      upload_threads: uploadThreads,
       file_detail_threads: formData.fileDetailThreads,
       openlist_qps: formData.openlistQPS,
       openlist_retry: formData.openlistRetryCount,

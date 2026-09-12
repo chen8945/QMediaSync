@@ -1,5 +1,6 @@
 export const THREAD_LIMITS = {
   downloadThreads: { min: 1, max: 10 },
+  uploadThreads: { min: 1, max: 10 },
   fileDetailThreads: { min: 2, max: 10 },
   openlistQPS: { min: 2, max: 10 },
   openlistRetry: { min: 1, max: 10 },

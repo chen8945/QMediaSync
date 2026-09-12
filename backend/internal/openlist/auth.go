@@ -15,17 +15,21 @@ type TokenData struct {
 // 用于自动登录开放平台
 // POST /api/auth/login
 func (c *Client) GetToken() (*TokenData, error) {
+	return c.getToken(c.snapshot())
+}
+
+func (c *Client) getToken(state clientState) (*TokenData, error) {
 	type tokenReq struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	reqData := &tokenReq{
-		Username: c.Username,
-		Password: c.Password,
+		Username: state.username,
+		Password: state.password,
 	}
 	var result Resp[TokenData]
 	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(&result)
-	_, err := c.doRequest("/api/auth/login", req, MakeRequestConfig(0, 1, 5))
+	_, err := c.doRequestWithState("/api/auth/login", req, MakeRequestConfig(0, 1, 5), state)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 获取访问凭证失败：%s", err.Error())
 		return nil, err
@@ -36,10 +40,9 @@ func (c *Client) GetToken() (*TokenData, error) {
 	c.SetAuthToken(tokenData.Token)
 	// 通知 models 保存 Token 到数据库
 	helpers.PublishSync(helpers.SaveOpenListTokenEvent, map[string]any{
-		"account_id": c.AccountId,
+		"account_id": state.accountID,
 		"token":      tokenData.Token,
 	})
-	c.SetAuthToken(tokenData.Token)
 	return &tokenData, nil
 }
 

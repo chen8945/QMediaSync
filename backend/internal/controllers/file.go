@@ -151,7 +151,7 @@ func RetryFailedDownloadTasks(ctx *gin.Context) {
 // @Security ApiKeyAuth
 func StartUploadQueue(ctx *gin.Context) {
 	// 调用全局上传队列的 Start 方法
-	models.GlobalUploadQueue.Restart()
+	models.GlobalUploadQueue.Start()
 
 	// 返回结果
 	ctx.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "上传队列已启动", Data: nil})

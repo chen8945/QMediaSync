@@ -408,15 +408,24 @@ func (task *DbUploadTask) cancelWithError(err error) {
 	publishUploadQueueChanged(task, "status_changed")
 }
 
-func (task *DbUploadTask) Uploading() {
-	task.Status = UploadStatusUploading
-	task.StartTime = time.Now().Unix()
-	err := db.Db.Save(task).Error
-	if err != nil {
-		helpers.AppLogger.Warnf("[上传] 标记为上传中失败：%s", err.Error())
-		return
+func (task *DbUploadTask) claimPendingUpload() (bool, error) {
+	startTime := time.Now().Unix()
+	result := db.Db.Model(&DbUploadTask{}).
+		Where("id = ? AND status = ?", task.ID, UploadStatusPending).
+		Updates(map[string]interface{}{
+			"status":     UploadStatusUploading,
+			"start_time": startTime,
+		})
+	if result.Error != nil {
+		return false, result.Error
 	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+	task.Status = UploadStatusUploading
+	task.StartTime = startTime
 	publishUploadQueueChanged(task, "status_changed")
+	return true, nil
 }
 
 func (task *DbUploadTask) GetAccount() *Account {
@@ -435,10 +444,24 @@ func (task *DbUploadTask) GetAccount() *Account {
 
 // 执行上传
 func (task *DbUploadTask) Upload() {
+	if task == nil {
+		return
+	}
 	if task.Status == UploadStatusRemoteCompletedPendingFinalize {
 		if err := task.finalizeRemoteCompletedUploadWithClaim(); err != nil {
 			helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d err=%v", task.ID, err)
 		}
+		return
+	}
+	if task.Status != UploadStatusPending {
+		return
+	}
+	claimed, err := task.claimPendingUpload()
+	if err != nil {
+		helpers.AppLogger.Warnf("[上传] 领取待上传任务失败：task_id=%d err=%v", task.ID, err)
+		return
+	}
+	if !claimed {
 		return
 	}
 	if !helpers.PathExists(task.LocalFullPath) {
@@ -632,7 +655,6 @@ func (task *DbUploadTask) Upload115File() bool {
 		task.Fail(fmt.Errorf("账户 %s 115 客户端不存在", account.Name))
 		return false
 	}
-	task.Uploading()
 	result, err := currentUpload115Runner.Upload(context.Background(), task, client)
 	if err != nil {
 		task.Fail(fmt.Errorf("调用 115 上传 API 失败：%v", err))
@@ -665,7 +687,6 @@ func (task *DbUploadTask) UploadBaiduPanFile() bool {
 		task.Fail(fmt.Errorf("账户 %s 百度网盘客户端不存在", account.Name))
 		return false
 	}
-	task.Uploading()
 	task.baiduUploadMtime = 0
 	// 调用上传方法
 	resp, err := client.Upload(context.Background(), task.LocalFullPath, task.RemoteFullPath)
@@ -731,7 +752,6 @@ func (task *DbUploadTask) UploadOpenListFile() bool {
 		task.Fail(fmt.Errorf("账户 %s OpenList 客户端不存在", account.Name))
 		return false
 	}
-	task.Uploading()
 	_, err := client.Upload(task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
 		task.Fail(fmt.Errorf("OpenList 上传文件 %s 失败：%v", task.FileName, err))
@@ -765,7 +785,6 @@ func (task *DbUploadTask) UploadOpenListFile() bool {
 }
 
 func (task *DbUploadTask) UploadLocalFile() bool {
-	task.Uploading()
 	err := helpers.CopyFile(task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
 		task.Fail(fmt.Errorf("本地文件 %s 复制到 %s 失败：%v", task.LocalFullPath, task.RemoteFullPath, err))
@@ -957,13 +976,17 @@ func AddUploadTaskFromMediaFile(mediaFile *ScrapeMediaFile, scrapePath *ScrapePa
 	return derr
 }
 
-func GetPendingUploadTasks(limit int) []*DbUploadTask {
+func GetPendingUploadTasks(limit int, excludedIDs ...uint) []*DbUploadTask {
 	var tasks []*DbUploadTask
-	db.Db.Model(&DbUploadTask{}).
-		Where("status IN ?", []UploadStatus{UploadStatusPending, UploadStatusRemoteCompletedPendingFinalize}).
-		Limit(limit).
-		Order("id ASC").
-		Find(&tasks)
+	query := db.Db.Model(&DbUploadTask{}).
+		Where("status IN ?", []UploadStatus{UploadStatusPending, UploadStatusRemoteCompletedPendingFinalize})
+	if len(excludedIDs) > 0 {
+		query = query.Where("id NOT IN ?", excludedIDs)
+	}
+	if err := query.Limit(limit).Order("id ASC").Find(&tasks).Error; err != nil {
+		helpers.AppLogger.Errorf("查询待上传任务失败：%v", err)
+		return nil
+	}
 	return tasks
 }
 

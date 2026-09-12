@@ -1,11 +1,15 @@
 package openlist
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"qmediasync/internal/helpers"
 
@@ -68,45 +72,64 @@ func TestGetUserInfoTokenAuthDoesNotRetryAfterUnauthorized(t *testing.T) {
 	}
 }
 
-func TestGetUserInfoPasswordAuthDoesNotRetryWhenTokenRefreshFails(t *testing.T) {
-	oldOpenListLog := helpers.OpenListLog
-	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	t.Cleanup(func() {
-		helpers.OpenListLog = oldOpenListLog
-	})
+func TestClientPasswordAuthDoesNotRetryWhenLoginFails(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		loginCode int
+		direct    bool
+		wantInfo  int64
+	}{
+		{name: "刷新登录返回 400", loginCode: http.StatusBadRequest, wantInfo: 1},
+		{name: "刷新登录返回 401", loginCode: http.StatusUnauthorized, wantInfo: 1},
+		{name: "直接登录返回 401", loginCode: http.StatusUnauthorized, direct: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupConcurrentClientTest(t)
+			var userInfoRequests, loginRequests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/openlist/api/me":
+					userInfoRequests.Add(1)
+					_, _ = io.WriteString(w, `{"code":401,"message":"token expired","data":null}`)
+				case "/openlist/api/auth/login":
+					loginRequests.Add(1)
+					_, _ = fmt.Fprintf(w, `{"code":%d,"message":"invalid credentials","data":null}`, tc.loginCode)
+				default:
+					t.Errorf("意外请求：%s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
 
-	var userInfoRequestCount int
-	var loginRequestCount int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/me":
-			userInfoRequestCount++
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"code":401,"message":"token expired","data":null}`))
-		case "/api/auth/login":
-			loginRequestCount++
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"code":400,"message":"invalid credentials","data":null}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	client := &Client{
-		Username:    "user",
-		Password:    "invalid-password",
-		AccessToken: "expired-token",
-		client:      resty.New().SetBaseURL(server.URL),
-	}
-	_, err := client.GetUserInfo("expired-token")
-	if err == nil {
-		t.Fatal("刷新 Token 失败时应该返回错误")
-	}
-	if userInfoRequestCount != 1 {
-		t.Fatalf("刷新 Token 失败后用户信息请求次数 = %d，期望 1", userInfoRequestCount)
-	}
-	if loginRequestCount != 1 {
-		t.Fatalf("刷新 Token 请求次数 = %d，期望 1", loginRequestCount)
+			client := NewClient(1, server.URL+"/openlist/", "user", "invalid-password", "expired-token")
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				if tc.direct {
+					_, err = client.GetToken()
+				} else {
+					_, err = client.GetUserInfo("")
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, errTokenExpired) {
+					t.Fatalf("登录失败错误 = %v，期望凭据失效", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("登录失败后请求未返回；用户信息请求 %d 次，登录请求 %d 次", userInfoRequests.Load(), loginRequests.Load())
+			}
+			if got := userInfoRequests.Load(); got != tc.wantInfo {
+				t.Errorf("用户信息请求次数 = %d，期望 %d", got, tc.wantInfo)
+			}
+			if got := loginRequests.Load(); got != 1 {
+				t.Errorf("登录请求次数 = %d，期望 1", got)
+			}
+			if got := client.GetAuthToken(); got != "expired-token" {
+				t.Errorf("登录失败后 Token = %q，期望保留原值", got)
+			}
+		})
 	}
 }

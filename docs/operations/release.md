@@ -20,7 +20,7 @@
 
 局部加载遮罩的导航层级契约随 Vitest 执行；浏览器中的绘制、点击命中及模态层级按 [稳定回归验证](../engineering/verification.md#稳定回归验证) 复核。
 
-下载、上传队列的全局剩余数、筛选分页和快照刷新回归也随 Vitest 执行，沿用现有前端验证命令。
+下载、上传队列的全局剩余数、筛选分页、快照刷新，以及上传并发设置的保存和校验回归也随 Vitest 执行。后端同时覆盖上传并发调整、暂停恢复、任务领取和设置迁移，验证方式见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
 推送 `dev` 还会触发 `beta.yaml`，发布多架构镜像 `ghcr.io/<owner>/qmediasync:beta`。推送 `feature/**` 还会触发 `feature.yaml`，发布 `ghcr.io/<owner>/qmediasync:<branch-tag>`：分支名会去掉 `feature/` 前缀、转为小写，斜杠和非法字符替换为连字符，最长 120 个字符。`dev` 的同一分支构建会取消仍在运行的旧 beta 构建。
 

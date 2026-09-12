@@ -512,7 +512,7 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 			return err
 		}
 		// GetUserInfo 遇到过期 Token 时会在 client 内自动刷新，保存刷新后的实际 Token。
-		account.Token = client.AccessToken
+		account.Token = client.GetAuthToken()
 	}
 	if userInfo == nil {
 		restore()

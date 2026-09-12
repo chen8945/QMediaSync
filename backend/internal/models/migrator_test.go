@@ -105,6 +105,13 @@ func TestInitDBDoesNotCreateDefaultAdmin(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("新库初始化后用户数量 = %d，期望 0", count)
 	}
+	var settings Settings
+	if err := db.Db.First(&settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	if settings.UploadThreads != DefaultUploadThreads {
+		t.Fatalf("新库同时上传任务数 = %d，期望默认 1", settings.UploadThreads)
+	}
 }
 
 func createMigratorTestTable(t *testing.T) {
@@ -202,6 +209,85 @@ func TestMigrateVersion62AddsStrmRegexExclusions(t *testing.T) {
 		if len(stored) != 3 || stored[0] != existingRegex || stored[1] != "[]" || stored[2] != "[]" {
 			t.Fatalf("%s 迁移重试未保留配置或补齐空值：%q", table, stored)
 		}
+	}
+}
+
+func TestMigrateVersion63AddsUploadThreads(t *testing.T) {
+	originalDB, originalLogger := db.Db, helpers.AppLogger
+	t.Cleanup(func() { db.Db, helpers.AppLogger = originalDB, originalLogger })
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := testDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	db.Db = testDB
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 63}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Exec("CREATE TABLE settings (id integer primary key, download_threads integer, cron text)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Table("settings").Create(map[string]any{"id": 1, "download_threads": 2, "cron": "17 * * * *"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	checkVersion := func(want int) {
+		t.Helper()
+		var version Migrator
+		if err := db.Db.First(&version).Error; err != nil {
+			t.Fatal(err)
+		}
+		if version.VersionCode != want {
+			t.Fatalf("数据库版本 = %d，期望 %d", version.VersionCode, want)
+		}
+	}
+
+	Migrate()
+	checkVersion(MaxVersionCode)
+	var stored Settings
+	if err := db.Db.First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.UploadThreads != DefaultUploadThreads || stored.DownloadThreads != 2 || stored.Cron != "17 * * * *" {
+		t.Fatalf("迁移应补默认上传并发并保留旧设置：%+v", stored.SettingThreads)
+	}
+	if db.Db.Migrator().HasColumn(&Settings{}, "FileDetailThreads") {
+		t.Fatal("迁移不应补写无关配置列")
+	}
+
+	// 模拟加列后中断：重试保留已保存的并发数，仅补齐空值和零值。
+	if err := db.Db.Model(&Settings{}).Where("id = 1").UpdateColumn("upload_threads", 7).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []map[string]any{{"id": 2, "upload_threads": nil}, {"id": 3, "upload_threads": 0}} {
+		if err := db.Db.Table("settings").Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Db.Model(&Migrator{}).Where("id = 1").UpdateColumn("version_code", 63).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Exec("CREATE TRIGGER fail_upload_threads_migration BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'test migration failure'); END").Error; err != nil {
+		t.Fatal(err)
+	}
+	Migrate()
+	checkVersion(63)
+	if err := db.Db.Exec("DROP TRIGGER fail_upload_threads_migration").Error; err != nil {
+		t.Fatal(err)
+	}
+	Migrate()
+	checkVersion(MaxVersionCode)
+	var values []int
+	if err := db.Db.Model(&Settings{}).Order("id").Pluck("upload_threads", &values).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 3 || values[0] != 7 || values[1] != 1 || values[2] != 1 {
+		t.Fatalf("迁移重试后的上传并发 = %v，期望 [7 1 1]", values)
 	}
 }
 

@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `63`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `64`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -94,8 +94,9 @@
 | 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
 | 61 | 62 | 为 `account.name` 和 `account.user_id` 创建非空条件唯一索引；迁移前检查已有重复值，发现重复时保留数据、停留在旧版本并记录诊断信息，不静默改写账号关联。 |
 | 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
+| 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`；迁移重试保留已有有效值，补齐旧记录的默认上传并发数。 |
 
-当前数据库版本是 `63`。
+当前数据库版本是 `64`。
 
 `62 → 63` 对已有表只添加正则列并回填空值，不整体重建表；已有正则值及其他配置均保留，迁移重试不会覆盖已保存的规则。
 
@@ -241,6 +242,7 @@ API Key 认证表。
 全局配置表，包含线程、STRM 和历史兼容字段。
 
 - `download_threads`：下载队列并发数。
+- `upload_threads`：同时处理的上传任务数，默认 `1`；范围和保存生效方式见 [上传队列并发](../operations/configuration.md#上传队列并发)。
 - `file_detail_threads`：115 文件详情请求并发数。
 - `openlist_qps`：OpenList QPS。
 - `openlist_retry`：OpenList 重试次数。

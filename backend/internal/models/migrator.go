@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 63
+var MaxVersionCode = 64
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -724,6 +724,24 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加 STRM 正则排除名称设置")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	if migrator.VersionCode == 63 {
+		if db.Db.Migrator().HasTable(&Settings{}) {
+			if !db.Db.Migrator().HasColumn(&Settings{}, "UploadThreads") {
+				if err := db.Db.Migrator().AddColumn(&Settings{}, "UploadThreads"); err != nil {
+					helpers.AppLogger.Errorf("迁移同时上传任务数设置失败：%v", err)
+					return
+				}
+			}
+			if err := db.Db.Model(&Settings{}).
+				Where("upload_threads IS NULL OR upload_threads = ?", 0).
+				UpdateColumn("upload_threads", DefaultUploadThreads).Error; err != nil {
+				helpers.AppLogger.Errorf("初始化同时上传任务数设置失败：%v", err)
+				return
+			}
+		}
+		helpers.AppLogger.Info("已添加同时上传任务数设置")
+		migrator.UpdateVersionCode(db.Db)
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -1422,6 +1440,7 @@ func InitSettings() {
 		},
 		SettingThreads: SettingThreads{
 			DownloadThreads:    1,
+			UploadThreads:      DefaultUploadThreads,
 			FileDetailThreads:  3,
 			OpenlistQPS:        3,
 			OpenlistRetry:      1,

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"qmediasync/internal/helpers"
 
@@ -19,30 +22,36 @@ var (
 )
 
 // Client OpenList 客户端
+// 共享后通过 NewClient 和 Token 方法读写配置，避免直接访问可变字段。
 type Client struct {
-	AccountId   uint
-	BaseUrl     string
-	Username    string
-	Password    string
-	AccessToken string
-	client      *resty.Client
+	AccountId    uint
+	BaseUrl      string
+	Username     string
+	Password     string
+	AccessToken  string
+	client       *resty.Client
+	stateMu      sync.RWMutex
+	refreshGroup singleflight.Group
 }
 
 // 全局 HTTP 客户端实例
 var cachedClients map[string]*Client = make(map[string]*Client, 0)
-var cachedClientsMutex sync.RWMutex
+
+// 客户端构造共用短临界区；出现构造争用后再拆分缓存获取和配置更新。
+var cachedClientsMutex sync.Mutex
 
 // NewClient 创建新的客户端
 func NewClient(accountId uint, url, username, password, accessToken string) *Client {
-	cachedClientsMutex.RLock()
-	defer cachedClientsMutex.RUnlock()
+	cachedClientsMutex.Lock()
+	defer cachedClientsMutex.Unlock()
 	clientKey := fmt.Sprintf("%d", accountId)
 	if client, exists := cachedClients[clientKey]; exists {
+		client.stateMu.Lock()
+		defer client.stateMu.Unlock()
 		client.BaseUrl = url
 		client.Username = username
 		client.Password = password
-		client.SetAuthToken(accessToken)
-		client.client.SetBaseURL(url)
+		client.AccessToken = accessToken
 		return client
 	}
 	restyClient := resty.New()
@@ -62,12 +71,46 @@ func NewClient(accountId uint, url, username, password, accessToken string) *Cli
 	return client
 }
 
+// SetAuthToken 更新访问凭证，允许与请求并发调用。
 func (c *Client) SetAuthToken(accessToken string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	c.AccessToken = accessToken
 }
 
+// GetAuthToken 返回当前访问凭证，允许与配置更新及 Token 刷新并发调用。
+func (c *Client) GetAuthToken() string {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.AccessToken
+}
+
+type clientState struct {
+	accountID   uint
+	baseURL     string
+	username    string
+	password    string
+	accessToken string
+}
+
+func (c *Client) snapshot() clientState {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return clientState{
+		accountID:   c.AccountId,
+		baseURL:     c.BaseUrl,
+		username:    c.Username,
+		password:    c.Password,
+		accessToken: c.AccessToken,
+	}
+}
+
 // doRequest 执行 HTTP 请求
-func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfig) (*resty.Response, error) {
+func (c *Client) doRequest(path string, req *resty.Request, options *RequestConfig) (*resty.Response, error) {
+	return c.doRequestWithState(path, req, options, c.snapshot())
+}
+
+func (c *Client) doRequestWithState(path string, req *resty.Request, options *RequestConfig, state clientState) (*resty.Response, error) {
 	if options == nil {
 		options = DefaultRequestConfig()
 	}
@@ -79,7 +122,7 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 	}
 	var lastErr error
 	for attempt := 0; attempt <= options.MaxRetries; attempt++ {
-		resp, err := c.request(url, req)
+		resp, err := c.request(path, req, &state)
 		if err == nil {
 			// 正常返回
 			return resp, nil
@@ -103,12 +146,14 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 	return nil, lastErr
 }
 
-func (c *Client) request(url string, req *resty.Request) (*resty.Response, error) {
+func (c *Client) request(path string, req *resty.Request, state *clientState) (*resty.Response, error) {
 	// req.SetResponseForceContentType("application/json")
 	var response *resty.Response
 	var err error
-	if c.AccessToken != "" {
-		req.SetHeader("Authorization", c.AccessToken)
+	// URL 和凭据来自同一快照，锁不跨 HTTP 请求或同步事件回调。
+	url := strings.TrimRight(state.baseURL, "/") + path
+	if state.accessToken != "" {
+		req.SetHeader("Authorization", state.accessToken)
 	}
 	switch req.Method {
 	case "GET":
@@ -140,13 +185,19 @@ func (c *Client) request(url string, req *resty.Request) (*resty.Response, error
 	if data != nil && jsonResult != nil {
 		switch jsonResult["code"].(float64) {
 		case http.StatusUnauthorized:
-			// Token 过期时，只有用户名和密码登录才尝试刷新凭据。
-			if c.Username == "" || c.Password == "" {
+			// 登录失败不再刷新；其他请求仅在配置用户名和密码时尝试刷新 Token。
+			if path == "/api/auth/login" || state.username == "" || state.password == "" {
 				return response, errTokenExpired
 			}
-			if _, err := c.GetToken(); err != nil {
+			// 同一客户端按地址和登录凭据合并并发刷新，避免跨地址复用 Token。
+			key := strings.TrimRight(state.baseURL, "/") + "\x00" + state.username + "\x00" + state.password
+			refreshed, err, _ := c.refreshGroup.Do(key, func() (any, error) {
+				return c.getToken(*state)
+			})
+			if err != nil {
 				return response, errTokenExpired
 			}
+			state.accessToken = refreshed.(*TokenData).Token
 			return response, errTokenRefreshed
 		}
 		if jsonResult["code"].(float64) != http.StatusOK {

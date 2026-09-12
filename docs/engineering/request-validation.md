@@ -139,6 +139,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - `IDCSVRequest` 保留 `ids=1,2` 的 Query 格式，用于刮削记录批量操作。
 - `ParsePositiveIDRequest` 用于解析 HTTP path 中的正整数 `id`，控制器仍按各自模块既有响应格式返回错误。
 - `QueueListRequest.Status` 当前只绑定为 `int`，不做枚举限制，继续兼容现有前端和模型状态值。
+- `UpdateThreadsRequest.upload_threads` 为可选整数，显式数值必须在 `1` 到 `10` 之间；旧调用方省略该字段或传入 `null` 时保留当前上传并发数，首次初始化默认 `1`。设置写库失败时，内存中的配置和上传队列并发数都必须保持原值。
 - `AISettingsRequest.EnableAI` 允许空值，避免旧前端或局部保存请求被误拒。
 - `HTTPProxyRequest.PreserveProxyCredentials` 是可空布尔值：当前前端保存或测试脱敏代理地址时必须显式提交。`true` 仅在提交地址与当前存储地址的协议和 `host:port` 一致时保留用户名和密码；端点变化时忽略该标志，使用 `http_proxy` 中的凭据，避免将已存凭据转发给其他代理。`false` 表示将 `http_proxy` 中的凭据作为新值；字段缺失仅为兼容未升级前端，继续沿用历史的脱敏字符串匹配行为。
 - 账号添加页面会在提交前拦截空账号备注、OpenList 访问地址、用户名、密码或 Token 等轻量问题；后端 DTO 仍是最终校验来源，并在账号接口返回前把字段级校验错误转换为面向用户的提示。
@@ -190,7 +191,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 
 前端校验用于即时反馈和减少误操作，不能替代后端校验，也不作为安全边界。与后端一致的范围和枚举常量放在 `frontend/src/constants/validation.ts`：
 
-- `THREAD_LIMITS`：下载线程、文件详情线程、OpenList QPS、重试次数、重试延迟、文件列表分页大小。
+- `THREAD_LIMITS`：下载线程、同时上传任务数、文件详情线程、OpenList QPS、重试次数、重试延迟、文件列表分页大小。
 - `SCRAPE_THREAD_LIMITS`：本地刮削最大线程 20、远程刮削最大线程 5、最小线程 1。
 - `STRM_GLOBAL_OPTIONS` 和 `STRM_CUSTOM_OPTIONS`：全局配置与自定义配置的 STRM 开关枚举；`add_path` 全局值为 `1` 添加完整路径、`2` 只添加文件名、`3` 不添加，同步目录自定义配置额外支持 `-1` 继承全局 STRM 设置。
 - `HTTP_URL_PATTERN`：前端 URL 输入提示使用，后端仍以 `validation.HTTPURL` 为准。

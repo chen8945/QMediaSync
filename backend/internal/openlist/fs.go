@@ -240,7 +240,8 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 	// URL 编码远程路径（保留斜杠，避免转义）
 	encodedPath := helpers.UrlEncode(remotePath)
 	// 构造上传请求 URL
-	reqURL := fmt.Sprintf("%s/api/fs/form", c.BaseUrl)
+	state := c.snapshot()
+	reqURL := strings.TrimRight(state.baseURL, "/") + "/api/fs/form"
 
 	// 创建 multipart/form-data 请求体
 	body := &bytes.Buffer{}
@@ -265,7 +266,7 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 		return nil, fmt.Errorf("创建上传请求失败：%w", err)
 	}
 	// 设置请求头（Authorization、Content-Type、file-path）
-	req.Header.Set("Authorization", c.AccessToken)
+	req.Header.Set("Authorization", state.accessToken)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("File-Path", encodedPath)
 	// 延长上传超时（大文件上传可能需要更长时间，此处设 5 分钟）

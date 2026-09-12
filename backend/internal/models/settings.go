@@ -14,6 +14,8 @@ import (
 var V115Login bool
 
 const (
+	DefaultUploadThreads                  = 1
+	MaxUploadThreads                      = 10
 	DefaultURLValidityCheckEnabled        = 1
 	DefaultURLValidityCheckTimeoutSeconds = 3
 	MaxURLValidityCheckTimeoutSeconds     = 9
@@ -21,6 +23,7 @@ const (
 
 type SettingThreads struct {
 	DownloadThreads    int `form:"download_threads" json:"download_threads" binding:"required" gorm:"default:1"`          // 下载 QPS
+	UploadThreads      int `form:"upload_threads" json:"upload_threads" gorm:"default:1"`                                 // 同时上传任务数
 	FileDetailThreads  int `form:"file_detail_threads" json:"file_detail_threads" binding:"required" gorm:"default:1"`    // 115 接口 QPS
 	OpenlistQPS        int `form:"openlist_qps" json:"openlist_qps" binding:"required" gorm:"default:3"`                  // OpenList QPS
 	OpenlistRetry      int `form:"openlist_retry" json:"openlist_retry" binding:"required" gorm:"default:1"`              // OpenList 重试次数
@@ -87,6 +90,7 @@ type Settings struct {
 func (t SettingThreads) ToMap() map[string]any {
 	return map[string]any{
 		"download_threads":     t.DownloadThreads,
+		"upload_threads":       t.UploadThreads,
 		"file_detail_threads":  t.FileDetailThreads,
 		"openlist_qps":         t.OpenlistQPS,
 		"openlist_retry":       t.OpenlistRetry,
@@ -278,17 +282,23 @@ func (settings *Settings) ThreadAndRapidWait() SettingThreadAndRapidWait {
 }
 
 func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
-	settings.SettingThreads = req.SettingThreads
-	settings.SettingUploadRapidWait = req.SettingUploadRapidWait
-	settings.SettingURLValidityCheck = req.SettingURLValidityCheck
+	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
+	updated := *settings
+	updated.SettingThreads = req.SettingThreads
+	updated.SettingUploadRapidWait = req.SettingUploadRapidWait
+	updated.SettingURLValidityCheck = req.SettingURLValidityCheck
 
 	updateData := req.ToMap()
 
-	err := db.Db.Model(settings).Where("id = ?", settings.ID).Updates(updateData).Error
+	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("更新线程数失败：%v", err)
 		return false
 	}
+	settings.SettingThreads = updated.SettingThreads
+	settings.SettingUploadRapidWait = updated.SettingUploadRapidWait
+	settings.SettingURLValidityCheck = updated.SettingURLValidityCheck
+	settings.UpdatedAt = updated.UpdatedAt
 	// 重新初始化下载队列
 	InitDQ()
 	return true

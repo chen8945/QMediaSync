@@ -73,6 +73,7 @@ func (r ValidateCronRequest) NormalizedCronExpression() string {
 // UpdateThreadsRequest 更新线程配置请求。
 type UpdateThreadsRequest struct {
 	DownloadThreads                int    `form:"download_threads" json:"download_threads" binding:"required"`
+	UploadThreads                  *int   `form:"upload_threads" json:"upload_threads"`
 	FileDetailThreads              int    `form:"file_detail_threads" json:"file_detail_threads" binding:"required"`
 	OpenlistQPS                    int    `form:"openlist_qps" json:"openlist_qps" binding:"required"`
 	OpenlistRetry                  int    `form:"openlist_retry" json:"openlist_retry" binding:"required"`
@@ -92,6 +93,11 @@ type UpdateThreadsRequest struct {
 func (r UpdateThreadsRequest) Validate() error {
 	if err := validation.RangeInt("download_threads", r.DownloadThreads, 1, 10); err != nil {
 		return err
+	}
+	if r.UploadThreads != nil {
+		if err := validation.RangeInt("upload_threads", *r.UploadThreads, 1, models.MaxUploadThreads); err != nil {
+			return err
+		}
 	}
 	if err := validation.RangeInt("file_detail_threads", r.FileDetailThreads, 2, 10); err != nil {
 		return err
@@ -157,18 +163,24 @@ func (r UpdateThreadsRequest) Validate() error {
 }
 
 // ToModel 转换为线程配置模型。
-func (r UpdateThreadsRequest) ToModel(baseRapidWait models.SettingUploadRapidWait, baseURLValidityCheck models.SettingURLValidityCheck) models.SettingThreadAndRapidWait {
+func (r UpdateThreadsRequest) ToModel(base models.SettingThreadAndRapidWait) models.SettingThreadAndRapidWait {
 	modelReq := models.SettingThreadAndRapidWait{
 		SettingThreads: models.SettingThreads{
 			DownloadThreads:    r.DownloadThreads,
+			UploadThreads:      base.UploadThreads,
 			FileDetailThreads:  r.FileDetailThreads,
 			OpenlistQPS:        r.OpenlistQPS,
 			OpenlistRetry:      r.OpenlistRetry,
 			OpenlistRetryDelay: r.OpenlistRetryDelay,
 			FileListPageSize:   r.FileListPageSize,
 		},
-		SettingUploadRapidWait:  baseRapidWait,
-		SettingURLValidityCheck: baseURLValidityCheck,
+		SettingUploadRapidWait:  base.SettingUploadRapidWait,
+		SettingURLValidityCheck: base.SettingURLValidityCheck,
+	}
+	if r.UploadThreads != nil {
+		modelReq.UploadThreads = *r.UploadThreads
+	} else if modelReq.UploadThreads < 1 || modelReq.UploadThreads > models.MaxUploadThreads {
+		modelReq.UploadThreads = models.DefaultUploadThreads
 	}
 	if r.UploadRapidWaitEnabled != nil {
 		modelReq.UploadRapidWaitEnabled = *r.UploadRapidWaitEnabled
