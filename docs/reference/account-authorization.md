@@ -2,11 +2,11 @@
 
 > 职责：定义云盘账号授权、更换授权的接口、来源边界、短时会话、访问凭证刷新和落库语义。
 >
-> 权威范围：本文档维护 115 账号更换授权的跨后端、前端和数据库契约，以及 115 访问凭证的定时刷新与失效边界；账号字段和迁移以 [数据库 schema 与迁移](database-schema.md) 为准，通用请求校验以 [请求校验约定](../engineering/request-validation.md) 为准。
+> 权威范围：本文档维护 115 账号更换授权的跨后端、前端和数据库契约、115 与百度网盘访问凭证的定时刷新，以及 OpenList 登录和 Token 回写边界；账号字段和迁移以 [数据库 schema 与迁移](database-schema.md) 为准，通用请求校验以 [请求校验约定](../engineering/request-validation.md) 为准。
 >
 > 修改时机：修改账号授权入口、`authorization_id` 传递、授权来源兼容性、确认提示、原子更新、访问凭证刷新策略或失败回滚边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115auth/`、`backend/internal/v115open/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
+> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115auth/`、`backend/internal/v115open/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
 
 ## 账号关联语义
 
@@ -129,6 +129,12 @@
 
 `models.Account.TryUpdateTokenIfCurrent` 返回具体错误以区分守卫不匹配与写库失败；`UpdateToken` / `UpdateTokenIfCurrent` 的布尔语义与 `persistAccountTokenFields` 的守卫语义保持不变。
 
+## OpenList 登录与 Token 回写
+
+OpenList 登录使用请求开始时的地址、用户名、密码和 Token 快照。登录结果只有在共享客户端仍匹配这份快照时才更新其 Token；保存事件携带同一份预期配置，数据库通过条件更新确认账号来源、地址、用户名、密码和旧 Token 未变后才落库。配置已经更换或账号已经删除时，迟到的结果不能覆盖或重建账号。旧请求仍可使用原地址与自身登录结果完成，但不能改写新配置。
+
+账号创建和编辑先使用独立的临时客户端验证候选凭据及用户信息，验证阶段不更新原账号或共享客户端。编辑保存时还需匹配原授权快照；验证失败、保存失败或原授权已被并发替换时保留现有配置。验证通过后将配置、用户信息与实际使用的 Token 一起保存，再更新共享客户端；最终写库与缓存安装保持同序，避免较早提交的配置最后覆盖缓存。网络请求及同步保存事件都在客户端状态锁之外执行，客户端锁只保护短暂的状态比较和赋值。同配置已有更新的 Token 时，迟到的 `401` 复用新 Token。
+
 ## 前端确认
 
 所有 115 账号卡片都提供“授权/重新授权”和“更换授权”入口，未授权或授权失效的账号也可以直接选择新的有效授权来源。目标选择复用新建账号的应用选择器，因此已废弃 APP ID 不进入新建或更换目标列表；历史账号的普通授权入口仍保留，用于兼容旧来源。提交准备接口前，弹窗必须要求用户勾选确认，并明确说明：
@@ -151,6 +157,7 @@
 - 更换会话创建成功后，旧的无会话 OAuth state 不能在新授权提交后再次写入账号；无会话旧授权提交必须通过同一账号会话锁。
 - 直接跳转 OAuth 的待处理会话在页面返回时必须与回调中的会话 ID 匹配；无回调或失败回调不能留下活动会话。
 - 授权结果必须在新令牌和用户信息都验证成功后原子写入；失败不能产生部分授权更新。
+- OpenList 登录结果回写内存与数据库时均校验发起时的配置；保存回调不能用重新读取的最新配置替代原快照。
 - 网络错误、频控（40140117）和可重试失败（40140121）不得清空凭据、不得发布 `V115TokenInValidEvent`，也不得发送重新授权通知。
 - 只有 115 明确判定 refresh_token 无法继续使用（40140114/40140115/40140116/40140119/40140120）时才允许清空凭据并通知重新授权。
 - 百度网盘仅 OAuth 错误 `invalid_grant` / `expired_token` 允许清空凭据并通知重新授权；中转不可达、响应格式异常和 `invalid_client` 等配置类错误保留凭据等待重试。
@@ -165,6 +172,7 @@
 
 ## 验证方式
 
+- OpenList：`cd backend && go test -race ./internal/openlist`，并运行相关 `models` 与 `controllers` 测试。覆盖登录在途和保存回调在途时的配置更换、Token 相同但地址或密码改变、正常刷新落库、候选凭据验证或保存失败、并发编辑与临时客户端隔离，以及并发刷新去重与回调重入。回归位于 `backend/internal/openlist/auth_test.go`、`backend/internal/openlist/client_test.go`、`backend/internal/models/account_openlist_test.go` 和 `backend/internal/models/account_openlist_commit_test.go`。
 - 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。
 - 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/v115open/auth_test.go`、`backend/internal/baidupan/refresh_test.go`、`backend/internal/baidupan/errors_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。

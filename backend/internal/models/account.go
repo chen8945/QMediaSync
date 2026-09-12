@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"qmediasync/internal/baidupan"
@@ -16,6 +17,7 @@ import (
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Account struct {
@@ -45,6 +47,9 @@ const (
 	openListAuthTypePassword = "password"
 	openListAuthTypeToken    = "token"
 )
+
+// 串行化 OpenList 最终写库及缓存安装；账号间写入出现争用后改为按账号锁。
+var openListAuthorizationMu sync.Mutex
 
 func (account *Account) TableName() string {
 	return "account"
@@ -400,19 +405,19 @@ func (account *Account) ClearTokenIfCredentialsMatch(expectedToken string, expec
 	return account.clearToken(reason, expected)
 }
 
+func openListAccountIfCurrent(accountID uint, baseURL, username, password, token string) *gorm.DB {
+	// WHERE 包含原密码与 Token，禁止 GORM 将它们展开到错误或慢 SQL 日志。
+	return db.Db.Session(&gorm.Session{Logger: logger.Discard}).Model(&Account{}).
+		Where("id = ? AND source_type = ? AND base_url = ? AND username = ? AND password = ? AND token = ?",
+			accountID, SourceTypeOpenList, baseURL, username, password, token)
+}
+
 func (account *Account) UpdateOpenList(baseUrl string, username string, password string, token string, authType string) error {
+	candidate := *account
 	oldUsername := account.Username
 	oldPassword := account.Password
 	oldBaseUrl := account.BaseUrl
 	oldToken := account.Token
-	oldUserId := account.UserId
-	restore := func() {
-		account.BaseUrl = oldBaseUrl
-		account.Username = oldUsername
-		account.Password = oldPassword
-		account.Token = oldToken
-		account.UserId = oldUserId
-	}
 
 	token = strings.TrimSpace(token)
 	authType = strings.TrimSpace(authType)
@@ -441,95 +446,83 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	if oldPassword != "" {
 		oldAuthType = openListAuthTypePassword
 	}
-	account.BaseUrl = baseUrl
-	account.Username = username
-	var userInfo *openlist.UserInfoResp
-	var client *openlist.Client
+	candidate.BaseUrl = baseUrl
+	candidate.Username = username
+	needsNewToken := false
 	switch authType {
 	case openListAuthTypeToken:
 		if token == "" {
 			if oldPassword != "" {
-				restore()
 				return fmt.Errorf("切换为 Token 认证需要提供新的 Token")
 			}
 			token = oldToken
 		}
 		if token == "" {
-			restore()
 			return fmt.Errorf("OpenList Token 不能为空")
 		}
 		// Token 认证不保留旧密码，避免账号列表和 Token 刷新流程误判为密码认证。
-		account.Password = ""
-		account.Token = token
-		client = account.GetOpenListClient()
-		var err error
-		if userInfo, err = client.GetUserInfo(account.Token); err != nil {
-			helpers.AppLogger.Errorf("验证 OpenList Token 失败：%v", err)
-			restore()
-			return err
-		}
-		helpers.AppLogger.Infof("使用提供的 Token 更新 OpenList 账号成功")
+		candidate.Password = ""
+		candidate.Token = token
 	case openListAuthTypePassword:
 		if oldAuthType != openListAuthTypePassword && !usernameProvided {
-			restore()
 			return fmt.Errorf("切换为用户名密码认证需要提供用户名")
 		}
 		if oldAuthType != openListAuthTypePassword && !passwordProvided {
-			restore()
 			return fmt.Errorf("切换为用户名密码认证需要提供密码")
 		}
 		if strings.TrimSpace(password) == "" {
 			password = oldPassword
 		}
 		if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
-			restore()
 			return fmt.Errorf("OpenList 用户名和密码不能为空")
 		}
-		account.Password = password
+		candidate.Password = password
 		credentialsChanged := oldAuthType != openListAuthTypePassword || username != oldUsername || password != oldPassword
-		needsNewToken := credentialsChanged || baseUrl != oldBaseUrl || oldToken == ""
+		needsNewToken = credentialsChanged || baseUrl != oldBaseUrl || oldToken == ""
 		if needsNewToken {
 			// 认证方式或登录凭据发生变化时重新获取 Token，避免继续使用旧 Token。
-			account.Token = ""
+			candidate.Token = ""
 		}
-		client = account.GetOpenListClient()
-		var err error
-		if needsNewToken {
-			tokenData, getTokenErr := client.GetToken()
-			if getTokenErr != nil {
-				helpers.AppLogger.Errorf("更新 OpenList 账号 Token 失败：%v", getTokenErr)
-				restore()
-				return getTokenErr
-			}
-			account.Token = tokenData.Token
-		} else {
-			// 同为密码认证且配置未变化时复用已有 Token，避免编辑备注时重复登录。
-			account.Token = oldToken
-		}
-		if userInfo, err = client.GetUserInfo(account.Token); err != nil {
-			helpers.AppLogger.Errorf("获取 OpenList 用户信息失败：%v", err)
-			restore()
+	}
+	client := openlist.NewTemporaryClient(candidate.BaseUrl, candidate.Username, candidate.Password, candidate.Token)
+	defer client.Close()
+	if needsNewToken {
+		if _, err := client.GetToken(); err != nil {
+			helpers.AppLogger.Errorf("更新 OpenList 账号 Token 失败：%v", err)
 			return err
 		}
-		// GetUserInfo 遇到过期 Token 时会在 client 内自动刷新，保存刷新后的实际 Token。
-		account.Token = client.GetAuthToken()
 	}
-	if userInfo == nil {
-		restore()
-		return fmt.Errorf("更新 OpenList 账号需要提供有效凭据")
-	}
-	account.UserId = fmt.Sprintf("%d", userInfo.ID)
-	if err := ensureAccountIdentityAvailable(db.Db, account.ID, account.Name, account.UserId); err != nil {
-		restore()
-		return err
-	}
-	// 保存到数据库
-	err := db.Db.Save(account).Error
+	userInfo, err := client.GetUserInfo(client.GetAuthToken())
 	if err != nil {
-		helpers.AppLogger.Errorf("更新 OpenList 账号失败：%v", err)
-		restore()
+		helpers.AppLogger.Errorf("验证 OpenList 账号失败：%v", err)
 		return err
 	}
+	// 用户信息查询可能自动刷新 Token，保存最终验证过的实际值。
+	candidate.Token = client.GetAuthToken()
+	candidate.UserId = fmt.Sprintf("%d", userInfo.ID)
+	if err := ensureAccountIdentityAvailable(db.Db, account.ID, candidate.Name, candidate.UserId); err != nil {
+		return err
+	}
+	updateData := map[string]any{
+		"base_url": candidate.BaseUrl,
+		"username": candidate.Username,
+		"password": candidate.Password,
+		"token":    candidate.Token,
+		"user_id":  candidate.UserId,
+	}
+	// 网络验证已结束；数据库提交与缓存安装保持同序，避免慢编辑覆盖后来的配置。
+	openListAuthorizationMu.Lock()
+	defer openListAuthorizationMu.Unlock()
+	result := openListAccountIfCurrent(account.ID, oldBaseUrl, oldUsername, oldPassword, oldToken).Updates(updateData)
+	if result.Error != nil {
+		helpers.AppLogger.Errorf("更新 OpenList 账号失败：%v", result.Error)
+		return mapAccountIdentityError(result.Error, updateData)
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("OpenList 账号配置已更新或账号已删除，请重新加载后重试")
+	}
+	*account = candidate
+	account.GetOpenListClient()
 	return nil
 }
 
@@ -617,46 +610,38 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 	account.Password = password
 	account.Token = token
 
-	var userInfo *openlist.UserInfoResp
+	client := openlist.NewTemporaryClient(baseUrl, username, password, token)
+	defer client.Close()
 	// 如果提供了 Token，优先使用 Token，否则使用用户名密码获取 Token
-	if token != "" {
-		client := account.GetOpenListClient()
-		var err error
-		if userInfo, err = client.GetUserInfo(token); err != nil {
-			helpers.AppLogger.Errorf("验证 OpenList Token 失败：%v", err)
-			return nil, err
-		}
-		helpers.AppLogger.Infof("使用提供的 Token 创建 OpenList 账号成功")
-	} else {
-		client := account.GetOpenListClient()
-		tokenData, clientErr := client.GetToken()
-		if clientErr != nil {
-			helpers.AppLogger.Errorf("验证 OpenList 账号失败：%v", clientErr)
-			return nil, clientErr
-		} else {
-			helpers.AppLogger.Infof("获取 OpenList 账号 Token 成功")
-		}
-		account.Token = tokenData.Token
-		var err error
-		if userInfo, err = client.GetUserInfo(token); err != nil {
-			helpers.AppLogger.Errorf("获取 OpenList 用户信息失败：%v", err)
+	if token == "" {
+		if _, err := client.GetToken(); err != nil {
+			helpers.AppLogger.Errorf("验证 OpenList 账号失败：%v", err)
 			return nil, err
 		}
 	}
+	userInfo, err := client.GetUserInfo(client.GetAuthToken())
+	if err != nil {
+		helpers.AppLogger.Errorf("获取 OpenList 用户信息失败：%v", err)
+		return nil, err
+	}
+	account.Token = client.GetAuthToken()
 	account.UserId = fmt.Sprintf("%d", userInfo.ID)
 	account.Name = userInfo.Username
 
-	helpers.AppLogger.Infof("创建 OpenList 账号成功，用户 ID：%s，用户名：%s", account.UserId, account.Name)
 	if err := ensureAccountIdentityAvailable(db.Db, 0, account.Name, account.UserId); err != nil {
 		return nil, err
 	}
 
-	// 插入数据库，如果插入失败则报错
-	err := db.Db.Save(account).Error
+	// 验证完成后才同时保存配置和 Token，并安装共享客户端。
+	openListAuthorizationMu.Lock()
+	defer openListAuthorizationMu.Unlock()
+	err = db.Db.Session(&gorm.Session{Logger: logger.Discard}).Create(account).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("创建 OpenList 账号失败：%v", err)
 		return nil, err
 	}
+	account.GetOpenListClient()
+	helpers.AppLogger.Infof("创建 OpenList 账号成功，用户 ID：%s，用户名：%s", account.UserId, account.Name)
 	return account, nil
 }
 
@@ -804,35 +789,25 @@ func HandleV115TokenInvalid(event helpers.Event) helpers.EventResult {
 
 // 处理 OpenList 访问凭证保存事件（同步版本）
 func HandleOpenListTokenSaveSync(event helpers.Event) helpers.EventResult {
-	helpers.AppLogger.Warnf("收到 OpenList 访问凭证保存同步事件，开始处理")
-
-	eventData := event.Data.(map[string]any)
-	account, err := GetAccountById(eventData["account_id"].(uint))
-	if err != nil {
-		helpers.AppLogger.Errorf("查询 OpenList 账号失败：%v", err)
-		return helpers.EventResult{
-			Success: false,
-			Error:   err,
-			Data:    nil,
-		}
+	eventData, ok := event.Data.(openlist.TokenSaveEvent)
+	if !ok || eventData.AccountID == 0 || eventData.Token == "" {
+		return helpers.EventResult{Success: false, Error: fmt.Errorf("OpenList 访问凭证保存事件缺少有效的登录快照")}
 	}
-	// expiresTime = now+ 48 小时
-	expiresTime := int64(48 * 60 * 60)
-	suc := account.UpdateToken(eventData["token"].(string), "", expiresTime)
-
-	if suc {
-		helpers.AppLogger.Infof("OpenList 访问凭证保存成功")
-		return helpers.EventResult{
-			Success: true,
-			Error:   nil,
-			Data:    nil,
-		}
-	} else {
-		helpers.AppLogger.Warn("OpenList 访问凭证保存失败")
-		return helpers.EventResult{
-			Success: false,
-			Error:   fmt.Errorf("OpenList 访问凭证保存失败"),
-			Data:    nil,
-		}
+	openListAuthorizationMu.Lock()
+	defer openListAuthorizationMu.Unlock()
+	result := openListAccountIfCurrent(eventData.AccountID, eventData.BaseURL, eventData.Username, eventData.Password, eventData.PreviousToken).
+		Updates(map[string]any{
+			"token":               eventData.Token,
+			"refresh_token":       "",
+			"token_expiries_time": time.Now().Unix() + 48*60*60,
+			"token_failed_reason": "",
+		})
+	if result.Error != nil {
+		helpers.AppLogger.Errorf("OpenList 账号 %d 访问凭证保存失败：%v", eventData.AccountID, result.Error)
+		return helpers.EventResult{Success: false, Error: result.Error}
 	}
+	if result.RowsAffected == 0 {
+		helpers.AppLogger.Infof("OpenList 账号 %d 配置已更新或已删除，跳过旧登录结果", eventData.AccountID)
+	}
+	return helpers.EventResult{Success: true}
 }

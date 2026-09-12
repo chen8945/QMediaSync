@@ -164,9 +164,9 @@ func TestClientConcurrentTokenRefresh(t *testing.T) {
 	client := NewClient(1, server.URL, "user", "user", "expired-token")
 	var callbacks atomic.Int64
 	helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, func(event helpers.Event) helpers.EventResult {
-		data := event.Data.(map[string]any)
-		if data["account_id"] != uint(1) || data["token"] != "shared-token" {
-			t.Errorf("刷新事件数据不正确：%v", data)
+		data := event.Data.(TokenSaveEvent)
+		if data.AccountID != uint(1) || data.Token != "shared-token" {
+			t.Error("刷新事件账号或 Token 不正确")
 		}
 		// 同步订阅者可以重新获取客户端，不能被调用方持有的缓存锁或状态锁阻塞。
 		if got := NewClient(1, server.URL, "callback", "callback", "shared-token"); got != client {
@@ -204,8 +204,12 @@ func TestClientConcurrentTokenRefresh(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if callbacks.Load() < 20 {
-		t.Fatalf("Token 保存事件次数 = %d，期望至少 20", callbacks.Load())
+	// 配置持续变化时允许丢弃旧登录事件；配置稳定后仍应保存并支持回调重入。
+	if _, err := client.GetToken(); err != nil {
+		t.Fatalf("稳定配置刷新失败：%v", err)
+	}
+	if callbacks.Load() == 0 {
+		t.Fatal("稳定配置未触发 Token 保存回调")
 	}
 }
 

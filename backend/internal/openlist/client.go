@@ -54,21 +54,31 @@ func NewClient(accountId uint, url, username, password, accessToken string) *Cli
 		client.AccessToken = accessToken
 		return client
 	}
+	client := NewTemporaryClient(url, username, password, accessToken)
+	client.AccountId = accountId
+	cachedClients[clientKey] = client
+	return client
+}
+
+// NewTemporaryClient 创建不进入共享缓存、不发布账号保存事件的临时验证客户端。
+func NewTemporaryClient(url, username, password, accessToken string) *Client {
 	restyClient := resty.New()
 	restyClient.SetTimeout(time.Duration(DEFAULT_TIMEOUT) * time.Second).SetBaseURL(url)
 	// 设置代理
 	// restyClient.SetProxy("http://127.0.0.1:10808")
 
-	client := &Client{
-		AccountId:   accountId,
+	return &Client{
 		BaseUrl:     url,
 		Username:    username,
 		Password:    password,
 		AccessToken: accessToken,
 		client:      restyClient,
 	}
-	cachedClients[clientKey] = client
-	return client
+}
+
+// Close 释放客户端资源；临时验证完成后调用，共享客户端不能在单次请求后关闭。
+func (c *Client) Close() error {
+	return c.client.Close()
 }
 
 // SetAuthToken 更新访问凭证，允许与请求并发调用。
@@ -93,9 +103,19 @@ type clientState struct {
 	accessToken string
 }
 
+func (state clientState) sameLogin(other clientState) bool {
+	return state.accountID == other.accountID && state.baseURL == other.baseURL &&
+		state.username == other.username && state.password == other.password
+}
+
 func (c *Client) snapshot() clientState {
 	c.stateMu.RLock()
 	defer c.stateMu.RUnlock()
+	return c.snapshotLocked()
+}
+
+// snapshotLocked 的调用方必须持有 stateMu。
+func (c *Client) snapshotLocked() clientState {
 	return clientState{
 		accountID:   c.AccountId,
 		baseURL:     c.BaseUrl,
@@ -181,7 +201,9 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 		return response, err
 	}
 	// helpers.OpenListLog.Infof("认证访问 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n", req.Method, req.URL, resp.State, resp.Code, resp.Message, string(resp.Data))
-	helpers.OpenListLog.Infof("%s %s 请求数据：%+v 返回值：%s\n", req.Method, req.URL, req.Body, string(data))
+	if path != "/api/auth/login" {
+		helpers.OpenListLog.Infof("%s %s 请求数据：%+v 返回值：%s\n", req.Method, req.URL, req.Body, string(data))
+	}
 	if data != nil && jsonResult != nil {
 		switch jsonResult["code"].(float64) {
 		case http.StatusUnauthorized:
@@ -192,6 +214,10 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 			// 同一客户端按地址和登录凭据合并并发刷新，避免跨地址复用 Token。
 			key := strings.TrimRight(state.baseURL, "/") + "\x00" + state.username + "\x00" + state.password
 			refreshed, err, _ := c.refreshGroup.Do(key, func() (any, error) {
+				current := c.snapshot()
+				if current.sameLogin(*state) && current.accessToken != "" && current.accessToken != state.accessToken {
+					return &TokenData{Token: current.accessToken}, nil
+				}
 				return c.getToken(*state)
 			})
 			if err != nil {
