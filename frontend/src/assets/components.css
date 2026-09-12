@@ -139,6 +139,10 @@
   min-width: 0;
 }
 
+.tag-input-tags > .el-button + .el-button {
+  margin-left: 0;
+}
+
 .tag-input-tags + .el-input {
   margin-top: 8px;
 }

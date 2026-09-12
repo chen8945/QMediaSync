@@ -142,6 +142,10 @@
           <div class="form-tip">
             开启后可自定义 STRM 配置，包括扩展名和排除规则；否则使用 STRM 设置中的值
           </div>
+          <div v-if="form.custom_config" class="form-tip">
+            “导入全局设置”会保留当前列表并合并全局中的不重复项，保存后生效。
+            非空列表保存后不随全局设置变化；清空相应列表并保存可恢复继承。
+          </div>
         </el-form-item>
 
         <template v-if="form.custom_config">
@@ -210,40 +214,54 @@
             </div>
           </el-form-item>
           <el-form-item label="视频扩展名" prop="video_ext">
-            <div class="ext-input-wrapper">
-              <MetadataExtInput
-                v-model="form.video_ext"
-                placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
-                class="meta-ext-input limited-width-input"
-              />
-              <el-button
-                type="primary"
-                link
-                @click="importFromStrmSettings('video_ext')"
-                :loading="importStrmSettingsLoading"
-              >
-                从 STRM 设置导入
-              </el-button>
+            <MetadataExtInput
+              v-model="form.video_ext"
+              placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
+              class="meta-ext-input limited-width-input"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('video_ext')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
+            <div class="form-tip">
+              指定需要生成 STRM 文件的视频文件扩展名。列表为空时继承全局设置；填写后覆盖全局列表。
             </div>
-            <div class="form-tip">指定需要生成 STRM 文件的视频文件扩展名</div>
           </el-form-item>
           <el-form-item label="元数据扩展名" prop="meta_ext">
-            <div class="ext-input-wrapper">
-              <MetadataExtInput
-                v-model="form.meta_ext"
-                placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
-                class="meta-ext-input limited-width-input"
-              />
-              <el-button
-                type="primary"
-                link
-                @click="importFromStrmSettings('meta_ext')"
-                :loading="importStrmSettingsLoading"
-              >
-                从 STRM 设置导入
-              </el-button>
+            <MetadataExtInput
+              v-model="form.meta_ext"
+              placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
+              class="meta-ext-input limited-width-input"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('meta_ext')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
+            <div class="form-tip">
+              指定需要同步的元数据文件扩展名。列表为空时继承全局设置；填写后覆盖全局列表。
             </div>
-            <div class="form-tip">指定需要同步的元数据文件扩展名</div>
           </el-form-item>
           <el-form-item label="排除名称" prop="exclude_name">
             <MetadataExtInput
@@ -251,10 +269,25 @@
               :autoAddDot="false"
               placeholder="输入名称后按回车添加，也可用逗号或分号分隔"
               class="meta-ext-input limited-width-input"
-            />
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('exclude_name')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
             <div class="form-tip">
               完整匹配文件名（含扩展名）或目录名，不区分大小写；目录命中时也排除其下内容。
-              列表为空时使用 STRM 设置中的排除名称；正则请填写下方“正则排除名称”。
+              列表为空时继承全局排除名称；填写后覆盖全局列表。正则请填写下方“正则排除名称”。
             </div>
           </el-form-item>
           <el-form-item
@@ -264,10 +297,24 @@
           >
             <StrmRegexInput
               v-model="form.exclude_name_regex"
-              :disabled="loading"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
               inherit
               @update:model-value="syncPathFieldErrors.exclude_name_regex = ''"
-            />
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('exclude_name_regex')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </StrmRegexInput>
           </el-form-item>
           <el-form-item label="下载元数据" prop="download_meta">
             <el-radio-group v-model="form.download_meta">
@@ -545,7 +592,12 @@
 
       <div class="mobile-form-footer">
         <el-button @click="goBack">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="loading">
+        <el-button
+          type="primary"
+          @click="handleSubmit"
+          :loading="loading"
+          :disabled="importStrmSettingsLoading"
+        >
           {{ isEditMode ? '保存修改' : '确定添加' }}
         </el-button>
       </div>
@@ -685,6 +737,10 @@
           <div class="form-tip">
             开启后可自定义 STRM 配置，包括扩展名和排除规则；否则使用 STRM 设置中的值
           </div>
+          <div v-if="form.custom_config" class="form-tip">
+            “导入全局设置”会保留当前列表并合并全局中的不重复项，保存后生效。
+            非空列表保存后不随全局设置变化；清空相应列表并保存可恢复继承。
+          </div>
         </el-form-item>
 
         <template v-if="form.custom_config">
@@ -753,40 +809,54 @@
             </div>
           </el-form-item>
           <el-form-item label="视频扩展名" prop="video_ext">
-            <div class="ext-input-wrapper">
-              <MetadataExtInput
-                v-model="form.video_ext"
-                placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
-                class="meta-ext-input limited-width-input"
-              />
-              <el-button
-                type="primary"
-                link
-                @click="importFromStrmSettings('video_ext')"
-                :loading="importStrmSettingsLoading"
-              >
-                从 STRM 设置导入
-              </el-button>
+            <MetadataExtInput
+              v-model="form.video_ext"
+              placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
+              class="meta-ext-input limited-width-input"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('video_ext')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
+            <div class="form-tip">
+              指定需要生成 STRM 文件的视频文件扩展名。列表为空时继承全局设置；填写后覆盖全局列表。
             </div>
-            <div class="form-tip">指定需要生成 STRM 文件的视频文件扩展名</div>
           </el-form-item>
           <el-form-item label="元数据扩展名" prop="meta_ext">
-            <div class="ext-input-wrapper">
-              <MetadataExtInput
-                v-model="form.meta_ext"
-                placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
-                class="meta-ext-input limited-width-input"
-              />
-              <el-button
-                type="primary"
-                link
-                @click="importFromStrmSettings('meta_ext')"
-                :loading="importStrmSettingsLoading"
-              >
-                从 STRM 设置导入
-              </el-button>
+            <MetadataExtInput
+              v-model="form.meta_ext"
+              placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
+              class="meta-ext-input limited-width-input"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('meta_ext')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
+            <div class="form-tip">
+              指定需要同步的元数据文件扩展名。列表为空时继承全局设置；填写后覆盖全局列表。
             </div>
-            <div class="form-tip">指定需要同步的元数据文件扩展名</div>
           </el-form-item>
           <el-form-item label="排除名称" prop="exclude_name">
             <MetadataExtInput
@@ -794,10 +864,25 @@
               :autoAddDot="false"
               placeholder="输入名称后按回车添加，也可用逗号或分号分隔"
               class="meta-ext-input limited-width-input"
-            />
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('exclude_name')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </MetadataExtInput>
             <div class="form-tip">
               完整匹配文件名（含扩展名）或目录名，不区分大小写；目录命中时也排除其下内容。
-              列表为空时使用 STRM 设置中的排除名称；正则请填写下方“正则排除名称”。
+              列表为空时继承全局排除名称；填写后覆盖全局列表。正则请填写下方“正则排除名称”。
             </div>
           </el-form-item>
           <el-form-item
@@ -807,10 +892,24 @@
           >
             <StrmRegexInput
               v-model="form.exclude_name_regex"
-              :disabled="loading"
+              :disabled="loading || importStrmSettingsLoading"
+              clearable
               inherit
               @update:model-value="syncPathFieldErrors.exclude_name_regex = ''"
-            />
+            >
+              <template #actions>
+                <el-button
+                  type="primary"
+                  size="small"
+                  plain
+                  :disabled="loading"
+                  :loading="importStrmSettingsLoading"
+                  @click="importFromStrmSettings('exclude_name_regex')"
+                >
+                  导入全局设置
+                </el-button>
+              </template>
+            </StrmRegexInput>
           </el-form-item>
           <el-form-item label="下载元数据" prop="download_meta">
             <el-radio-group v-model="form.download_meta">
@@ -1089,7 +1188,12 @@
       <template #footer>
         <div class="form-footer">
           <el-button @click="goBack">取消</el-button>
-          <el-button type="primary" @click="handleSubmit" :loading="loading">
+          <el-button
+            type="primary"
+            @click="handleSubmit"
+            :loading="loading"
+            :disabled="importStrmSettingsLoading"
+          >
             {{ isEditMode ? '保存修改' : '确定添加' }}
           </el-button>
         </div>
@@ -1785,25 +1889,37 @@ const loadCronTimes = async () => {
 }
 
 const importStrmSettingsLoading = ref(false)
-const importFromStrmSettings = async (field: 'video_ext' | 'meta_ext') => {
+const importFromStrmSettings = async (
+  field: 'video_ext' | 'meta_ext' | 'exclude_name' | 'exclude_name_regex',
+) => {
+  if (loading.value || importStrmSettingsLoading.value) return
   try {
     importStrmSettingsLoading.value = true
     const response = await http.get(`${SERVER_URL}/setting/strm-config`)
 
     if (response?.data.code === 200 && response.data.data) {
-      const config = response.data.data
-      if (field === 'video_ext') {
-        form.video_ext = config.video_ext_arr || []
-        ElMessage.success('已从 STRM 设置导入视频扩展名')
-      } else {
-        form.meta_ext = config.meta_ext_arr || []
-        ElMessage.success('已从 STRM 设置导入元数据扩展名')
+      const imported: unknown = response.data.data[`${field}_arr`] ?? []
+      if (!Array.isArray(imported) || !imported.every((value) => typeof value === 'string')) {
+        ElMessage.error('全局设置中的列表格式无效')
+        return
       }
+      const key = (value: string) => (field === 'exclude_name_regex' ? value : value.toLowerCase())
+      const merged = [...form[field]]
+      const seen = new Set(merged.map(key))
+      for (const value of imported) {
+        if (!seen.has(key(value))) {
+          merged.push(value)
+          seen.add(key(value))
+        }
+      }
+      form[field] = merged
+      if (field === 'exclude_name_regex') syncPathFieldErrors.value.exclude_name_regex = ''
+      ElMessage.success('已导入全局设置并合并去重，保存后生效')
     } else {
-      ElMessage.error('获取 STRM 设置失败')
+      ElMessage.error('获取全局 STRM 设置失败')
     }
   } catch {
-    ElMessage.error('获取 STRM 设置失败')
+    ElMessage.error('获取全局 STRM 设置失败')
   } finally {
     importStrmSettingsLoading.value = false
   }
@@ -2027,9 +2143,10 @@ const confirmSelectDir = async () => {
 }
 
 const handleSubmit = async () => {
-  if (!formRef.value) return
+  if (!formRef.value || loading.value || importStrmSettingsLoading.value) return
 
   try {
+    loading.value = true
     await formRef.value.validate()
     if (directoryUploadRulesLoadFailed.value) {
       ElMessage.error('目录监控上传规则加载失败，请刷新或重试后再保存')
@@ -2039,8 +2156,6 @@ const handleSubmit = async () => {
     if (!validateDirectoryUploadRules()) {
       return
     }
-    loading.value = true
-
     const result = await syncDirectorySave.saveAndRun(
       isEditMode.value ? form.id : 0,
       buildSaveSyncPathPayload(),
@@ -2321,21 +2436,5 @@ onMounted(async () => {
 .is-mobile .directory-upload-rule__actions {
   width: 100%;
   justify-content: space-between;
-}
-
-.ext-input-wrapper {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.ext-input-wrapper .meta-ext-input {
-  flex: 1;
-  min-width: 200px;
-}
-
-.ext-input-wrapper .el-button {
-  flex-shrink: 0;
 }
 </style>

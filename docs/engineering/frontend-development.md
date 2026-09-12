@@ -17,6 +17,7 @@
 - 分页页面使用 `components/common/ResponsivePagination.vue` 承担布局和事件透传；页面自身保留页码、每页数量和数据加载状态。
 - STRM 全局设置和同步目录的桌面 / 移动表单共用 `StrmRegexInput.vue`。正则输入、说明与示例由该组件维护，不能复用会裁剪空格和拆分分隔符的扩展名输入；预检与保存错误边界见 [STRM 正则预检](request-validation.md#strm-正则预检)。
 - `MetadataExtInput.vue` 与 `StrmRegexInput.vue` 统一使用“已有标签 + 添加”入口，点击后展开并聚焦当前控件的输入框；添加成功后清空并收起，校验失败保留输入和错误提示。输入框使用 Element Plus 默认尺寸，桌面最大宽度为 `500px`，移动端占满可用宽度；标签统一间距与内边距，长内容允许换行，正则保留等宽字体和原始空白。匹配与继承含义常驻，正则语法细节及示例使用原生 `details` 折叠；列表编辑方式不改变各自的解析和保存语义。
+- 两个标签输入通过可选的 `clearable` 属性和 `actions` 插槽提供局部操作，`disabled` 同时约束添加、删除和清空。STRM 表单使用小尺寸 `primary/plain` 导入按钮和 `danger/plain` 清空按钮，沿用标签区域的换行与间距；草稿展开时操作仍可达。清空使用就地确认，取消保留草稿，确认后清空当前列表与草稿并恢复添加入口焦点；导入和清空均由页面保存后生效。其他调用方不启用 `clearable` 时保持原交互；业务语义见 [STRM 列表与继承](../operations/configuration.md#strm-列表与继承)。
 
 ## HTTP 快照、SSE 与轮询
 

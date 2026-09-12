@@ -225,10 +225,10 @@ func (r UpdateStrmConfigRequest) Validate() error {
 	if err := validation.RangeInt64("min_video_size", r.MinVideoSize, 0, 9223372036854775807); err != nil {
 		return err
 	}
-	if err := validation.ExtList("video_ext_arr", r.VideoExtArr, false); err != nil {
+	if err := validation.ExtList("video_ext_arr", r.VideoExtArr, true); err != nil {
 		return err
 	}
-	if err := validation.ExtList("meta_ext_arr", r.MetaExtArr, false); err != nil {
+	if err := validation.ExtList("meta_ext_arr", r.MetaExtArr, true); err != nil {
 		return err
 	}
 	if err := validation.RegexList("exclude_name_regex_arr", r.ExcludeNameRegexArr); err != nil {

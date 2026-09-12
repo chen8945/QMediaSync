@@ -88,6 +88,133 @@ func TestStrmConfigRegexSaveRoundTripAndValidation(t *testing.T) {
 	checkReloaded(t, []string{})
 }
 
+func TestStrmConfigEmptyExtensionsUseConfiguredDefaults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings, originalLogger, originalStrm := models.SettingsGlobal, helpers.AppLogger, helpers.GlobalConfig.Strm
+	t.Cleanup(func() {
+		models.SettingsGlobal, helpers.AppLogger, helpers.GlobalConfig.Strm = originalSettings, originalLogger, originalStrm
+	})
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	helpers.GlobalConfig.Strm.VideoExt = []string{".configured-video"}
+	helpers.GlobalConfig.Strm.MetaExt = []string{".configured-meta"}
+
+	for _, tt := range []struct {
+		name                string
+		video, meta         []string
+		wantVideo, wantMeta []string
+		omitExtensions      bool
+		failWrite           bool
+	}{
+		{name: "清空视频扩展名", video: []string{}, meta: []string{".nfo"}, wantVideo: helpers.GlobalConfig.Strm.VideoExt, wantMeta: []string{".nfo"}},
+		{name: "清空元数据扩展名", video: []string{".mkv"}, meta: []string{}, wantVideo: []string{".mkv"}, wantMeta: helpers.GlobalConfig.Strm.MetaExt},
+		{name: "清空两类扩展名", video: []string{}, meta: []string{}, wantVideo: helpers.GlobalConfig.Strm.VideoExt, wantMeta: helpers.GlobalConfig.Strm.MetaExt},
+		{name: "null 扩展名使用默认值", wantVideo: helpers.GlobalConfig.Strm.VideoExt, wantMeta: helpers.GlobalConfig.Strm.MetaExt},
+		{name: "省略扩展名使用默认值", omitExtensions: true, wantVideo: helpers.GlobalConfig.Strm.VideoExt, wantMeta: helpers.GlobalConfig.Strm.MetaExt},
+		{name: "保存失败保留旧设置", video: []string{}, meta: []string{}, failWrite: true},
+		{name: "null 扩展名保存失败保留旧设置", failWrite: true},
+		{name: "省略扩展名保存失败保留旧设置", omitExtensions: true, failWrite: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupControllerTestDB(t, &models.Settings{})
+			initial := (models.SettingStrm{
+				StrmBaseUrl:      "http://old.local",
+				Cron:             "0 * * * *",
+				VideoExt:         `[".old-video"]`,
+				MetaExt:          `[".old-meta"]`,
+				ExcludeName:      `["sample"]`,
+				ExcludeNameRegex: `["(?i)sample"]`,
+			}).DecodeArr(true)
+			if initial == nil {
+				t.Fatal("解码初始 STRM 设置失败")
+			}
+			models.SettingsGlobal = &models.Settings{SettingStrm: *initial}
+			if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
+				t.Fatal(err)
+			}
+			previous := *models.SettingsGlobal
+			if tt.failWrite {
+				if err := db.Db.Exec(`CREATE TRIGGER fail_strm_update BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'test write failure'); END`).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			router := gin.New()
+			router.POST("/setting/strm-config", UpdateStrmConfig)
+			router.GET("/setting/strm-config", GetStrmConfig)
+			payload := map[string]any{
+				"strm_base_url":          "http://qms.local",
+				"cron":                   "0 * * * *",
+				"video_ext_arr":          tt.video,
+				"meta_ext_arr":           tt.meta,
+				"exclude_name_arr":       []string{},
+				"exclude_name_regex_arr": []string{},
+				"add_path":               3,
+			}
+			if tt.omitExtensions {
+				delete(payload, "video_ext_arr")
+				delete(payload, "meta_ext_arr")
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/setting/strm-config", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			var savedResult APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &savedResult); err != nil {
+				t.Fatal(err)
+			}
+			var stored models.Settings
+			if err := db.Db.Take(&stored, previous.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tt.failWrite {
+				if response.Code != http.StatusOK || savedResult.Code != BadRequest {
+					t.Fatalf("保存失败应返回业务错误：HTTP %d，%s", response.Code, response.Body)
+				}
+				if !reflect.DeepEqual(*models.SettingsGlobal, previous) {
+					t.Fatal("保存失败修改了运行时 STRM 设置")
+				}
+				stored.SettingStrm = *stored.SettingStrm.DecodeArr(true)
+				if !reflect.DeepEqual(stored, previous) {
+					t.Fatal("保存失败修改了数据库 STRM 设置")
+				}
+				return
+			}
+			if response.Code != http.StatusOK || savedResult.Code != Success {
+				t.Fatalf("清空扩展名保存失败：HTTP %d，%s", response.Code, response.Body)
+			}
+			if (len(tt.video) == 0 && stored.VideoExt != "[]") || (len(tt.meta) == 0 && stored.MetaExt != "[]") {
+				t.Fatalf("清空扩展名应持久化为空数组：video=%q，meta=%q", stored.VideoExt, stored.MetaExt)
+			}
+			if stored.ExcludeName != "[]" || stored.ExcludeNameRegex != "[]" {
+				t.Fatal("排除列表未持久化为空数组")
+			}
+			checkEffective := func(got models.SettingStrm) {
+				t.Helper()
+				if !reflect.DeepEqual(got.VideoExtArr, tt.wantVideo) || !reflect.DeepEqual(got.MetaExtArr, tt.wantMeta) {
+					t.Fatalf("有效扩展名 = %q / %q，期望 %q / %q", got.VideoExtArr, got.MetaExtArr, tt.wantVideo, tt.wantMeta)
+				}
+				if !reflect.DeepEqual(got.ExcludeNameArr, []string{}) || !reflect.DeepEqual(got.ExcludeNameRegexArr, []string{}) {
+					t.Fatalf("清空后的排除列表应保持为空：%q / %q", got.ExcludeNameArr, got.ExcludeNameRegexArr)
+				}
+			}
+			checkEffective(models.SettingsGlobal.SettingStrm)
+			response = httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
+			var loaded APIResponse[models.SettingStrm]
+			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || loaded.Code != Success {
+				t.Fatalf("读取设置失败：HTTP %d，%s", response.Code, response.Body)
+			}
+			checkEffective(loaded.Data)
+		})
+	}
+}
+
 func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -1,6 +1,9 @@
 <template>
   <div class="strm-regex-input">
-    <div v-if="modelValue.length || !showInput" class="tag-input-tags limited-width-input">
+    <div
+      v-if="modelValue.length || !showInput || clearable || $slots.actions"
+      class="tag-input-tags limited-width-input"
+    >
       <el-tag
         v-for="(pattern, index) in modelValue"
         :key="index"
@@ -20,6 +23,22 @@
       >
         + 添加
       </el-button>
+      <slot name="actions" />
+      <el-popconfirm
+        v-if="clearable"
+        title="清空当前列表？保存后生效。"
+        confirm-button-text="清空"
+        cancel-button-text="取消"
+        confirm-button-type="danger"
+        :disabled="disabled || !modelValue.length"
+        @confirm="clearPatterns"
+      >
+        <template #reference>
+          <el-button size="small" type="danger" plain :disabled="disabled || !modelValue.length">
+            清空
+          </el-button>
+        </template>
+      </el-popconfirm>
     </div>
     <el-input
       v-if="showInput"
@@ -46,6 +65,7 @@
       </p>
       <p v-if="showInput">每次添加一条原始表达式；逗号、分号和首尾空格均按原文保留。</p>
       <p v-if="inherit">列表为空时使用 STRM 设置中的正则；填写后覆盖全局正则列表。</p>
+      <p v-else>列表为空时不按正则排除名称。</p>
       <p>采用 Go/RE2 语法，保存时由服务器最终校验。</p>
       <details>
         <summary>正则语法与常用示例</summary>
@@ -73,6 +93,7 @@ import { precheckStrmRegex } from '@/utils/strmRegex'
 const props = defineProps<{
   modelValue: string[]
   disabled?: boolean
+  clearable?: boolean
   inherit?: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [patterns: string[]] }>()
@@ -109,6 +130,15 @@ function removePattern(index: number) {
       props.modelValue.filter((_, itemIndex) => itemIndex !== index),
     )
   }
+}
+
+async function clearPatterns() {
+  if (props.disabled || !props.modelValue.length) return
+  emit('update:modelValue', [])
+  draft.value = ''
+  showInput.value = false
+  await nextTick()
+  addButtonRef.value?.ref?.focus()
 }
 
 watch(showInput, async (visible) => {

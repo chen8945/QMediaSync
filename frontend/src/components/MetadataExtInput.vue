@@ -1,6 +1,6 @@
 <template>
   <div class="metadata-ext-input-container">
-    <div v-if="tags.length || !showInput" class="tag-input-tags">
+    <div v-if="tags.length || !showInput || clearable || $slots.actions" class="tag-input-tags">
       <el-tag v-for="(tag, index) in tags" :key="index" closable @close="removeTag(index)">
         {{ tag }}
       </el-tag>
@@ -11,9 +11,26 @@
         size="small"
         type="primary"
         plain
+        :disabled="disabled"
       >
         + 添加
       </el-button>
+      <slot name="actions" />
+      <el-popconfirm
+        v-if="clearable"
+        title="清空当前列表？保存后生效。"
+        confirm-button-text="清空"
+        cancel-button-text="取消"
+        confirm-button-type="danger"
+        :disabled="disabled || !tags.length"
+        @confirm="clearTags"
+      >
+        <template #reference>
+          <el-button size="small" type="danger" plain :disabled="disabled || !tags.length">
+            清空
+          </el-button>
+        </template>
+      </el-popconfirm>
     </div>
     <el-input
       ref="inputRef"
@@ -22,10 +39,13 @@
       @keydown.enter="handleEnter"
       class="limited-width-input"
       size="default"
+      :disabled="disabled"
       v-if="showInput"
     >
       <template #append>
-        <el-button @click="addTags" type="primary" :disabled="!inputValue.trim()">添加</el-button>
+        <el-button @click="addTags" type="primary" :disabled="disabled || !inputValue.trim()">
+          添加
+        </el-button>
       </template>
     </el-input>
   </div>
@@ -40,6 +60,8 @@ interface Props {
   modelValue: string[]
   placeholder?: string
   autoAddDot?: boolean
+  disabled?: boolean
+  clearable?: boolean
 }
 
 // 定义事件发射
@@ -52,6 +74,8 @@ const props = withDefaults(defineProps<Props>(), {
   modelValue: () => [],
   placeholder: '输入扩展名后按回车添加，如：jpg 或 jpg,png,gif',
   autoAddDot: true,
+  disabled: false,
+  clearable: false,
 })
 
 // 输入框值
@@ -76,6 +100,7 @@ watch(
 
 // 添加标签
 const addTags = () => {
+  if (props.disabled) return
   if (!inputValue.value.trim()) {
     showInput.value = false
     return
@@ -116,8 +141,19 @@ const handleEnter = (event: KeyboardEvent) => {
 
 // 删除标签
 const removeTag = (index: number) => {
+  if (props.disabled) return
   tags.value.splice(index, 1)
   emit('update:modelValue', tags.value)
+}
+
+const clearTags = async () => {
+  if (props.disabled || !tags.value.length) return
+  tags.value = []
+  emit('update:modelValue', tags.value)
+  inputValue.value = ''
+  showInput.value = false
+  await nextTick()
+  addButtonRef.value?.ref?.focus()
 }
 
 watch(showInput, async (visible) => {

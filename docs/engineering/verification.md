@@ -144,6 +144,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 - STRM 正则预检由 `frontend/test/utils/strmRegex.test.ts` 与 Go `validation` 包共同读取 [兼容性样例](../../backend/internal/validation/testdata/strm_regex_cases.json)，保护合法 Go 表达式不被前端误拦截、明确不兼容项能提示，以及无法可靠预检的语法交由后端判断。新增样例需同时通过两端测试。
 - STRM 原文输入和保存由 `frontend/test/components/StrmRegexInput.test.ts`、`frontend/test/components/StrmSettings.regex-save.test.ts` 保护，覆盖输入法组合、大小写、空白、分隔符、转义、桌面与移动表单保存回读、服务端错误展示和清空列表；随 `pnpm run test` 执行。后端 `controllers` 包以真实保存接口和 SQLite 覆盖原文落库、失败不改旧配置及清空；`models` 包覆盖旧库迁移和迁移重试，`syncstrm` 包覆盖手动文件 / 目录生成、全局继承与自定义覆盖、115 目录缓存 / 预取 / 路径补全中的祖先目录排除。
 - 标签输入的折叠、展开、添加和输入保留由 `frontend/test/components/MetadataExtInput.test.ts` 与 `frontend/test/components/StrmRegexInput.test.ts` 保护，同时保留普通名称 / 扩展名的规范化和正则原文的区别。浏览器检查需覆盖多个控件同时展开时的焦点、添加后的焦点恢复、桌面输入尺寸，以及移动端长名称 / 正则换行和删除操作可达性。
+- STRM 列表的清空确认、取消与草稿重置由上述输入组件测试保护；`StrmSettings.regex-save.test.ts` 同时覆盖桌面 / 移动表单四类列表的合并导入、去重、逐项清空、保存回读、导入失败保留原值及导入期间禁止保存。后端 `requests` 和 `controllers` 包覆盖全局扩展名空数组校验、默认值回退、空数组 / `null` / 字段省略时统一落库为空数组，以及保存失败不改内存；浏览器还需复核窄屏按钮换行与就地确认的可达性。
 - 仅依赖构建产物的检查使用 `*.check.mjs`，通过独立脚本在 `pnpm run build` 后执行，不能使用 Vitest 测试文件后缀。
 - 当包内 Go 测试、前端测试、lint、类型检查和生产构建都无法覆盖明确的长期风险时，优先补充对应测试；无法自动覆盖时，在对应契约文档中写明人工检查步骤和剩余风险。
 

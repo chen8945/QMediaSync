@@ -338,22 +338,34 @@ func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
 }
 
 func (settings *Settings) UpdateStrm(req SettingStrm) bool {
+	if req.VideoExtArr == nil {
+		req.VideoExtArr = []string{}
+	}
+	if req.MetaExtArr == nil {
+		req.MetaExtArr = []string{}
+	}
 	strm := req.EncodeArr()
 	if strm == nil {
 		helpers.AppLogger.Errorf("编码 STRM 设置失败")
 		return false
 	}
-	settings.SettingStrm = *strm
+	strm = strm.DecodeArr(true)
+	if strm == nil {
+		helpers.AppLogger.Errorf("解码 STRM 设置失败")
+		return false
+	}
+	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
+	updated := *settings
+	updated.SettingStrm = *strm
 
-	// ctx := context.Background()
 	updateData := strm.ToMap(true, true)
-	// helpers.AppLogger.Infof("更新 STRM 设置：%+v", updateData)
-	err := db.Db.Model(settings).Where("id = ?", settings.ID).Updates(updateData).Error
-	// _, err = gorm.G[Settings](db.Db).Where("id = ?", settings.ID).Updates(ctx, updateData)
+	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("更新 STRM 设置失败：%v", err)
 		return false
 	}
+	settings.SettingStrm = updated.SettingStrm
+	settings.UpdatedAt = updated.UpdatedAt
 	return true
 }
 

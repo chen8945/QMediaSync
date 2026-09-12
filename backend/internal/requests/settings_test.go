@@ -252,7 +252,16 @@ func TestUpdateStrmConfigRequestValidate(t *testing.T) {
 		{name: "Cron 格式错误失败", mutate: func(r *UpdateStrmConfigRequest) { r.Cron = "bad" }, wantErr: true},
 		{name: "最小视频大小为负数失败", mutate: func(r *UpdateStrmConfigRequest) { r.MinVideoSize = -1 }, wantErr: true},
 		{name: "下载元数据枚举错误失败", mutate: func(r *UpdateStrmConfigRequest) { r.DownloadMeta = 2 }, wantErr: true},
+		{name: "空视频扩展名使用配置默认值", mutate: func(r *UpdateStrmConfigRequest) { r.VideoExtArr = []string{} }},
+		{name: "空元数据扩展名使用配置默认值", mutate: func(r *UpdateStrmConfigRequest) { r.MetaExtArr = []string{} }},
+		{name: "未提供扩展名使用配置默认值", mutate: func(r *UpdateStrmConfigRequest) {
+			r.VideoExtArr = nil
+			r.MetaExtArr = nil
+		}},
 		{name: "视频扩展名缺少点失败", mutate: func(r *UpdateStrmConfigRequest) { r.VideoExtArr = []string{"mp4"} }, wantErr: true},
+		{name: "元数据扩展名缺少点失败", mutate: func(r *UpdateStrmConfigRequest) { r.MetaExtArr = []string{"nfo"} }, wantErr: true},
+		{name: "视频扩展名包含空项失败", mutate: func(r *UpdateStrmConfigRequest) { r.VideoExtArr = []string{".mkv", ""} }, wantErr: true},
+		{name: "元数据扩展名包含空项失败", mutate: func(r *UpdateStrmConfigRequest) { r.MetaExtArr = []string{".nfo", ""} }, wantErr: true},
 		{name: "允许 Go 正则及原文空格", mutate: func(r *UpdateStrmConfigRequest) {
 			r.ExcludeNameRegexArr = []string{"(?i)^Sample\\.[^.]+$", " A{1,3};B "}
 		}},

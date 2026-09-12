@@ -480,8 +480,8 @@ func GetStrmConfig(c *gin.Context) {
 // @Produce json
 // @Param strm_base_url body string true "STRM 基础 URL"
 // @Param cron body string true "Cron 表达式"
-// @Param meta_ext body []string true "元数据扩展名"
-// @Param video_ext body []string true "视频扩展名"
+// @Param meta_ext_arr body []string false "元数据扩展名，空列表使用配置默认扩展名"
+// @Param video_ext_arr body []string false "视频扩展名，空列表使用配置默认扩展名"
 // @Param min_video_size body integer false "最小视频大小（MB）"
 // @Param upload_meta body integer false "是否上传元数据，1 上传 0 不上传"
 // @Param delete_dir body integer false "是否删除空目录，1 删除 0 不删除"

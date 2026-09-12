@@ -18,24 +18,34 @@
           placeholder="输入名称后按回车添加"
           class="meta-ext-input limited-width-input"
           :autoAddDot="false"
+          :disabled="strmLoading"
+          clearable
         />
         <div class="form-help">
           <p>完整匹配文件名（含扩展名）或目录名，不区分大小写；正则请填写下方“正则排除名称”。</p>
           <p>任一排除规则命中即跳过，目录命中时也跳过其下全部内容。</p>
+          <p>列表为空时不按名称排除；清空后需保存才会生效。</p>
         </div>
       </el-form-item>
       <el-form-item label="正则排除名称" prop="exclude_name_regex_arr">
-        <StrmRegexInput v-model="strmData.exclude_name_regex_arr" :disabled="strmLoading" />
+        <StrmRegexInput
+          v-model="strmData.exclude_name_regex_arr"
+          :disabled="strmLoading"
+          clearable
+        />
       </el-form-item>
       <!-- 视频文件扩展名 -->
       <el-form-item label="视频文件扩展名" prop="video_ext_arr">
         <MetadataExtInput
           v-model="strmData.video_ext_arr"
-          placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
+          placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
           class="meta-ext-input limited-width-input"
+          :disabled="strmLoading"
+          clearable
         />
         <div class="form-help">
           <p>指定需要生成 STRM 文件的视频文件扩展名，如：.mp4、.mkv、.avi、.mov 等</p>
+          <p>列表为空并保存后使用配置默认扩展名，重新打开时会显示生效列表。</p>
         </div>
       </el-form-item>
 
@@ -59,11 +69,14 @@
       <el-form-item label="元数据扩展名" prop="meta_ext_arr">
         <MetadataExtInput
           v-model="strmData.meta_ext_arr"
-          placeholder="输入扩展名后按回车添加，也可用逗号或换行分隔"
+          placeholder="输入扩展名后按回车添加，也可用逗号或分号分隔"
           class="meta-ext-input limited-width-input"
+          :disabled="strmLoading"
+          clearable
         />
         <div class="form-help">
           <p>指定需要处理的元数据文件扩展名，如：.jpg、.nfo、.srt、.ass 等</p>
+          <p>列表为空并保存后使用配置默认扩展名，重新打开时会显示生效列表。</p>
         </div>
       </el-form-item>
 
@@ -326,19 +339,6 @@ const formRules: FormRules = {
       trigger: 'change',
     },
   ],
-  video_ext_arr: [
-    {
-      required: true,
-      validator: (rule, value, callback) => {
-        if (!value || value.length === 0) {
-          callback(new Error('请至少添加一个视频文件扩展名'))
-        } else {
-          callback()
-        }
-      },
-      trigger: 'change',
-    },
-  ],
   min_video_size: [
     { required: true, message: '请输入最小文件大小', trigger: 'blur' },
     {
@@ -350,19 +350,6 @@ const formRules: FormRules = {
         }
       },
       trigger: 'blur',
-    },
-  ],
-  meta_ext_arr: [
-    {
-      required: true,
-      validator: (rule, value, callback) => {
-        if (!value || value.length === 0) {
-          callback(new Error('请至少添加一个元数据扩展名'))
-        } else {
-          callback()
-        }
-      },
-      trigger: 'change',
     },
   ],
   cron: [{ required: true, message: '请输入定时同步表达式', trigger: 'blur' }],
@@ -443,6 +430,7 @@ const saveStrmConfig = async () => {
 // 加载 STRM 配置
 const loadStrmConfig = async () => {
   try {
+    strmLoading.value = true
     const response = await http.get(`${SERVER_URL}/setting/strm-config`)
 
     if (response?.data.code === 200 && response.data.data) {
@@ -469,6 +457,8 @@ const loadStrmConfig = async () => {
     }
   } catch (error) {
     console.error('加载 STRM 配置错误：', error)
+  } finally {
+    strmLoading.value = false
   }
 }
 

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import StrmRegexInput from '@/components/StrmRegexInput.vue'
 
 enableAutoUnmount(afterEach)
@@ -21,6 +21,7 @@ describe('正则排除名称输入', () => {
     expect(wrapper.find('input').exists()).toBe(false)
     expect(wrapper.get('.el-tag code').text()).toBe('^Sample$')
     expect(wrapper.text()).toContain('+ 添加')
+    expect(wrapper.findAll('button').some((button) => button.text() === '清空')).toBe(false)
     const help = wrapper
       .findAll('p')
       .filter((paragraph) => !paragraph.element.closest('details'))
@@ -121,7 +122,12 @@ describe('正则排除名称输入', () => {
   })
 
   it('禁用时不能展开、添加或删除，并保留已展开的草稿', async () => {
-    const wrapper = mount(StrmRegexInput, { props: { modelValue: ['sample'], disabled: true } })
+    const wrapper = mount(StrmRegexInput, {
+      props: { modelValue: ['sample'], disabled: true, clearable: true },
+    })
+    const clear = wrapper.findAll('button').find((button) => button.text() === '清空')!
+    expect(clear.element.disabled).toBe(true)
+    await clear.trigger('click')
     const trigger = wrapper.findAll('button').find((button) => button.text() === '+ 添加')!
     expect(trigger.element.disabled).toBe(true)
     await trigger.trigger('click')
@@ -141,5 +147,65 @@ describe('正则排除名称输入', () => {
     await wrapper.get('.el-tag__close').trigger('click')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
     expect(wrapper.get('input').element.value).toBe('trailer')
+  })
+
+  it('取消清空保留原文和错误草稿，确认后清空列表及草稿，空列表仍显示导入入口', async () => {
+    const original = [String.raw`  Sample{1,3},Trailer;\D+  `]
+    const wrapper = mount(StrmRegexInput, {
+      attachTo: document.body,
+      props: { modelValue: original, clearable: true },
+      slots: { actions: '<button type="button">导入全局设置</button>' },
+      global: { stubs: { teleport: true } },
+    })
+    const controls = wrapper
+      .get('.tag-input-tags')
+      .findAll('button')
+      .filter((button) => button.text())
+    expect(controls.map((button) => button.text())).toEqual(['+ 添加', '导入全局设置', '清空'])
+    await (await openEditor(wrapper)).setValue('(?=sample)')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(controls[1]!.isVisible()).toBe(true)
+    expect(controls[2]!.isVisible()).toBe(true)
+    await controls[2]!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.el-popconfirm').exists()).toBe(true))
+    expect(wrapper.get('.el-popconfirm').text()).toContain('清空当前列表？保存后生效。')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await wrapper
+      .get('.el-popconfirm')
+      .findAll('button')
+      .find((button) => button.text() === '取消')!
+      .trigger('click')
+    await vi.waitFor(() =>
+      expect(wrapper.findAll('.el-popconfirm').some((popup) => popup.isVisible())).toBe(false),
+    )
+    expect(wrapper.get('input').element.value).toBe('(?=sample)')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(wrapper.get('.el-tag code').element.textContent).toBe(original[0])
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    await controls[2]!.trigger('click')
+    await vi.waitFor(() =>
+      expect(wrapper.findAll('.el-popconfirm').some((popup) => popup.isVisible())).toBe(true),
+    )
+    await wrapper
+      .get('.el-popconfirm')
+      .findAll('button')
+      .find((button) => button.text() === '清空')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')).toEqual([[[]]])
+    expect(original).toEqual([String.raw`  Sample{1,3},Trailer;\D+  `])
+    expect(wrapper.find('input').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(document.activeElement?.textContent?.trim()).toBe('+ 添加')
+    expect(wrapper.element.contains(document.activeElement)).toBe(true)
+    await wrapper.setProps({ modelValue: [] })
+    expect(wrapper.find('.el-tag').exists()).toBe(false)
+    expect(controls[2]!.element.disabled).toBe(true)
+    await controls[2]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[[]]])
+    expect((await openEditor(wrapper)).element.value).toBe('')
+    expect(controls[1]!.isVisible()).toBe(true)
+    expect(wrapper.text()).toContain('列表为空时不按正则排除名称')
   })
 })
