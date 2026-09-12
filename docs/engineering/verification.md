@@ -140,6 +140,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 
 - 长期回归风险优先由相关 Go 包内测试保护；新增或修改测试时遵循 table-driven 模式。
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。
+- 下载、上传队列的统计由 `frontend/test/components/QueueTotals.test.ts` 覆盖全局“剩余 / 排队 / 处理中”、分页和筛选不改变统计口径、快照刷新与空队列归零；下载预取和上传完成处理均沿用后端 `processing` 口径。相关组件测试随 `pnpm run test` 执行。
 - 局部加载遮罩与导航的层级由 `frontend/test/regression/sidebar-menu-motion.test.ts` 保护样式契约；真实绘制和点击命中需在浏览器复核：分别使用移动和桌面视口，延迟首页、更新页及队列接口，确认移动菜单及背景遮罩可点击、关闭菜单后加载区域仍阻止操作、响应结束后遮罩消失，并确认模态对话框仍覆盖侧栏。路由模块加载骨架和全屏加载不得被局部遮罩规则改变。
 - STRM 正则预检由 `frontend/test/utils/strmRegex.test.ts` 与 Go `validation` 包共同读取 [兼容性样例](../../backend/internal/validation/testdata/strm_regex_cases.json)，保护合法 Go 表达式不被前端误拦截、明确不兼容项能提示，以及无法可靠预检的语法交由后端判断。新增样例需同时通过两端测试。
 - STRM 原文输入和保存由 `frontend/test/components/StrmRegexInput.test.ts`、`frontend/test/components/StrmSettings.regex-save.test.ts` 保护，覆盖输入法组合、大小写、空白、分隔符、转义、桌面与移动表单保存回读、服务端错误展示和清空列表；随 `pnpm run test` 执行。后端 `controllers` 包以真实保存接口和 SQLite 覆盖原文落库、失败不改旧配置及清空；`models` 包覆盖旧库迁移和迁移重试，`syncstrm` 包覆盖手动文件 / 目录生成、全局继承与自定义覆盖、115 目录缓存 / 预取 / 路径补全中的祖先目录排除。

@@ -70,14 +70,19 @@
         </el-select>
       </div>
 
-      <div class="queue-stats">
-        <el-statistic :value="downloading">
-          <template #title>
-            <div style="display: inline-flex; align-items: center">
-              <el-text class="mx-1" type="primary">正在下载的任务总数</el-text>
-            </div>
-          </template>
-        </el-statistic>
+      <div class="queue-stats" role="group" aria-label="下载队列任务统计">
+        <span class="queue-stat-item">剩余 {{ remainingTasks }}</span>
+        <span class="queue-stat-item">· 排队 {{ queueStatusSnapshot.pending }}</span>
+        <span class="queue-stat-item">· 处理中 {{ queueStatusSnapshot.processing }}</span>
+        <el-tooltip
+          content="统计整个队列，剩余为排队与处理中之和，不含完成、失败和取消的任务。处理中包含已提前取出、等待执行的下载任务。"
+          trigger="click"
+          placement="top"
+          popper-class="qms-contained-tooltip"
+          append-to="body"
+        >
+          <el-button link :icon="InfoFilled" aria-label="查看下载队列统计说明" />
+        </el-tooltip>
       </div>
     </div>
     <el-table
@@ -331,7 +336,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
 import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
 import { ElMessage, type TableInstance } from 'element-plus'
-import { WarningFilled } from '@element-plus/icons-vue'
+import { InfoFilled, WarningFilled } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useQueueMutationContext } from '@/composables/useQueueMutationContext'
@@ -401,6 +406,9 @@ const queryLoading = ref(false)
 const total = ref(0)
 const downloading = ref(0)
 const queueStatusSnapshot = ref<QueueStatusSnapshot>(emptyQueueStatusSnapshot())
+const remainingTasks = computed(
+  () => queueStatusSnapshot.value.pending + queueStatusSnapshot.value.processing,
+)
 const canPauseAllTasks = computed(() => canPauseQueue(queueStatusSnapshot.value))
 const canResumeAllTasks = computed(() => canResumeQueue(queueStatusSnapshot.value))
 const { isMobile: isMobileView } = useDeviceType()
@@ -812,10 +820,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.el-statistic {
-  --el-statistic-content-font-size: 28px;
-}
-
 .download-queue-container {
   position: relative;
   width: 100%;
@@ -855,15 +859,23 @@ onUnmounted(() => {
 
 .queue-toolbar-row {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 0 20px;
   align-items: center;
 }
 
 .queue-stats {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 6px;
   margin: 16px 0;
   flex-wrap: wrap;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-stat-item {
+  white-space: nowrap;
 }
 
 .filter-container {
@@ -1035,8 +1047,7 @@ onUnmounted(() => {
   }
 
   .queue-toolbar-row {
-    gap: 8px;
-    align-items: stretch;
+    gap: 0 8px;
   }
 
   .filter-container {
@@ -1046,15 +1057,7 @@ onUnmounted(() => {
 
   .queue-stats {
     margin: 8px 0;
-    gap: 8px;
-  }
-
-  .queue-stats :deep(.el-statistic__head) {
     font-size: 12px;
-  }
-
-  .queue-stats :deep(.el-statistic__content) {
-    font-size: 20px;
   }
 
   .queue-table-mobile {
