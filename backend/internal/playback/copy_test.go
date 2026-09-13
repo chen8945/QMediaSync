@@ -1,11 +1,13 @@
 package playback
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -386,6 +388,54 @@ func TestCopyURLDownloadRetriesAndIndependentCleanup(t *testing.T) {
 				}
 				cancel()
 				awaitCleanup(t, f)
+			})
+		})
+	}
+}
+
+func TestCopyURLLogsVerifiedCopyIdentity(t *testing.T) {
+	for _, wrongID := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wrongID=%v", wrongID), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var output bytes.Buffer
+				previousLogger, previousLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+				helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+				helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+				t.Cleanup(func() {
+					helpers.AppLogger = previousLogger
+					helpers.SetGlobalLogLevel(previousLevel)
+				})
+				f := newCopyFixture()
+				download := f.api.download
+				f.api.download = func(ctx context.Context, pickCode, ua string, bypass bool) (*v115open.DownloadUrlResult, error) {
+					result, err := download(ctx, pickCode, ua, bypass)
+					if err == nil {
+						result.URL = "https://cdn.test/%E5%BD%B1%E7%89%87.mkv?k=signature"
+						if wrongID {
+							result.FileID = "another-file"
+						}
+					}
+					return result, err
+				}
+				_, err := f.manager.copyURL(t.Context(), f.source, f.file, "Player", f.api)
+				if (err != nil) != wrongID {
+					t.Fatalf("副本取链错误 = %v", err)
+				}
+				awaitCleanup(t, f)
+				if wrongID {
+					if strings.Contains(output.String(), "取得副本直链") {
+						t.Fatalf("未经身份核验不能记录副本成功：%s", output.String())
+					}
+					return
+				}
+				for _, want := range []string{`文件="影片.mkv"`, "原始PickCode=original", "副本PickCode=pc-101", `UA="Player"`} {
+					if !strings.Contains(output.String(), want) {
+						t.Errorf("副本日志缺少 %q：%s", want, output.String())
+					}
+				}
+				if strings.Contains(output.String(), "https://") || strings.Contains(output.String(), "signature") {
+					t.Errorf("副本层不应重复输出完整直链：%s", output.String())
+				}
 			})
 		})
 	}

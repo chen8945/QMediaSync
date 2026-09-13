@@ -18,6 +18,7 @@ import (
 
 	"qmediasync/emby302/util/urls"
 	"qmediasync/emby302/web/cache"
+	"qmediasync/internal/helpers"
 
 	"github.com/gin-gonic/gin"
 )
@@ -104,7 +105,7 @@ func Redirect2OpenlistLink(c *gin.Context) {
 			buf := bytes.NewBufferString("")
 			io.Copy(buf, f)
 			strmUrl = buf.String()
-			logs.Success("读取到 STRM 文件 %s 的内容: %s", embyPath, strmUrl)
+			logs.Success("读取 STRM 文件成功：路径=%q", embyPath)
 			f.Close()
 		}
 	}
@@ -114,9 +115,14 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	isProxyUrl := ""
 	// 4 如果是远程地址 (STRM) 且不包含 QMediaSync 的本地代理播放链接, 则重定向处理。
 	if urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:") {
-		finalPath := getFinalRedirectLink(strmUrl, c.Request.Header.Clone())
+		finalPath, resolverStatus := getFinalRedirectLink(strmUrl, c.Request.Header.Clone())
 		if !strings.Contains(finalPath, "/proxy-115") {
-			logs.Success("重定向 STRM 到直连地址: %s", finalPath)
+			targetHost := ""
+			if target, err := url.Parse(finalPath); err == nil {
+				targetHost = target.Hostname()
+			}
+			logs.Info("Emby STRM 跳转：文件=%q，UA=%q，接口状态=%d，跳转状态=%d，目标域名=%s",
+				helpers.URLFileName(finalPath), c.Request.UserAgent(), resolverStatus, http.StatusTemporaryRedirect, targetHost)
 			c.Header(cache.HeaderKeyExpired, cache.Duration(time.Minute*10))
 			c.Redirect(http.StatusTemporaryRedirect, finalPath)
 			return
@@ -246,19 +252,47 @@ func checkErr(c *gin.Context, err error) bool {
 	return true
 }
 
-// getFinalRedirectLink 尝试对带有重定向的原始链接进行内部请求, 返回最终链接
+// getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址和取链响应状态。
 //
-// 请求中途出现任何失败都会返回原始链接
-func getFinalRedirectLink(originLink string, header http.Header) string {
-	if !strings.Contains(originLink, "smartstrm") && (strings.Contains(originLink, "115/newurl") || strings.Contains(originLink, "115/url")) {
-		originLink += "&force=1"
+// 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败时回退原链接，未取得响应时状态为 0。
+func getFinalRedirectLink(originLink string, header http.Header) (string, int) {
+	if origin, err := url.Parse(originLink); err == nil && origin.Host != "" &&
+		(origin.Scheme == "http" || origin.Scheme == "https") &&
+		(origin.Path == "/115/newurl" || strings.HasPrefix(origin.Path, "/115/url/")) {
+		originLink = urls.AppendArgs(originLink, "force", "1")
+		resp, err := https.Get(originLink).Header(header).DoSingle()
+		responseStatus := 0
+		if resp != nil {
+			responseStatus = resp.StatusCode
+			if resp.Body != nil {
+				defer resp.Body.Close()
+			}
+		}
+		if err != nil {
+			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，错误=%v",
+				origin.Query().Get("pickcode"), header.Get("User-Agent"), responseStatus, helpers.URLRequestErrorForLog(err))
+			return originLink, responseStatus
+		}
+		if !https.IsRedirectCode(resp.StatusCode) && resp.StatusCode != http.StatusSeeOther {
+			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=接口未返回跳转",
+				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
+			return originLink, resp.StatusCode
+		}
+		finalLink := resp.Header.Get("Location")
+		finalURL, err := url.Parse(finalLink)
+		if err != nil || finalURL.Hostname() == "" || (finalURL.Scheme != "http" && finalURL.Scheme != "https") {
+			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=缺少或无效的 HTTP(S) Location",
+				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
+			return originLink, resp.StatusCode
+		}
+		return finalLink, resp.StatusCode
 	}
 	finalLink, resp, err := https.Get(originLink).Header(header).DoRedirect()
 	if err != nil {
 		logs.Warn("获取最终重定向链接失败, 原始链接: %s, 错误信息: %v", originLink, err)
-		return originLink
+		return originLink, 0
 	}
 	logs.Success("获取最终重定向链接成功, 原始链接: %s, 最终链接: %s", originLink, finalLink)
 	defer resp.Body.Close()
-	return finalLink
+	return finalLink, resp.StatusCode
 }

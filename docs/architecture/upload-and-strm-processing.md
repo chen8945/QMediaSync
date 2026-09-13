@@ -1,12 +1,12 @@
 # 上传和 STRM 后处理流程
 
-> 职责：定义 115 上传、目录监控、STRM 生成、源文件清理、上传后 Emby 刷新和多端播放副本的状态流转。
+> 职责：定义 115 上传、目录监控、STRM 生成与直链解析、源文件清理、上传后 Emby 刷新和多端播放副本的状态流转。
 >
-> 权威范围：本文档维护上传与 STRM 后处理的行为契约；运行参数见 [配置、密钥与日志](../operations/configuration.md)，外部 Webhook 字段见 [STRM Webhook](../reference/strm-webhook.md)。
+> 权威范围：本文档维护上传、STRM 后处理与直链解析的行为契约；运行参数见 [配置、密钥与日志](../operations/configuration.md)，外部 Webhook 字段见 [STRM Webhook](../reference/strm-webhook.md)。
 >
-> 修改时机：修改上传队列并发、上传协议、目录监控规则、上传任务状态、STRM 生成、源文件清理、幂等策略、上传后刷新或 115 多端播放链路时必须更新本文档。
+> 修改时机：修改上传队列并发、上传协议、目录监控规则、上传任务状态、STRM 生成与直链解析、源文件清理、幂等策略、上传后刷新或 115 多端播放链路时必须更新本文档。
 >
-> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/v115open/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115_playback.go`。
+> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/v115open/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115.go`、`backend/internal/controllers/open115_playback.go`、`backend/emby302/service/emby/redirect.go`。
 
 ## 上传队列执行
 
@@ -34,6 +34,14 @@ OSS `CompleteMultipartUpload` 完成后，必须带回 115 init 返回的 `callb
 
 `preid` 按 115 官方「文件上传」文档使用文件前 `128 KiB` 的 SHA1。该窗口应封装为可测试实现，不能在上传流程中散落协议常量。115 直链缓存有效性检查只对命中的缓存 URL 发起 HEAD 请求；关闭检查后直接使用缓存链接，百度网盘和 OpenList 不使用这套机制。
 
+## 115 STRM 直链解析
+
+内置 Emby 302 入口按 HTTP(S) URL 的实际路径识别 QMS 的 `/115/newurl` 和 `/115/url/*filename` 取链接口，不用查询参数中的子串判断，也不要求 STRM 内网地址与播放器访问的域名相同。该分支将 `force` 设为唯一的 `1`，携带当前客户端 UA 单次请求接口，检查跳转状态和绝对 HTTP(S) `Location` 后关闭响应体，直接向播放器返回现有 `307` 跳转。签名直链原样传递，服务端不再跟随它额外 GET 视频。
+
+网络失败、接口返回非跳转响应、缺少或无效的 `Location` 均沿用回退到原取链接口地址的处理，并记录实际失败原因；无法取得响应时不能虚报接口状态。第三方 STRM 服务继续使用原有多级重定向解析。这里的单次请求与缓存命中后的可选 HEAD 有效性检查是两个独立步骤。
+
+播放接口日志的文件名、UA、地址输出时机和脱敏规则见[日志行为与脱敏](../operations/configuration.md#日志行为与脱敏)。取链、跳转或 HEAD 成功都不表示播放器已经成功读取或解码视频。
+
 ## 115 多端播放链路
 
 配置入口及本地代理置灰规则见 [115 多端播放](../operations/configuration.md#115-多端播放)。播放继续经过现有 `/115/url` 或 `/115/newurl`，STRM 和内置 Emby 302 的缓存设计不变，不引入 `PlaySessionId`。本地代理和多端播放开关从同一配置快照读取，保存、重载与播放请求并发时不混用新旧值。
@@ -50,7 +58,7 @@ Copy 因传输中断、响应损坏等导致结果不明时，仅在请求及副
 
 副本总预算为 10 秒，从决定尝试复制起计算，包含索引查询、根目录初始化等待、API 排队、HTTP、列表重查和取链退避。首次取链立即执行，暂时性失败最多再按 0.5、1、2 秒重试。`70004`、`31004` 和成功但缺少 URL 的响应归为未就绪；`fta` 仅辅助观测，不能因 `fta=1` 否决未就绪重试。取消、授权、限流和预算耗尽及时退出，SDK 不叠加内层重试。目录、复制和删除复用既有请求队列，下载地址沿用播放快速通路。播放器请求仍有效时，副本失败降级普通取链；普通取链不计入这 10 秒，失败沿用现有接口错误。
 
-每次操作绑定不可变凭据快照，复用长期 HTTP 连接池，Authorization 和 UA 放在各自请求上。账号授权替换不改变旧操作清理所用身份。日志沿用现有请求统计，记录账号、操作标识、阶段、队列等待、HTTP 耗时及失败原因，不记录完整直链、Token 或远端可能回显凭据的消息。
+每次操作绑定不可变凭据快照，复用长期 HTTP 连接池，Authorization 和 UA 放在各自请求上。账号授权替换不改变旧操作清理所用身份。SDK 和副本操作日志沿用现有请求统计，记录账号、操作标识、阶段、队列等待、HTTP 耗时及失败原因，不记录完整直链、Token 或远端可能回显凭据的消息；播放接口取得新链接时的地址记录遵循上述日志规则。
 
 确认创建操作目录后立即登记清理责任，无论复制、识别或取链是否成功，都在尝试结束 5 秒后按目录清理，预算独立为 10 秒且不继承播放器取消。删除前按 ID 核验目录类型、随机名称和原父目录 ID。持有本进程创建记录的操作目录允许随祖先根目录移动或改名后继续清理；操作目录自身改名、换父或身份无法核验时仍拒绝删除。`231011` 按已经删除处理。删除成功后释放记录，失败则保留精确身份供定时维护重试。已取得的 URL 在清理后继续使用；关闭开关不撤销清理。服务退出时停止播放编排并等待清理退出，再释放共享客户端资源。
 
@@ -171,6 +179,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 
 ## 验证方式
 
+- 115 STRM 直链解析及日志运行 `go test ./emby302/service/emby ./emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`。使用本地 HTTP 替身确认自有接口解析不访问 CDN、UA 和签名地址完整传递、异常响应回退、第三方多级解析及播放器 `307` 响应；日志回归覆盖首次取链、刷新、副本及降级来源、连续缓存命中不重复长地址、HEAD 检查和副本身份字段。
 - 多端播放运行 `go test ./internal/playback ./internal/controllers ./internal/v115open ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；对副本隔离、在途预留、10 秒预算、取消清理、定时补偿、TTL、排序及临时目录过滤相关测试运行 `-race`。修改设置交互时另验证本地代理置灰、保留值、恢复编辑与保存失败。
 - Copy 列表补救须覆盖复制已成功但响应丢失或损坏、短暂空列表后恢复、持续空列表、歧义或身份不符拒绝，以及明确失败、取消和预算耗尽时停止补救；队列测试须覆盖剩余预算不足以排队但 context 尚有效，HTTP 替身须覆盖明确拒绝状态伴随响应体截断。同时确认不重复复制、正常成功路径不增加请求，且补救失败仍清理操作目录。
 - 根目录移动回归须覆盖缓存命中不增加写前查询、列表发现移动后降级、下一次按固定路径复用或重建，以及清理详情发现移动后失效旧缓存。已知操作随根目录移动仍可删除，自身改名或换父仍拒删；扫描发现的目录不能绕过路径和时间校验。失败记录须覆盖固定根缺失时仍可重试、账号 UID 隔离、并发抢占、取消与预算耗尽后保留，以及成功后不再重复清理。

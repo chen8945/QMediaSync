@@ -151,6 +151,8 @@ func (m *Manager) copyURL(ctx context.Context, source SourceKey, file File, ua s
 				(result.PickCode != "" && result.PickCode != copyFile.PickCode) {
 				return "", errors.New("副本下载响应的文件身份不匹配")
 			}
+			helpers.AppLogger.Infof("115 多端播放取得副本直链：文件=%q，账号=%d，原始PickCode=%s，副本PickCode=%s，UA=%q",
+				helpers.URLFileName(result.URL), source.AccountID, source.PickCode, copyFile.PickCode, ua)
 			return result.URL, nil
 		}
 		if err == nil {

@@ -2,18 +2,47 @@ package helpers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"qmediasync/internal/github"
 	"qmediasync/internal/validation"
 )
+
+// URLFileName 提取 URL 最后一个路径段的文件名，仅用于展示，不修改原链接。
+func URLFileName(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" || strings.HasSuffix(u.EscapedPath(), "/") {
+		return ""
+	}
+	name, err := url.PathUnescape(path.Base(u.EscapedPath()))
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// URLRequestErrorForLog 去掉请求错误中的 URL，避免解析异常回显地址及凭据。
+func URLRequestErrorForLog(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	// net/http 的 Location 解析错误会嵌入完整地址，包括 //host 形式。
+	if err != nil && (strings.HasPrefix(err.Error(), "failed to parse Location header") || strings.Contains(err.Error(), "://")) {
+		return errors.New("HTTP 请求或跳转响应无法解析")
+	}
+	return err
+}
 
 // 获取本机网卡 IP
 func GetLocalIP() (ipv4 string, err error) {

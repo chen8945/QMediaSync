@@ -1,11 +1,15 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +22,7 @@ import (
 	"qmediasync/internal/playback"
 
 	"github.com/coocood/freecache"
+	"github.com/gin-gonic/gin"
 )
 
 func setup115PlaybackCache(t *testing.T) {
@@ -63,7 +68,7 @@ func Test115PlaybackSmartSkip(t *testing.T) {
 			originalCalls, copyCalls := 0, 0
 			original := func(context.Context) string { originalCalls++; return "https://original.invalid/video" }
 			copyURL := func(context.Context) (string, error) { copyCalls++; return "https://copy.invalid/video", nil }
-			result := resolve115URLMiss(context.Background(), manager, source, slot, key, tt.enabled, original, copyURL)
+			result := resolve115URLMiss(context.Background(), manager, source, slot, key, "", tt.enabled, original, copyURL)
 			if (copyCalls == 1) != tt.wantCopy || originalCalls+copyCalls != 1 {
 				t.Fatalf("original=%d copy=%d wantCopy=%v", originalCalls, copyCalls, tt.wantCopy)
 			}
@@ -71,9 +76,87 @@ func Test115PlaybackSmartSkip(t *testing.T) {
 				t.Fatalf("URL 未写回原始键：cached=%q result=%q", cached, result)
 			}
 			// 关闭开关后仍复用已经生成的缓存，不重新取链或清除副本 URL。
-			again := resolve115URLMiss(context.Background(), manager, source, slot, key, false, original, copyURL)
+			again := resolve115URLMiss(context.Background(), manager, source, slot, key, "", false, original, copyURL)
 			if again != result || originalCalls+copyCalls != 1 {
 				t.Fatal("缓存命中不应再次调用原文件或副本接口")
+			}
+		})
+	}
+}
+
+func Test115PlaybackLogsLinksOnlyWhenNewURLIsPublished(t *testing.T) {
+	previousLevel := helpers.ConfiguredLogLevel()
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() { helpers.SetGlobalLogLevel(previousLevel) })
+	for _, tt := range []struct {
+		name     string
+		copy     bool
+		copyFail bool
+		kind     string
+	}{
+		{name: "原文件", kind: "原文件"},
+		{name: "副本", copy: true, kind: "副本"},
+		{name: "副本失败降级", copy: true, copyFail: true, kind: "原文件"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setup115PlaybackCache(t)
+			setupControllerTestDB(t, &models.Account{})
+			previousSettings := models.SettingsGlobal
+			models.SettingsGlobal = &models.Settings{}
+			t.Cleanup(func() { models.SettingsGlobal = previousSettings })
+			account := &models.Account{Name: "日志测试", SourceType: models.SourceType115, UserId: "log-user"}
+			if err := db.Db.Create(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+			manager := playback.NewManager()
+			source := playback.SourceKey{AccountID: account.ID, UserID: account.UserId, PickCode: "log-pick"}
+			slot := playback.Slot{Mode: playback.ModeDirect, UA: "Yamby/2.1.0.8"}
+			if tt.copy {
+				manager.Record(source, playback.Slot{Mode: playback.ModeDirect, UA: "RodelPlayer/2.2607.7.0"}, time.Now().Add(time.Hour))
+			}
+			key := v115URLCacheKey(source.PickCode, 1, 0, slot.UA)
+			origin := "http://qms.test/115/url/video.mkv?pickcode=log-pick&userid=log-user&force=1"
+			fetches := 0
+			fetch := func(context.Context) string {
+				fetches++
+				return fmt.Sprintf("https://cdn.test/%%E5%%BD%%B1%%E7%%89%%87.mkv?generation=%d&k=a%%2Bb", fetches)
+			}
+			resolve := func() string {
+				return resolve115URLMiss(t.Context(), manager, source, slot, key, origin, tt.copy, fetch,
+					func(ctx context.Context) (string, error) {
+						if tt.copyFail {
+							return "", errors.New("copy failed")
+						}
+						return fetch(ctx), nil
+					},
+				)
+			}
+			first := resolve()
+			for _, want := range []string{`文件="影片.mkv"`, `UA="Yamby/2.1.0.8"`, "来源=" + tt.kind, "PickCode=log-pick"} {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("取链日志缺少 %q：%s", want, output.String())
+				}
+			}
+			// 通过真实 HTTP 控制器重复命中同一缓存；仅产生简短命中和跳转日志。
+			for range 3 {
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest(http.MethodGet, origin, nil)
+				c.Request.Header.Set("User-Agent", slot.UA)
+				Get115UrlByPickCode(c)
+				if w.Code != http.StatusFound || w.Header().Get("Location") != first {
+					t.Fatalf("缓存响应 = %d %q", w.Code, w.Header().Get("Location"))
+				}
+			}
+			if resolve() != first || fetches != 1 || strings.Count(output.String(), origin) != 1 || strings.Count(output.String(), first) != 1 {
+				t.Fatalf("缓存命中不应重取或重复长链接：fetches=%d，日志=%s", fetches, output.String())
+			}
+			db.Cache.Delete(key)
+			second := resolve()
+			if second == first || fetches != 2 || strings.Count(output.String(), origin) != 2 || strings.Count(output.String(), second) != 1 {
+				t.Fatalf("失效刷新应再输出一次成对地址：fetches=%d，日志=%s", fetches, output.String())
 			}
 		})
 	}
@@ -107,7 +190,7 @@ func Test115PlaybackConcurrentColdRequests(t *testing.T) {
 							return
 						}
 						defer keyLock.Unlock(key)
-						results <- resolve115URLMiss(context.Background(), manager, source, slot, key, true,
+						results <- resolve115URLMiss(context.Background(), manager, source, slot, key, "", true,
 							func(context.Context) string {
 								if originalCalls.Add(1) == 1 {
 									close(originalStarted)
@@ -159,7 +242,7 @@ func Test115PlaybackInvalidatedURLReentersDecisionAndFallsBack(t *testing.T) {
 	// HEAD 失效和 freecache 提前淘汰均删除 URL，不能丢失其他槽位。
 	db.Cache.Delete(key)
 	copyCalls := 0
-	result := resolve115URLMiss(context.Background(), manager, source, slot, key, true,
+	result := resolve115URLMiss(context.Background(), manager, source, slot, key, "", true,
 		func(context.Context) string { return "fallback-url" },
 		func(context.Context) (string, error) { copyCalls++; return "", errors.New("copy failed") },
 	)
@@ -177,7 +260,7 @@ func Test115PlaybackCanceledCopyDoesNotStartFallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	called := false
-	result := resolve115URLMiss(ctx, manager, source, slot, "canceled-copy-cache", true,
+	result := resolve115URLMiss(ctx, manager, source, slot, "canceled-copy-cache", "", true,
 		func(context.Context) string { called = true; return "unexpected" },
 		func(ctx context.Context) (string, error) { cancel(); return "", ctx.Err() },
 	)
@@ -193,7 +276,7 @@ func Test115PlaybackCanceledMissDoesNotReserve(t *testing.T) {
 	cancel()
 	manager := playback.NewManager()
 	called := false
-	result := resolve115URLMiss(ctx, manager, source, playback.Slot{Mode: playback.ModeDirect, UA: "waiting"}, "waiting-cache", true,
+	result := resolve115URLMiss(ctx, manager, source, playback.Slot{Mode: playback.ModeDirect, UA: "waiting"}, "waiting-cache", "", true,
 		func(context.Context) string { called = true; return "unexpected" },
 		func(context.Context) (string, error) { called = true; return "unexpected", nil },
 	)
@@ -213,7 +296,7 @@ func Test115PlaybackCopyDeadlineKeepsFallbackAndReservation(t *testing.T) {
 		manager.Record(source, other, time.Now().Add(playback.URLCacheTTL))
 		started := time.Now()
 		fallbackCalled := false
-		result := resolve115URLMiss(t.Context(), manager, source, slot, "budget-cache", true,
+		result := resolve115URLMiss(t.Context(), manager, source, slot, "budget-cache", "", true,
 			func(ctx context.Context) string {
 				fallbackCalled = true
 				if ctx.Err() != nil || !manager.HasOther(source, other, time.Now()) {
@@ -248,7 +331,7 @@ func Test115PlaybackCacheAndSlotUseSignedExpiry(t *testing.T) {
 		observer := playback.Slot{Mode: playback.ModeDirect, UA: "observer"}
 		value := fmt.Sprintf("https://download.invalid/video?t=%d", time.Now().Add(10*time.Minute).Unix())
 		key := "signed-expiry-cache"
-		got := resolve115URLMiss(t.Context(), manager, source, slot, key, false,
+		got := resolve115URLMiss(t.Context(), manager, source, slot, key, "", false,
 			func(context.Context) string { return value }, nil,
 		)
 		if got != value || !manager.HasOther(source, observer, time.Now()) {
@@ -258,7 +341,7 @@ func Test115PlaybackCacheAndSlotUseSignedExpiry(t *testing.T) {
 		if cached := string(db.Cache.Get(key)); cached != value {
 			t.Fatal("安全期限前缓存过早失效")
 		}
-		got = resolve115URLMiss(t.Context(), manager, source, slot, key, true,
+		got = resolve115URLMiss(t.Context(), manager, source, slot, key, "", true,
 			func(context.Context) string { t.Fatal("命中缓存不应重取"); return "" }, nil,
 		)
 		if got != value {
@@ -284,7 +367,7 @@ func Test115PlaybackExpiredURLDoesNotPublishOrLeavePending(t *testing.T) {
 			}
 			expired := fmt.Sprintf("https://download.invalid/video?t=%d", time.Now().Add(time.Minute).Unix())
 			originalCalls := 0
-			got := resolve115URLMiss(t.Context(), manager, source, slot, "expired-cache", copyEnabled,
+			got := resolve115URLMiss(t.Context(), manager, source, slot, "expired-cache", "", copyEnabled,
 				func(context.Context) string { originalCalls++; return expired },
 				func(context.Context) (string, error) { return expired, nil },
 			)

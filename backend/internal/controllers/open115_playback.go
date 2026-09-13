@@ -11,6 +11,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/v115open"
+	"qmediasync/internal/validation"
 )
 
 var v115Playback = playback.DefaultManager
@@ -18,7 +19,7 @@ var v115Playback = playback.DefaultManager
 // resolve115URLMiss 由持有原始 URL 缓存键锁的调用方执行；原文件状态只在预留和发布时加锁。
 func resolve115URLMiss(
 	ctx context.Context, manager *playback.Manager, source playback.SourceKey, slot playback.Slot,
-	cacheKey string, enabled bool, original func(context.Context) string, copyURL func(context.Context) (string, error),
+	cacheKey, originLink string, enabled bool, original func(context.Context) string, copyURL func(context.Context) (string, error),
 ) string {
 	if ctx.Err() != nil {
 		return ""
@@ -29,7 +30,7 @@ func resolve115URLMiss(
 	hasOther := manager.Begin(source, slot, time.Now())
 	var expiresAt time.Time
 	defer func() { manager.Finish(source, slot, expiresAt) }()
-	publish := func(value string) string {
+	publish := func(value, kind string) string {
 		if value == "" || ctx.Err() != nil {
 			return ""
 		}
@@ -42,6 +43,12 @@ func resolve115URLMiss(
 		}
 		db.Cache.Set(cacheKey, []byte(value), ttl)
 		expiresAt = time.Unix(deadline.Unix(), 0)
+		// 只在实际取得新链接后记录地址，缓存命中和外层 Emby 跳转仅输出简要信息。
+		helpers.AppLogger.Infof(
+			"115 取链成功：文件=%q，账号=%d，PickCode=%s，来源=%s，模式=%s，UA=%q，原始链接=%s，最终链接=%s",
+			helpers.URLFileName(value), source.AccountID, source.PickCode, kind, slot.Mode, slot.UA,
+			validation.RedactProxyURL(originLink), validation.RedactProxyURL(value),
+		)
 		return value
 	}
 	if enabled && slot.Mode == playback.ModeDirect && hasOther {
@@ -56,18 +63,18 @@ func resolve115URLMiss(
 			return ""
 		}
 		if err == nil {
-			if published := publish(value); published != "" {
-				helpers.AppLogger.Infof("115 多端播放取得副本直链：账号=%d", source.AccountID)
+			if published := publish(value, "副本"); published != "" {
 				return published
 			}
 			err = errors.New("副本直链为空或已到安全有效期")
 		}
-		helpers.AppLogger.Warnf("115 多端播放副本取链失败，降级普通取链：账号=%d，错误=%v", source.AccountID, err)
+		helpers.AppLogger.Warnf("115 多端播放副本取链失败，降级普通取链：账号=%d，PickCode=%s，UA=%q，错误=%v",
+			source.AccountID, source.PickCode, slot.UA, err)
 	}
 	if ctx.Err() != nil {
 		return ""
 	}
-	return publish(original(ctx))
+	return publish(original(ctx), "原文件")
 }
 
 func copy115URL(ctx context.Context, account *models.Account, pickCode, ua string) (string, error) {

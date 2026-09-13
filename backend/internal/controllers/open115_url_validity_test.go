@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/v115open"
 
@@ -22,6 +25,7 @@ func TestCheckURLValidityUsesHEADUserAgentAndTotalTimeout(t *testing.T) {
 		name       string
 		userAgent  string
 		statusCode int
+		location   string
 		delay      time.Duration
 		timeout    time.Duration
 		wantValid  bool
@@ -48,10 +52,32 @@ func TestCheckURLValidityUsesHEADUserAgentAndTotalTimeout(t *testing.T) {
 			timeout:    10 * time.Millisecond,
 			wantValid:  false,
 		},
+		{
+			name:       "非法绝对 Location 不回显地址",
+			userAgent:  "qms-test",
+			statusCode: http.StatusFound,
+			location:   "https://private-user:private-pass@cdn.invalid/%zz?k=signature",
+			timeout:    time.Second,
+		},
+		{
+			name:       "非法协议相对 Location 不回显地址",
+			userAgent:  "qms-test",
+			statusCode: http.StatusFound,
+			location:   "//private-user:private-pass@cdn.invalid/%zz?k=signature",
+			timeout:    time.Second,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			previousLogger, previousLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+			helpers.SetGlobalLogLevel(helpers.LogLevelDebug)
+			t.Cleanup(func() {
+				helpers.AppLogger = previousLogger
+				helpers.SetGlobalLogLevel(previousLevel)
+			})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodHead {
 					t.Fatalf("请求方法 = %s，期望 HEAD", r.Method)
@@ -62,12 +88,26 @@ func TestCheckURLValidityUsesHEADUserAgentAndTotalTimeout(t *testing.T) {
 				if tt.delay > 0 {
 					time.Sleep(tt.delay)
 				}
+				if tt.location != "" {
+					w.Header().Set("Location", tt.location)
+				}
 				w.WriteHeader(tt.statusCode)
 			}))
 			defer server.Close()
 
-			if got := checkURLValidity(server.URL, tt.userAgent, tt.timeout); got != tt.wantValid {
+			target := server.URL + "/%E5%BD%B1%E7%89%87.mkv?k=signature"
+			if got := checkURLValidity(target, tt.userAgent, tt.timeout); got != tt.wantValid {
 				t.Fatalf("checkURLValidity() = %v，期望 %v", got, tt.wantValid)
+			}
+			for _, want := range []string{"HEAD", `文件="影片.mkv"`, `UA="` + tt.userAgent + `"`} {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("HEAD 日志缺少 %q：%s", want, output.String())
+				}
+			}
+			for _, unwanted := range []string{server.URL, "signature", "private-user", "private-pass"} {
+				if strings.Contains(output.String(), unwanted) {
+					t.Errorf("HEAD 检查不应输出地址或凭据 %q：%s", unwanted, output.String())
+				}
 			}
 		})
 	}
