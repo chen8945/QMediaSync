@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-
-	"resty.dev/v3"
 )
 
 func TestFileModifiedAtPrefersOfficialModificationTime(t *testing.T) {
@@ -96,13 +94,14 @@ func (t *captureOpenAPITransport) RoundTrip(req *http.Request) (*http.Response, 
 
 func newTestOpenClient(transport *captureOpenAPITransport) *OpenClient {
 	ensureOpenAPITestLoggers()
-	return &OpenClient{
-		AppId:           "test-app-id",
-		AccountId:       1,
-		client:          resty.New().SetTransport(transport),
-		AccessToken:     "test-access-token",
-		RefreshTokenStr: "test-refresh-token",
-	}
+	client := NewClient(
+		1,
+		"test-app-id",
+		"test-access-token",
+		"test-refresh-token",
+	)
+	client.client.SetTransport(transport)
+	return client
 }
 
 func ensureOpenAPITestLoggers() {

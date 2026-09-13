@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,8 +12,6 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-
-	"resty.dev/v3"
 )
 
 // refreshStubTransport 拦截刷新请求：networkErr 非空时返回网络错误，否则返回固定 JSON 响应
@@ -20,10 +19,14 @@ type refreshStubTransport struct {
 	response   string
 	networkErr error
 	requests   atomic.Int32
+	onRequest  func(*http.Request)
 }
 
 func (t *refreshStubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.requests.Add(1)
+	if t.onRequest != nil {
+		t.onRequest(req)
+	}
 	if t.networkErr != nil {
 		return nil, t.networkErr
 	}
@@ -40,13 +43,14 @@ func (t *refreshStubTransport) RoundTrip(req *http.Request) (*http.Response, err
 
 func newRefreshTestClient(transport http.RoundTripper) *OpenClient {
 	ensureOpenAPITestLoggers()
-	return &OpenClient{
-		AppId:           "test-app-id",
-		AccountId:       7,
-		client:          resty.New().SetTransport(transport),
-		AccessToken:     "old-access-token",
-		RefreshTokenStr: "old-refresh-token",
-	}
+	client := NewClient(
+		7,
+		"test-app-id",
+		"old-access-token",
+		"old-refresh-token",
+	)
+	client.client.SetTransport(transport)
+	return client
 }
 
 func withFastRefreshRetry(t *testing.T) {
@@ -126,7 +130,8 @@ func TestRefreshTokenNetworkErrorKeepsCredentials(t *testing.T) {
 	if IsRefreshTokenDead(err) {
 		t.Fatal("网络错误不应判定为刷新令牌失效")
 	}
-	if client.AccessToken != "old-access-token" || client.RefreshTokenStr != "old-refresh-token" {
+	credentials := client.credentialSnapshot()
+	if credentials.accessToken != "old-access-token" || credentials.refreshToken != "old-refresh-token" {
 		t.Fatal("网络错误后不应清空客户端凭据")
 	}
 	if got := rec.count(); got != 0 {
@@ -149,7 +154,8 @@ func TestRefreshTokenDeadCodeClearsCredentialsAndPublishesEvent(t *testing.T) {
 	if !IsRefreshTokenDead(err) {
 		t.Fatal("40140116 应判定为刷新令牌失效")
 	}
-	if client.AccessToken != "" || client.RefreshTokenStr != "" {
+	credentials := client.credentialSnapshot()
+	if credentials.accessToken != "" || credentials.refreshToken != "" {
 		t.Fatal("凭证失效后应清空客户端凭据")
 	}
 	if got := rec.count(); got != 1 {
@@ -170,7 +176,8 @@ func TestRefreshTokenThrottledKeepsCredentialsWithoutRetry(t *testing.T) {
 	if IsRefreshTokenDead(err) {
 		t.Fatal("频控不应判定为刷新令牌失效")
 	}
-	if client.AccessToken != "old-access-token" || client.RefreshTokenStr != "old-refresh-token" {
+	credentials := client.credentialSnapshot()
+	if credentials.accessToken != "old-access-token" || credentials.refreshToken != "old-refresh-token" {
 		t.Fatal("频控后不应清空客户端凭据")
 	}
 	if got := rec.count(); got != 0 {
@@ -194,7 +201,8 @@ func TestRefreshTokenRetryableFailureKeepsCredentials(t *testing.T) {
 	if IsRefreshTokenDead(err) {
 		t.Fatal("40140121 不应判定为刷新令牌失效")
 	}
-	if client.AccessToken != "old-access-token" || client.RefreshTokenStr != "old-refresh-token" {
+	credentials := client.credentialSnapshot()
+	if credentials.accessToken != "old-access-token" || credentials.refreshToken != "old-refresh-token" {
 		t.Fatal("可重试失败后不应清空客户端凭据")
 	}
 	if got := rec.count(); got != 0 {
@@ -202,5 +210,69 @@ func TestRefreshTokenRetryableFailureKeepsCredentials(t *testing.T) {
 	}
 	if got := transport.requests.Load(); got != int32(refreshTokenRetryCount+1) {
 		t.Fatalf("40140121 应请求内重试共 %d 次，实际 %d 次", refreshTokenRetryCount+1, got)
+	}
+}
+
+// 刷新与直接设置凭据并发时，失效事件必须保留实际请求使用的整对凭据。
+func TestRefreshTokenUsesRequestCredentialSnapshot(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	tests := []struct {
+		name         string
+		refreshToken string
+	}{
+		{name: "空参数使用整组快照"},
+		{name: "显式参数保留请求语义", refreshToken: "explicit-refresh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := subscribeInvalidEventRecorder(t)
+			sentRefreshTokens := make(chan string, 1)
+			transport := &refreshStubTransport{
+				response: `{"state":false,"code":40140116,"message":"no auth"}`,
+				onRequest: func(req *http.Request) {
+					if err := req.ParseForm(); err != nil {
+						t.Error(err)
+					}
+					sentRefreshTokens <- req.Form.Get("refresh_token")
+				},
+			}
+			client := newRefreshTestClient(transport)
+			client.SetAuthToken("version-0", "version-0")
+			start := make(chan struct{})
+			var updates sync.WaitGroup
+			updates.Go(func() {
+				<-start
+				for i := range 800 {
+					token := fmt.Sprintf("version-%d", i+1)
+					client.SetAuthToken(token, token)
+					runtime.Gosched()
+				}
+			})
+			defer updates.Wait()
+			close(start)
+			for i := range 40 {
+				if _, err := client.RefreshToken(tt.refreshToken); !IsRefreshTokenDead(err) {
+					t.Fatalf("期望凭据失效错误，实际为 %v", err)
+				}
+				if rec.count() != i+1 {
+					t.Fatalf("刷新失败应发布一次凭据失效事件，实际 %d 次", rec.count())
+				}
+				rec.mu.Lock()
+				event := rec.events[i]
+				expectedToken := event["token"].(string)
+				expectedRefresh := event["refresh_token"].(string)
+				rec.mu.Unlock()
+				if sent := <-sentRefreshTokens; expectedRefresh != sent {
+					t.Fatalf("事件刷新令牌 %q 与实际请求 %q 不一致", expectedRefresh, sent)
+				}
+				if tt.refreshToken == "" {
+					if expectedToken != expectedRefresh {
+						t.Fatalf("事件拼接了不同版本的凭据：access=%q refresh=%q", expectedToken, expectedRefresh)
+					}
+				} else if expectedRefresh != tt.refreshToken {
+					t.Fatalf("显式刷新令牌被客户端快照覆盖：%q", expectedRefresh)
+				}
+			}
+		})
 	}
 }

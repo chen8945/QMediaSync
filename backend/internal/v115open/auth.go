@@ -41,9 +41,10 @@ type TokenData struct {
 // 获取 115 开放平台登录二维码
 // POST https://passportapi.115.com/open/authDeviceCode
 func (c *OpenClient) GetQrCode() (*QrCodeDataReturn, error) {
+	credentials := c.credentialSnapshot()
 	data := make(map[string]string)
 	codeVerifier := helpers.RandStr(64)
-	data["client_id"] = c.AppId
+	data["client_id"] = credentials.appID
 	data["code_challenge"] = GenCodeChallenge(codeVerifier)
 	data["code_challenge_method"] = "sha256"
 	req := c.client.R().SetFormData(data).SetMethod("POST")
@@ -170,10 +171,11 @@ var (
 // 刷新 115 开放平台的 access_token
 // https://passportapi.115.com/open/refreshToken
 func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
+	credentials := c.credentialSnapshot()
 	if refreshToken == "" {
-		refreshToken = c.RefreshTokenStr
+		refreshToken = credentials.refreshToken
 	}
-	expectedAccessToken := c.AccessToken
+	expectedAccessToken := credentials.accessToken
 	expectedRefreshToken := refreshToken
 	data := make(map[string]string)
 	data["refresh_token"] = refreshToken

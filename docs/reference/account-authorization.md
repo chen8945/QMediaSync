@@ -80,7 +80,7 @@
 
 该更新不修改 `id`、`name` 或任何同步、刮削、任务关联表。更新成功后才刷新按账号 ID 缓存的 115 客户端，并消费 `authorization_id`。目标令牌无效、用户信息请求失败、唯一性冲突、更新失败、取消或超时都会保留旧授权的来源、应用、令牌和用户信息。
 
-共享 115 客户端命中已有账号 ID 时必须同时更新 `AppId` 和令牌；待授权校验使用不进入共享缓存的临时客户端。
+115 共享客户端按账号 ID 复用。授权提交成功后通过 `GetClient` 一次发布 APP ID、access_token 和 refresh_token 的完整凭据；普通业务通过 `GetCachedClient` 复用已有客户端，不用旧账号快照覆盖新凭据。待授权校验使用不进入共享缓存的临时客户端。
 
 115 授权替换不再先查询 `user_id` 再更新目标行，而是依赖 `idx_account_user_id` 部分唯一索引作为并发冲突的最终判定；SQLite 下这条单语句更新没有读快照升级窗口。SQLite 连接池仍固定为一个连接，以串行化其他写事务；连接池边界见 [数据库运维](../operations/database.md)。数据库返回的账号身份唯一性错误会映射为稳定的模型错误，调用方可安全保留旧授权并提示重复账号。
 
@@ -89,6 +89,8 @@
 ## 访问凭证定时刷新与失效
 
 115 访问凭证由 `TokenCron` 每 5 分钟检查一次。账号在 `token_expiries_time` 前 30 分钟进入刷新窗口；access_token 过期后只要 refresh_token 仍存在，刷新会一直按 cron 节奏重试，直到成功或 refresh_token 被判定失效。刷新使用账号快照创建的临时客户端，成功后经带重试的条件写库落库并更新共享客户端；落库失败时保留待写记录等待补传（见下文），refresh_token 旋转语义下旧凭据不会被远端旧结果覆盖。
+
+共享客户端的 APP ID、access_token 与 refresh_token 作为不可变整体原子发布。业务请求在入队前读取一次凭据快照，该请求及其重试使用同一 access_token；后续请求可以读取刷新或授权替换后的新凭据。共享客户端的条件刷新与清空必须原子比较旧凭据后替换，不能拆成独立检查和赋值；仅更新令牌时保留当前 APP ID。网络请求不持有客户端缓存锁。
 
 刷新失败按 115 官方错误语义分流：
 
@@ -177,6 +179,7 @@ OpenList 登录使用请求开始时的地址、用户名、密码和 Token 快�
 
 ## 验证方式
 
+- 115 客户端：`cd backend && go test -race ./internal/v115open`，并运行相关 `models`、`controllers` 与 `synccron` 测试。覆盖真实请求队列与凭据更新并发、完整凭据快照、过时条件更新拒绝、临时客户端隔离、旧账号快照不回退凭据，以及清空与恢复后的请求行为。
 - 百度客户端：`cd backend && go test -race ./internal/baidupan`，覆盖所有 Token 写入入口与请求并发、过时刷新结果拒绝、条件清空与恢复，以及长上传后续请求读取新 Token；真实上传队列回归见[上传和 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList：`cd backend && go test -race ./internal/openlist`，并运行相关 `models` 与 `controllers` 测试。覆盖登录在途和保存回调在途时的配置更换、Token 相同但地址或密码改变、正常刷新落库、候选凭据验证或保存失败、并发编辑与临时客户端隔离，以及并发刷新去重与回调重入。回归位于 `backend/internal/openlist/auth_test.go`、`backend/internal/openlist/client_test.go`、`backend/internal/models/account_openlist_test.go` 和 `backend/internal/models/account_openlist_commit_test.go`。
 - 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
