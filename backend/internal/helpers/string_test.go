@@ -1,8 +1,55 @@
 package helpers
 
 import (
+	"strings"
+	"sync"
 	"testing"
 )
+
+func TestRandStr(t *testing.T) {
+	tests := []struct {
+		name   string
+		length int
+	}{
+		{name: "空字符串", length: 0},
+		{name: "单个字符", length: 1},
+		{name: "OAuth 状态与请求 ID", length: 16},
+		{name: "PKCE 验证串", length: 64},
+		{name: "较长随机串", length: 1024},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RandStr(tt.length)
+			if len(got) != tt.length {
+				t.Fatalf("随机串长度 = %d，期望 %d", len(got), tt.length)
+			}
+			for _, char := range got {
+				if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", char) {
+					t.Fatalf("随机串包含非字母数字字符：%q", char)
+				}
+			}
+		})
+	}
+}
+
+// 授权和 Webhook 共用随机串生成入口，必须支持同时调用。
+func TestRandStrConcurrent(t *testing.T) {
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			<-start
+			for range 100 {
+				if got := RandStr(64); len(got) != 64 {
+					t.Errorf("并发生成的随机串长度 = %d，期望 64", len(got))
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	workers.Wait()
+}
 
 func TestMD5Hash(t *testing.T) {
 	// 测试用例

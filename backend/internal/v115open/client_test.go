@@ -1,6 +1,8 @@
 package v115open
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -264,6 +266,7 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var authRequests atomic.Int32
+			var qrChallenges sync.Map
 			transport := &refreshStubTransport{
 				response: `{"state":true,"code":0,"data":{
 					"access_token":"remote","refresh_token":"remote","uid":"test-uid"
@@ -283,6 +286,10 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 						if appID := req.Form.Get("client_id"); !strings.HasPrefix(appID, "version-") {
 							t.Errorf("二维码请求应用 ID 无效：%q", appID)
 						}
+						if method := req.Form.Get("code_challenge_method"); method != "sha256" {
+							t.Errorf("二维码请求挑战算法 = %q，期望 sha256", method)
+						}
+						qrChallenges.Store(req.Form.Get("code_challenge"), struct{}{})
 					}
 				},
 			}
@@ -309,7 +316,7 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 					runtime.Gosched()
 				}
 			})
-			for reader := range readers {
+			for range readers {
 				workers.Go(func() {
 					<-start
 					for range requests {
@@ -337,12 +344,20 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 								return
 							}
 						}
-						// ponytail: 共享 RandStr 尚不支持并发调用，仅保留一个二维码读取协程与凭据更新并发。
-						if reader == 0 {
-							if _, err := client.GetQrCode(); err != nil {
-								t.Errorf("并发获取二维码失败：%v", err)
-								return
-							}
+						qrCode, err := client.GetQrCode()
+						if err != nil {
+							t.Errorf("并发获取二维码失败：%v", err)
+							return
+						}
+						if len(qrCode.CodeVerifier) != 64 {
+							t.Errorf("二维码验证串长度 = %d，期望 64", len(qrCode.CodeVerifier))
+							return
+						}
+						hash := sha256.Sum256([]byte(qrCode.CodeVerifier))
+						challenge := base64.StdEncoding.EncodeToString(hash[:])
+						if _, ok := qrChallenges.Load(challenge); !ok {
+							t.Error("二维码请求挑战值与返回的验证串不匹配")
+							return
 						}
 					}
 				})

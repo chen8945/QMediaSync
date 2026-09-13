@@ -8,20 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	mathrand "math/rand"
 	"net/url"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/mozillazg/go-pinyin"
 )
-
-// 全局随机生成器，在包初始化时设置种子
-var globalRand = mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
 
 func StringToInt(s string) int {
 	if s == "" {
@@ -59,12 +54,19 @@ func UUID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
+// RandStr 生成指定长度的密码学安全字母数字随机字符串。
 func RandStr(length int) string {
-	// 生成指定长度的随机字符串
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// 只接受 62 的整数倍范围 [0, 248)，避免取模偏差。
+	const limit = 256 - 256%len(charset)
 	b := make([]byte, length)
+	// Go 1.25 的 rand.Read 保证读满，随机源失败时由标准库终止进程。
+	rand.Read(b)
 	for i := range b {
-		b[i] = charset[globalRand.Intn(len(charset))]
+		for int(b[i]) >= limit {
+			rand.Read(b[i : i+1])
+		}
+		b[i] = charset[int(b[i])%len(charset)]
 	}
 	return string(b)
 }

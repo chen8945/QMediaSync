@@ -48,6 +48,8 @@
 
 准备会话成功后，前端把 `authorization_id` 原样传给对应授权流程。后端不信任后续请求中自行修改的应用字段，而是从会话读取目标来源。
 
+115 的 PKCE `code_verifier` 和 115 / 百度中转 OAuth state 内的随机字段使用密码学安全随机源，允许多个请求并发生成。`code_verifier` 保持 64 个字符，state 内的随机字段保持 16 个字符，字符集均为 ASCII 大小写字母和数字。
+
 ### QR 授权
 
 - `POST /api/auth/115-qrcode-open` 接收 `account_id` 和可选 `authorization_id`。
@@ -179,6 +181,7 @@ OpenList 登录使用请求开始时的地址、用户名、密码和 Token 快�
 
 ## 验证方式
 
+- 授权随机串：`cd backend && go test -race ./internal/helpers ./internal/v115open`，验证长度、字符集与并发生成；二维码回归让多个请求同时生成 PKCE 校验码，并与共享客户端凭据更新交错。OAuth 和 Webhook 调用方同时运行 `v115auth`、`controllers` 包测试。
 - 115 客户端：`cd backend && go test -race ./internal/v115open`，并运行相关 `models`、`controllers` 与 `synccron` 测试。覆盖真实请求队列与凭据更新并发、完整凭据快照、过时条件更新拒绝、临时客户端隔离、旧账号快照不回退凭据，以及清空与恢复后的请求行为。
 - 百度客户端：`cd backend && go test -race ./internal/baidupan`，覆盖所有 Token 写入入口与请求并发、过时刷新结果拒绝、条件清空与恢复，以及长上传后续请求读取新 Token；真实上传队列回归见[上传和 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList：`cd backend && go test -race ./internal/openlist`，并运行相关 `models` 与 `controllers` 测试。覆盖登录在途和保存回调在途时的配置更换、Token 相同但地址或密码改变、正常刷新落库、候选凭据验证或保存失败、并发编辑与临时客户端隔离，以及并发刷新去重与回调重入。回归位于 `backend/internal/openlist/auth_test.go`、`backend/internal/openlist/client_test.go`、`backend/internal/models/account_openlist_test.go` 和 `backend/internal/models/account_openlist_commit_test.go`。
