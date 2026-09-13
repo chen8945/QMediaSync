@@ -106,6 +106,8 @@
 
 百度网盘访问凭证由同一 `TokenCron` 检查，账号在 `token_expiries_time` 前 24 小时进入刷新窗口。refresh_token 官方有效期为 10 年，每次刷新返回新的 refresh_token。刷新不直连百度，而是经授权中转（`AuthServer` 的 `/baidupan/oauth-url?action=refresh`，refresh_token 加密在 state 参数中传递），本机不持有 App Secret。
 
+百度客户端按账号复用，上传、浏览和同步的每次 HTTP 请求都读取独立的 Token 快照；已持有客户端的后续请求（包括后续上传分片和创建文件）能读取新发布的凭据。缓存命中、直接设置、刷新和清空必须统一原子读写 Token，网络请求不持有缓存锁；条件刷新与清空须原子比较旧 Token 后替换，不能拆成独立检查和赋值，以免覆盖已经更换的凭据。
+
 百度刷新失败按 OAuth 字符串错误码分流（`baidupan.IsRefreshTokenDead` 是唯一判定入口）：
 
 | 失败类别 | 判定 | 行为 |
@@ -175,6 +177,7 @@ OpenList 登录使用请求开始时的地址、用户名、密码和 Token 快�
 
 ## 验证方式
 
+- 百度客户端：`cd backend && go test -race ./internal/baidupan`，覆盖所有 Token 写入入口与请求并发、过时刷新结果拒绝、条件清空与恢复，以及长上传后续请求读取新 Token；真实上传队列回归见[上传和 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList：`cd backend && go test -race ./internal/openlist`，并运行相关 `models` 与 `controllers` 测试。覆盖登录在途和保存回调在途时的配置更换、Token 相同但地址或密码改变、正常刷新落库、候选凭据验证或保存失败、并发编辑与临时客户端隔离，以及并发刷新去重与回调重入。回归位于 `backend/internal/openlist/auth_test.go`、`backend/internal/openlist/client_test.go`、`backend/internal/models/account_openlist_test.go` 和 `backend/internal/models/account_openlist_commit_test.go`。
 - 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。

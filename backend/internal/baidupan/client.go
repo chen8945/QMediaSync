@@ -11,15 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/helpers"
 	openapiclient "qmediasync/openxpanapi"
 )
 
+// Client 按请求读取 Token 快照；首次使用后不得复制。
 type Client struct {
 	client      *openapiclient.APIClient
-	accessToken string
+	accessToken atomic.Value // 仅存 string；每次请求读取快照，不持锁执行网络请求。
 }
 
 type FileListOptions struct {
@@ -157,7 +159,7 @@ func NewBaiDuPanClient(accountId uint, accessToken string) *Client {
 	defer cachedClientsMutex.Unlock()
 	clientKey := fmt.Sprintf("%d", accountId)
 	if client, exists := cachedClients[clientKey]; exists {
-		client.accessToken = accessToken
+		client.SetAuthToken(accessToken)
 		return client
 	}
 	client := newBaiDuPanClient(accessToken)
@@ -177,9 +179,9 @@ func newBaiDuPanClient(accessToken string) *Client {
 	// }
 	apiClient := openapiclient.NewAPIClient(config)
 	client := &Client{
-		client:      apiClient,
-		accessToken: accessToken,
+		client: apiClient,
 	}
+	client.SetAuthToken(accessToken)
 	return client
 }
 
@@ -188,7 +190,7 @@ func UpdateToken(accountId uint, accessToken string) {
 	defer cachedClientsMutex.Unlock()
 	clientKey := fmt.Sprintf("%d", accountId)
 	if client, exists := cachedClients[clientKey]; exists {
-		client.accessToken = accessToken
+		client.SetAuthToken(accessToken)
 	}
 }
 
@@ -198,15 +200,20 @@ func UpdateTokenIfCurrent(accountId uint, expectedAccessToken string, accessToke
 	defer cachedClientsMutex.Unlock()
 	clientKey := fmt.Sprintf("%d", accountId)
 	client, exists := cachedClients[clientKey]
-	if !exists || client.accessToken != expectedAccessToken {
+	if !exists {
 		return false
 	}
-	client.accessToken = accessToken
-	return true
+	return client.accessToken.CompareAndSwap(expectedAccessToken, accessToken)
 }
 
+// SetAuthToken 原子更新访问凭据，允许与请求和条件刷新并发调用。
 func (c *Client) SetAuthToken(accessToken string) {
-	c.accessToken = accessToken
+	c.accessToken.Store(accessToken)
+}
+
+func (c *Client) getAccessToken() string {
+	accessToken, _ := c.accessToken.Load().(string)
+	return accessToken
 }
 
 // 统一处理错误
@@ -257,7 +264,7 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 }
 
 func (c *Client) GetUserInfo(ctx context.Context) (*openapiclient.Uinforesponse, error) {
-	resp, r, err := c.client.UserinfoApi.Xpannasuinfo(ctx).AccessToken(c.accessToken).Execute()
+	resp, r, err := c.client.UserinfoApi.Xpannasuinfo(ctx).AccessToken(c.getAccessToken()).Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
 		return nil, err
@@ -266,7 +273,7 @@ func (c *Client) GetUserInfo(ctx context.Context) (*openapiclient.Uinforesponse,
 }
 
 func (c *Client) GetQuota(ctx context.Context) (*openapiclient.Quotaresponse, error) {
-	resp, r, err := c.client.UserinfoApi.Apiquota(ctx).AccessToken(c.accessToken).Execute()
+	resp, r, err := c.client.UserinfoApi.Apiquota(ctx).AccessToken(c.getAccessToken()).Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
 		return nil, err
@@ -291,7 +298,7 @@ func (c *Client) GetFileListWithOptions(ctx context.Context, parentPath string, 
 	// 将所有\转为/
 	parentPath = filepath.ToSlash(parentPath)
 	req := c.client.FileinfoApi.Xpanfilelist(ctx).
-		AccessToken(c.accessToken).
+		AccessToken(c.getAccessToken()).
 		Web("1").
 		Dir(parentPath).
 		Folder(onlyDirStr).
@@ -332,7 +339,7 @@ func (c *Client) GetAllFiles(ctx context.Context, parentPath string, start int, 
 	}
 	// 将所有\转为/
 	parentPath = filepath.ToSlash(parentPath)
-	req := c.client.MultimediafileApi.Xpanfilelistall(ctx).AccessToken(c.accessToken).Recursion(int32(1)).Path(parentPath).Start(int32(start)).Limit(int32(limit))
+	req := c.client.MultimediafileApi.Xpanfilelistall(ctx).AccessToken(c.getAccessToken()).Recursion(int32(1)).Path(parentPath).Start(int32(start)).Limit(int32(limit))
 	if mtime > 0 {
 		req = req.Mtime(fmt.Sprintf("%d", mtime))
 	}
@@ -362,7 +369,7 @@ func (c *Client) GetFileDetail(ctx context.Context, fileId string, dlink int32) 
 	}
 	fsids := string(fsidsJson)
 	helpers.AppLogger.Infof("查询百度网盘文件详情：文件 ID：%s，获取下载链接：%d", fsidsJson, dlink)
-	req := c.client.MultimediafileApi.Xpanmultimediafilemetas(ctx).AccessToken(c.accessToken).Fsids(fsids)
+	req := c.client.MultimediafileApi.Xpanmultimediafilemetas(ctx).AccessToken(c.getAccessToken()).Fsids(fsids)
 	if dlink == 1 {
 		req = req.Dlink("1")
 	}
@@ -393,7 +400,7 @@ func (c *Client) Mkdir(ctx context.Context, path string) error {
 	}
 	// 将所有\转为/
 	path = filepath.ToSlash(path)
-	resp, r, err := c.client.FileuploadApi.Xpanfilecreate(ctx).AccessToken(c.accessToken).Isdir(1).Path(path).Rtype(0).Execute()
+	resp, r, err := c.client.FileuploadApi.Xpanfilecreate(ctx).AccessToken(c.getAccessToken()).Isdir(1).Path(path).Rtype(0).Execute()
 	// 统一处理错误
 	return c.handleError(err, r, resp)
 }
@@ -414,7 +421,7 @@ func (c *Client) Del(ctx context.Context, pathes []string) error {
 		return err
 	}
 	fileListStr := string(fileList)
-	r, err := c.client.FilemanagerApi.Filemanagerdelete(ctx).AccessToken(c.accessToken).Async(0).Filelist(fileListStr).Execute()
+	r, err := c.client.FilemanagerApi.Filemanagerdelete(ctx).AccessToken(c.getAccessToken()).Async(0).Filelist(fileListStr).Execute()
 	// 统一处理错误
 	return c.handleError(err, r, nil)
 }
@@ -458,7 +465,7 @@ func (c *Client) PreCreate(ctx context.Context, localPath string, remotePath str
 	}
 	chunkMD5s := string(chunkMD5sJson)
 	chunkMD5.ChunkMD5sJsonStr = chunkMD5s
-	req := c.client.FileuploadApi.Xpanfileprecreate(ctx).AccessToken(c.accessToken).Path(remotePath).Size(int32(size)).Isdir(0).Autoinit(1).Rtype(2).BlockList(chunkMD5s)
+	req := c.client.FileuploadApi.Xpanfileprecreate(ctx).AccessToken(c.getAccessToken()).Path(remotePath).Size(int32(size)).Isdir(0).Autoinit(1).Rtype(2).BlockList(chunkMD5s)
 	resp, r, err := req.Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
@@ -486,7 +493,7 @@ func (c *Client) Upload(ctx context.Context, localPath string, remotePath string
 			return nil, fmt.Errorf("打开临时文件失败：%w", err)
 		}
 		// 上传分片
-		uresp, ur, uerr := c.client.FileuploadApi.Pcssuperfile2(context.Background()).AccessToken(c.accessToken).Partseq(fmt.Sprintf("%d", seqNum)).Path(remotePath).Uploadid(*preResp.Uploadid).Type_("tmpfile").File(file).Execute()
+		uresp, ur, uerr := c.client.FileuploadApi.Pcssuperfile2(context.Background()).AccessToken(c.getAccessToken()).Partseq(fmt.Sprintf("%d", seqNum)).Path(remotePath).Uploadid(*preResp.Uploadid).Type_("tmpfile").File(file).Execute()
 		if c.handleError(uerr, ur, uresp) != nil {
 			// 关闭且删除分片
 			file.Close()
@@ -498,7 +505,7 @@ func (c *Client) Upload(ctx context.Context, localPath string, remotePath string
 		os.Remove(tempFilePath)
 	}
 	// 创建文件
-	resp, r, err := c.client.FileuploadApi.Xpanfilecreate(ctx).AccessToken(c.accessToken).Path(remotePath).Isdir(0).Size(int32(chunkMD5.FileSize)).Uploadid(*preResp.Uploadid).BlockList(chunkMD5.ChunkMD5sJsonStr).Rtype(2).Execute()
+	resp, r, err := c.client.FileuploadApi.Xpanfilecreate(ctx).AccessToken(c.getAccessToken()).Path(remotePath).Isdir(0).Size(int32(chunkMD5.FileSize)).Uploadid(*preResp.Uploadid).BlockList(chunkMD5.ChunkMD5sJsonStr).Rtype(2).Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
 		return nil, fmt.Errorf("创建文件失败：%w", err)
@@ -583,7 +590,7 @@ func (c *Client) Rename(ctx context.Context, path string, newName string) error 
 		return fmt.Errorf("将 fileList 转为 JSON 失败：%w", err)
 	}
 
-	r, err := c.client.FilemanagerApi.Filemanagerrename(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	r, err := c.client.FilemanagerApi.Filemanagerrename(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	// 统一处理错误
 	return c.handleError(err, r, nil)
 }
@@ -598,7 +605,7 @@ func (c *Client) RenameBatch(ctx context.Context, fileList []ReNameItem) error {
 		return fmt.Errorf("将 fileList 转为 JSON 失败：%w", err)
 	}
 
-	r, err := c.client.FilemanagerApi.Filemanagerrename(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	r, err := c.client.FilemanagerApi.Filemanagerrename(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	// 统一处理错误
 	return c.handleError(err, r, nil)
 }
@@ -632,7 +639,7 @@ func (c *Client) Move(ctx context.Context, path string, newPath string, newName 
 		return fmt.Errorf("将 fileList 转为 JSON 失败：%w", err)
 	}
 
-	resp, rerr := c.client.FilemanagerApi.Filemanagermove(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	resp, rerr := c.client.FilemanagerApi.Filemanagermove(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	return c.handleError(rerr, resp, nil)
 }
 
@@ -658,7 +665,7 @@ func (c *Client) MoveBatch(ctx context.Context, fileList []MoveOrCopyItem) error
 	}
 	helpers.BaiduPanLog.Debugf("移动文件列表：%s", string(fileListStr))
 
-	resp, rerr := c.client.FilemanagerApi.Filemanagermove(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	resp, rerr := c.client.FilemanagerApi.Filemanagermove(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	return c.handleError(rerr, resp, nil)
 }
 
@@ -687,7 +694,7 @@ func (c *Client) Copy(ctx context.Context, path string, newPath string) error {
 		return fmt.Errorf("将 fileList 转为 JSON 失败：%w", err)
 	}
 
-	resp, rerr := c.client.FilemanagerApi.Filemanagercopy(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	resp, rerr := c.client.FilemanagerApi.Filemanagercopy(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	return c.handleError(rerr, resp, nil)
 }
 
@@ -701,6 +708,6 @@ func (c *Client) CopyBatch(ctx context.Context, fileList []MoveOrCopyItem) error
 		return fmt.Errorf("将 fileList 转为 JSON 失败：%w", err)
 	}
 
-	resp, rerr := c.client.FilemanagerApi.Filemanagercopy(ctx).AccessToken(c.accessToken).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
+	resp, rerr := c.client.FilemanagerApi.Filemanagercopy(ctx).AccessToken(c.getAccessToken()).Async(0).Ondup("skip").Filelist(string(fileListStr)).Execute()
 	return c.handleError(rerr, resp, nil)
 }

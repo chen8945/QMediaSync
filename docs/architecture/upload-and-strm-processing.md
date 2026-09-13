@@ -16,6 +16,8 @@
 
 并发调整和暂停、恢复共用在途任务计数；减少并发后，现有 worker 不能在实际并发仍达到或超过新上限时补入任务。暂停只停止领取新任务，在途任务继续完成；快速恢复也不能让新旧 worker 重复领取或突破上限。上传请求继续使用现有网盘限流器。
 
+百度网盘上传与浏览、同步入口共用按账号缓存的客户端；请求级 Token 快照和原子更新遵循[百度网盘刷新](../reference/account-authorization.md#百度网盘刷新)约定，同账号上传无需串行化整个文件传输。
+
 OpenList 上传与目录浏览、同步等入口共用按账号缓存的客户端。缓存访问和客户端地址、登录凭据、Token 的读写必须同步；每次 HTTP 请求使用一致的配置快照，网络传输和 Token 保存事件在状态锁外执行，以保留同账号与不同账号的上传并发。并发 `401` 触发的 Token 刷新按客户端、OpenList 地址和登录凭据去重，同配置的在途刷新只执行一次登录，其余请求复用结果后重试。登录接口自身返回业务码 `401` 时直接返回凭据失效错误，不再触发刷新。
 
 OpenList 上传的普通重试预算保持为 `0`，网络错误或超时不自动重传。远端明确返回业务码 `401` 后允许一次认证恢复重发；重发必须重新读取完整文件，并保留 multipart 文件名、目标路径和原请求选项。认证恢复、登录结果的条件回写与账号编辑验证边界见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。
@@ -139,6 +141,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 ## 验证方式
 
 - 上传并发测试须覆盖在途任务下增减并发、暂停后修改并恢复、快速暂停恢复、重复领取和已清空任务；运行相关 `models` 测试及 `-race` 检查，配置保存与迁移同时验证失败不生效和旧配置兼容。
+- 百度网盘的 `models/upload_baidupan_test.go` 使用生产 SQLite 单连接、真实上传队列和本地 HTTP 替身，覆盖单 worker 对照、同账号和不同账号并发、冷缓存及后续缓存命中。验证请求实际重叠、凭据隔离、分片内容完整、每个上传阶段只执行一次及任务正确完成；运行 `(cd backend && go test -race ./internal/models -run '^TestUploadQueueBaiduPanConcurrency$')`。
 - OpenList 客户端测试覆盖并发创建、缓存命中、配置更新、同配置 Token 刷新去重、跨地址刷新隔离及登录 `401` 及时返回；认证恢复回归须覆盖零普通重试预算下的完整 multipart 重发、普通网络重试次数不变及持续 `401` 及时失败。`models/upload_openlist_test.go` 使用真实上传队列和本地 HTTP 替身覆盖单 worker 对照、同账号与不同账号并发，验证冷缓存和后续缓存命中、请求实际重叠、凭据隔离、有效凭据下每个文件只上传一次及任务正确完成。运行 `(cd backend && go test -race ./internal/openlist)` 和 `(cd backend && go test -race ./internal/models -run 'Test(UploadQueue|UpdateOpenList)')`。
 - 运行 `(cd backend && go test ./internal/directoryupload/)`、`(cd backend && go test ./internal/syncstrm/)` 和相关 `models` 测试。
 - STRM 收尾回归使用生产 SQLite 单连接配置，覆盖信息补齐、重复收尾去重、准备失败以及账本更新失败时的事务回滚；OpenList 真实上传队列测试也使用该配置，覆盖上传到本地收尾的完整链路。
