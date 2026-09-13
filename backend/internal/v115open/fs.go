@@ -235,7 +235,9 @@ func (c *OpenClient) GetFsDetailByPath(ctx context.Context, path string) (*FileD
 	var respData *FileDetail = &FileDetail{}
 	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), respData)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+		if !c.playback || !IsAlreadyDeleted(err) {
+			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+		}
 		return nil, err
 	}
 	resp := &RespBaseBool[json.RawMessage]{}
@@ -276,7 +278,9 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 	var respData *FileDetail = &FileDetail{}
 	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), respData)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+		if !c.playback || !IsAlreadyDeleted(err) {
+			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+		}
 		return nil, err
 	}
 	resp := &RespBaseBool[json.RawMessage]{}

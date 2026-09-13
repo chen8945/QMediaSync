@@ -60,9 +60,17 @@ func TestIsAlreadyDeleted(t *testing.T) {
 		{name: "成功结果"},
 		{name: "明确已删除", err: NewOpenAPIError(231011, "deleted"), want: true},
 		{name: "包装后仍可判定", err: fmt.Errorf("cleanup: %w", NewOpenAPIError(231011, "deleted")), want: true},
+		{name: "明确不存在或已删除", err: &OpenAPIError{Code: 430004, HTTPStatus: 200}, want: true},
+		{name: "包装后的不存在", err: fmt.Errorf("detail: %w", NewOpenAPIError(430004, "missing")), want: true},
 		{name: "未知不存在错误保留", err: NewOpenAPIError(20018, "missing")},
 		{name: "限流保留", err: NewOpenAPIError(590075, "frequency")},
+		{name: "HTTP 授权失败保留", err: &OpenAPIError{Code: 430004, HTTPStatus: 401}},
+		{name: "HTTP 禁止访问保留", err: &OpenAPIError{Code: 231011, HTTPStatus: 403}},
+		{name: "HTTP 限流保留", err: &OpenAPIError{Code: 430004, HTTPStatus: 429}},
+		{name: "HTTP 服务失败保留", err: &OpenAPIError{Code: 231011, HTTPStatus: 503}},
 		{name: "网络取消保留", err: context.Canceled},
+		{name: "取消优先于已删除", err: errors.Join(context.Canceled, NewOpenAPIError(430004, "missing"))},
+		{name: "超时优先于已删除", err: errors.Join(context.DeadlineExceeded, NewOpenAPIError(231011, "deleted"))},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsAlreadyDeleted(tt.err); got != tt.want {

@@ -433,18 +433,31 @@ func TestPlaybackFSMethodsPreserveAPIError(t *testing.T) {
 
 func TestPlaybackDeleteAlreadyDeletedDoesNotLogFailure(t *testing.T) {
 	withUnlimitedOpenAPIRequests(t)
-	var logs bytes.Buffer
-	original := helpers.V115Log.Writer()
-	helpers.V115Log.SetOutput(&logs)
-	t.Cleanup(func() { helpers.V115Log.SetOutput(original) })
-	client := NewPlaybackClient(1, "app", "token", "refresh")
-	transport := newCaptureOpenAPITransport(`{"state":false,"errno":231011}`)
-	setPlaybackTestTransport(t, client, transport)
-	_, err := client.Del(t.Context(), []string{"123"}, "456")
-	if !IsAlreadyDeleted(err) || len(transport.requests) != 1 {
-		t.Fatalf("删除未保留幂等错误或执行了重试：%v", err)
-	}
-	if strings.Contains(logs.String(), "调用文件删除接口失败") {
-		t.Fatal("已删除的副本仍输出删除失败日志")
+	for _, code := range []int{231011, 430004, ACCESS_AUTH_INVALID} {
+		for _, action := range []struct {
+			name string
+			call func(*OpenClient) error
+		}{
+			{name: "删除", call: func(c *OpenClient) error { _, err := c.Del(t.Context(), []string{"123"}, "456"); return err }},
+			{name: "ID 详情", call: func(c *OpenClient) error { _, err := c.GetFsDetailByCid(t.Context(), "123"); return err }},
+			{name: "路径详情", call: func(c *OpenClient) error { _, err := c.GetFsDetailByPath(t.Context(), "/多端播放"); return err }},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", code, action.name), func(t *testing.T) {
+				var logs bytes.Buffer
+				original := helpers.V115Log.Writer()
+				helpers.V115Log.SetOutput(&logs)
+				t.Cleanup(func() { helpers.V115Log.SetOutput(original) })
+				client := NewPlaybackClient(1, "app", "token", "refresh")
+				transport := newCaptureOpenAPITransport(fmt.Sprintf(`{"state":false,"errno":%d}`, code))
+				setPlaybackTestTransport(t, client, transport)
+				alreadyDeleted := code != ACCESS_AUTH_INVALID
+				if err := action.call(client); err == nil || IsAlreadyDeleted(err) != alreadyDeleted || len(transport.requests) != 1 {
+					t.Fatalf("未保留正确错误或执行了重试：%v", err)
+				}
+				if strings.Contains(logs.String(), "接口失败") == alreadyDeleted {
+					t.Fatalf("已删除目标不应报错，授权错误仍需保留日志：%s", logs.String())
+				}
+			})
+		}
 	}
 }

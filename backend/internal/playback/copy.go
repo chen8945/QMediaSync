@@ -42,13 +42,15 @@ type operationDirectory struct {
 
 // copyCalls 将具体 SDK 方法绑定到本次账号凭据，也允许测试替换远端调用。
 type copyCalls struct {
-	detailPath func(context.Context, string) (*v115open.FileDetail, error)
-	detailID   func(context.Context, string) (*v115open.FileDetail, error)
-	list       func(context.Context, string, bool, bool, bool, int, int) (*v115open.FileListResp, error)
-	mkdir      func(context.Context, string, string) (string, error)
-	copy       func(context.Context, []string, string, bool) (*v115open.CopyResult, error)
-	download   func(context.Context, string, string, bool) (*v115open.DownloadUrlResult, error)
-	del        func(context.Context, []string, string) (bool, error)
+	detailPath    func(context.Context, string) (*v115open.FileDetail, error)
+	detailID      func(context.Context, string) (*v115open.FileDetail, error)
+	list          func(context.Context, string, bool, bool, bool, int, int) (*v115open.FileListResp, error)
+	mkdir         func(context.Context, string, string) (string, error)
+	copy          func(context.Context, []string, string, bool) (*v115open.CopyResult, error)
+	download      func(context.Context, string, string, bool) (*v115open.DownloadUrlResult, error)
+	del           func(context.Context, []string, string) (bool, error)
+	listRecycle   func(context.Context, int, int) (*v115open.RecycleList, error)
+	deleteRecycle func(context.Context, []string) error
 }
 
 func playbackCalls(client *v115open.OpenClient) copyCalls {
@@ -56,6 +58,7 @@ func playbackCalls(client *v115open.OpenClient) copyCalls {
 		detailPath: client.GetFsDetailByPath, detailID: client.GetFsDetailByCid,
 		list: client.GetFsList, mkdir: client.MkDir, copy: client.CopyWithResult,
 		download: client.GetDownloadURLWithError, del: client.Del,
+		listRecycle: client.ListRecycle, deleteRecycle: client.DeleteRecycle,
 	}
 }
 

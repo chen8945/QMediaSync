@@ -190,6 +190,12 @@ func newCopyFixture() *copyFixture {
 	f.originals = map[string]File{f.file.ID: f.file}
 	f.files["99"] = testCloudFile("99", "90")
 	f.api = copyCalls{
+		listRecycle: func(_ context.Context, offset, limit int) (*v115open.RecycleList, error) {
+			return &v115open.RecycleList{Offset: offset, Limit: limit}, nil
+		},
+		deleteRecycle: func(context.Context, []string) error {
+			return errors.New("unexpected recycle deletion")
+		},
 		detailPath: func(context.Context, string) (*v115open.FileDetail, error) { return testDirectoryDetail("90"), nil },
 		detailID: func(ctx context.Context, id string) (*v115open.FileDetail, error) {
 			if err := ctx.Err(); err != nil {

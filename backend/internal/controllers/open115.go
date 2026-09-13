@@ -225,7 +225,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
 			return
 		}
-		// helpers.AppLogger.Infof("通过 PickCode 查询到 115 账号：%s", account.Username)
+		helpers.AppLogger.Debugf("通过 PickCode 查询到 115 账号：%s", account.Username)
 	} else {
 		var err error
 		// 通过 userId 查询账号
@@ -234,14 +234,15 @@ func Get115UrlByPickCode(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "用户 ID 不存在", Data: nil})
 			return
 		}
-		// helpers.AppLogger.Infof("通过用户 ID 查询到 115 账号：%s", account.Username)
+		helpers.AppLogger.Debugf("通过用户 ID 查询到 115 账号：%s", account.Username)
 	}
 	requestUA := c.Request.UserAgent()
 	localProxy, multiPlaybackEnabled := models.GetPlaybackSettings()
 	ua := v115EffectiveUA(req.Force, localProxy, requestUA)
 	client := account.Get115Client()
-	// helpers.AppLogger.Infof("检查是否具有直链播放标记， force=%d", req.Force)
+	helpers.AppLogger.Debugf("检查是否具有直链播放标记， force=%d", req.Force)
 	cacheKey := v115URLCacheKey(pickCode, req.Force, localProxy, requestUA)
+	helpers.AppLogger.Debugf("准备获取 115 文件下载链接：PickCode=%s，ua=%s，8095 播放=%d，加锁 10 秒", pickCode, ua, req.Force)
 	if !keyLock.lockContext(c.Request.Context(), cacheKey, v115URLCacheLockWait) {
 		helpers.AppLogger.Warnf("获取 115 下载链接缓存锁超时：PickCode=%s，ua=%s", pickCode, ua)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接超时，请稍后重试", Data: nil})
@@ -249,7 +250,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 	}
 	defer keyLock.Unlock(cacheKey)
 
-	// helpers.AppLogger.Debugf("是否启用本地代理：%d", models.SettingsGlobal.LocalProxy)
+	helpers.AppLogger.Debugf("是否启用本地代理：%d", models.SettingsGlobal.LocalProxy)
 	if v115URLPlaybackMode(req.Force, localProxy) == v115URLCacheModeProxy {
 		helpers.AppLogger.Infof("因为直链标识=%d，本地播放代理开关=%d，所以使用默认 UA：%s", req.Force, localProxy, ua)
 	}

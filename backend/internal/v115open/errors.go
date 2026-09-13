@@ -82,6 +82,8 @@ func playbackResponseError(status int, resp *RespBaseBool[json.RawMessage]) *Ope
 		message = "115 文件尚未上传完整"
 	case 231011:
 		message = "115 文件已删除"
+	case 430004:
+		message = "115 文件（夹）不存在或已删除"
 	case 590075:
 		message = "115 操作过于频繁"
 	case 91005:
@@ -108,10 +110,17 @@ func IsRateLimited(err error) bool {
 	return false
 }
 
-// IsAlreadyDeleted 判断删除目标是否已被 115 明确标记为删除，供清理幂等收敛。
+// IsAlreadyDeleted 判断目标是否已被 115 明确标记为不存在或已删除，供清理幂等收敛。
 func IsAlreadyDeleted(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	var apiErr *OpenAPIError
-	return errors.As(err, &apiErr) && apiErr.Code == 231011
+	if !errors.As(err, &apiErr) || (apiErr.HTTPStatus != 0 &&
+		(apiErr.HTTPStatus < http.StatusOK || apiErr.HTTPStatus >= http.StatusMultipleChoices)) {
+		return false
+	}
+	return apiErr.Code == 231011 || apiErr.Code == 430004
 }
 
 // IsPlaybackRetryable 判断副本取链是否值得在播放总时限内短暂重试。

@@ -249,6 +249,35 @@ func TestCleanupStaleAttemptsKnownDirectoryOncePerSweep(t *testing.T) {
 	})
 }
 
+func TestCleanupStaleReleasesMissingKnownDirectory(t *testing.T) {
+	for _, code := range []int{231011, 430004} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := failedCleanupFixture(t, 1)
+				id := f.createdDirs[0]
+				delete(f.dirs, id)
+				detail := f.api.detailID
+				reads := 0
+				f.api.detailID = func(ctx context.Context, fileID string) (*v115open.FileDetail, error) {
+					if fileID != id {
+						return detail(ctx, fileID)
+					}
+					reads++
+					return nil, fmt.Errorf("detail: %w", &v115open.OpenAPIError{Code: code, HTTPStatus: 200})
+				}
+				for range 2 {
+					if err := f.manager.cleanupStale(t.Context(), f.source, f.api); err != nil {
+						t.Fatal(err)
+					}
+					if reads != 1 || len(f.deleted) != 0 || len(f.manager.operations) != 0 {
+						t.Fatalf("已消失目录应释放记录且不再查询或删除：reads=%d，deleted=%v", reads, f.deleted)
+					}
+				}
+			})
+		})
+	}
+}
+
 func TestCleanupStaleConcurrentSweepsCannotReclaimRequeuedRecord(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := failedCleanupFixture(t, 2)
@@ -412,6 +441,10 @@ func TestRemoveOperationRechecksOwnershipAgeAndDeletionResult(t *testing.T) {
 		{name: "目标变为文件", created: true, change: func(d *v115open.FileDetail) { d.FileCategory, d.Path = v115open.TypeFile, "/媒体/多端播放" }, wantErr: true},
 		{name: "目录详情已删除视为成功", detailErr: &v115open.OpenAPIError{Code: 231011}},
 		{name: "删除接口已删除视为成功", delErr: &v115open.OpenAPIError{Code: 231011}, wantDelete: true},
+		{name: "目录详情不存在视为成功", detailErr: &v115open.OpenAPIError{Code: 430004}},
+		{name: "删除接口不存在视为成功", delErr: &v115open.OpenAPIError{Code: 430004}, wantDelete: true},
+		{name: "未知详情错误保留", detailErr: &v115open.OpenAPIError{Code: 20018}, wantErr: true},
+		{name: "删除限流保留", delErr: &v115open.OpenAPIError{Code: 590075}, wantDelete: true, wantErr: true},
 		{name: "未确认删除成功不能吞错", falseDel: true, wantDelete: true, wantErr: true},
 		{name: "维护详情时间未知保留", stale: true, change: func(d *v115open.FileDetail) { d.Utime, d.Ptime = "", "" }, wantErr: true},
 		{name: "维护扫描后刚被修改保留", stale: true, change: func(d *v115open.FileDetail) { d.Utime = fmt.Sprint(time.Now().Unix()) }},

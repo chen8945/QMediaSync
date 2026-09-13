@@ -3,6 +3,7 @@ package playback
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path"
 	"strings"
 	"time"
@@ -40,8 +41,8 @@ func (m *Manager) cleanup(ctx context.Context, source SourceKey, dir operationDi
 	}()
 }
 
-// CleanupStale 先重试本进程已知目录，再回收保留根目录下超过一小时的非活跃操作目录。
-// 扫描先完整列出候选再删除，不创建缺失的根目录；每账号限时一分钟、每次删除最多十秒。
+// CleanupStale 重试已知目录、回收保留根目录下的过期目录，再永久删除归属已核验的回收站目录。
+// 各阶段先完整列出候选再删除，不创建缺失根目录；每账号共用一分钟预算、每次删除最多十秒。
 func (m *Manager) CleanupStale(ctx context.Context, source SourceKey, client *v115open.OpenClient) error {
 	return m.cleanupStale(ctx, source, playbackCalls(client))
 }
@@ -117,6 +118,9 @@ func (m *Manager) cleanupStale(ctx context.Context, source SourceKey, api copyCa
 				return err
 			}
 		}
+	}
+	if err := m.cleanupRecycle(ctx, source, rootID, api); err != nil {
+		return errors.Join(cleanupErr, fmt.Errorf("回收站清理失败：%w", err))
 	}
 	return cleanupErr
 }
