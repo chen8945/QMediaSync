@@ -80,6 +80,9 @@ func TestOpenClient_GetDownloadUrlResultPreservesRemoteIdentity(t *testing.T) {
 	if result.URL != "https://download.example/movie.mkv" || result.FileName != "movie.mkv" || result.PickCode != "pick-code" || result.Sha1 != "remote-sha1" {
 		t.Fatalf("下载地址结果 = %+v", result)
 	}
+	if result.FileID != "file-id" || result.FileSize.String() != "123" {
+		t.Fatalf("下载地址丢失了文件 ID 或大小：%#v", result)
+	}
 
 	req := receiveCapturedRequest(t, transport)
 	if req.Method != http.MethodPost {

@@ -132,6 +132,9 @@ func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGe
 	if err != nil {
 		return nil, err
 	}
+	if file.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(file.GetFullRemotePath()) {
+		return nil, fmt.Errorf("115 多端播放临时目录不参与 STRM 生成：%s", file.GetFullRemotePath())
+	}
 	if file.IsVideo {
 		unlock := lockStrmTarget(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
 		defer unlock()
@@ -499,6 +502,9 @@ func (service *StrmGenerationService) expandDirectoryScanChildren(ctx context.Co
 		return 0, ctx.Err()
 	default:
 	}
+	if syncer.Account != nil && syncer.Account.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(directoryPath) {
+		return 0, nil
+	}
 	fileItems, err := syncer.SyncDriver.GetNetFileFiles(ctx, directoryPath, directoryID)
 	if err != nil {
 		return 0, fmt.Errorf("获取远端目录文件列表失败：%w", err)
@@ -517,6 +523,9 @@ func (service *StrmGenerationService) expandDirectoryScanChildren(ctx context.Co
 		}
 		if file.Path == "" {
 			file.Path = directoryPath
+		}
+		if file.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(file.GetFullRemotePath()) {
+			continue
 		}
 		if file.FileType == v115open.TypeDir {
 			childPath := normalizeStrmRemotePath(file.GetFullRemotePath())

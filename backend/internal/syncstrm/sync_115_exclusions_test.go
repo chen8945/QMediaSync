@@ -1,6 +1,7 @@
 package syncstrm
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,6 +25,9 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 		{id: "regex-ancestor", name: "Season 2", path: "Media/.hidden", excluded: true},
 		{id: "partial", name: "MyExtras", path: "Media"},
 		{id: "case-sensitive", name: "Sample", path: "Media"},
+		{id: "playback", name: "多端播放", path: "/", excluded: true},
+		{id: "playback-child", name: "child", path: "多端播放", excluded: true},
+		{id: "playback-nested-name", name: "多端播放", path: "Media"},
 	}
 	var preloaded []pathQueueItem
 	for _, directory := range directories {
@@ -55,8 +59,8 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 			t.Cleanup(syncer.Cancel)
 			syncer.sync115 = &Sync115{}
 			if mode == "读取已有目录" {
-				if count := syncer.GetExistsPath(); count != 5 {
-					t.Fatalf("加载目录数 = %d，期望 5", count)
+				if count := syncer.GetExistsPath(); count != 6 {
+					t.Fatalf("加载目录数 = %d，期望 6", count)
 				}
 			} else {
 				syncer.SyncDriver = &fakeDirectoryScanDriver{
@@ -80,6 +84,96 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 					t.Errorf("目录 %s：已加载=%v，已排除=%v，缓存=%+v，期望排除=%v",
 						directory.id, exists, excluded, cached, directory.excluded)
 				}
+			}
+		})
+	}
+}
+
+func TestPlaybackDirectoryIsExcludedFromLocalSyncComparison(t *testing.T) {
+	account, syncPath := setupStrmExclusionTestDB(t)
+	for _, source := range []models.SourceType{models.SourceType115, models.SourceTypeBaiduPan} {
+		t.Run(string(source), func(t *testing.T) {
+			account.SourceType = source
+			target := t.TempDir()
+			paths := []string{
+				"多端播放/child/movie.strm", "多端播放/child/movie.nfo",
+				"Media/多端播放/movie.strm", "Media/多端播放/movie.nfo",
+			}
+			for _, name := range paths {
+				path := filepath.Join(target, name)
+				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("original"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			syncer := newSyncStrm(account, syncPath.ID, "/", "0", target, SyncStrmConfig{
+				MetaExt: []string{".nfo"}, EnableDownloadMeta: 1,
+				NetNotFoundFileAction: models.SyncTreeItemMetaActionDelete,
+			}, false, 0, false, false)
+			if syncer == nil {
+				t.Fatal("创建同步器失败")
+			}
+			t.Cleanup(syncer.Cancel)
+			if err := syncer.compareLocalFilesWithTempTable(); err != nil {
+				t.Fatal(err)
+			}
+			for i, name := range paths {
+				data, err := os.ReadFile(filepath.Join(target, name))
+				if source == models.SourceType115 && i < 2 {
+					if err != nil || string(data) != "original" {
+						t.Errorf("临时目录本地镜像不应被处理：%s，err=%v", name, err)
+					}
+				} else if !os.IsNotExist(err) {
+					t.Errorf("普通路径应沿用远端缺失时的删除行为：%s，err=%v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func Test115PathCompletionExcludesPlaybackDirectory(t *testing.T) {
+	account, syncPath := setupStrmExclusionTestDB(t)
+	for _, tt := range []struct {
+		name      string
+		parents   []v115open.FileDetailPath
+		directory string
+		wantPath  string
+	}{
+		{name: "临时目录", directory: "多端播放"},
+		{name: "临时目录子树", parents: []v115open.FileDetailPath{{FileId: "playback", Name: "多端播放"}}, directory: "child"},
+		{name: "同名非根目录", parents: []v115open.FileDetailPath{{FileId: "media", Name: "Media"}}, directory: "多端播放", wantPath: "Media/多端播放"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			syncer := newSyncStrm(account, syncPath.ID, "/", "0", t.TempDir(), SyncStrmConfig{}, false, 0, false, false)
+			if syncer == nil {
+				t.Fatal("创建同步器失败")
+			}
+			t.Cleanup(syncer.Cancel)
+			syncer.sync115 = &Sync115{}
+			if err := syncer.memSyncCache.Insert(&SyncFileCache{
+				FileId: "movie", ParentId: "directory", FileName: "movie.mkv",
+				FileType: v115open.TypeFile, SourceType: models.SourceType115, IsVideo: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			syncer.SyncDriver = &fakeDirectoryScanDriver{detailsByID: map[string]*SyncFileCache{
+				"directory": {
+					FileId: "directory", FileName: tt.directory,
+					Paths: append([]v115open.FileDetailPath{{FileId: "0"}}, tt.parents...),
+				},
+			}}
+			if err := syncer.Start115PathDispathcer(); err != nil {
+				t.Fatal(err)
+			}
+			file, _ := syncer.memSyncCache.GetByFileId("movie")
+			if tt.wantPath == "" {
+				if file != nil || syncer.memSyncCache.Count() != 0 {
+					t.Fatalf("临时目录的文件或目录仍留在同步缓存：%+v", file)
+				}
+			} else if file == nil || file.Path != tt.wantPath {
+				t.Fatalf("普通目录文件未完成路径补齐：%+v，期望 %s", file, tt.wantPath)
 			}
 		})
 	}

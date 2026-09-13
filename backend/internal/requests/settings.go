@@ -211,19 +211,20 @@ func (r UpdateThreadsRequest) ToModel(base models.SettingThreadAndRapidWait) mod
 
 // UpdateStrmConfigRequest 更新 STRM 配置请求。
 type UpdateStrmConfigRequest struct {
-	LocalProxy          int      `form:"local_proxy" json:"local_proxy"`
-	StrmBaseURL         string   `form:"strm_base_url" json:"strm_base_url" binding:"required"`
-	Cron                string   `form:"cron" json:"cron" binding:"required"`
-	MinVideoSize        int64    `form:"min_video_size" json:"min_video_size"`
-	VideoExtArr         []string `json:"video_ext_arr"`
-	MetaExtArr          []string `form:"meta_ext_arr" json:"meta_ext_arr"`
-	ExcludeNameArr      []string `form:"exclude_name_arr" json:"exclude_name_arr"`
-	ExcludeNameRegexArr []string `form:"exclude_name_regex_arr" json:"exclude_name_regex_arr"`
-	UploadMeta          int      `form:"upload_meta" json:"upload_meta"`
-	DownloadMeta        int      `form:"download_meta" json:"download_meta"`
-	DeleteDir           int      `form:"delete_dir" json:"delete_dir"`
-	AddPath             int      `form:"add_path" json:"add_path"`
-	CheckMetaMtime      int      `form:"check_meta_mtime" json:"check_meta_mtime"`
+	MultiPlaybackEnabled int      `form:"multi_playback_enabled" json:"multi_playback_enabled"`
+	LocalProxy           int      `form:"local_proxy" json:"local_proxy"`
+	StrmBaseURL          string   `form:"strm_base_url" json:"strm_base_url" binding:"required"`
+	Cron                 string   `form:"cron" json:"cron" binding:"required"`
+	MinVideoSize         int64    `form:"min_video_size" json:"min_video_size"`
+	VideoExtArr          []string `json:"video_ext_arr"`
+	MetaExtArr           []string `form:"meta_ext_arr" json:"meta_ext_arr"`
+	ExcludeNameArr       []string `form:"exclude_name_arr" json:"exclude_name_arr"`
+	ExcludeNameRegexArr  []string `form:"exclude_name_regex_arr" json:"exclude_name_regex_arr"`
+	UploadMeta           int      `form:"upload_meta" json:"upload_meta"`
+	DownloadMeta         int      `form:"download_meta" json:"download_meta"`
+	DeleteDir            int      `form:"delete_dir" json:"delete_dir"`
+	AddPath              int      `form:"add_path" json:"add_path"`
+	CheckMetaMtime       int      `form:"check_meta_mtime" json:"check_meta_mtime"`
 }
 
 // Validate 校验 STRM 配置请求。
@@ -247,6 +248,9 @@ func (r UpdateStrmConfigRequest) Validate() error {
 		return err
 	}
 	if err := validation.OneOfInt("local_proxy", r.LocalProxy, []int{0, 1}); err != nil {
+		return err
+	}
+	if err := validation.OneOfInt("multi_playback_enabled", r.MultiPlaybackEnabled, []int{0, 1}); err != nil {
 		return err
 	}
 	if err := validation.OneOfInt("upload_meta", r.UploadMeta, []int{0, 1, 2}); err != nil {

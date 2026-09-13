@@ -38,6 +38,30 @@ func TestValidFileHonorsNameAndParentExclusions(t *testing.T) {
 	}
 }
 
+func TestPlaybackDirectoryExclusionOnlyAppliesTo115(t *testing.T) {
+	for _, source := range []models.SourceType{
+		models.SourceType115, models.SourceTypeBaiduPan, models.SourceTypeOpenList, models.SourceTypeLocal,
+	} {
+		t.Run(string(source), func(t *testing.T) {
+			syncer := &SyncStrm{
+				Account: &models.Account{SourceType: source},
+				Sync:    &models.Sync{Logger: &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}},
+				Config:  SyncStrmConfig{VideoExt: []string{".mkv"}},
+			}
+			for _, parent := range []string{"/多端播放", "多端播放/child", "/Media/多端播放"} {
+				file := &SyncFileCache{FileName: "movie.mkv", Path: parent, ParentId: parent, SourceType: source}
+				wantExcluded := source == models.SourceType115 && parent != "/Media/多端播放"
+				if got := syncer.IsExcludePath(parent); got != wantExcluded {
+					t.Errorf("IsExcludePath(%q) = %v，期望 %v", parent, got, wantExcluded)
+				}
+				if got := syncer.ValidFile(file); got == wantExcluded {
+					t.Errorf("ValidFile(%q) = %v，期望 %v", parent, got, !wantExcluded)
+				}
+			}
+		})
+	}
+}
+
 func TestRegexExclusionMatching(t *testing.T) {
 	tests := []struct {
 		name     string

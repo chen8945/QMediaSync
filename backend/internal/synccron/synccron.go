@@ -12,6 +12,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/notificationmanager"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/scrape"
 	"qmediasync/internal/v115open"
 
@@ -66,6 +67,40 @@ var ScrapeCron *cron.Cron
 var TokenCron *cron.Cron
 
 var tokenRefreshRunning int32 = 0
+
+var playbackCleanupRunning atomic.Bool
+
+// cleanup115PlaybackAccount 使用该轮账号快照，维护与播放共享同一个操作目录登记器。
+var cleanup115PlaybackAccount = func(ctx context.Context, account models.Account) error {
+	client := v115open.NewPlaybackClient(account.ID, account.AppId, account.Token, account.RefreshToken)
+	return playback.DefaultManager.CleanupStale(ctx,
+		playback.SourceKey{AccountID: account.ID, UserID: account.UserId}, client,
+	)
+}
+
+func cleanup115PlaybackDirectories(ctx context.Context) {
+	if !playbackCleanupRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer playbackCleanupRunning.Store(false)
+	accounts, err := models.GetAllAccount()
+	if err != nil {
+		helpers.AppLogger.Errorf("读取 115 多端播放清理账号失败：%v", err)
+		return
+	}
+	for _, account := range accounts {
+		if ctx.Err() != nil {
+			return
+		}
+		if account.SourceType != models.SourceType115 || account.Token == "" || account.UserId == "" {
+			continue
+		}
+		// 开关关闭后仍回收历史残留；每个账号的扫描预算由播放编排器负责。
+		if err := cleanup115PlaybackAccount(ctx, account); err != nil {
+			helpers.AppLogger.Warnf("115 多端播放定时清理失败：账号=%d，错误=%v", account.ID, err)
+		}
+	}
+}
 
 func selectScheduledEmbySyncMode(config *models.EmbyConfig, now time.Time) string {
 	if config == nil || config.EnableDailyFirstFullSync != 1 {
@@ -498,6 +533,7 @@ func InitCron() {
 		} else {
 			helpers.AppLogger.Infof("已清理 24 小时前的请求统计数据")
 		}
+		cleanup115PlaybackDirectories(context.Background())
 	})
 	GlobalCron.AddFunc("0 4 * * *", func() {
 		// 每天 4 点补齐数据库表结构，并检查 PostgreSQL 主键序列

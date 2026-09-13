@@ -19,6 +19,10 @@ type QueuedRequest struct {
 	Request *resty.Request
 	// 是否绕过速率限制（播放请求等）
 	BypassRateLimit bool
+	// 播放编排请求遇到全局限流立即返回，并省略响应体日志。
+	Playback bool
+	// 本地账号 ID，仅用于关联播放阶段日志，不包含凭据。
+	AccountID uint
 	// 响应数据接收通道
 	ResponseChan chan *RequestResponse
 	// 创建时间

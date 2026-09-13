@@ -94,11 +94,9 @@
 | 60 | 61 | 分离上传、下载队列的远端完整路径、文件 ID、PickCode 与哈希；迁移隐藏下载执行定位字段，并删除上传任务旧的 `completed_remote_file_id`、`completed_pick_code` 列。为活跃上传任务及可可靠定位的活跃下载任务补齐部分唯一索引；下载键以范围和定位值的 SHA-256 摘要存储，避免将签名直链写入索引。旧 115 下载任务的 `remote_file_id` 先回填为 `remote_pick_code`；关联 `SyncFile` 只有提供非空 PickCode 时才能覆盖该值，部分迁移重试优先保留已写入的 `remote_pick_code`。 |
 | 61 | 62 | 为 `account.name` 和 `account.user_id` 创建非空条件唯一索引；迁移前检查已有重复值，发现重复时保留数据、停留在旧版本并记录诊断信息，不静默改写账号关联。 |
 | 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
-| 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`；迁移重试保留已有有效值，补齐旧记录的默认上传并发数。 |
+| 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`，以及全局 `multi_playback_enabled`，默认 `0`；迁移重试保留已有值，仅补齐缺列和默认值。 |
 
 当前数据库版本是 `64`。
-
-`62 → 63` 对已有表只添加正则列并回填空值，不整体重建表；已有正则值及其他配置均保留，迁移重试不会覆盖已保存的规则。
 
 ## 不变量
 
@@ -172,7 +170,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `63`。
+- `version_code`：当前数据库版本号，当前值为 `64`。
 
 ### `users`
 
@@ -254,6 +252,7 @@ API Key 认证表。
 STRM 相关字段：
 
 - `local_proxy`：全局本地代理开关，只接受 `0`（关闭）或 `1`（开启）。同步目录自定义 STRM 配置才额外接受 `-1`，表示继承这里的全局值。
+- `multi_playback_enabled`：全局 115 多端直链播放开关，只接受 `0` 或 `1`，默认 `0`。字段直接属于 `Settings`，不进入共享 `SettingStrm` 或 `sync_paths`；编辑和智能跳过规则见 [115 多端播放](../operations/configuration.md#115-多端播放)。
 - `strm_base_url`：生成 STRM 的基础地址。
 - `cron`：定时任务表达式。
 - `min_video_size`：最小视频大小，单位字节。

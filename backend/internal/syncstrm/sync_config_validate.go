@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 )
 
@@ -127,6 +128,9 @@ func (s *SyncStrm) IsExcludeName(filename string) bool {
 }
 
 func (s *SyncStrm) IsExcludePath(path string) bool {
+	if s.Account != nil && s.Account.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(path) {
+		return true
+	}
 	// 分隔路径
 	pathParts := strings.Split(filepath.ToSlash(path), "/")
 	for _, part := range pathParts {

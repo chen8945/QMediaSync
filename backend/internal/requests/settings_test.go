@@ -281,6 +281,12 @@ func TestUpdateStrmConfigRequestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "合法 STRM 配置通过"},
+		{name: "允许启用多端播放", mutate: func(r *UpdateStrmConfigRequest) { r.MultiPlaybackEnabled = 1 }},
+		{name: "本地代理保留多端播放选择", mutate: func(r *UpdateStrmConfigRequest) {
+			r.LocalProxy, r.MultiPlaybackEnabled = 1, 1
+		}},
+		{name: "多端播放不允许继承值", mutate: func(r *UpdateStrmConfigRequest) { r.MultiPlaybackEnabled = -1 }, wantErr: true},
+		{name: "多端播放枚举错误失败", mutate: func(r *UpdateStrmConfigRequest) { r.MultiPlaybackEnabled = 2 }, wantErr: true},
 		{name: "全局 STRM 允许完整路径", mutate: func(r *UpdateStrmConfigRequest) { r.AddPath = 1 }},
 		{name: "全局 STRM 允许只添加文件名", mutate: func(r *UpdateStrmConfigRequest) { r.AddPath = 2 }},
 		{name: "全局 STRM 允许不添加路径", mutate: func(r *UpdateStrmConfigRequest) { r.AddPath = 3 }},

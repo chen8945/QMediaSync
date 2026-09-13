@@ -27,6 +27,29 @@ type FileDetailPath struct {
 	Name   string `json:"file_name"`
 }
 
+// UnmarshalJSON 兼容详情父目录 ID 的字符串和官方数字形态，不经浮点数转换。
+func (p *FileDetailPath) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		FileID json.RawMessage `json:"file_id"`
+		Name   string          `json:"file_name"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var id string
+	if len(raw.FileID) > 0 {
+		if err := json.Unmarshal(raw.FileID, &id); err != nil {
+			var number json.Number
+			if err := json.Unmarshal(raw.FileID, &number); err != nil {
+				return fmt.Errorf("解析 115 父目录 ID 失败：%w", err)
+			}
+			id = number.String()
+		}
+	}
+	p.FileId, p.Name = id, raw.Name
+	return nil
+}
+
 type File struct {
 	FileId       string      `json:"fid"`  // 文件 ID
 	Aid          string      `json:"aid"`  // 文件的状态，aid 的别名。1 正常，7 删除（回收站），120 彻底删除
@@ -102,6 +125,18 @@ type FileListOptions struct {
 	Asc   string
 }
 
+// CopyCandidate 是复制响应中可解析的候选身份，调用方仍须核对目标目录和文件内容。
+type CopyCandidate struct {
+	FileID   string
+	PickCode string
+}
+
+// CopyResult 保留复制接口的原始 data；官方尚未约定数组元素的完整结构。
+type CopyResult struct {
+	Candidates []CopyCandidate
+	Data       json.RawMessage
+}
+
 func (d *FileDetail) GetFullPath() string {
 	// 生成完整路径
 	baseDir := make([]string, 0, len(d.Paths))
@@ -149,6 +184,10 @@ func (c *OpenClient) GetFsListWithOptions(ctx context.Context, fileId string, sh
 	}
 	if options.Asc != "" {
 		data["asc"] = options.Asc
+	}
+	if options.Order != "" || options.Asc != "" {
+		// 未显式启用自定义排序时，115 会静默沿用网盘目录保存的排序规则。
+		data["custom_order"] = "2"
 	}
 	url := fmt.Sprintf("%s/open/ufile/files", OPEN_BASE_URL)
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
@@ -236,6 +275,10 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
 	var respData *FileDetail = &FileDetail{}
 	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), respData)
+	if err != nil {
+		helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+		return nil, err
+	}
 	resp := &RespBaseBool[json.RawMessage]{}
 	// helpers.V115Log.Debugf("调用文件详情接口，fileId：%s => %s", fileId, string(bodyBytes))
 	bodyErr := json.Unmarshal(bodyBytes, &resp)
@@ -246,10 +289,6 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 	if resp.Code != 0 {
 		// helpers.V115Log.Errorf("文件 %s 不存在：%v", fileId, err)
 		return nil, fmt.Errorf("错误码=%d，消息=%s", resp.Code, resp.Message)
-	}
-	if err != nil {
-		helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
-		return nil, err
 	}
 	if respData.FileId == "" {
 		return nil, fmt.Errorf("115 返回空数据")
@@ -317,28 +356,93 @@ func (c *OpenClient) Move(ctx context.Context, fileIds []string, toFileId string
 // POST 域名 + /open/ufile/copy
 // 多个文件用半角逗号分隔
 func (c *OpenClient) Copy(ctx context.Context, fileIds []string, toFileId string, overwrite bool) (bool, error) {
+	resp, err := c.copyFiles(ctx, fileIds, toFileId, overwrite)
+	if err != nil {
+		return false, err
+	}
+	return resp.State, nil
+}
+
+// CopyWithResult 复制文件并保留候选新文件身份，allowDuplicates 为 true 时发送 nodupli=0。
+func (c *OpenClient) CopyWithResult(ctx context.Context, fileIDs []string, targetID string, allowDuplicates bool) (*CopyResult, error) {
+	if len(fileIDs) == 0 || strings.TrimSpace(targetID) == "" {
+		return nil, fmt.Errorf("复制文件 ID 和目标目录 ID 不能为空")
+	}
+	for _, id := range fileIDs {
+		if strings.TrimSpace(id) == "" {
+			return nil, fmt.Errorf("复制文件 ID 不能为空")
+		}
+	}
+	resp, err := c.copyFiles(ctx, fileIDs, targetID, allowDuplicates)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.State {
+		return nil, NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件复制失败")
+	}
+	result := &CopyResult{Data: resp.Data}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(resp.Data, &entries); err != nil {
+		return result, nil
+	}
+	for _, entry := range entries {
+		var fields struct {
+			FileID   json.RawMessage `json:"file_id"`
+			PickCode string          `json:"pick_code"`
+		}
+		candidate := CopyCandidate{}
+		if err := json.Unmarshal(entry, &fields); err == nil && len(fields.FileID) > 0 {
+			candidate.FileID = copyFileID(fields.FileID)
+			candidate.PickCode = fields.PickCode
+		} else {
+			candidate.FileID = copyFileID(entry)
+		}
+		if candidate.FileID != "" {
+			result.Candidates = append(result.Candidates, candidate)
+		}
+	}
+	return result, nil
+}
+
+func copyFileID(raw json.RawMessage) string {
+	var id json.Number
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return ""
+	}
+	value := id.String()
+	if value == "" || strings.Trim(value, "0") == "" {
+		return ""
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return ""
+		}
+	}
+	return value
+}
+
+func (c *OpenClient) copyFiles(ctx context.Context, fileIDs []string, targetID string, allowDuplicates bool) (*RespBaseBool[json.RawMessage], error) {
 	data := make(map[string]string)
-	data["file_id"] = strings.Join(fileIds, ",")
-	data["pid"] = toFileId
-	if overwrite {
+	data["file_id"] = strings.Join(fileIDs, ",")
+	data["pid"] = targetID
+	if allowDuplicates {
 		data["nodupli"] = "0"
 	} else {
 		data["nodupli"] = "1"
 	}
 	url := fmt.Sprintf("%s/open/ufile/copy", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	respData := RespBaseBool[interface{}]{}
+	respData := RespBaseBool[json.RawMessage]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
 		helpers.V115Log.Errorf("调用文件复制接口失败：%v", err)
-		return false, err
+		return nil, err
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
-	if jsonErr != nil || !respData.State {
-		helpers.V115Log.Errorf("复制文件失败：%+v => %s：%v", fileIds, toFileId, jsonErr)
-		return false, jsonErr
+	if jsonErr != nil {
+		return nil, jsonErr
 	}
-	return respData.State, nil
+	return &respData, nil
 }
 
 // 批量删除文件（夹）
@@ -355,7 +459,9 @@ func (c *OpenClient) Del(ctx context.Context, fileIds []string, parentFileId str
 	respData := RespBaseBool[interface{}]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件删除接口失败：%v", err)
+		if !c.playback || !IsAlreadyDeleted(err) {
+			helpers.V115Log.Errorf("调用文件删除接口失败：%v", err)
+		}
 		return false, err
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)

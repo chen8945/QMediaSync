@@ -18,6 +18,91 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestStrmConfigMultiPlaybackSave(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings, originalLogger := models.SettingsGlobal, helpers.AppLogger
+	t.Cleanup(func() {
+		models.SettingsGlobal, helpers.AppLogger = originalSettings, originalLogger
+	})
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	for _, tt := range []struct {
+		name                  string
+		previous, next, proxy int
+		failWrite             bool
+	}{
+		{name: "启用并读回", next: 1},
+		{name: "代理开启保留多端播放", next: 1, proxy: 1},
+		{name: "关闭并读回", previous: 1},
+		{name: "启用失败保留全部设置", next: 1, proxy: 1, failWrite: true},
+		{name: "关闭失败保留全部设置", previous: 1, failWrite: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupControllerTestDB(t, &models.Settings{})
+			models.SettingsGlobal = &models.Settings{
+				MultiPlaybackEnabled: tt.previous,
+				SettingStrm:          models.SettingStrm{Cron: "0 * * * *", StrmBaseUrl: "http://old.local"},
+			}
+			if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
+				t.Fatal(err)
+			}
+			previous := *models.SettingsGlobal
+			if tt.failWrite {
+				if err := db.Db.Exec(`CREATE TRIGGER fail_strm_update BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'test write failure'); END`).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			router := gin.New()
+			router.POST("/setting/strm-config", UpdateStrmConfig)
+			router.GET("/setting/strm-config", GetStrmConfig)
+			body, err := json.Marshal(map[string]any{
+				"strm_base_url": "http://new.local", "cron": previous.Cron, "add_path": 3,
+				"local_proxy": tt.proxy, "multi_playback_enabled": tt.next,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/setting/strm-config", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			var result APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			var stored models.Settings
+			if err := db.Db.First(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tt.failWrite {
+				if response.Code != http.StatusOK || result.Code != BadRequest {
+					t.Fatalf("保存失败应返回业务错误：HTTP %d，%s", response.Code, response.Body)
+				}
+				if !reflect.DeepEqual(*models.SettingsGlobal, previous) || !reflect.DeepEqual(stored, previous) {
+					t.Fatal("保存失败不能修改运行时或数据库中的任意 STRM 设置")
+				}
+				return
+			}
+			if response.Code != http.StatusOK || result.Code != Success {
+				t.Fatalf("保存失败：HTTP %d，%s", response.Code, response.Body)
+			}
+			for _, settings := range []*models.Settings{models.SettingsGlobal, &stored} {
+				if settings.MultiPlaybackEnabled != tt.next || settings.LocalProxy != tt.proxy || settings.StrmBaseUrl != "http://new.local" {
+					t.Fatal("多端播放、本地代理和原有 STRM 字段应一起保存")
+				}
+			}
+			response = httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
+			var loaded APIResponse[models.Settings]
+			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Code != Success || loaded.Data.MultiPlaybackEnabled != tt.next || loaded.Data.LocalProxy != tt.proxy {
+				t.Fatalf("设置读回与保存值不一致：%s", response.Body)
+			}
+		})
+	}
+}
+
 func TestStrmConfigRegexSaveRoundTripAndValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originalSettings, originalLogger := models.SettingsGlobal, helpers.AppLogger

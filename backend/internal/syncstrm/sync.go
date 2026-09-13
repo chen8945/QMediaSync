@@ -715,6 +715,15 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					s.Sync.Logger.Infof("跳过文件 %s，错误：%v", path, err)
 					return nil
 				}
+				if s.Account.SourceType == models.SourceType115 {
+					remotePath, relErr := filepath.Rel(s.TargetPath, path)
+					if relErr == nil && helpers.IsV115PlaybackPath(remotePath) {
+						if info.IsDir() {
+							return filepath.SkipDir
+						}
+						return nil
+					}
+				}
 				if info.IsDir() {
 					if s.Config.DelEmptyLocalDir {
 						// 如果目录是空的则删除目录

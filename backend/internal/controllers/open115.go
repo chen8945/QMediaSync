@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/v115auth"
 	"qmediasync/internal/v115open"
@@ -36,22 +37,29 @@ type KeyLockWithTimeout struct {
 
 // LockWithTimeout 尝试获取锁，如果超时则返回 false
 func (kl *KeyLockWithTimeout) LockWithTimeout(key string, timeout time.Duration) bool {
+	return kl.lockContext(context.Background(), key, timeout)
+}
+
+func (kl *KeyLockWithTimeout) lockContext(ctx context.Context, key string, timeout time.Duration) bool {
 	kl.global.Lock()
 	mutex, _ := kl.mutexes.LoadOrStore(key, &sync.Mutex{})
 	kl.global.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		if mutex.(*sync.Mutex).TryLock() {
+			return true
+		}
 		select {
 		case <-ctx.Done():
-			return false // 超时
-		default:
-			if mutex.(*sync.Mutex).TryLock() {
-				return true // 成功获取锁
-			}
-			time.Sleep(10 * time.Millisecond) // 短暂等待后重试
+			return false
+		case <-ticker.C:
 		}
 	}
 }
@@ -141,8 +149,8 @@ func GetFileDetail(c *gin.Context) {
 var keyLock KeyLockWithTimeout
 
 const (
-	v115URLCacheModeDirect = "direct"
-	v115URLCacheModeProxy  = "proxy"
+	v115URLCacheModeDirect = playback.ModeDirect
+	v115URLCacheModeProxy  = playback.ModeProxy
 
 	v115URLValidityCheckMaxWait = time.Duration(models.MaxURLValidityCheckTimeoutSeconds) * time.Second
 )
@@ -229,16 +237,13 @@ func Get115UrlByPickCode(c *gin.Context) {
 		// helpers.AppLogger.Infof("通过用户 ID 查询到 115 账号：%s", account.Username)
 	}
 	requestUA := c.Request.UserAgent()
-	localProxy := 0
-	if models.SettingsGlobal != nil {
-		localProxy = models.SettingsGlobal.LocalProxy
-	}
+	localProxy, multiPlaybackEnabled := models.GetPlaybackSettings()
 	ua := v115EffectiveUA(req.Force, localProxy, requestUA)
 	client := account.Get115Client()
 	// helpers.AppLogger.Infof("检查是否具有直链播放标记， force=%d", req.Force)
 	cacheKey := v115URLCacheKey(pickCode, req.Force, localProxy, requestUA)
 	// helpers.AppLogger.Infof("准备获取 115 文件下载链接：PickCode=%s，ua=%s，8095 播放=%d，加锁 10 秒", pickCode, ua, req.Force)
-	if !keyLock.LockWithTimeout(cacheKey, v115URLCacheLockWait) {
+	if !keyLock.lockContext(c.Request.Context(), cacheKey, v115URLCacheLockWait) {
 		helpers.AppLogger.Warnf("获取 115 下载链接缓存锁超时：PickCode=%s，ua=%s", pickCode, ua)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接超时，请稍后重试", Data: nil})
 		return
@@ -251,7 +256,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 	}
 	cachedUrl := string(db.Cache.Get(cacheKey))
 	if cachedUrl != "" {
-		helpers.AppLogger.Infof("从缓存中查询到 115 下载链接：PickCode=%s，ua=%s => %s", pickCode, ua, cachedUrl)
+		helpers.AppLogger.Infof("命中 115 下载链接缓存：PickCode=%s，ua=%s", pickCode, ua)
 		if !models.IsURLValidityCheckEnabled() {
 			helpers.AppLogger.Infof("115 直链缓存有效性检查已关闭，直接使用缓存链接：PickCode=%s", req.PickCode)
 		} else if !checkURLValidity(cachedUrl, ua, v115URLValidityCheckTimeout(models.URLValidityCheckTimeout())) {
@@ -261,27 +266,29 @@ func Get115UrlByPickCode(c *gin.Context) {
 		}
 	}
 	if cachedUrl == "" {
-		cachedUrl = client.GetDownloadUrl(context.Background(), pickCode, ua, true)
+		source := playback.SourceKey{AccountID: account.ID, UserID: account.UserId, PickCode: pickCode}
+		slot := playback.Slot{Mode: v115URLPlaybackMode(req.Force, localProxy), UA: ua}
+		cachedUrl = resolve115URLMiss(c.Request.Context(), v115Playback, source, slot, cacheKey, multiPlaybackEnabled,
+			func(ctx context.Context) string { return client.GetDownloadUrl(ctx, pickCode, ua, true) },
+			func(ctx context.Context) (string, error) { return copy115URL(ctx, account, pickCode, ua) },
+		)
 		if cachedUrl == "" {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
 			return
 		}
-		helpers.AppLogger.Infof("从接口中查询到 115 下载链接：PickCode=%s，ua=%s => %s", pickCode, ua, cachedUrl)
-		// 缓存 50 分钟
-		db.Cache.Set(cacheKey, []byte(cachedUrl), 3000)
 	}
 	if req.Force == 0 {
 		if localProxy == 1 {
 			// 跳转到本地代理
-			helpers.AppLogger.Infof("通过本地代理访问 115 下载链接，Emby 端口播放：%s", cachedUrl)
+			helpers.AppLogger.Infof("通过本地代理访问 115 下载链接：PickCode=%s", pickCode)
 			proxyUrl := fmt.Sprintf("/proxy-115?url=%s", url.QueryEscape(cachedUrl))
 			c.Redirect(http.StatusFound, proxyUrl)
 		} else {
-			helpers.AppLogger.Infof("302 重定向到 115 下载链接，Emby 端口播放：%s", cachedUrl)
+			helpers.AppLogger.Infof("302 重定向到 115 下载链接：PickCode=%s", pickCode)
 			c.Redirect(http.StatusFound, cachedUrl)
 		}
 	} else {
-		helpers.AppLogger.Infof("302 重定向到 115 下载链接，直链播放：%s", cachedUrl)
+		helpers.AppLogger.Infof("302 重定向到 115 下载链接：PickCode=%s", pickCode)
 		c.Redirect(http.StatusFound, cachedUrl)
 	}
 }

@@ -101,13 +101,12 @@ func (s *SyncStrm) GetExistsPath() int64 {
 		}
 		// 将查询到的路径全部写入 existsPathes
 		for _, path := range pathes {
+			pathStr := filepath.ToSlash(filepath.Join(path.Path, path.FileName))
 			// 如果名字被排除，则不加入
-			if s.IsExcludeName(path.FileName) || s.IsExcludePath(path.Path) {
+			if s.IsExcludeName(path.FileName) || s.IsExcludePath(pathStr) {
 				s.sync115.excludePathId.Store(path.FileId, true)
 				continue
 			}
-			pathStr := filepath.Join(path.Path, path.FileName)
-			pathStr = filepath.ToSlash(pathStr)
 			// s.Sync.Logger.Infof("加载已存在路径：%s=>%s", path.FileId, pathStr)
 			s.sync115.existsPathes.Store(path.FileId, pathStr)
 			existsPathesCount++

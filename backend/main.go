@@ -29,6 +29,7 @@ import (
 	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/synccron"
 	"qmediasync/internal/syncstrm"
@@ -133,6 +134,15 @@ func (app *App) Stop() {
 	syncstrm.StopStrmGenerationWorker()
 	// 关闭定时任务（包含备份定时任务）
 	synccron.GlobalCron.Stop()
+	// 播放清理退出后再释放共享连接池；未完成的目录由下次定时维护回收。
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := playback.DefaultManager.Shutdown(cleanupCtx); err != nil {
+		helpers.AppLogger.Warnf("等待 115 多端播放清理退出失败：%v", err)
+	}
+	cancelCleanup()
+	if err := v115open.ClosePlaybackClient(); err != nil {
+		helpers.AppLogger.Warnf("关闭 115 播放客户端失败：%v", err)
+	}
 	// 停止统计写入 worker，并在关闭数据库前尽量刷完已入队记录。
 	if requestStatWriter != nil {
 		requestStatWriter.Close()

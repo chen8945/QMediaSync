@@ -1,6 +1,8 @@
 package synccron
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -46,6 +48,55 @@ func TestMain(m *testing.M) {
 func TestSyncRecordRetentionDays(t *testing.T) {
 	if syncRecordRetentionDays != 7 {
 		t.Fatalf("syncRecordRetentionDays = %d, want 7", syncRecordRetentionDays)
+	}
+}
+
+func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T) {
+	if err := db.Db.Where("1 = 1").Delete(&models.Account{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	accounts := []models.Account{
+		{Name: "playback-valid-a", SourceType: models.SourceType115, UserId: "playback-uid-a", AppId: "app-a", Token: "token-a", RefreshToken: "refresh-a"},
+		{Name: "playback-valid-b", SourceType: models.SourceType115, UserId: "playback-uid-b", AppId: "app-b", Token: "token-b", RefreshToken: "refresh-b"},
+		{Name: "playback-no-token", SourceType: models.SourceType115, UserId: "playback-uid-c"},
+		{Name: "playback-no-uid", SourceType: models.SourceType115, Token: "token"},
+		{Name: "playback-other-provider", SourceType: models.SourceType123, UserId: "playback-uid-d", Token: "token"},
+	}
+	for i := range accounts {
+		if err := db.Db.Create(&accounts[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	previousCleanup := cleanup115PlaybackAccount
+	t.Cleanup(func() {
+		cleanup115PlaybackAccount = previousCleanup
+		if err := db.Db.Where("1 = 1").Delete(&models.Account{}).Error; err != nil {
+			t.Error(err)
+		}
+	})
+	seen := make(map[uint]models.Account)
+	cleanup115PlaybackAccount = func(ctx context.Context, account models.Account) error {
+		// Cron 重载或重复触发不能同时清理同一批账号。
+		cleanup115PlaybackDirectories(ctx)
+		seen[account.ID] = account
+		return errors.New("temporary cleanup failure")
+	}
+	cleanup115PlaybackDirectories(t.Context())
+	if len(seen) != 2 {
+		t.Fatalf("清理账号数 = %d，期望 2，单账号失败不能阻止后续账号", len(seen))
+	}
+	for _, expected := range accounts[:2] {
+		got := seen[expected.ID]
+		if got.UserId != expected.UserId || got.AppId != expected.AppId || got.Token != expected.Token || got.RefreshToken != expected.RefreshToken {
+			t.Fatalf("账号 %d 没有使用一致的凭据快照", expected.ID)
+		}
+	}
+	clear(seen)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cleanup115PlaybackDirectories(ctx)
+	if len(seen) != 0 {
+		t.Fatal("已取消的维护不能继续调用网盘接口")
 	}
 }
 

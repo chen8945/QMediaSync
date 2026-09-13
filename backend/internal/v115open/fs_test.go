@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,17 @@ func TestFileDetailModifiedAtAndFolderCount(t *testing.T) {
 	detail.Utime = "invalid"
 	if got := detail.ModifiedAt(); got != 100 {
 		t.Fatalf("无效 utime 回退结果 = %d，期望 100", got)
+	}
+}
+
+func TestFileDetailPathsAcceptOfficialNumericIDs(t *testing.T) {
+	var detail FileDetail
+	err := json.Unmarshal([]byte(`{"paths":[{"file_id":0,"file_name":"根目录"},{"file_id":2323423573680609857,"file_name":"多端播放"},{"file_id":"legacy-id","file_name":"旧字符串"}]}`), &detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Paths) != 3 || detail.Paths[0].FileId != "0" || detail.Paths[1].FileId != "2323423573680609857" || detail.Paths[2].FileId != "legacy-id" {
+		t.Fatalf("详情路径 ID 解析错误：%#v", detail.Paths)
 	}
 }
 
@@ -135,6 +147,40 @@ func mustParseURLPath(t *testing.T, rawURL string) string {
 	return parsedURL.Path
 }
 
+func TestGetFsListWithOptionsEnablesExplicitOrdering(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, tt := range []struct {
+		name        string
+		options     FileListOptions
+		customOrder string
+	}{
+		{name: "默认排序不覆盖网盘设置"},
+		{name: "完整排序", options: FileListOptions{Order: "user_ptime", Asc: "0"}, customOrder: "2"},
+		{name: "仅排序字段", options: FileListOptions{Order: "file_name"}, customOrder: "2"},
+		{name: "仅排序方向", options: FileListOptions{Asc: "1"}, customOrder: "2"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := newCaptureOpenAPITransport(`{"state":true,"data":[]}`)
+			client := newTestOpenClient(transport)
+			if _, err := client.GetFsListWithOptions(t.Context(), "123", true, false, true, 0, 20, tt.options); err != nil {
+				t.Fatal(err)
+			}
+			request := receiveCapturedRequest(t, transport)
+			endpoint, err := url.Parse(request.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := endpoint.Query()
+			if query.Get("custom_order") != tt.customOrder || query.Get("o") != tt.options.Order || query.Get("asc") != tt.options.Asc {
+				t.Fatalf("排序参数错误：%v", query)
+			}
+			if tt.customOrder == "" && (query.Has("custom_order") || query.Has("o") || query.Has("asc")) {
+				t.Fatal("空排序选项仍发送了排序参数")
+			}
+		})
+	}
+}
+
 func TestOpenClient_FileMutationEndpointsUseOfficialPaths(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -207,6 +253,75 @@ func TestOpenClient_FileMutationEndpointsUseOfficialPaths(t *testing.T) {
 			gotPath := mustParseURLPath(t, req.URL)
 			if gotPath != tt.wantPath {
 				t.Fatalf("请求路径 = %s，want %s", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestOpenClientCopyWithResultPreservesCandidateIdentity(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	tests := []struct {
+		name string
+		data string
+		want []CopyCandidate
+	}{
+		{name: "对象数组", data: `[{"file_id":"2323423573680609857","pick_code":"copy-pick"}]`, want: []CopyCandidate{{FileID: "2323423573680609857", PickCode: "copy-pick"}}},
+		{name: "数字 ID 数组不丢精度", data: `[2323423573680609857]`, want: []CopyCandidate{{FileID: "2323423573680609857"}}},
+		{name: "字符串 ID 数组", data: `["2323423573680609857"]`, want: []CopyCandidate{{FileID: "2323423573680609857"}}},
+		{name: "空数组是合法成功结果", data: `[]`},
+		{name: "对象数字 ID", data: `[{"file_id":2323423573680609857}]`, want: []CopyCandidate{{FileID: "2323423573680609857"}}},
+		{name: "未知对象保持原数据", data: `[{"source_id":"100","target_id":"200"}]`},
+		{name: "未知顶层保持原数据", data: `{"ids":[123]}`},
+		{name: "拒绝负数小数零和布尔值", data: `[-1,1.5,0,true,{"file_id":null}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := newCaptureOpenAPITransport(`{"state":true,"data":` + tt.data + `}`)
+			client := NewPlaybackClient(1, "app", "token", "refresh")
+			setPlaybackTestTransport(t, client, transport)
+			result, err := client.CopyWithResult(t.Context(), []string{"100"}, "200", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(result.Data) != tt.data || !reflect.DeepEqual(result.Candidates, tt.want) {
+				t.Fatalf("复制结果 = %#v，候选期望 %#v", result, tt.want)
+			}
+			req := receiveCapturedRequest(t, transport)
+			values, err := url.ParseQuery(req.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if values.Get("nodupli") != "0" || values.Get("file_id") != "100" || values.Get("pid") != "200" {
+				t.Fatalf("复制参数不匹配：%v", values)
+			}
+		})
+	}
+}
+
+func TestOpenClientCopyKeepsLegacyDuplicateFlag(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, tt := range []struct {
+		name      string
+		overwrite bool
+		state     bool
+		response  string
+		wantFlag  string
+	}{
+		{name: "允许重复", overwrite: true, state: true, response: `{"state":true,"data":[]}`, wantFlag: "0"},
+		{name: "禁止重复", state: true, response: `{"state":true,"data":[]}`, wantFlag: "1"},
+		{name: "保留失败布尔值", response: `{"state":false,"data":[]}`, wantFlag: "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := newCaptureOpenAPITransport(tt.response)
+			client := newTestOpenClient(transport)
+			ok, err := client.Copy(t.Context(), []string{"1"}, "2", tt.overwrite)
+			if err != nil || ok != tt.state {
+				t.Fatalf("原 Copy 返回值改变：ok=%v err=%v", ok, err)
+			}
+			req := receiveCapturedRequest(t, transport)
+			values, err := url.ParseQuery(req.Body)
+			if err != nil || values.Get("nodupli") != tt.wantFlag {
+				t.Fatalf("原 Copy 重复标记改变：%s", req.Body)
 			}
 		})
 	}

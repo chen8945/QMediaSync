@@ -25,6 +25,10 @@ func New115ScanImpl(scrapePath *models.ScrapePath, client *v115open.OpenClient, 
 	return &Scan115Impl{scanBaseImpl: scanBaseImpl{ctx: ctx, scrapePath: scrapePath}, client: client}
 }
 
+var list115ScanFilesPage = func(ctx context.Context, client *v115open.OpenClient, parentID string, offset, limit int) (*v115open.FileListResp, error) {
+	return client.GetFsList(ctx, parentID, true, false, true, offset, limit)
+}
+
 // 检查来源目录和目标目录是否存在
 func (s *Scan115Impl) CheckPathExists() error {
 	// 检查来源目录 ID 是否存在
@@ -112,7 +116,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 				// 分页取文件夹内容
 				// 查询目录下所有文件和文件夹
 				helpers.AppLogger.Infof("worker %d 开始处理目录 %s，offset=%d，limit=%d", workerID, pathId, offset, limit)
-				fsList, err := s.client.GetFsList(s.ctx, pathId, true, false, true, offset, limit)
+				fsList, err := list115ScanFilesPage(s.ctx, s.client, pathId, offset, limit)
 				if err != nil {
 					if strings.Contains(err.Error(), "context canceled") {
 						s.wg.Done()
@@ -132,6 +136,9 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 					if !s.CheckIsRunning() {
 						s.wg.Done()
 						return
+					}
+					if helpers.IsV115PlaybackPath(filepath.Join(parentPath, file.FileName)) {
+						continue fileloop
 					}
 					if file.FileCategory == v115open.TypeDir {
 						// 是目录，加入队列

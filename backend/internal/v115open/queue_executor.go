@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -224,11 +225,23 @@ func (qe *QueueExecutor) worker(id int, requestQueue <-chan *QueuedRequest) {
 // handleRequest 处理单个请求
 func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 	startTime := time.Now()
+	if err := req.Ctx.Err(); err != nil {
+		replyRequestError(req, err)
+		return
+	}
 
 	// 检查限流状态
 	if qe.throttleManager.IsThrottled() {
+		if req.Playback {
+			replyRequestError(req, NewOpenAPIError(REQUEST_MAX_LIMIT_CODE, "115 接口正在限流"))
+			return
+		}
 		helpers.V115Log.Debugf("系统处于限流状态，等待恢复")
 		qe.throttleManager.WaitThrottleRecovery(req.Ctx)
+	}
+	if err := req.Ctx.Err(); err != nil {
+		replyRequestError(req, err)
+		return
 	}
 
 	// 如果不绕过速率限制，则检查三层限制
@@ -243,46 +256,57 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 
 		// 等待 QPS 限制
 		if err := qpsLimiter.Wait(req.Ctx); err != nil {
-			req.ResponseChan <- &RequestResponse{
-				Error:    fmt.Errorf("QPS 限制错误：%w", err),
-				Duration: time.Since(startTime).Milliseconds(),
-			}
+			replyRequestError(req, fmt.Errorf("QPS 限制错误：%w", err))
 			return
 		}
 
 		// 等待 QPM 限制
 		if err := qpmLimiter.Wait(req.Ctx); err != nil {
-			req.ResponseChan <- &RequestResponse{
-				Error:    fmt.Errorf("QPM 限制错误：%w", err),
-				Duration: time.Since(startTime).Milliseconds(),
-			}
+			replyRequestError(req, fmt.Errorf("QPM 限制错误：%w", err))
 			return
 		}
 
 		// 等待 QPH 限制
 		if err := qphLimiter.Wait(req.Ctx); err != nil {
-			req.ResponseChan <- &RequestResponse{
-				Error:    fmt.Errorf("QPH 限制错误：%w", err),
-				Duration: time.Since(startTime).Milliseconds(),
-			}
+			replyRequestError(req, fmt.Errorf("QPH 限制错误：%w", err))
 			return
 		}
 	} else {
 		// 播放请求：只检查限流状态，不检查速率限制
 		// 但仍然等待限流恢复
 		if qe.throttleManager.IsThrottled() {
+			if req.Playback {
+				replyRequestError(req, NewOpenAPIError(REQUEST_MAX_LIMIT_CODE, "115 接口正在限流"))
+				return
+			}
 			qe.throttleManager.WaitThrottleRecovery(req.Ctx)
 		}
 	}
+	if err := req.Ctx.Err(); err != nil {
+		replyRequestError(req, err)
+		return
+	}
 
 	// 发送请求
+	if req.Playback && qe.throttleManager.IsThrottled() {
+		replyRequestError(req, NewOpenAPIError(REQUEST_MAX_LIMIT_CODE, "115 接口正在限流"))
+		return
+	}
+	httpStart := time.Now()
 	response, respData, respBytes, err := qe.executeRequest(req)
+	if req.Playback {
+		logPlaybackRequest(req, httpStart.Sub(req.CreatedAt), time.Since(httpStart), response, respData, err)
+	}
 
 	duration := time.Since(startTime).Milliseconds()
 
 	// 检查是否是限流响应
 	isThrottled := false
 	if respData != nil && respData.Code == REQUEST_MAX_LIMIT_CODE {
+		isThrottled = true
+		qe.throttleManager.MarkThrottled(qe.stats)
+	}
+	if req.Playback && IsRateLimited(err) {
 		isThrottled = true
 		qe.throttleManager.MarkThrottled(qe.stats)
 	}
@@ -349,6 +373,11 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	defer response.Body.Close()
 	resBytes, ioErr := io.ReadAll(response.Body)
 	if ioErr != nil {
+		// 响应体损坏不能抹掉已收到的明确 HTTP 拒绝状态。
+		if status := response.StatusCode(); req.Playback && status >= http.StatusBadRequest &&
+			status < http.StatusInternalServerError && status != http.StatusRequestTimeout {
+			return response, nil, nil, playbackResponseError(status, nil)
+		}
 		return response, nil, nil, ioErr
 	}
 
@@ -358,6 +387,9 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 		// 兼容 state 为数字的响应
 		respBase := &RespBase[json.RawMessage]{}
 		if err := json.Unmarshal(resBytes, respBase); err != nil {
+			if req.Playback && response.StatusCode() >= http.StatusBadRequest {
+				return response, nil, resBytes, playbackResponseError(response.StatusCode(), nil)
+			}
 			helpers.V115Log.Errorf("解析响应失败：%s", bodyErr.Error())
 			return response, resp, resBytes, bodyErr
 		}
@@ -369,6 +401,12 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 			Error:   respBase.Error,
 			Data:    respBase.Data,
 		}
+	}
+	if req.Playback {
+		if response.StatusCode() >= http.StatusBadRequest || !resp.State || resp.Code != 0 || resp.Errno != 0 {
+			return response, resp, resBytes, playbackResponseError(response.StatusCode(), resp)
+		}
+		return response, resp, resBytes, nil
 	}
 
 	helpers.V115Log.Infof("队列执行 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n",
@@ -394,19 +432,31 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	return response, resp, resBytes, nil
 }
 
-// EnqueueRequest 将请求加入队列
+// replyRequestError 仅回复 HTTP 发出前的失败，播放编排可据此跳过远端结果核验。
+func replyRequestError(req *QueuedRequest, err error) {
+	var duration time.Duration
+	if !req.CreatedAt.IsZero() {
+		duration = time.Since(req.CreatedAt)
+	}
+	if req.Playback {
+		err = fmt.Errorf("%w：%w", ErrPlaybackRequestNotSent, err)
+		logPlaybackRequest(req, duration, 0, nil, nil, err)
+	}
+	select {
+	case req.ResponseChan <- &RequestResponse{Error: err, Duration: duration.Milliseconds(), IsThrottled: IsRateLimited(err)}:
+	default:
+	}
+	close(req.ResponseChan)
+}
+
+// EnqueueRequest 将请求加入队列，队列满时允许请求上下文取消等待。
 func (qe *QueueExecutor) EnqueueRequest(req *QueuedRequest) {
 	qe.Lock()
 	if !qe.running || qe.requestQueue == nil {
 		qe.Unlock()
 		helpers.V115Log.Error("队列执行器未启动")
 		if req != nil && req.ResponseChan != nil {
-			select {
-			case req.ResponseChan <- &RequestResponse{Error: fmt.Errorf("队列执行器未启动")}:
-			default:
-				helpers.V115Log.Warnf("响应通道已关闭或已满，丢弃响应：%s %s", req.Method, req.URL)
-			}
-			close(req.ResponseChan)
+			replyRequestError(req, fmt.Errorf("队列执行器未启动"))
 		}
 		return
 	}
@@ -416,8 +466,11 @@ func (qe *QueueExecutor) EnqueueRequest(req *QueuedRequest) {
 	qe.Unlock()
 	defer qe.enqueueWG.Done()
 
-	// 发送到队列（如果缓冲满则阻塞）
-	requestQueue <- req
+	select {
+	case requestQueue <- req:
+	case <-req.Ctx.Done():
+		replyRequestError(req, req.Ctx.Err())
+	}
 }
 
 // GetStats 获取统计数据

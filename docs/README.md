@@ -8,7 +8,7 @@
 
 - [认证与浏览器会话](architecture/authentication-sessions.md)：首次管理员、本地管理员恢复、Cookie、CSRF、API Key、可信来源和下载代理安全边界。
 - [实时事件（SSE）](architecture/realtime-events.md)：全局事件、日志流、任务详情快照和回放边界。
-- [上传与 STRM 处理](architecture/upload-and-strm-processing.md)：115 上传、目录监控、STRM 后处理、源文件清理和上传后刷新。
+- [上传与 STRM 处理](architecture/upload-and-strm-processing.md)：115 上传、目录监控、STRM 后处理、源文件清理、上传后刷新和多端播放副本。
 - [STRM 同步调度与任务记录](architecture/sync-orchestration.md)：同步目录、Cron、按来源队列、`sync` 记录、取消和完成后的下游协作。
 - [Emby 媒体库同步](architecture/emby-library-sync.md)：Emby 刷新、条目同步、Webhook 同步和协调器边界。
 

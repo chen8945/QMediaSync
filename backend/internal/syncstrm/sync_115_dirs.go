@@ -92,7 +92,7 @@ pathloop:
 			pathStr = filepath.Join(pathStr, p.Name)
 			pathStr = filepath.ToSlash(pathStr)
 		}
-		if s.IsExcludeName(p.Name) {
+		if s.IsExcludePath(pathStr) {
 			s.Sync.Logger.Infof("路径 %s 名称：%s 被排除", p.FileId, p.Name)
 			isExclude = true
 			break
@@ -133,6 +133,7 @@ pathloop:
 	}
 	// 检查是否被排除，如果排除需要从临时表删除所有该目录下的文件
 	if isExclude {
+		s.sync115.excludePathId.Store(pathId, true)
 		// 从临时表中删除所有该目录下的文件
 		s.Sync.Logger.Infof("目录 ID %s 名称：%s 被排除，从同步缓存中删除所有该目录下的文件", pathId, detail.FileName)
 

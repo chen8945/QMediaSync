@@ -2,7 +2,9 @@ package models
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"qmediasync/internal/db"
@@ -77,13 +79,14 @@ type Settings struct {
 	SettingStrm
 	SettingUploadRapidWait
 	SettingURLValidityCheck
-	UseTelegram      int8   `json:"use_telegram"`       // @deprecated 已迁移到 TelegramChannelConfig 是否使用 Telegram Bot 通知
-	TelegramBotToken string `json:"telegram_bot_token"` // @deprecated 已迁移到 TelegramChannelConfig Telegram Bot Token
-	TelegramChatId   string `json:"telegram_chat_id"`   // @deprecated 已迁移到 TelegramChannelConfig Telegram Chat ID
-	MeoWName         string `json:"meow_name"`          // @deprecated 已迁移到 MeoWChannelConfig MeoW 昵称，用于发送 MeoW 消息
-	EmbyUrl          string `json:"emby_url"`           // @deprecated 已迁移到 EmbyConfig Emby 的主机地址
-	EmbyApiKey       string `json:"emby_api_key"`       // @deprecated 已迁移到 EmbyConfig Emby 的 API Key
-	HttpProxy        string `json:"http_proxy"`         // 出站代理地址，支持 http、https、socks5 和 socks5h
+	MultiPlaybackEnabled int    `json:"multi_playback_enabled" gorm:"default:0"` // 是否启用 115 多端直链播放，仅作用于全局设置
+	UseTelegram          int8   `json:"use_telegram"`                            // @deprecated 已迁移到 TelegramChannelConfig 是否使用 Telegram Bot 通知
+	TelegramBotToken     string `json:"telegram_bot_token"`                      // @deprecated 已迁移到 TelegramChannelConfig Telegram Bot Token
+	TelegramChatId       string `json:"telegram_chat_id"`                        // @deprecated 已迁移到 TelegramChannelConfig Telegram Chat ID
+	MeoWName             string `json:"meow_name"`                               // @deprecated 已迁移到 MeoWChannelConfig MeoW 昵称，用于发送 MeoW 消息
+	EmbyUrl              string `json:"emby_url"`                                // @deprecated 已迁移到 EmbyConfig Emby 的主机地址
+	EmbyApiKey           string `json:"emby_api_key"`                            // @deprecated 已迁移到 EmbyConfig Emby 的 API Key
+	HttpProxy            string `json:"http_proxy"`                              // 出站代理地址，支持 http、https、socks5 和 socks5h
 	// LocalProxy       int    `json:"local_proxy" gorm:"default:0"` // 是否启用本地代理，0 表示不启用，1 表示启用
 }
 
@@ -273,6 +276,32 @@ func (s SettingStrm) DecodeArr(isSetting bool) *SettingStrm {
 
 var SettingsGlobal = &Settings{}
 
+// settingsMu 串行设置加载和发布，保护播放配置与 STRM 快照读取。
+var settingsMu sync.RWMutex
+
+// GetPlaybackSettings 返回同一次发布的本地代理和多端播放配置。
+func GetPlaybackSettings() (localProxy int, multiPlaybackEnabled bool) {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	if SettingsGlobal != nil {
+		localProxy = SettingsGlobal.LocalProxy
+		multiPlaybackEnabled = SettingsGlobal.MultiPlaybackEnabled == 1
+	}
+	return
+}
+
+// StrmSnapshot 返回独立的 STRM 设置副本，供解锁后的响应编码与配置比较使用。
+func (settings *Settings) StrmSnapshot() (SettingStrm, int) {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	strm := settings.SettingStrm
+	strm.VideoExtArr = slices.Clone(strm.VideoExtArr)
+	strm.MetaExtArr = slices.Clone(strm.MetaExtArr)
+	strm.ExcludeNameArr = slices.Clone(strm.ExcludeNameArr)
+	strm.ExcludeNameRegexArr = slices.Clone(strm.ExcludeNameRegexArr)
+	return strm, settings.MultiPlaybackEnabled
+}
+
 func (settings *Settings) ThreadAndRapidWait() SettingThreadAndRapidWait {
 	return SettingThreadAndRapidWait{
 		SettingThreads:          settings.SettingThreads,
@@ -282,6 +311,7 @@ func (settings *Settings) ThreadAndRapidWait() SettingThreadAndRapidWait {
 }
 
 func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
+	settingsMu.Lock()
 	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
 	updated := *settings
 	updated.SettingThreads = req.SettingThreads
@@ -292,6 +322,7 @@ func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
 
 	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
+		settingsMu.Unlock()
 		helpers.AppLogger.Errorf("更新线程数失败：%v", err)
 		return false
 	}
@@ -299,6 +330,7 @@ func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
 	settings.SettingUploadRapidWait = updated.SettingUploadRapidWait
 	settings.SettingURLValidityCheck = updated.SettingURLValidityCheck
 	settings.UpdatedAt = updated.UpdatedAt
+	settingsMu.Unlock()
 	// 重新初始化下载队列
 	InitDQ()
 	return true
@@ -347,7 +379,9 @@ func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
 	return true
 }
 
-func (settings *Settings) UpdateStrm(req SettingStrm) bool {
+func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int) bool {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
 	if req.VideoExtArr == nil {
 		req.VideoExtArr = []string{}
 	}
@@ -367,19 +401,24 @@ func (settings *Settings) UpdateStrm(req SettingStrm) bool {
 	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
 	updated := *settings
 	updated.SettingStrm = *strm
+	updated.MultiPlaybackEnabled = multiPlaybackEnabled
 
 	updateData := strm.ToMap(true, true)
+	updateData["multi_playback_enabled"] = multiPlaybackEnabled
 	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("更新 STRM 设置失败：%v", err)
 		return false
 	}
 	settings.SettingStrm = updated.SettingStrm
+	settings.MultiPlaybackEnabled = updated.MultiPlaybackEnabled
 	settings.UpdatedAt = updated.UpdatedAt
 	return true
 }
 
 func LoadSettings() {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
 	if err := db.Db.Take(SettingsGlobal).Error; err != nil {
 		helpers.AppLogger.Errorf("load settings failed: %v", err)
 		return

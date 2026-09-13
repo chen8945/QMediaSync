@@ -49,6 +49,9 @@ func TestStartFileHonorsGlobalExclusions(t *testing.T) {
 		{name: "正则父目录规则", patterns: []string{"^Extras$"}, filename: "movie.mkv", parent: "/Media/Extras/Season 1"},
 		{name: "正则默认区分大小写", patterns: []string{"sample"}, filename: "SAMPLE.mkv", parent: "/Media", wantFiles: 1},
 		{name: "原名称列表不做部分匹配", exact: []string{"sample.mkv"}, filename: "MySample.mkv", parent: "/Media", wantFiles: 1},
+		{name: "多端播放临时目录", filename: "movie.mkv", parent: "/多端播放"},
+		{name: "多端播放临时目录后代", filename: "movie.mkv", parent: "多端播放/child"},
+		{name: "同名非根目录", filename: "movie.mkv", parent: "/Media/多端播放", wantFiles: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +105,7 @@ func TestStartOtherHonorsGlobalAndCustomExclusions(t *testing.T) {
 	settings := models.SettingsGlobal.SettingStrm
 	settings.ExcludeNameArr = []string{"extras"}
 	settings.ExcludeNameRegexArr = []string{"(?i)sample", "^\\.hidden$"}
-	if !models.SettingsGlobal.UpdateStrm(settings) {
+	if !models.SettingsGlobal.UpdateStrm(settings, models.SettingsGlobal.MultiPlaybackEnabled) {
 		t.Fatal("保存全局排除设置失败")
 	}
 

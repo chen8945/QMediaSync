@@ -204,6 +204,21 @@
         </div>
       </el-form-item>
 
+      <el-form-item label="启用 115 多端播放" prop="multi_playback_enabled">
+        <el-radio-group
+          v-model="strmData.multi_playback_enabled"
+          :disabled="strmLoading || strmData.local_proxy === 1"
+        >
+          <el-radio-button :value="1">启用</el-radio-button>
+          <el-radio-button :value="0">关闭</el-radio-button>
+        </el-radio-group>
+        <div class="form-help">
+          <p>多台设备同时播放同一个 115 文件时，自动在网盘 /多端播放 目录创建临时副本换取独立播放链接，副本用后自动删除。</p>
+          <p>用于解决 115 对同一文件多端同时播放的限制；开启后同文件多 IP 播放仍可能触发 115 风控，请谨慎开启。</p>
+          <p>开启下方"启用本地代理播放"后，播放流量经本系统转发，115 不会感知多端，此开关自动失效并保留原设置；使用 8095 端口（Emby 代理）播放时仍按本开关执行。</p>
+        </div>
+      </el-form-item>
+
       <el-form-item label="启用本地代理播放" prop="local_proxy">
         <el-radio-group v-model="strmData.local_proxy">
           <el-radio-button :value="1">启用</el-radio-button>
@@ -282,6 +297,7 @@ interface StrmData {
   upload_meta: 0 | 1 | 2
   download_meta: 0 | 1
   delete_dir: 0 | 1
+  multi_playback_enabled: 0 | 1
   local_proxy: 0 | 1
   exclude_name_arr: string[]
   exclude_name_regex_arr: string[]
@@ -319,6 +335,7 @@ const defaultStrmData: StrmData = {
   upload_meta: 0, // 默认保留
   download_meta: 1, // 默认下载元数据
   delete_dir: 0, // 默认不删除
+  multi_playback_enabled: 0,
   local_proxy: 0, // 是否启用本地代理
   exclude_name_arr: [], // 排除名称列表，默认为空
   exclude_name_regex_arr: [],
@@ -405,7 +422,7 @@ const saveStrmConfig = async () => {
       strmStatus.value = {
         title: 'STRM 配置已保存',
         type: 'success',
-        description: '所有 STRM 相关设置已成功保存，将在下次同步时生效',
+        description: '配置已保存；同步设置用于下次同步，播放设置用于后续播放请求',
       }
     } else {
       strmStatus.value = {
@@ -443,6 +460,7 @@ const loadStrmConfig = async () => {
       strmData.download_meta = config.download_meta
       strmData.upload_meta = config.upload_meta
       strmData.delete_dir = config.delete_dir
+      strmData.multi_playback_enabled = config.multi_playback_enabled ?? 0
       strmData.local_proxy = config.local_proxy
       strmData.exclude_name_arr = config.exclude_name_arr
       strmData.exclude_name_regex_arr = config.exclude_name_regex_arr || []

@@ -738,8 +738,20 @@ func Migrate() {
 				helpers.AppLogger.Errorf("初始化同时上传任务数设置失败：%v", err)
 				return
 			}
+			if !db.Db.Migrator().HasColumn(&Settings{}, "MultiPlaybackEnabled") {
+				if err := db.Db.Migrator().AddColumn(&Settings{}, "MultiPlaybackEnabled"); err != nil {
+					helpers.AppLogger.Errorf("迁移 115 多端播放设置失败：%v", err)
+					return
+				}
+			}
+			if err := db.Db.Model(&Settings{}).
+				Where("multi_playback_enabled IS NULL").
+				UpdateColumn("multi_playback_enabled", 0).Error; err != nil {
+				helpers.AppLogger.Errorf("初始化 115 多端播放设置失败：%v", err)
+				return
+			}
 		}
-		helpers.AppLogger.Info("已添加同时上传任务数设置")
+		helpers.AppLogger.Info("已添加同时上传任务数和 115 多端播放设置")
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == MaxVersionCode {

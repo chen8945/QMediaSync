@@ -18,6 +18,7 @@ type OpenClient struct {
 	AccountId   uint // 账号 ID
 	client      *resty.Client
 	credentials atomic.Pointer[clientCredentials]
+	playback    bool // 播放编排使用单次请求策略，构造后不再修改。
 }
 
 // clientCredentials 发布后不可修改，应用 ID 与令牌必须属于同一快照。
@@ -252,6 +253,9 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 
 // doAuthRequest 带重试的认证请求方法（使用全局队列）
 func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.Request, options *RequestConfig, respData any) (*resty.Response, []byte, error) {
+	if c.playback {
+		return c.doPlaybackRequest(ctx, url, req, options, respData)
+	}
 	credentials := c.credentialSnapshot()
 	if credentials.accessToken == "" {
 		// 没有 Token，直接报错
