@@ -164,6 +164,8 @@ func v115URLPlaybackMode(force int, localProxy int) string {
 	return v115URLCacheModeDirect
 }
 
+// 115 直链的 f=1 要求 CDN 请求复用生成链接时完全一致的 User-Agent。
+// 因此有效 UA 同时用于生成链接、缓存隔离和 HEAD 有效性检查；f=3 还要求保留 Cookie。
 func v115EffectiveUA(force int, localProxy int, requestUA string) string {
 	if v115URLPlaybackMode(force, localProxy) == v115URLCacheModeProxy {
 		return v115open.DEFAULTUA
@@ -936,7 +938,8 @@ func CleanOldRequestStats(c *gin.Context) {
 
 // checkURLValidity 使用 HEAD 请求检查 URL 是否有效。
 // 返回 true 表示 URL 有效（2xx 状态码），false 表示 URL 已失效。
-// ua 参数：必须使用当前请求的 User-Agent 访问 115 链接（否则返回 403）。
+// ua 参数必须复用生成直链时的 User-Agent；115 直链 f=1 不接受不同 UA，f=3 还需要 Cookie。
+// 此函数只复用 UA，不负责获取或补充 f=3 所需的 Cookie。
 func checkURLValidity(urlStr string, ua string, timeout time.Duration) bool {
 	if timeout <= 0 {
 		timeout = time.Duration(models.DefaultURLValidityCheckTimeoutSeconds) * time.Second

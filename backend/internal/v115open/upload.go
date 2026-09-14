@@ -25,6 +25,11 @@ type DownloadUrlResp struct {
 }
 
 // DownloadUrlResult 包含下载地址及远端文件身份；URL 带签名，不得写入日志或持久化。
+// 115 返回的签名直链还会在查询参数中携带服务端校验信息：
+//   - t：链接过期时间戳；
+//   - c：允许同时打开的连接数，0 表示不限制；
+//   - f：请求头要求。1 表示 CDN 请求必须使用生成链接时的同一个 User-Agent；
+//     3 表示在此基础上还必须携带生成链接响应返回的 Cookie。
 type DownloadUrlResult struct {
 	URL      string
 	FileID   string

@@ -260,6 +260,8 @@ func getFinalRedirectLink(originLink string, header http.Header) (string, int) {
 		(origin.Scheme == "http" || origin.Scheme == "https") &&
 		(origin.Path == "/115/newurl" || strings.HasPrefix(origin.Path, "/115/url/")) {
 		originLink = urls.AppendArgs(originLink, "force", "1")
+		// 115 直链的 f=1 要求生成链接和后续 CDN 请求使用同一个 User-Agent，
+		// 因此保留 STRM 请求头传给 QMS 取链接口，避免中间跳转丢失 UA。
 		resp, err := https.Get(originLink).Header(header).DoSingle()
 		responseStatus := 0
 		if resp != nil {

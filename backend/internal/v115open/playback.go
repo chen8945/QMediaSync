@@ -61,6 +61,8 @@ func (c *OpenClient) doPlaybackRequest(
 	if credentials.accessToken == "" {
 		return nil, nil, NewOpenAPIError(ACCESS_AUTH_INVALID, "115 账号授权失效")
 	}
+	// 115 直链的 f=1 会把 CDN 请求绑定到生成链接时的 User-Agent。
+	// 播放请求没有上游 UA 时使用固定 DEFAULTUA，避免生成链接和后续 CDN 请求不一致。
 	// 单次调用时限同时覆盖队列等待和 HTTP 请求，不启动 SDK 内层重试。
 	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
