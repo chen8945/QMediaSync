@@ -15,6 +15,7 @@ import (
 	"qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/jsons"
 	"qmediasync/emby302/util/logs"
+	"qmediasync/emby302/web/cache"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,6 +33,10 @@ func ProxySocket() func(*gin.Context) {
 		}
 
 		proxy = httputil.NewSingleHostReverseProxy(u)
+		// WebSocket 直接连接 Emby，避免受系统代理环境变量影响。
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		proxy.Transport = transport
 
 		proxy.Director = func(r *http.Request) {
 			r.URL.Scheme = u.Scheme
@@ -71,6 +76,7 @@ func ProxyOrigin(c *gin.Context) {
 	c.Request.Header.Set("X-Real-IP", c.ClientIP())
 
 	if err := https.ProxyPass(c.Request, c.Writer, origin); err != nil {
+		c.Header(cache.HeaderKeyExpired, "-1")
 		logs.Error("代理异常: %v", err)
 	}
 }

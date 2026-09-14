@@ -2,6 +2,7 @@ package https
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,9 @@ type RequestHolder struct {
 
 	// closeConn 请求结束后是否关闭连接
 	closeConn bool
+
+	// ctx 请求上下文，用于传递取消和超时
+	ctx context.Context
 }
 
 // Request 构造自定义请求
@@ -93,6 +97,12 @@ func (r *RequestHolder) CloseConn() *RequestHolder {
 	return r
 }
 
+// Context 设置请求上下文。
+func (r *RequestHolder) Context(ctx context.Context) *RequestHolder {
+	r.ctx = ctx
+	return r
+}
+
 // Do 发起请求并自动重定向
 func (r *RequestHolder) Do() (*http.Response, error) {
 	r.redirect = true
@@ -117,6 +127,11 @@ func (r *RequestHolder) DoRedirect() (string, *http.Response, error) {
 // 如果一个请求有多次重定向并且进行了 autoRedirect,
 // 则最后一次重定向的 URL 会作为第一个参数返回。
 func (r *RequestHolder) execute() (string, *http.Response, error) {
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var inner func(method, url string, header http.Header, body io.ReadCloser, autoRedirect bool, depth int) (string, *http.Response, error)
 	inner = func(method, url string, header http.Header, body io.ReadCloser, autoRedirect bool, depth int) (string, *http.Response, error) {
 		if depth >= MaxRedirectDepth {
@@ -131,7 +146,7 @@ func (r *RequestHolder) execute() (string, *http.Response, error) {
 				return "", nil, fmt.Errorf("读取请求体失败: %v", err)
 			}
 		}
-		req, err := http.NewRequest(method, url, bytes.NewBuffer(bodyBytes))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(bodyBytes))
 		if err != nil {
 			return "", nil, fmt.Errorf("创建请求失败: %v", err)
 		}

@@ -13,6 +13,7 @@ import (
 	"qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/jsons"
 	"qmediasync/emby302/util/logs"
+	"qmediasync/emby302/web/cache"
 
 	"github.com/gin-gonic/gin"
 )
@@ -141,6 +142,7 @@ func DownloadStrategyChecker() gin.HandlerFunc {
 
 		if strategy == config.DlStrategyOrigin {
 			if err := https.ProxyPass(c.Request, c.Writer, config.C.Emby.Host); err != nil {
+				c.Header(cache.HeaderKeyExpired, "-1")
 				logs.Error("下载接口代理失败: %v", err)
 			}
 		}

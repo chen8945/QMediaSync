@@ -10,6 +10,8 @@ import (
 
 	"qmediasync/emby302/config"
 	"qmediasync/emby302/util/https"
+	"qmediasync/emby302/util/logs"
+	"qmediasync/emby302/web/cache"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,7 +23,14 @@ import (
 func ResortEpisodes(c *gin.Context) {
 	// 1 检查配置是否开启
 	if !config.C.Emby.EpisodesUnplayPrior {
-		checkErr(c, https.ProxyPass(c.Request, c.Writer, config.C.Emby.Host))
+		err := https.ProxyPass(c.Request, c.Writer, config.C.Emby.Host)
+		if err != nil && c.Writer.Written() {
+			// 已开始的响应不能再回源，否则会拼接两份内容。
+			c.Header(cache.HeaderKeyExpired, "-1")
+			logs.Error("剧集接口代理失败: %v", err)
+			return
+		}
+		checkErr(c, err)
 		return
 	}
 

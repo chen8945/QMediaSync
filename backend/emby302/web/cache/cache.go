@@ -107,8 +107,8 @@ func RequestCacher() gin.HandlerFunc {
 		// 5 执行请求处理器
 		c.Next()
 
-		// 6 不缓存错误请求
-		if https.IsErrorStatus(c.Writer.Status()) {
+		// 6 不缓存错误或已取消的请求
+		if c.Request.Context().Err() != nil || https.IsErrorStatus(c.Writer.Status()) {
 			return
 		}
 

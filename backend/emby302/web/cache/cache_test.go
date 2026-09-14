@@ -2,14 +2,44 @@ package cache
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestRequestCacherSkipsCanceledRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/"+t.Name(), nil)
+	key := keyForRequest(t, req)
+	t.Cleanup(func() {
+		cacheMap.Delete(key)
+		spaceMap.Delete(t.Name())
+	})
+	router := gin.New()
+	router.Use(RequestCacher())
+	router.GET("/"+t.Name(), func(c *gin.Context) {
+		c.Header(HeaderKeyExpired, Duration(time.Minute))
+		c.Header(HeaderKeySpace, t.Name())
+		c.Header(HeaderKeySpaceKey, key)
+		_, _ = c.Writer.Write([]byte("canceled response"))
+		cancel()
+	})
+	router.ServeHTTP(httptest.NewRecorder(), req)
+	WaitingForHandleChan()
+	if _, ok := getCache(key); ok {
+		t.Fatal("canceled response was cached")
+	}
+	if _, ok := GetSpaceCache(t.Name(), key); ok {
+		t.Fatal("canceled response was published to a cache space")
+	}
+}
 
 func TestCalcCacheKeyPreservesRequestValues(t *testing.T) {
 	tests := []struct {
