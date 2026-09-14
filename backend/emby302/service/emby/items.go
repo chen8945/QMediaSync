@@ -124,7 +124,11 @@ func RandomItemsWithLimit(c *gin.Context) {
 
 	buf := bytess.CommonFixedBuffer()
 	defer buf.PutBack()
-	io.CopyBuffer(c.Writer, resp.Body, buf.Bytes())
+	if _, err := io.CopyBuffer(c.Writer, resp.Body, buf.Bytes()); err != nil {
+		// 响应已开始，复制失败时仅禁用缓存，避免再次回源拼接内容。
+		c.Header(cache.HeaderKeyExpired, "-1")
+		logs.Error("随机列表接口代理失败: %v", err)
+	}
 }
 
 // randomItemsUpstreamURL 构造随机 Items 的内部回源地址，不修改客户端请求 URL。
