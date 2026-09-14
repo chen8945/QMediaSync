@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"qmediasync/emby302/util/urls"
 	"qmediasync/emby302/web/cache"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/playback"
 
 	"github.com/gin-gonic/gin"
 )
@@ -115,7 +117,7 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	isProxyUrl := ""
 	// 4 如果是远程地址 (STRM) 且不包含 QMediaSync 的本地代理播放链接, 则重定向处理。
 	if urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:") {
-		finalPath, resolverStatus := getFinalRedirectLink(strmUrl, c.Request.Header.Clone())
+		finalPath, resolverStatus, expiresAt := getFinalRedirectLink(strmUrl, c.Request.Header.Clone())
 		if !strings.Contains(finalPath, "/proxy-115") {
 			targetHost := ""
 			if target, err := url.Parse(finalPath); err == nil {
@@ -123,7 +125,10 @@ func Redirect2OpenlistLink(c *gin.Context) {
 			}
 			logs.Info("Emby STRM 跳转：文件=%q，UA=%q，接口状态=%d，跳转状态=%d，目标域名=%s",
 				helpers.URLFileName(finalPath), c.Request.UserAgent(), resolverStatus, http.StatusTemporaryRedirect, targetHost)
-			c.Header(cache.HeaderKeyExpired, cache.Duration(time.Minute*10))
+			c.Header(cache.HeaderKeyExpired, "-1")
+			if !expiresAt.IsZero() {
+				c.Header(cache.HeaderKeyExpired, strconv.FormatInt(expiresAt.UnixMilli(), 10))
+			}
 			c.Redirect(http.StatusTemporaryRedirect, finalPath)
 			return
 		} else {
@@ -252,10 +257,10 @@ func checkErr(c *gin.Context, err error) bool {
 	return true
 }
 
-// getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址和取链响应状态。
+// getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址、取链响应状态和缓存截止时间。
 //
-// 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败时回退原链接，未取得响应时状态为 0。
-func getFinalRedirectLink(originLink string, header http.Header) (string, int) {
+// 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败回退不缓存，未取得响应时状态为 0。
+func getFinalRedirectLink(originLink string, header http.Header) (string, int, time.Time) {
 	if origin, err := url.Parse(originLink); err == nil && origin.Host != "" &&
 		(origin.Scheme == "http" || origin.Scheme == "https") &&
 		(origin.Path == "/115/newurl" || strings.HasPrefix(origin.Path, "/115/url/")) {
@@ -273,28 +278,59 @@ func getFinalRedirectLink(originLink string, header http.Header) (string, int) {
 		if err != nil {
 			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，错误=%v",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), responseStatus, helpers.URLRequestErrorForLog(err))
-			return originLink, responseStatus
+			return originLink, responseStatus, time.Time{}
 		}
 		if !https.IsRedirectCode(resp.StatusCode) && resp.StatusCode != http.StatusSeeOther {
 			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=接口未返回跳转",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
-			return originLink, resp.StatusCode
+			return originLink, resp.StatusCode, time.Time{}
 		}
 		finalLink := resp.Header.Get("Location")
 		finalURL, err := url.Parse(finalLink)
 		if err != nil || finalURL.Hostname() == "" || (finalURL.Scheme != "http" && finalURL.Scheme != "https") {
 			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=缺少或无效的 HTTP(S) Location",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
-			return originLink, resp.StatusCode
+			return originLink, resp.StatusCode, time.Time{}
 		}
-		return finalLink, resp.StatusCode
+		return finalLink, resp.StatusCode, redirectCacheExpiresAt(finalLink, true, time.Now())
 	}
 	finalLink, resp, err := https.Get(originLink).Header(header).DoRedirect()
 	if err != nil {
 		logs.Warn("获取最终重定向链接失败, 原始链接: %s, 错误信息: %v", originLink, err)
-		return originLink, 0
+		return originLink, 0, time.Time{}
 	}
 	logs.Success("获取最终重定向链接成功, 原始链接: %s, 最终链接: %s", originLink, finalLink)
 	defer resp.Body.Close()
-	return finalLink, resp.StatusCode
+	if !https.IsSuccessCode(resp.StatusCode) {
+		return finalLink, resp.StatusCode, time.Time{}
+	}
+	return finalLink, resp.StatusCode, redirectCacheExpiresAt(finalLink, false, time.Now())
+}
+
+// redirectCacheExpiresAt 对已识别的 115 链接严格要求签名期限，防止外层缓存跳过内层刷新。
+func redirectCacheExpiresAt(rawURL string, qms115 bool, now time.Time) time.Time {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return time.Time{}
+	}
+	expiresAt := now.Add(10 * time.Minute)
+	host := strings.ToLower(u.Hostname())
+	if !qms115 && host != "115cdn.net" && !strings.HasSuffix(host, ".115cdn.net") {
+		return expiresAt
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || len(query["t"]) != 1 {
+		return time.Time{}
+	}
+	if expires, err := strconv.ParseInt(query.Get("t"), 10, 64); err != nil || expires <= 0 {
+		return time.Time{}
+	}
+	signedExpiry := playback.URLExpiresAt(rawURL, now)
+	if !signedExpiry.After(now) {
+		return time.Time{}
+	}
+	if signedExpiry.Before(expiresAt) {
+		expiresAt = signedExpiry
+	}
+	return expiresAt
 }

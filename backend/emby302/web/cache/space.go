@@ -4,6 +4,7 @@ package cache
 
 import (
 	"sync"
+	"time"
 
 	"qmediasync/emby302/util/strs"
 )
@@ -43,11 +44,11 @@ func putSpaceCache(space, spaceKey string, cache *respCache) {
 	getSpace(space).Store(spaceKey, cache)
 }
 
-func delSpaceCache(space, spaceKey string) {
+func delSpaceCache(space, spaceKey string, expected *respCache) {
 	if strs.AnyEmpty(space, spaceKey) {
 		return
 	}
-	getSpace(space).Delete(spaceKey)
+	getSpace(space).CompareAndDelete(spaceKey, expected)
 }
 
 // getSpace 获取缓存空间
@@ -67,7 +68,10 @@ func getSpaceCache(space *sync.Map, spaceKey string) (*respCache, bool) {
 		return nil, false
 	}
 	if cache, ok := space.Load(spaceKey); ok {
-		return cache.(*respCache), true
+		rc := cache.(*respCache)
+		if rc.expired > time.Now().UnixMilli() {
+			return rc, true
+		}
 	}
 	return nil, false
 }

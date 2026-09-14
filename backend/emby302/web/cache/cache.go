@@ -83,13 +83,18 @@ func RequestCacher() gin.HandlerFunc {
 
 		// 3 尝试获取缓存
 		if rc, ok := getCache(cacheKey); ok {
-			if https.IsRedirectCode(rc.code) {
+			rc.mu.RLock()
+			code := rc.code
+			header := rc.header.header.Clone()
+			body := append([]byte(nil), rc.body...)
+			rc.mu.RUnlock()
+			if https.IsRedirectCode(code) {
 				// 适配重定向请求
-				c.Redirect(rc.code, rc.header.header.Get("Location"))
+				c.Redirect(code, header.Get("Location"))
 			} else {
-				c.Status(rc.code)
-				https.CloneHeader(c.Writer, rc.header.header)
-				c.Writer.Write(rc.body)
+				c.Status(code)
+				https.CloneHeader(c.Writer, header)
+				c.Writer.Write(body)
 			}
 			c.Abort()
 			return
@@ -119,7 +124,8 @@ func RequestCacher() gin.HandlerFunc {
 		defer header.Del(HeaderKeySpace)
 		defer header.Del(HeaderKeySpaceKey)
 
-		go putCache(cacheKey, c, append([]byte(nil), customWriter.body.Bytes()...), respHeader)
+		// 响应快照同步入队，后台维护不再访问会被 Gin 复用的 Context。
+		putCache(cacheKey, c.Writer.Status(), append([]byte(nil), customWriter.body.Bytes()...), respHeader)
 	}
 }
 

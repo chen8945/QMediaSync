@@ -7,8 +7,6 @@ import (
 
 	"qmediasync/emby302/config"
 	"qmediasync/emby302/util/strs"
-
-	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -21,7 +19,7 @@ const (
 	// MaxCacheNum 最多缓存多少个请求信息
 	MaxCacheNum = 8092
 
-	// HeaderKeyExpired 缓存过期响应头, 用于覆盖默认的缓存过期时间
+	// HeaderKeyExpired 缓存截止时间（Unix 毫秒），-1 表示不缓存
 	HeaderKeyExpired = "Expired"
 )
 
@@ -61,7 +59,7 @@ func loopMaintainCache() {
 
 		cacheMap.Range(func(key, value any) bool {
 			rc := value.(*respCache)
-			if nowMillis > rc.expired || validCnt == MaxCacheNum || currentCacheSize > MaxCacheSize {
+			if nowMillis >= rc.expired || validCnt == MaxCacheNum || currentCacheSize > MaxCacheSize {
 				toDelete = append(toDelete, rc)
 			} else {
 				validCnt++
@@ -71,8 +69,10 @@ func loopMaintainCache() {
 
 		for _, rc := range toDelete {
 			cacheMap.Delete(rc.cacheKey)
+			rc.mu.RLock()
 			currentCacheSize -= int64(len(rc.body))
-			delSpaceCache(rc.header.space, rc.header.spaceKey)
+			rc.mu.RUnlock()
+			delSpaceCache(rc.header.space, rc.header.spaceKey, rc)
 		}
 	}
 
@@ -80,8 +80,21 @@ func loopMaintainCache() {
 	//
 	// 同时淘汰掉过期缓存
 	putrespCache := func(rc *respCache) {
-		cacheMap.Store(rc.cacheKey, rc)
-		currentCacheSize += int64(len(rc.body))
+		rc.mu.RLock()
+		bodySize := int64(len(rc.body))
+		rc.mu.RUnlock()
+		// 排队期间也可能过期，不能将旧响应重新发布到任何缓存入口。
+		if rc.expired <= time.Now().UnixMilli() {
+			return
+		}
+		if previous, loaded := cacheMap.Swap(rc.cacheKey, rc); loaded {
+			old := previous.(*respCache)
+			old.mu.RLock()
+			currentCacheSize -= int64(len(old.body))
+			old.mu.RUnlock()
+			delSpaceCache(old.header.space, old.header.spaceKey, old)
+		}
+		currentCacheSize += bodySize
 		space, spaceKey := rc.header.space, rc.header.spaceKey
 		if strs.AllNotEmpty(space, spaceKey) {
 			putSpaceCache(space, spaceKey, rc)
@@ -104,35 +117,38 @@ func loopMaintainCache() {
 // getCache 根据 cacheKey 获取缓存
 func getCache(cacheKey string) (*respCache, bool) {
 	if c, ok := cacheMap.Load(cacheKey); ok {
-		return c.(*respCache), true
+		rc := c.(*respCache)
+		if rc.expired > time.Now().UnixMilli() {
+			return rc, true
+		}
 	}
 	return nil, false
 }
 
 // putCache 设置缓存
-func putCache(cacheKey string, c *gin.Context, respBody []byte, respHeader respHeader) {
-	if cacheKey == "" || c == nil || respBody == nil {
+func putCache(cacheKey string, code int, respBody []byte, respHeader respHeader) {
+	if cacheKey == "" || respBody == nil {
 		return
 	}
 
 	// 计算缓存过期时间
 	nowMillis := time.Now().UnixMilli()
-	expiredMillis := int64(DefaultExpired()) + nowMillis
-	if expiredNum, err := strconv.Atoi(respHeader.expired); err == nil {
-		customMillis := int64(expiredNum)
-
-		// 特定接口不使用缓存
-		if customMillis < 0 {
+	var expiredMillis int64
+	if respHeader.expired == "" {
+		expiredMillis = DefaultExpired().Milliseconds() + nowMillis
+	} else {
+		var err error
+		expiredMillis, err = strconv.ParseInt(respHeader.expired, 10, 64)
+		if err != nil {
 			return
 		}
-
-		if customMillis > nowMillis {
-			expiredMillis = customMillis
-		}
+	}
+	if expiredMillis <= nowMillis {
+		return
 	}
 
 	rc := &respCache{
-		code:     c.Writer.Status(),
+		code:     code,
 		body:     respBody,
 		cacheKey: cacheKey,
 		expired:  expiredMillis,
@@ -141,14 +157,16 @@ func putCache(cacheKey string, c *gin.Context, respBody []byte, respHeader respH
 
 	// 依据先进先淘汰原则, 将最新缓存放入预缓存通道
 	cacheHandleWaitGroup.Add(1)
-	doneOnce := sync.OnceFunc(cacheHandleWaitGroup.Done)
 	for {
 		select {
 		case preCacheChan <- rc:
 			return
 		default:
-			<-preCacheChan
-			doneOnce()
+			select {
+			case <-preCacheChan:
+				cacheHandleWaitGroup.Done()
+			default:
+			}
 		}
 	}
 }

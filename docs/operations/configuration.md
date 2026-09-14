@@ -95,6 +95,12 @@ STRM 名称排除保存于数据库，由全局 STRM 设置和同步目录自定
 
 槽位依据 URL 缓存期限和在途请求推断，不检测真实设备或播放会话。操作结束后延迟清理整个子目录，异常残留由每小时维护回收；归属已核验的回收站操作目录也会在维护时永久删除，不按缓存到期判断播放结束。程序不在启动时清空根目录，也不清空整个账号回收站。该目录子树从 115 同步、手动 STRM 生成及刮削中排除。完整分配、清理条件和失败边界见 [115 多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路)。
 
+## Emby 302 缓存
+
+内置缓存开关取自编译嵌入的 `backend/emby302.yaml`，`cache.enable` 默认 `false`；修改该模板需重新构建。它独立于主配置 `config.yaml` 中的 `emby302.insecure_skip_verify`，当前没有对应的运行时开关。
+
+开启缓存后，通用响应使用 `cache.expired`，直链响应最多缓存 10 分钟。115 直链还受签名提前 5 分钟的安全期限约束，期限无法确认或取链失败时不缓存；命中不会延长期限。UA 隔离、失败回退和到期边界见 [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)。
+
 ## Emby 302 出站 HTTPS
 
 Emby 302 代理访问 Emby、OpenList、m3u8 和下载资源时默认校验证书，并复用共享 HTTP client 的空闲连接。仅在受控内网自签名证书或临时排障场景下，才设置：
