@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,6 +23,62 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestRedirect2OpenlistLinkLocalMediaPaths(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		path string
+	}{
+		{"Linux", "/media/movie.mkv"},
+		{"Windows", `D:\media\movie.mkv`},
+		{"UNC", `\\nas\media\movie.mkv`},
+		{"SMB", "smb://nas/media/movie.mkv"},
+		{"SMB 大小写", "SmB://nas/media/movie.mkv"},
+		{"正斜杠共享", "//nas/media/movie.mkv"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router, _ := newSTRMRedirectTestRouter(t, tt.path, false)
+			config.C.Emby.LocalMediaRoot = "/"
+			router.GET("/Videos/movie/original", ProxyOriginalResource)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/Videos/movie/stream?MediaSourceId=ms&api_key=test", nil))
+			const original = "/Videos/movie/original?MediaSourceId=ms&api_key=test"
+			if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != original {
+				t.Fatalf("本地媒体应走 original：status=%d Location=%q", rec.Code, rec.Header().Get("Location"))
+			}
+			rec = httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, original, nil))
+			if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" || rec.Body.Len() == 0 {
+				t.Fatalf("original 应直接回源：status=%d Location=%q body=%q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRedirect2OpenlistLinkNFSSTRM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 文件名不支持冒号，无法构造 NFS STRM 测试路径")
+	}
+	t.Chdir(t.TempDir())
+	var calls atomic.Int32
+	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer resolver.Close()
+	if err := os.MkdirAll("nfs:/media", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const path = "nfs:/media/movie.strm"
+	if err := os.WriteFile(path, []byte(resolver.URL+"/movie.mkv"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := runSTRMRedirectTest(t, path, "Emby Test Player")
+	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != resolver.URL+"/movie.mkv" || calls.Load() != 1 {
+		t.Fatalf("NFS STRM 应继续解析内容：status=%d Location=%q calls=%d", rec.Code, rec.Header().Get("Location"), calls.Load())
+	}
+}
 
 func TestRedirect2OpenlistLinkResolverBoundaries(t *testing.T) {
 	tests := []struct {
@@ -359,7 +417,9 @@ func newSTRMRedirectTestRouter(t *testing.T, source string, cached bool) (*gin.E
 	})
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{map[string]string{"Id": "ms", "Path": source}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{map[string]any{
+			"Id": "ms", "Path": source, "SupportsTranscoding": true, "TranscodingUrl": "/origin/transcode",
+		}}})
 	}))
 	t.Cleanup(origin.Close)
 	cacheConfig := &config.Cache{Enable: cached, Expired: "1h"}

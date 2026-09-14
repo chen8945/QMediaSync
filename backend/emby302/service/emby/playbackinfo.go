@@ -112,10 +112,7 @@ func TransferPlaybackInfo(c *gin.Context) {
 
 		// 如果是本地媒体, 不处理
 		embyPath, _ := source.Attr("Path").String()
-		// 2. 以 Windows 盘符开头, 通过正则匹配
-		pattern := `^[A-Za-z]:`
-		matchedWin, _ := regexp.MatchString(pattern, embyPath)
-		if strings.HasPrefix(embyPath, "/") || matchedWin {
+		if config.C.Emby.IsLocalMediaPath(embyPath) {
 			return nil
 		}
 		var path string
@@ -223,11 +220,7 @@ func handleSpecialPlayback(c *gin.Context, itemInfo ItemInfo) bool {
 
 		// 本地媒体
 		path, _ := value.Attr("Path").String()
-		// 2. 以 Windows 盘符开头, 通过正则匹配
-		pattern := `^[A-Za-z]:`
-		matchedWin, _ := regexp.MatchString(pattern, path)
-		// \\ 开头表示 Emby 网络共享地址
-		if strings.HasPrefix(path, "/") || matchedWin || strings.HasPrefix(path, "\\") {
+		if config.C.Emby.IsLocalMediaPath(path) {
 			logs.Info("本地媒体: %s, 回源处理", path)
 			flag = true
 		}

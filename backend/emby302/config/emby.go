@@ -106,6 +106,19 @@ func (e *Emby) Init() error {
 	return nil
 }
 
+// IsLocalMediaPath 判断路径是否需要由 Emby 读取本地文件或网络共享。
+func (e *Emby) IsLocalMediaPath(path string) bool {
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) ||
+		strings.HasPrefix(strings.ToLower(path), "smb://") {
+		return true
+	}
+	if len(path) >= 2 && path[1] == ':' &&
+		((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) {
+		return true
+	}
+	return e.LocalMediaRoot != "" && strings.HasPrefix(path, e.LocalMediaRoot)
+}
+
 // Strm STRM 配置
 type Strm struct {
 	// PathMap 远程路径映射

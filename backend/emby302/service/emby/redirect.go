@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,9 +113,10 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	if strmUrl == "" {
 		strmUrl = embyPath
 	}
+	isLocalMedia := config.C.Emby.IsLocalMediaPath(strmUrl)
 	isProxyUrl := ""
 	// 4 如果是远程地址 (STRM) 且不包含 QMediaSync 的本地代理播放链接, 则重定向处理。
-	if urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:") {
+	if !isLocalMedia && (urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:")) {
 		finalPath, resolverStatus, expiresAt := getFinalRedirectLink(strmUrl, c.Request.Header.Clone())
 		if !strings.Contains(finalPath, "/proxy-115") {
 			targetHost := ""
@@ -138,12 +138,7 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	}
 
 	// 5 如果是本地地址, 回源处理
-	// 1. 以 / 开头
-	// 2. 以 Windows 盘符开头, 通过正则匹配
-	pattern := `^[A-Za-z]:`
-	matchedWin, _ := regexp.MatchString(pattern, embyPath)
-	// \\ 开头表示 Emby 网络共享地址
-	if strings.HasPrefix(embyPath, "/") || matchedWin || strings.HasPrefix(embyPath, "\\") || isProxyUrl != "" {
+	if isLocalMedia || isProxyUrl != "" {
 		logs.Info("本地或代理路径: %s, 回源处理", embyPath)
 		newUri := strings.Replace(c.Request.RequestURI, "stream", "original", 1)
 		newUri = strings.Replace(newUri, "universal", "original", 1)
