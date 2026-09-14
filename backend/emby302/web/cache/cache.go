@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,9 +14,6 @@ import (
 	"qmediasync/emby302/util/encrypts"
 	"qmediasync/emby302/util/https"
 	"qmediasync/emby302/util/logs"
-
-	"qmediasync/emby302/util/strs"
-	"qmediasync/emby302/util/urls"
 
 	"github.com/gin-gonic/gin"
 )
@@ -137,17 +136,18 @@ func WaitingForHandleChan() {
 
 // calcCacheKey 计算缓存 key
 //
-// 计算方式: 取出请求方法、请求路径、请求体、请求头并转换成字符串,
-// 字典排序后再进行 MD5 哈希。
+// 请求方法、URL、请求体及请求头使用长度前缀编码后进行 MD5 哈希。
+// 仅排序参数名和请求头名称，保留字段值及多值顺序，不修改转发请求。
 func calcCacheKey(c *gin.Context) (string, error) {
-	method := c.Request.Method
-
-	q := c.Request.URL.Query()
+	u := *c.Request.URL
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "", fmt.Errorf("解析请求参数失败: %w", err)
+	}
 	for key := range CacheKeyIgnoreParams {
 		q.Del(key)
 	}
-	c.Request.URL.RawQuery = q.Encode()
-	uri := c.Request.URL.String()
+	u.RawQuery = q.Encode()
 
 	body := ""
 	if c.Request.Body != nil {
@@ -158,10 +158,30 @@ func calcCacheKey(c *gin.Context) (string, error) {
 		body = string(bodyBytes)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	}
+	identity := strings.Builder{}
+	writeField := func(value string) {
+		fmt.Fprintf(&identity, "%d:", len(value))
+		identity.WriteString(value)
+	}
+	writeField(c.Request.Method)
+	writeField(u.String())
+	writeField(body)
+
+	headerKeys := make([]string, 0, len(c.Request.Header))
+	for key := range c.Request.Header {
+		if _, ok := CacheKeyIgnoreParams[key]; !ok {
+			headerKeys = append(headerKeys, key)
+		}
+	}
+	sort.Strings(headerKeys)
+	fmt.Fprintf(&identity, "%d:", len(headerKeys))
 	header := strings.Builder{}
-	for key, values := range c.Request.Header {
-		if _, ok := CacheKeyIgnoreParams[key]; ok {
-			continue
+	for _, key := range headerKeys {
+		values := c.Request.Header[key]
+		writeField(key)
+		fmt.Fprintf(&identity, "%d:", len(values))
+		for _, value := range values {
+			writeField(value)
 		}
 		header.WriteString(key)
 		header.WriteString("=")
@@ -170,18 +190,9 @@ func calcCacheKey(c *gin.Context) (string, error) {
 	}
 
 	headerStr := header.String()
-	preEnc := strs.Sort(c.Request.URL.RawQuery + body + headerStr)
 	if headerStr != "" {
 		logs.Tip("参与 cache key 计算的请求头: %s", headerStr)
 	}
 
-	// 为防止字典排序后不同 URI 冲突, 这里在排序完的字符串前再加上原始 URI。
-	uriNoArgs := urls.ReplaceAll(
-		uri,
-		"?"+c.Request.URL.RawQuery, "",
-		c.Request.URL.RawQuery, "",
-	)
-
-	hash := encrypts.Md5Hash(method + uriNoArgs + preEnc)
-	return hash, nil
+	return encrypts.Md5Hash(identity.String()), nil
 }
