@@ -64,6 +64,7 @@
 - CORS 和 CSRF 共享可信来源判断。默认允许 Vite 的 `localhost:5173`、`127.0.0.1:5173` 和 `[::1]:5173`；跨源部署通过 `trustedOrigins` 配置精确的 `scheme://host[:port]`。
 - 反向代理必须保留原始 `Host`，由可信代理传递 `X-Forwarded-Proto: https`；后端 HTTP 监听不得直接暴露，以防客户端伪造该 header。具体代理配置见 [反向代理](../operations/reverse-proxy.md)。
 - `/proxy-115` 仅允许 115 CDN 和百度网盘下载域名；初始目标和每次重定向目标都执行同一白名单校验。
+- 共享下载代理只转发客户端的 `Range`、`Referer`，并设置对应网盘的 UA；首跳和后续重定向均不转发浏览器 `Cookie`，包括 `auth_token`、`csrf_token` 及其他会话凭据。
 
 ## 不变量
 
@@ -75,9 +76,11 @@
 - 未认证的 `/api/session` 是正常匿名状态，必须返回 `200` 与 `authenticated=false`，不能返回伪造的认证错误。
 - API Key 明文只能在创建响应出现一次，日志和数据库不得保存完整值。
 - 跨源部署必须显式配置可信来源，SSE 不作为跨源 Cookie 通道。
+- 浏览器 Cookie 只用于 QMS 会话鉴权，不能经下载代理发送给网盘或 CDN。
 
 ## 验证方式
 
+- 运行 `(cd backend && go test -race ./internal/controllers -run '^TestProxy115')`，覆盖 115、百度网盘首跳及同域、跨允许域重定向的 Cookie 隔离，同时验证 Range、Referer、网盘 UA 和响应内容。
 - 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景。
 - 管理员恢复的 SQLite、PostgreSQL、命令入口及 Compose 脚本验证命令见 [验证说明](../engineering/verification.md#管理员恢复验证)，覆盖事务回滚、损坏旧凭据、非固定管理员 ID、认证清理和业务数据保留。
 - 运行 `(cd frontend && pnpm lint)`、`(cd frontend && pnpm run type-check)` 检查前端认证调用改动。

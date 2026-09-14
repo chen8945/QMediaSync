@@ -141,9 +141,9 @@ func Proxy115(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求创建失败", Data: nil})
 		return
 	}
-	// 复制客户端的 Range、Cookie、Referer 等头部
+	// 仅转发 Range、Referer，避免将浏览器 Cookie 泄露给网盘。
 	for k, v := range c.Request.Header {
-		if k == "Range" || k == "Cookie" || k == "Referer" {
+		if k == "Range" || k == "Referer" {
 			// helpers.AppLogger.Infof("响应头：%s=%s", k, v)
 			req.Header[k] = v
 		}
