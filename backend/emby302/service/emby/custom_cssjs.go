@@ -164,13 +164,26 @@ func ProxyIndexHtml(c *gin.Context) {
 	c.Writer.Flush()
 }
 
-// ProxyCustomJs 代理自定义脚本
+// ProxyCustomJs 代理自定义脚本，等待 ApiClient 初始化后执行。
 func ProxyCustomJs(c *gin.Context) {
 	loadAllCustomCssJs()
 
 	contentBuilder := strings.Builder{}
 	for _, script := range customJsList {
-		contentBuilder.WriteString(fmt.Sprintf("(function(){ %s })();\n", script))
+		fmt.Fprintf(&contentBuilder, `(function waitForEmby() {
+  if (typeof ApiClient === 'undefined' || ApiClient === null) {
+    setTimeout(waitForEmby, 100);
+    return;
+  }
+  try {
+    (function() {
+%s
+    })();
+  } catch (e) {
+    console.error('自定义脚本执行失败:', e);
+  }
+})();
+`, script)
 	}
 	contentBytes := []byte(contentBuilder.String())
 

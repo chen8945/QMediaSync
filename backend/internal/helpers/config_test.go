@@ -143,6 +143,46 @@ func TestInitConfigReadsEmby302InsecureSkipVerify(t *testing.T) {
 	})
 }
 
+func TestEmby302ImagesOriginalConfig(t *testing.T) {
+	if MakeDefaultConfig().Emby302.ImagesOriginal {
+		t.Fatal("原图模式默认应关闭")
+	}
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"missing", "", false},
+		{"disabled", "emby302:\n  images_original: false\n", false},
+		{"enabled", "emby302:\n  images_original: true\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			withTempConfigDir(t, func(configDir string) {
+				data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\n" + tt.value)
+				if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := InitConfig(); err != nil {
+					t.Fatal(err)
+				}
+				if GlobalConfig.Emby302.ImagesOriginal != tt.want {
+					t.Fatalf("ImagesOriginal = %v, want %v", GlobalConfig.Emby302.ImagesOriginal, tt.want)
+				}
+				if err := SaveConfig(&GlobalConfig); err != nil {
+					t.Fatal(err)
+				}
+				GlobalConfig = Config{}
+				if err := InitConfig(); err != nil {
+					t.Fatal(err)
+				}
+				if GlobalConfig.Emby302.ImagesOriginal != tt.want {
+					t.Fatalf("saved ImagesOriginal = %v, want %v", GlobalConfig.Emby302.ImagesOriginal, tt.want)
+				}
+			})
+		})
+	}
+}
+
 func TestInitConfigDefaultsMissingLogLevelToInfo(t *testing.T) {
 	withTempConfigDir(t, func(configDir string) {
 		data := []byte(testSQLiteConfig + "jwtSecret: custom-secret\nlog:\n  file: logs/app.log\n")

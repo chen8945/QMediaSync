@@ -427,6 +427,7 @@ func startEmby302() {
 		helpers.AppLogger.RequiredWarnf("Emby 302 已开启 insecure_skip_verify，出站 HTTPS 请求将跳过证书校验，存在中间人攻击风险，仅建议在受控内网自签名证书场景临时使用")
 	}
 	config.C.Emby.Host = models.GlobalEmbyConfig.EmbyUrl
+	config.C.Emby.ImagesOriginal = helpers.GlobalConfig.Emby302.ImagesOriginal
 	config.C.Emby.EpisodesUnplayPrior = false // 关闭剧集排序
 	certFile := filepath.Join(dataRoot, "server.crt")
 	keyFile := filepath.Join(dataRoot, "server.key")

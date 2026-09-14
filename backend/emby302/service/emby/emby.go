@@ -52,14 +52,29 @@ func ProxySocket() func(*gin.Context) {
 
 // HandleImages 处理图片请求
 //
-// 修改图片质量参数为配置值
+// 按配置请求原图或覆盖图片质量参数
 // TODO 尝试跳转到 115 缩略图地址
 // 根据 ItemId 查询 SyncFile, 如果有 115 缩略图地址就跳转过去
 func HandleImages(c *gin.Context) {
 	q := c.Request.URL.Query()
-	q.Del("quality")
-	q.Del("Quality")
-	q.Set("Quality", strconv.Itoa(config.C.Emby.ImagesQuality))
+	if config.C.Emby.ImagesOriginal {
+		// 参数名与 Emby 一样不区分大小写，保留选图、版本和认证参数。
+		for key := range q {
+			switch strings.ToLower(key) {
+			case "maxwidth", "maxheight", "width", "height", "quality", "format",
+				"cropwhitespace", "enableimageenhancers", "addplayedindicator", "percentplayed",
+				"unplayedcount", "blur", "backgroundcolor", "foregroundlayer":
+				q.Del(key)
+			}
+		}
+		// Emby 缺省会裁剪 Logo/Art 并启用增强器，需要显式关闭。
+		q.Set("CropWhitespace", "false")
+		q.Set("EnableImageEnhancers", "false")
+	} else {
+		q.Del("quality")
+		q.Del("Quality")
+		q.Set("Quality", strconv.Itoa(config.C.Emby.ImagesQuality))
+	}
 	c.Request.RequestURI = c.Request.URL.Path + "?" + q.Encode()
 	ProxyOrigin(c)
 }

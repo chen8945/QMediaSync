@@ -20,6 +20,8 @@
 
 默认 HTTP 端口为 `12333`。Docker 和发布二进制部署中，主程序只有在运行目录 `config/server.crt` 和 `config/server.key` 都存在时才额外监听 HTTPS `12332`。Emby 302 服务使用 `8095`（HTTP）和 `8094`（HTTPS）；仅在已配置 Emby 时启动。端口、证书和代理层细节分别见 [配置、密钥与日志](configuration.md) 与 [反向代理与 SSE](reverse-proxy.md)。
 
+Emby 海报、背景原图模式通过持久化主配置 `config/config.yaml` 的 `emby302.images_original` 开启，默认关闭，修改后重启 QMediaSync 即可，无需重建镜像。流量和图片标记变化见 [Emby 302 图片与自定义脚本](configuration.md#emby-302-图片与自定义脚本)。
+
 ## Docker
 
 正式发布镜像为 `ghcr.io/chen8945/qmediasync:latest`，同时提供 `linux/amd64` 和 `linux/arm64`。固定版本使用 `ghcr.io/chen8945/qmediasync:<tag>`；`beta` 和功能分支镜像的生成规则见 [发布流程](release.md)。

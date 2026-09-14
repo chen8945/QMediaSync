@@ -31,6 +31,7 @@
 | 115 共享客户端凭据 | `cd backend && go test -race ./internal/v115open`；`cd backend && go test ./internal/models ./internal/controllers ./internal/synccron` | [账号授权与更换](../reference/account-authorization.md#访问凭证定时刷新与失效) |
 | 下载代理 Cookie 隔离 | `cd backend && go test -race ./internal/controllers -run '^TestProxy115'`；覆盖 115/百度首跳与重定向、Range/Referer/UA 保留 | [认证与浏览器会话](../architecture/authentication-sessions.md#api-key可信来源与下载代理) |
 | 115 STRM 直链解析与播放日志 | `cd backend && go test ./emby302/service/emby ./emby302/web/cache ./emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`；缓存联调运行 `go test -race ./emby302/service/emby ./emby302/web/cache`，覆盖 UA 分离、请求保真、签名安全期限、排队过期及失败回退不缓存 | [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)、[日志行为与脱敏](../operations/configuration.md#日志行为与脱敏) |
+| Emby 302 回源、共享路径和 Web 兼容性 | `cd backend && go test -race ./emby302/config ./emby302/service/emby ./emby302/util/https ./emby302/web/cache ./emby302/util/jsons ./internal/helpers`；覆盖 HTTP 取消及不完整响应不缓存、完整字幕仍可命中缓存、WebSocket 直连及消息收发、本地 / SMB 路径、原图默认裁剪与增强显式关闭、主配置读写；脚本执行验证需要 Node.js | [Emby 302 回源连接](../operations/configuration.md#emby-302-回源连接)、[图片与自定义脚本](../operations/configuration.md#emby-302-图片与自定义脚本) |
 | 115 多端播放 | `cd backend && go test ./internal/playback ./internal/controllers ./internal/v115open ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；相关播放、目录与回收站定时清理和过滤测试加 `-race`；涉及设置页交互时再运行前端检查 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
 | 多端副本失败保护与有限重试 | `cd backend && go test -race ./internal/controllers ./internal/playback ./internal/v115open`；覆盖原文件零取链、旧槽位保留、当前预留释放、一次取链重试、确认缺失后一次重建、共享预算与独立清理 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
 | 公共授权随机串 | `cd backend && go test -race ./internal/helpers ./internal/v115open`；`cd backend && go test ./internal/v115auth ./internal/controllers` | [账号授权与更换](../reference/account-authorization.md#授权流程传递) |
@@ -62,6 +63,8 @@
 ```
 
 项目没有配置 Go lint 工具。Go 文件的 import 以 `goimports -local qmediasync` 的实际输出为准；仅在用户请求或本次变更确实需要格式化时运行会写入文件的命令，并检查不会带入无关改动。
+
+`TestProxyCustomJsWaitsForEmby` 通过 Node.js 执行处理器生成的脚本，验证等待初始化、单次执行及异常隔离。运行相关 Go 测试前确认 `node --version` 可用；没有 Node.js 时该项会明确跳过，不能据此声称脚本行为已验证。
 
 ## 数据库启动与部署验证
 

@@ -105,6 +105,9 @@ emby302:
   # 默认 false，会校验证书并复用 HTTP 连接。
   # 只有受控内网自签名证书或临时排障场景才建议显式改为 true。
   insecure_skip_verify: false
+  # 是否请求 Emby 海报、背景等图片的原图，修改后重启生效。
+  # 开启后移除缩放、格式和服务端播放标记等处理参数，并显式关闭裁剪和增强，图片流量可能增加。
+  images_original: false
 
 # 旧版授权服务地址；通常无需修改。
 authServer: https://api.mqfamily.top

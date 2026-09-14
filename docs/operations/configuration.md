@@ -4,7 +4,7 @@
 >
 > 权威范围：本文档维护配置文件、端口、密钥优先级、日志和运行参数；浏览器认证见 [认证会话](../architecture/authentication-sessions.md)，反向代理见 [反向代理](reverse-proxy.md)。
 >
-> 修改时机：修改配置字段、默认值、密钥来源、日志行为、Emby 302 TLS 选项或运行时监控指标时必须更新本文档和 `docs/examples/config.yaml`。
+> 修改时机：修改配置字段、默认值、密钥来源、日志行为、Emby 302 运行选项或运行时监控指标时必须更新本文档和 `docs/examples/config.yaml`。
 >
 > 相关代码：`backend/internal/helpers/config.go`、`backend/internal/helpers/logger.go`、`backend/internal/models/settings.go`、`backend/internal/models/syncpath.go`、`backend/main.go`、`backend/emby302.yaml`、`docs/examples/config.yaml`。
 
@@ -121,6 +121,19 @@ emby302:
 ```
 
 启用 `emby302.insecure_skip_verify` 后，出站 HTTPS 请求会接受无法验证的证书，程序会写入风险提示日志。该模式存在中间人攻击风险，不适合公网或长期生产环境。
+
+## Emby 302 图片与自定义脚本
+
+主配置 `config/config.yaml` 的 `emby302.images_original` 默认 `false`，修改后重启生效。关闭时保留客户端请求的图片尺寸、格式等参数，仅按内嵌模板的 `images-quality` 覆盖质量；默认质量 `100` 不等于原图模式。
+
+```yaml
+emby302:
+  images_original: true
+```
+
+开启后，海报、背景等图片请求会移除缩放、质量、格式、模糊、背景色及服务端播放标记叠加参数，不区分参数名大小写。裁剪和增强先清理所有大小写别名，再显式设置唯一的 `CropWhitespace=false`、`EnableImageEnhancers=false`，避免 Emby 的默认行为重新开启 Logo/Art 裁剪或图片增强。选图 `index`、版本 `tag`、认证及其他参数保留。这样可请求更清晰的原图，但图片流量、加载时间和客户端内存占用可能增加；Emby 服务端叠加的已播放标记、进度或未播放数量也不会再随图片生成。
+
+配置目录 `custom-js/` 中的脚本在全局 `ApiClient` 存在且非 `null` 后执行；未就绪时每 100 毫秒检查一次，就绪后每个脚本执行一次。各脚本保留独立作用域，同步执行异常写入浏览器控制台，不阻断其他脚本。该条件不代表用户已登录或所有插件已加载。脚本和样式仍在首次访问时加载并缓存，修改文件后需重启服务。
 
 ## 出站代理
 

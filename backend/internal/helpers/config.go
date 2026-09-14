@@ -101,6 +101,7 @@ type ConfigStrm struct {
 // ConfigEmby302 表示 Emby 302 代理配置。
 type ConfigEmby302 struct {
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify"` // 是否跳过 Emby 302 出站 HTTPS 证书校验
+	ImagesOriginal     bool `yaml:"images_original"`      // 是否请求 Emby 海报、背景等图片的原图
 }
 
 type Config struct {
@@ -432,6 +433,7 @@ func MakeDefaultConfig() *Config {
 		},
 		Emby302: ConfigEmby302{
 			InsecureSkipVerify: false,
+			ImagesOriginal:     false,
 		},
 	}
 }

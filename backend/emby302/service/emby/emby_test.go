@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -84,5 +85,89 @@ func TestProxySocketBypassesDefaultProxy(t *testing.T) {
 	}
 	if transport.Proxy == nil {
 		t.Fatal("WebSocket proxy changed the default transport")
+	}
+}
+
+func TestHandleImagesUpstreamParameters(t *testing.T) {
+	query := "maxWidth=300&MAXHEIGHT=450&Width=200&height=400&quality=20&Quality=30&QUALITY=40" +
+		"&Format=webp&AddPlayedIndicator=true" +
+		"&PercentPlayed=50&UnplayedCount=3&Blur=10&BackgroundColor=black&ForegroundLayer=logo" +
+		"&tag=revision-1&Index=2&api_key=token%2Btest&custom=one&custom=two"
+	for _, tt := range []struct {
+		name       string
+		original   bool
+		path       string
+		processing string
+	}{
+		{"poster original", true, "/Items/123/Images/Primary", ""},
+		{"backdrop original", true, "/Items/123/Images/Backdrop/2", "&CropWhitespace=true&EnableImageEnhancers=true"},
+		{"logo default crop", true, "/Items/123/Images/Logo", ""},
+		{"art default crop", true, "/Items/123/Images/Art", ""},
+		{"processing explicitly disabled", true, "/Items/123/Images/Primary", "&cRoPwHiTeSpAcE=false&ENABLEIMAGEENHANCERS=false"},
+		{"duplicate processing flags", true, "/Items/123/Images/Logo",
+			"&CropWhitespace=false&CropWhitespace=true&cropWhitespace=true" +
+				"&EnableImageEnhancers=false&EnableImageEnhancers=true&ENABLEIMAGEENHANCERS=true"},
+		{"configured quality", false, "/Items/123/Images/Primary", "&CropWhitespace=true&EnableImageEnhancers=true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := make(chan *url.URL, 1)
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r.URL
+				// 模拟 Emby 缺省处理：Logo/Art 自动裁剪，增强器默认启用。
+				crop := strings.HasSuffix(r.URL.Path, "/Logo") || strings.HasSuffix(r.URL.Path, "/Art")
+				enhance := true
+				for key, values := range r.URL.Query() {
+					switch strings.ToLower(key) {
+					case "cropwhitespace":
+						crop = values[0] == "true"
+					case "enableimageenhancers":
+						enhance = values[0] == "true"
+					}
+				}
+				if crop || enhance {
+					_, _ = w.Write([]byte("processed image bytes"))
+					return
+				}
+				_, _ = w.Write([]byte("original image bytes"))
+			}))
+			defer origin.Close()
+			oldConfig := config.C
+			config.C = &config.Config{Emby: &config.Emby{
+				Host: origin.URL, ImagesQuality: 85, ImagesOriginal: tt.original,
+			}}
+			t.Cleanup(func() { config.C = oldConfig })
+			router := gin.New()
+			router.GET("/Items/:id/Images/*image", HandleImages)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tt.path+"?"+query+tt.processing, nil))
+			wantBody := "original image bytes"
+			if !tt.original {
+				wantBody = "processed image bytes"
+			}
+			if response.Code != http.StatusOK || response.Body.String() != wantBody {
+				t.Fatalf("image response = %d %q", response.Code, response.Body.String())
+			}
+			var upstream *url.URL
+			select {
+			case upstream = <-requests:
+			default:
+				t.Fatal("image request did not reach Emby")
+			}
+			if upstream.Path != tt.path {
+				t.Fatalf("upstream path = %q, want %q", upstream.Path, tt.path)
+			}
+			want := url.Values{
+				"tag": {"revision-1"}, "Index": {"2"}, "api_key": {"token+test"}, "custom": {"one", "two"},
+				"CropWhitespace": {"false"}, "EnableImageEnhancers": {"false"},
+			}
+			if !tt.original {
+				want, _ = url.ParseQuery(query + tt.processing)
+				delete(want, "quality")
+				want["Quality"] = []string{"85"}
+			}
+			if got := upstream.Query(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("upstream parameters = %v, want %v", got, want)
+			}
+		})
 	}
 }
