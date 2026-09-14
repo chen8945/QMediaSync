@@ -53,7 +53,6 @@ type Manager struct {
 	// nil 表示正在取链、等待删除或清理中；非 nil 是待重试的不可变目录身份。
 	operations map[operationKey]*operationDirectory
 	nextSweep  time.Time
-	retries    []time.Duration
 	stopped    bool
 	workers    sync.WaitGroup
 	// shutdown 只传播进程退出，不承载请求身份或播放器取消。
@@ -72,7 +71,6 @@ func NewManager() *Manager {
 		pending:    make(map[SourceKey]map[Slot]int),
 		dirs:       make(map[accountKey]*copyDirectory),
 		operations: make(map[operationKey]*operationDirectory),
-		retries:    []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second},
 		shutdown:   shutdown,
 		stop:       stop,
 	}

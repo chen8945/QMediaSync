@@ -3,6 +3,7 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -89,14 +90,12 @@ func Test115PlaybackLogsLinksOnlyWhenNewURLIsPublished(t *testing.T) {
 	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
 	t.Cleanup(func() { helpers.SetGlobalLogLevel(previousLevel) })
 	for _, tt := range []struct {
-		name     string
-		copy     bool
-		copyFail bool
-		kind     string
+		name string
+		copy bool
+		kind string
 	}{
 		{name: "原文件", kind: "原文件"},
 		{name: "副本", copy: true, kind: "副本"},
-		{name: "副本失败降级", copy: true, copyFail: true, kind: "原文件"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setup115PlaybackCache(t)
@@ -126,9 +125,6 @@ func Test115PlaybackLogsLinksOnlyWhenNewURLIsPublished(t *testing.T) {
 			resolve := func() string {
 				return resolve115URLMiss(t.Context(), manager, source, slot, key, origin, tt.copy, fetch,
 					func(ctx context.Context) (string, error) {
-						if tt.copyFail {
-							return "", errors.New("copy failed")
-						}
 						return fetch(ctx), nil
 					},
 				)
@@ -229,7 +225,7 @@ func Test115PlaybackConcurrentColdRequests(t *testing.T) {
 	}
 }
 
-func Test115PlaybackInvalidatedURLReentersDecisionAndFallsBack(t *testing.T) {
+func Test115PlaybackInvalidatedURLReentersIsolationDecision(t *testing.T) {
 	setup115PlaybackCache(t)
 	manager := playback.NewManager()
 	source := playback.SourceKey{AccountID: 1, UserID: t.Name(), PickCode: "retry-file"}
@@ -241,13 +237,63 @@ func Test115PlaybackInvalidatedURLReentersDecisionAndFallsBack(t *testing.T) {
 	db.Cache.Set(key, []byte("expired-url"), 3000)
 	// HEAD 失效和 freecache 提前淘汰均删除 URL，不能丢失其他槽位。
 	db.Cache.Delete(key)
-	copyCalls := 0
+	copyCalls, originalCalls := 0, 0
 	result := resolve115URLMiss(context.Background(), manager, source, slot, key, "", true,
-		func(context.Context) string { return "fallback-url" },
+		func(context.Context) string { originalCalls++; return "fallback-url" },
 		func(context.Context) (string, error) { copyCalls++; return "", errors.New("copy failed") },
 	)
-	if copyCalls != 1 || result != "fallback-url" || string(db.Cache.Get(key)) != result {
-		t.Fatalf("失效重取未判定或未降级：copy=%d result=%q", copyCalls, result)
+	if copyCalls != 1 || originalCalls != 0 || result != "" || len(db.Cache.Get(key)) != 0 ||
+		!manager.HasOther(source, slot, time.Now()) {
+		t.Fatalf("隔离失败仍调用原文件或影响其他槽位：copy=%d original=%d result=%q", copyCalls, originalCalls, result)
+	}
+}
+
+func Test115PlaybackIsolationFailurePreservesOtherSlotAndURL(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		err     error
+		value   string
+		pending bool
+	}{
+		{name: "复制失败", err: errors.New("copy failed")},
+		{name: "其他 UA 正在取链", err: errors.New("copy failed"), pending: true},
+		{name: "副本身份缺失", err: errors.New("缺少原文件 ID 或 PickCode")},
+		{name: "空链接"},
+		{name: "签名进入安全窗口", value: "https://copy.invalid/video?t=1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setup115PlaybackCache(t)
+			var logs bytes.Buffer
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+			manager := playback.NewManager()
+			source := playback.SourceKey{AccountID: 1, UserID: t.Name(), PickCode: "protected-file"}
+			slot := playback.Slot{Mode: playback.ModeDirect, UA: "new-player"}
+			other := playback.Slot{Mode: playback.ModeDirect, UA: "existing-player"}
+			if tt.pending {
+				manager.Begin(source, other, time.Now())
+			} else {
+				manager.Record(source, other, time.Now().Add(playback.URLCacheTTL))
+			}
+			key := v115URLCacheKey(source.PickCode, 1, 0, slot.UA)
+			otherKey := v115URLCacheKey(source.PickCode, 1, 0, other.UA)
+			const previousURL = "https://original.invalid/video?signature=keep"
+			db.Cache.Set(otherKey, []byte(previousURL), 3000)
+			originalCalls, copyCalls := 0, 0
+			value := resolve115URLMiss(t.Context(), manager, source, slot, key, "", true,
+				func(context.Context) string { originalCalls++; return "unexpected-original" },
+				func(context.Context) (string, error) { copyCalls++; return tt.value, tt.err },
+			)
+			if value != "" || originalCalls != 0 || copyCalls != 1 || len(db.Cache.Get(key)) != 0 ||
+				string(db.Cache.Get(otherKey)) != previousURL {
+				t.Fatalf("失败不应降级或改写缓存：value=%q original=%d copy=%d", value, originalCalls, copyCalls)
+			}
+			if manager.HasOther(source, other, time.Now()) || !manager.HasOther(source, slot, time.Now()) {
+				t.Fatal("本次预留应释放，其他 UA 的有效或在途槽位必须保留")
+			}
+			if !strings.Contains(logs.String(), "保护已有播放链接") || strings.Contains(logs.String(), "115 取链成功") {
+				t.Fatalf("未记录隔离保护原因，或误报取链成功：%s", logs.String())
+			}
+		})
 	}
 }
 
@@ -286,7 +332,7 @@ func Test115PlaybackCanceledMissDoesNotReserve(t *testing.T) {
 	}
 }
 
-func Test115PlaybackCopyDeadlineKeepsFallbackAndReservation(t *testing.T) {
+func Test115PlaybackCopyDeadlineReleasesReservationWithoutFallback(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		setup115PlaybackCache(t)
 		manager := playback.NewManager()
@@ -299,9 +345,6 @@ func Test115PlaybackCopyDeadlineKeepsFallbackAndReservation(t *testing.T) {
 		result := resolve115URLMiss(t.Context(), manager, source, slot, "budget-cache", "", true,
 			func(ctx context.Context) string {
 				fallbackCalled = true
-				if ctx.Err() != nil || !manager.HasOther(source, other, time.Now()) {
-					t.Fatal("普通取链必须使用仍有效的请求并保留当前 pending 槽位")
-				}
 				return "fallback-url"
 			},
 			func(ctx context.Context) (string, error) {
@@ -309,15 +352,18 @@ func Test115PlaybackCopyDeadlineKeepsFallbackAndReservation(t *testing.T) {
 				if !ok || deadline.Sub(started) != 10*time.Second {
 					t.Fatalf("副本预算未在调用前生效：%v, %v", deadline.Sub(started), ok)
 				}
+				if !manager.HasOther(source, other, time.Now()) {
+					t.Fatal("副本取链期间必须保留当前 pending 槽位")
+				}
 				<-ctx.Done()
 				return "", ctx.Err()
 			},
 		)
-		if !fallbackCalled || result != "fallback-url" || time.Since(started) != 10*time.Second {
-			t.Fatalf("副本超时未在 10 秒后降级：result=%q elapsed=%v", result, time.Since(started))
+		if fallbackCalled || result != "" || time.Since(started) != 10*time.Second {
+			t.Fatalf("副本超时仍尝试普通取链：result=%q elapsed=%v", result, time.Since(started))
 		}
-		if manager.HasOther(source, other, time.Now().Add(playback.URLCacheTTL)) {
-			t.Fatal("降级成功后的 pending 未撤销，或槽位未按缓存期限过期")
+		if manager.HasOther(source, other, time.Now()) || !manager.HasOther(source, slot, time.Now()) {
+			t.Fatal("失败必须撤销本次预留并保留其他 UA 的槽位")
 		}
 	})
 }
@@ -371,7 +417,11 @@ func Test115PlaybackExpiredURLDoesNotPublishOrLeavePending(t *testing.T) {
 				func(context.Context) string { originalCalls++; return expired },
 				func(context.Context) (string, error) { return expired, nil },
 			)
-			if got != "" || originalCalls != 1 || len(db.Cache.Get("expired-cache")) != 0 || manager.HasOther(source, other, time.Now()) {
+			wantOriginalCalls := 1
+			if copyEnabled {
+				wantOriginalCalls = 0
+			}
+			if got != "" || originalCalls != wantOriginalCalls || len(db.Cache.Get("expired-cache")) != 0 || manager.HasOther(source, other, time.Now()) {
 				t.Fatal("已到安全期限的 URL 不能返回或成为永久缓存，失败必须撤销 pending")
 			}
 		})
@@ -399,5 +449,63 @@ func TestCopy115URLRequiresAccountScoped115FileIdentity(t *testing.T) {
 	}
 	if _, err := copy115URL(context.Background(), account, "same-pick", "player"); err == nil {
 		t.Fatal("没有 FileId 时不能发起复制")
+	}
+}
+
+func TestGet115UrlByPickCodeIsolationFailureDoesNotRedirect(t *testing.T) {
+	for _, indexed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
+			setup115PlaybackCache(t)
+			setupControllerTestDB(t, &models.Account{}, &models.SyncFile{})
+			previousManager, previousSettings := v115Playback, models.SettingsGlobal
+			v115Playback = playback.NewManager()
+			models.SettingsGlobal = &models.Settings{MultiPlaybackEnabled: 1}
+			t.Cleanup(func() { v115Playback, models.SettingsGlobal = previousManager, previousSettings })
+			account := &models.Account{Name: "隔离保护", SourceType: models.SourceType115, UserId: "protected-user"}
+			if err := db.Db.Create(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			source := playback.SourceKey{AccountID: account.ID, UserID: account.UserId, PickCode: "protected-pick"}
+			if indexed {
+				file := models.SyncFile{AccountId: account.ID, SourceType: models.SourceType115, PickCode: source.PickCode}
+				if err := db.Db.Create(&file).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := playback.Slot{Mode: playback.ModeDirect, UA: "existing-player"}
+			current := playback.Slot{Mode: playback.ModeDirect, UA: "new-player"}
+			v115Playback.Record(source, other, time.Now().Add(playback.URLCacheTTL))
+			oldKey := v115URLCacheKey(source.PickCode, 1, 0, other.UA)
+			newKey := v115URLCacheKey(source.PickCode, 1, 0, current.UA)
+			const previousURL = "https://cdn.test/already-playing.mkv?k=keep"
+			db.Cache.Set(oldKey, []byte(previousURL), 3000)
+			request := func(ua string) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest(http.MethodGet,
+					"http://qms.test/115/newurl?pickcode=protected-pick&userid=protected-user&force=1", nil)
+				c.Request.Header.Set("User-Agent", ua)
+				Get115UrlByPickCode(c)
+				return w
+			}
+			for range 2 {
+				w := request(current.UA)
+				var response APIResponse[any]
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				if w.Code != http.StatusOK || response.Code != BadRequest || response.Message != "获取 115 下载链接失败" ||
+					w.Header().Get("Location") != "" || len(db.Cache.Get(newKey)) != 0 {
+					t.Fatalf("隔离失败响应不应包含直链：HTTP=%d response=%+v Location=%q", w.Code, response, w.Header().Get("Location"))
+				}
+				if v115Playback.HasOther(source, other, time.Now()) || !v115Playback.HasOther(source, current, time.Now()) {
+					t.Fatal("控制器未释放本次预留或丢失原播放槽位")
+				}
+			}
+			if w := request(other.UA); w.Code != http.StatusFound || w.Header().Get("Location") != previousURL ||
+				string(db.Cache.Get(oldKey)) != previousURL {
+				t.Fatalf("原播放器不能再命中原签名：HTTP=%d Location=%q", w.Code, w.Header().Get("Location"))
+			}
+		})
 	}
 }

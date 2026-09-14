@@ -68,8 +68,9 @@ func resolve115URLMiss(
 			}
 			err = errors.New("副本直链为空或已到安全有效期")
 		}
-		helpers.AppLogger.Warnf("115 多端播放副本取链失败，降级普通取链：账号=%d，PickCode=%s，UA=%q，错误=%v",
+		helpers.AppLogger.Warnf("115 多端播放副本取链失败，为保护已有播放链接停止原文件取链：账号=%d，PickCode=%s，UA=%q，错误=%v",
 			source.AccountID, source.PickCode, slot.UA, err)
+		return ""
 	}
 	if ctx.Err() != nil {
 		return ""

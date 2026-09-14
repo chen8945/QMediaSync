@@ -204,7 +204,12 @@ func newCopyFixture() *copyFixture {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if original, ok := f.originals[id]; ok {
-				return &v115open.FileDetail{FileId: id, FileCategory: v115open.TypeFile, Sha1: original.SHA1, FileSizeByte: original.Size}, nil
+				return &v115open.FileDetail{FileId: id, FileCategory: v115open.TypeFile, Sha1: original.SHA1,
+					FileSizeByte: original.Size, PickCode: f.source.PickCode}, nil
+			}
+			if file, ok := f.files[id]; ok {
+				return &v115open.FileDetail{FileId: id, FileCategory: file.FileCategory, Sha1: file.Sha1,
+					FileSizeByte: file.FileSize, PickCode: file.PickCode}, nil
 			}
 			item, ok := f.dirs[id]
 			if !ok {
@@ -341,18 +346,27 @@ func TestCopyURLDownloadRetriesAndIndependentCleanup(t *testing.T) {
 		failures     int
 		err          error
 		emptyResult  bool
+		unsafeURL    string
 		wrongID      bool
 		wrongPick    bool
 		wantAttempts int
 		wantErr      bool
 	}{
 		{name: "成功后清理", wantAttempts: 1},
-		{name: "就绪失败后重试", failures: 2, err: v115open.ErrDownloadURLNotReady, wantAttempts: 3},
-		{name: "fta为1仍重试70004", failures: 2, err: &v115open.OpenAPIError{Code: 70004}, wantAttempts: 3},
+		{name: "就绪失败后重试", failures: 1, err: v115open.ErrDownloadURLNotReady, wantAttempts: 2},
+		{name: "fta为1仍重试70004", failures: 1, err: &v115open.OpenAPIError{Code: 70004}, wantAttempts: 2},
 		{name: "31004重试", failures: 1, err: &v115open.OpenAPIError{Code: 31004}, wantAttempts: 2},
 		{name: "空取链响应重试", failures: 1, emptyResult: true, wantAttempts: 2},
+		{name: "签名进入安全窗口后重新取链", failures: 1, unsafeURL: "https://cdn.test/expired?t=1", wantAttempts: 2},
+		{name: "相对链接重新取链", failures: 1, unsafeURL: "../video.mkv", wantAttempts: 2},
+		{name: "非HTTP链接重新取链", failures: 1, unsafeURL: "ftp://cdn.test/video.mkv", wantAttempts: 2},
+		{name: "空主机链接重新取链", failures: 1, unsafeURL: "https://:443/video.mkv", wantAttempts: 2},
+		{name: "畸形链接重新取链", failures: 1, unsafeURL: "https://cdn.test/%zz", wantAttempts: 2},
 		{name: "临时服务错误重试", failures: 1, err: &v115open.OpenAPIError{HTTPStatus: 503}, wantAttempts: 2},
-		{name: "重试耗尽仍清理", failures: 5, err: v115open.ErrDownloadURLNotReady, wantAttempts: 4, wantErr: true},
+		{name: "重试耗尽仍清理", failures: 5, err: v115open.ErrDownloadURLNotReady, wantAttempts: 2, wantErr: true},
+		{name: "持续空链接不重建", failures: 5, emptyResult: true, wantAttempts: 2, wantErr: true},
+		{name: "持续过期链接不重建", failures: 5, unsafeURL: "https://cdn.test/expired?t=1", wantAttempts: 2, wantErr: true},
+		{name: "持续无效链接不重建", failures: 5, unsafeURL: "https://:443/video.mkv", wantAttempts: 2, wantErr: true},
 		{name: "授权错误不重试", failures: 1, err: &v115open.OpenAPIError{HTTPStatus: 401}, wantAttempts: 1, wantErr: true},
 		{name: "限流不重试", failures: 1, err: &v115open.OpenAPIError{HTTPStatus: 429}, wantAttempts: 1, wantErr: true},
 		{name: "返回其他文件的链接仍清理副本", wrongID: true, wantAttempts: 1, wantErr: true},
@@ -361,6 +375,7 @@ func TestCopyURLDownloadRetriesAndIndependentCleanup(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newCopyFixture()
+				defer awaitCleanup(t, f)
 				attempts := 0
 				download := f.api.download
 				f.api.download = func(ctx context.Context, pickCode, ua string, bypass bool) (*v115open.DownloadUrlResult, error) {
@@ -368,6 +383,9 @@ func TestCopyURLDownloadRetriesAndIndependentCleanup(t *testing.T) {
 					if attempts <= tt.failures {
 						if tt.emptyResult {
 							return nil, nil
+						}
+						if tt.unsafeURL != "" {
+							return &v115open.DownloadUrlResult{URL: tt.unsafeURL}, nil
 						}
 						return nil, tt.err
 					}
@@ -393,7 +411,181 @@ func TestCopyURLDownloadRetriesAndIndependentCleanup(t *testing.T) {
 					t.Fatal("取链结束只能安排延迟清理，不能提前删除或重复复制")
 				}
 				cancel()
-				awaitCleanup(t, f)
+			})
+		})
+	}
+}
+
+func TestCopyURLRebuildsOnlyConfirmedMissingCopyOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		downloadErr   error
+		detailErr     error
+		emptyDetail   bool
+		sourceErr     error
+		changeSource  func(*v115open.FileDetail)
+		secondMissing bool
+		wantCopies    int32
+		wantDownloads int
+		wantDetails   int
+		wantErr       bool
+	}{
+		{name: "确认已删除后重建", detailErr: &v115open.OpenAPIError{HTTPStatus: 200, Code: 231011}, wantCopies: 2, wantDownloads: 3, wantDetails: 1},
+		{name: "确认不存在后重建", detailErr: &v115open.OpenAPIError{HTTPStatus: 200, Code: 430004}, wantCopies: 2, wantDownloads: 3, wantDetails: 1},
+		{name: "第二份也不存在时停止", detailErr: &v115open.OpenAPIError{Code: 430004}, secondMissing: true,
+			wantCopies: 2, wantDownloads: 4, wantDetails: 2, wantErr: true},
+		{name: "提取码失效但文件存在", wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "70004不是缺失证明", downloadErr: &v115open.OpenAPIError{Code: 70004}, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "31004不是缺失证明", downloadErr: &v115open.OpenAPIError{Code: 31004}, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "空详情不是缺失证明", emptyDetail: true, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "详情网络错误不重建", detailErr: io.ErrUnexpectedEOF, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "详情401优先于缺失码", detailErr: &v115open.OpenAPIError{HTTPStatus: 401, Code: 430004}, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "详情503不确认缺失", detailErr: &v115open.OpenAPIError{HTTPStatus: 503, Code: 231011}, wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "原文件ID不符拒绝重建", detailErr: &v115open.OpenAPIError{Code: 430004}, changeSource: func(d *v115open.FileDetail) { d.FileId = "other" },
+			wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "原文件PickCode缺失拒绝重建", detailErr: &v115open.OpenAPIError{Code: 430004}, changeSource: func(d *v115open.FileDetail) { d.PickCode = "" },
+			wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "原文件内容变化拒绝重建", detailErr: &v115open.OpenAPIError{Code: 430004}, changeSource: func(d *v115open.FileDetail) { d.Sha1 = "changed" },
+			wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "原文件大小变化拒绝重建", detailErr: &v115open.OpenAPIError{Code: 430004}, changeSource: func(d *v115open.FileDetail) { d.FileSizeByte++ },
+			wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "原文件详情未知拒绝重建", detailErr: &v115open.OpenAPIError{Code: 430004}, sourceErr: io.ErrUnexpectedEOF,
+			wantCopies: 1, wantDownloads: 2, wantDetails: 1, wantErr: true},
+		{name: "授权失败不确认或重试", downloadErr: &v115open.OpenAPIError{HTTPStatus: 401, Code: 50003}, wantCopies: 1, wantDownloads: 1, wantErr: true},
+		{name: "限流不确认或重试", downloadErr: &v115open.OpenAPIError{HTTPStatus: 429, Code: 50003}, wantCopies: 1, wantDownloads: 1, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newCopyFixture()
+				defer awaitCleanup(t, f)
+				download, detail := f.api.download, f.api.detailID
+				downloads, details, sourceChecks := 0, 0, 0
+				attemptsByCopy := make(map[string]int)
+				f.api.download = func(ctx context.Context, pickCode, ua string, bypass bool) (*v115open.DownloadUrlResult, error) {
+					downloads++
+					attemptsByCopy[pickCode]++
+					if pickCode == f.source.PickCode || ua != "Player" || !bypass {
+						t.Errorf("重试不得取原文件或更换 UA：pickCode=%q UA=%q bypass=%v", pickCode, ua, bypass)
+					}
+					if pickCode == "pc-101" || tt.secondMissing {
+						if tt.downloadErr != nil {
+							return nil, tt.downloadErr
+						}
+						return nil, &v115open.OpenAPIError{Code: 50003}
+					}
+					return download(ctx, pickCode, ua, bypass)
+				}
+				f.api.detailID = func(ctx context.Context, id string) (*v115open.FileDetail, error) {
+					if id == "101" || id == "102" {
+						details++
+						if tt.detailErr != nil || tt.emptyDetail {
+							return nil, tt.detailErr
+						}
+					}
+					result, err := detail(ctx, id)
+					if id == f.file.ID {
+						sourceChecks++
+						if tt.sourceErr != nil {
+							return nil, tt.sourceErr
+						}
+						if tt.changeSource != nil && result != nil {
+							tt.changeSource(result)
+						}
+					}
+					return result, err
+				}
+				value, err := f.manager.copyURL(t.Context(), f.source, f.file, "Player", f.api)
+				if (err != nil) != tt.wantErr || (value == "") != tt.wantErr || f.copyRequests.Load() != tt.wantCopies ||
+					downloads != tt.wantDownloads || details != tt.wantDetails {
+					t.Errorf("缺失重建结果：value=%q err=%v copies=%d downloads=%d details=%d", value, err, f.copyRequests.Load(), downloads, details)
+				}
+				wantSourceChecks := 0
+				if v115open.IsAlreadyDeleted(tt.detailErr) {
+					wantSourceChecks = 1
+				}
+				if sourceChecks != wantSourceChecks {
+					t.Errorf("重建前核验原文件次数=%d，期望=%d", sourceChecks, wantSourceChecks)
+				}
+				for pickCode, attempts := range attemptsByCopy {
+					if attempts > 2 {
+						t.Errorf("每份副本最多取链两次：pickCode=%q attempts=%d", pickCode, attempts)
+					}
+				}
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				if len(f.createdDirs) != int(tt.wantCopies) || len(f.deleted) != 0 ||
+					(tt.wantCopies == 2 && f.dirs[f.createdDirs[0]].FileName == f.dirs[f.createdDirs[1]].FileName) {
+					t.Error("每次复制应创建独立目录，并分别安排延迟清理")
+				}
+			})
+		})
+	}
+}
+
+func TestCopyURLRecoverySharesCancellationAndBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		stopAt     string
+		timeout    bool
+		wantCopies int32
+	}{
+		{name: "唯一取链重试前取消", stopAt: "retry", wantCopies: 1},
+		{name: "副本详情期间取消", stopAt: "copy-detail", wantCopies: 1},
+		{name: "原文件核验期间取消", stopAt: "source-detail", wantCopies: 1},
+		{name: "原文件核验期间预算耗尽", stopAt: "source-detail", timeout: true, wantCopies: 1},
+		{name: "第二份取链仍用原总预算", stopAt: "second-download", timeout: true, wantCopies: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newCopyFixture()
+				defer awaitCleanup(t, f)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				stopRequest := func(ctx context.Context) {
+					if tt.timeout {
+						<-ctx.Done()
+					} else {
+						cancel()
+					}
+				}
+				downloads := 0
+				f.api.download = func(ctx context.Context, pickCode, _ string, _ bool) (*v115open.DownloadUrlResult, error) {
+					downloads++
+					if tt.stopAt == "retry" && downloads == 1 {
+						time.AfterFunc(linkRetryDelay/2, cancel)
+					}
+					if tt.stopAt == "second-download" && pickCode != "pc-101" {
+						stopRequest(ctx)
+					}
+					return nil, &v115open.OpenAPIError{Code: 50015}
+				}
+				detail := f.api.detailID
+				f.api.detailID = func(ctx context.Context, id string) (*v115open.FileDetail, error) {
+					if id == "101" {
+						if tt.stopAt == "copy-detail" {
+							stopRequest(ctx)
+						}
+						return nil, &v115open.OpenAPIError{Code: 430004}
+					}
+					if id == f.file.ID && tt.stopAt == "source-detail" {
+						stopRequest(ctx)
+					}
+					return detail(ctx, id)
+				}
+				started := time.Now()
+				value, err := f.manager.copyURL(ctx, f.source, f.file, "Player", f.api)
+				wantErr, wantElapsed := context.Canceled, linkRetryDelay
+				if tt.timeout {
+					wantErr, wantElapsed = context.DeadlineExceeded, CopyTimeout
+				} else if tt.stopAt == "retry" {
+					wantElapsed = linkRetryDelay / 2
+				}
+				if value != "" || !errors.Is(err, wantErr) || time.Since(started) != wantElapsed || f.copyRequests.Load() != tt.wantCopies {
+					t.Errorf("恢复超出请求或总预算：value=%q err=%v elapsed=%v copies=%d", value, err, time.Since(started), f.copyRequests.Load())
+				}
+				if tt.stopAt == "retry" && downloads != 1 {
+					t.Errorf("取消后仍然重试取链：calls=%d", downloads)
+				}
 			})
 		})
 	}
@@ -707,7 +899,7 @@ func TestCopyURLRechecksRootOnlyForKnownMkdirFailure(t *testing.T) {
 		{name: "目录身份确认变化才重试创建", err: &v115open.OpenAPIError{Code: 20018}, newRoot: true, wantMkdir: 2, wantLookups: 2},
 		{name: "目录未变化不重试", err: &v115open.OpenAPIError{Code: 20018}, wantMkdir: 1, wantLookups: 2, wantErr: true},
 		{name: "传输结果不明不重复创建", err: errors.New("network failure"), newRoot: true, wantMkdir: 1, wantLookups: 1, wantErr: true},
-		{name: "限流直接降级", err: &v115open.OpenAPIError{HTTPStatus: 429}, wantMkdir: 1, wantLookups: 1, wantErr: true},
+		{name: "限流停止本次取链", err: &v115open.OpenAPIError{HTTPStatus: 429}, wantMkdir: 1, wantLookups: 1, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -868,7 +1060,7 @@ func TestCopyURLBudgetIncludesWaitingAndRetries(t *testing.T) {
 					want = parentBudget
 				}
 				f.api.detailPath = func(ctx context.Context, _ string) (*v115open.FileDetail, error) {
-					if err := waitContext(ctx, want-time.Second); err != nil {
+					if err := waitContext(ctx, want-linkRetryDelay/2); err != nil {
 						return nil, err
 					}
 					return testDirectoryDetail("90"), nil
@@ -880,7 +1072,7 @@ func TestCopyURLBudgetIncludesWaitingAndRetries(t *testing.T) {
 				}
 				before := time.Now()
 				_, err := f.manager.copyURL(ctx, f.source, f.file, "Player", f.api)
-				if !errors.Is(err, context.DeadlineExceeded) || time.Since(before) != want || attempts != 2 {
+				if !errors.Is(err, context.DeadlineExceeded) || time.Since(before) != want || attempts != 1 {
 					t.Fatalf("总预算未覆盖等待或重试：elapsed=%v，attempts=%d，err=%v", time.Since(before), attempts, err)
 				}
 				awaitCleanup(t, f)
@@ -996,7 +1188,7 @@ func TestCopyURLRecoversFromMovedRootWithoutExtraPlaybackRequests(t *testing.T) 
 					f.dirs["91"] = v115open.File{FileId: "91", Pid: "0", FileName: "多端播放", FileCategory: v115open.TypeDir}
 				}
 				if url, err := f.manager.copyURL(t.Context(), f.source, f.file, "Player", f.api); url != "" || !errors.Is(err, errDirectoryChanged) {
-					t.Fatalf("复制后发现旧根已移动时应降级：url=%q，err=%v", url, err)
+					t.Fatalf("复制后发现旧根已移动时应停止本次取链：url=%q，err=%v", url, err)
 				}
 				if pathReads.Load() != 1 || idReads.Load() != 0 || f.listRequests.Load() != 1 || f.downloadRequests.Load() != 0 {
 					t.Fatal("缓存命中的副本流程不能新增前置目录查询")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -22,9 +23,11 @@ const (
 	cleanupTimeout = 10 * time.Second
 	listPageSize   = 1150
 	listRetryDelay = 100 * time.Millisecond
+	linkRetryDelay = 500 * time.Millisecond
 )
 
 var errDirectoryChanged = errors.New("临时目录位置或身份已变化")
+var errCopyMissing = errors.New("已确认副本不存在或已删除")
 
 // File 是已有同步索引提供的原文件身份。
 type File struct {
@@ -93,6 +96,37 @@ func (m *Manager) copyURL(ctx context.Context, source SourceKey, file File, ua s
 		}
 		file.SHA1, file.Size = detail.Sha1, detail.FileSizeByte
 	}
+	value, err := m.copyOnce(ctx, source, file, ua, api)
+	if !errors.Is(err, errCopyMissing) {
+		return value, err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	// 只重建已明确消失的副本；重建前再次确认原文件，不能用过时身份复制其他内容。
+	detail, err := api.detailID(ctx, file.ID)
+	if err != nil {
+		return "", fmt.Errorf("重建前核验原文件：%w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if detail == nil || detail.FileId != file.ID || detail.FileCategory != v115open.TypeFile ||
+		detail.PickCode != source.PickCode || detail.FileSizeByte != file.Size || !strings.EqualFold(detail.Sha1, file.SHA1) {
+		return "", errors.New("重建前原文件身份不匹配")
+	}
+	if helpers.AppLogger != nil {
+		helpers.AppLogger.Warnf("115 多端播放副本已不存在，重新复制取链一次：账号=%d，PickCode=%s，UA=%q",
+			source.AccountID, source.PickCode, ua)
+	}
+	// 同一请求最多两份副本，共用上层截止时间和凭据；每个目录各自承担清理责任。
+	return m.copyOnce(ctx, source, file, ua, api)
+}
+
+func (m *Manager) copyOnce(ctx context.Context, source SourceKey, file File, ua string, api copyCalls) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	var randomID [16]byte
 	if _, err := rand.Read(randomID[:]); err != nil {
 		return "", fmt.Errorf("生成操作标识：%w", err)
@@ -149,19 +183,36 @@ func (m *Manager) copyURL(ctx context.Context, source SourceKey, file File, ua s
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		if err == nil && result != nil && result.URL != "" {
+		if err == nil && result != nil {
 			if (result.FileID != "" && result.FileID != copyFile.FileId) ||
 				(result.PickCode != "" && result.PickCode != copyFile.PickCode) {
 				return "", errors.New("副本下载响应的文件身份不匹配")
 			}
-			helpers.AppLogger.Infof("115 多端播放取得副本直链：文件=%q，账号=%d，原始PickCode=%s，副本PickCode=%s，UA=%q",
-				helpers.URLFileName(result.URL), source.AccountID, source.PickCode, copyFile.PickCode, ua)
-			return result.URL, nil
+			now := time.Now()
+			link, parseErr := url.Parse(result.URL)
+			if parseErr == nil && link.Hostname() != "" && (link.Scheme == "http" || link.Scheme == "https") &&
+				URLExpiresAt(result.URL, now).Unix() > now.Unix() {
+				helpers.AppLogger.Infof("115 多端播放取得副本直链：文件=%q，账号=%d，原始PickCode=%s，副本PickCode=%s，UA=%q",
+					helpers.URLFileName(result.URL), source.AccountID, source.PickCode, copyFile.PickCode, ua)
+				return result.URL, nil
+			}
 		}
 		if err == nil {
 			err = v115open.ErrDownloadURLNotReady
 		}
-		if attempt == len(m.retries) || !v115open.IsPlaybackRetryable(err) {
+		// 未就绪、临时失败和提取码失效可重新取链一次，但都不能直接证明副本已删除。
+		retryable := v115open.IsPlaybackRetryable(err) || copyDownloadMissing(err)
+		if !retryable {
+			return "", fmt.Errorf("副本取链：%w", err)
+		}
+		if attempt == 1 {
+			_, detailErr := api.detailID(ctx, copyFile.FileId)
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			if v115open.IsAlreadyDeleted(detailErr) {
+				return "", errCopyMissing
+			}
 			return "", fmt.Errorf("副本取链：%w", err)
 		}
 		if helpers.AppLogger != nil {
@@ -169,12 +220,26 @@ func (m *Manager) copyURL(ctx context.Context, source SourceKey, file File, ua s
 			if fta != "0" && fta != "1" && fta != "2" {
 				fta = "unknown"
 			}
-			helpers.AppLogger.Debugf("115 多端播放等待副本就绪：账号=%d，操作=%s，重试=%d，fta=%s", source.AccountID, name, attempt+1, fta)
+			helpers.AppLogger.Debugf("115 多端播放等待可用副本直链：账号=%d，操作=%s，重试=%d，fta=%s", source.AccountID, name, attempt+1, fta)
 		}
-		if err := waitContext(ctx, m.retries[attempt]); err != nil {
+		if err := waitContext(ctx, linkRetryDelay); err != nil {
 			return "", err
 		}
 	}
+}
+
+// copyDownloadMissing 仅识别下载接口的缺失线索，重建仍须按副本 ID 查询详情确认。
+func copyDownloadMissing(err error) bool {
+	if terminalRootError(err) {
+		return false
+	}
+	if v115open.IsAlreadyDeleted(err) {
+		return true
+	}
+	var apiErr *v115open.OpenAPIError
+	return errors.As(err, &apiErr) && (apiErr.HTTPStatus == 0 ||
+		(apiErr.HTTPStatus >= http.StatusOK && apiErr.HTTPStatus < http.StatusMultipleChoices)) &&
+		(apiErr.Code == 50003 || apiErr.Code == 50015)
 }
 
 func (m *Manager) createOperation(ctx context.Context, source SourceKey, name, originalID string, api copyCalls) (operationDirectory, error) {

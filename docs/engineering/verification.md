@@ -32,6 +32,7 @@
 | 下载代理 Cookie 隔离 | `cd backend && go test -race ./internal/controllers -run '^TestProxy115'`；覆盖 115/百度首跳与重定向、Range/Referer/UA 保留 | [认证与浏览器会话](../architecture/authentication-sessions.md#api-key可信来源与下载代理) |
 | 115 STRM 直链解析与播放日志 | `cd backend && go test ./emby302/service/emby ./emby302/web/cache ./emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`；缓存联调运行 `go test -race ./emby302/service/emby ./emby302/web/cache`，覆盖 UA 分离、请求保真、签名安全期限、排队过期及失败回退不缓存 | [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)、[日志行为与脱敏](../operations/configuration.md#日志行为与脱敏) |
 | 115 多端播放 | `cd backend && go test ./internal/playback ./internal/controllers ./internal/v115open ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；相关播放、目录与回收站定时清理和过滤测试加 `-race`；涉及设置页交互时再运行前端检查 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
+| 多端副本失败保护与有限重试 | `cd backend && go test -race ./internal/controllers ./internal/playback ./internal/v115open`；覆盖原文件零取链、旧槽位保留、当前预留释放、一次取链重试、确认缺失后一次重建、共享预算与独立清理 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
 | 公共授权随机串 | `cd backend && go test -race ./internal/helpers ./internal/v115open`；`cd backend && go test ./internal/v115auth ./internal/controllers` | [账号授权与更换](../reference/account-authorization.md#授权流程传递) |
 | 前端生产集成 | `pnpm run test`、`pnpm run build`、`pnpm run check:build` | 本地开发、发布流程 |
 | 后端可执行文件或发布配置 | `go build` 或发布文档中的对应构建命令 | 发布流程 |
