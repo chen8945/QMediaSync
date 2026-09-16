@@ -61,7 +61,6 @@ describe.each([
         stubs: {
           PageHeader: { template: '<header><slot name="actions" /></header>' },
           ElButton: false,
-          ElTooltip: { template: '<span><slot /></span>' },
         },
       },
     })
@@ -73,7 +72,7 @@ describe.each([
     await flushPromises()
     expect(statsText()).toBe('剩余100·排队89·处理中11')
     expect(get).toHaveBeenCalledTimes(2)
-    expect(wrapper.get(`[aria-label="查看${label}队列统计说明"]`).element.tagName).toBe('BUTTON')
+    expect(wrapper.find(`[aria-label="查看${label}队列统计说明"]`).exists()).toBe(false)
 
     filteredTotal = 30
     wrapper.getComponent({ name: 'ElSelect' }).vm.$emit('change', 3)

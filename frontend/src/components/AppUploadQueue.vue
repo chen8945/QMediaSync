@@ -76,15 +76,6 @@
         <span class="queue-stat-item">剩余 {{ remainingTasks }}</span>
         <span class="queue-stat-item">· 排队 {{ queueStatusSnapshot.pending }}</span>
         <span class="queue-stat-item">· 处理中 {{ queueStatusSnapshot.processing }}</span>
-        <el-tooltip
-          content="统计整个队列，剩余为排队与处理中之和，不含完成、失败和取消的任务。处理中包含正在上传，以及等待或正在完成处理的任务。"
-          trigger="click"
-          placement="top"
-          popper-class="qms-contained-tooltip"
-          append-to="body"
-        >
-          <el-button link :icon="InfoFilled" aria-label="查看上传队列统计说明" />
-        </el-tooltip>
       </div>
     </div>
 
@@ -384,7 +375,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
 import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
 import { ElMessage, type TableInstance } from 'element-plus'
-import { InfoFilled, WarningFilled } from '@element-plus/icons-vue'
+import { WarningFilled } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useQueueMutationContext } from '@/composables/useQueueMutationContext'
