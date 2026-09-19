@@ -152,6 +152,12 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 - 上传后的 STRM 收尾与 OpenList 上传队列回归须覆盖生产 SQLite 单连接配置；信息准备、事务回滚和幂等边界见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList 凭据变更须验证内存与数据库两处的过时结果保护，并覆盖临时验证失败、条件保存冲突与正常刷新；认证重试变更还须验证一次独立认证恢复、完整 multipart 重发及普通网络重试次数不变。契约和回归范围见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。
+- 公共请求错误和认证 API 回归随 `pnpm run test` 执行，覆盖新旧错误码、HTTP `200` 业务失败、合法空值、取消／超时／无响应与普通异常的区别、诊断脱敏、登录统一文案、匿名会话查询及并发 `401` 只处理一次。业务页面迁入 API 模块时还须验证失败保留输入、不误报成功和不执行成功回调；契约见 [API 响应与请求错误](frontend-development.md#api-响应与请求错误)。
+- 刮削请求迁移的回归覆盖 AI / TMDB 保存失败、TMDB 连接测试 `data=false`、来源／CSRF 拒绝、刮削搜索与重新识别参数和专用超时，以及记录删除、目录保存和启停失败不执行成功后续动作。组件错误提示测试应同时确认表单输入保留和取消／已处理认证错误不重复提示。
+- 账号请求与授权回归覆盖无响应、来源／CSRF、业务失败的提示和输入保留，以及 QR / OAuth 会话 ID、取消、隐藏／卸载、过期请求和 APP ID 搜索竞态。旧请求不得覆盖新授权或新搜索状态，错误诊断不得包含授权载荷和凭据；复用 [账号授权与更换](../reference/account-authorization.md#验证方式) 的前端验证入口。
+- 设置领域请求回归覆盖 Emby 轮询、代理凭据保留和脱敏回读、通知 `code=0` 的历史成功语义、STRM 安全校验提示，以及当前用户、两步验证和设备撤销失败不执行成功动作。保存失败保留输入、取消／已处理认证错误静默、回读失败不得被成功说明覆盖，错误与日志不含敏感载荷；均随 Vitest 执行。
+- 同步目录与队列请求回归覆盖聚合保存的字段定位、成功警告和幂等键复用、详情与关联读取失败保护，以及队列操作成功后刷新失败只提示一次、取消／已处理认证错误静默。请求参数、分页统计、刷新合并和生命周期保护仍由 API、composable 与组件测试共同验证；原始版本对象另有 API 契约测试。
+- 剩余领域请求回归覆盖文件与目录操作、同步记录、API Key、分类、备份恢复、更新和后台统计的业务成功校验与输入保护。日志及任务 HTTP 快照测试同时验证错误状态保留、HTML 响应、JSON 解析异常与传输故障区分、取消静默和旧结果失效；原生 SSE 错误不得额外触发 HTTP 探测。备份下载额外验证 JSON 错误不生成下载文件，更新取消失败继续保留进度状态。
 - 下载、上传队列的统计由 `frontend/test/components/QueueTotals.test.ts` 覆盖全局“剩余 / 排队 / 处理中”、分页和筛选不改变统计口径、快照刷新与空队列归零；下载预取和上传完成处理均沿用后端 `processing` 口径。相关组件测试随 `pnpm run test` 执行。
 - 上传并发由 `frontend/test/components/AppThreadSettings.upload-concurrency.test.ts` 覆盖默认值、保存回读、整数范围及保存失败提示；后端 `requests`、`controllers` 和 `models` 测试覆盖旧请求兼容、写库失败不生效、默认设置和迁移重试。队列测试使用受控在途任务验证增减并发、暂停后保存与恢复、重复领取及清空后的旧任务，并额外运行相关 `models` 测试的 `-race` 检查。百度网盘和 OpenList 还须通过真实队列与本地 HTTP 替身验证驱动共享状态的并发安全，覆盖范围与命令见[上传和 STRM 处理的验证方式](../architecture/upload-and-strm-processing.md#验证方式)。
 - 局部加载遮罩与导航的层级由 `frontend/test/regression/sidebar-menu-motion.test.ts` 保护样式契约；真实绘制和点击命中需在浏览器复核：分别使用移动和桌面视口，延迟首页、更新页及队列接口，确认移动菜单及背景遮罩可点击、关闭菜单后加载区域仍阻止操作、响应结束后遮罩消失，并确认模态对话框仍覆盖侧栏。路由模块加载骨架和全屏加载不得被局部遮罩规则改变。

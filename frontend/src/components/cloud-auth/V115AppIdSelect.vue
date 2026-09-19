@@ -20,9 +20,10 @@ interface V115AppSelectOption {
 }
 
 const http = useHttpClient()
-const { keyword, items, total, loading, hasMore, search, loadMore, reset } = useV115AppIdSearch({
-  http,
-})
+const { keyword, items, total, loading, errorMessage, hasMore, search, loadMore, reset } =
+  useV115AppIdSearch({
+    http,
+  })
 const dropdownVisible = shallowRef(false)
 const showDefaultRemoteOptions = shallowRef(false)
 const remoteSearchHint = '输入应用名或 APP ID 搜索更多内置应用'
@@ -146,7 +147,7 @@ watch(showCustomFields, (visible) => {
 </script>
 
 <template>
-  <el-form-item label="APP ID">
+  <el-form-item label="APP ID" :error="errorMessage">
     <el-select
       v-model="selectedValue"
       class="v115-app-select"

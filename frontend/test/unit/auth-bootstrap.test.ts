@@ -59,9 +59,12 @@ describe('auth bootstrap', () => {
 
     const result = await authStore.refreshSession(http as never)
 
-    expect(result).toEqual({ state: 'unavailable' })
+    expect(result).toMatchObject({
+      state: 'unavailable',
+      error: { kind: 'unknown', message: '登录会话验证失败，请稍后重试' },
+    })
     expect(authStore.authStatus).toBe('anonymous')
-    expect(consoleError).toHaveBeenCalledWith('恢复登录会话失败：', expect.any(Error))
+    expect(consoleError).toHaveBeenCalledWith('恢复登录会话失败：', {})
     consoleError.mockRestore()
   })
 

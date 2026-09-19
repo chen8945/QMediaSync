@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AxiosError, CanceledError } from 'axios'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -14,7 +15,8 @@ import { ElMessage } from 'element-plus'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const messageError = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
-vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+const messageSuccess = vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
 const createHTTP = () => ({
   get: vi.fn().mockResolvedValue({ data: { code: 200, data: { required: false } } }),
@@ -42,13 +44,14 @@ const createWrapper = async (http = createHTTP()) => {
         ElForm: {
           name: 'ElForm',
           props: ['model', 'rules'],
+          methods: { validate: async () => true },
           template: '<form v-bind="$attrs" @submit="$emit(\'submit\', $event)"><slot /></form>',
         },
         ElFormItem: { props: ['prop'], template: '<div><slot /></div>' },
         ElInput: {
           props: ['modelValue', 'type', 'name', 'autocomplete', 'placeholder', 'disabled', 'id'],
           template:
-            '<input :id="id" :value="modelValue" :type="type || \'text\'" :name="name" :autocomplete="autocomplete" :placeholder="placeholder" :disabled="disabled" />',
+            '<input :id="id" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" :type="type || \'text\'" :name="name" :autocomplete="autocomplete" :placeholder="placeholder" :disabled="disabled" />',
         },
         ElCheckbox: {
           props: ['modelValue', 'disabled'],
@@ -222,10 +225,92 @@ describe('AppLogin', () => {
     })
     await flushPromises()
 
-    expect(messageError).toHaveBeenCalledWith('登录会话验证失败，请检查网络连接或稍后重试')
+    expect(messageError).toHaveBeenCalledWith('登录会话验证失败，请稍后重试')
     expect(messageError).not.toHaveBeenCalledWith(
       '登录会话未能建立，请允许本站 Cookie 后重试；若问题持续，请清除本站点数据或停用拦截扩展',
     )
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it.each(['用户不存在', '密码错误', '动态验证码错误'])(
+    '凭据失败 %s 只提示登录失败并保留输入',
+    async () => {
+      const http = createHTTP()
+      // 后端对各类凭据失败统一返回“登录失败”
+      http.post.mockResolvedValue({
+        status: 200,
+        data: { code: 500, message: '登录失败', data: null },
+      })
+      const { router, wrapper } = await createWrapper(http)
+      await wrapper.get('input[name="username"]').setValue('admin')
+      await wrapper.get('input[name="password"]').setValue('secret123')
+      await wrapper.get('input[name="one-time-code"]').setValue('654321')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(messageError).toHaveBeenCalledExactlyOnceWith('登录失败')
+      expect(messageSuccess).not.toHaveBeenCalled()
+      expect(http.post).toHaveBeenCalledTimes(1)
+      expect(http.get).toHaveBeenCalledTimes(1)
+      expect(wrapper.get<HTMLInputElement>('input[name="username"]').element.value).toBe('admin')
+      expect(wrapper.get<HTMLInputElement>('input[name="password"]').element.value).toBe(
+        'secret123',
+      )
+      expect(wrapper.get<HTMLInputElement>('input[name="one-time-code"]').element.value).toBe(
+        '654321',
+      )
+      expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
+      expect(router.currentRoute.value.path).toBe('/login')
+      expect(consoleError).toHaveBeenCalledWith('登录错误：', { status: 200 })
+    },
+  )
+
+  it.each([
+    [403, '请求来源无效', '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置'],
+    [403, 'CSRF 校验失败', '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录'],
+    [429, '请求过于频繁，请 83 秒后再试', '请求过于频繁，请 83 秒后再试'],
+  ])('登录 HTTP %s 错误按原因展示一次', async (status, message, expected) => {
+    const http = createHTTP()
+    http.post.mockRejectedValue({ response: { status, data: { code: 500, message } } })
+    const { router, wrapper } = await createWrapper(http)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(messageError).toHaveBeenCalledExactlyOnceWith(expected)
+    expect(messageSuccess).not.toHaveBeenCalled()
+    expect(http.get).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it('登录主动取消不提示、不验证会话或跳转', async () => {
+    const http = createHTTP()
+    http.post.mockRejectedValue(new CanceledError('cancelled'))
+    const { router, wrapper } = await createWrapper(http)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(messageError).not.toHaveBeenCalled()
+    expect(messageSuccess).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(http.get).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
+  })
+
+  it('登录后会话无响应时展示连接提示，不误判 Cookie', async () => {
+    const http = createHTTP()
+    http.post.mockResolvedValue({ data: { code: 200, data: null } })
+    http.get
+      .mockResolvedValueOnce({ data: { code: 200, data: { required: false } } })
+      .mockRejectedValueOnce(new AxiosError('Network Error', 'ERR_NETWORK'))
+    const { router, wrapper } = await createWrapper(http)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(messageError).toHaveBeenCalledExactlyOnceWith(
+      '无法获取服务器响应，请检查网络连接、服务状态或访问配置',
+    )
+    expect(messageSuccess).not.toHaveBeenCalled()
     expect(router.currentRoute.value.path).toBe('/login')
   })
 })

@@ -4,7 +4,14 @@ import { ElMessage } from 'element-plus'
 import { Key, CircleCheck, Lock } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import {
+  fetchTwoFactorStatus,
+  setupTwoFactor as requestTwoFactorSetup,
+  enableTwoFactor as requestTwoFactorEnable,
+  disableTwoFactor as requestTwoFactorDisable,
+  userSettingsPublicMessages,
+} from '@/api/userSettings'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 
 interface TwoFactorStatus {
   enabled: boolean
@@ -32,24 +39,32 @@ const twoFactorDisableForm = reactive({
 const twoFactorLoading = shallowRef(false)
 const twoFactorQrCode = shallowRef('')
 
+const reportError = (error: unknown, fallbackMessage: string) => {
+  notifyHttpError(error, fallbackMessage, {
+    publicMessages: userSettingsPublicMessages,
+    fallbackMessage,
+  })
+}
+
 const loadTwoFactorStatus = async () => {
-  const response = await http.get(`${SERVER_URL}/user/two-factor/status`)
-  if (response?.data.code === 200) {
-    twoFactorStatus.enabled = !!response.data.data.enabled
+  try {
+    const data = await fetchTwoFactorStatus(http)
+    twoFactorStatus.enabled = data.enabled
+  } catch (error) {
+    reportError(error, '加载两步验证状态失败')
   }
 }
 
 const setupTwoFactor = async () => {
   twoFactorLoading.value = true
   try {
-    const response = await http.post(`${SERVER_URL}/user/two-factor/setup`)
-    if (response?.data.code !== 200) {
-      ElMessage.error(response?.data.message || '生成两步验证密钥失败')
-      return
-    }
-    twoFactorSetup.secret = response.data.data.secret
-    twoFactorSetup.otpauth_url = response.data.data.otpauth_url
-    twoFactorQrCode.value = await QRCode.toDataURL(twoFactorSetup.otpauth_url)
+    const data = await requestTwoFactorSetup(http)
+    const qrCode = await QRCode.toDataURL(data.otpauth_url)
+    twoFactorSetup.secret = data.secret
+    twoFactorSetup.otpauth_url = data.otpauth_url
+    twoFactorQrCode.value = qrCode
+  } catch (error) {
+    reportError(error, '生成两步验证密钥失败')
   } finally {
     twoFactorLoading.value = false
   }
@@ -60,18 +75,16 @@ const enableTwoFactor = async () => {
     ElMessage.error('请输入动态验证码')
     return
   }
-  const response = await http.post(`${SERVER_URL}/user/two-factor/enable`, {
-    totp_code: twoFactorEnableCode.value,
-  })
-  if (response?.data.code === 200) {
+  try {
+    await requestTwoFactorEnable(http, twoFactorEnableCode.value)
     ElMessage.success('两步验证已启用')
     twoFactorEnableCode.value = ''
     twoFactorSetup.secret = ''
     twoFactorSetup.otpauth_url = ''
     twoFactorQrCode.value = ''
     await loadTwoFactorStatus()
-  } else {
-    ElMessage.error(response?.data.message || '启用两步验证失败')
+  } catch (error) {
+    reportError(error, '启用两步验证失败')
   }
 }
 
@@ -80,17 +93,17 @@ const disableTwoFactor = async () => {
     ElMessage.error('请输入当前密码和当前动态验证码')
     return
   }
-  const response = await http.post(`${SERVER_URL}/user/two-factor/disable`, {
-    password: twoFactorDisableForm.password,
-    totp_code: twoFactorDisableForm.totpCode,
-  })
-  if (response?.data.code === 200) {
+  try {
+    await requestTwoFactorDisable(http, {
+      password: twoFactorDisableForm.password,
+      totp_code: twoFactorDisableForm.totpCode,
+    })
     ElMessage.success('两步验证已关闭')
     twoFactorDisableForm.password = ''
     twoFactorDisableForm.totpCode = ''
     await loadTwoFactorStatus()
-  } else {
-    ElMessage.error(response?.data.message || '关闭两步验证失败')
+  } catch (error) {
+    reportError(error, '关闭两步验证失败')
   }
 }
 

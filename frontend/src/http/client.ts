@@ -15,7 +15,8 @@ type ConfigureHttpClientOptions = {
 }
 
 // 业务请求使用独立实例，避免改写 Axios 全局默认配置。
-export const http = axios.create()
+// 超时改用 ETIMEDOUT，与浏览器中止请求的 ECONNABORTED 区分。
+export const http = axios.create({ transitional: { clarifyTimeoutError: true } })
 
 export const httpKey: InjectionKey<AxiosInstance> = Symbol('http')
 

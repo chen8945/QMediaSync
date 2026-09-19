@@ -132,8 +132,14 @@
 import { reactive, ref, onMounted, computed, useTemplateRef } from 'vue'
 import { ElMessage, type FormInstance } from 'element-plus'
 import { Check, Refresh } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchAiSettings as getAiSettings,
+  saveAiSettings,
+  testAiConnection,
+  scrapeSettingsPublicMessages,
+} from '@/api/scrapeSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -198,14 +204,19 @@ onMounted(async () => {
 async function fetchAiSettings() {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/scrape/ai-settings`)
-    formData.aiBaseUrl = response?.data.data.ai_base_url || ''
-    formData.aiApiKey = response?.data.data.ai_api_key || ''
-    formData.aiModelName = response?.data.data.ai_model_name || ''
-    formData.ai_timeout = response?.data.data.ai_timeout || 120
+    const settings = await getAiSettings(http)
+    formData.aiBaseUrl = settings.ai_base_url || ''
+    formData.aiApiKey = settings.ai_api_key || ''
+    formData.aiModelName = settings.ai_model_name || ''
+    formData.ai_timeout = settings.ai_timeout || 120
   } catch (error) {
-    console.error('获取 AI 设置失败：', error)
-    ElMessage.error('获取 AI 设置失败，请稍后重试')
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '获取 AI 设置失败，请稍后重试',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('获取 AI 设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '获取设置失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
@@ -213,9 +224,8 @@ async function fetchAiSettings() {
 
 // 保存 AI 设置
 async function saveSettings() {
+  if (!(await formRef.value?.validate().catch(() => false))) return
   try {
-    // 执行表单验证
-    await formRef.value?.validate()
     if (formData.aiModelName && !formData.aiApiKey) {
       ElMessage.error('如果填写了模型名称，必须填写 API Key')
       return
@@ -225,6 +235,7 @@ async function saveSettings() {
       return
     }
     loading.value = true
+    saveStatus.value = null
 
     const payload = {
       ai_base_url: formData.aiBaseUrl,
@@ -233,7 +244,7 @@ async function saveSettings() {
       ai_timeout: formData.ai_timeout,
     }
 
-    await http.post(`${SERVER_URL}/scrape/ai-settings`, payload)
+    await saveAiSettings(http, payload)
 
     saveStatus.value = {
       title: '保存成功',
@@ -241,20 +252,18 @@ async function saveSettings() {
       description: 'AI 识别设置已成功保存',
     }
 
-    // 3 秒后清除状态提示
+    const status = saveStatus.value
     setTimeout(() => {
-      saveStatus.value = null
+      if (saveStatus.value === status) saveStatus.value = null
     }, 3000)
   } catch (error) {
-    // 如果是验证错误，则不显示保存失败的消息
-    if (error !== false) {
-      console.error('保存 AI 设置失败：', error)
-      saveStatus.value = {
-        title: '保存失败',
-        type: 'error',
-        description: '保存 AI 设置失败，请稍后重试',
-      }
-    }
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '保存 AI 设置失败，请稍后重试',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('保存 AI 设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '保存失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
@@ -262,10 +271,8 @@ async function saveSettings() {
 
 // 测试 AI 连通性
 async function testConnection() {
+  if (!(await formRef.value?.validate().catch(() => false))) return
   try {
-    // 执行表单验证
-    await formRef.value?.validate()
-
     testing.value = true
     testStatus.value = null
 
@@ -275,39 +282,26 @@ async function testConnection() {
       ai_model_name: formData.aiModelName,
     }
 
-    const response = await http.post(`${SERVER_URL}/scrape/ai-test`, payload, {
-      timeout: 120000,
-    })
+    await testAiConnection(http, payload)
 
-    // 根据接口返回结果显示不同的状态
-    if (response?.data?.code === 200) {
-      testStatus.value = {
-        title: '测试成功',
-        type: 'success',
-        description: response.data.message || 'AI 服务连通性测试成功',
-      }
-    } else {
-      testStatus.value = {
-        title: '测试失败',
-        type: 'error',
-        description: response?.data?.message || 'AI 服务连通性测试失败，请检查设置',
-      }
+    testStatus.value = {
+      title: '测试成功',
+      type: 'success',
+      description: 'AI 识别连接测试成功',
     }
 
-    // 5 秒后清除状态提示
+    const status = testStatus.value
     setTimeout(() => {
-      testStatus.value = null
+      if (testStatus.value === status) testStatus.value = null
     }, 5000)
   } catch (error) {
-    // 如果是验证错误，则不显示测试失败的消息
-    if (error !== false) {
-      console.error('测试 AI 连通性失败：', error)
-      testStatus.value = {
-        title: '连接失败',
-        type: 'error',
-        description: '测试过程中发生错误，请检查网络连接和设置',
-      }
-    }
+    const parsed = parseHttpError(error, {
+      fallbackMessage: 'AI 服务连通性测试失败，请检查设置',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('测试 AI 连通性失败：', parsed.diagnostics)
+    testStatus.value = { title: '测试失败', type: 'error', description: parsed.message }
   } finally {
     testing.value = false
   }

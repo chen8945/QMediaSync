@@ -1,10 +1,11 @@
 import type { AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
-
-const authenticationExpiredMessage = '登录已失效，请重新登录'
+import { HttpResponseError, markAuthInvalidationHandled, parseHttpError } from '@/http/errors'
 
 export type AuthInvalidationStore = {
   isAuthenticated: boolean
   isLoggingOut: boolean
+  // clearAuth 与建立会话都会递增版本，版本变化即表示旧批次已失效。
+  sessionVersion: number
   clearAuth: () => void
 }
 
@@ -13,59 +14,75 @@ type AuthResponseInterceptorOptions = {
   onAuthenticationInvalidated: () => void | Promise<void>
 }
 
-const isAuthenticationFailure = (status?: number, data?: unknown) => {
-  if (status === 401) return true
-  if (!data || typeof data !== 'object' || !('code' in data)) return false
-  return data.code === 401
-}
-
-const canHandleAuthenticationFailure = (
-  config: InternalAxiosRequestConfig | undefined,
-  authStore: AuthInvalidationStore,
-) => {
-  return !config?.skipAuthInvalidation && authStore.isAuthenticated && !authStore.isLoggingOut
+type AuthRequestWave = {
+  sessionVersion: number
+  promise: Promise<void> | null
 }
 
 export const installAuthResponseInterceptor = (
   http: AxiosInstance,
   options: AuthResponseInterceptorOptions,
 ) => {
-  let invalidationPromise: Promise<void> | null = null
+  let currentWave: AuthRequestWave | undefined
+  const requestWaves = new WeakMap<InternalAxiosRequestConfig, AuthRequestWave>()
 
-  const handleAuthenticationFailure = async (config?: InternalAxiosRequestConfig) => {
+  const requestInterceptorID = http.interceptors.request.use((config) => {
     const authStore = options.getAuthStore()
-    if (!canHandleAuthenticationFailure(config, authStore)) return false
+    if (!config.skipAuthInvalidation && authStore.isAuthenticated && !authStore.isLoggingOut) {
+      if (currentWave?.sessionVersion !== authStore.sessionVersion) {
+        currentWave = { sessionVersion: authStore.sessionVersion, promise: null }
+      }
+      requestWaves.set(config, currentWave)
+    }
+    return config
+  })
 
-    if (!invalidationPromise) {
+  const handleAuthenticationFailure = async (
+    error: object,
+    config?: InternalAxiosRequestConfig,
+  ) => {
+    const authStore = options.getAuthStore()
+    if (config?.skipAuthInvalidation) return false
+    const wave = config && requestWaves.get(config)
+    if (!wave) return false
+
+    if (
+      !authStore.isLoggingOut &&
+      authStore.isAuthenticated &&
+      wave.sessionVersion === authStore.sessionVersion
+    ) {
       authStore.clearAuth()
-      invalidationPromise = Promise.resolve(options.onAuthenticationInvalidated()).finally(() => {
-        invalidationPromise = null
-      })
+      wave.promise = Promise.resolve().then(options.onAuthenticationInvalidated)
     }
 
-    await invalidationPromise
+    // 同批迟到的失败仍归属于旧会话，不清理之后重新建立的会话。
+    markAuthInvalidationHandled(error)
+    // 导航失败不能替换原始 HTTP 错误，否则页面无法读取状态和处理标记。
+    await wave.promise?.catch(() => undefined)
     return true
   }
 
   const interceptorID = http.interceptors.response.use(
     async (response: AxiosResponse) => {
-      if (!isAuthenticationFailure(response.status, response.data)) return response
+      if (parseHttpError({ response }).kind !== 'unauthorized') return response
 
-      if (await handleAuthenticationFailure(response.config)) {
-        return Promise.reject(new Error(authenticationExpiredMessage))
+      const error = new HttpResponseError(response)
+      if (await handleAuthenticationFailure(error, response.config)) {
+        return Promise.reject(error)
       }
 
       return response
     },
     async (error) => {
-      if (isAuthenticationFailure(error.response?.status, error.response?.data)) {
-        await handleAuthenticationFailure(error.config)
+      if (parseHttpError(error).kind === 'unauthorized') {
+        await handleAuthenticationFailure(error, error.config)
       }
       return Promise.reject(error)
     },
   )
 
   return () => {
+    http.interceptors.request.eject(requestInterceptorID)
     http.interceptors.response.eject(interceptorID)
   }
 }

@@ -1,6 +1,7 @@
 import { computed, onMounted, ref } from 'vue'
-import { SERVER_URL } from '@/const'
+import { fetchHourlyStats, type HourlyStatsData } from '@/api/dashboard'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
 import { formatDateTime } from '@/utils/timeUtils'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -24,21 +25,7 @@ use([
   DataZoomComponent,
 ])
 
-export interface HourlyStat {
-  hour_ts: number
-  total_requests: number
-  throttled_requests: number
-  avg_duration: string
-}
-
-export interface HourlyStatsData {
-  start_date: string
-  end_date: string
-  total_requests: number
-  total_throttled: number
-  hourly_stats: HourlyStat[]
-  query_time_range_days: number
-}
+export type { HourlyStat, HourlyStatsData } from '@/api/dashboard'
 
 export function useHourlyStats() {
   const http = useHttpClient()
@@ -49,15 +36,11 @@ export function useHourlyStats() {
   const loadHourlyStats = async () => {
     try {
       hourlyStatsLoading.value = !hasLoaded.value
-      const response = await http.get(`${SERVER_URL}/115/stats/hourly`)
-      if (response && response.data && response.data.code === 200) {
-        hourlyStats.value = response.data.data
-        hasLoaded.value = true
-      } else if (!hasLoaded.value) {
-        hourlyStats.value = null
-      }
+      hourlyStats.value = await fetchHourlyStats(http)
+      hasLoaded.value = true
     } catch (error) {
-      console.error('加载每小时请求统计错误：', error)
+      const parsed = parseHttpError(error, { fallbackMessage: '加载每小时请求统计失败' })
+      if (parsed.shouldNotify) console.error('加载每小时请求统计错误：', parsed.diagnostics)
       if (!hasLoaded.value) {
         hourlyStats.value = null
       }

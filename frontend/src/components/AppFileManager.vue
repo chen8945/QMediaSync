@@ -312,6 +312,7 @@
           <DirectorySelector
             v-model="strmTargetDir"
             source-type="local"
+            :reset-on-select="false"
             @cancel="resetStrmTargetDialog"
             @select="confirmStrmGenerate"
           />
@@ -342,6 +343,8 @@ import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { accountPublicMessages, listAccounts } from '@/api/accounts'
 import { usePageScrollRestore } from '@/composables/usePageScrollRestore'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
 import { usePageStateStore } from '@/stores/pageState'
@@ -349,7 +352,18 @@ import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { getFileType, getFileIconByName } from '@/utils/fileIconUtils'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatDateTime } from '@/utils/timeUtils'
-import { SERVER_URL } from '@/const'
+import {
+  createDirectory,
+  deleteFile,
+  fetchFiles,
+  filePublicMessages,
+  generateManualStrm,
+  type NetFileListCacheMeta,
+  type NetFileListPayload,
+  type NetFileListQuery,
+  type NetFileSortBy,
+  type NetFileSortOrder,
+} from '@/api/files'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import DirectorySelector from './DirectorySelector.vue'
@@ -367,29 +381,6 @@ interface NetdiskAccount {
   app_id_name?: string
   app_id?: string
   token_failed_reason?: string
-}
-
-type NetFileSortBy = 'default' | 'name' | 'time' | 'size' | 'type'
-type NetFileSortOrder = 'asc' | 'desc'
-
-interface NetFileListCacheMeta {
-  status: 'hit' | 'miss' | 'partial_hit' | 'refresh'
-  batch_start: number
-  batch_size: number
-  cached_at: number
-  expires_at: number
-}
-
-interface NetFileListPayload {
-  list: FileSystemItem[]
-  total: number
-  total_exact: boolean
-  has_more: boolean
-  page: number
-  page_size: number
-  sort_by: NetFileSortBy
-  sort_order: NetFileSortOrder
-  cache?: NetFileListCacheMeta
 }
 
 interface LoadFileListOptions {
@@ -727,46 +718,43 @@ async function loadAccountList() {
   }
 
   try {
-    const response = await http.get(`${SERVER_URL}/account/list`)
+    const data = await listAccounts(http)
 
     if (!accountListRequestGate.isCurrent(requestId)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      const data = response.data.data
-      accountList.value = data.map((item: NetdiskAccount) => ({
-        id: item.id,
-        name: item.name,
-        username: item.username,
-        user_id: item.user_id,
-        source_type: item.source_type,
-        authorized: item.authorized,
-        created_at: item.created_at,
-        base_url: item.base_url,
-        password: item.password,
-        app_id_name: item.app_id_name,
-        app_id: item.app_id,
-        token_failed_reason: item.token_failed_reason || '',
-      }))
+    accountList.value = data.map((item) => ({
+      id: item.id,
+      name: item.name,
+      username: item.username,
+      user_id: item.user_id,
+      source_type: item.source_type,
+      authorized: item.authorized,
+      created_at: item.created_at,
+      base_url: item.base_url,
+      password: item.password,
+      app_id_name: item.app_id_name,
+      app_id: item.app_id,
+      token_failed_reason: item.token_failed_reason || '',
+    }))
 
-      if (
-        selectedAccountId.value &&
-        !accountList.value.some((account) => account.id === selectedAccountId.value)
-      ) {
-        selectedAccountId.value = null
-        setPathItems([])
-        clearFileListForContextSwitch()
-      }
-    } else {
-      console.error('加载账号列表失败：', response?.data.message || '未知错误')
-      accountList.value = []
+    if (
+      selectedAccountId.value &&
+      !accountList.value.some((account) => account.id === selectedAccountId.value)
+    ) {
+      selectedAccountId.value = null
+      setPathItems([])
+      clearFileListForContextSwitch()
     }
   } catch (error) {
     if (!accountListRequestGate.isCurrent(requestId)) {
       return
     }
-    console.error('加载账号列表失败：', error)
+    notifyHttpError(error, '加载账号列表失败：', {
+      publicMessages: accountPublicMessages,
+      fallbackMessage: '加载账号列表失败',
+    })
     accountList.value = []
   }
 }
@@ -830,6 +818,14 @@ function getSortFieldLabel(field: NetFileSortBy): string {
   }
 }
 
+function reportFileError(error: unknown, fallbackMessage: string, isRead = false) {
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage,
+    publicMessages: filePublicMessages,
+    messagePrefix: isRead ? fallbackMessage : undefined,
+  })
+}
+
 // 加载文件列表
 async function loadFileList(options: LoadFileListOptions = {}) {
   if (!isPageActive) {
@@ -867,7 +863,7 @@ async function loadFileList(options: LoadFileListOptions = {}) {
       const currentItemId =
         pathItems.value.length > 0 ? pathItems.value[pathItems.value.length - 1].id : ''
 
-      const requestParams: Record<string, string | number> = {
+      const requestParams: NetFileListQuery = {
         account_id: accountId,
         path: currentItemId,
         page: currentPage.value,
@@ -879,68 +875,55 @@ async function loadFileList(options: LoadFileListOptions = {}) {
         requestParams.sort_order = sortOrder.value
       }
 
-      const response = await http.get(`${SERVER_URL}/path/files`, {
-        params: requestParams,
-        timeout: 60000,
-      })
+      const data = await fetchFiles(http, requestParams)
 
       if (!fileListRequestGate.isCurrent(requestId)) {
         return
       }
 
-      if (response?.data.code === 200) {
-        const {
-          list: items,
-          total: responseTotal,
-          sort_by: responseSortBy,
-          sort_order: responseSortOrder,
-        } = normalizeNetFileListPayload(response.data.data, {
-          page: currentPage.value,
-          pageSize: pageSize.value,
-          sortBy: sortBy.value,
-          sortOrder: sortOrder.value,
-        })
+      const {
+        list: items,
+        total: responseTotal,
+        sort_by: responseSortBy,
+        sort_order: responseSortOrder,
+      } = normalizeNetFileListPayload(data, {
+        page: currentPage.value,
+        pageSize: pageSize.value,
+        sortBy: sortBy.value,
+        sortOrder: sortOrder.value,
+      })
 
-        const pageStart = (currentPage.value - 1) * pageSize.value
-        if (responseTotal > 0 && pageStart >= responseTotal) {
-          pageStateStore.setPagination('file-manager', 1, pageSize.value)
-          await loadFileList({ refresh: options.refresh })
-          return
-        }
-
-        const rows = items.map((item: FileSystemItem) => ({
-          id: item.id,
-          name: item.name,
-          path: currentPath.value ? `${currentPath.value}/${item.name}` : item.name,
-          type: item.is_directory ? 'directory' : getFileType(item.name),
-          size: item.size,
-          modified_time: item.modified_time,
-          is_directory: item.is_directory,
-        }))
-
-        fileList.value = mergeStableList(fileList.value, rows, (row) => row.id || row.path)
-        pageStateStore.setExpandedRowKeys(
-          'file-manager',
-          retainExistingKeys(
-            pageState.expandedRowKeys,
-            fileList.value,
-            (row) => row.id || row.path,
-          ),
-        )
-        total.value = responseTotal
-        sortBy.value = responseSortBy
-        sortOrder.value = responseSortOrder
-      } else {
-        console.error('加载文件列表失败：', response?.data.message || '未知错误')
-        fileList.value = []
-        total.value = 0
+      const pageStart = (currentPage.value - 1) * pageSize.value
+      if (responseTotal > 0 && pageStart >= responseTotal) {
+        pageStateStore.setPagination('file-manager', 1, pageSize.value)
+        await loadFileList({ refresh: options.refresh })
+        return
       }
+
+      const rows = items.map((item: FileSystemItem) => ({
+        id: item.id,
+        name: item.name,
+        path: currentPath.value ? `${currentPath.value}/${item.name}` : item.name,
+        type: item.is_directory ? 'directory' : getFileType(item.name),
+        size: item.size,
+        modified_time: item.modified_time,
+        is_directory: item.is_directory,
+      }))
+
+      fileList.value = mergeStableList(fileList.value, rows, (row) => row.id || row.path)
+      pageStateStore.setExpandedRowKeys(
+        'file-manager',
+        retainExistingKeys(pageState.expandedRowKeys, fileList.value, (row) => row.id || row.path),
+      )
+      total.value = responseTotal
+      sortBy.value = responseSortBy
+      sortOrder.value = responseSortOrder
     })
-  } catch {
+  } catch (error) {
     if (!fileListRequestGate.isCurrent(requestId)) {
       return
     }
-    ElMessage.error('加载文件列表失败')
+    reportFileError(error, '加载文件列表失败', true)
   } finally {
     if (pendingFileListRefresh.value && isPageActive) {
       const pendingOptions = pendingFileListRefresh.value
@@ -1069,32 +1052,25 @@ async function handleDeleteItem(item: FileSystemItem) {
       return
     }
 
-    const response = await http.delete(`${SERVER_URL}/path`, {
-      params: {
-        parent_id: operationContext.parentId,
-        file_id: item.id,
-        account_id: operationContext.accountId,
-      },
+    await deleteFile(http, {
+      parent_id: operationContext.parentId,
+      file_id: item.id,
+      account_id: operationContext.accountId,
     })
 
     if (!isFileOperationContextCurrent(operationContext)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('删除成功')
-      await loadFileList({ refresh: true })
-    } else {
-      ElMessage.error(response?.data.message || '删除失败')
-    }
+    ElMessage.success('删除成功')
+    await loadFileList({ refresh: true })
   } catch (error) {
     if (!isFileOperationContextCurrent(operationContext)) {
       return
     }
 
     if (!isMessageBoxCancelError(error)) {
-      console.error('删除失败：', error)
-      ElMessage.error('删除失败')
+      reportFileError(error, '删除失败')
     }
   }
 }
@@ -1135,7 +1111,7 @@ async function handleCreateDirectory() {
 
     createLoading.value = true
 
-    const response = await http.post(`${SERVER_URL}/path/create`, {
+    await createDirectory(http, {
       parent_id: operationContext.parentId,
       parent_path: operationContext.parentPath,
       name: createForm.value.name.trim(),
@@ -1147,19 +1123,15 @@ async function handleCreateDirectory() {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('创建文件夹成功')
-      resetCreateDirectoryDialog()
-      await loadFileList({ refresh: true })
-    } else {
-      ElMessage.error(response?.data.message || '创建文件夹失败')
-    }
-  } catch {
+    ElMessage.success('创建文件夹成功')
+    resetCreateDirectoryDialog()
+    await loadFileList({ refresh: true })
+  } catch (error) {
     if (!isCreateDirectoryOperationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.error('创建文件夹失败')
+    reportFileError(error, '创建文件夹失败')
   } finally {
     if (createDirectoryOperationContext.value === operationContext) {
       createLoading.value = false
@@ -1168,6 +1140,8 @@ async function handleCreateDirectory() {
 }
 
 async function confirmStrmGenerate() {
+  if (strmGenerateLoading.value) return
+
   if (!strmTargetDir.value || !strmSourceItem.value) {
     ElMessage.warning('请选择目标目录')
     return
@@ -1187,14 +1161,9 @@ async function confirmStrmGenerate() {
   try {
     strmGenerateLoading.value = true
 
-    // const currentPathStr = pathItems.value.map(p => p.name).join('/')
-    // const itemPath = currentPathStr ? `${currentPathStr}/${strmSourceItem.value.name}` : strmSourceItem.value.name
-
-    const response = await http.post(`${SERVER_URL}/sync/manual`, {
+    await generateManualStrm(http, {
       path_id: strmSourceItem.value.id,
-      // path: itemPath,
       target_path: strmTargetDir.value.path,
-      // is_file: !strmSourceItem.value.is_directory,
       account_id: operationContext.accountId,
     })
 
@@ -1202,18 +1171,14 @@ async function confirmStrmGenerate() {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('STRM 生成任务已提交')
-      resetStrmTargetDialog()
-    } else {
-      ElMessage.error(response?.data.message || 'STRM 生成失败')
-    }
-  } catch {
+    ElMessage.success('STRM 生成任务已提交')
+    resetStrmTargetDialog()
+  } catch (error) {
     if (!isStrmOperationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.error('STRM 生成失败')
+    reportFileError(error, 'STRM 生成失败')
   } finally {
     if (strmOperationContext.value === operationContext) {
       strmGenerateLoading.value = false

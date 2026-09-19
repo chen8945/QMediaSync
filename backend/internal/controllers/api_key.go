@@ -57,7 +57,7 @@ func CreateAPIKey(c *gin.Context) {
 
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 
@@ -100,7 +100,7 @@ func CreateAPIKey(c *gin.Context) {
 func ListAPIKeys(c *gin.Context) {
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 
@@ -146,7 +146,7 @@ func ListAPIKeys(c *gin.Context) {
 func DeleteAPIKey(c *gin.Context) {
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 
@@ -194,7 +194,7 @@ func DeleteAPIKey(c *gin.Context) {
 func UpdateAPIKeyStatus(c *gin.Context) {
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 

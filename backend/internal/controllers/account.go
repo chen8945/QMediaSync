@@ -456,7 +456,7 @@ func CreateOpenListAccount(c *gin.Context) {
 			return
 		}
 		if err := account.UpdateOpenList(req.BaseURL, req.Username, req.Password, req.Token, req.AuthType); err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("更新 OpenList 账号失败：%s", accountPersistenceMessage(err)), Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("更新 OpenList 账号失败：%s", helpers.RedactSensitiveLog(accountPersistenceMessage(err), req.Password, req.Token)), Data: nil})
 			return
 		}
 		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OpenList 账号已更新", Data: nil})
@@ -465,7 +465,7 @@ func CreateOpenListAccount(c *gin.Context) {
 	// 创建 OpenList 账号
 	_, err := models.CreateOpenListAccount(req.BaseURL, req.Username, req.Password, req.Token)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("创建 OpenList 账号失败：%s", accountPersistenceMessage(err)), Data: nil})
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("创建 OpenList 账号失败：%s", helpers.RedactSensitiveLog(accountPersistenceMessage(err), req.Password, req.Token)), Data: nil})
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OpenList 账号已创建", Data: nil})

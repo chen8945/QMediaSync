@@ -97,7 +97,8 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import type { DirInfo } from '@/typing'
 import TreeNode from './TreeNode.vue'
-import { SERVER_URL } from '@/const'
+import { createDirectory, fetchDirectories, filePublicMessages } from '@/api/files'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 
 interface Props {
   modelValue?: DirInfo | null
@@ -105,6 +106,7 @@ interface Props {
   rootPath?: string
   sourceType: string
   accountId?: number
+  resetOnSelect?: boolean
 }
 
 type DirectoryLoadState = 'unloaded' | 'loading' | 'loaded' | 'error'
@@ -127,6 +129,7 @@ const props = withDefaults(defineProps<Props>(), {
   rootId: '',
   rootPath: '',
   accountId: 0,
+  resetOnSelect: true,
 })
 
 const emit = defineEmits<{
@@ -185,22 +188,19 @@ const toDirInfo = (node: TreeNodeData): DirInfo => ({
   path: node.path,
 })
 
-const requestDirectories = async (parentID: string, parentPath: string): Promise<DirInfo[]> => {
-  const response = await http.get(`${SERVER_URL}/path/list`, {
-    timeout: 60000,
-    params: {
-      parent_id: parentID,
-      parent_path: parentPath,
-      source_type: props.sourceType,
-      account_id: props.accountId || 0,
-    },
+const requestDirectories = async (parentID: string, parentPath: string): Promise<DirInfo[]> =>
+  (await fetchDirectories(http, {
+    parent_id: parentID,
+    parent_path: parentPath,
+    source_type: props.sourceType,
+    account_id: props.accountId || 0,
+  })) || []
+
+const reportDirectoryError = (error: unknown, fallbackMessage: string) => {
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage,
+    publicMessages: filePublicMessages,
   })
-
-  if (response?.data.code === 200) {
-    return (response.data.data || []) as DirInfo[]
-  }
-
-  throw new Error(response?.data.message || '加载目录失败')
 }
 
 const loadNodeChildren = async (
@@ -225,7 +225,9 @@ const loadNodeChildren = async (
     node.loadState = 'error'
     node.isLeaf = false
     if (notify) {
-      ElMessage.error(error instanceof Error ? error.message : '加载子目录失败')
+      reportDirectoryError(error, '加载子目录失败')
+    } else {
+      throw error
     }
     return false
   }
@@ -293,7 +295,7 @@ const loadRootDirectories = async () => {
   } catch (error) {
     if (rootLoadId !== latestRootLoadId) return
     treeData.value = []
-    ElMessage.error(error instanceof Error ? error.message : '加载目录失败')
+    reportDirectoryError(error, '加载目录失败')
   } finally {
     if (rootLoadId === latestRootLoadId) {
       loading.value = false
@@ -334,7 +336,7 @@ const refreshDirectories = async () => {
     ElMessage.warning('所选目录已不存在，已回到根目录，请重新选择')
   } catch (error) {
     if (rootLoadId === latestRootLoadId) {
-      ElMessage.error(error instanceof Error ? error.message : '加载目录失败')
+      reportDirectoryError(error, '加载目录失败')
     }
   } finally {
     if (rootLoadId === latestRootLoadId) {
@@ -383,7 +385,7 @@ const handleButtonSelect = () => {
   if (loading.value || !selectedDir.value) return
 
   emit('select')
-  resetState()
+  if (props.resetOnSelect) resetState()
 }
 
 const resetState = () => {
@@ -448,7 +450,7 @@ const handleCreateDirectory = async () => {
     createLoading.value = true
     await createFormRef.value.validate()
 
-    const response = await http.post(`${SERVER_URL}/path/create`, {
+    const newDirectory = await createDirectory(http, {
       parent_id: parent.id,
       parent_path: parent.path,
       name: createForm.value.name.trim(),
@@ -456,16 +458,10 @@ const handleCreateDirectory = async () => {
       account_id: props.accountId,
     })
 
-    if (response?.data.code !== 200) {
-      ElMessage.error(response?.data.message || '创建文件夹失败')
-      return
-    }
-
     ElMessage.success('创建文件夹成功')
     showCreateDialog.value = false
     createForm.value.name = ''
 
-    const newDirectory = response.data.data as DirInfo
     const parentNode = findNode(treeData.value, parent.id)
     if (parentNode) {
       parentNode.latestChildLoadId += 1
@@ -481,8 +477,8 @@ const handleCreateDirectory = async () => {
 
     selectedDir.value = newDirectory
     emit('update:modelValue', newDirectory)
-  } catch {
-    ElMessage.error('创建文件夹失败')
+  } catch (error) {
+    reportDirectoryError(error, '创建文件夹失败')
   } finally {
     createLoading.value = false
   }

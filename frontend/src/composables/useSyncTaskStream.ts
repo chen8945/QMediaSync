@@ -1,4 +1,6 @@
 import { registerRealtimeSource } from '@/composables/realtimeSources'
+import { fetchSyncTask } from '@/api/syncTasks'
+import { parseHttpError } from '@/http/errors'
 import type {
   SyncTask,
   SyncTaskEventPayload,
@@ -42,6 +44,8 @@ export function useSyncTaskStream(
   const source = shallowRef<EventSource | null>(null)
   let unregisterSource: (() => void) | null = null
   let pollTimer: ReturnType<typeof setInterval> | null = null
+  let fallbackGeneration = 0
+  let fallbackRequest: { generation: number } | null = null
 
   const isRunning = computed(() => task.value?.status === 0 || task.value?.status === 1)
 
@@ -62,6 +66,7 @@ export function useSyncTaskStream(
   }
 
   const closeRealtime = () => {
+    fallbackGeneration++
     closeSource()
     clearPolling()
   }
@@ -149,29 +154,50 @@ export function useSyncTaskStream(
     }
   }
 
-  const loadFallbackTask = async (currentID: number) => {
+  const loadFallbackTask = async (currentID: number, generation: number) => {
+    if (fallbackRequest?.generation === generation) return
+    const request = { generation }
+    fallbackRequest = request
+    const isCurrent = () =>
+      generation === fallbackGeneration && !source.value && Number(toValue(syncId)) === currentID
     try {
-      const response = await fetch(`/api/sync/task?sync_id=${currentID}`, {
-        credentials: 'include',
-      })
-      if (!response.ok) return
-      const body = await response.json()
-      const nextTask = (body?.data ?? body) as SyncTask
-      if (!nextTask || source.value || Number(toValue(syncId)) !== currentID) return
+      const nextTask = await fetchSyncTask(currentID)
+      if (!isCurrent()) return
       task.value = nextTask
+      errorMessage.value = ''
       terminal.value = nextTask.status === 2 || nextTask.status === 3
       loading.value = false
       if (terminal.value) clearPolling()
-    } catch {
-      // 降级轮询失败后保持既有快照，下一轮继续尝试。
+    } catch (error) {
+      if (!isCurrent()) return
+      const failure = parseHttpError(error, { fallbackMessage: '加载同步任务失败' })
+      if (failure.shouldNotify) errorMessage.value = failure.message
+      loading.value = false
+      if (
+        failure.response?.status === 401 ||
+        failure.response?.status === 403 ||
+        failure.response?.status === 404
+      ) {
+        // 首次降级读取后也不能由 then 重新创建 timer。
+        fallbackGeneration++
+        clearPolling()
+      }
+    } finally {
+      if (fallbackRequest === request) fallbackRequest = null
     }
   }
 
   const startFallbackPolling = (currentID: number) => {
     clearPolling()
-    void loadFallbackTask(currentID).then(() => {
-      if (!terminal.value && isRunning.value && Number(toValue(syncId)) === currentID) {
-        pollTimer = setInterval(() => void loadFallbackTask(currentID), 5000)
+    const generation = fallbackGeneration
+    void loadFallbackTask(currentID, generation).then(() => {
+      if (
+        generation === fallbackGeneration &&
+        !terminal.value &&
+        isRunning.value &&
+        Number(toValue(syncId)) === currentID
+      ) {
+        pollTimer = setInterval(() => void loadFallbackTask(currentID, generation), 5000)
       }
     })
   }
@@ -202,10 +228,15 @@ export function useSyncTaskStream(
     }
     currentSource.onerror = (event) => {
       if ('data' in event) return
-      if (source.value === currentSource) {
-        connected.value = false
-        connectionState.value = 'reconnecting'
+      if (source.value !== currentSource) return
+      // CLOSED 表示浏览器不会再自动重连，改用与不支持 SSE 时相同的降级轮询。
+      if (currentSource.readyState === EventSource.CLOSED) {
+        closeSource(currentSource)
+        startFallbackPolling(currentID)
+        return
       }
+      connected.value = false
+      connectionState.value = 'reconnecting'
     }
     const listen = (eventType: SyncTaskStreamMessage['type']) => {
       currentSource.addEventListener(eventType, (event) => {

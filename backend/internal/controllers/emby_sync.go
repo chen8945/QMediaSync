@@ -112,7 +112,7 @@ func GetEmbyLibraries(c *gin.Context) {
 	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
 	libs, err := client.GetAllMediaLibraries()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询 Emby 媒体库失败：" + err.Error()})
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询 Emby 媒体库失败：" + helpers.RedactSensitiveLog(err.Error(), config.EmbyApiKey)})
 		return
 	}
 	if err := models.UpsertEmbyLibraries(libs); err != nil {

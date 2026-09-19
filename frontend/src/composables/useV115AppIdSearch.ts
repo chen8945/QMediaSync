@@ -1,7 +1,9 @@
-import { SERVER_URL } from '@/const'
+import { authorizationPublicMessages, fetchV115AppIds, type V115AppIDOption } from '@/api/accounts'
+import { parseHttpError } from '@/http/errors'
 import type { AxiosInstance } from 'axios'
 import {
   computed,
+  onScopeDispose,
   readonly,
   shallowRef,
   toValue,
@@ -11,27 +13,11 @@ import {
 } from 'vue'
 
 const V115_APPID_PAGE_SIZE = 50
-const V115_APPID_SEARCH_FALLBACK_SERVER_URL = '/api'
-
-export interface V115AppIDOption {
-  app_id: string
-  app_name: string
-  display_name: string
-  deprecated?: boolean
-}
+export { resolveV115AppIdSearchBaseURL, type V115AppIDOption } from '@/api/accounts'
 
 export interface UseV115AppIdSearchOptions {
   http: MaybeRef<AxiosInstance>
   pageSize?: MaybeRefOrGetter<number>
-}
-
-export function resolveV115AppIdSearchBaseURL(serverURL?: unknown): string {
-  const value = arguments.length === 0 ? SERVER_URL : serverURL
-  const normalized = typeof value === 'string' ? value.trim() : ''
-  if (!normalized || normalized === 'undefined' || normalized === 'null') {
-    return V115_APPID_SEARCH_FALLBACK_SERVER_URL
-  }
-  return normalized.replace(/\/+$/, '')
 }
 
 export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
@@ -39,6 +25,7 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
   const items = shallowRef<V115AppIDOption[]>([])
   const total = shallowRef(0)
   const loading = shallowRef(false)
+  const errorMessage = shallowRef('')
   const requestRunId = shallowRef(0)
   const offset = computed(() => items.value.length)
   const hasMore = computed(() => items.value.length < total.value)
@@ -52,14 +39,23 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
     const runId = requestRunId.value + 1
     requestRunId.value = runId
     loading.value = true
+    errorMessage.value = ''
     try {
-      const response = await http.get(`${resolveV115AppIdSearchBaseURL()}/115/appids`, {
-        params: { keyword: keyword.value, offset: 0, limit: pageSize.value },
+      const data = await fetchV115AppIds(http, {
+        keyword: keyword.value,
+        offset: 0,
+        limit: pageSize.value,
       })
       if (runId !== requestRunId.value) return
-      const data = response.data?.data
       items.value = data?.items || []
       total.value = data?.total || 0
+    } catch (error) {
+      if (runId !== requestRunId.value) return
+      const failure = parseHttpError(error, {
+        publicMessages: authorizationPublicMessages,
+        fallbackMessage: '搜索 APP ID 失败',
+      })
+      if (failure.shouldNotify) errorMessage.value = failure.message
     } finally {
       if (runId === requestRunId.value) loading.value = false
     }
@@ -71,14 +67,23 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
     const runId = requestRunId.value + 1
     requestRunId.value = runId
     loading.value = true
+    errorMessage.value = ''
     try {
-      const response = await http.get(`${resolveV115AppIdSearchBaseURL()}/115/appids`, {
-        params: { keyword: keyword.value, offset: offset.value, limit: pageSize.value },
+      const data = await fetchV115AppIds(http, {
+        keyword: keyword.value,
+        offset: offset.value,
+        limit: pageSize.value,
       })
       if (runId !== requestRunId.value) return
-      const data = response.data?.data
       items.value = [...items.value, ...(data?.items || [])]
       total.value = data?.total || total.value
+    } catch (error) {
+      if (runId !== requestRunId.value) return
+      const failure = parseHttpError(error, {
+        publicMessages: authorizationPublicMessages,
+        fallbackMessage: '加载更多 APP ID 失败',
+      })
+      if (failure.shouldNotify) errorMessage.value = failure.message
     } finally {
       if (runId === requestRunId.value) loading.value = false
     }
@@ -90,13 +95,19 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
     items.value = []
     total.value = 0
     loading.value = false
+    errorMessage.value = ''
   }
+
+  onScopeDispose(() => {
+    requestRunId.value += 1
+  })
 
   return {
     keyword,
     items: readonly(items),
     total: readonly(total),
     loading: readonly(loading),
+    errorMessage: readonly(errorMessage),
     hasMore,
     search,
     loadMore,

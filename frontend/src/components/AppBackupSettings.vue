@@ -71,15 +71,15 @@ import { ref, reactive, onMounted, watch, shallowRef } from 'vue'
 import { Check } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
-import type { BackupConfig } from '@/typing'
+import * as backupAPI from '@/api/backup'
+import { fetchCronTimes, systemSettingsPublicMessages } from '@/api/systemSettings'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CronSelector from './CronSelector.vue'
 
 const http = useHttpClient()
 const { isMobile } = useDeviceType()
-const API_SUCCESS_CODE = 200
 
 const configForm = reactive({
   backup_enabled: 1 as 0 | 1,
@@ -90,18 +90,21 @@ const configForm = reactive({
 })
 
 const configSaving = ref(false)
-const cronTimes = ref<string[]>([])
+const cronTimes = ref<(string | number)[]>([])
 const cronTimesLoading = ref(false)
 const backupCustomCron = shallowRef('')
 
+const reportError = (error: unknown, fallbackMessage: string) => {
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage,
+    publicMessages: { ...backupAPI.backupPublicMessages, ...systemSettingsPublicMessages },
+  })
+}
+
 const loadBackupConfig = async () => {
-  if (!http) return
-
   try {
-    const res = await http.get<{ code: number; data: BackupConfig }>(`${SERVER_URL}/backup/config`)
-
-    if (res.data.code === API_SUCCESS_CODE && res.data.data) {
-      const config = res.data.data
+    const config = await backupAPI.fetchBackupConfig(http)
+    if (config) {
       const cronExpression = config.backup_cron || '0 3 * * *'
       const cronChanged = configForm.backup_cron !== cronExpression
 
@@ -118,51 +121,34 @@ const loadBackupConfig = async () => {
       }
     }
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : '加载备份配置失败'
-    ElMessage.error(errorMsg)
+    reportError(error, '加载备份配置失败')
   }
 }
 
 const saveConfig = async () => {
-  if (!http) return
-
   configSaving.value = true
   try {
-    const res = await http.put(`${SERVER_URL}/backup/config`, configForm)
-
-    if (res.data.code === API_SUCCESS_CODE) {
-      ElMessage.success('备份配置保存成功')
-      await loadCronTimes()
-    } else {
-      ElMessage.error(res.data.message || '保存配置失败')
-    }
+    await backupAPI.saveBackupConfig(http, configForm)
+    ElMessage.success('备份配置保存成功')
+    await loadCronTimes()
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : '保存配置失败'
-    ElMessage.error(errorMsg)
+    reportError(error, '保存备份配置失败')
   } finally {
     configSaving.value = false
   }
 }
 
 const loadCronTimes = async () => {
-  if (!configForm.backup_cron || !http) {
+  if (!configForm.backup_cron) {
     cronTimes.value = []
     return
   }
 
   try {
     cronTimesLoading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/cron`, {
-      params: { cron: configForm.backup_cron },
-    })
-
-    if (response?.data.code === 200 && response.data.data) {
-      cronTimes.value = response.data.data || []
-    } else {
-      cronTimes.value = []
-    }
+    cronTimes.value = await fetchCronTimes(http, configForm.backup_cron)
   } catch (error) {
-    console.error('查询 Cron 执行时间错误：', error)
+    reportError(error, '查询 Cron 执行时间失败')
     cronTimes.value = []
   } finally {
     cronTimesLoading.value = false

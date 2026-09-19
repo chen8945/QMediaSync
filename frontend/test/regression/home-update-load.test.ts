@@ -44,17 +44,24 @@ test('queue stats polling keeps existing data after first successful load', () =
   assert.match(source, /queueStatsLoading\.value\s*=\s*!hasLoaded\.value/)
   assert.match(
     source,
-    /queueStats\.value\s*=\s*response\.data\.data\s+hasLoaded\.value\s*=\s*true/s,
+    /queueStats\.value\s*=\s*await fetchQueueStats\(http\)\s+hasLoaded\.value\s*=\s*true/s,
   )
   assert.match(
     source,
-    /else\s+if\s*\(\s*!hasLoaded\.value\s*\)\s*\{[\s\S]*?queueStats\.value\s*=\s*null[\s\S]*?currentPollingInterval\s*=\s*Math\.min/,
+    /catch\s*\([^)]*\)\s*\{[\s\S]*?queueStats\.value\s*=\s*null[\s\S]*?currentPollingInterval\s*=\s*Math\.min/,
   )
   assert.match(
     source,
     /catch\s*\([^)]*\)\s*\{[\s\S]*?if\s*\(\s*!hasLoaded\.value\s*\)\s*\{\s*queueStats\.value\s*=\s*null\s*\}/,
   )
   assert.doesNotMatch(source, /queueStatsLoading\.value\s*=\s*true/)
+  assert.match(source, /if\s*\(inFlight\)\s*\{\s*return\s*\}\s*inFlight\s*=\s*true/)
+  assert.match(source, /finally\s*\{\s*inFlight\s*=\s*false/)
+  assert.match(
+    source,
+    /if\s*\(!isPollingActive\s*\|\|\s*queueStatsTimer\s*\|\|\s*document\.hidden\)/,
+  )
+  assert.match(source, /import.*fetchQueueStats.*from ['"]@\/api\/dashboard['"]/)
 })
 
 test('hourly stats polling keeps existing chart data after first successful load', () => {
@@ -64,12 +71,9 @@ test('hourly stats polling keeps existing chart data after first successful load
   assert.match(source, /hourlyStatsLoading\.value\s*=\s*!hasLoaded\.value/)
   assert.match(
     source,
-    /hourlyStats\.value\s*=\s*response\.data\.data\s+hasLoaded\.value\s*=\s*true/s,
+    /hourlyStats\.value\s*=\s*await fetchHourlyStats\(http\)\s+hasLoaded\.value\s*=\s*true/s,
   )
-  assert.match(
-    source,
-    /else\s+if\s*\(\s*!hasLoaded\.value\s*\)\s*\{\s*hourlyStats\.value\s*=\s*null\s*\}/,
-  )
+  assert.match(source, /import.*fetchHourlyStats.*from ['"]@\/api\/dashboard['"]/)
   assert.match(
     source,
     /catch\s*\([^)]*\)\s*\{[\s\S]*?if\s*\(\s*!hasLoaded\.value\s*\)\s*\{\s*hourlyStats\.value\s*=\s*null\s*\}/,

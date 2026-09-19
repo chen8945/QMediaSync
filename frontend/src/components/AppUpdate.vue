@@ -9,6 +9,9 @@ import MarkdownIt from 'markdown-it'
 import 'github-markdown-css/github-markdown.css'
 import { CircleCheck, Refresh } from '@element-plus/icons-vue'
 import { SERVER_URL } from '@/const'
+import { fetchIsFnOS, updatePublicMessages } from '@/api/update'
+import { parseHttpError } from '@/http/errors'
+import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -55,11 +58,17 @@ const isFnOSLoading = ref(false)
 const checkIsFnOS = async () => {
   try {
     isFnOSLoading.value = true
-    const response = await http.get(`${SERVER_URL}/path/is-fn-os`)
-    if (response?.data.code === 200) {
-      isFnOS.value = response.data.data === true
+    isFnOS.value = await fetchIsFnOS(http)
+  } catch (error) {
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '检查飞牛环境失败',
+      publicMessages: updatePublicMessages,
+      request: { method: 'get', url: `${SERVER_URL}/path/is-fn-os` },
+    })
+    if (parsed.shouldNotify) {
+      console.error('检查飞牛环境失败', parsed.diagnostics)
+      ElMessage.error(parsed.message)
     }
-  } catch {
     isFnOS.value = false
   } finally {
     isFnOSLoading.value = false

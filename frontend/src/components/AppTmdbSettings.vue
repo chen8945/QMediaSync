@@ -141,10 +141,15 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { Check, Refresh } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchTmdbSettings as getTmdbSettings,
+  saveTmdbSettings,
+  testTmdbConnection,
+  scrapeSettingsPublicMessages,
+} from '@/api/scrapeSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -194,20 +199,25 @@ onMounted(async () => {
 async function fetchTmdbSettings() {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/scrape/tmdb`)
+    const settings = await getTmdbSettings(http)
 
-    formData.tmdbUrl = response?.data.data.tmdb_url || ''
-    formData.tmdbImageUrl = response?.data.data.tmdb_image_url || ''
-    formData.tmdbEnableProxy = response?.data.data.tmdb_enable_proxy || false
-    formData.tmdbApiKey = response?.data.data.tmdb_api_key || ''
-    formData.tmdbAccessToken = response?.data.data.tmdb_access_token || ''
-    formData.fanartApiKey = response?.data.data.fanart_api_key || ''
-    formData.tmdbLanguage = response?.data.data.tmdb_language || 'zh-CN'
-    formData.tmdbImageLanguage = response?.data.data.tmdb_image_language || 'en-US'
-    formData.local_max_threads = response?.data.data.local_max_threads || 5
+    formData.tmdbUrl = settings.tmdb_url || ''
+    formData.tmdbImageUrl = settings.tmdb_image_url || ''
+    formData.tmdbEnableProxy = settings.tmdb_enable_proxy || false
+    formData.tmdbApiKey = settings.tmdb_api_key || ''
+    formData.tmdbAccessToken = settings.tmdb_access_token || ''
+    formData.fanartApiKey = settings.fanart_api_key || ''
+    formData.tmdbLanguage = settings.tmdb_language || 'zh-CN'
+    formData.tmdbImageLanguage = settings.tmdb_image_language || 'en-US'
+    formData.local_max_threads = settings.local_max_threads || 5
   } catch (error) {
-    console.error('获取 TMDB 设置失败：', error)
-    ElMessage.error('获取刮削设置失败，请稍后重试')
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '获取刮削设置失败，请稍后重试',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('获取 TMDB 设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '获取设置失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
@@ -217,6 +227,7 @@ async function fetchTmdbSettings() {
 async function saveSettings() {
   try {
     loading.value = true
+    saveStatus.value = null
 
     const payload = {
       tmdb_url: formData.tmdbUrl,
@@ -233,7 +244,7 @@ async function saveSettings() {
       payload.local_max_threads = 5
     }
 
-    await http.post(`${SERVER_URL}/scrape/tmdb`, payload)
+    await saveTmdbSettings(http, payload)
 
     saveStatus.value = {
       title: '保存成功',
@@ -241,17 +252,18 @@ async function saveSettings() {
       description: '刮削设置已成功保存',
     }
 
-    // 3 秒后清除状态提示
+    const status = saveStatus.value
     setTimeout(() => {
-      saveStatus.value = null
+      if (saveStatus.value === status) saveStatus.value = null
     }, 3000)
   } catch (error) {
-    console.error('保存 TMDB 设置失败：', error)
-    saveStatus.value = {
-      title: '保存失败',
-      type: 'error',
-      description: '保存刮削设置失败，请稍后重试',
-    }
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '保存刮削设置失败，请稍后重试',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('保存 TMDB 设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '保存失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
@@ -273,36 +285,36 @@ async function testConnection() {
       tmdb_image_language: formData.tmdbImageLanguage,
     }
 
-    const response = await http.post(`${SERVER_URL}/scrape/tmdb-test`, payload, {
-      timeout: 20000,
-    })
+    const connected = await testTmdbConnection(http, payload)
 
     // 根据接口返回结果显示不同的状态
-    if (response?.data?.data) {
+    if (connected) {
       testStatus.value = {
         title: '连接成功',
         type: 'success',
-        description: response.data.message || 'TMDB 连通性测试成功',
+        description: 'TMDB 连通性测试成功',
       }
     } else {
       testStatus.value = {
         title: '连接失败',
         type: 'error',
-        description: response?.data?.message || 'TMDB 连通性测试失败，请检查设置',
+        description: 'TMDB 连通性测试失败，请检查设置',
       }
+      return
     }
 
-    // 5 秒后清除状态提示
+    const status = testStatus.value
     setTimeout(() => {
-      testStatus.value = null
+      if (testStatus.value === status) testStatus.value = null
     }, 5000)
   } catch (error) {
-    console.error('测试 TMDB 连通性失败：', error)
-    testStatus.value = {
-      title: '连接失败',
-      type: 'error',
-      description: '测试过程中发生错误，请检查网络连接和设置',
-    }
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '测试 TMDB 连通性失败，请稍后重试',
+      publicMessages: scrapeSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('测试 TMDB 连通性失败：', parsed.diagnostics)
+    testStatus.value = { title: '测试失败', type: 'error', description: parsed.message }
   } finally {
     testing.value = false
   }

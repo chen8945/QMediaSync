@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -330,4 +332,179 @@ func setAuthBackgroundTaskRunnerForTest(t *testing.T, runner func(func())) {
 	t.Cleanup(func() {
 		runAuthBackgroundTask = oldRunner
 	})
+}
+
+func TestAuthRequestErrorCodes(t *testing.T) {
+	cases := []struct {
+		name       string
+		origin     string
+		host       string
+		proto      string
+		mutation   string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "缺少登录凭证", mutation: "missing_auth", wantStatus: 401, wantCode: ErrorCodeAuthenticationRequired},
+		{name: "无效登录凭证", mutation: "invalid_auth", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
+		{name: "撤销会话", mutation: "revoked", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
+		{name: "数据库会话过期", mutation: "expired_session", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
+		{name: "会话不存在", mutation: "missing_session", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
+		{name: "会话用户不一致", mutation: "session_user", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
+		{name: "登录用户不存在", mutation: "missing_user", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
+		{name: "会话查询故障不标记具体原因", mutation: "database", wantStatus: 401},
+		{name: "来源缺失", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
+		{name: "来源格式无效", origin: "null", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
+		{name: "代理改写域名", origin: "https://qms.example.com", host: "127.0.0.1", proto: "https", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
+		{name: "代理丢失协议", origin: "https://qms.example.com", host: "qms.example.com", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
+		{name: "代理丢失端口", origin: "https://qms.example.com:8443", host: "qms.example.com", proto: "https", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
+		{name: "代理保留完整地址", origin: "https://qms.example.com:8443", host: "qms.example.com:8443", proto: "https", wantStatus: 200},
+		{name: "缺少CSRF头", origin: "http://localhost:12333", mutation: "missing_csrf", wantStatus: 403, wantCode: ErrorCodeCSRFTokenInvalid},
+		{name: "缺少CSRF Cookie", origin: "http://localhost:12333", mutation: "missing_csrf_cookie", wantStatus: 403, wantCode: ErrorCodeCSRFTokenInvalid},
+		{name: "CSRF头与Cookie不一致", origin: "http://localhost:12333", mutation: "mismatched_csrf", wantStatus: 403, wantCode: ErrorCodeCSRFTokenInvalid},
+		{name: "CSRF与会话不一致", origin: "http://localhost:12333", mutation: "stale_csrf", wantStatus: 403, wantCode: ErrorCodeCSRFTokenInvalid},
+		{name: "无效APIKey", mutation: "api_key", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
+		{name: "API Key 用户不存在", mutation: "api_key_missing_user", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
+		{name: "API Key 豁免来源和CSRF", mutation: "valid_api_key", wantStatus: 200},
+		{name: "API Key 查询故障不标记具体原因", mutation: "api_key_db", wantStatus: 401},
+		{name: "API Key 用户查询故障不标记具体原因", mutation: "api_key_user_db", wantStatus: 401},
+		{name: "Cookie 用户查询故障不标记具体原因", mutation: "user_db", wantStatus: 401},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, user, session, csrfToken := setupAuthSecurityTest(t)
+			r.POST("/api/user/change", ChangePassword)
+			token := buildSessionCookieTokenForTest(t, session)
+			apiKey := ""
+			switch tc.mutation {
+			case "invalid_auth":
+				token = "invalid"
+			case "revoked":
+				if err := db.Db.Model(session).Update("revoked_at", time.Now().Unix()).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "expired_session":
+				if err := db.Db.Model(session).Update("expires_at", time.Now().Add(-time.Hour).Unix()).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "missing_session":
+				if err := db.Db.Delete(session).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "session_user":
+				if err := db.Db.Model(session).Update("user_id", user.ID+1).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "missing_user":
+				if err := db.Db.Delete(user).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "api_key":
+				apiKey = "invalid"
+			case "api_key_missing_user", "valid_api_key", "api_key_db", "api_key_user_db":
+				_, rawKey, err := models.CreateAPIKey(user.ID, "request-errors")
+				if err != nil {
+					t.Fatal(err)
+				}
+				apiKey = rawKey
+				switch tc.mutation {
+				case "api_key_missing_user":
+					if err := db.Db.Delete(user).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "api_key_db":
+					if err := db.Db.Migrator().DropTable(&models.ApiKey{}); err != nil {
+						t.Fatal(err)
+					}
+				case "api_key_user_db":
+					if err := db.Db.Migrator().DropTable(&models.User{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "database":
+				if err := db.Db.Migrator().DropTable(&models.UserSession{}); err != nil {
+					t.Fatal(err)
+				}
+			case "user_db":
+				if err := db.Db.Migrator().DropTable(&models.User{}); err != nil {
+					t.Fatal(err)
+				}
+			case "stale_csrf":
+				csrfToken = "old-token"
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/user/change", strings.NewReader(`{"username":"updatedadmin"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Host = "localhost:12333"
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("X-Forwarded-Proto", tc.proto)
+			if tc.mutation != "missing_auth" {
+				req.AddCookie(&http.Cookie{Name: authCookieName, Value: token})
+			}
+			if tc.mutation != "missing_csrf_cookie" && tc.mutation != "valid_api_key" {
+				req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrfToken})
+			}
+			if tc.mutation != "missing_csrf" && tc.mutation != "valid_api_key" {
+				req.Header.Set(csrfHeaderName, csrfToken)
+			}
+			if tc.mutation == "mismatched_csrf" {
+				req.Header.Set(csrfHeaderName, "different-token")
+			}
+			if apiKey != "" {
+				req.Header.Set(apiKeyHeaderName, apiKey)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("HTTP = %d，want %d，body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantCode == "" {
+				if _, ok := body["error_code"]; ok {
+					t.Fatalf("不应带有具体错误码：%s", w.Body.String())
+				}
+			} else if body["error_code"] != tc.wantCode {
+				t.Fatalf("错误码 = %v，want %s", body["error_code"], tc.wantCode)
+			}
+			if w.Code != http.StatusOK && (body["code"] != float64(BadRequest) || body["data"] != nil) {
+				t.Fatalf("错误响应必须保留 code=500 和 data=null：%s", w.Body.String())
+			}
+			if w.Code == http.StatusOK && (body["code"] != float64(Success) || body["data"] != true) {
+				t.Fatalf("成功请求应执行凭据修改并保留成功响应：%s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionSuccessOmitsRequestErrorCode(t *testing.T) {
+	_, _, session, _ := setupAuthSecurityTest(t)
+	r := gin.New()
+	r.GET("/api/session", SessionAction)
+	for _, authenticated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("authenticated=%t", authenticated), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+			if authenticated {
+				req.AddCookie(&http.Cookie{Name: authCookieName, Value: buildSessionCookieTokenForTest(t, session)})
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			var body struct {
+				Code      APIResponseCode `json:"code"`
+				ErrorCode *string         `json:"error_code"`
+				Data      struct {
+					Authenticated bool `json:"authenticated"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != 200 || body.Code != Success || body.ErrorCode != nil || body.Data.Authenticated != authenticated {
+				t.Fatalf("会话状态契约错误：HTTP=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
 }

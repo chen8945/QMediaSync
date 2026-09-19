@@ -771,10 +771,18 @@
 </template>
 
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { SCRAPE_THREAD_LIMITS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
+import { accountPublicMessages, listAccounts } from '@/api/accounts'
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchScrapePath,
+  saveScrapePath,
+  validateScrapePathCron,
+  scrapePathErrorOptions,
+  type ScrapePath,
+} from '@/api/scrapePaths'
 import { onMounted, ref, reactive, watch, useTemplateRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
@@ -796,36 +804,6 @@ interface CloudAccount {
   authorized: boolean
 }
 
-interface ScrapePath {
-  id?: number
-  source_type: string
-  account_id?: number
-  media_type: string
-  source_path: string
-  source_path_id: string
-  dest_path: string
-  dest_path_id: string
-  scrape_type: string
-  rename_type: string
-  enable_category: boolean
-  folder_name_template: string
-  file_name_template: string
-  delete_keyword: string[]
-  min_video_file_size: number
-  video_ext_list: string[]
-  created_at?: number
-  updated_at?: number
-  enable_ai: string
-  ai_prompt: string
-  exclude_no_image_actor: boolean
-  force_delete_source_path: boolean
-  enable_cron?: boolean
-  cron_expression?: string
-  cron_description?: string
-  enable_fanart_tv: boolean
-  max_threads: number
-}
-
 const http = useHttpClient()
 const route = useRoute()
 const router = useRouter()
@@ -845,7 +823,7 @@ const isEditMode = ref(false)
 const loading = ref(false)
 
 const formRef = useTemplateRef<FormInstance>('formRef')
-const form = reactive<ScrapePath>({
+const form = reactive<Omit<ScrapePath, 'is_running'>>({
   id: 0,
   source_type: '115',
   account_id: 0,
@@ -923,6 +901,13 @@ const isSelectSource = ref(true)
 const selectedSourceType = ref('')
 const selectedAccountId = ref(0)
 
+const reportError = (error: unknown, fallbackMessage: string) => {
+  const failure = parseHttpError(error, { ...scrapePathErrorOptions, fallbackMessage })
+  if (!failure.shouldNotify) return
+  console.error(fallbackMessage, failure.diagnostics)
+  ElMessage.error(failure.message)
+}
+
 const goBack = () => {
   void navigateBackOrReplace(router, { name: 'scrape-pathes' })
 }
@@ -941,17 +926,16 @@ const loadAccounts = async () => {
   accounts.value = []
   try {
     accountsLoading.value = true
-    const response = await http.get(`${SERVER_URL}/account/list`, {
-      params: { source_type: form.source_type },
-    })
-    if (response?.data.code === 200) {
-      accounts.value = response.data.data || []
-    } else {
-      console.error('加载账号列表失败：', response?.data.message || '未知错误')
-      accounts.value = []
-    }
+    accounts.value = await listAccounts(http, form.source_type)
   } catch (error) {
-    console.error('加载账号列表失败：', error)
+    const failure = parseHttpError(error, {
+      publicMessages: accountPublicMessages,
+      fallbackMessage: '加载账号列表失败',
+    })
+    if (failure.shouldNotify) {
+      console.error('加载账号列表失败：', failure.diagnostics)
+      ElMessage.error(failure.message)
+    }
     accounts.value = []
   } finally {
     accountsLoading.value = false
@@ -961,51 +945,34 @@ const loadAccounts = async () => {
 const loadDirectoryData = async (id: number) => {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/scrape/pathes/${id}`)
-
-    if (response?.data.code === 200) {
-      // const directory = response.data.data?.find((d: ScrapePath) => d.id === id)
-      // if (directory) {
-      // 将 res.data.data 赋值给 form
-      const directory = response.data.data
-      form.id = directory.id || 0
-      form.source_type = directory.source_type
-      form.account_id = directory.account_id
-      form.media_type = directory.media_type
-      form.source_path = directory.source_path
-      form.source_path_id = directory.source_path_id
-      form.dest_path = directory.dest_path
-      form.dest_path_id = directory.dest_path_id
-      form.scrape_type = directory.scrape_type
-      form.rename_type = directory.rename_type
-      form.enable_category = directory.enable_category
-      form.folder_name_template = directory.folder_name_template
-      form.file_name_template = directory.file_name_template
-      form.delete_keyword = [...directory.delete_keyword]
-      form.min_video_file_size = directory.min_video_file_size || 0
-      form.video_ext_list = directory.video_ext_list || []
-      form.exclude_no_image_actor = directory.exclude_no_image_actor || false
-      form.enable_ai = directory.enable_ai || 'off'
-      form.ai_prompt = directory.ai_prompt || ''
-      form.force_delete_source_path = directory.force_delete_source_path || false
-      form.enable_cron = directory.enable_cron || false
-      form.cron_expression = directory.cron_expression || ''
-      form.cron_description = directory.cron_description || ''
-      form.enable_fanart_tv = directory.enable_fanart_tv || false
-      form.max_threads = parseInt(directory.max_threads + '') || SCRAPE_THREAD_LIMITS.remoteMax
-
-      // } else {
-      //   ElMessage.error('未找到该刮削目录')
-      //   goBack()
-      // }
-    } else {
-      ElMessage.error(response?.data.message || '加载刮削目录失败')
-      goBack()
-    }
-  } catch {
-    console.error('加载刮削目录错误')
-    ElMessage.error('加载刮削目录失败')
-    goBack()
+    const directory = await fetchScrapePath(http, id)
+    form.id = directory.id || 0
+    form.source_type = directory.source_type
+    form.account_id = directory.account_id
+    form.media_type = directory.media_type
+    form.source_path = directory.source_path
+    form.source_path_id = directory.source_path_id
+    form.dest_path = directory.dest_path
+    form.dest_path_id = directory.dest_path_id
+    form.scrape_type = directory.scrape_type
+    form.rename_type = directory.rename_type
+    form.enable_category = directory.enable_category
+    form.folder_name_template = directory.folder_name_template
+    form.file_name_template = directory.file_name_template
+    form.delete_keyword = [...directory.delete_keyword]
+    form.min_video_file_size = directory.min_video_file_size || 0
+    form.video_ext_list = directory.video_ext_list || []
+    form.exclude_no_image_actor = directory.exclude_no_image_actor || false
+    form.enable_ai = directory.enable_ai || 'off'
+    form.ai_prompt = directory.ai_prompt || ''
+    form.force_delete_source_path = directory.force_delete_source_path || false
+    form.enable_cron = directory.enable_cron || false
+    form.cron_expression = directory.cron_expression || ''
+    form.cron_description = directory.cron_description || ''
+    form.enable_fanart_tv = directory.enable_fanart_tv || false
+    form.max_threads = parseInt(directory.max_threads + '') || SCRAPE_THREAD_LIMITS.remoteMax
+  } catch (error) {
+    reportError(error, '加载刮削目录失败')
   } finally {
     loading.value = false
   }
@@ -1040,19 +1007,21 @@ const validateCronExpression = async () => {
   }
 
   try {
-    const response = await http.post(`${SERVER_URL}/cron/validate`, {
-      cron_expression: form.cron_expression.trim(),
-    })
-
-    if (response?.data.code === 200) {
-      form.cron_description = response.data.data.description || '有效表达式'
-    } else {
-      ElMessage.warning(response?.data.message || 'Cron 表达式验证失败')
-      form.cron_description = '无效表达式'
-    }
+    const data = await validateScrapePathCron(http, form.cron_expression.trim())
+    form.cron_description = data.description || '有效表达式'
   } catch (error) {
-    console.error('验证 Cron 表达式失败：', error)
-    ElMessage.error('验证 Cron 表达式失败，请检查网络连接')
+    const failure = parseHttpError(error, {
+      ...scrapePathErrorOptions,
+      fallbackMessage: 'Cron 表达式验证失败',
+    })
+    if (!failure.shouldNotify) return
+    console.error('验证 Cron 表达式失败：', failure.diagnostics)
+    if (failure.kind === 'application') {
+      form.cron_description = '无效表达式'
+      ElMessage.warning(failure.message)
+    } else {
+      ElMessage.error(failure.message)
+    }
   }
 }
 
@@ -1079,7 +1048,7 @@ const handleSubmit = async () => {
     loading.value = true
 
     if (isEditMode.value) {
-      const response = await http.post(`${SERVER_URL}/scrape/pathes`, {
+      await saveScrapePath(http, {
         id: form.id,
         source_path: form.source_path,
         source_path_id: form.source_path_id,
@@ -1104,14 +1073,10 @@ const handleSubmit = async () => {
         max_threads: parseInt(form.max_threads + ''),
       })
 
-      if (response?.data.code === 200) {
-        ElMessage.success('编辑刮削目录成功')
-        returnToScrapePathList()
-      } else {
-        ElMessage.error(response?.data.message || '编辑刮削目录失败')
-      }
+      ElMessage.success('编辑刮削目录成功')
+      returnToScrapePathList()
     } else {
-      const response = await http.post(`${SERVER_URL}/scrape/pathes`, {
+      await saveScrapePath(http, {
         id: 0,
         source_type: form.source_type,
         account_id: form.source_type !== 'local' ? form.account_id : 0,
@@ -1139,16 +1104,11 @@ const handleSubmit = async () => {
         max_threads: form.max_threads,
       })
 
-      if (response?.data.code === 200) {
-        ElMessage.success('添加刮削目录成功')
-        returnToScrapePathList()
-      } else {
-        ElMessage.error(response?.data.message || '添加刮削目录失败')
-      }
+      ElMessage.success('添加刮削目录成功')
+      returnToScrapePathList()
     }
-  } catch {
-    console.error('提交刮削目录错误')
-    ElMessage.error(isEditMode.value ? '编辑刮削目录失败' : '添加刮削目录失败')
+  } catch (error) {
+    reportError(error, isEditMode.value ? '编辑刮削目录失败' : '添加刮削目录失败')
   } finally {
     loading.value = false
   }

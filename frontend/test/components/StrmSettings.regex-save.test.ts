@@ -54,7 +54,8 @@ function createHTTP(
   }
   const http = {
     get: vi.fn(async (url: string) => {
-      if (url.endsWith('/version')) return { data: { isWindows: false } }
+      if (url.endsWith('/version'))
+        return { data: { version: 'v1', date: '', isWindows: false, isRelease: false } }
       if (url.endsWith('/setting/cron')) return { data: { code: 200, data: [] } }
       if (url.includes('/sync/path/')) {
         return {
@@ -324,7 +325,9 @@ describe('STRM 排除规则保存与读回', () => {
       const http = createHTTP([pattern])
       const error = {
         response: {
+          status: 400,
           data: {
+            code: 500,
             message: 'exclude_name_regex_arr[0]：正则表达式无效',
             data: {
               error_code: 'INVALID_REQUEST',
@@ -342,7 +345,7 @@ describe('STRM 排除规则保存与读回', () => {
       expect(wrapper.get('.el-tag code').element.textContent).toBe(pattern)
       await vi.waitFor(() =>
         expect(wrapper.text()).toContain(
-          page === 'global' ? '正则表达式无效' : '第 1 条：未知字符类',
+          page === 'global' ? '正则表达式无效' : '第 1 条：正则表达式无效',
         ),
       )
       expect(wrapper.text()).not.toContain('检查网络连接')

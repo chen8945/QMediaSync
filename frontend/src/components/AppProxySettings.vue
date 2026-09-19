@@ -58,7 +58,8 @@
       :title="proxyStatus.title"
       :type="proxyStatus.type"
       :description="proxyStatus.description"
-      :closable="false"
+      closable
+      @close="proxyStatus = null"
       show-icon
       class="proxy-status"
     />
@@ -66,7 +67,13 @@
 </template>
 
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
+import {
+  fetchProxySettings,
+  proxySettingsPublicMessages,
+  saveProxySettings,
+  testProxyConnection,
+} from '@/api/proxySettings'
+import { parseHttpError } from '@/http/errors'
 import {
   PROXY_CREDENTIALS_MASKED_HINT,
   PROXY_PORT_RANGE,
@@ -167,6 +174,16 @@ const markProxyCredentialsEdited = (): void => {
 const shouldPreserveProxyCredentials = (): boolean =>
   credentialsMasked.value && !proxyCredentialsEdited.value
 
+const showProxyFailure = (error: unknown, title: string) => {
+  const failure = parseHttpError(error, {
+    publicMessages: proxySettingsPublicMessages,
+    fallbackMessage: title,
+  })
+  if (!failure.shouldNotify) return
+  console.error(title, failure.diagnostics)
+  proxyStatus.value = { title, type: 'error', description: failure.message }
+}
+
 // 测试代理连接
 const testProxy = async () => {
   const trimmedUrl = proxyData.proxy_url.trim()
@@ -191,32 +208,14 @@ const testProxy = async () => {
       preserve_proxy_credentials: shouldPreserveProxyCredentials(),
     }
 
-    const response = await http.post(`${SERVER_URL}/setting/test-http-proxy`, requestData, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (response?.data.code === 200) {
-      proxyStatus.value = {
-        title: '代理测试成功',
-        type: 'success',
-        description: '代理服务器连接正常，可以正常使用',
-      }
-    } else {
-      proxyStatus.value = {
-        title: '代理测试失败',
-        type: 'error',
-        description: response?.data.message || '无法连接到代理服务器，请检查配置',
-      }
+    await testProxyConnection(http, requestData)
+    proxyStatus.value = {
+      title: '代理测试成功',
+      type: 'success',
+      description: '代理服务器连接正常，可以正常使用',
     }
   } catch (error) {
-    console.error('代理测试错误：', error)
-    proxyStatus.value = {
-      title: '代理测试出错',
-      type: 'error',
-      description: '测试过程中发生错误，请检查网络连接和代理设置',
-    }
+    showProxyFailure(error, '代理测试失败')
   } finally {
     testingProxy.value = false
   }
@@ -243,55 +242,32 @@ const saveProxy = async () => {
       preserve_proxy_credentials: shouldPreserveProxyCredentials(),
     }
 
-    const response = await http.post(`${SERVER_URL}/setting/http-proxy`, requestData, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (response?.data.code === 200) {
-      // 重新拉取而不是直接回填 trimmedUrl：接口只回传脱敏地址，
-      // 这样输入框和提示都不会继续留着刚输入的明文凭据，也能刷新脱敏标记
-      await loadProxy()
-      proxyStatus.value = {
-        title: '代理设置已保存',
-        type: 'success',
-        description: proxyData.proxy_url
-          ? `已设置代理服务器：${proxyData.proxy_url}`
-          : '已清除代理设置，使用直连网络',
-      }
-    } else {
-      proxyStatus.value = {
-        title: '保存代理设置失败',
-        type: 'error',
-        description: response?.data.message || '保存设置失败，请重试',
-      }
+    await saveProxySettings(http, requestData)
+    // 只在脱敏回读成功后更新提示；回读失败必须保留刷新错误和用户输入。
+    if (!(await loadProxy('代理设置已保存，但刷新失败'))) return
+    proxyStatus.value = {
+      title: '代理设置已保存',
+      type: 'success',
+      description: proxyData.proxy_url ? '已设置代理服务器' : '已清除代理设置，使用直连网络',
     }
   } catch (error) {
-    console.error('保存代理设置错误：', error)
-    proxyStatus.value = {
-      title: '保存设置出错',
-      type: 'error',
-      description: '保存过程中发生错误，请检查网络连接',
-    }
+    showProxyFailure(error, '保存代理设置失败')
   } finally {
     proxyLoading.value = false
   }
 }
 
 // 加载代理设置
-const loadProxy = async () => {
+const loadProxy = async (failureTitle = '加载代理设置失败') => {
   try {
-    const response = await http.get(`${SERVER_URL}/setting/http-proxy`)
-
-    if (response?.data.code === 200 && response.data.data) {
-      proxyData.proxy_url = response.data.data.http_proxy || ''
-      // 接口不回传明文凭据，凭据被脱敏时要提示用户输入框里的 xxxxx 是占位串
-      credentialsMasked.value = response.data.data.credentials_masked === '1'
-      proxyCredentialsEdited.value = false
-    }
+    const data = await fetchProxySettings(http)
+    proxyData.proxy_url = data.http_proxy
+    credentialsMasked.value = data.credentials_masked === '1'
+    proxyCredentialsEdited.value = false
+    return true
   } catch (error) {
-    console.error('加载代理设置错误：', error)
+    showProxyFailure(error, failureTitle)
+    return false
   }
 }
 

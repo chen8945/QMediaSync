@@ -221,7 +221,7 @@ func TestAiSettings(c *gin.Context) {
 	}
 	testResult := tmpScrapeSetting.TestAi()
 	if testResult != nil {
-		c.JSON(http.StatusOK, APIResponse[error]{Code: BadRequest, Message: testResult.Error(), Data: nil})
+		c.JSON(http.StatusOK, APIResponse[error]{Code: BadRequest, Message: helpers.RedactSensitiveLog(testResult.Error(), reqData.AIAPIKey), Data: nil})
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[error]{Code: Success, Message: "AI 识别连接测试成功", Data: nil})
@@ -1304,7 +1304,7 @@ func TmdbSearch(c *gin.Context) {
 			// 搜索电影
 			resp, err := tmdbClient.SearchMovie(req.Name, req.Year, models.GlobalScrapeSettings.GetTmdbLanguage(), true, false)
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电影失败：" + err.Error(), Data: nil})
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电影失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
 			}
 			if len(resp.Results) == 0 {
@@ -1328,7 +1328,7 @@ func TmdbSearch(c *gin.Context) {
 		} else {
 			resp, err := tmdbClient.GetMovieDetail(int64(req.TmdbID), models.GlobalScrapeSettings.GetTmdbLanguage())
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电影详情失败：" + err.Error(), Data: nil})
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电影详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
 			}
 			tmdbResp := make([]TmdbSearchResp, 0)
@@ -1349,7 +1349,7 @@ func TmdbSearch(c *gin.Context) {
 			// 搜索电视剧
 			resp, err := tmdbClient.SearchTv(req.Name, req.Year, models.GlobalScrapeSettings.GetTmdbLanguage(), true)
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电视剧失败：" + err.Error(), Data: nil})
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电视剧失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
 			}
 			if len(resp.Results) == 0 {
@@ -1373,7 +1373,7 @@ func TmdbSearch(c *gin.Context) {
 		} else {
 			resp, err := tmdbClient.GetTvDetail(int64(req.TmdbID), models.GlobalScrapeSettings.GetTmdbLanguage())
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电视剧详情失败：" + err.Error(), Data: nil})
+				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电视剧详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
 			}
 			tmdbResp := make([]TmdbSearchResp, 0)

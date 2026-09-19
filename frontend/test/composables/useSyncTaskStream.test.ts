@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, shallowRef, type App } from 'vue'
+import { flushPromises } from '@vue/test-utils'
 
 vi.mock('@/const', () => ({
   SERVER_URL: 'https://api.example.test',
@@ -28,6 +29,8 @@ type Listener = (event: MessageEvent<string>) => void
 
 class MockEventSource {
   static instances: MockEventSource[] = []
+  static readonly CLOSED = 2
+  readyState = 0
   onopen: (() => void) | null = null
   onerror: ((event: Event) => void) | null = null
   private readonly listeners = new Map<string, Set<Listener>>()
@@ -88,6 +91,7 @@ describe('useSyncTaskStream', () => {
   afterEach(() => {
     mountedApps.splice(0).forEach((app) => app.unmount())
     vi.unstubAllGlobals()
+    vi.useRealTimers()
     MockEventSource.instances = []
   })
 
@@ -136,6 +140,46 @@ describe('useSyncTaskStream', () => {
     expect(stream.connected.value).toBe(false)
   })
 
+  it('浏览器放弃重连（CLOSED）后关闭流并改用 HTTP 降级轮询', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ code: 200, data: { ...snapshot.task } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await nextTick()
+    const source = MockEventSource.instances[0]
+
+    source.readyState = MockEventSource.CLOSED
+    source.onerror?.(new Event('error'))
+    await flushPromises()
+
+    expect(source.closed).toBe(true)
+    expect(stream.connectionState.value).toBe('idle')
+    expect(fetchMock).toHaveBeenCalledWith('/api/sync/task?sync_id=8', {
+      credentials: 'include',
+    })
+    expect(stream.task.value?.id).toBe(8)
+  })
+
+  it.each([401, 403, 404])('CLOSED 后首次 HTTP %s 不再创建降级轮询', async (status) => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', MockEventSource)
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status }))
+    vi.stubGlobal('fetch', fetchMock)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    const source = MockEventSource.instances[0]
+    source.emit('snapshot', { type: 'snapshot', version: 1, sync_id: 8, data: snapshot })
+    source.readyState = MockEventSource.CLOSED
+    source.onerror?.(new Event('error'))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(stream.task.value?.id).toBe(8)
+    expect(stream.unsupported.value).toBe(false)
+  })
+
   it('closes terminal sources and ignores callbacks from a replaced source', async () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const syncId = shallowRef(8)
@@ -171,13 +215,13 @@ describe('useSyncTaskStream', () => {
     vi.stubGlobal('EventSource', undefined)
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ data: { ...snapshot.task } }),
+      json: vi.fn().mockResolvedValue({ code: 200, data: { ...snapshot.task } }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
     const stream = withSetup(() => useSyncTaskStream(8))
     await nextTick()
-    await Promise.resolve()
+    await flushPromises()
 
     expect(MockEventSource.instances).toHaveLength(0)
     expect(stream.unsupported.value).toBe(true)
@@ -204,5 +248,99 @@ describe('useSyncTaskStream', () => {
 
     expect(stream.connected.value).toBe(true)
     expect(stream.errorMessage.value).toBe('同步任务实时流返回错误')
+  })
+
+  it('降级查询业务失败不把错误包络写入任务', async () => {
+    vi.stubGlobal('EventSource', undefined)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: 500,
+            message: '同步任务读取失败，请稍后重试',
+            data: null,
+          }),
+        ),
+      ),
+    )
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await flushPromises()
+    expect(stream.task.value).toBeNull()
+    expect(stream.loading.value).toBe(false)
+    expect(stream.errorMessage.value).toBe('同步任务读取失败，请稍后重试')
+    expect(MockEventSource.instances).toHaveLength(0)
+  })
+
+  it('降级轮询失败保留已有快照，后续成功清除错误', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 500 }), {
+          status: 503,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 200, data: { ...snapshot.task, status: 2 } })),
+      )
+    vi.stubGlobal('fetch', fetch)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(stream.task.value?.id).toBe(8)
+    expect(stream.task.value?.status).toBe(1)
+    expect(stream.errorMessage.value).toContain('服务器处理请求失败')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(stream.terminal.value).toBe(true)
+    expect(stream.errorMessage.value).toBe('')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('停止降级读取后，飞行请求不能回写或重新建立定时器', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    let resolve!: (value: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise((done) => {
+            resolve = done
+          }),
+      ),
+    )
+    const stream = withSetup(() => useSyncTaskStream(8))
+    stream.disconnect()
+    resolve(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+    await flushPromises()
+    expect(stream.task.value).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('降级请求未结束时不重叠发起下一轮读取', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    let resolve!: (value: Response) => void
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+      .mockImplementation(
+        () =>
+          new Promise((done) => {
+            resolve = done
+          }),
+      )
+    vi.stubGlobal('fetch', fetch)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    resolve(new Response(JSON.stringify({ code: 200, data: { ...snapshot.task, status: 2 } })))
+    await flushPromises()
+    expect(stream.terminal.value).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

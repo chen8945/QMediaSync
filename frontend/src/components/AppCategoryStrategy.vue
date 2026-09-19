@@ -246,28 +246,31 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, useTemplateRef } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
-import { SERVER_URL } from '@/const'
+import {
+  deleteScrapeCategory,
+  fetchScrapeCategories,
+  fetchScrapeCountries,
+  fetchScrapeGenres,
+  fetchScrapeLanguages,
+  saveScrapeCategory,
+  scrapeCategoryPublicMessages,
+  type ScrapeCategory,
+  type ScrapeCategoryType,
+} from '@/api/scrapeCategories'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { useHttpClient } from '@/http/client'
 import { Plus, Edit, Delete, Folder } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 // 响应式数据
-const activeTab = ref('movie')
+const activeTab = ref<ScrapeCategoryType>('movie')
 const dialogVisible = ref(false)
 const dialogType = ref<'add' | 'edit'>('add')
 const editingId = ref<number | null>(null)
 const editingType = ref<'movie' | 'tvshow'>('movie')
 const formRef = useTemplateRef<FormInstance>('formRef')
 const http = useHttpClient()
-
-interface category {
-  id: number
-  name: string
-  language_array?: string[]
-  country_array?: string[]
-  genre_id_array: number[]
-  created_at?: number
-}
 
 // 时间格式化函数
 const formatDateTime = (timestamp: number) => {
@@ -282,8 +285,8 @@ const formatDateTime = (timestamp: number) => {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 
-const movieCategories = ref<category[]>([])
-const tvshowCategories = ref<category[]>([])
+const movieCategories = ref<ScrapeCategory[]>([])
+const tvshowCategories = ref<ScrapeCategory[]>([])
 
 // 语言、国家和类别数据
 const languages = ref<{ code: string; name: string }[]>([])
@@ -334,80 +337,67 @@ const handleTabChange = () => {
   loadCategories()
 }
 
+const reportError = (error: unknown, fallbackMessage: string, refreshAfterSuccess = false) => {
+  const messagePrefix = refreshAfterSuccess ? '操作已成功，但刷新分类列表失败' : undefined
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage: messagePrefix ?? fallbackMessage,
+    publicMessages: scrapeCategoryPublicMessages,
+    messagePrefix,
+  })
+}
+
 const loadLanguages = async () => {
   try {
-    const response = await http.get(`${SERVER_URL}/scrape/language`)
-    if (response?.data?.code === 200) {
-      languages.value = response.data.data || []
-    }
+    languages.value = await fetchScrapeLanguages(http)
   } catch (error) {
-    console.error('加载语言列表失败：', error)
-    ElMessage.error('加载语言列表失败')
+    reportError(error, '加载语言列表失败')
   }
 }
 
 const loadCountries = async () => {
   try {
-    const response = await http.get(`${SERVER_URL}/scrape/countries`)
-    if (response?.data?.code === 200) {
-      countries.value = response.data.data || []
-    }
+    countries.value = await fetchScrapeCountries(http)
   } catch (error) {
-    console.error('加载国家列表失败：', error)
-    ElMessage.error('加载国家列表失败')
+    reportError(error, '加载国家列表失败')
   }
 }
 
 const loadMovieGenres = async () => {
   try {
-    const response = await http.get(`${SERVER_URL}/scrape/movie-genre`)
-    if (response?.data?.code === 200) {
-      movieGenres.value = response.data.data || []
-    }
+    movieGenres.value = await fetchScrapeGenres(http, 'movie')
   } catch (error) {
-    console.error('加载电影类别失败：', error)
-    ElMessage.error('加载电影类别失败')
+    reportError(error, '加载电影类别失败')
   }
 }
 
 const loadTvshowGenres = async () => {
   try {
-    const response = await http.get(`${SERVER_URL}/scrape/tvshow-genre`)
-    if (response?.data?.code === 200) {
-      tvshowGenres.value = response.data.data || []
-    }
+    tvshowGenres.value = await fetchScrapeGenres(http, 'tvshow')
   } catch (error) {
-    console.error('加载电视剧类别失败：', error)
-    ElMessage.error('加载电视剧类别失败')
+    reportError(error, '加载电视剧类别失败')
   }
 }
 
-const loadCategories = async () => {
+const loadCategories = async (refreshAfterSuccess = false) => {
   try {
     const type = activeTab.value
-    const response = await http.get(`${SERVER_URL}/scrape/${type}-categories`)
-    if (response?.data?.code === 200) {
-      // 转换数据结构以匹配表格展示需求
-      const categories = response.data.data.map((item: category) => ({
-        id: item.id,
-        name: item.name,
-        language_array: item.language_array || [],
-        country_array: item.country_array || [],
-        genre_id_array: item.genre_id_array || [],
-        created_at: item.created_at,
-      }))
+    // 按发起请求时的分类类型写回，避免切换页签后写入另一类列表。
+    const categories = (await fetchScrapeCategories(http, type)).map((item) => ({
+      id: item.id,
+      name: item.name,
+      language_array: item.language_array || [],
+      country_array: item.country_array || [],
+      genre_id_array: item.genre_id_array || [],
+      created_at: item.created_at,
+    }))
 
-      if (type === 'movie') {
-        movieCategories.value = categories
-      } else {
-        tvshowCategories.value = categories
-      }
+    if (type === 'movie') {
+      movieCategories.value = categories
     } else {
-      ElMessage.error(`加载分类列表失败：${response?.data?.msg || '未知错误'}`)
+      tvshowCategories.value = categories
     }
   } catch (error) {
-    console.error('加载分类列表异常：', error)
-    ElMessage.error('加载分类列表异常')
+    reportError(error, '加载分类列表失败', refreshAfterSuccess)
   }
 }
 
@@ -419,7 +409,7 @@ const handleAdd = (type: 'movie' | 'tvshow') => {
   dialogVisible.value = true
 }
 
-const handleEdit = (type: 'movie' | 'tvshow', row: category) => {
+const handleEdit = (type: 'movie' | 'tvshow', row: ScrapeCategory) => {
   dialogType.value = 'edit'
   editingType.value = type
   editingId.value = row.id
@@ -446,17 +436,12 @@ const handleDelete = async (type: 'movie' | 'tvshow', id: number) => {
       type: 'warning',
     })
 
-    const response = await http.delete(`${SERVER_URL}/scrape/${type}-categories/${id}`)
-    if (response?.data?.code === 200) {
-      ElMessage.success('删除成功')
-      loadCategories()
-    } else {
-      ElMessage.error('删除失败：' + (response?.data?.msg || '未知错误'))
-    }
+    await deleteScrapeCategory(http, type, id)
+    ElMessage.success('删除成功')
+    await loadCategories(true)
   } catch (error: unknown) {
-    if (error !== 'cancel') {
-      console.error('删除分类失败：', error)
-      ElMessage.error('删除失败')
+    if (!isMessageBoxCancelError(error)) {
+      reportError(error, '删除分类失败')
     }
   }
 }
@@ -476,45 +461,29 @@ const handleDialogClose = () => {
 }
 
 const handleSubmit = async () => {
-  try {
-    // 验证表单
-    await formRef.value?.validate()
+  // 表单校验失败由字段自身展示，避免把校验对象作为请求错误处理。
+  if (!formRef.value || !(await formRef.value.validate().catch(() => false))) return
 
-    // 根据后端需要的数据结构格式化 payload
-    const payload: category = {
-      id: 0,
+  const action = dialogType.value === 'add' ? '添加' : '编辑'
+  try {
+    const payload: ScrapeCategory = {
+      id: dialogType.value === 'add' ? 0 : formData.id,
       name: formData.name,
       genre_id_array: formData.genres,
     }
 
-    // 根据类型添加不同的数组字段
     if (editingType.value === 'movie') {
       payload.language_array = formData.languages
     } else {
       payload.country_array = formData.languages
     }
 
-    let response
-    if (dialogType.value === 'add') {
-      response = await http.post(`${SERVER_URL}/scrape/${editingType.value}-categories`, payload)
-    } else {
-      payload.id = formData.id
-      response = await http.post(`${SERVER_URL}/scrape/${editingType.value}-categories`, payload)
-    }
-
-    if (response?.data?.code === 200) {
-      ElMessage.success(dialogType.value === 'add' ? '添加成功' : '编辑成功')
-      dialogVisible.value = false
-      loadCategories()
-    } else {
-      ElMessage.error(
-        `${dialogType.value === 'add' ? '添加失败' : '编辑失败'}：${response?.data?.msg || '未知错误'}`,
-      )
-    }
+    await saveScrapeCategory(http, editingType.value, payload)
+    ElMessage.success(`${action}成功`)
+    dialogVisible.value = false
+    await loadCategories(true)
   } catch (error: unknown) {
-    if (error !== false) {
-      console.error('提交表单失败：', error)
-    }
+    reportError(error, `${action}分类失败`)
   }
 }
 

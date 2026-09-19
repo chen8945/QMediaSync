@@ -84,7 +84,8 @@
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
-import { SERVER_URL } from '@/const'
+import { deleteSyncRecords, fetchSyncRecords, syncRecordPublicMessages } from '@/api/syncRecords'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
@@ -135,21 +136,6 @@ interface SyncRecord {
   created_strm: number
   downloaded_meta: number
   uploaded_meta: number
-  local_path: string
-  remote_path: string
-  fail_reason: string
-}
-
-interface ApiSyncRecord {
-  id: number
-  created_at: number
-  finish_at: number | null
-  status: number
-  sub_status: number
-  total: number
-  new_strm: number
-  new_meta: number
-  new_upload: number
   local_path: string
   remote_path: string
   fail_reason: string
@@ -404,6 +390,14 @@ function finishSyncRecordsQuerySwitchLoading() {
   }
 }
 
+const reportSyncRecordError = (error: unknown, fallbackMessage: string, isRead = false) => {
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage,
+    publicMessages: syncRecordPublicMessages,
+    messagePrefix: isRead ? fallbackMessage : undefined,
+  })
+}
+
 // 加载同步记录
 const loadSyncRecords = async () => {
   if (!isPageActive) {
@@ -421,45 +415,41 @@ const loadSyncRecords = async () => {
   try {
     await runRefresh(async () => {
       try {
-        const response = await http.get(`${SERVER_URL}/sync/records`, {
-          params: {
-            page: currentPage.value,
-            page_size: pageSize.value,
-          },
+        const data = await fetchSyncRecords(http, {
+          page: currentPage.value,
+          page_size: pageSize.value,
         })
 
         if (!syncRecordsRequestGate.isCurrent(requestId)) {
           return
         }
 
-        if (response?.data.code === 200) {
-          const rows = (response.data.data.records || []).map((item: ApiSyncRecord) => ({
-            id: item.id,
-            start_time: item.created_at,
-            end_time: item.finish_at,
-            status: item.status as 0 | 1 | 2 | 3,
-            sub_status: item.sub_status as 0 | 1 | 2 | 3 | 4,
-            processed_files: item.total,
-            created_strm: item.new_strm,
-            downloaded_meta: item.new_meta || 0,
-            uploaded_meta: item.new_upload || 0,
-            local_path: item.local_path || '',
-            remote_path: item.remote_path || '',
-            fail_reason: item.fail_reason || '',
-          }))
+        const rows = (data.records || []).map((item) => ({
+          id: item.id,
+          start_time: item.created_at,
+          end_time: item.finish_at,
+          status: item.status as 0 | 1 | 2 | 3,
+          sub_status: item.sub_status as 0 | 1 | 2 | 3 | 4,
+          processed_files: item.total,
+          created_strm: item.new_strm,
+          downloaded_meta: item.new_meta || 0,
+          uploaded_meta: item.new_upload || 0,
+          local_path: item.local_path || '',
+          remote_path: item.remote_path || '',
+          fail_reason: item.fail_reason || '',
+        }))
 
-          syncRecords.value = mergeStableList(syncRecords.value, rows, (row) => row.id)
-          pageStateStore.setExpandedRowKeys(
-            'sync-records',
-            retainExistingKeys(pageState.expandedRowKeys, syncRecords.value, (row) => row.id),
-          )
-          total.value = response.data.data.total || 0
-        }
+        syncRecords.value = mergeStableList(syncRecords.value, rows, (row) => row.id)
+        pageStateStore.setExpandedRowKeys(
+          'sync-records',
+          retainExistingKeys(pageState.expandedRowKeys, syncRecords.value, (row) => row.id),
+        )
+        total.value = data.total || 0
       } catch (error) {
         if (!syncRecordsRequestGate.isCurrent(requestId)) {
           return
         }
-        console.error('加载同步记录错误：', error)
+        reportSyncRecordError(error, '加载同步记录失败', true)
       }
     })
   } finally {
@@ -470,43 +460,6 @@ const loadSyncRecords = async () => {
     finishSyncRecordsQuerySwitchLoading()
   }
 }
-
-// // 手动开始同步
-// const startManualSync = async () => {
-//   try {
-//     syncLoading.value = true
-//     syncStatus.value = null
-
-//     const response = await http.post(`${SERVER_URL}/sync/start`)
-
-//     if (response?.data.code === 200) {
-//       syncStatus.value = {
-//         title: '同步任务已启动',
-//         type: 'success',
-//         description: '手动同步任务已成功启动，请稍后查看同步记录',
-//       }
-//       // 重新加载记录
-//       await loadSyncRecords()
-//       // 启动自动刷新
-//       startAutoRefresh()
-//     } else {
-//       syncStatus.value = {
-//         title: '启动同步失败',
-//         type: 'error',
-//         description: response?.data.message || '启动同步任务失败，请重试',
-//       }
-//     }
-//   } catch (error) {
-//     console.error('启动同步错误：', error)
-//     syncStatus.value = {
-//       title: '启动同步出错',
-//       type: 'error',
-//       description: '启动同步过程中发生错误，请检查网络连接',
-//     }
-//   } finally {
-//     syncLoading.value = false
-//   }
-// }
 
 // 查看任务详情
 const viewTaskDetail = (taskId: number) => {
@@ -606,32 +559,18 @@ const deleteRecord = async (id: number) => {
     }
 
     deleteLoading.value = true
-    const response = await http.post(
-      `${SERVER_URL}/sync/delete-records`,
-      {
-        ids: [id],
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      },
-    )
+    await deleteSyncRecords(http, [id])
     if (!isDeleteOperationContextCurrent(operationContext, 'single')) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('删除成功')
-      await loadSyncRecords()
-    } else {
-      ElMessage.error(response?.data.message || '删除失败')
-    }
-  } catch {
+    ElMessage.success('删除成功')
+    await loadSyncRecords()
+  } catch (error) {
     if (!isDeleteOperationContextCurrent(operationContext, 'single')) {
       return
     }
-    ElMessage.error('删除出错')
+    reportSyncRecordError(error, '删除失败')
   } finally {
     if (isDeleteOperationContextCurrent(operationContext, 'single')) {
       deleteLoading.value = false
@@ -663,35 +602,20 @@ const batchDeleteRecords = async () => {
     }
 
     batchDeleteLoading.value = true
-    const response = await http.post(
-      `${SERVER_URL}/sync/delete-records`,
-      {
-        ids,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        timeout: 60000, // 1 分钟超时
-      },
-    )
+    await deleteSyncRecords(http, ids, { batch: true })
     if (!isDeleteOperationContextCurrent(operationContext, 'batch')) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('批量删除成功')
-      selectedIds.value = []
-      await loadSyncRecords()
-    } else {
-      ElMessage.error(response?.data.message || '批量删除失败')
-    }
+    ElMessage.success('批量删除成功')
+    selectedIds.value = []
+    await loadSyncRecords()
   } catch (error) {
     if (!isDeleteOperationContextCurrent(operationContext, 'batch')) {
       return
     }
     if (!isMessageBoxCancelError(error)) {
-      ElMessage.error('批量删除出错')
+      reportSyncRecordError(error, '批量删除失败')
     }
   } finally {
     if (isDeleteOperationContextCurrent(operationContext, 'batch')) {

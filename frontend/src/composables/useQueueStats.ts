@@ -1,22 +1,9 @@
 import { onMounted, onUnmounted, ref } from 'vue'
-import { SERVER_URL } from '@/const'
+import { fetchQueueStats, type QueueStats } from '@/api/dashboard'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
 
-export interface QueueStats {
-  avg_response_time_ms: number
-  is_throttled: boolean
-  last_throttle_time: string | null
-  qph_count: number
-  qpm_count: number
-  qps_count: number
-  throttle_recover_time: string
-  throttle_wait_time: string
-  throttled_count: number
-  throttled_elapsed_time: string
-  throttled_remaining_time: string
-  time_window_seconds: number
-  total_requests: number
-}
+export type { QueueStats } from '@/api/dashboard'
 
 export function useQueueStats(pollingInterval = 3000) {
   const http = useHttpClient()
@@ -37,19 +24,12 @@ export function useQueueStats(pollingInterval = 3000) {
 
     try {
       queueStatsLoading.value = !hasLoaded.value
-      const response = await http.get(`${SERVER_URL}/115/queue/stats`)
-      if (response && response.data && response.data.code === 200) {
-        queueStats.value = response.data.data
-        hasLoaded.value = true
-        currentPollingInterval = pollingInterval
-      } else if (!hasLoaded.value) {
-        queueStats.value = null
-        currentPollingInterval = Math.min(currentPollingInterval * 2, maxPollingInterval)
-      } else {
-        currentPollingInterval = Math.min(currentPollingInterval * 2, maxPollingInterval)
-      }
+      queueStats.value = await fetchQueueStats(http)
+      hasLoaded.value = true
+      currentPollingInterval = pollingInterval
     } catch (error) {
-      console.error('加载 115 接口请求统计错误：', error)
+      const parsed = parseHttpError(error, { fallbackMessage: '加载 115 接口请求统计失败' })
+      if (parsed.shouldNotify) console.error('加载 115 接口请求统计错误：', parsed.diagnostics)
       if (!hasLoaded.value) {
         queueStats.value = null
       }

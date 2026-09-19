@@ -6,6 +6,8 @@ type EventListener = (event: MessageEvent<string>) => void
 
 class MockEventSource {
   static instances: MockEventSource[] = []
+  static readonly CLOSED = 2
+  readyState = 0
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   private readonly listeners = new Map<string, Set<EventListener>>()
@@ -61,6 +63,22 @@ describe('global realtime EventSource', () => {
     unsubscribe()
     expect(source.closed).toBe(true)
     expect(realtime.realtimeActive.value).toBe(false)
+  })
+
+  it('浏览器放弃重连（CLOSED）时进入已断开状态并释放连接，下一次订阅重建', async () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const realtime = await import('@/composables/useRealtimeEvents')
+    realtime.on('upload_queue_changed', vi.fn())
+    const source = MockEventSource.instances[0]
+
+    source.readyState = MockEventSource.CLOSED
+    source.onerror?.()
+    expect(source.closed).toBe(true)
+    expect(realtime.realtimeConnectionState.value).toBe('disconnected')
+
+    realtime.on('download_queue_changed', vi.fn())
+    expect(MockEventSource.instances).toHaveLength(2)
+    expect(realtime.realtimeConnectionState.value).toBe('connecting')
   })
 
   it('keeps listener lifecycle without creating a source when EventSource is unsupported', async () => {

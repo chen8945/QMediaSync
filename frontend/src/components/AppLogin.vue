@@ -4,12 +4,13 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import LoginForm, { type LoginSubmitPayload } from '@/components/auth/LoginForm.vue'
 import InitialAdminSetupForm, {
   type InitialAdminSubmitPayload,
 } from '@/components/auth/InitialAdminSetupForm.vue'
-import { createInitialAdmin, fetchSetupStatus } from '@/composables/useInitialAdminSetup'
+import { createInitialAdmin, fetchSetupStatus, initialAdminErrorOptions, login } from '@/api/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -20,29 +21,13 @@ const setupStatusLoaded = shallowRef(false)
 
 const subtitle = computed(() => (setupRequired.value ? '创建管理员' : '系统登录'))
 
-const getErrorMessage = (error: unknown, fallback: string) => {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-  if (error && typeof error === 'object' && 'response' in error) {
-    const response = (error as { response?: { data?: { message?: string } } }).response
-    if (response?.data?.message) {
-      return response.data.message
-    }
-  }
-  return fallback
-}
-
 const loadSetupStatus = async () => {
-  if (!http) {
-    setupStatusLoaded.value = true
-    return
-  }
   try {
     const status = await fetchSetupStatus(http)
     setupRequired.value = status.required
   } catch (error) {
-    console.error('查询初始化状态失败：', error)
+    const failure = parseHttpError(error)
+    if (failure.shouldNotify) console.error('查询初始化状态失败：', failure.diagnostics)
     setupRequired.value = false
   } finally {
     setupStatusLoaded.value = true
@@ -50,66 +35,44 @@ const loadSetupStatus = async () => {
 }
 
 const handleCreateInitialAdmin = async (payload: InitialAdminSubmitPayload) => {
-  if (loading.value || !http) return
+  if (loading.value) return
   loading.value = true
   try {
     await createInitialAdmin(http, payload)
     ElMessage.success('管理员创建成功，请登录')
     setupRequired.value = false
   } catch (error: unknown) {
-    console.error('创建管理员失败：', error)
-    ElMessage.error(getErrorMessage(error, '创建管理员失败，请检查网络连接'))
+    notifyHttpError(error, '创建管理员失败：', initialAdminErrorOptions)
   } finally {
     loading.value = false
   }
 }
 
 const handleLogin = async (payload: LoginSubmitPayload) => {
-  if (loading.value || !http) return
+  if (loading.value) return
 
   try {
     loading.value = true
-    // 使用 JSON 格式发送请求，以支持 rememberMe 参数
-    const response = await http.post(
-      `${SERVER_URL}/login`,
-      {
-        username: payload.username,
-        password: payload.password,
-        totp_code: payload.totp_code,
-        rememberMe: payload.rememberMe,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        skipAuthInvalidation: true,
-      },
-    )
-
-    if (response?.data.code === 200) {
-      const sessionResult = await authStore.refreshSession(http)
-      if (sessionResult.state === 'anonymous') {
-        ElMessage.error(
-          '登录会话未能建立，请允许本站 Cookie 后重试；若问题持续，请清除本站点数据或停用拦截扩展',
-        )
-        return
-      }
-      if (sessionResult.state === 'unavailable') {
-        ElMessage.error('登录会话验证失败，请检查网络连接或稍后重试')
-        return
-      }
-
-      ElMessage.success('登录成功')
-
-      // 跳转到首页或原本要访问的页面
-      const redirect = router.currentRoute.value.query.redirect as string
-      router.replace(redirect || '/')
-    } else {
-      ElMessage.error(response?.data.message || '登录失败')
+    await login(http, payload)
+    const sessionResult = await authStore.refreshSession(http)
+    if (sessionResult.state === 'anonymous') {
+      ElMessage.error(
+        '登录会话未能建立，请允许本站 Cookie 后重试；若问题持续，请清除本站点数据或停用拦截扩展',
+      )
+      return
     }
+    if (sessionResult.state === 'unavailable') {
+      if (sessionResult.error?.shouldNotify) ElMessage.error(sessionResult.error.message)
+      return
+    }
+
+    ElMessage.success('登录成功')
+
+    // 跳转到首页或原本要访问的页面
+    const redirect = router.currentRoute.value.query.redirect as string
+    router.replace(redirect || '/')
   } catch (error: unknown) {
-    console.error('登录错误：', error)
-    ElMessage.error(getErrorMessage(error, '登录失败，请检查网络连接'))
+    notifyHttpError(error, '登录错误：', { fallbackMessage: '登录失败' })
   } finally {
     loading.value = false
   }

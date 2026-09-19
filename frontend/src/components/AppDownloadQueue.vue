@@ -328,10 +328,20 @@ import QueueTaskExpandButton from '@/components/queue/QueueTaskExpandButton.vue'
 import QueueTaskDetails from '@/components/queue/QueueTaskDetails.vue'
 import { ElMessage, type TableInstance } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
+import {
+  fetchDownloadQueue,
+  fetchDownloadQueueStatus,
+  clearPendingDownloadQueue,
+  clearCompletedDownloadQueue,
+  retryFailedDownloadQueue,
+  pauseDownloadQueue,
+  resumeDownloadQueue,
+  type DownloadTask,
+} from '@/api/downloadQueue'
+import { parseHttpError } from '@/http/errors'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useQueueMutationContext } from '@/composables/useQueueMutationContext'
-import { useQueueMutations } from '@/composables/useQueueMutations'
+import { useQueueMutations, type QueueSnapshotResult } from '@/composables/useQueueMutations'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useHttpClient } from '@/http/client'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
@@ -360,27 +370,6 @@ import {
   removePendingQueueRows,
   type QueueStatusSnapshot,
 } from '@/utils/queueStatusUtils'
-
-interface DownloadTask {
-  id: string
-  source: string
-  file_name: string
-  local_full_path: string
-  remote_path: string
-  remote_full_path: string
-  status: 0 | 1 | 2 | 3 | 4
-  size: number
-  start_time: number
-  end_time: number
-  remote_file_id: string
-  remote_pick_code?: string
-  remote_sha1?: string
-  remote_md5?: string
-  error: string
-  source_type: string
-  retry_count: number
-  last_retry_time: number
-}
 
 const http = useHttpClient()
 
@@ -431,7 +420,7 @@ const hasActiveQueueWork = computed(
 // 定时器
 const refreshTimer = ref<number | null>(null)
 const pendingQueueDataRefresh = ref(false)
-let queueDataRefreshPromise: Promise<boolean> | null = null
+let queueDataRefreshPromise: Promise<QueueSnapshotResult> | null = null
 let isPageActive = false
 const queueDataRequestGate = createActiveRequestGate(() => isPageActive)
 const queueStatusRequestGate = createActiveRequestGate(() => isPageActive)
@@ -494,65 +483,64 @@ const pruneExpandedRowsAfterLoad = () => {
 }
 
 // 加载队列数据
-const loadQueueData = async (): Promise<boolean> => {
+const loadQueueData = async (): Promise<QueueSnapshotResult> => {
   if (!isPageActive) {
-    return false
+    return { status: 'stale' }
   }
 
   const requestId = queueDataRequestGate.next()
 
   if (isRefreshing.value) {
     pendingQueueDataRefresh.value = true
-    return queueDataRefreshPromise ?? false
+    return queueDataRefreshPromise ?? { status: 'stale' }
   }
 
   const refreshPromise = (async () => {
-    let loaded = false
+    let loaded: QueueSnapshotResult = { status: 'stale' }
     try {
-      const result = await runRefresh(async () => {
+      const result = await runRefresh<QueueSnapshotResult>(async () => {
         try {
-          const response = await http.get(`${SERVER_URL}/download/queue`, {
-            params: {
-              page: currentPage.value,
-              page_size: pageSize.value,
-              status: statusFilter.value,
-            },
+          const data = await fetchDownloadQueue(http, {
+            page: currentPage.value,
+            page_size: pageSize.value,
+            status: statusFilter.value,
           })
 
           if (!queueDataRequestGate.isCurrent(requestId)) {
-            return false
+            return { status: 'stale' }
           }
 
-          if (response?.data.code === 200) {
-            const rows = response.data.data.list || []
-            queueData.value = mergeStableList(queueData.value, rows, (row) => row.id)
-            total.value = response.data.data.total
-            downloading.value = response.data.data.downloading || 0
-            queueStatusSnapshot.value = normalizeQueueStatusSnapshot(
-              response.data.data.queue_status,
-              queueStatusSnapshot.value.running,
-            )
-            pruneExpandedRowsAfterLoad()
-            if (hasActiveQueueWork.value) {
-              startAutoRefresh()
-            } else {
-              stopAutoRefresh()
-            }
-            return true
+          const rows = data.list || []
+          queueData.value = mergeStableList(queueData.value, rows, (row) => row.id)
+          total.value = data.total
+          downloading.value = data.downloading || 0
+          queueStatusSnapshot.value = normalizeQueueStatusSnapshot(
+            data.queue_status,
+            queueStatusSnapshot.value.running,
+          )
+          pruneExpandedRowsAfterLoad()
+          if (hasActiveQueueWork.value) {
+            startAutoRefresh()
           } else {
-            ElMessage.error('获取下载队列数据失败')
-            return false
+            stopAutoRefresh()
           }
+          return { status: 'loaded' }
         } catch (error) {
           if (!queueDataRequestGate.isCurrent(requestId)) {
-            return false
+            return { status: 'stale' }
           }
-          console.error('加载下载队列数据错误：', error)
-          ElMessage.error('获取下载队列数据失败')
-          return false
+          const parsed = parseHttpError(error, {
+            fallbackMessage: '获取下载队列数据失败',
+          })
+          // 操作后的刷新由协调器报告，避免先报加载失败再重复报快照失败。
+          if (parsed.shouldNotify && !isReloadingQueueSnapshot.value) {
+            console.error('获取下载队列数据失败', parsed.diagnostics)
+            ElMessage.error(parsed.message)
+          }
+          return { status: 'failed', error: parsed }
         }
       })
-      loaded = result === true
+      loaded = result ?? { status: 'stale' }
     } finally {
       if (pendingQueueDataRefresh.value && isPageActive) {
         pendingQueueDataRefresh.value = false
@@ -576,41 +564,41 @@ const refreshQueue = () => {
 }
 
 // 获取队列状态
-const loadQueueStatus = async () => {
+const loadQueueStatus = async (): Promise<QueueSnapshotResult> => {
   const requestId = queueStatusRequestGate.next()
 
   try {
-    const response = await http.get(`${SERVER_URL}/download/queue/status`)
+    const data = await fetchDownloadQueueStatus(http)
 
     if (!queueStatusRequestGate.isCurrent(requestId)) {
-      return false
+      return { status: 'stale' }
     }
 
-    if (response?.data.code === 200) {
-      queueStatusSnapshot.value = normalizeQueueStatusSnapshot(
-        response.data.data,
-        queueStatusSnapshot.value.running,
-      )
-    } else {
-      console.error('获取队列状态失败：', response?.data.message)
-      return false
-    }
+    queueStatusSnapshot.value = normalizeQueueStatusSnapshot(
+      data,
+      queueStatusSnapshot.value.running,
+    )
+    return { status: 'loaded' }
   } catch (error) {
     if (!queueStatusRequestGate.isCurrent(requestId)) {
-      return false
+      return { status: 'stale' }
     }
-    console.error('获取队列状态错误：', error)
-    return false
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '获取下载队列状态失败',
+    })
+    if (parsed.shouldNotify && !isReloadingQueueSnapshot.value) {
+      console.error('获取下载队列状态失败', parsed.diagnostics)
+    }
+    return { status: 'failed', error: parsed }
   }
-  return queueStatusRequestGate.isCurrent(requestId)
 }
 
 const {
   isQueueMutationPending,
+  isReloadingQueueSnapshot,
   clearQueue: runClearQueue,
   runMutation,
 } = useQueueMutations({
-  post: (endpoint) => http.post(endpoint),
   reloadQueue: loadQueueData,
   reloadQueueStatus: loadQueueStatus,
   isContextCurrent: isQueueMutationContextCurrent,
@@ -631,44 +619,39 @@ const {
 
 const clearQueue = async () =>
   runClearQueue({
-    endpoint: `${SERVER_URL}/download/queue/clear-pending`,
+    execute: () => clearPendingDownloadQueue(http),
     confirm: { message: '只能清空所有等待下载的数据，此操作不可恢复，是否继续？' },
     successMessage: '队列已清空',
-    businessErrorMessage: () => '清空队列失败',
     requestErrorMessage: '清空队列失败',
   })
 
 const clearSuccessAndFailedTasks = () =>
   runMutation({
-    endpoint: `${SERVER_URL}/download/queue/clear-success-failed`,
+    execute: () => clearCompletedDownloadQueue(http),
     confirm: { message: '只能清空所有已完成和失败的数据，此操作不可恢复，是否继续？' },
     successMessage: '队列已清空',
-    businessErrorMessage: (message) => `清空队列失败：${message || ''}`,
     requestErrorMessage: '清空队列失败',
   })
 
 const retryFailedTasks = () =>
   runMutation({
-    endpoint: `${SERVER_URL}/download/queue/retry-failed`,
+    execute: () => retryFailedDownloadQueue(http),
     confirm: { message: '是否重试所有失败任务？' },
     successMessage: '失败任务已重新加入队列',
-    businessErrorMessage: (message) => message || '重试失败任务时出错',
     requestErrorMessage: '重试失败任务时出错',
   })
 
 const pauseAllTasks = () =>
   runMutation({
-    endpoint: `${SERVER_URL}/download/queue/stop`,
+    execute: () => pauseDownloadQueue(http),
     successMessage: '已暂停所有任务',
-    businessErrorMessage: (message) => `暂停所有任务失败：${message || ''}`,
     requestErrorMessage: '暂停所有任务失败',
   })
 
 const resumeAllTasks = () =>
   runMutation({
-    endpoint: `${SERVER_URL}/download/queue/start`,
+    execute: () => resumeDownloadQueue(http),
     successMessage: '已恢复所有任务',
-    businessErrorMessage: (message) => `恢复所有任务失败：${message || ''}`,
     requestErrorMessage: '恢复所有任务失败',
   })
 

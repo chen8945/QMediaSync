@@ -12,7 +12,7 @@ import (
 func ListUserSessions(c *gin.Context) {
 	user, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 	currentSessionID := ""
@@ -34,7 +34,7 @@ func ListUserSessions(c *gin.Context) {
 func RevokeUserSessionAction(c *gin.Context) {
 	user, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 	sessionID := c.Param("session_id")
@@ -52,7 +52,7 @@ func RevokeUserSessionAction(c *gin.Context) {
 func RevokeOtherUserSessionsAction(c *gin.Context) {
 	user, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 	currentSessionID := ""

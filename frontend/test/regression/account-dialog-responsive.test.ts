@@ -184,15 +184,6 @@ describe('115 授权流程生命周期', () => {
     )
     expect(mismatchBlock).toContain('return')
   })
-
-  test('取消授权会话会校验接口业务码后再清理暂存', () => {
-    const cancelBlock = cloudAccountsSource.slice(
-      cloudAccountsSource.indexOf('const cancelAuthorizationSession = async'),
-      cloudAccountsSource.indexOf('const cancelAndClearPendingAuthorization'),
-    )
-    expect(cancelBlock).toContain('const response = await http.post')
-    expect(cancelBlock).toContain('return response?.data?.code === 200')
-  })
 })
 
 describe('首页操作区样式隔离', () => {

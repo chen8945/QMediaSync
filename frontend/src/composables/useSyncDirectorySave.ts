@@ -1,29 +1,19 @@
 import {
   saveSyncPathAggregate,
+  syncPathPublicMessages,
+  syncPathFieldErrors,
+  syncPathSaveWarning,
   type SaveSyncPathPayload,
   type SaveSyncPathResponseData,
   type SyncPathFieldError,
 } from '@/api/syncPaths'
-import type { AxiosError, AxiosInstance } from 'axios'
+import type { AxiosInstance } from 'axios'
+import { parseHttpError } from '@/http/errors'
 import { readonly, ref } from 'vue'
 
-interface APIEnvelope<T> {
-  code: number
-  message: string
-  data: T
-}
-
-interface SaveErrorData {
-  error_code?: string
-  field_errors?: SyncPathFieldError[]
-}
-
 export function useSyncDirectorySave(http: AxiosInstance) {
-  const saving = ref(false)
   const errorMessage = ref('')
-  const errorCode = ref('')
   const fieldErrors = ref<SyncPathFieldError[]>([])
-  const warnings = ref<string[]>([])
 
   async function save(
     id: number,
@@ -31,31 +21,21 @@ export function useSyncDirectorySave(http: AxiosInstance) {
     idempotencyKey: string,
   ): Promise<SaveSyncPathResponseData | null> {
     errorMessage.value = ''
-    errorCode.value = ''
     fieldErrors.value = []
-    warnings.value = []
-    saving.value = true
     try {
-      const response = await saveSyncPathAggregate(http, id, payload, idempotencyKey)
-      const envelope = response.data as APIEnvelope<SaveSyncPathResponseData | SaveErrorData>
-      if (envelope.code !== 200) {
-        const data = envelope.data as SaveErrorData
-        errorMessage.value = envelope.message || '保存同步目录失败'
-        errorCode.value = data?.error_code || ''
-        fieldErrors.value = data?.field_errors || []
-        return null
-      }
-      const data = envelope.data as SaveSyncPathResponseData
-      warnings.value = data.warnings || []
-      return data
+      const data = await saveSyncPathAggregate(http, id, payload, idempotencyKey)
+      return { ...data, warnings: data.warnings.map(syncPathSaveWarning) }
     } catch (error) {
-      const response = (error as AxiosError<APIEnvelope<SaveErrorData>>).response?.data
-      errorMessage.value = response?.message || '保存同步目录失败'
-      errorCode.value = response?.data?.error_code || ''
-      fieldErrors.value = response?.data?.field_errors || []
+      const failure = parseHttpError(error, {
+        publicMessages: syncPathPublicMessages,
+        fallbackMessage: '保存同步目录失败',
+      })
+      if (failure.shouldNotify) {
+        errorMessage.value = failure.message
+        fieldErrors.value = syncPathFieldErrors(failure)
+        console.error('保存同步目录失败：', failure.diagnostics)
+      }
       return null
-    } finally {
-      saving.value = false
     }
   }
 
@@ -74,12 +54,8 @@ export function useSyncDirectorySave(http: AxiosInstance) {
   }
 
   return {
-    saving: readonly(saving),
     errorMessage: readonly(errorMessage),
-    errorCode: readonly(errorCode),
     fieldErrors: readonly(fieldErrors),
-    warnings: readonly(warnings),
-    save,
     saveAndRun,
   }
 }

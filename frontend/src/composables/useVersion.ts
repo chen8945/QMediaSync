@@ -1,12 +1,9 @@
 import { onMounted, ref } from 'vue'
-import { SERVER_URL } from '@/const'
+import { fetchSystemVersion, type SystemVersion } from '@/api/systemInfo'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
 
-export interface VersionInfo {
-  version: string
-  build_time?: number
-  date: string
-}
+export type VersionInfo = Pick<SystemVersion, 'version' | 'build_time' | 'date'>
 
 export function useVersion() {
   const http = useHttpClient()
@@ -16,14 +13,10 @@ export function useVersion() {
   const loadVersionInfo = async () => {
     try {
       versionLoading.value = true
-      const response = await http.get(`${SERVER_URL}/version`)
-      if (response && response.data) {
-        versionInfo.value = response.data
-      } else {
-        versionInfo.value = null
-      }
+      versionInfo.value = await fetchSystemVersion(http)
     } catch (error) {
-      console.error('加载系统版本信息错误：', error)
+      const failure = parseHttpError(error)
+      if (failure.shouldNotify) console.error('加载系统版本信息失败：', failure.diagnostics)
       versionInfo.value = null
     } finally {
       versionLoading.value = false

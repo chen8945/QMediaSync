@@ -139,8 +139,19 @@ func TestStrmWebhookAuthSupportsHeaderAndQueryAPIKey(t *testing.T) {
 		t.Fatalf("query API Key 响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 
+	w = performStrmWebhookRequest(t, router, "", "", payload)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"error_code":"AUTHENTICATION_REQUIRED"`) {
+		t.Fatalf("缺少 API Key 状态码 = %d，期望 401，body=%s", w.Code, w.Body.String())
+	}
+
+	// 纯空白的 Key（URL 编码空格经查询参数传入）与缺失同等处理。
+	w = performStrmWebhookRequest(t, router, "", "%20%20%20", payload)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"error_code":"AUTHENTICATION_REQUIRED"`) {
+		t.Fatalf("空白 API Key 状态码 = %d，期望 401，body=%s", w.Code, w.Body.String())
+	}
+
 	w = performStrmWebhookRequest(t, router, "bad-key", "", payload)
-	if w.Code != http.StatusUnauthorized {
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"error_code":"AUTHENTICATION_INVALID"`) {
 		t.Fatalf("无效 API Key 状态码 = %d，期望 401，body=%s", w.Code, w.Body.String())
 	}
 }

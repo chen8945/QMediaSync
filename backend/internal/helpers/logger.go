@@ -130,10 +130,15 @@ func (q *QLogger) Close() {
 	}
 }
 
-// RedactSensitiveLog 脱敏日志中的常见密钥、Token 和密码字段。
-func RedactSensitiveLog(input string) string {
+// RedactSensitiveLog 脱敏常见凭据字段；已知密钥也可用于清理路径或上游原文中的回显。
+func RedactSensitiveLog(input string, secrets ...string) string {
 	if input == "" {
 		return input
+	}
+	for _, secret := range secrets {
+		if secret != "" {
+			input = strings.ReplaceAll(input, secret, redactedLogValue)
+		}
 	}
 	output := sensitiveLogQuotedRegexp.ReplaceAllString(input, "${1}"+redactedLogValue+"${3}")
 	output = sensitiveLogMediaBrowserAuthRegexp.ReplaceAllString(output, "${1}"+redactedLogValue+"${3}")

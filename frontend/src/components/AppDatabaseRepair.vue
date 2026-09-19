@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { SERVER_URL } from '@/const'
+import { repairDatabase as requestDatabaseRepair } from '@/api/systemMaintenance'
 import { useHttpClient } from '@/http/client'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
@@ -11,15 +12,12 @@ const loading = ref(false)
 const repairDatabase = async () => {
   try {
     loading.value = true
-    const response = await http.post(`${SERVER_URL}/database/repair`)
-    if (response?.data.code === 200) {
-      ElMessage.success('数据库修复成功')
-    } else {
-      ElMessage.error(response?.data.message || '数据库修复失败')
-    }
+    await requestDatabaseRepair(http)
+    ElMessage.success('数据库修复成功')
   } catch (error) {
-    console.error('数据库修复失败：', error)
-    ElMessage.error('数据库修复失败，请重试')
+    notifyHttpError(error, '数据库修复失败：', {
+      fallbackMessage: '数据库修复失败',
+    })
   } finally {
     loading.value = false
   }

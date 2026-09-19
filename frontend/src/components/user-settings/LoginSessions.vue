@@ -3,34 +3,36 @@ import { onMounted, shallowRef } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Refresh } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import {
+  fetchLoginSessions,
+  revokeLoginSession,
+  revokeOtherLoginSessions,
+  userSettingsPublicMessages,
+  type LoginSession,
+} from '@/api/userSettings'
 import { formatDateTime } from '@/utils/timeUtils'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import PageHeader from '@/components/common/PageHeader.vue'
-
-interface LoginSession {
-  session_id: string
-  current: boolean
-  ip_address: string
-  user_agent: string
-  created_at: number
-  last_seen_at: number
-  expires_at: number
-}
 
 const http = useHttpClient()
 const sessions = shallowRef<LoginSession[]>([])
 const loading = shallowRef(false)
 
+const reportError = (error: unknown, fallbackMessage: string) => {
+  if (isMessageBoxCancelError(error)) return
+  notifyHttpError(error, fallbackMessage, {
+    publicMessages: userSettingsPublicMessages,
+    fallbackMessage,
+  })
+}
+
 const loadSessions = async () => {
   loading.value = true
   try {
-    const response = await http.get(`${SERVER_URL}/user/sessions`)
-    if (response?.data.code === 200) {
-      sessions.value = response.data.data || []
-    } else {
-      sessions.value = []
-      ElMessage.error(response?.data.message || '加载登录设备失败')
-    }
+    sessions.value = await fetchLoginSessions(http)
+  } catch (error) {
+    reportError(error, '加载登录设备失败')
   } finally {
     loading.value = false
   }
@@ -41,32 +43,32 @@ const revokeSession = async (session: LoginSession) => {
     ElMessage.warning('当前设备请使用退出登录')
     return
   }
-  await ElMessageBox.confirm('确定撤销该登录设备吗？', '撤销登录设备', {
-    type: 'warning',
-    confirmButtonText: '撤销',
-    cancelButtonText: '取消',
-  })
-  const response = await http.delete(`${SERVER_URL}/user/sessions/${session.session_id}`)
-  if (response?.data.code === 200) {
+  try {
+    await ElMessageBox.confirm('确定撤销该登录设备吗？', '撤销登录设备', {
+      type: 'warning',
+      confirmButtonText: '撤销',
+      cancelButtonText: '取消',
+    })
+    await revokeLoginSession(http, session.session_id)
     ElMessage.success('登录设备已撤销')
     await loadSessions()
-  } else {
-    ElMessage.error(response?.data.message || '撤销失败')
+  } catch (error) {
+    reportError(error, '撤销登录设备失败')
   }
 }
 
 const revokeOthers = async () => {
-  await ElMessageBox.confirm('确定撤销除当前设备外的所有登录设备吗？', '撤销其他设备', {
-    type: 'warning',
-    confirmButtonText: '撤销',
-    cancelButtonText: '取消',
-  })
-  const response = await http.post(`${SERVER_URL}/user/sessions/revoke-others`)
-  if (response?.data.code === 200) {
+  try {
+    await ElMessageBox.confirm('确定撤销除当前设备外的所有登录设备吗？', '撤销其他设备', {
+      type: 'warning',
+      confirmButtonText: '撤销',
+      cancelButtonText: '取消',
+    })
+    await revokeOtherLoginSessions(http)
     ElMessage.success('其他登录设备已撤销')
     await loadSessions()
-  } else {
-    ElMessage.error(response?.data.message || '撤销失败')
+  } catch (error) {
+    reportError(error, '撤销其他登录设备失败')
   }
 }
 

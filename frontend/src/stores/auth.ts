@@ -1,25 +1,17 @@
-import { SERVER_URL } from '@/const'
 import { closeAllRealtimeSources } from '@/composables/realtimeSources'
-import { isAxiosError, type AxiosInstance } from 'axios'
+import type { AxiosInstance } from 'axios'
+import {
+  fetchSession,
+  logout as requestLogout,
+  type SessionResponseData,
+  type User,
+  type UserSession,
+} from '@/api/auth'
+import { parseHttpError, type ParsedHttpError } from '@/http/errors'
 import { defineStore } from 'pinia'
 import { computed, shallowRef } from 'vue'
 
-export interface User {
-  id: string
-  username: string
-  email?: string
-  role?: string
-}
-
-export interface UserSession {
-  session_id: string
-  current?: boolean
-  ip_address?: string
-  user_agent?: string
-  created_at?: number
-  last_seen_at?: number
-  expires_at: number
-}
+export type { User, UserSession } from '@/api/auth'
 
 export interface LoginPayload {
   user: User
@@ -33,13 +25,7 @@ export type SessionRefreshState = 'authenticated' | 'anonymous' | 'unavailable'
 
 export type SessionRefreshResult = {
   state: SessionRefreshState
-}
-
-type SessionResponseData = {
-  authenticated: boolean
-  user?: User
-  csrf_token?: string
-  session?: UserSession
+  error?: ParsedHttpError
 }
 
 const clearLegacyWebStorage = () => {
@@ -56,11 +42,13 @@ export const useAuthStore = defineStore('auth', () => {
   const authStatus = shallowRef<AuthStatus>('checking')
   const isLoggingOut = shallowRef(false)
   const hasInitialized = shallowRef(false)
+  const sessionVersion = shallowRef(0)
   let bootstrapPromise: Promise<boolean> | null = null
 
   const isAuthenticated = computed(() => authStatus.value === 'authenticated' && !!user.value)
 
   const applySession = (payload: LoginPayload) => {
+    sessionVersion.value += 1
     user.value = payload.user
     session.value = payload.session || null
     csrfToken.value = payload.csrfToken
@@ -70,6 +58,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   const clearAuth = () => {
+    sessionVersion.value += 1
     closeAllRealtimeSources()
     user.value = null
     session.value = null
@@ -93,23 +82,21 @@ export const useAuthStore = defineStore('auth', () => {
   const refreshSession = async (http: AxiosInstance): Promise<SessionRefreshResult> => {
     authStatus.value = 'checking'
     try {
-      const response = await http.get(`${SERVER_URL}/session`, {
-        withCredentials: true,
-        skipAuthInvalidation: true,
-      })
-      if (response.data?.code === 200 && applySessionResponse(response.data.data)) {
+      const data = await fetchSession(http)
+      if (applySessionResponse(data)) {
         return { state: 'authenticated' }
       }
-      if (response.data?.code === 200 && response.data?.data?.authenticated === false) {
+      if (data?.authenticated === false) {
         clearAuth()
         return { state: 'anonymous' }
       }
-      console.error('恢复登录会话失败：', response.data)
+      throw new Error('会话响应不完整')
     } catch (error) {
-      console.error('恢复登录会话失败：', error)
+      const failure = parseHttpError(error, { fallbackMessage: '登录会话验证失败，请稍后重试' })
+      if (failure.shouldNotify) console.error('恢复登录会话失败：', failure.diagnostics)
+      clearAuth()
+      return { state: 'unavailable', error: failure }
     }
-    clearAuth()
-    return { state: 'unavailable' }
   }
 
   const bootstrapAuth = async (http: AxiosInstance) => {
@@ -141,13 +128,11 @@ export const useAuthStore = defineStore('auth', () => {
     if (isLoggingOut.value) return
     isLoggingOut.value = true
     try {
-      await http.post(`${SERVER_URL}/logout`, undefined, {
-        withCredentials: true,
-        skipAuthInvalidation: true,
-      })
+      await requestLogout(http)
     } catch (error) {
-      if (!isAxiosError(error) || error.response?.status !== 401) {
-        console.error('服务端退出登录失败：', error)
+      const failure = parseHttpError(error)
+      if (failure.shouldNotify && failure.kind !== 'unauthorized') {
+        console.error('服务端退出登录失败：', failure.diagnostics)
       }
     } finally {
       clearAuth()
@@ -170,6 +155,7 @@ export const useAuthStore = defineStore('auth', () => {
     authStatus,
     isLoggingOut,
     hasInitialized,
+    sessionVersion,
     isAuthenticated,
     bootstrapAuth,
     refreshSession,

@@ -328,7 +328,11 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
   ) => {
     const body = getLocalFunctionBody(source, 'loadQueueData')
 
-    assert.match(body, /runRefresh\s*\(/, `${messagePrefix} loadQueueData should use runRefresh`)
+    assert.match(
+      body,
+      /runRefresh(?:<QueueSnapshotResult>)?\s*\(/,
+      `${messagePrefix} loadQueueData should use runRefresh`,
+    )
     assert.match(
       body,
       /queueDataRequestGate\.next\s*\(\s*\)/,
@@ -351,34 +355,23 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      new RegExp(`${counterField}\\.value\\s*=\\s*response\\.data\\.data\\.${counterField}`),
+      new RegExp(`${counterField}\\.value\\s*=\\s*data\\.${counterField}`),
       `${messagePrefix} should update ${counterField} count from the response`,
-    )
-    assert.doesNotMatch(
-      body,
-      new RegExp(
-        `ElMessage\\.error\\s*\\(\\s*['"]${escapeRegExp(legacyFailureMessage)}['"]\\s*\\)`,
-      ),
-      `${messagePrefix} loadQueueData should not use the legacy failure message`,
-    )
-    assert.equal(
-      countMatches(
-        body,
-        new RegExp(
-          `ElMessage\\.error\\s*\\(\\s*['"]${escapeRegExp(failureMessage)}['"]\\s*\\)`,
-          'g',
-        ),
-      ),
-      2,
-      `${messagePrefix} loadQueueData should use the specified failure message for response and catch failures`,
     )
     assert.match(
       body,
-      new RegExp(
-        `catch\\s*\\([^)]*\\)\\s*{[\\s\\S]*?ElMessage\\.error\\s*\\(\\s*['"]${escapeRegExp(failureMessage)}['"]\\s*\\)`,
-      ),
-      `${messagePrefix} loadQueueData catch branch should use the specified failure message`,
+      new RegExp(`fallbackMessage:\\s*['"]${escapeRegExp(failureMessage)}['"]`),
+      `${messagePrefix} should retain its operation-specific fallback`,
     )
+    assert.match(body, /parseHttpError\(/, `${messagePrefix} should classify loader failures`)
+    assert.match(
+      body,
+      /parsed\.shouldNotify\s*&&\s*!isReloadingQueueSnapshot\.value/,
+      `${messagePrefix} should leave mutation snapshot notifications to the coordinator`,
+    )
+    assert.match(body, /ElMessage\.error\(parsed\.message\)/)
+    assert.match(body, /return\s*{\s*status:\s*'failed',\s*error:\s*parsed\s*}/)
+    assert.doesNotMatch(source, /http\.(get|post)\(/, `${messagePrefix} should use its domain API`)
   }
 
   const assertLoadQueueDataCoalescesInFlightChanges = (source, messagePrefix) => {
@@ -399,7 +392,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      /if\s*\(\s*!\s*isPageActive\s*\)\s*{\s*return\s+false\s*}/,
+      /if\s*\(\s*!\s*isPageActive\s*\)\s*{\s*return\s+{\s*status:\s*'stale'\s*}\s*}/,
       `${messagePrefix} loadQueueData should skip inactive pages before creating requests`,
     )
     assert.notEqual(requestIdIndex, -1, `${messagePrefix} loadQueueData should create a request id`)
@@ -415,7 +408,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     )
     assert.match(
       body,
-      /if\s*\(\s*isRefreshing\.value\s*\)\s*{[\s\S]*?pendingQueueDataRefresh\.value\s*=\s*true[\s\S]*?return\s+queueDataRefreshPromise\s*\?\?\s*false\s*}/,
+      /if\s*\(\s*isRefreshing\.value\s*\)\s*{[\s\S]*?pendingQueueDataRefresh\.value\s*=\s*true[\s\S]*?return\s+queueDataRefreshPromise\s*\?\?\s*{\s*status:\s*'stale'\s*}\s*}/,
       `${messagePrefix} loadQueueData should record one pending refresh while a request is in flight`,
     )
     assert.match(
@@ -510,7 +503,6 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     assert.match(mutationCoordinatorSource, /await\s+options\.reloadQueue\(\)/)
     assert.match(mutationCoordinatorSource, /clearPending\s*&&\s*options\.reloadQueueStatus/)
     assert.match(mutationCoordinatorSource, /isMessageBoxCancelError\(error\)/)
-    assert.match(mutationCoordinatorSource, /options\.onSnapshotError\?\./)
   }
 
   for (const queuePage of [

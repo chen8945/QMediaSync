@@ -415,6 +415,8 @@ Webhook 删除事件只删除本地索引和关联：
 
 如果已有任务运行，定时任务直接跳过，不排队堆积。手动全量同步遇到运行中的任务时，前端应提示稍后再试。
 
+Web 设置页的配置、媒体库、提取和同步请求由 `api/emby.ts` 封装并判断业务结果，轮询仍保留页面可见性及过期请求保护。请求的来源、CSRF 和传输错误使用 [公共错误分类](../engineering/frontend-development.md#api-响应与请求错误)，配置保存失败保留表单输入；状态快照中的动态 `last_error` 不直接展示底层错误内容，页面提示查看服务日志。
+
 程序启动并完成数据库迁移后，会清理上次进程异常退出遗留的 `is_running=true` 状态，避免全量、增量和 Webhook 单条同步长期被旧运行标记阻塞。该清理只复位 `is_running`、`sync_mode` 和 `started_at`，并写入 `last_error` 说明原因；不会推进或清空 `last_sync_time`、`last_full_sync_at`、`last_incremental_sync_at` 和 `last_saved_cursor_at`。
 
 ## 升级和迁移说明

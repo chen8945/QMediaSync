@@ -17,6 +17,12 @@
 
 该文件由 `frontend/src/http/client.ts` 使用。Cookie、请求头和服务端校验的安全契约见 [认证与浏览器会话](../../../docs/architecture/authentication-sessions.md)。
 
+## httpErrorNotification.ts
+
+HTTP 错误的展示层提示：
+
+- `notifyHttpError(error, label, options)`：调用 `parseHttpError`；`shouldNotify` 为真时以 `label` 输出筛选后的诊断并 `ElMessage.error`，`messagePrefix` 用于显示“操作：原因”，与最终消息相同时不重复拼接。返回解析结果。`http/` 本身不弹窗。
+
 ## cloudAccountUtils.ts
 
 云盘账号和 115 开放平台应用信息展示辅助：

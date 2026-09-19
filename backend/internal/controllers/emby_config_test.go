@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"qmediasync/internal/db"
@@ -26,6 +27,20 @@ func setupEmbyConfigControllerTest(t *testing.T) *gin.Engine {
 	r := gin.New()
 	r.PUT("/emby/config", UpdateEmbyConfig)
 	return r
+}
+
+func TestGetEmbyLibraries连接失败保留原因且隐藏密钥(t *testing.T) {
+	r := setupEmbyConfigControllerTest(t)
+	r.GET("/emby/libraries", GetEmbyLibraries)
+	server := httptest.NewServer(http.NotFoundHandler())
+	server.Close()
+	models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "private-emby-key"}
+	t.Cleanup(func() { models.GlobalEmbyConfig = nil })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/emby/libraries", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "查询 Emby 媒体库失败") || strings.Contains(w.Body.String(), "private-emby-key") {
+		t.Fatalf("应返回不含密钥的连接失败：%s", w.Body.String())
+	}
 }
 
 func TestUpdateEmbyConfig省略每日首次全量同步字段时保留现有配置(t *testing.T) {

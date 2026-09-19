@@ -302,10 +302,23 @@
 </template>
 
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageStats from '@/components/common/PageStats.vue'
 import { useHttpClient } from '@/http/client'
+import { accountPublicMessages, listAccounts } from '@/api/accounts'
+import { parseHttpError } from '@/http/errors'
+import { fetchSyncPaths, syncPathPublicMessages } from '@/api/syncPaths'
+import {
+  fetchScrapePaths,
+  deleteScrapePath,
+  startScrapePath,
+  stopScrapePath,
+  toggleScrapePathCron,
+  fetchScrapeSyncPathIDs,
+  saveScrapeSyncPathIDs,
+  scrapePathErrorOptions,
+  type ScrapePath as ScrapePathData,
+} from '@/api/scrapePaths'
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -339,22 +352,10 @@ import {
 } from '@/utils/directoryRunStatusUtils'
 import { sourceTypeTagMap, sourceTypeMap } from '@/utils/sourceTypeUtils'
 
-interface ScrapePath {
-  id?: number
-  source_type: string
-  account_id?: number
-  media_type: string
-  source_path: string
-  dest_path: string
-  scrape_type: string
-  rename_type: string
-  enable_category: boolean
-  created_at?: number
-  deleting: boolean
-  editing: boolean
-  scanning: boolean
-  enable_cron?: boolean
-  is_running: number
+interface ScrapePath extends ScrapePathData {
+  deleting?: boolean
+  editing?: boolean
+  scanning?: boolean
 }
 
 interface CloudAccount {
@@ -376,6 +377,13 @@ const syncPathOptions = ref<{ id: number; label: string }[]>([])
 const syncPathsLoading = ref(false)
 const saveSyncPathLoading = ref(false)
 const currentScrapePath = ref<ScrapePath | null>(null)
+
+const reportError = (error: unknown, fallbackMessage: string) => {
+  const failure = parseHttpError(error, { ...scrapePathErrorOptions, fallbackMessage })
+  if (!failure.shouldNotify) return
+  console.error(fallbackMessage, failure.diagnostics)
+  ElMessage.error(failure.message)
+}
 
 const runningCount = computed(() => pathes.value.filter((p) => p.is_running === 2).length)
 const waitingCount = computed(() => pathes.value.filter((p) => p.is_running === 1).length)
@@ -433,17 +441,9 @@ const getRenameTypeText = (renameType: string): string => {
 const loadPathes = async () => {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/scrape/pathes`)
-
-    if (response?.data.code === 200) {
-      pathes.value = response.data.data || []
-    } else {
-      ElMessage.error(response?.data.message || '加载刮削目录失败')
-      pathes.value = []
-    }
-  } catch {
-    console.error('加载刮削目录错误')
-    ElMessage.error('加载刮削目录失败')
+    pathes.value = (await fetchScrapePaths(http)) || []
+  } catch (error) {
+    reportError(error, '加载刮削目录失败')
     pathes.value = []
   } finally {
     loading.value = false
@@ -451,34 +451,32 @@ const loadPathes = async () => {
 }
 
 const updatePathesStatus = async () => {
-  const response = await http.get(`${SERVER_URL}/scrape/pathes`)
-
-  if (response?.data.code === 200) {
-    for (const p of response?.data?.data || []) {
+  try {
+    const paths = await fetchScrapePaths(http)
+    for (const p of paths || []) {
       const path = pathes.value.find((pa) => pa.id === p.id)
       if (path) {
         path.is_running = p.is_running
       }
     }
+  } catch (error) {
+    reportError(error, '更新刮削目录状态失败')
   }
 }
 
 const loadAccounts = async (sourceType?: string) => {
   try {
     accountsLoading.value = true
-    const response = await http.get(`${SERVER_URL}/account/list`, {
-      params: { source_type: sourceType },
+    accounts.value = await listAccounts(http, sourceType)
+  } catch (error) {
+    const failure = parseHttpError(error, {
+      publicMessages: accountPublicMessages,
+      fallbackMessage: '加载账号列表失败',
     })
-
-    if (response?.data.code === 200) {
-      accounts.value = response.data.data || []
-    } else {
-      ElMessage.error(response?.data.message || '加载账号列表失败')
-      accounts.value = []
+    if (failure.shouldNotify) {
+      console.error('加载账号列表失败：', failure.diagnostics)
+      ElMessage.error(failure.message)
     }
-  } catch {
-    console.error('加载账号列表错误')
-    ElMessage.error('加载账号列表失败')
     accounts.value = []
   } finally {
     accountsLoading.value = false
@@ -497,18 +495,12 @@ const handleDelete = async (row: ScrapePath, index: number) => {
       pathes.value[index].deleting = true
     }
 
-    const response = await http.delete(`${SERVER_URL}/scrape/pathes/${row.id}`)
-
-    if (response?.data.code === 200) {
-      ElMessage.success('删除刮削目录成功')
-      loadPathes()
-    } else {
-      ElMessage.error(response?.data.message || '删除刮削目录失败')
-    }
+    await deleteScrapePath(http, row.id)
+    ElMessage.success('删除刮削目录成功')
+    void loadPathes()
   } catch (error) {
-    if (error !== 'cancel') {
-      console.error('删除刮削目录错误')
-      ElMessage.error('删除刮削目录失败')
+    if (error !== 'cancel' && error !== 'close') {
+      reportError(error, '删除刮削目录失败')
     }
   } finally {
     if (pathes.value[index]) {
@@ -518,30 +510,24 @@ const handleDelete = async (row: ScrapePath, index: number) => {
 }
 
 const handleScan = async (row: ScrapePath) => {
-  if (!http) return
-
   try {
     row.scanning = true
-    await http.post(`${SERVER_URL}/scrape/pathes/start`, { id: row.id })
+    await startScrapePath(http, row.id)
     ElMessage.success('刮削任务已开始')
   } catch (error) {
-    ElMessage.error('启动刮削任务失败')
-    console.error('启动刮削任务错误：', error)
+    reportError(error, '启动刮削任务失败')
   } finally {
     row.scanning = false
   }
 }
 
 const handleStop = async (row: ScrapePath) => {
-  if (!http) return
-
   try {
     row.scanning = true
-    await http.post(`${SERVER_URL}/scrape/pathes/stop`, { id: row.id })
+    await stopScrapePath(http, row.id)
     ElMessage.success('刮削任务已停止')
   } catch (error) {
-    ElMessage.error('停止刮削任务失败')
-    console.error('停止刮削任务错误：', error)
+    reportError(error, '停止刮削任务失败')
   } finally {
     row.scanning = false
   }
@@ -549,49 +535,32 @@ const handleStop = async (row: ScrapePath) => {
 
 const toggleCron = async (row: ScrapePath) => {
   try {
-    const formData = {
-      id: row.id || 0,
-    }
-
-    const response = await http.post(`${SERVER_URL}/scrape/pathes/toggle-cron`, formData, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (response?.data.code === 200) {
-      ElMessage.success(row.enable_cron ? '开启定时任务成功' : '关闭定时任务成功')
-    } else {
-      row.enable_cron = !row.enable_cron
-      ElMessage.error(response?.data.message || '切换定时任务状态失败')
-    }
-  } catch {
-    console.error('切换定时任务状态错误')
+    await toggleScrapePathCron(http, row.id || 0)
+    ElMessage.success(row.enable_cron ? '开启定时任务成功' : '关闭定时任务成功')
+  } catch (error) {
     row.enable_cron = !row.enable_cron
-    ElMessage.error('切换定时任务状态失败')
+    reportError(error, '切换定时任务状态失败')
   }
 }
 
 const loadSyncPaths = async (sourceType?: string) => {
   try {
     syncPathsLoading.value = true
-    const response = await http.get(`${SERVER_URL}/sync/path-list`, {
-      params: { page: 1, page_size: 9999, source_type: sourceType },
+    const result = await fetchSyncPaths(http, {
+      page: 1,
+      page_size: 9999,
+      source_type: sourceType,
     })
-
-    if (response?.data.code === 200) {
-      syncPathOptions.value = (response.data.data.list || []).map(
-        (item: { id: number; source_type: string; remote_path: string }) => ({
-          id: item.id,
-          label: `#${item.id} - ${item.source_type} - ${item.remote_path}`,
-        }),
-      )
-    } else {
-      ElMessage.error(response?.data.message || '加载同步目录失败')
-    }
-  } catch {
-    console.error('加载同步目录错误')
-    ElMessage.error('加载同步目录失败')
+    syncPathOptions.value = result.list.map((item) => ({
+      id: item.id,
+      label: `#${item.id} - ${item.source_type} - ${item.remote_path}`,
+    }))
+  } catch (error) {
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '加载同步目录失败',
+      publicMessages: syncPathPublicMessages,
+    })
+    if (parsed.shouldNotify) ElMessage.error(parsed.message)
   } finally {
     syncPathsLoading.value = false
   }
@@ -604,14 +573,9 @@ const openSyncPathDialog = async (row: ScrapePath) => {
   await loadSyncPaths(row.source_type)
   if (row.id) {
     try {
-      const response = await http.get(`${SERVER_URL}/scrape/sync-pathes`, {
-        params: { scrape_path_id: row.id },
-      })
-      if (response?.data.code === 200) {
-        selectedSyncPathIds.value = response.data.data || []
-      }
-    } catch {
-      console.error('加载已关联同步目录错误')
+      selectedSyncPathIds.value = (await fetchScrapeSyncPathIDs(http, row.id)) || []
+    } catch (error) {
+      reportError(error, '加载已关联同步目录失败')
     }
   }
 }
@@ -624,20 +588,11 @@ const saveSyncPathRelation = async () => {
 
   try {
     saveSyncPathLoading.value = true
-    const response = await http.post(`${SERVER_URL}/scrape/sync-pathes`, {
-      scrape_path_id: currentScrapePath.value.id,
-      sync_path_ids: selectedSyncPathIds.value,
-    })
-
-    if (response?.data.code === 200) {
-      ElMessage.success('关联同步目录成功')
-      showSyncPathDialog.value = false
-    } else {
-      ElMessage.error(response?.data.message || '关联同步目录失败')
-    }
-  } catch {
-    console.error('关联同步目录错误')
-    ElMessage.error('关联同步目录失败')
+    await saveScrapeSyncPathIDs(http, currentScrapePath.value.id, selectedSyncPathIds.value)
+    ElMessage.success('关联同步目录成功')
+    showSyncPathDialog.value = false
+  } catch (error) {
+    reportError(error, '关联同步目录失败')
   } finally {
     saveSyncPathLoading.value = false
   }

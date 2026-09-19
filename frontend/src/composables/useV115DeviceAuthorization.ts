@@ -1,9 +1,9 @@
-import { SERVER_URL } from '@/const'
-import type { V115AuthStatus, V115QrCodePayload, V115QrCodeStatusPayload } from '@/types/v115Auth'
+import { authorizationPublicMessages, fetchV115QRCodeStatus, openV115QRCode } from '@/api/accounts'
+import { parseHttpError } from '@/http/errors'
+import type { V115AuthStatus, V115QrCodePayload } from '@/types/v115Auth'
 import type { AxiosInstance } from 'axios'
 import { computed, onScopeDispose, shallowRef } from 'vue'
 
-export const V115_QR_STATUS_TIMEOUT_MS = 70_000
 // 等待扫码阶段保持较快轮询，便于及时显示扫码结果。
 export const V115_QR_STATUS_POLL_DELAY_MS = 1_000
 // 已扫码后服务端要串行完成取令牌、查用户信息和写库，降低轮询频率可减少同期数据库写入竞争。
@@ -28,6 +28,7 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
   const stopPolling = () => {
     authorizationRunId.value += 1
     pollingActive.value = false
+    loading.value = false
     if (pollTimer.value !== null) {
       window.clearTimeout(pollTimer.value)
       pollTimer.value = null
@@ -57,26 +58,12 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
     pollingRequestRunId = runId
 
     try {
-      const response = await http.post(
-        `${SERVER_URL}/auth/115-qrcode-status`,
-        {
-          account_id: accountId.value,
-          uid: qrCode.value.uid,
-          ...(authorizationId.value ? { authorization_id: authorizationId.value } : {}),
-        },
-        {
-          timeout: V115_QR_STATUS_TIMEOUT_MS,
-        },
-      )
+      const data = await fetchV115QRCodeStatus(http, {
+        account_id: accountId.value,
+        uid: qrCode.value.uid,
+        ...(authorizationId.value ? { authorization_id: authorizationId.value } : {}),
+      })
       if (runId !== authorizationRunId.value) return
-
-      const data = response.data?.data as V115QrCodeStatusPayload | undefined
-      if (response.data?.code !== 200 || !data) {
-        status.value = 'failed'
-        tip.value = response.data?.message || '授权状态查询失败'
-        stopPolling()
-        return
-      }
       status.value = data.status
       tip.value = data.tip
       if (['confirmed', 'expired', 'failed'].includes(data.status)) {
@@ -86,8 +73,12 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
       schedulePollStatus(runId)
     } catch (error) {
       if (runId !== authorizationRunId.value) return
-      status.value = 'failed'
-      tip.value = error instanceof Error ? error.message : '授权状态查询失败'
+      const failure = parseHttpError(error, {
+        publicMessages: authorizationPublicMessages,
+        fallbackMessage: '授权状态查询失败',
+      })
+      status.value = failure.shouldNotify ? 'failed' : 'idle'
+      tip.value = failure.shouldNotify ? failure.message : ''
       stopPolling()
     } finally {
       if (pollingRequestRunId === runId) {
@@ -120,17 +111,9 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
     qrCode.value = null
 
     try {
-      const response = await http.post(`${SERVER_URL}/auth/115-qrcode-open`, {
-        account_id: nextAccountId,
-        ...(authorizationId.value ? { authorization_id: authorizationId.value } : {}),
-      })
+      const data = await openV115QRCode(http, nextAccountId, nextAuthorizationId)
       if (runId !== authorizationRunId.value) return
-      if (response.data?.code !== 200 || !response.data.data) {
-        status.value = 'failed'
-        tip.value = response.data?.message || '获取二维码失败'
-        return
-      }
-      qrCode.value = response.data.data as V115QrCodePayload
+      qrCode.value = data
       tip.value = '等待扫码'
       pollingActive.value = true
       if (!isPageHidden()) {
@@ -138,8 +121,12 @@ export function useV115DeviceAuthorization(http: AxiosInstance) {
       }
     } catch (error) {
       if (runId !== authorizationRunId.value) return
-      status.value = 'failed'
-      tip.value = error instanceof Error ? error.message : '获取二维码失败'
+      const failure = parseHttpError(error, {
+        publicMessages: authorizationPublicMessages,
+        fallbackMessage: '获取二维码失败',
+      })
+      status.value = failure.shouldNotify ? 'failed' : 'idle'
+      tip.value = failure.shouldNotify ? failure.message : ''
     } finally {
       if (runId === authorizationRunId.value) loading.value = false
     }

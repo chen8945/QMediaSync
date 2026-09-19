@@ -81,13 +81,12 @@
       </el-form-item>
 
       <!-- 定时同步表达式 -->
-      <el-form-item label="定时同步表达式" prop="cron">
+      <el-form-item label="定时同步表达式" prop="cron" :error="cronError">
         <el-input
           v-model="strmData.cron"
           placeholder="输入 Cron 表达式，如：0 2 * * *"
           :disabled="strmLoading"
           class="limited-width-input"
-          @blur="loadCronTimes"
         />
         <div class="form-help">
           <p><strong>常用示例：</strong></p>
@@ -215,8 +214,8 @@
         <div class="form-help">
           <p>该功能目前仅为实验性功能，目前只在部分播放器有效，解决方法还没找到，请谨慎开启。</p>
           <p>
-            用于解决 115 对同一文件多端同时播放的限制，但是最多只支持两个设备；开启后同文件多 IP 播放仍可能触发 115
-            风控，请谨慎开启。
+            用于解决 115 对同一文件多端同时播放的限制，但是最多只支持两个设备；开启后同文件多 IP
+            播放仍可能触发 115 风控，请谨慎开启。
           </p>
           <p>
             多台设备同时播放同一个 115 文件时，自动在网盘 /多端播放
@@ -256,10 +255,14 @@
           type="success"
           @click="saveStrmConfig"
           :loading="strmLoading"
+          :disabled="!strmConfigLoaded"
           size="large"
           :icon="Check"
         >
           保存 STRM 配置
+        </el-button>
+        <el-button v-if="!strmConfigLoaded" :loading="strmLoading" @click="loadStrmConfig">
+          重新加载
         </el-button>
       </div>
 
@@ -269,7 +272,8 @@
         :title="strmStatus.title"
         :type="strmStatus.type"
         :description="strmStatus.description"
-        :closable="false"
+        :closable="true"
+        @close="strmStatus = null"
         show-icon
         class="strm-status"
       />
@@ -288,33 +292,25 @@
 </template>
 
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
-import type { AxiosError } from 'axios'
 import { Check } from '@element-plus/icons-vue'
-import { onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import PageHeader from '@/components/common/PageHeader.vue'
 import MetadataExtInput from './MetadataExtInput.vue'
 import StrmRegexInput from './StrmRegexInput.vue'
 import { strmRegexListError } from '@/utils/strmRegex'
-interface StrmData {
-  video_ext_arr: string[]
-  min_video_size: number
-  meta_ext_arr: string[]
-  cron: string
-  strm_base_url: string
-  upload_meta: 0 | 1 | 2
-  download_meta: 0 | 1
-  delete_dir: 0 | 1
-  multi_playback_enabled: 0 | 1
-  local_proxy: 0 | 1
-  exclude_name_arr: string[]
-  exclude_name_regex_arr: string[]
-  add_path: 1 | 2 | 3
-  check_meta_mtime: 0 | 1
-}
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchStrmSettings,
+  saveStrmSettings,
+  fetchCronTimes,
+  strmRegexValidationIssue,
+  systemSettingsPublicMessages,
+  type StrmSettings,
+} from '@/api/systemSettings'
 
 interface StrmStatus {
   title: string
@@ -329,15 +325,20 @@ const formRef = useTemplateRef<FormInstance>('formRef')
 
 // STRM 配置相关状态
 const strmLoading = ref(false)
+const strmConfigLoaded = ref(false)
 const strmStatus = ref<StrmStatus | null>(null)
 const strmExample = ref('')
 
 // Cron 下次执行时间相关状态
-const cronTimes = ref<string[]>([])
+const cronTimes = ref<(string | number)[]>([])
 const cronTimesLoading = ref(false)
+const cronError = ref('')
+let pageActive = true
+const cronRequestGate = createActiveRequestGate(() => pageActive)
+let cronTimer: ReturnType<typeof setTimeout> | undefined
 
 // 默认 STRM 配置
-const defaultStrmData: StrmData = {
+const defaultStrmData: StrmSettings = {
   video_ext_arr: ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts'],
   min_video_size: 50, // 默认 50 MB
   meta_ext_arr: ['.jpg', '.jpeg', '.png', '.webp', '.nfo', '.srt', '.ass', '.svg', '.sup', '.lrc'],
@@ -354,7 +355,7 @@ const defaultStrmData: StrmData = {
   check_meta_mtime: 0, // 检查元数据的修改时间
 }
 
-const strmData = reactive<StrmData>({ ...defaultStrmData })
+const strmData = reactive<StrmSettings>({ ...defaultStrmData })
 
 // 表单验证规则
 const formRules: FormRules = {
@@ -409,13 +410,13 @@ const updateStrmExample = () => {
 
 // 保存 STRM 配置
 const saveStrmConfig = async () => {
+  if (!strmConfigLoaded.value || strmLoading.value) return
   // 验证表单
   if (!formRef.value) return
 
   try {
     await formRef.value.validate()
-  } catch (error) {
-    console.warn('表单验证失败：', error)
+  } catch {
     return
   }
 
@@ -423,32 +424,26 @@ const saveStrmConfig = async () => {
     strmLoading.value = true
     strmStatus.value = null
 
-    const response = await http.post(`${SERVER_URL}/setting/strm-config`, strmData, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (response?.data.code === 200) {
-      strmStatus.value = {
-        title: 'STRM 配置已保存',
-        type: 'success',
-        description: '配置已保存；同步设置用于下次同步，播放设置用于后续播放请求',
-      }
-    } else {
-      strmStatus.value = {
-        title: '保存 STRM 配置失败',
-        type: 'error',
-        description: response?.data.message || '保存设置失败，请重试',
-      }
+    await saveStrmSettings(http, strmData)
+    strmStatus.value = {
+      title: 'STRM 配置已保存',
+      type: 'success',
+      description: '配置已保存；同步设置用于下次同步，播放设置用于后续播放请求',
     }
   } catch (error) {
-    console.error('保存 STRM 配置错误：', error)
-    const response = (error as AxiosError<{ message?: string }>).response?.data
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '保存 STRM 配置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('保存 STRM 配置失败：', parsed.diagnostics)
+    const issue = strmRegexValidationIssue(parsed)
     strmStatus.value = {
-      title: '保存设置出错',
+      title: '保存 STRM 配置失败',
       type: 'error',
-      description: response?.message || '保存过程中发生错误，请检查网络连接',
+      description: issue
+        ? `正则排除名称第 ${issue.position} 条：${issue.reason === 'empty' ? '正则表达式不能为空' : '正则表达式无效，请检查 Go 正则语法'}`
+        : parsed.message,
     }
   } finally {
     strmLoading.value = false
@@ -457,12 +452,13 @@ const saveStrmConfig = async () => {
 
 // 加载 STRM 配置
 const loadStrmConfig = async () => {
+  if (strmLoading.value) return
+  strmStatus.value = null
   try {
     strmLoading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/strm-config`)
+    const config = await fetchStrmSettings(http)
 
-    if (response?.data.code === 200 && response.data.data) {
-      const config = response.data.data
+    if (config) {
       strmData.video_ext_arr = config.video_ext_arr
       strmData.min_video_size = config.min_video_size
       strmData.meta_ext_arr = config.meta_ext_arr
@@ -481,11 +477,21 @@ const loadStrmConfig = async () => {
       // 更新示例
       updateStrmExample()
 
-      // 加载 Cron 执行时间
-      await loadCronTimes()
+      strmConfigLoaded.value = true
+      void loadCronTimes()
     }
   } catch (error) {
-    console.error('加载 STRM 配置错误：', error)
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '加载 STRM 配置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('加载 STRM 配置失败：', parsed.diagnostics)
+    strmStatus.value = {
+      title: '加载 STRM 配置失败',
+      type: 'error',
+      description: parsed.message,
+    }
   } finally {
     strmLoading.value = false
   }
@@ -493,27 +499,33 @@ const loadStrmConfig = async () => {
 
 // 查询 Cron 下次执行时间
 const loadCronTimes = async () => {
-  if (!strmData.cron) {
+  if (!pageActive) return
+  clearTimeout(cronTimer)
+  const requestId = cronRequestGate.next()
+  cronError.value = ''
+  if (!strmData.cron.trim()) {
     cronTimes.value = []
+    cronTimesLoading.value = false
     return
   }
 
   try {
     cronTimesLoading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/cron`, {
-      params: { cron: strmData.cron },
-    })
-
-    if (response?.data.code === 200 && response.data.data) {
-      cronTimes.value = response.data.data || []
-    } else {
-      cronTimes.value = []
-    }
+    const times = await fetchCronTimes(http, strmData.cron)
+    if (!cronRequestGate.isCurrent(requestId)) return
+    cronTimes.value = times
   } catch (error) {
-    console.error('查询 Cron 执行时间错误：', error)
+    if (!cronRequestGate.isCurrent(requestId)) return
     cronTimes.value = []
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '查询 Cron 执行时间失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('查询 Cron 执行时间失败：', parsed.diagnostics)
+    cronError.value = parsed.message
   } finally {
-    cronTimesLoading.value = false
+    if (cronRequestGate.isCurrent(requestId)) cronTimesLoading.value = false
   }
 }
 
@@ -527,17 +539,25 @@ const changeDownloadMeta = () => {
 watch(
   () => strmData.cron,
   (newCron) => {
-    if (newCron && newCron.trim()) {
-      loadCronTimes()
-    } else {
-      cronTimes.value = []
-    }
+    cronRequestGate.invalidate()
+    clearTimeout(cronTimer)
+    cronTimes.value = []
+    cronError.value = ''
+    cronTimesLoading.value = false
+    if (strmConfigLoaded.value && newCron.trim())
+      cronTimer = setTimeout(() => void loadCronTimes(), 300)
   },
-  { immediate: false },
+  { flush: 'sync' },
 )
 
 onMounted(() => {
   loadStrmConfig()
+})
+
+onBeforeUnmount(() => {
+  pageActive = false
+  cronRequestGate.invalidate()
+  clearTimeout(cronTimer)
 })
 </script>
 

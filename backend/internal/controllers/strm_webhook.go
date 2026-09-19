@@ -89,9 +89,14 @@ type strmWebhookPreparedFile struct {
 
 // StrmWebhook 接收外部请求创建 STRM 生成任务。
 func StrmWebhook(c *gin.Context) {
-	apiKey, err := authenticateStrmWebhookAPIKey(c)
+	raw := apiKeyFromRequest(c)
+	if strings.TrimSpace(raw) == "" {
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		return
+	}
+	apiKey, err := models.ValidateAPIKey(raw)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil, ErrorCode: authErrorCode(err, ErrorCodeAuthenticationInvalid)})
 		return
 	}
 	_ = apiKey.UpdateLastUsedAt()
@@ -107,17 +112,6 @@ func StrmWebhook(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[strmWebhookResponse]{Code: Success, Message: "STRM 生成任务已接收", Data: resp})
-}
-
-func authenticateStrmWebhookAPIKey(c *gin.Context) (*models.ApiKey, error) {
-	raw := c.GetHeader(apiKeyHeaderName)
-	if raw == "" {
-		raw = c.Query("api_key")
-	}
-	if strings.TrimSpace(raw) == "" {
-		return nil, errors.New("API Key 为空")
-	}
-	return models.ValidateAPIKey(raw)
 }
 
 func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strmWebhookResponse, error) {

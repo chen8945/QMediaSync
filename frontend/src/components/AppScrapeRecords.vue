@@ -433,11 +433,27 @@
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
-import { SERVER_URL } from '@/const'
+import {
+  clearFailedScrapeRecords,
+  deleteScrapeRecords,
+  fetchScrapeRecords,
+  finishScrapeRecord,
+  getScrapeRecordsExportUrl,
+  reidentifyScrapeRecord,
+  renameFailedScrapeRecords,
+  scrapeRecordErrorOptions,
+  searchScrapeTmdb,
+  truncateScrapeRecords,
+  type ScrapeRecord,
+  type ScrapeRecordsQuery,
+  type TmdbSearchQuery,
+  type TmdbSearchResult,
+} from '@/api/scrapeRecords'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { mergeStableList, retainExistingKeys } from '@/composables/useStableList'
 import { usePageScrollRestore } from '@/composables/usePageScrollRestore'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
@@ -459,51 +475,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 const http = useHttpClient()
 
-// 定义刮削记录接口
-interface ScrapeRecord {
-  id: number
-  type: 'movie' | 'tvshow' | 'other'
-  path: string
-  file_name: string
-  media_name: string
-  original_name: string
-  year: number
-  tmdb_id: number
-  season_number: number
-  episode_number: number
-  episode_name?: string
-  status:
-    'scanned' | 'scraping' | 'scraped' | 'scrape_failed' | 'renaming' | 'renamed' | 'rename_failed'
-  failed_reason: string
-  created_at: number
-  updated_at: number
-  scanned_at: number
-  scraped_at: number
-  renamed_at: number
-  audio_count: number
-  subtitle_count: number
-  resolution: string
-  resolution_level: string
-  is_hdr: boolean
-  category_name: string
-  new_dest_path: string
-  new_dest_name: string
-  path_is_scraping: boolean
-  source_full_path: string
-  dest_full_path: string
-  source_type: string
-  rename_type: string
-  scrape_type: string
-}
-
-interface TmdbSearchResult {
-  tmdb_id: number
-  title: string
-  original_title: string
-  year: string
-  poster_url: string
-  overview: string
-  selecting?: boolean
+interface SelectableTmdbSearchResult extends TmdbSearchResult {
+  selecting: boolean
 }
 
 interface ReScrapeFormState {
@@ -902,7 +875,7 @@ const loadRecords = async () => {
     await runRefresh(async () => {
       try {
         // 构建查询参数
-        const params: Record<string, string | number> = {
+        const params: ScrapeRecordsQuery = {
           page: currentPage.value,
           pageSize: pageSize.value,
         }
@@ -922,29 +895,28 @@ const loadRecords = async () => {
           params.name = nameFilter.value
         }
 
-        const response = await http.get(`${SERVER_URL}/scrape/records`, { params })
+        const response = await fetchScrapeRecords(http, params)
 
         if (!scrapeRecordsRequestGate.isCurrent(requestId)) {
           return
         }
 
-        if (response?.data.code === 200) {
-          const rows = response.data.data.list || []
-          applyLoadedScrapeRecords(rows)
-          pageStateStore.setExpandedRowKeys(
-            'scrape-records',
-            retainExistingKeys(pageState.expandedRowKeys, records.value, (row) => row.id),
-          )
-          total.value = response.data.data.total
-        } else {
-          ElMessage.error(`加载刮削记录失败：${response?.data.message || '未知错误'}`)
-        }
+        const rows = response.list || []
+        applyLoadedScrapeRecords(rows)
+        pageStateStore.setExpandedRowKeys(
+          'scrape-records',
+          retainExistingKeys(pageState.expandedRowKeys, records.value, (row) => row.id),
+        )
+        total.value = response.total
       } catch (error) {
         if (!scrapeRecordsRequestGate.isCurrent(requestId)) {
           return
         }
-        console.error('加载刮削记录失败：', error)
-        ElMessage.error('加载刮削记录失败：网络错误')
+        notifyHttpError(error, '加载刮削记录失败：', {
+          ...scrapeRecordErrorOptions,
+          fallbackMessage: '请稍后重试',
+          messagePrefix: '加载刮削记录失败',
+        })
       }
     })
   } finally {
@@ -1037,7 +1009,7 @@ const handleSelectionChange = (selection: ScrapeRecord[]) => {
 }
 
 // 导出识别错误文件
-const handleExportErrors = async () => {
+const handleExportErrors = () => {
   try {
     // 移除筛选条件，导出所有已选择的记录
     if (selectedRecords.value.length === 0) {
@@ -1046,16 +1018,16 @@ const handleExportErrors = async () => {
     }
 
     const ids = selectedRecords.value.map((record) => record.id)
-    // 构造 URL，将 ids 作为 GET 参数传递
-    const idsQuery = ids.join(',')
-    const downloadUrl = `${SERVER_URL}/scrape/records/export?ids=${idsQuery}`
+    const downloadUrl = getScrapeRecordsExportUrl(ids)
 
     // 在新窗口打开下载
-    window.open(downloadUrl, '_blank')
+    if (!window.open(downloadUrl, '_blank')) {
+      ElMessage.error('浏览器阻止了下载窗口，请允许弹出窗口后重试')
+      return
+    }
     ElMessage.success('导出请求已发送')
-  } catch (error) {
-    console.error('导出失败：', error)
-    ElMessage.error('导出失败：网络错误')
+  } catch {
+    ElMessage.error('无法打开导出下载，请重试')
   }
 }
 
@@ -1092,30 +1064,26 @@ const handleDeleteSelectedRecords = async () => {
     }
 
     const ids = selectedRecords.value.map((record) => record.id)
-    // 发送 DELETE 请求，参数与导出识别错误文件接口一致
-    // 构造 URL，将 ids 作为 GET 参数传递
-    const idsQuery = ids.join(',')
-    const response = await http.delete(`${SERVER_URL}/scrape/records?ids=${idsQuery}`)
+    await deleteScrapeRecords(http, ids)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('删除成功')
-      // 清空选择
-      selectedRecords.value = []
-      // 刷新记录列表
-      loadRecords()
-    } else {
-      ElMessage.error(`删除失败：${response?.data.message || '未知错误'}`)
-    }
+    ElMessage.success('删除成功')
+    // 清空选择
+    selectedRecords.value = []
+    // 刷新记录列表
+    loadRecords()
   } catch (error) {
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
-    console.error('删除失败：', error)
-    ElMessage.error('删除失败：网络错误')
+    notifyHttpError(error, '删除失败：', {
+      ...scrapeRecordErrorOptions,
+      fallbackMessage: '请稍后重试',
+      messagePrefix: '删除失败',
+    })
   } finally {
     if (isScrapeRecordsMutationContextCurrent(operationContext)) {
       finishScrapeRecordsMutationContext(operationContext)
@@ -1155,30 +1123,26 @@ const handleRename = async () => {
     }
 
     const ids = selectedRecords.value.map((record) => record.id)
-    // 发送 DELETE 请求，参数与导出识别错误文件接口一致
-    // 构造 URL，将 ids 作为 GET 参数传递
-    const idsQuery = ids.join(',')
-    const response = await http.post(`${SERVER_URL}/scrape/rename-failed?ids=${idsQuery}`)
+    await renameFailedScrapeRecords(http, ids)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('重新整理成功')
-      // 清空选择
-      selectedRecords.value = []
-      // 刷新记录列表
-      loadRecords()
-    } else {
-      ElMessage.error(`重新整理失败：${response?.data.message || '未知错误'}`)
-    }
+    ElMessage.success('重新整理成功')
+    // 清空选择
+    selectedRecords.value = []
+    // 刷新记录列表
+    loadRecords()
   } catch (error) {
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
-    console.error('重新整理失败：', error)
-    ElMessage.error('重新整理失败：网络错误')
+    notifyHttpError(error, '重新整理失败：', {
+      ...scrapeRecordErrorOptions,
+      fallbackMessage: '请稍后重试',
+      messagePrefix: '重新整理失败',
+    })
   } finally {
     if (isScrapeRecordsMutationContextCurrent(operationContext)) {
       finishScrapeRecordsMutationContext(operationContext)
@@ -1196,7 +1160,7 @@ const handleDetail = (record: ScrapeRecord) => {
 // 重识别相关变量
 const showReScrapeDialog = ref(false)
 const reScrapeForm = ref<ReScrapeFormState>(createDefaultReScrapeForm())
-const searchResults = ref<TmdbSearchResult[]>([])
+const searchResults = ref<SelectableTmdbSearchResult[]>([])
 const searchLoading = ref(false)
 const hasSearched = ref(false)
 const searchMode = ref<'name' | 'tmdb'>('name')
@@ -1250,7 +1214,7 @@ const searchTmdb = async () => {
     hasSearched.value = false
     searchResults.value = []
 
-    const params: Record<string, string | number> = {
+    const params: TmdbSearchQuery = {
       type: reScrapeForm.value.type,
     }
 
@@ -1263,27 +1227,26 @@ const searchTmdb = async () => {
       params.tmdb_id = reScrapeForm.value.tmdb_id
     }
 
-    const response = await http.get(`${SERVER_URL}/scrape/tmdb-search`, { params, timeout: 30000 })
+    const response = await searchScrapeTmdb(http, params)
 
     if (!isRecordActionContextCurrent(operationContext, recordId)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      searchResults.value = (response.data.data || []).map((item: TmdbSearchResult) => ({
-        ...item,
-        selecting: false,
-      }))
-      hasSearched.value = true
-    } else {
-      ElMessage.error(response?.data.message || '搜索失败')
-    }
+    searchResults.value = (response || []).map((item) => ({
+      ...item,
+      selecting: false,
+    }))
+    hasSearched.value = true
   } catch (error) {
     if (!isRecordActionContextCurrent(operationContext, recordId)) {
       return
     }
-    console.error('TMDB 搜索失败：', error)
-    ElMessage.error('搜索失败：网络错误')
+    notifyHttpError(error, 'TMDB 搜索失败：', {
+      ...scrapeRecordErrorOptions,
+      fallbackMessage: '请稍后重试',
+      messagePrefix: '搜索失败',
+    })
   } finally {
     if (isRecordActionContextCurrent(operationContext, recordId)) {
       searchLoading.value = false
@@ -1291,7 +1254,7 @@ const searchTmdb = async () => {
   }
 }
 
-const selectSearchResult = async (item: TmdbSearchResult) => {
+const selectSearchResult = async (item: SelectableTmdbSearchResult) => {
   const operationContext = activeRecordActionContext.value
   const recordId = reScrapeForm.value.id
   if (!isRecordActionContextCurrent(operationContext, recordId)) {
@@ -1312,25 +1275,24 @@ const selectSearchResult = async (item: TmdbSearchResult) => {
       return
     }
 
-    const response = await http.post(`${SERVER_URL}/scrape/re-scrape`, params, { timeout: 60000 })
+    const message = await reidentifyScrapeRecord(http, params)
 
     if (!isRecordActionContextCurrent(operationContext, recordId)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('重新识别请求已发送')
-      invalidateRecordActionContext()
-      loadRecords()
-    } else {
-      ElMessage.error(response?.data.message || '重新识别失败')
-    }
+    ElMessage.success(message || '重新识别请求已发送')
+    invalidateRecordActionContext()
+    loadRecords()
   } catch (error) {
     if (!isRecordActionContextCurrent(operationContext, recordId)) {
       return
     }
-    console.error('重新识别失败：', error)
-    ElMessage.error('重新识别失败：网络错误')
+    notifyHttpError(error, '重新识别失败：', {
+      ...scrapeRecordErrorOptions,
+      fallbackMessage: '请稍后重试',
+      messagePrefix: '重新识别失败',
+    })
   } finally {
     item.selecting = false
   }
@@ -1379,24 +1341,23 @@ const handleDeleteFailedRecords = async () => {
       return
     }
 
-    const response = await http.post(`${SERVER_URL}/scrape/clear-failed`)
+    await clearFailedScrapeRecords(http)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('刮削失败记录已清除')
-      loadRecords()
-    } else {
-      ElMessage.error(`清除刮削失败记录失败：${response?.data.message || '未知错误'}`)
-    }
+    ElMessage.success('刮削失败记录已清除')
+    loadRecords()
   } catch (error) {
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
-    console.error('清除刮削失败记录失败：', error)
-    ElMessage.error('清除刮削失败记录失败：网络错误')
+    notifyHttpError(error, '清除刮削失败记录失败：', {
+      ...scrapeRecordErrorOptions,
+      fallbackMessage: '请稍后重试',
+      messagePrefix: '清除刮削失败记录失败',
+    })
   } finally {
     if (isScrapeRecordsMutationContextCurrent(operationContext)) {
       finishScrapeRecordsMutationContext(operationContext)
@@ -1435,29 +1396,28 @@ const handleTruncateAll = async () => {
     }
 
     // 发送请求
-    const response = await http.post(`${SERVER_URL}/scrape/truncate-all`)
+    await truncateScrapeRecords(http)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('清空记录成功')
-      // 清空选择
-      selectedRecords.value = []
-      // 刷新记录列表
-      loadRecords()
-    } else {
-      ElMessage.error(`清空记录失败：${response?.data.message || '未知错误'}`)
-    }
+    ElMessage.success('清空记录成功')
+    // 清空选择
+    selectedRecords.value = []
+    // 刷新记录列表
+    loadRecords()
   } catch (error) {
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
     // 如果用户取消操作，不显示错误消息
     if (!isMessageBoxCancelError(error)) {
-      console.error('清空记录失败：', error)
-      ElMessage.error('清空记录失败：网络错误')
+      notifyHttpError(error, '清空记录失败：', {
+        ...scrapeRecordErrorOptions,
+        fallbackMessage: '请稍后重试',
+        messagePrefix: '清空记录失败',
+      })
     }
   } finally {
     if (isScrapeRecordsMutationContextCurrent(operationContext)) {
@@ -1485,28 +1445,26 @@ const markAsFinished = async (record: ScrapeRecord) => {
       return
     }
 
-    // 发送 POST 请求到/scrape/finish 接口
-    const response = await http.post(`${SERVER_URL}/scrape/finish`, { id: record.id })
+    await finishScrapeRecord(http, record.id)
 
     if (!isRecordActionContextCurrent(operationContext, record.id)) {
       return
     }
 
-    if (response?.data.code === 200) {
-      ElMessage.success('标记为已整理成功')
-      // 刷新记录列表
-      loadRecords()
-    } else {
-      ElMessage.error(`标记为已整理失败：${response?.data.message || '未知错误'}`)
-    }
+    ElMessage.success('标记为已整理成功')
+    // 刷新记录列表
+    loadRecords()
   } catch (error) {
     if (!isRecordActionContextCurrent(operationContext, record.id)) {
       return
     }
     // 如果用户取消操作，不显示错误消息
     if (!isMessageBoxCancelError(error)) {
-      console.error('标记为已整理失败：', error)
-      ElMessage.error('标记为已整理失败：网络错误')
+      notifyHttpError(error, '标记为已整理失败：', {
+        ...scrapeRecordErrorOptions,
+        fallbackMessage: '请稍后重试',
+        messagePrefix: '标记为已整理失败',
+      })
     }
   } finally {
     if (isRecordActionContextCurrent(operationContext, record.id)) {

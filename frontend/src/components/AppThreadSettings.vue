@@ -210,10 +210,14 @@
           type="success"
           @click="saveSettings"
           :loading="loading"
+          :disabled="!configLoaded"
           size="large"
           :icon="Check"
         >
           保存设置
+        </el-button>
+        <el-button v-if="!configLoaded" :loading="loading" @click="fetchThreadSettings">
+          重新加载
         </el-button>
       </div>
     </el-form>
@@ -224,7 +228,8 @@
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
-      :closable="false"
+      :closable="true"
+      @close="saveStatus = null"
       show-icon
       class="save-status"
     />
@@ -244,12 +249,17 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { reactive, ref, onMounted, onBeforeUnmount } from 'vue'
 import { Check } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
 import { THREAD_LIMITS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchThreadSettings as getThreadSettings,
+  saveThreadSettings,
+  systemSettingsPublicMessages,
+  type ThreadSettings as ThreadSettingsPayload,
+} from '@/api/systemSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -279,7 +289,14 @@ interface SaveStatus {
 const http = useHttpClient()
 const { isMobile: checkIsMobile } = useDeviceType()
 const loading = ref(false)
+const configLoaded = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
+let saveStatusTimer: ReturnType<typeof setTimeout> | undefined
+const clearSaveStatusTimer = () => {
+  clearTimeout(saveStatusTimer)
+  saveStatusTimer = undefined
+}
+onBeforeUnmount(clearSaveStatusTimer)
 
 // 表单数据
 const formData = reactive<ThreadSettings>({
@@ -321,36 +338,41 @@ onMounted(async () => {
 
 // 获取线程设置
 async function fetchThreadSettings() {
+  if (loading.value) return
+  clearSaveStatusTimer()
+  saveStatus.value = null
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/threads`)
+    const settings = await getThreadSettings(http)
 
-    formData.downloadThreads = response?.data.data.download_threads
-    formData.uploadThreads = response?.data.data.upload_threads ?? 1
-    formData.fileDetailThreads = response?.data.data.file_detail_threads
-    formData.openlistQPS = response?.data.data.openlist_qps
-    formData.openlistRetryCount = response?.data.data.openlist_retry
-    formData.openlistRetryDelay = response?.data.data.openlist_retry_delay
-    formData.fileListPageSize = response?.data.data.file_list_page_size || 1150
-    formData.urlValidityCheckEnabled = response?.data.data.url_validity_check_enabled !== 0
-    const urlValidityCheckTimeout = response?.data.data.url_validity_check_timeout_seconds || 3
+    formData.downloadThreads = settings.download_threads
+    formData.uploadThreads = settings.upload_threads ?? 1
+    formData.fileDetailThreads = settings.file_detail_threads
+    formData.openlistQPS = settings.openlist_qps
+    formData.openlistRetryCount = settings.openlist_retry
+    formData.openlistRetryDelay = settings.openlist_retry_delay
+    formData.fileListPageSize = settings.file_list_page_size || 1150
+    formData.urlValidityCheckEnabled = settings.url_validity_check_enabled !== 0
+    const urlValidityCheckTimeout = settings.url_validity_check_timeout_seconds || 3
     formData.urlValidityCheckTimeoutSeconds = Math.min(
       Math.max(urlValidityCheckTimeout, THREAD_LIMITS.urlValidityCheckTimeout.min),
       THREAD_LIMITS.urlValidityCheckTimeout.max,
     )
-    formData.uploadRapidWaitEnabled = response?.data.data.upload_rapid_wait_enabled === 1
-    formData.uploadRapidWaitTimeoutSeconds =
-      response?.data.data.upload_rapid_wait_timeout_seconds || 0
-    formData.uploadRapidWaitIntervalSeconds =
-      response?.data.data.upload_rapid_wait_interval_seconds || 60
-    formData.uploadRapidWaitMinSizeMB = bytesToMB(response?.data.data.upload_rapid_wait_min_size)
-    formData.uploadRapidWaitForceSizeMB = bytesToMB(
-      response?.data.data.upload_rapid_wait_force_size,
-    )
-    formData.uploadRapidWaitSkipUpload = response?.data.data.upload_rapid_wait_skip_upload === 1
+    formData.uploadRapidWaitEnabled = settings.upload_rapid_wait_enabled === 1
+    formData.uploadRapidWaitTimeoutSeconds = settings.upload_rapid_wait_timeout_seconds || 0
+    formData.uploadRapidWaitIntervalSeconds = settings.upload_rapid_wait_interval_seconds || 60
+    formData.uploadRapidWaitMinSizeMB = bytesToMB(settings.upload_rapid_wait_min_size)
+    formData.uploadRapidWaitForceSizeMB = bytesToMB(settings.upload_rapid_wait_force_size)
+    formData.uploadRapidWaitSkipUpload = settings.upload_rapid_wait_skip_upload === 1
+    configLoaded.value = true
   } catch (error) {
-    console.error('获取线程设置失败：', error)
-    ElMessage.error('获取线程设置失败，请稍后重试')
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '获取线程设置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('获取线程设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '获取线程设置失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
@@ -358,6 +380,9 @@ async function fetchThreadSettings() {
 
 // 保存线程设置
 async function saveSettings() {
+  if (!configLoaded.value || loading.value) return
+  clearSaveStatusTimer()
+  saveStatus.value = null
   const uploadThreads = formData.uploadThreads
   if (
     typeof uploadThreads !== 'number' ||
@@ -376,7 +401,7 @@ async function saveSettings() {
   try {
     loading.value = true
 
-    const payload = {
+    const payload: ThreadSettingsPayload = {
       download_threads: formData.downloadThreads,
       upload_threads: uploadThreads,
       file_detail_threads: formData.fileDetailThreads,
@@ -394,10 +419,7 @@ async function saveSettings() {
       upload_rapid_wait_skip_upload: formData.uploadRapidWaitSkipUpload ? 1 : 0,
     }
 
-    const response = await http.post(`${SERVER_URL}/setting/threads`, payload)
-    if (response?.data.code !== 200) {
-      throw new Error(response?.data.message || '保存线程设置失败')
-    }
+    await saveThreadSettings(http, payload)
 
     saveStatus.value = {
       title: '保存成功',
@@ -406,15 +428,20 @@ async function saveSettings() {
     }
 
     // 3 秒后清除状态提示
-    setTimeout(() => {
+    saveStatusTimer = setTimeout(() => {
       saveStatus.value = null
     }, 3000)
   } catch (error) {
-    console.error('保存线程设置失败：', error)
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '保存线程设置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('保存线程设置失败：', parsed.diagnostics)
     saveStatus.value = {
       title: '保存失败',
       type: 'error',
-      description: error instanceof Error ? error.message : '保存线程设置失败，请稍后重试',
+      description: parsed.message,
     }
   } finally {
     loading.value = false

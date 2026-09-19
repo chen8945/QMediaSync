@@ -1223,10 +1223,18 @@
 </template>
 
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
+import { fetchSystemVersion } from '@/api/systemInfo'
+import {
+  fetchCronTimes,
+  fetchStrmSettings,
+  systemSettingsPublicMessages,
+} from '@/api/systemSettings'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { STRM_CUSTOM_OPTIONS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { accountPublicMessages, listAccounts } from '@/api/accounts'
 import { computed, onMounted, ref, reactive, watch, useTemplateRef, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
@@ -1234,7 +1242,12 @@ import { ArrowLeft, Delete, Plus } from '@element-plus/icons-vue'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { navigateBackOrReplace } from '@/utils/navigation'
 import { sourceTypeOptions } from '@/utils/sourceTypeUtils'
-import type { SaveSyncPathPayload } from '@/api/syncPaths'
+import {
+  fetchSyncPath,
+  fetchDirectoryUploadRules,
+  syncPathPublicMessages,
+  type SaveSyncPathPayload,
+} from '@/api/syncPaths'
 import { useSyncDirectorySave } from '@/composables/useSyncDirectorySave'
 import MetadataExtInput from './MetadataExtInput.vue'
 import StrmRegexInput from './StrmRegexInput.vue'
@@ -1306,6 +1319,7 @@ const router = useRouter()
 const { isMobile: checkIsMobile } = useDeviceType()
 const isEditMode = ref(false)
 const loading = ref(false)
+const directoryLoadFailed = ref(false)
 const createIdempotencyKey = ref(generateCreateIdempotencyKey())
 
 const formRef = useTemplateRef<FormInstance>('formRef')
@@ -1385,7 +1399,7 @@ const activeDirectoryUploadRuleClientId = ref<number | null>(null)
 
 const versionInfo = ref<VersionInfo | null>(null)
 
-const cronTimes = ref<string[]>([])
+const cronTimes = ref<(string | number)[]>([])
 const cronTimesLoading = ref(false)
 const strmExample = ref('')
 const directoryUploadLoading = ref(false)
@@ -1463,6 +1477,13 @@ const fillDirectoryUploadRules = (rules: DirectoryUploadRule[]) => {
   directoryUploadRuleFieldErrors.value = {}
 }
 
+const reportRequestError = (error: unknown, fallbackMessage: string) => {
+  return notifyHttpError(error, fallbackMessage, {
+    publicMessages: { ...systemSettingsPublicMessages, ...syncPathPublicMessages },
+    fallbackMessage,
+  })
+}
+
 const loadDirectoryUploadRules = async (syncPathId: number) => {
   if (!syncPathId || form.source_type !== '115') {
     resetDirectoryUploadRules()
@@ -1472,25 +1493,16 @@ const loadDirectoryUploadRules = async (syncPathId: number) => {
   try {
     directoryUploadLoading.value = true
     directoryUploadRulesLoadFailed.value = false
-    const response = await http.get(`${SERVER_URL}/directory-upload/rules`, {
-      params: { sync_path_id: syncPathId },
-    })
-
-    if (response?.data.code === 200) {
-      const rules = response.data.data?.list || []
-      if (rules.length > 0) {
-        fillDirectoryUploadRules(rules)
-      } else {
-        directoryUploadRules.value = []
-        directoryUploadRuleFieldErrors.value = {}
-        activeDirectoryUploadRuleClientId.value = null
-      }
+    const rules = await fetchDirectoryUploadRules(http, syncPathId)
+    if (rules.length > 0) {
+      fillDirectoryUploadRules(rules)
     } else {
-      ElMessage.error(response?.data.message || '加载目录监控上传配置失败')
-      directoryUploadRulesLoadFailed.value = true
+      directoryUploadRules.value = []
+      directoryUploadRuleFieldErrors.value = {}
+      activeDirectoryUploadRuleClientId.value = null
     }
-  } catch {
-    ElMessage.error('加载目录监控上传配置失败')
+  } catch (error) {
+    reportRequestError(error, '加载目录监控上传配置失败')
     directoryUploadRulesLoadFailed.value = true
   } finally {
     directoryUploadLoading.value = false
@@ -1872,17 +1884,10 @@ const loadCronTimes = async () => {
 
   try {
     cronTimesLoading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/cron`, {
-      params: { cron: form.cron },
-    })
-
-    if (response?.data.code === 200) {
-      cronTimes.value = response.data.data || []
-    } else {
-      cronTimes.value = []
-    }
-  } catch {
+    cronTimes.value = await fetchCronTimes(http, form.cron)
+  } catch (error) {
     cronTimes.value = []
+    reportRequestError(error, '获取 Cron 执行时间失败')
   } finally {
     cronTimesLoading.value = false
   }
@@ -1895,10 +1900,10 @@ const importFromStrmSettings = async (
   if (loading.value || importStrmSettingsLoading.value) return
   try {
     importStrmSettingsLoading.value = true
-    const response = await http.get(`${SERVER_URL}/setting/strm-config`)
+    const data = await fetchStrmSettings(http)
 
-    if (response?.data.code === 200 && response.data.data) {
-      const imported: unknown = response.data.data[`${field}_arr`] ?? []
+    if (data) {
+      const imported: unknown = data[`${field}_arr`] ?? []
       if (!Array.isArray(imported) || !imported.every((value) => typeof value === 'string')) {
         ElMessage.error('全局设置中的列表格式无效')
         return
@@ -1918,8 +1923,8 @@ const importFromStrmSettings = async (
     } else {
       ElMessage.error('获取全局 STRM 设置失败')
     }
-  } catch {
-    ElMessage.error('获取全局 STRM 设置失败')
+  } catch (error) {
+    reportRequestError(error, '获取全局 STRM 设置失败')
   } finally {
     importStrmSettingsLoading.value = false
   }
@@ -1960,19 +1965,16 @@ const loadAccounts = async () => {
   accounts.value = []
   try {
     accountsLoading.value = true
-    const response = await http.get(`${SERVER_URL}/account/list`)
-    if (response?.data.code === 200) {
-      const data = response.data.data || []
-      for (const account of data) {
-        if (account.source_type !== form.source_type) continue
-        accounts.value.push(account)
-      }
-    } else {
-      console.error('加载账号列表失败：', response?.data.message || '未知错误')
-      accounts.value = []
+    const data = await listAccounts(http)
+    for (const account of data) {
+      if (account.source_type !== form.source_type) continue
+      accounts.value.push(account)
     }
   } catch (error) {
-    console.error('加载账号列表失败：', error)
+    notifyHttpError(error, '加载账号列表失败：', {
+      publicMessages: accountPublicMessages,
+      fallbackMessage: '加载账号列表失败',
+    })
     accounts.value = []
   } finally {
     accountsLoading.value = false
@@ -1981,14 +1983,10 @@ const loadAccounts = async () => {
 
 const loadVersionInfo = async () => {
   try {
-    const response = await http.get(`${SERVER_URL}/version`)
-    if (response && response.data) {
-      versionInfo.value = response.data
-    } else {
-      versionInfo.value = null
-    }
+    versionInfo.value = await fetchSystemVersion(http)
   } catch (error) {
-    console.error('加载系统版本信息错误：', error)
+    const failure = parseHttpError(error)
+    if (failure.shouldNotify) console.error('加载系统版本信息失败：', failure.diagnostics)
     versionInfo.value = null
   }
 }
@@ -1996,51 +1994,39 @@ const loadVersionInfo = async () => {
 const loadDirectoryData = async (id: number) => {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/sync/path/${id}`)
-
-    if (response?.data.code === 200) {
-      const directory = response.data.data
-      if (directory) {
-        form.id = directory.id
-        form.account_id = directory.account_id
-        form.local_path = directory.local_path
-        form.base_cid = directory.base_cid
-        form.source_type = directory.source_type
-        form.custom_config = directory.custom_config
-        form.video_ext = directory.video_ext_arr || []
-        form.meta_ext = directory.meta_ext_arr || []
-        form.exclude_name = directory.exclude_name_arr || []
-        form.exclude_name_regex = directory.exclude_name_regex_arr || []
-        form.remote_path = directory.remote_path
-        selectedDirPath.value = directory.remote_path
-        form.min_video_size = directory.min_video_size
-        form.upload_meta = directory.upload_meta
-        form.download_meta = directory.download_meta
-        form.delete_dir = directory.delete_dir
-        form.add_path = directory.add_path
-        form.check_meta_mtime = directory.check_meta_mtime
-        form.baidu_sync_method = directory.baidu_sync_method
-        form.cron = directory.cron || ''
-        form.enable_cron = directory.enable_cron !== false
-        form.directory_upload_enabled = directory.directory_upload_enabled === true
-        form.strm_base_url = directory.strm_base_url || ''
-        updateStrmPath()
-        if (form.strm_base_url) {
-          updateStrmExample()
-        }
-        await loadDirectoryUploadRules(directory.id)
-      } else {
-        ElMessage.error('未找到该同步目录')
-        goBack()
-      }
-    } else {
-      ElMessage.error(response?.data.message || '加载同步目录失败')
-      goBack()
+    directoryLoadFailed.value = false
+    const directory = await fetchSyncPath(http, id)
+    form.id = directory.id
+    form.account_id = directory.account_id
+    form.local_path = directory.local_path
+    form.base_cid = directory.base_cid
+    form.source_type = directory.source_type
+    form.custom_config = directory.custom_config
+    form.video_ext = directory.video_ext_arr || []
+    form.meta_ext = directory.meta_ext_arr || []
+    form.exclude_name = directory.exclude_name_arr || []
+    form.exclude_name_regex = directory.exclude_name_regex_arr || []
+    form.remote_path = directory.remote_path
+    selectedDirPath.value = directory.remote_path
+    form.min_video_size = directory.min_video_size
+    form.upload_meta = directory.upload_meta
+    form.download_meta = directory.download_meta
+    form.delete_dir = directory.delete_dir
+    form.add_path = directory.add_path
+    form.check_meta_mtime = directory.check_meta_mtime
+    form.baidu_sync_method = directory.baidu_sync_method
+    form.cron = directory.cron || ''
+    form.enable_cron = directory.enable_cron !== false
+    form.directory_upload_enabled = directory.directory_upload_enabled === true
+    form.strm_base_url = directory.strm_base_url || ''
+    updateStrmPath()
+    if (form.strm_base_url) {
+      updateStrmExample()
     }
-  } catch {
-    console.error('加载同步目录错误')
-    ElMessage.error('加载同步目录失败')
-    goBack()
+    await loadDirectoryUploadRules(directory.id)
+  } catch (error) {
+    directoryLoadFailed.value = true
+    reportRequestError(error, '加载同步目录失败')
   } finally {
     loading.value = false
   }
@@ -2147,7 +2133,15 @@ const handleSubmit = async () => {
 
   try {
     loading.value = true
-    await formRef.value.validate()
+    try {
+      await formRef.value.validate()
+    } catch {
+      return
+    }
+    if (directoryLoadFailed.value) {
+      ElMessage.error('同步目录加载失败，请刷新后再保存')
+      return
+    }
     if (directoryUploadRulesLoadFailed.value) {
       ElMessage.error('目录监控上传规则加载失败，请刷新或重试后再保存')
       return
@@ -2161,7 +2155,7 @@ const handleSubmit = async () => {
       buildSaveSyncPathPayload(),
       createIdempotencyKey.value,
       (saved) => {
-        for (const warning of saved.warnings || []) {
+        for (const warning of saved.warnings) {
           ElMessage.warning(warning)
         }
         ElMessage.success(isEditMode.value ? '编辑同步目录成功' : '添加同步目录成功')
@@ -2169,9 +2163,6 @@ const handleSubmit = async () => {
       },
     )
     if (!result) {
-      if (!isEditMode.value && syncDirectorySave.errorCode.value === 'IDEMPOTENCY_CONFLICT') {
-        createIdempotencyKey.value = generateCreateIdempotencyKey()
-      }
       directoryUploadRuleFieldErrors.value = {}
       syncPathFieldErrors.value = {}
       for (const fieldError of syncDirectorySave.fieldErrors.value) {
@@ -2188,12 +2179,12 @@ const handleSubmit = async () => {
           )
         }
       }
-      ElMessage.error(syncDirectorySave.errorMessage.value || '保存同步目录失败')
+      if (syncDirectorySave.errorMessage.value)
+        ElMessage.error(syncDirectorySave.errorMessage.value)
       return
     }
-  } catch {
-    console.error('提交同步目录错误')
-    ElMessage.error(isEditMode.value ? '编辑同步目录失败' : '添加同步目录失败')
+  } catch (error) {
+    reportRequestError(error, isEditMode.value ? '编辑同步目录失败' : '添加同步目录失败')
   } finally {
     loading.value = false
   }

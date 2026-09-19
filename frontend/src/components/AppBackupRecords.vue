@@ -77,10 +77,12 @@ import { useDeviceType } from '@/composables/useDeviceType'
 import { Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import * as backupAPI from '@/api/backup'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { useBackupStore } from '@/stores/backup'
 import PageHeader from '@/components/common/PageHeader.vue'
-import type { BackupRecordListItem, BackupRecordsResponse, BackupStatus } from '@/typing'
+import type { BackupRecordListItem, BackupStatus } from '@/typing'
 import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/recordTable'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp, formatDuration } from '@/utils/timeUtils'
@@ -88,7 +90,6 @@ import { formatTimestamp, formatDuration } from '@/utils/timeUtils'
 const http = useHttpClient()
 const backupStore = useBackupStore()
 const { isMobile } = useDeviceType()
-const API_SUCCESS_CODE = 200
 
 const activeTab = ref('records')
 const backupStarting = ref(false)
@@ -98,6 +99,14 @@ const backupRecords = ref<BackupRecordListItem[]>([])
 const currentPage = ref(1)
 const pageSize = ref(20)
 const totalRecords = ref(0)
+
+const reportError = (error: unknown, fallbackMessage: string) => {
+  if (isMessageBoxCancelError(error)) return
+  notifyHttpError(error, fallbackMessage, {
+    fallbackMessage,
+    publicMessages: backupAPI.backupPublicMessages,
+  })
+}
 
 const backupRecordColumns: RecordColumn<BackupRecordListItem>[] = [
   {
@@ -201,56 +210,33 @@ const backupRecordActions: RecordAction<BackupRecordListItem>[] = [
 const getBackupRecordRowKey = (row: BackupRecordListItem) => row.id
 
 const startManualBackup = async () => {
-  if (!http) return
-
   backupStarting.value = true
   try {
-    const res = await http.post(`${SERVER_URL}/backup/create`, {
-      reason: '手动备份',
-    })
-
-    if (res.data.code === API_SUCCESS_CODE) {
-      ElMessage.success('备份任务已启动')
-      backupStore.startProgressPolling('backup', undefined, http)
-      setTimeout(() => {
-        loadBackupRecords()
-      }, 2000)
-    } else {
-      ElMessage.error(res.data.message || '启动备份任务失败')
-    }
+    await backupAPI.createBackup(http, '手动备份')
+    ElMessage.success('备份任务已启动')
+    backupStore.startProgressPolling('backup', undefined, http)
+    setTimeout(() => {
+      loadBackupRecords()
+    }, 2000)
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : '启动备份任务失败'
-    ElMessage.error(errorMsg)
+    reportError(error, '启动备份任务失败')
   } finally {
     backupStarting.value = false
   }
 }
 
 const loadBackupRecords = async () => {
-  if (!http) return
-
   recordsLoading.value = true
   try {
-    const res = await http.get<{ code: number; data: BackupRecordsResponse }>(
-      `${SERVER_URL}/backup/list`,
-      {
-        params: {
-          page: currentPage.value,
-          page_size: pageSize.value,
-          type: 'all',
-        },
-      },
-    )
-
-    if (res.data.code === API_SUCCESS_CODE) {
-      backupRecords.value = res.data.data.list
-      totalRecords.value = res.data.data.total
-    } else {
-      ElMessage.error('加载备份记录失败')
-    }
+    const records = await backupAPI.fetchBackupRecords(http, {
+      page: currentPage.value,
+      page_size: pageSize.value,
+      type: 'all',
+    })
+    backupRecords.value = records.list
+    totalRecords.value = records.total
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : '加载备份记录失败'
-    ElMessage.error(errorMsg)
+    reportError(error, '加载备份记录失败')
   } finally {
     recordsLoading.value = false
   }
@@ -288,14 +274,9 @@ const getFilenameFromPath = (filePath: string): string => {
 }
 
 const downloadBackup = async (recordId: number, filename: string) => {
-  if (!http) return
-
   try {
-    const res = await http.get(`${SERVER_URL}/backup/download/${recordId}`, {
-      responseType: 'blob',
-    })
-
-    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const data = await backupAPI.downloadBackup(http, recordId)
+    const url = window.URL.createObjectURL(new Blob([data]))
     const link = document.createElement('a')
     link.href = url
     link.setAttribute('download', filename)
@@ -304,8 +285,7 @@ const downloadBackup = async (recordId: number, filename: string) => {
     link.remove()
     window.URL.revokeObjectURL(url)
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : '下载备份文件失败'
-    ElMessage.error(errorMsg)
+    reportError(error, '下载备份文件失败')
   }
 }
 
@@ -317,21 +297,11 @@ const deleteBackupRecord = async (recordId: number) => {
       type: 'warning',
     })
 
-    if (!http) return
-
-    const res = await http.delete(`${SERVER_URL}/backup/records/${recordId}`)
-
-    if (res.data.code === API_SUCCESS_CODE) {
-      ElMessage.success('备份记录已删除')
-      loadBackupRecords()
-    } else {
-      ElMessage.error(res.data.message || '删除备份记录失败')
-    }
+    await backupAPI.deleteBackup(http, recordId)
+    ElMessage.success('备份记录已删除')
+    await loadBackupRecords()
   } catch (error: unknown) {
-    if (error !== 'cancel') {
-      const errorMsg = error instanceof Error ? error.message : '删除备份记录失败'
-      ElMessage.error(errorMsg)
-    }
+    reportError(error, '删除备份记录失败')
   }
 }
 
@@ -357,34 +327,20 @@ const handleRestoreBackup = async (record: BackupRecordListItem) => {
     // 用户确认后，调用恢复 API
     await restoreBackup(record.id)
   } catch (error) {
-    // 用户取消操作
-    if (error !== 'cancel') {
-      console.error('恢复备份失败：', error)
-    }
+    reportError(error, '恢复备份失败')
   }
 }
 
 const restoreBackup = async (recordId: number) => {
-  if (!http) return
-
   try {
     restoringBackup.value = true
     ElMessage.info('正在启动恢复任务…')
 
-    const response = await http.post(`${SERVER_URL}/backup/restore`, {
-      record_id: recordId,
-    })
-
-    if (response?.data.code === API_SUCCESS_CODE) {
-      ElMessage.success('恢复任务已启动')
-      // 启动进度轮询，与现有的恢复流程相同
-      backupStore.startProgressPolling('restore', undefined, http)
-    } else {
-      ElMessage.error(response?.data.message || '恢复备份失败')
-    }
+    await backupAPI.restoreBackup(http, recordId)
+    ElMessage.success('恢复任务已启动')
+    backupStore.startProgressPolling('restore', undefined, http)
   } catch (error) {
-    console.error('恢复备份失败：', error)
-    ElMessage.error('恢复备份失败')
+    reportError(error, '恢复备份失败')
   } finally {
     restoringBackup.value = false
   }

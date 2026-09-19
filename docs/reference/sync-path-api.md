@@ -125,6 +125,8 @@
 - 相同 key 仍在处理时，返回 HTTP `409` 和 `IDEMPOTENCY_CONFLICT`。
 - 原始 key 不入库，也不参与更新请求的幂等处理。
 
+前端在同一次创建流程中保留幂等键。请求超时或收到 `IDEMPOTENCY_CONFLICT` 时，不自动重发请求或更换 key；用户确认状态后手动重试仍使用原 key，避免在原请求完成后重复创建。
+
 事务提交后，服务端会创建本地目录、重载同步 Cron 和目录监控服务。任何一项后续操作失败都不会回滚已保存配置，而会写入响应 `warnings`。
 
 ## 响应与错误
@@ -163,6 +165,8 @@
 
 `field_errors` 是数组，每项包含 `field`、`message`，规则错误可额外包含暂存用 `client_id`。基础字段错误没有 `client_id`。
 
+前端领域 API 保留原始错误响应，保存逻辑通过公共解析器兼容顶层及旧嵌套错误码。可展示的字段原因使用核验后的固定文案，未知原因回退为安全说明，同时保留 `field` 和 `client_id` 的定位。保存成功仍返回聚合和警告；警告不得改判为保存失败，也不得丢失条目。
+
 ## 不变量
 
 - 创建和更新只能通过聚合接口保存；基础配置与目录监控规则不得分开写入。
@@ -176,3 +180,4 @@
 - 修改接口或聚合保存逻辑后，运行 `(cd backend && go test ./internal/controllers/ -run 'Test(Create|Update)SyncPathAggregate')`。
 - 修改事务、幂等或规则归属后，运行 `(cd backend && go test ./internal/syncconfig/)` 与 `(cd backend && go test ./internal/models/ -run TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey)`。
 - 修改前端表单或字段定位后，运行 `(cd frontend && pnpm run type-check)`。
+- 前端 API、保存流程和组件回归随 `(cd frontend && pnpm run test)` 执行，覆盖 HTTP 成功但业务失败、来源／CSRF、字段定位、成功警告、失败保留输入、幂等键复用，以及详情或关联读取失败不提交默认空值。

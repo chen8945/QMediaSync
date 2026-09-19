@@ -292,7 +292,7 @@ func ChangePassword(c *gin.Context) {
 	req.Username = strings.TrimSpace(req.Username)
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 
@@ -303,7 +303,7 @@ func ChangePassword(c *gin.Context) {
 		if _, err := models.GetActiveUserSession(currentSession.SessionID, time.Now().Unix()); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				clearSessionCookies(c)
-				c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录会话已失效", Data: nil})
+				c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录会话已失效", Data: nil, ErrorCode: ErrorCodeSessionInvalid})
 				return
 			}
 			if helpers.AppLogger != nil {
@@ -320,7 +320,7 @@ func ChangePassword(c *gin.Context) {
 			if _, ok := CurrentSession(c); ok {
 				clearSessionCookies(c)
 			}
-			c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+			c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 			return
 		}
 		if helpers.AppLogger != nil {
@@ -333,7 +333,7 @@ func ChangePassword(c *gin.Context) {
 		if _, ok := CurrentSession(c); ok {
 			clearSessionCookies(c)
 		}
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 
@@ -501,7 +501,7 @@ func DisableTwoFactor(c *gin.Context) {
 func GetUserInfo(c *gin.Context) {
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return
 	}
 	// 返回当前用户 ID 和用户名

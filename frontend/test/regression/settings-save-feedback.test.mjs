@@ -95,15 +95,6 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppUserSettings.vue save success should use the inline status instead of a duplicate toast',
   )
 
-  const telegramSource = readSource('src/components/AppTelegramSettings.vue')
-  const saveTelegramSettingsBody = getLocalFunctionBody(telegramSource, 'saveSettings')
-
-  assert.doesNotMatch(
-    saveTelegramSettingsBody,
-    /ElMessage\.success\(/,
-    'AppTelegramSettings.vue save success should use the inline status instead of a duplicate toast',
-  )
-
   assert.match(
     userSource,
     /import\s*\{[\s\S]*?\bCheck\b[\s\S]*?\}\s*from\s*['"]@element-plus\/icons-vue['"]/,
@@ -145,20 +136,6 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     '保存',
     '(?=[^>]*type=["\']success["\'])(?=[^>]*size=["\']large["\'])(?=[^>]*:icon=["\']Check["\'])',
     'AppProxySettings.vue save button should be a large success settings action',
-  )
-
-  assertButtonMatches(
-    telegramSource,
-    '测试机器人',
-    '(?=[^>]*type=["\']primary["\'])(?=[^>]*size=["\']large["\'])(?=[^>]*:icon=["\']Message["\'])',
-    'AppTelegramSettings.vue test button should be a large primary settings action',
-  )
-
-  assertButtonMatches(
-    telegramSource,
-    '保存设置',
-    '(?=[^>]*type=["\']success["\'])(?=[^>]*size=["\']large["\'])(?=[^>]*:icon=["\']Check["\'])',
-    'AppTelegramSettings.vue save button should be a large success settings action',
   )
 
   for (const queuePage of [

@@ -6,7 +6,7 @@
           <el-button type="primary" :icon="Plus" @click="openCreateDialog">
             生成 API Key
           </el-button>
-          <el-button :icon="Refresh" @click="loadKeys" :loading="loading"> 刷新 </el-button>
+          <el-button :icon="Refresh" @click="loadKeys()" :loading="loading"> 刷新 </el-button>
         </div>
       </template>
     </PageHeader>
@@ -35,11 +35,11 @@
       <el-table-column prop="is_active" label="状态" width="200">
         <template #default="{ row }">
           <el-switch
-            v-model="row.is_active"
+            :model-value="row.is_active"
             :loading="row._updating"
             active-text="启用"
             inactive-text="停用"
-            @change="toggleStatus(row)"
+            @change="toggleStatus(row, Boolean($event))"
           />
         </template>
       </el-table-column>
@@ -132,24 +132,20 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Delete, CopyDocument } from '@element-plus/icons-vue'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import {
+  apiKeyPublicMessages,
+  createApiKey,
+  deleteApiKey,
+  fetchApiKeys,
+  updateApiKeyStatus,
+  type ApiKey,
+  type CreatedApiKey,
+} from '@/api/apiKeys'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/timeUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
-
-interface ApiKey {
-  id: number
-  name: string
-  key_prefix: string
-  last_used_at?: number | null
-  created_at: number
-  is_active: boolean
-}
-
-interface CreatedApiKey extends ApiKey {
-  key?: string
-}
 
 type ApiKeyItem = ApiKey & { _updating?: boolean }
 
@@ -167,23 +163,17 @@ const formatDateSafe = (value?: number | null) => {
   return formatDateTime(value || 0)
 }
 
-const loadKeys = async () => {
+const loadKeys = async (refreshAfterSuccess = false) => {
   try {
     loading.value = true
-    const response = await http.get(`${SERVER_URL}/api-keys`)
-    if (response?.data.code === 200) {
-      apiKeys.value = (response.data.data || []).map((item: ApiKey) => ({
-        ...item,
-        _updating: false,
-      }))
-    } else {
-      apiKeys.value = []
-      ElMessage.error(response?.data.message || '加载 API Key 列表失败')
-    }
+    apiKeys.value = (await fetchApiKeys(http)).map((item) => ({ ...item, _updating: false }))
   } catch (error) {
-    console.error('加载 API Key 失败：', error)
-    apiKeys.value = []
-    ElMessage.error('加载失败，请稍后重试')
+    const messagePrefix = refreshAfterSuccess ? '操作已成功，但刷新 API Key 列表失败' : undefined
+    notifyHttpError(error, '加载 API Key 列表失败', {
+      fallbackMessage: messagePrefix ?? '加载 API Key 列表失败',
+      publicMessages: apiKeyPublicMessages,
+      messagePrefix,
+    })
   } finally {
     loading.value = false
   }
@@ -201,47 +191,37 @@ const createKey = async () => {
   }
   try {
     creating.value = true
-    const response = await http.post(`${SERVER_URL}/api-keys`, {
-      name: createForm.name.trim(),
-    })
-
-    if (response?.data.code === 200) {
-      createdKey.value = response.data.data
-      createDialogVisible.value = false
-      createdKeyDialogVisible.value = true
-      ElMessage.success('API Key 创建成功')
-      loadKeys()
-    } else {
-      ElMessage.error(response?.data.message || '创建失败')
-    }
+    createdKey.value = await createApiKey(http, createForm.name.trim())
+    createDialogVisible.value = false
+    createdKeyDialogVisible.value = true
+    ElMessage.success('API Key 创建成功')
+    await loadKeys(true)
   } catch (error) {
-    console.error('创建 API Key 失败：', error)
-    ElMessage.error('创建失败，请稍后重试')
+    notifyHttpError(error, '创建 API Key 失败', {
+      fallbackMessage: '创建 API Key 失败',
+      publicMessages: apiKeyPublicMessages,
+    })
   } finally {
     creating.value = false
   }
 }
 
-const toggleStatus = async (row: ApiKeyItem) => {
+const toggleStatus = async (row: ApiKeyItem, isActive: boolean) => {
+  if (row._updating) return
   const original = row.is_active
+  row.is_active = isActive
   row._updating = true
   try {
-    const response = await http.put(`${SERVER_URL}/api-keys/${row.id}/status`, {
-      is_active: row.is_active,
-    })
-
-    if (response?.data.code === 200) {
-      ElMessage.success(row.is_active ? '已启用' : '已禁用')
-      // 刷新时间等可能变化
-      loadKeys()
-    } else {
-      row.is_active = original
-      ElMessage.error(response?.data.message || '状态更新失败')
-    }
+    await updateApiKeyStatus(http, row.id, isActive)
+    ElMessage.success(isActive ? '已启用' : '已禁用')
+    // 刷新时间等可能变化；回读失败不撤销已经成功的状态更新。
+    await loadKeys(true)
   } catch (error) {
-    console.error('更新 API Key 状态失败：', error)
     row.is_active = original
-    ElMessage.error('状态更新失败，请稍后重试')
+    notifyHttpError(error, '更新 API Key 状态失败', {
+      fallbackMessage: '更新 API Key 状态失败',
+      publicMessages: apiKeyPublicMessages,
+    })
   } finally {
     row._updating = false
   }
@@ -259,17 +239,15 @@ const confirmDelete = async (row: ApiKey) => {
       },
     )
 
-    const response = await http.delete(`${SERVER_URL}/api-keys/${row.id}`)
-    if (response?.data.code === 200) {
-      ElMessage.success('删除成功')
-      loadKeys()
-    } else {
-      ElMessage.error(response?.data.message || '删除失败')
-    }
+    await deleteApiKey(http, row.id)
+    ElMessage.success('删除成功')
+    await loadKeys(true)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
-      console.error('删除 API Key 失败：', error)
-      ElMessage.error('删除失败，请稍后重试')
+      notifyHttpError(error, '删除 API Key 失败', {
+      fallbackMessage: '删除 API Key 失败',
+      publicMessages: apiKeyPublicMessages,
+    })
     }
   }
 }

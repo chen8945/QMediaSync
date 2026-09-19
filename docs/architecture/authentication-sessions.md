@@ -57,7 +57,30 @@
 
 `GET /api/session` 是会话状态查询。无 Cookie、无效或过期 JWT、已撤销会话均返回 `200` 和 `data.authenticated=false`；有效会话返回用户、会话和 CSRF 数据，始终设置 `Cache-Control: no-store, private`。内部故障返回 `5xx`，不得伪装匿名状态。登录成功后前端先调用该接口确认 Cookie；只有明确返回未认证时才提示 Cookie 问题。
 
+前端认证请求由 `api/auth.ts` 封装，初始化、会话恢复和退出的状态流程仍由页面或 store 管理。登录凭据失败采用固定文案；来源、CSRF、限流和传输故障按 [前端错误处理约定](../engineering/frontend-development.md#api-响应与请求错误) 分类。业务请求认证失效后，拦截器标记本轮已处理的错误，页面不得重复提示；登录与会话查询保留独立的认证失效策略。
+
+当前用户资料、两步验证和登录设备请求由 `api/userSettings.ts` 封装。只有业务成功后才能清空已提交的敏感输入、切换两步验证状态或刷新撤销后的设备列表；凭据修改响应的 `data=true` 才触发本地会话清理和重新登录。失败保留输入，来源、CSRF 和传输错误使用公共分类；取消和已处理的认证失效不重复提示。两步验证关闭失败不区分密码和验证码原因，登录接口的统一失败契约不变。
+
+## 请求错误码
+
+认证拒绝通过 `APIResponse` 的可选顶层 `error_code` 区分原因，保留既有 HTTP 状态、数值 `code`、`message` 和 `data`。通用响应边界见 [请求校验约定](../engineering/request-validation.md#响应与错误分类)。
+
+| 错误码 | 含义 |
+| --- | --- |
+| `AUTHENTICATION_REQUIRED` | 受保护操作（含 STRM Webhook）缺少登录凭证、API Key 或认证上下文。 |
+| `AUTHENTICATION_INVALID` | 受保护操作（含 STRM Webhook）的 JWT 或 API Key 无效，或对应用户不存在；不用于登录接口。 |
+| `SESSION_INVALID` | 会话不存在、已撤销、已过期或与用户不一致，不进一步区分具体原因。 |
+| `REQUEST_ORIGIN_INVALID` | 来源缺失、格式无效或不在允许范围内，不能仅据此断言反向代理是唯一原因。 |
+| `CSRF_TOKEN_INVALID` | CSRF 请求头、Cookie 或会话哈希校验失败。 |
+| `FORBIDDEN` | 通用拒绝码，供明确的禁止访问分支使用（如 `/proxy-115` 拒绝非 115／百度网盘链接）；未分类的旧 `403` 仍可省略错误码。 |
+
+来源和 CSRF 拒绝仍返回 HTTP `403`、业务 `code=500`、`data=null`。所有常规登录失败保留原完整响应：HTTP `200`、`code=500`、`message="登录失败"`、`data=null`，不新增 `error_code`；不得通过任何响应字段区分账号不存在、密码错误或 TOTP 错误。登录限流保留独立的 HTTP `429` 和等待提示。
+
+受保护请求的会话、API Key 或用户查询故障保留历史 HTTP `401` 和响应体，但不推断为 `SESSION_INVALID` 或 `AUTHENTICATION_INVALID`；`/api/session` 的内部故障仍返回 `5xx`。匿名会话查询是正常成功响应，不带 `error_code`。错误码不改变来源白名单、API Key 的 CSRF 豁免或 Cookie 安全属性。
+
 ## API Key、可信来源与下载代理
+
+前端 API Key 管理通过领域 API 校验业务成功后再展示新建密钥或刷新列表。创建失败保留输入，状态写入失败恢复操作前的开关值；异常提示与诊断不包含密钥，取消和已处理的认证失效不重复提示。
 
 - API Key 接受 `X-API-Key` 或 `?api_key=`，不需要 CSRF。`/emby/webhook` 默认鉴权，优先 header，保留查询参数兼容只能配置 URL 的 Emby Webhook。
 - 创建时生成 `qms_` 前缀加 24 位随机字符的完整密钥，只在创建响应中返回一次。数据库只保存 SHA256 `key_hash`、前 8 位 `key_prefix`、状态和时间字段，不保存明文。
@@ -81,7 +104,7 @@
 ## 验证方式
 
 - 运行 `(cd backend && go test -race ./internal/controllers -run '^TestProxy115')`，覆盖 115、百度网盘首跳及同域、跨允许域重定向的 Cookie 隔离，同时验证 Range、Referer、网盘 UA 和响应内容。
-- 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景。
+- 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Login|Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景；控制器测试同时保护登录失败完整响应一致、已知拒绝原因的错误码及数据库故障不误分类。
 - 管理员恢复的 SQLite、PostgreSQL、命令入口及 Compose 脚本验证命令见 [验证说明](../engineering/verification.md#管理员恢复验证)，覆盖事务回滚、损坏旧凭据、非固定管理员 ID、认证清理和业务数据保留。
 - 运行 `(cd frontend && pnpm lint)`、`(cd frontend && pnpm run type-check)` 检查前端认证调用改动。
 - 代理或 Cookie 部署改动在 HTTPS 测试环境检查 `Set-Cookie`、`X-Forwarded-Proto` 和可信来源行为；真实域名与证书配置无法在单元测试中覆盖时，在变更说明中记录。

@@ -90,7 +90,9 @@ import { ref, useTemplateRef } from 'vue'
 import { UploadFilled, CircleCheck } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type UploadFile, type UploadInstance } from 'element-plus'
 import { useHttpClient } from '@/http/client'
-import { SERVER_URL } from '@/const'
+import * as backupAPI from '@/api/backup'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { useBackupStore } from '@/stores/backup'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp } from '@/utils/timeUtils'
@@ -100,7 +102,6 @@ import PageHeader from '@/components/common/PageHeader.vue'
 const http = useHttpClient()
 const backupStore = useBackupStore()
 const { isMobile } = useDeviceType()
-const API_SUCCESS_CODE = 200
 
 const uploadRef = useTemplateRef<UploadInstance>('uploadRef')
 const selectedFile = ref<File | null>(null)
@@ -144,7 +145,7 @@ const clearFile = () => {
 }
 
 const startRestore = async () => {
-  if (!selectedFile.value || !http) {
+  if (!selectedFile.value) {
     return
   }
 
@@ -166,27 +167,16 @@ const startRestore = async () => {
 
     restoreStarting.value = true
 
-    const formData = new FormData()
-    formData.append('file', selectedFile.value)
-
-    const res = await http.post(`${SERVER_URL}/backup/upload-restore`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 600000,
-    })
-    if (res.data.code === API_SUCCESS_CODE) {
-      ElMessage.success('恢复任务已启动')
-      backupStore.startProgressPolling('restore', undefined, http)
-      clearFile()
-    } else {
-      ElMessage.error(res.data.message || '启动恢复任务失败')
-    }
+    await backupAPI.uploadAndRestoreBackup(http, selectedFile.value)
+    ElMessage.success('恢复任务已启动')
+    backupStore.startProgressPolling('restore', undefined, http)
+    clearFile()
   } catch (error: unknown) {
-    if (error !== 'cancel') {
-      const errorMsg = error instanceof Error ? error.message : '启动恢复任务失败'
-      ElMessage.error(errorMsg)
-    }
+    if (isMessageBoxCancelError(error)) return
+    notifyHttpError(error, '启动恢复任务失败', {
+      fallbackMessage: '启动恢复任务失败',
+      publicMessages: backupAPI.backupPublicMessages,
+    })
   } finally {
     restoreStarting.value = false
   }

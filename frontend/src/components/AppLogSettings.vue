@@ -1,27 +1,17 @@
 <script setup lang="ts">
-import { SERVER_URL } from '@/const'
 import type { LogLevel } from '@/types/log'
 import { isLogLevel, LOG_LEVEL_OPTIONS } from '@/utils/logLevel'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
-import { ElMessage } from 'element-plus'
 import { Check } from '@element-plus/icons-vue'
-import { onMounted, reactive, shallowRef } from 'vue'
+import { onMounted, onBeforeUnmount, reactive, shallowRef } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
-
-interface APIResponse<T> {
-  code: number
-  message: string
-  data: T
-}
-
-interface LogSettingResponse {
-  level: string
-  levels: string[]
-  maxSizeMB: number
-  maxBackups: number
-  maxAgeDays: number
-}
+import { parseHttpError } from '@/http/errors'
+import {
+  fetchLogSettings,
+  saveLogSettings,
+  systemSettingsPublicMessages,
+} from '@/api/systemSettings'
 
 interface SaveStatus {
   title: string
@@ -32,7 +22,14 @@ interface SaveStatus {
 const http = useHttpClient()
 const { isMobile: checkIsMobile } = useDeviceType()
 const loading = shallowRef(false)
+const configLoaded = shallowRef(false)
 const saveStatus = shallowRef<SaveStatus | null>(null)
+let saveStatusTimer: ReturnType<typeof setTimeout> | undefined
+const clearSaveStatusTimer = () => {
+  clearTimeout(saveStatusTimer)
+  saveStatusTimer = undefined
+}
+onBeforeUnmount(clearSaveStatusTimer)
 const LOG_ROTATION_LIMITS = {
   maxSizeMB: { min: 1, max: 1024 },
   maxBackups: { min: 1, max: 100 },
@@ -99,25 +96,34 @@ function validateLogSettingForm(): string | null {
 }
 
 async function fetchLogSetting() {
+  if (loading.value) return
+  clearSaveStatusTimer()
+  saveStatus.value = null
   try {
     loading.value = true
-    const response = await http.get<APIResponse<LogSettingResponse>>(`${SERVER_URL}/setting/log`)
-    if (!response || response.data.code !== 200) {
-      throw new Error(response?.data.message || '获取日志设置失败')
-    }
-    formData.level = normalizeLevel(response.data.data.level)
-    formData.maxSizeMB = normalizeNumber(response.data.data.maxSizeMB, 10)
-    formData.maxBackups = normalizeNumber(response.data.data.maxBackups, 3)
-    formData.maxAgeDays = normalizeNumber(response.data.data.maxAgeDays, 7)
+    const settings = await fetchLogSettings(http)
+    formData.level = normalizeLevel(settings.level)
+    formData.maxSizeMB = normalizeNumber(settings.maxSizeMB, 10)
+    formData.maxBackups = normalizeNumber(settings.maxBackups, 3)
+    formData.maxAgeDays = normalizeNumber(settings.maxAgeDays, 7)
+    configLoaded.value = true
   } catch (error) {
-    console.error('获取日志设置失败：', error)
-    ElMessage.error(error instanceof Error ? error.message : '获取日志设置失败')
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '获取日志设置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('获取日志设置失败：', parsed.diagnostics)
+    saveStatus.value = { title: '获取日志设置失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
   }
 }
 
 async function saveLogSetting() {
+  if (!configLoaded.value || loading.value) return
+  clearSaveStatusTimer()
+  saveStatus.value = null
   const validationError = validateLogSettingForm()
   if (validationError) {
     saveStatus.value = {
@@ -130,34 +136,35 @@ async function saveLogSetting() {
 
   try {
     loading.value = true
-    saveStatus.value = null
-    const response = await http.post<APIResponse<LogSettingResponse>>(`${SERVER_URL}/setting/log`, {
+    const settings = await saveLogSettings(http, {
       level: formData.level,
       maxSizeMB: formData.maxSizeMB,
       maxBackups: formData.maxBackups,
       maxAgeDays: formData.maxAgeDays,
     })
-    if (!response || response.data.code !== 200) {
-      throw new Error(response?.data.message || '保存日志设置失败')
-    }
-    formData.level = normalizeLevel(response.data.data.level)
-    formData.maxSizeMB = normalizeNumber(response.data.data.maxSizeMB, formData.maxSizeMB)
-    formData.maxBackups = normalizeNumber(response.data.data.maxBackups, formData.maxBackups)
-    formData.maxAgeDays = normalizeNumber(response.data.data.maxAgeDays, formData.maxAgeDays)
+    formData.level = normalizeLevel(settings.level)
+    formData.maxSizeMB = normalizeNumber(settings.maxSizeMB, formData.maxSizeMB)
+    formData.maxBackups = normalizeNumber(settings.maxBackups, formData.maxBackups)
+    formData.maxAgeDays = normalizeNumber(settings.maxAgeDays, formData.maxAgeDays)
     saveStatus.value = {
       title: '保存成功',
       type: 'success',
       description: '日志设置已保存',
     }
-    setTimeout(() => {
+    saveStatusTimer = setTimeout(() => {
       saveStatus.value = null
     }, 3000)
   } catch (error) {
-    console.error('保存日志设置失败：', error)
+    const parsed = parseHttpError(error, {
+      fallbackMessage: '保存日志设置失败，请稍后重试',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!parsed.shouldNotify) return
+    console.error('保存日志设置失败：', parsed.diagnostics)
     saveStatus.value = {
       title: '保存失败',
       type: 'error',
-      description: error instanceof Error ? error.message : '保存日志设置失败',
+      description: parsed.message,
     }
   } finally {
     loading.value = false
@@ -232,9 +239,13 @@ onMounted(() => {
           size="large"
           :icon="Check"
           :loading="loading"
+          :disabled="!configLoaded"
           @click="saveLogSetting"
         >
           保存设置
+        </el-button>
+        <el-button v-if="!configLoaded" :loading="loading" @click="fetchLogSetting">
+          重新加载
         </el-button>
       </div>
     </el-form>
@@ -244,7 +255,8 @@ onMounted(() => {
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
-      :closable="false"
+      :closable="true"
+      @close="saveStatus = null"
       show-icon
       class="save-status"
     />

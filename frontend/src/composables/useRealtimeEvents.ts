@@ -30,7 +30,8 @@ type Listener = {
   onReconnect?: ReconnectCallback
 }
 
-export type RealtimeConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting'
+export type RealtimeConnectionState =
+  'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
 const listeners = new Map<RealtimeEventType, Set<Listener>>()
 const sourceHandlers = new Map<RealtimeEventType, (event: MessageEvent<string>) => void>()
@@ -93,7 +94,17 @@ function ensureSource() {
       opened = true
     }
     currentSource.onerror = () => {
-      if (source === currentSource) realtimeConnectionState.value = 'reconnecting'
+      if (source !== currentSource) return
+      if (currentSource.readyState !== EventSource.CLOSED) {
+        realtimeConnectionState.value = 'reconnecting'
+        return
+      }
+      // CLOSED 表示浏览器不会再自动重连；释放连接并保留监听，下一次订阅会重新建立连接。
+      source = null
+      unregisterSource?.()
+      unregisterSource = null
+      currentSource.close()
+      realtimeConnectionState.value = 'disconnected'
     }
   } catch {
     realtimeConnectionState.value = 'reconnecting'

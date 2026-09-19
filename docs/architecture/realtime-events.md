@@ -38,6 +38,8 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 日志查看器先成功请求 `GET /api/logs/old`，再创建 `/api/logs/stream`。日志路径切换或组件卸载会取消旧快照请求，并忽略已过期的响应，避免旧历史日志与新路径的实时增量混合。服务端 stream 自身会校验路径、普通文件类型和 EOF cursor；建立 tail 时只读取文件末尾位置，不扫描整个历史日志。
 
+初始快照和向前翻页均通过日志领域 API 读取，保留 Cookie、位置、条数和取消信号。失败复用公共 HTTP 分类，日志区域只显示安全说明；路径切换后的旧失败也不能写入新路径的日志。原生 `EventSource.onerror` 只表示连接暂时断开，不据此判断认证失效或服务不可达，也不新增会话探测。
+
 `log_append` 传递新增日志条目，`resync_required` 表示截断、轮转或 tailer 无法继续时应重新请求 HTTP 日志快照。日志查看器的连接状态为 `idle`、`connecting`、`connected`、`reconnecting` 或 `unsupported`：初始历史快照和 `EventSource` 建立期间显示“正在连接”，仅在原生连接错误后显示重连提示；初始快照请求失败时会记录错误并回退到 `idle`；不支持 `EventSource` 时进入 `unsupported`，仅显示不支持提示。普通连接错误不关闭 source，下一次 `open` 会重新加载 HTTP 历史快照。日志流不承诺严格投递、持久回放或客户端 cursor 补偿。
 
 不支持 SSE 时，日志不轮询，界面提示“当前浏览器不支持实时日志，请手动刷新查看最新内容”。
@@ -49,6 +51,8 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 运行中任务会在单个进程 epoch 内缓存最近 64 条 `task_patch`。浏览器携带格式为 `<stream_epoch>:<sequence>` 的 `Last-Event-ID` 时，仅在 epoch 一致且缓存连续时回放后续 patch；空值、非法值、epoch 不同、缓存缺口或服务重启时均返回完整 snapshot。snapshot 带注册时的 sequence 水位线，后续只发送更大的 patch，避免旧事件回退快照。日志不参与回放，未命中时由 snapshot 中的最近日志恢复。
 
 任务详情前端同样区分 `idle`、`connecting`、`connected` 和 `reconnecting`：首次订阅期间不显示断线提示，原生连接错误后才显示重连提示。任务完成、失败或删除后，服务端清理该任务的回放缓存和 sequence 状态。已订阅客户端继续接收最多 2 秒的最终日志增量，再收到唯一 `complete`；客户端关闭 source，避免终态任务自动重连。后续新建连接通过终态 snapshot（或缺失记录的 `deleted complete`）收敛，不会在终态 snapshot 后重复发送 `complete`。浏览器不支持 SSE 时，详情页仅对运行中任务每 5 秒请求 `GET /api/sync/task?sync_id=...`，终态后停止；日志仍由用户手动刷新。
+
+该 HTTP 降级读取必须校验业务成功和任务 ID，同一轮查询不得重叠；失败保留已有任务快照，并显示公共错误说明，后续成功清除错误。显式停止、任务切换或卸载会使在途结果失效，旧请求不得回写状态或重新创建轮询。SSE 支持与连接状态不因 HTTP 错误分类而改变。
 
 ## 日志 tailer 与事件字段
 

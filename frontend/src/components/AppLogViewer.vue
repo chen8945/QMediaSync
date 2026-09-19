@@ -85,6 +85,8 @@ import { registerRealtimeSource } from '@/composables/realtimeSources'
 import type { LogEntry, LogLevel } from '@/types/log'
 import { DEFAULT_VISIBLE_LOG_LEVELS, filterLogEntriesByLevels } from '@/utils/logLevel'
 import { formatDateTime } from '@/utils/timeUtils'
+import { fetchLogSnapshot } from '@/api/logs'
+import { parseHttpError } from '@/http/errors'
 
 // 定义组件属性
 interface Props {
@@ -135,18 +137,7 @@ let hasInitialSnapshot = false
 let snapshotRequestID = 0
 let snapshotController: AbortController | null = null
 
-const HTTP_URL = '/api/logs/old'
 const STREAM_URL = '/api/logs/stream'
-
-const readLogResponseError = async (response: Response) => {
-  try {
-    const body = await response.json()
-    if (body?.error) return String(body.error)
-  } catch {
-    // 忽略非 JSON 错误响应
-  }
-  return 'HTTP 请求失败'
-}
 
 // 限制显示的日志条目
 const limitedLogLines = computed(() => {
@@ -225,16 +216,8 @@ const loadInitialLogs = async (): Promise<boolean> => {
   isLoadingOldLogs = true
   loading.value = true
 
-  // 构建 HTTP 请求 URL，加载前 1000 条日志
-  const apiUrl = `${HTTP_URL}?path=${encodeURIComponent(logPath)}&pos=-1&direction=forward&limit=1000`
-
   try {
-    const response = await fetch(apiUrl, { credentials: 'include', signal: controller.signal })
-    if (!isCurrentSnapshotRequest()) return false
-    if (!response.ok) {
-      throw new Error(await readLogResponseError(response))
-    }
-    const rs = await response.json()
+    const rs = await fetchLogSnapshot(logPath, -1, 1000, controller.signal)
     if (!isCurrentSnapshotRequest()) return false
     const entries = rs.entries || []
     currentOffset = rs.pos
@@ -246,11 +229,11 @@ const loadInitialLogs = async (): Promise<boolean> => {
     if (controller.signal.aborted || !isCurrentSnapshotRequest()) {
       return false
     }
-    console.error('加载初始日志失败：', error)
-    addSystemLog(
-      `加载初始日志失败：${error instanceof Error ? error.message : '未知错误'}`,
-      'error',
-    )
+    const failure = parseHttpError(error, { fallbackMessage: '加载初始日志失败' })
+    if (failure.shouldNotify) {
+      console.error('加载初始日志失败：', failure.diagnostics)
+      addSystemLog(failure.message, 'error')
+    }
     hasInitialSnapshot = false
     if (!stream.value && streamConnectionState.value === 'connecting') {
       streamConnectionState.value = 'idle'
@@ -370,9 +353,10 @@ const connect = () => {
   }
   currentStream.onerror = (event) => {
     if ('data' in event) return
-    if (stream.value === currentStream) {
-      streamConnectionState.value = 'reconnecting'
-    }
+    if (stream.value !== currentStream) return
+    // CLOSED 表示浏览器已放弃自动重连，释放连接并回到“已断开”，由用户手动重新连接。
+    if (currentStream.readyState === EventSource.CLOSED) disconnect(currentStream)
+    else streamConnectionState.value = 'reconnecting'
   }
   currentStream.addEventListener('log_append', (event) => {
     if (stream.value !== currentStream) return
@@ -412,54 +396,50 @@ const disconnect = (currentStream = stream.value) => {
 }
 
 // 通过 HTTP 接口加载旧日志
-const loadOldLogs = () => {
+const loadOldLogs = async () => {
   const logPath = props.logPath.trim()
   if (!logPath) {
     return
   }
 
   // 如果已经到达日志文件末尾，不再加载
-  if (hasReachedEnd) {
+  if (hasReachedEnd || isLoadingOldLogs) {
     return
   }
 
+  const requestID = ++snapshotRequestID
+  const controller = new AbortController()
+  snapshotController = controller
+  const isCurrentSnapshotRequest = () =>
+    snapshotRequestID === requestID &&
+    snapshotController === controller &&
+    props.logPath.trim() === logPath
   isLoadingOldLogs = true
   loading.value = true
 
-  // 构建 HTTP 请求 URL
-  const apiUrl = `${HTTP_URL}?path=${encodeURIComponent(logPath)}&pos=${currentOffset}&direction=forward&limit=100`
-
-  // 发送 HTTP 请求
-  fetch(apiUrl, { credentials: 'include' })
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new Error(await readLogResponseError(response))
-      }
-      return response.json() // 解析为 JSON 格式
-    })
-    .then((rs) => {
-      const entries = rs.entries || []
-      currentOffset = rs.pos
-      // 处理返回的旧日志条目
-      if (Array.isArray(entries) && entries.length > 0) {
-        // 直接添加新日志
-        logLines.value = [...logLines.value, ...entries]
-      } else {
-        // 返回数据为空，说明已经到达日志文件末尾
-        hasReachedEnd = true
-      }
-    })
-    .catch((error) => {
-      console.error('加载旧日志失败：', error)
-      addSystemLog(
-        `加载旧日志失败：${error instanceof Error ? error.message : '未知错误'}`,
-        'error',
-      )
-    })
-    .finally(() => {
+  try {
+    const rs = await fetchLogSnapshot(logPath, currentOffset, 100, controller.signal)
+    if (!isCurrentSnapshotRequest()) return
+    currentOffset = rs.pos
+    if (rs.entries.length > 0) {
+      logLines.value = [...logLines.value, ...rs.entries]
+    } else {
+      hasReachedEnd = true
+    }
+  } catch (error) {
+    if (controller.signal.aborted || !isCurrentSnapshotRequest()) return
+    const failure = parseHttpError(error, { fallbackMessage: '加载旧日志失败' })
+    if (failure.shouldNotify) {
+      console.error('加载旧日志失败：', failure.diagnostics)
+      addSystemLog(failure.message, 'error')
+    }
+  } finally {
+    if (isCurrentSnapshotRequest()) {
       isLoadingOldLogs = false
       loading.value = false
-    })
+      snapshotController = null
+    }
+  }
 }
 
 // 清空日志

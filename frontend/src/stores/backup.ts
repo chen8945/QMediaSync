@@ -4,6 +4,8 @@ import { ElMessage } from 'element-plus'
 import type { AxiosInstance } from 'axios'
 import type { BackupTaskType, BackupProgress } from '@/typing'
 import { SERVER_URL } from '@/const'
+import { fetchBackupStatus, backupPublicMessages } from '@/api/backup'
+import { parseHttpError } from '@/http/errors'
 
 export const useBackupStore = defineStore('backup', () => {
   const progress = ref<BackupProgress | null>(null)
@@ -18,7 +20,6 @@ export const useBackupStore = defineStore('backup', () => {
   const errorRetryCount = ref(0)
 
   const MAX_RETRY_COUNT = 3
-  const API_SUCCESS_CODE = 200
 
   const isRunning = computed(() => progress.value?.running === true)
 
@@ -62,64 +63,52 @@ export const useBackupStore = defineStore('backup', () => {
       return
     pollInFlight.value = true
     try {
-      if (taskType.value === 'backup') {
-        const res = await http.get(`${SERVER_URL}/backup/status`)
-        if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
-        if (res.data.code === API_SUCCESS_CODE) {
-          const statusData = res.data.data
-
-          progress.value = {
-            running: statusData.is_running,
-            status: statusData.is_running ? 'running' : 'completed',
-            progress: parseInt((statusData.count / statusData.total) * 100 + '', 10),
-            elapsed_seconds: statusData.elapsed,
-            estimated_seconds: 0,
-            current_step: statusData.desc,
-            processed_tables: statusData.count,
-            total_tables: statusData.total,
-          }
-          errorRetryCount.value = 0
-
-          if (!statusData.is_running) {
-            stopProgressPolling()
-            handleTaskComplete(progress.value.status)
-          }
-        }
-      } else if (taskType.value === 'restore') {
-        const res = await http.get(`${SERVER_URL}/backup/status`)
-        if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
-        if (res.data.code === API_SUCCESS_CODE) {
-          const statusData = res.data.data
-          progress.value = {
-            running: statusData.is_running,
-            status: statusData.is_running ? 'running' : 'completed',
-            progress:
-              statusData.count === 0
-                ? 0
-                : parseInt((statusData.count / statusData.total) * 100 + '', 10),
-            elapsed_seconds: statusData.elapsed,
-            estimated_seconds: 0,
-            current_step: statusData.desc,
-            processed_tables: statusData.count,
-            total_tables: statusData.total,
-          }
-          errorRetryCount.value = 0
-
-          if (!progress.value.running) {
-            stopProgressPolling()
-            showProgressDialog.value = false
-          }
+      const statusData = await fetchBackupStatus(http)
+      if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
+      progress.value = {
+        running: statusData.is_running,
+        status: statusData.is_running ? 'running' : 'completed',
+        progress:
+          taskType.value === 'restore' && statusData.count === 0
+            ? 0
+            : parseInt((statusData.count / statusData.total) * 100 + '', 10),
+        elapsed_seconds: statusData.elapsed,
+        estimated_seconds: 0,
+        current_step: statusData.desc,
+        processed_tables: statusData.count,
+        total_tables: statusData.total,
+      }
+      errorRetryCount.value = 0
+      if (!statusData.is_running) {
+        stopProgressPolling()
+        if (taskType.value === 'backup') {
+          handleTaskComplete(progress.value.status)
+        } else {
+          showProgressDialog.value = false
         }
       }
     } catch (error) {
-      if (generation !== pollingGeneration.value || !pageVisible.value) return
-      console.error('轮询进度失败：', error)
+      if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
+      const parsed = parseHttpError(error, {
+        fallbackMessage: '查询备份或恢复进度失败',
+        publicMessages: backupPublicMessages,
+        request: { method: 'get', url: `${SERVER_URL}/backup/status` },
+      })
+      if (!parsed.shouldNotify) return
+      console.error('轮询进度失败', parsed.diagnostics)
       errorRetryCount.value++
 
       if (errorRetryCount.value >= MAX_RETRY_COUNT) {
         stopProgressPolling()
-        ElMessage.error('网络连接失败，页面即将刷新…')
+        ElMessage.error(`${parsed.message}，页面即将刷新…`)
+        const stoppedGeneration = pollingGeneration.value
         setTimeout(() => {
+          if (
+            stoppedGeneration !== pollingGeneration.value ||
+            !pageVisible.value ||
+            document.hidden
+          )
+            return
           location.reload()
         }, 2000)
       }
@@ -144,7 +133,9 @@ export const useBackupStore = defineStore('backup', () => {
         break
     }
 
+    const completedGeneration = pollingGeneration.value
     setTimeout(() => {
+      if (completedGeneration !== pollingGeneration.value) return
       showProgressDialog.value = false
       resetState()
     }, 1500)

@@ -512,8 +512,21 @@ import {
   Cellphone,
   Link,
 } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
+import {
+  createNotificationChannel,
+  deleteNotificationChannel,
+  fetchNotificationChannel,
+  fetchNotificationChannels,
+  fetchNotificationRules,
+  notificationPublicMessages,
+  saveNotificationRule,
+  setNotificationChannelEnabled,
+  testNotificationChannel,
+  updateNotificationChannel,
+  type NotificationChannelPayload,
+} from '@/api/notificationSettings'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveIconButton from '@/components/common/ResponsiveIconButton.vue'
 import WebhookHeadersEditor from '@/components/notification/WebhookHeadersEditor.vue'
@@ -575,6 +588,16 @@ interface RuleWithStatus extends NotificationRule {
 
 const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
+
+const reportError = (error: unknown, fallbackMessage: string) => {
+  const failure = parseHttpError(error, {
+    publicMessages: notificationPublicMessages,
+    fallbackMessage,
+  })
+  if (!failure.shouldNotify) return
+  console.error(fallbackMessage, failure.diagnostics)
+  ElMessage.error(failure.message)
+}
 
 const loading = ref(false)
 const creating = ref(false)
@@ -669,21 +692,14 @@ const channelForm = reactive<ChannelFormData>({
 const loadChannels = async () => {
   loading.value = true
   try {
-    const response = await http.get(`${SERVER_URL}/setting/notification/channels`)
-    if (response?.data.code === 0) {
-      channels.value = response.data.data.map(
-        (channel: NotificationChannel): ChannelWithStatus => ({
-          ...channel,
-          _switching: false,
-          _testing: false,
-        }),
-      )
-    } else {
-      ElMessage.error(response?.data.message || '加载失败')
-    }
+    const data = await fetchNotificationChannels(http)
+    channels.value = data.map((channel: NotificationChannel): ChannelWithStatus => ({
+      ...channel,
+      _switching: false,
+      _testing: false,
+    }))
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '加载渠道列表失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '加载通知渠道失败')
   } finally {
     loading.value = false
   }
@@ -729,64 +745,59 @@ const showEditDialog = async (channel: NotificationChannel) => {
 
   try {
     // 根据渠道类型调用对应的查询接口获取详细配置
-    const response = await http.get(
-      `${SERVER_URL}/setting/notification/channels/${channel.channel_type}/${channel.id}`,
+    const { channel: channelData, config } = await fetchNotificationChannel(
+      http,
+      channel.channel_type,
+      channel.id,
     )
 
-    if (response?.data.code === 0) {
-      const { channel: channelData, config } = response.data.data
+    // 填充基本信息
+    channelForm.channel_name = channelData.channel_name || ''
+    channelForm.description = channelData.description || ''
 
-      // 填充基本信息
-      channelForm.channel_name = channelData.channel_name || ''
-      channelForm.description = channelData.description || ''
-
-      if (config) {
-        // Telegram
-        if (channel.channel_type === 'telegram') {
-          channelForm.bot_token = config.bot_token || ''
-          channelForm.chat_id = config.chat_id || ''
-        }
-        // MeoW
-        else if (channel.channel_type === 'meow') {
-          channelForm.nickname = config.nickname || ''
-          channelForm.endpoint = config.endpoint || ''
-        }
-        // Bark
-        else if (channel.channel_type === 'bark') {
-          channelForm.device_key = config.device_key || ''
-          channelForm.server_url = config.server_url || ''
-          channelForm.sound = config.sound || ''
-          channelForm.icon = config.icon || ''
-        }
-        // Server酱
-        else if (channel.channel_type === 'serverchan') {
-          channelForm.sc_key = config.sc_key || ''
-          channelForm.endpoint = config.endpoint || ''
-        }
-        // Webhook
-        else if (channel.channel_type === 'webhook') {
-          channelForm.endpoint = config.endpoint || ''
-          channelForm.method = config.method || 'POST'
-          channelForm.format = config.format || 'json'
-          channelForm.template = config.template || ''
-          channelForm.query_param = config.query_param || 'q'
-          channelForm.auth_type = config.auth_type || 'none'
-          channelForm.auth_token = config.auth_token || ''
-          channelForm.auth_user = config.auth_user || ''
-          channelForm.auth_pass = config.auth_pass || ''
-          channelForm.auth_header_key = config.auth_header_key || ''
-          channelForm.auth_query_key = config.auth_query_key || ''
-          channelForm.headers = webhookHeaderRecordToRows(config.headers)
-        }
+    if (config) {
+      // Telegram
+      if (channel.channel_type === 'telegram') {
+        channelForm.bot_token = config.bot_token || ''
+        channelForm.chat_id = config.chat_id || ''
       }
-
-      editDialogVisible.value = true
-    } else {
-      ElMessage.error(response?.data.message || '获取渠道配置失败')
+      // MeoW
+      else if (channel.channel_type === 'meow') {
+        channelForm.nickname = config.nickname || ''
+        channelForm.endpoint = config.endpoint || ''
+      }
+      // Bark
+      else if (channel.channel_type === 'bark') {
+        channelForm.device_key = config.device_key || ''
+        channelForm.server_url = config.server_url || ''
+        channelForm.sound = config.sound || ''
+        channelForm.icon = config.icon || ''
+      }
+      // Server酱
+      else if (channel.channel_type === 'serverchan') {
+        channelForm.sc_key = config.sc_key || ''
+        channelForm.endpoint = config.endpoint || ''
+      }
+      // Webhook
+      else if (channel.channel_type === 'webhook') {
+        channelForm.endpoint = config.endpoint || ''
+        channelForm.method = config.method || 'POST'
+        channelForm.format = config.format || 'json'
+        channelForm.template = config.template || ''
+        channelForm.query_param = config.query_param || 'q'
+        channelForm.auth_type = config.auth_type || 'none'
+        channelForm.auth_token = config.auth_token || ''
+        channelForm.auth_user = config.auth_user || ''
+        channelForm.auth_pass = config.auth_pass || ''
+        channelForm.auth_header_key = config.auth_header_key || ''
+        channelForm.auth_query_key = config.auth_query_key || ''
+        channelForm.headers = webhookHeaderRecordToRows(config.headers)
+      }
     }
+
+    editDialogVisible.value = true
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '获取渠道配置失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '获取渠道配置失败')
   } finally {
     editLoading.value = false
   }
@@ -794,6 +805,7 @@ const showEditDialog = async (channel: NotificationChannel) => {
 
 // 创建渠道
 const createChannel = async () => {
+  if (!selectedChannelType.value) return
   if (!channelForm.channel_name) {
     ElMessage.warning('请输入渠道名称')
     return
@@ -833,7 +845,7 @@ const createChannel = async () => {
 
   creating.value = true
   try {
-    const requestData: Record<string, unknown> = {
+    const requestData: NotificationChannelPayload = {
       channel_name: channelForm.channel_name,
     }
 
@@ -896,21 +908,12 @@ const createChannel = async () => {
       }
     }
 
-    const response = await http.post(
-      `${SERVER_URL}/setting/notification/channels/${selectedChannelType.value}`,
-      requestData,
-    )
-
-    if (response?.data.code === 0) {
-      ElMessage.success('创建成功')
-      createDialogVisible.value = false
-      loadChannels()
-    } else {
-      ElMessage.error(response?.data.message || '创建失败')
-    }
+    await createNotificationChannel(http, selectedChannelType.value, requestData)
+    ElMessage.success('创建成功')
+    createDialogVisible.value = false
+    loadChannels()
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '创建渠道失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '创建渠道失败')
   } finally {
     creating.value = false
   }
@@ -920,23 +923,12 @@ const createChannel = async () => {
 const toggleChannelStatus = async (channel: ChannelWithStatus) => {
   channel._switching = true
   try {
-    const response = await http.post(`${SERVER_URL}/setting/notification/channels/status`, {
-      channel_id: channel.id,
-      is_enabled: channel.is_enabled,
-    })
-
-    if (response?.data.code === 0) {
-      ElMessage.success(channel.is_enabled ? '已启用' : '已禁用')
-    } else {
-      // 恢复原状态
-      channel.is_enabled = !channel.is_enabled
-      ElMessage.error(response?.data.message || '操作失败')
-    }
+    await setNotificationChannelEnabled(http, channel.id, channel.is_enabled)
+    ElMessage.success(channel.is_enabled ? '已启用' : '已禁用')
   } catch (error: unknown) {
     // 恢复原状态
     channel.is_enabled = !channel.is_enabled
-    const errorMessage = error instanceof Error ? error.message : '切换状态失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '切换渠道状态失败')
   } finally {
     channel._switching = false
   }
@@ -951,7 +943,7 @@ const updateChannel = async () => {
 
   updating.value = true
   try {
-    const requestData: Record<string, unknown> = {
+    const requestData: NotificationChannelPayload & { channel_id: number } = {
       channel_id: editingChannel.value.id,
       channel_name: channelForm.channel_name,
     }
@@ -1002,21 +994,12 @@ const updateChannel = async () => {
       if (channelForm.description) requestData.description = channelForm.description
     }
 
-    const response = await http.put(
-      `${SERVER_URL}/setting/notification/channels/${channelType}`,
-      requestData,
-    )
-
-    if (response?.data.code === 0) {
-      ElMessage.success('更新成功')
-      editDialogVisible.value = false
-      loadChannels()
-    } else {
-      ElMessage.error(response?.data.message || '更新失败')
-    }
+    await updateNotificationChannel(http, channelType, requestData)
+    ElMessage.success('更新成功')
+    editDialogVisible.value = false
+    loadChannels()
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '更新渠道失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '更新渠道失败')
   } finally {
     updating.value = false
   }
@@ -1026,18 +1009,10 @@ const updateChannel = async () => {
 const testChannel = async (channel: ChannelWithStatus) => {
   channel._testing = true
   try {
-    const response = await http.post(`${SERVER_URL}/setting/notification/channels/test`, {
-      channel_id: channel.id,
-    })
-
-    if (response?.data.code === 0) {
-      ElMessage.success('测试消息已发送，请检查设备')
-    } else {
-      ElMessage.error(response?.data.message || '测试失败')
-    }
+    await testNotificationChannel(http, channel.id)
+    ElMessage.success('测试消息已发送，请检查设备')
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '测试连接失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '发送通知测试消息失败，请检查渠道配置或查看服务日志')
   } finally {
     channel._testing = false
   }
@@ -1056,18 +1031,12 @@ const deleteChannel = async (channel: NotificationChannel) => {
       },
     )
 
-    const response = await http.delete(`${SERVER_URL}/setting/notification/channels/${channel.id}`)
-
-    if (response?.data.code === 0) {
-      ElMessage.success('删除成功')
-      loadChannels()
-    } else {
-      ElMessage.error(response?.data.message || '删除失败')
-    }
+    await deleteNotificationChannel(http, channel.id)
+    ElMessage.success('删除成功')
+    loadChannels()
   } catch (error: unknown) {
-    if (error !== 'cancel') {
-      const errorMessage = error instanceof Error ? error.message : '删除渠道失败'
-      ElMessage.error(errorMessage)
+    if (error !== 'cancel' && error !== 'close') {
+      reportError(error, '删除渠道失败')
     }
   }
 }
@@ -1083,21 +1052,13 @@ const showRulesDialog = async (channel: NotificationChannel) => {
 const loadRules = async (channelId: number) => {
   rulesLoading.value = true
   try {
-    const response = await http.get(
-      `${SERVER_URL}/setting/notification/rules?channel_id=${channelId}`,
-    )
-
-    if (response?.data.code === 0) {
-      currentRules.value = response.data.data.map((rule: NotificationRule): RuleWithStatus => ({
-        ...rule,
-        _updating: false,
-      }))
-    } else {
-      ElMessage.error(response?.data.message || '加载规则失败')
-    }
+    const data = await fetchNotificationRules(http, channelId)
+    currentRules.value = data.map((rule: NotificationRule): RuleWithStatus => ({
+      ...rule,
+      _updating: false,
+    }))
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : '加载通知规则失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '加载通知规则失败')
   } finally {
     rulesLoading.value = false
   }
@@ -1107,24 +1068,17 @@ const loadRules = async (channelId: number) => {
 const updateRule = async (rule: RuleWithStatus) => {
   rule._updating = true
   try {
-    const response = await http.put(`${SERVER_URL}/setting/notification/rules`, {
+    await saveNotificationRule(http, {
       channel_id: rule.channel_id,
       event_type: rule.event_type,
       is_enabled: rule.is_enabled,
     })
 
-    if (response?.data.code === 0) {
-      ElMessage.success('更新成功')
-    } else {
-      // 恢复原状态
-      rule.is_enabled = !rule.is_enabled
-      ElMessage.error(response?.data.message || '更新失败')
-    }
+    ElMessage.success('更新成功')
   } catch (error: unknown) {
     // 恢复原状态
     rule.is_enabled = !rule.is_enabled
-    const errorMessage = error instanceof Error ? error.message : '更新规则失败'
-    ElMessage.error(errorMessage)
+    reportError(error, '更新通知规则失败')
   } finally {
     rule._updating = false
   }

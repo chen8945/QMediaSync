@@ -38,7 +38,7 @@ server {
     location ~ ^/api/(events/stream|logs/stream|sync/tasks/[^/]+/stream)$ {
         proxy_pass http://127.0.0.1:12333;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;
         proxy_cache off;
@@ -48,13 +48,23 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:12333;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
 使用 Caddy 时，对三个 SSE 路由使用单独的 `reverse_proxy` 并设置 `flush_interval -1`；其他同源请求再代理到 `127.0.0.1:12333`。无论使用哪种代理，均不得允许公网直接访问后端端口后再伪造 forwarded header。
+
+## 浏览器写入请求被拒绝
+
+搜索、列表读取正常，但保存、删除或手动启动失败时，先查看失败请求的 HTTP 状态和响应体。HTTP `403` 中的 `REQUEST_ORIGIN_INVALID` 表示来源校验失败；响应体的业务 `code=500` 不表示 HTTP `500`。旧版本对应文案为“请求来源无效”。其他错误含义见 [请求错误码](../architecture/authentication-sessions.md#请求错误码)。
+
+来源校验比较浏览器 `Origin`（缺失时使用 `Referer`）与后端识别的协议、主机和端口。当前同源判断使用实际请求 `Host`，不会用 `X-Forwarded-Host` 替代它，因此仅设置后者不能修复被改写为 `127.0.0.1` 的 `Host`。
+
+代理应保留浏览器访问的 `Host`，包括非默认外部端口；示例使用 `$http_host`，避免 `$host` 丢失外部端口。TLS 在可信代理终止时，还需传递正确的 `X-Forwarded-Proto`。存在多层代理时，应逐层核对最终到达 QMediaSync 的值，不能以代理之间的内部 HTTP 协议覆盖外部 HTTPS。来源缺失或格式无效也会被拒绝，不应直接放宽来源校验来绕过错误。
+
+`CSRF_TOKEN_INVALID`（旧文案“CSRF 校验失败”）则应先刷新页面后重试，持续失败时重新登录。错误截图和诊断记录可以包含请求方法、接口路径、HTTP 状态与错误码，不能包含 Cookie、CSRF Token、API Key、完整 URL 参数或登录请求体。
 
 ## 验证方式
 

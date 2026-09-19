@@ -128,6 +128,14 @@
           :closable="false"
           show-icon
         />
+        <el-alert
+          v-else-if="realtimeActive && realtimeConnectionState === 'disconnected'"
+          class="realtime-status-alert"
+          title="实时更新已断开，请刷新页面恢复"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
         <router-view v-slot="{ Component, route: routeView }">
           <keep-alive :include="cachedComponentNames">
             <component :is="Component" :key="getRouteViewKey(routeView.name, routeView.fullPath)" />
@@ -190,7 +198,7 @@
       <!-- 错误重试提示 -->
       <el-alert
         v-if="backupStore.errorRetryCount > 0"
-        :title="`网络异常，正在重试 (${backupStore.errorRetryCount}/${3})…`"
+        :title="`查询进度失败，正在重试 (${backupStore.errorRetryCount}/${3})…`"
         type="warning"
         :closable="false"
         style="margin-top: 16px"

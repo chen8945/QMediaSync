@@ -47,6 +47,7 @@ describe('HTTP 客户端组织', () => {
       csrfToken: 'csrf-token',
       isAuthenticated: true,
       isLoggingOut: false,
+      sessionVersion: 1,
       clearAuth: () => undefined,
     }
     let requestConfig: InternalAxiosRequestConfig | undefined

@@ -24,7 +24,7 @@ X-API-Key: qms_xxxxxxxxxxxxxxxxxxxxxxxx
 
 - 推荐使用 `X-API-Key` 请求头。
 - 仅在调用方无法设置请求头时，使用 `?api_key=` 查询参数。
-- API Key 无效或缺失时返回 HTTP `401`。
+- API Key 无效或缺失时返回 HTTP `401`。请求未携带 API Key（或只有空白）时，响应带顶层 `error_code=AUTHENTICATION_REQUIRED`；API Key 不存在或已停用时带 `error_code=AUTHENTICATION_INVALID`；API Key 查询出现内部故障时不带 `error_code`。错误码含义见 [认证会话](../architecture/authentication-sessions.md)。
 
 API Key 在 Web 页面「系统设置 - API Key」中创建。完整密钥只会在创建响应中返回一次，后端只保存哈希。
 

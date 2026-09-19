@@ -38,6 +38,8 @@ SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_t
 
 `POST /api/database/repair` 调用 `RepairDB()`，对 `AllTables` 执行 `AutoMigrate` 并修复 PostgreSQL 主键序列：缺失表、字段和索引会补齐，不主动删除已有数据。
 
+前端只有在 HTTP 与业务响应都成功时才提示修复成功；失败使用安全错误说明，不展示数据库内部异常。
+
 `POST /api/database/delete-all-table` 调用 `BatchDropTable()` 删除 `AllTables` 中的全部表，属于高风险清库操作。执行前必须确认备份可用，并在维护窗口内操作。
 
 ## 备份
@@ -49,6 +51,8 @@ SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_t
 每次新备份开始前，程序只清理状态为 `completed` 的历史记录；保留天数和最大数量独立生效，任一条件命中都会删除文件及其记录。应定期把完成的 ZIP 包复制到配置目录之外的独立存储，避免把唯一备份与运行数据放在同一磁盘。
 
 备份开始时会暂停同步队列、上传下载队列和各类 Cron，完成后自动恢复。它无法阻止浏览器或外部客户端继续写入 API，因此应在维护窗口内操作并停止外部写入。
+
+前端备份请求失败时保留配置和输入，不进入成功后的进度流程；写入已成功但列表刷新失败时单独提示加载问题。下载接口的 JSON 错误即使以 HTTP `200` 返回，也不能作为备份文件保存。错误反馈约定见 [前端开发约定](../engineering/frontend-development.md#api-响应与请求错误)。
 
 ## 恢复与风险边界
 

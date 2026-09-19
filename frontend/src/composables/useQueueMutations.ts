@@ -1,36 +1,30 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { parseHttpError, type ParsedHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import type { QueueMutationContextSnapshot } from './useQueueMutationContext'
 
-export interface QueueMutationResponse {
-  data?: {
-    code?: number
-    message?: string
-  }
-}
+export type QueueSnapshotResult =
+  { status: 'loaded' } | { status: 'stale' } | { status: 'failed'; error: ParsedHttpError }
 
 export interface QueueMutationOperationOptions {
-  endpoint: string
+  execute: () => Promise<void>
   confirm?: {
     message: string
     title?: string
   }
   successMessage: string
-  businessErrorMessage: (message: string | undefined) => string
   requestErrorMessage: string
 }
 
 export interface UseQueueMutationsOptions {
-  post: (endpoint: string) => Promise<QueueMutationResponse>
-  reloadQueue: () => Promise<boolean | void>
-  reloadQueueStatus?: () => Promise<boolean | void>
+  reloadQueue: () => Promise<QueueSnapshotResult>
+  reloadQueueStatus?: () => Promise<QueueSnapshotResult>
   isContextCurrent: (context: QueueMutationContextSnapshot) => boolean
   startContext: () => QueueMutationContextSnapshot
   finishContext: (context: QueueMutationContextSnapshot) => void
   onClearPendingSuccess?: () => void
-  onMutationError?: (error: unknown, message: string) => void
-  onSnapshotError?: (message: string) => void
 }
 
 const snapshotErrorMessage = '操作已成功，但刷新队列快照失败，请手动刷新。'
@@ -44,7 +38,22 @@ const snapshotErrorMessage = '操作已成功，但刷新队列快照失败，�
  */
 export function useQueueMutations(options: UseQueueMutationsOptions) {
   const isQueueMutationPending = ref(false)
+  // 加载函数仍返回错误类别；此阶段的提示统一由协调器负责。
+  const snapshotContext = ref<QueueMutationContextSnapshot | null>(null)
+  const isReloadingQueueSnapshot = computed(
+    () => snapshotContext.value !== null && options.isContextCurrent(snapshotContext.value),
+  )
   let operationToken = 0
+
+  const reportSnapshotError = (error: ParsedHttpError) => {
+    if (!error.shouldNotify) return
+    const message =
+      error.kind === 'unknown' || error.kind === 'application'
+        ? snapshotErrorMessage
+        : `${snapshotErrorMessage}${error.message}`
+    console.error('刷新队列快照失败', error.diagnostics)
+    ElMessage.error(message)
+  }
 
   const run = async (operation: QueueMutationOperationOptions, clearPending = false) => {
     if (isQueueMutationPending.value) {
@@ -72,72 +81,57 @@ export function useQueueMutations(options: UseQueueMutationsOptions) {
         }
       }
 
-      if (!isCurrent()) {
-        return
-      }
+      if (!isCurrent()) return
 
-      let response: QueueMutationResponse
-      try {
-        response = await options.post(operation.endpoint)
-      } catch (error) {
-        if (isCurrent()) {
-          options.onMutationError?.(error, operation.requestErrorMessage)
-          ElMessage.error(operation.requestErrorMessage)
-        }
-        return
-      }
-
-      if (!isCurrent()) {
-        return
-      }
-
-      if (response?.data?.code !== 200) {
-        const message = operation.businessErrorMessage(response?.data?.message)
-        options.onMutationError?.(response, message)
-        ElMessage.error(message)
-        return
-      }
+      // 领域 API 在返回前完成业务成功校验。
+      await operation.execute()
+      if (!isCurrent()) return
 
       if (clearPending) {
         options.onClearPendingSuccess?.()
       }
       ElMessage.success(operation.successMessage)
 
+      snapshotContext.value = context
       try {
         const queueReloadResult = await options.reloadQueue()
-        if (queueReloadResult === false) {
-          throw new Error('queue snapshot reload failed')
+        if (!isCurrent() || queueReloadResult.status === 'stale') return
+        if (queueReloadResult.status === 'failed') {
+          reportSnapshotError(queueReloadResult.error)
+          return
         }
         if (clearPending && options.reloadQueueStatus) {
           const statusReloadResult = await options.reloadQueueStatus()
-          if (statusReloadResult === false) {
-            throw new Error('queue status snapshot reload failed')
+          if (!isCurrent() || statusReloadResult.status === 'stale') return
+          if (statusReloadResult.status === 'failed') {
+            reportSnapshotError(statusReloadResult.error)
           }
         }
-      } catch {
+      } catch (error) {
         if (isCurrent()) {
-          options.onSnapshotError?.(snapshotErrorMessage)
-          ElMessage.error(snapshotErrorMessage)
+          reportSnapshotError(parseHttpError(error, { fallbackMessage: snapshotErrorMessage }))
         }
-        return
-      }
-
-      if (!isCurrent()) {
-        return
       }
     } catch (error) {
-      if (error === 'cancel' || error === 'close' || isMessageBoxCancelError(error)) {
+      if (
+        !isCurrent() ||
+        error === 'cancel' ||
+        error === 'close' ||
+        isMessageBoxCancelError(error)
+      ) {
         return
       }
-      options.onMutationError?.(error, operation.requestErrorMessage)
-      ElMessage.error(operation.requestErrorMessage)
+      notifyHttpError(error, operation.requestErrorMessage, {
+        fallbackMessage: operation.requestErrorMessage,
+        messagePrefix: operation.requestErrorMessage,
+      })
     } finally {
-      // A stale operation may not finish a newer context, but it must not leave
-      // this page's button lock stuck after deactivation or unmount.
+      // 旧操作不能结束新 context，但失活或卸载后仍须释放当前页面的按钮锁。
       if (token === operationToken) {
         if (isCurrent()) {
           options.finishContext(context)
         }
+        snapshotContext.value = null
         isQueueMutationPending.value = false
       }
     }
@@ -145,6 +139,7 @@ export function useQueueMutations(options: UseQueueMutationsOptions) {
 
   return {
     isQueueMutationPending,
+    isReloadingQueueSnapshot,
     clearQueue: (operation: QueueMutationOperationOptions) => run(operation, true),
     runMutation: (operation: QueueMutationOperationOptions) => run(operation),
   }

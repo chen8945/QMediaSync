@@ -27,17 +27,17 @@ func validateCSRF(c *gin.Context) bool {
 		return false
 	}
 	if !requestOriginAllowed(c) {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "请求来源无效", Data: nil})
+		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "请求来源无效", Data: nil, ErrorCode: ErrorCodeRequestOriginInvalid})
 		return false
 	}
 	headerToken := c.Request.Header.Get(csrfHeaderName)
 	cookie, err := c.Request.Cookie(csrfCookieName)
 	if err != nil || cookie.Value == "" || headerToken == "" || headerToken != cookie.Value {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil})
+		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil, ErrorCode: ErrorCodeCSRFTokenInvalid})
 		return false
 	}
 	if !session.ValidateCSRFToken(headerToken) {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil})
+		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil, ErrorCode: ErrorCodeCSRFTokenInvalid})
 		return false
 	}
 	return true

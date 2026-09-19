@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import LoginSessions from '../../src/components/user-settings/LoginSessions.vue'
 import { httpKey } from '@/http/client'
@@ -44,8 +44,7 @@ describe('LoginSessions', () => {
       },
     })
 
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushPromises()
 
     expect(http.get).toHaveBeenCalledWith(expect.stringContaining('/user/sessions'))
     expect(wrapper.text()).toContain('当前设备')

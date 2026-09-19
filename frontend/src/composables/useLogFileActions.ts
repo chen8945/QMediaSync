@@ -1,4 +1,5 @@
-import { SERVER_URL } from '@/const'
+import { logDownloadURL } from '@/api/logs'
+import { parseHttpError } from '@/http/errors'
 import { ElMessage } from 'element-plus'
 
 interface DownloadLogFileOptions {
@@ -16,7 +17,7 @@ export function useLogFileActions() {
     }
 
     try {
-      const downloadUrl = `${SERVER_URL}/logs/download?path=${encodeURIComponent(normalizedLogPath)}`
+      const downloadUrl = logDownloadURL(normalizedLogPath)
       const link = document.createElement('a')
       link.href = downloadUrl
       link.download = normalizedLogPath.split('/').pop() || 'logfile.log'
@@ -28,8 +29,10 @@ export function useLogFileActions() {
       }, 100)
       ElMessage.success(options.successMessage || '开始下载日志文件')
     } catch (error) {
-      const message = error instanceof Error ? error.message : '未知错误'
-      ElMessage.error(`${options.errorPrefix || '下载日志失败'}：${message}`)
+      const failure = parseHttpError(error, {
+        fallbackMessage: options.errorPrefix || '下载日志失败',
+      })
+      if (failure.shouldNotify) ElMessage.error(failure.message)
     }
   }
 

@@ -61,7 +61,7 @@ const mountProxySettings = async (httpProxy = '', credentialsMasked = '0') => {
     const saveButton = wrapper.findAll('button').find((button) => button.text() === '保存')
     expect(saveButton, '保存按钮应存在').toBeDefined()
     await saveButton!.trigger('click')
-    await wrapper.vm.$nextTick()
+    await flushPromises()
 
     if (messageError.mock.calls.length === 0) {
       return null

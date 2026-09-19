@@ -83,8 +83,13 @@
 import { computed, onMounted, reactive, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
+import { parseHttpError } from '@/http/errors'
+import {
+  changeUserCredentials,
+  fetchCurrentUser,
+  userSettingsPublicMessages,
+} from '@/api/userSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
@@ -162,52 +167,38 @@ const saveSettings = async () => {
     loading.value = true
     saveStatus.value = null
 
-    const requestData: Record<string, string> = {}
-    requestData.username = formData.username.trim()
-    requestData.new_password = formData.password
-
-    const response = await http.post(`${SERVER_URL}/user/change`, requestData, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
+    const requiresLogin = await changeUserCredentials(http, {
+      username: formData.username.trim(),
+      new_password: formData.password,
     })
 
-    if (response?.data.code === 200) {
-      saveStatus.value = {
-        title: '用户设置已保存',
-        type: 'success',
-        description: '用户名和密码已更新，下次登录时请使用新的凭据',
-      }
-      // 清空字段
-      formData.confirmPassword = ''
-      formData.password = ''
-      if (response?.data.data) {
-        // 如果为 true 则需要重新登录
-        authStore.clearAuth()
-        ElMessage.success('已退出登录')
-        router.replace('/login')
-      }
-    } else {
-      ElMessage.error(response?.data.message || '保存设置失败，请重试')
-
-      saveStatus.value = {
-        title: '保存设置失败',
-        type: 'error',
-        description: response?.data.message || '无法保存用户设置，请检查网络连接后重试',
-      }
+    saveStatus.value = {
+      title: '用户设置已保存',
+      type: 'success',
+      description: '用户名和密码已更新，下次登录时请使用新的凭据',
+    }
+    formData.confirmPassword = ''
+    formData.password = ''
+    if (requiresLogin) {
+      authStore.clearAuth()
+      ElMessage.success('已退出登录')
+      void router.replace('/login')
     }
   } catch (error) {
-    console.error('保存设置失败：', error)
-    ElMessage.error('保存设置失败，请重试')
-
-    saveStatus.value = {
-      title: '保存设置失败',
-      type: 'error',
-      description: '保存过程中发生错误，请检查网络连接',
-    }
+    showSettingsError(error, '保存用户设置失败')
   } finally {
     loading.value = false
   }
+}
+
+const showSettingsError = (error: unknown, fallbackMessage: string) => {
+  const failure = parseHttpError(error, {
+    publicMessages: userSettingsPublicMessages,
+    fallbackMessage,
+  })
+  if (!failure.shouldNotify) return
+  console.error(fallbackMessage, failure.diagnostics)
+  saveStatus.value = { title: fallbackMessage, type: 'error', description: failure.message }
 }
 
 // 组件挂载时加载当前用户名
@@ -220,12 +211,10 @@ const loadCurrentUsername = async () => {
   formData.username = authStore.user?.username || ''
   if (formData.username === '') {
     try {
-      const response = await http.get(`${SERVER_URL}/user/info`)
-      if (response?.data.code === 200 && response.data.data?.username) {
-        formData.username = response.data.data.username
-      }
+      const user = await fetchCurrentUser(http)
+      formData.username = user.username
     } catch (error) {
-      console.error('加载当前用户名失败：', error)
+      showSettingsError(error, '加载当前用户名失败')
     }
   }
   originalUsername.value = formData.username.trim()

@@ -75,6 +75,13 @@ func TestRedactSensitiveLog保留非敏感请求头(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveLog已知密钥回显(t *testing.T) {
+	got := RedactSensitiveLog(`Post "https://example.test/secret-key.send": invalid key secret-key`, "", "secret-key")
+	if strings.Contains(got, "secret-key") || !strings.Contains(got, "example.test/") || !strings.Contains(got, "invalid key") {
+		t.Fatalf("应清理已知密钥并保留诊断原因：%s", got)
+	}
+}
+
 func TestQLogger默认脱敏日志(t *testing.T) {
 	useTestLogLevel(t, LogLevelInfo)
 

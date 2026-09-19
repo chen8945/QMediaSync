@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type APIResponseCode int
@@ -25,10 +27,21 @@ const (
 	BadRequest APIResponseCode = 500
 )
 
+// 请求错误码独立于 HTTP 状态和历史业务 code，供客户端稳定分类。
+const (
+	ErrorCodeAuthenticationRequired = "AUTHENTICATION_REQUIRED"
+	ErrorCodeAuthenticationInvalid  = "AUTHENTICATION_INVALID"
+	ErrorCodeSessionInvalid         = "SESSION_INVALID"
+	ErrorCodeRequestOriginInvalid   = "REQUEST_ORIGIN_INVALID"
+	ErrorCodeCSRFTokenInvalid       = "CSRF_TOKEN_INVALID"
+	ErrorCodeForbidden              = "FORBIDDEN"
+)
+
 type APIResponse[T any] struct {
-	Code    APIResponseCode `json:"code"`
-	Message string          `json:"message"`
-	Data    T               `json:"data"`
+	Code      APIResponseCode `json:"code"`
+	Message   string          `json:"message"`
+	Data      T               `json:"data"`
+	ErrorCode string          `json:"error_code,omitempty"`
 }
 
 var runAuthBackgroundTask = func(fn func()) {
@@ -60,6 +73,14 @@ func JWTAuthMiddleware() func(c *gin.Context) {
 	}
 }
 
+// authErrorCode 仅在凭证确实无效时返回错误码；数据库故障不返回，避免客户端误清登录态。
+func authErrorCode(err error, code string) string {
+	if err == nil || errors.Is(err, gorm.ErrRecordNotFound) {
+		return code
+	}
+	return ""
+}
+
 func apiKeyFromRequest(c *gin.Context) string {
 	apiKey := c.Request.Header.Get(apiKeyHeaderName)
 	if apiKey == "" {
@@ -71,12 +92,14 @@ func apiKeyFromRequest(c *gin.Context) string {
 func authenticateAPIKey(c *gin.Context, apiKey string) bool {
 	apiKeyModel, err := models.ValidateAPIKey(apiKey)
 	if err != nil || apiKeyModel == nil {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil})
+		errorCode := authErrorCode(err, ErrorCodeAuthenticationInvalid)
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil, ErrorCode: errorCode})
 		return false
 	}
 	user, err := models.GetUserById(apiKeyModel.UserID)
 	if err != nil || user == nil || user.ID == 0 {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 用户不存在", Data: nil})
+		errorCode := authErrorCode(err, ErrorCodeAuthenticationInvalid)
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 用户不存在", Data: nil, ErrorCode: errorCode})
 		return false
 	}
 	SetCurrentUser(c, user, authMethodAPIKey)
@@ -89,23 +112,26 @@ func authenticateAPIKey(c *gin.Context, apiKey string) bool {
 func authenticateCookieSession(c *gin.Context) bool {
 	cookie, err := c.Request.Cookie(authCookieName)
 	if err != nil || cookie.Value == "" {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录凭证不存在", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录凭证不存在", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
 		return false
 	}
 	loginUser, err := ValidateJWT(cookie.Value)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录凭证无效", Data: nil})
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录凭证无效", Data: nil, ErrorCode: ErrorCodeAuthenticationInvalid})
 		return false
 	}
 	now := time.Now().Unix()
 	session, err := models.GetActiveUserSession(loginUser.SessionID, now)
-	if err != nil || session.UserID != loginUser.ID {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录会话已失效", Data: nil})
+	if err != nil || session == nil || session.UserID != loginUser.ID {
+		// 查询故障保留历史响应，但不为未知原因标记会话失效。
+		errorCode := authErrorCode(err, ErrorCodeSessionInvalid)
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录会话已失效", Data: nil, ErrorCode: errorCode})
 		return false
 	}
 	user, err := models.GetUserById(loginUser.ID)
 	if err != nil || user == nil || user.ID == 0 {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录用户不存在", Data: nil})
+		errorCode := authErrorCode(err, ErrorCodeAuthenticationInvalid)
+		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "登录用户不存在", Data: nil, ErrorCode: errorCode})
 		return false
 	}
 	SetCurrentUser(c, user, authMethodSession)
@@ -130,7 +156,7 @@ func Proxy115(c *gin.Context) {
 	}
 	if err := proxyReq.Validate(); err != nil {
 		helpers.AppLogger.Warnf("拒绝反代非 115/百度网盘下载链接，url=%s，err=%v", proxyReq.URL, err)
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "只允许反代 115 或百度网盘下载链接", Data: nil})
+		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "只允许反代 115 或百度网盘下载链接", Data: nil, ErrorCode: ErrorCodeForbidden})
 		return
 	}
 	target := proxyReq.URL

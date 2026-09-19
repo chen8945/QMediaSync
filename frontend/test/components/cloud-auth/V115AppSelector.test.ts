@@ -24,7 +24,7 @@ describe('V115AppSelector', () => {
       global: {
         provide: {
           [httpKey]: {
-            get: vi.fn().mockResolvedValue({ data: { data: { items: [], total: 0 } } }),
+            get: vi.fn().mockResolvedValue({ data: { code: 200, data: { items: [], total: 0 } } }),
           },
         },
         stubs: {
@@ -71,7 +71,7 @@ describe('V115AppSelector', () => {
       global: {
         provide: {
           [httpKey]: {
-            get: vi.fn().mockResolvedValue({ data: { data: { items: [], total: 0 } } }),
+            get: vi.fn().mockResolvedValue({ data: { code: 200, data: { items: [], total: 0 } } }),
           },
         },
         stubs: {
@@ -140,6 +140,7 @@ describe('V115AppSelector', () => {
   it('扫码授权默认只显示置顶和精选 APP ID，不自动合并远程第一页', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
+        code: 200,
         data: {
           items: [{ app_id: '1001', app_name: '测试应用', display_name: '测试应用' }],
           total: 2,
@@ -195,6 +196,7 @@ describe('V115AppSelector', () => {
   it('扫码授权搜索结果存在下一页时显示加载更多入口', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
+        code: 200,
         data: {
           items: [{ app_id: '1001', app_name: '测试应用', display_name: '测试应用' }],
           total: 2,
@@ -253,6 +255,7 @@ describe('V115AppSelector', () => {
   it('扫码授权可以搜索置顶的 QMediaSync', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
+        code: 200,
         data: {
           items: [{ app_id: '100197849', app_name: 'QMediaSync', display_name: 'QMediaSync' }],
           total: 1,
@@ -311,6 +314,7 @@ describe('V115AppSelector', () => {
   it('扫码授权未输入搜索词时显示加载更多，点击后再展示远程结果', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
+        code: 200,
         data: {
           items: [{ app_id: '1001', app_name: '测试应用', display_name: '测试应用' }],
           total: 2,
@@ -380,6 +384,7 @@ describe('V115AppSelector', () => {
   it('扫码授权加载更多时不重复显示固定的 QMediaSync', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
+        code: 200,
         data: {
           items: [
             { app_id: '100197849', app_name: 'QMediaSync', display_name: 'QMediaSync' },
