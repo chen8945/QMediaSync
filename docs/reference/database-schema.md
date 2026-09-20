@@ -500,6 +500,8 @@ STRM 相关字段：
 - `genre_ids`：TMDB genre ID 的 JSON 数组。
 - `countries`：国家过滤的 JSON 数组。
 
+电影和剧集分类的过滤数组以 JSON 字符串存储；空数组保存为空字符串，回读时恢复为空数组。创建和更新都以数据库实际写入结果判定成功，写入失败必须返回错误；接口响应约定见 [请求校验约定](../engineering/request-validation.md#响应与错误分类)。
+
 ### `scrape_path_categories`
 
 刮削目录与分类的映射表。

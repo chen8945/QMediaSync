@@ -149,6 +149,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 ## 稳定回归验证
 
 - 长期回归风险优先由相关 Go 包内测试保护；新增或修改测试时遵循 table-driven 模式。
+- 分类保存回归在 `models` 包中使用隔离 SQLite，确认电影／电视剧分类写入失败时 `Save` 返回数据库错误而非固定成功。运行 `(cd backend && go test ./internal/models -run TestCategorySaveReturnsDBError)`。
 - 上传后的 STRM 收尾与 OpenList 上传队列回归须覆盖生产 SQLite 单连接配置；信息准备、事务回滚和幂等边界见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList 凭据变更须验证内存与数据库两处的过时结果保护，并覆盖临时验证失败、条件保存冲突与正常刷新；认证重试变更还须验证一次独立认证恢复、完整 multipart 重发及普通网络重试次数不变。契约和回归范围见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。

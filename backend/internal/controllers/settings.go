@@ -383,20 +383,20 @@ func TestHttpProxy(c *gin.Context) {
 		// 使用高级测试，返回详细结果
 		result, err := helpers.TestHttpProxyAdvancedWithContext(c.Request.Context(), httpProxy)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + err.Error(), Data: nil})
 			return
 		}
 
 		if result.Success {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "出站代理连接测试成功", Data: result})
 		} else {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + helpers.RedactSensitiveLog(result.ErrorMessage), Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + result.ErrorMessage, Data: nil})
 		}
 	} else {
 		// 使用简单测试
 		success, err := helpers.TestHttpProxyWithContext(c.Request.Context(), httpProxy)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + err.Error(), Data: nil})
 			return
 		}
 
@@ -448,7 +448,7 @@ func TestHttpProxy(c *gin.Context) {
 // 	// 测试 Telegram 机器人连接
 // 	err := helpers.TestTelegramBot(token, chatId, models.SettingsGlobal.HttpProxy)
 // 	if err != nil {
-// 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+// 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "连接失败：" + err.Error(), Data: nil})
 // 		return
 // 	}
 

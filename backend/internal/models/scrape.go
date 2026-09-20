@@ -413,12 +413,7 @@ func (m *MovieCategory) Save(name string, genreIdsArray []int, languageArray []s
 		}
 		m.Language = string(language)
 	}
-	if m.ID == 0 {
-		db.Db.Save(m)
-	} else {
-		db.Db.Save(m)
-	}
-	return nil
+	return db.Db.Save(m).Error
 }
 
 // 保存或者更新剧集分类
@@ -446,12 +441,7 @@ func (m *TvShowCategory) Save(name string, genreIdsArray []int, countryArray []s
 		}
 		m.Countries = string(countries)
 	}
-	if m.ID == 0 {
-		db.Db.Save(m)
-	} else {
-		db.Db.Save(m)
-	}
-	return nil
+	return db.Db.Save(m).Error
 }
 
 // 删除电影分类
