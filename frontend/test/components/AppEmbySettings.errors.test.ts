@@ -80,6 +80,28 @@ afterEach(() => {
 })
 
 describe('Emby 设置请求反馈', () => {
+  it('首次读取失败不能保存默认配置，重试读取成功后才允许保存', async () => {
+    const { wrapper, reply, getReply, act } = await mountSettings(
+      rejectedRequest('REQUEST_ORIGIN_INVALID'),
+    )
+    const save = () => wrapper.findAll('button').find((button) => button.text() === '保存设置')!
+    expect(save().attributes('disabled')).toBeDefined()
+    await act('保存设置')
+    expect(reply).not.toHaveBeenCalled()
+    getReply.mockResolvedValueOnce({
+      code: 200,
+      message: '',
+      data: { exists: true, config: settings },
+    })
+    await act('重试加载')
+    expect((input(wrapper, 'Emby 服务器地址').element as HTMLInputElement).value).toBe(
+      settings.emby_url,
+    )
+    expect(save().attributes('disabled')).toBeUndefined()
+    await act('保存设置')
+    expect(reply).toHaveBeenCalledTimes(1)
+  })
+
   it('业务失败保留输入和选择，只有一个安全错误提示', async () => {
     const { wrapper, reply, act, adapter } = await mountSettings()
     await input(wrapper, 'Emby 服务器地址').setValue('http://changed:8096')
@@ -121,7 +143,7 @@ describe('Emby 设置请求反馈', () => {
   })
 
   it('加载配置失败使用安全错误条，保存后的回读失败保留编辑值', async () => {
-    const { wrapper, getReply, act } = await mountSettings()
+    const { wrapper, getReply, reply, act } = await mountSettings()
     await input(wrapper, 'Emby 服务器地址').setValue('http://changed:8096')
     getReply.mockRejectedValueOnce(new AxiosError('private-key', 'ERR_NETWORK'))
     await act('保存设置')
@@ -132,6 +154,9 @@ describe('Emby 设置请求反馈', () => {
       'http://changed:8096',
     )
     expect(ElMessage.error).not.toHaveBeenCalled()
+    await act('保存设置')
+    expect(reply).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('.emby-status-alert').text()).toContain('保存成功')
   })
 
   it('首次加载失败可见且不透传内部异常', async () => {
@@ -181,6 +206,18 @@ describe('Emby 设置请求反馈', () => {
     await act('提取媒体信息')
     await vi.advanceTimersByTimeAsync(6000)
     expect(wrapper.get('.emby-status-alert').text()).toContain('访问地址校验失败')
+  })
+
+  it('保存请求在途时禁用启动同步，避免保存结果覆盖同步反馈', async () => {
+    const { wrapper, reply, act } = await mountSettings()
+    const sync = () => wrapper.findAll('button').find((button) => button.text() === '启动全量同步')!
+    const pending = createDeferred<APIResponse<unknown>>()
+    reply.mockReturnValueOnce(pending.promise)
+    await act('保存设置')
+    expect(sync().attributes('disabled')).toBeDefined()
+    pending.resolve({ code: 200, message: '', data: null })
+    await flushPromises()
+    expect(sync().attributes('disabled')).toBeUndefined()
   })
 
   it('Cron 保留 trim 参数，来源拒绝不误报表达式格式', async () => {

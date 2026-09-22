@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func TestZipDirReportsFinalWriteFailure(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("需要 /dev/full 注入 ZIP 关闭时的写入错误")
+	}
+	if err := ZipDir(t.TempDir(), "/dev/full"); err == nil {
+		t.Fatal("ZIP 中央目录写入失败必须返回错误")
+	}
+}
+
 type testTarEntry struct {
 	name     string
 	typeflag byte

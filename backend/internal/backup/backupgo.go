@@ -1,11 +1,12 @@
 package backup
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/db"
@@ -15,61 +16,9 @@ import (
 	"qmediasync/internal/synccron"
 )
 
-var isRuning int32 = 0
-
-type BackupOrRestoreResult struct {
-	Type      string    `json:"type"`       // 备份类型：backup or restore
-	Desc      string    `json:"desc"`       // 当前操作描述
-	Total     int       `json:"total"`      // 需要备份的数量
-	Count     int       `json:"count"`      // 已备份的数量
-	ErrorMsg  string    `json:"error_msg"`  // 错误信息（如果有错误发生，则会包含错误信息）
-	IsRunning bool      `json:"is_running"` // 是否正在运行（如果为否，则备份完成）
-	StartTime time.Time `json:"start_time"` // 开始时间
-	Elapsed   float64   `json:"elapsed"`    // 已用时间（秒）
-}
-
-var runningResult *BackupOrRestoreResult
-
-func GetRunningResult() *BackupOrRestoreResult {
-	return runningResult
-}
-
-func SetRunningResult(t string, desc string, total int, count int, errorMsg string, new bool) {
-	if runningResult == nil {
-		runningResult = &BackupOrRestoreResult{}
-	}
-	if new {
-		runningResult.StartTime = time.Now()
-		runningResult.Elapsed = 0
-	}
-	runningResult.Type = t
-	runningResult.Desc = desc
-	runningResult.Total = total
-	runningResult.Count = count
-	runningResult.ErrorMsg = errorMsg
-	runningResult.IsRunning = IsRunning()
-	runningResult.Elapsed = time.Since(runningResult.StartTime).Seconds()
-}
-
-func IsRunning() bool {
-	return atomic.LoadInt32(&isRuning) == 1
-}
-
-func SetRunning(running bool) {
-	if running {
-		atomic.StoreInt32(&isRuning, 1)
-		helpers.AppLogger.Infof("已将任务设置为进行中：%d", atomic.LoadInt32(&isRuning))
-		if runningResult != nil {
-			runningResult.IsRunning = true
-		}
-	} else {
-		atomic.StoreInt32(&isRuning, 0)
-		helpers.AppLogger.Infof("已将任务设置为完成：%d", atomic.LoadInt32(&isRuning))
-		if runningResult != nil {
-			runningResult.IsRunning = false
-		}
-	}
-}
+var pauseTasks = stopAllTasks
+var resumeTasks = startAllTasks
+var zipDir = helpers.ZipDir
 
 // 备份之前先停止所有同步任务、上传下载任务、定时任务
 func stopAllTasks() error {
@@ -116,90 +65,88 @@ func startAllTasks() error {
 
 // 遍历每一个模型，生成 JSON 格式的备份文件
 func Backup(backupType string, reason string) error {
+	if err := beginTask("backup"); err != nil {
+		return err
+	}
+	return runTask(func() error { return backup(backupType, reason) })
+}
+
+func backup(backupType, reason string) (err error) {
 	totalTable := len(models.AllTables)
 	count := 0
-	// config := models.GetOrCreateBackupConfig()
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		helpers.AppLogger.Errorf("创建备份目录失败：%v", err)
+		return fmt.Errorf("创建备份目录失败：%w", err)
 	}
-	if IsRunning() {
-		return fmt.Errorf("备份任务正在运行")
-	}
-	SetRunning(true)
-	defer SetRunning(false)
-	SetRunningResult("backup", fmt.Sprintf("开始 %s 备份", backupType), totalTable, count, "", true)
-	// 清理旧备份
+	SetRunningResult("backup", fmt.Sprintf("开始 %s 备份", backupType), totalTable, count, "")
 	models.GetBackupService().CleanupOldBackups()
 	record := &models.BackupRecord{
-		Status:        models.BackupStatusRunning,
-		BackupType:    backupType,
-		CreatedReason: reason,
+		Status: models.BackupStatusRunning, BackupType: backupType, CreatedReason: reason,
 	}
 	if err := db.Db.Save(record).Error; err != nil {
-		helpers.AppLogger.Errorf("创建备份记录失败：%v", err)
-		return err
+		return fmt.Errorf("创建备份记录失败：%w", err)
 	}
 	startTime := time.Now()
-	helpers.AppLogger.Infof("开始 %s 备份，备份记录 ID：%d", backupType, record.ID)
-	if err := stopAllTasks(); err != nil {
-		return err
-	}
-	SetRunningResult("backup", "已停止所有同步任务、上传下载任务、定时任务", totalTable, count, "", false)
-	defer startAllTasks()
-
-	// 创建备份目录
-	backupRecordDir := filepath.Join(backupDir, fmt.Sprintf("%d", record.ID))
-	if err := os.MkdirAll(backupRecordDir, 0755); err != nil {
-		helpers.AppLogger.Errorf("创建备份目录失败：%v", err)
-		return err
-	}
-	// 如果本方法返回的不是 nil，defer 中删除这个目录
+	// 每个退出分支（包括 panic）均落下历史终态，完成记录写入失败也不能报告成功。
 	defer func() {
-		if r := recover(); r != nil {
-			helpers.AppLogger.Errorf("备份任务 panic：%v", r)
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("备份任务异常：%v", recovered)
+		}
+		record.Status = models.BackupStatusCompleted
+		record.CompletedAt = time.Now().Unix()
+		record.BackupDuration = int64(time.Since(startTime).Seconds())
+		if err != nil {
 			record.Status = models.BackupStatusFailed
-			record.BackupDuration = int64(time.Since(startTime).Seconds())
-			db.Db.Save(record)
-			// 删除目录
-			os.RemoveAll(backupRecordDir)
+			record.FailureReason = taskFailureMessage("backup")
+		}
+		if saveErr := db.Db.Save(record).Error; saveErr != nil {
+			err = errors.Join(err, fmt.Errorf("保存备份终态失败：%w", saveErr))
+			// 尽可能将先前的 running 记录标为失败；数据库持续故障时仍由内存快照报告 failed。
+			if updateErr := db.Db.Model(record).Updates(map[string]any{
+				"status": models.BackupStatusFailed, "failure_reason": taskFailureMessage("backup"),
+			}).Error; updateErr != nil {
+				err = errors.Join(err, fmt.Errorf("保存备份失败状态失败：%w", updateErr))
+			}
 		}
 	}()
+	helpers.AppLogger.Infof("开始 %s 备份，备份记录 ID：%d", backupType, record.ID)
+	if err := pauseTasks(); err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, resumeTasks()) }()
+	SetRunningResult("backup", "已停止所有同步任务、上传下载任务、定时任务", totalTable, count, "")
+
+	backupRecordDir := filepath.Join(backupDir, fmt.Sprintf("%d", record.ID))
+	if err := os.MkdirAll(backupRecordDir, 0755); err != nil {
+		return fmt.Errorf("创建备份目录失败：%w", err)
+	}
+	defer os.RemoveAll(backupRecordDir)
 	for _, table := range models.AllTables {
 		if err := backupToJsonFile(backupRecordDir, helpers.GetStructName(table), totalTable, &count, table); err != nil {
 			return err
 		}
 	}
 
-	record.Status = models.BackupStatusCompleted
-	record.BackupDuration = int64(time.Since(startTime).Seconds())
-	var fileName string
-	timestamp := time.Now().Format("20060102_150405")
-	fileName = fmt.Sprintf("backup_%s_%s.zip", backupType, timestamp)
+	fileName := fmt.Sprintf("backup_%s_%s.zip", backupType, time.Now().Format("20060102_150405"))
 	filePath := filepath.Join(backupDir, fileName)
-	// 打包目录中所有文件，生成一个压缩包
-	if err := helpers.ZipDir(backupRecordDir, filePath); err != nil {
-		helpers.AppLogger.Errorf("打包备份目录失败：%v", err)
-		return err
+	if err := zipDir(backupRecordDir, filePath); err != nil {
+		// 残缺归档尚未写入记录路径，历史清理和删除都找不到它，只能在此删除。
+		os.Remove(filePath)
+		return fmt.Errorf("打包备份目录失败：%w", err)
 	}
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		helpers.AppLogger.Errorf("获取备份文件状态失败：%v", err)
-		return err
+		return fmt.Errorf("获取备份文件状态失败：%w", err)
 	}
 	record.FilePath = filePath
 	record.FileSize = stat.Size()
-	record.BackupDuration = int64(time.Since(startTime).Seconds())
 	record.TableCount = totalTable
-	db.Db.Save(record)
-	// 删除目录
-	os.RemoveAll(backupRecordDir)
-	helpers.AppLogger.Infof("备份完成：共 %d 张表，耗时 %.1f 秒，文件大小 %.2f MB", totalTable, time.Since(startTime).Seconds(), float64(stat.Size())/1024/1024)
+	helpers.AppLogger.Infof("备份文件已生成：共 %d 张表，耗时 %.1f 秒，文件大小 %.2f MB", totalTable, time.Since(startTime).Seconds(), float64(stat.Size())/1024/1024)
 	return nil
 }
 
 // 备份账号信息
-func backupToJsonFile(backupDir string, modelName string, totalTable int, count *int, model any) error {
+func backupToJsonFile(backupDir string, modelName string, totalTable int, count *int, model any) (err error) {
 	// 打开一个文件用来写入
 	backupFilePath := filepath.Join(backupDir, modelName+".json")
 	backupFile, err := os.OpenFile(backupFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -207,7 +154,8 @@ func backupToJsonFile(backupDir string, modelName string, totalTable int, count 
 		helpers.AppLogger.Errorf("创建 %s 备份文件失败：%v", modelName, err)
 		return err
 	}
-	defer backupFile.Close()
+	defer func() { err = errors.Join(err, backupFile.Close()) }()
+	encoder := json.NewEncoder(backupFile)
 	// 从数据库中分页查询所有数据，每页 100 条
 	pageSize := 100
 	page := 0
@@ -227,20 +175,18 @@ func backupToJsonFile(backupDir string, modelName string, totalTable int, count 
 
 		for i := 0; i < recordsValue.Len(); i++ {
 			record := recordsValue.Index(i).Interface()
-			jsonStr := helpers.JsonString(record)
-			_, err := backupFile.WriteString(jsonStr + "\n")
-			if err != nil {
-				helpers.AppLogger.Errorf("写入 %s 备份文件失败：%v", modelName, err)
+			if err := encoder.Encode(record); err != nil {
+				return fmt.Errorf("写入 %s 备份文件失败：%w", modelName, err)
 			}
 			totalCount++
 			if totalCount%10 == 0 {
-				SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "", false)
+				SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "")
 			}
 		}
 		page++
 	}
 	*count++
-	SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "", false)
+	SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "")
 	helpers.AppLogger.Infof("表 [%s] 备份完成，共 %d 条数据", modelName, totalCount)
 	return nil
 }

@@ -280,6 +280,7 @@
           placeholder="请选择同步目录"
           style="width: 100%"
           :loading="syncPathsLoading"
+          :disabled="!syncPathRelationReady || saveSyncPathLoading"
         >
           <el-option
             v-for="item in syncPathOptions"
@@ -288,11 +289,24 @@
             :value="item.id"
           />
         </el-select>
+        <el-alert
+          v-if="syncPathLoadError"
+          :title="syncPathLoadError"
+          type="error"
+          show-icon
+          style="margin-top: 16px"
+        />
       </div>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showSyncPathDialog = false">取消</el-button>
-          <el-button type="primary" @click="saveSyncPathRelation" :loading="saveSyncPathLoading">
+          <el-button v-if="syncPathLoadFailed" @click="loadSyncPathRelation">重新加载</el-button>
+          <el-button
+            type="primary"
+            @click="saveSyncPathRelation"
+            :loading="saveSyncPathLoading"
+            :disabled="!syncPathRelationReady"
+          >
             确定
           </el-button>
         </span>
@@ -307,6 +321,8 @@ import PageStats from '@/components/common/PageStats.vue'
 import { useHttpClient } from '@/http/client'
 import { accountPublicMessages, listAccounts } from '@/api/accounts'
 import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { fetchSyncPaths, syncPathPublicMessages } from '@/api/syncPaths'
 import {
   fetchScrapePaths,
@@ -319,7 +335,7 @@ import {
   scrapePathErrorOptions,
   type ScrapePath as ScrapePathData,
 } from '@/api/scrapePaths'
-import { onMounted, ref, computed } from 'vue'
+import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -377,12 +393,57 @@ const syncPathOptions = ref<{ id: number; label: string }[]>([])
 const syncPathsLoading = ref(false)
 const saveSyncPathLoading = ref(false)
 const currentScrapePath = ref<ScrapePath | null>(null)
+const syncPathRelationReady = ref(false)
+const syncPathLoadFailed = ref(false)
+const syncPathLoadError = ref('')
+let syncPathRequestId = 0
+type PathRefreshMode = 'snapshot' | 'status'
+let isPageActive = true
+let pathRefreshGeneration = 0
+let pathRefreshInFlight = false
+let pendingPathRefresh: PathRefreshMode | null = null
+let pathRefreshErrorNotified = false
+
+const deactivatePathRefresh = () => {
+  isPageActive = false
+  pathRefreshGeneration += 1
+  pendingPathRefresh = null
+  loading.value = false
+}
+
+onDeactivated(deactivatePathRefresh)
+onActivated(() => {
+  if (isPageActive) return
+  isPageActive = true
+  void loadPathes()
+})
+
+const isSyncPathRequestCurrent = (requestId: number, directoryId: number) =>
+  requestId === syncPathRequestId &&
+  showSyncPathDialog.value &&
+  currentScrapePath.value?.id === directoryId
+
+watch(
+  showSyncPathDialog,
+  (visible) => {
+    if (visible) return
+    syncPathRequestId += 1
+    currentScrapePath.value = null
+    syncPathRelationReady.value = false
+    syncPathsLoading.value = false
+    saveSyncPathLoading.value = false
+  },
+  { flush: 'sync' },
+)
+
+onBeforeUnmount(() => {
+  deactivatePathRefresh()
+  syncPathRequestId += 1
+})
 
 const reportError = (error: unknown, fallbackMessage: string) => {
-  const failure = parseHttpError(error, { ...scrapePathErrorOptions, fallbackMessage })
-  if (!failure.shouldNotify) return
-  console.error(fallbackMessage, failure.diagnostics)
-  ElMessage.error(failure.message)
+  return notifyHttpError(error, fallbackMessage, { ...scrapePathErrorOptions, fallbackMessage })
+    .shouldNotify
 }
 
 const runningCount = computed(() => pathes.value.filter((p) => p.is_running === 2).length)
@@ -438,45 +499,59 @@ const getRenameTypeText = (renameType: string): string => {
   return typeMap[renameType] || renameType
 }
 
-const loadPathes = async () => {
+const refreshPathes = async (mode: PathRefreshMode) => {
+  if (!isPageActive) return
+  if (pathRefreshInFlight) {
+    // 同一接口的全量读取与状态更新串行执行，最多补发一次，全量读取优先。
+    pendingPathRefresh = pendingPathRefresh === 'snapshot' ? 'snapshot' : mode
+    return
+  }
+  const generation = pathRefreshGeneration
+  pathRefreshInFlight = true
+  if (mode === 'snapshot') loading.value = true
   try {
-    loading.value = true
-    pathes.value = (await fetchScrapePaths(http)) || []
+    const paths = await fetchScrapePaths(http)
+    if (!isPageActive || generation !== pathRefreshGeneration) return
+    if (mode === 'snapshot') {
+      pathes.value = paths || []
+    } else {
+      for (const p of paths || []) {
+        const path = pathes.value.find((pa) => pa.id === p.id)
+        if (path) {
+          path.is_running = p.is_running
+        }
+      }
+    }
+    pathRefreshErrorNotified = false
   } catch (error) {
-    reportError(error, '加载刮削目录失败')
-    pathes.value = []
+    if (!isPageActive || generation !== pathRefreshGeneration) return
+    if (!pathRefreshErrorNotified) {
+      pathRefreshErrorNotified = reportError(
+        error,
+        mode === 'snapshot' ? '加载刮削目录失败' : '更新刮削目录状态失败',
+      )
+    }
   } finally {
-    loading.value = false
+    pathRefreshInFlight = false
+    if (generation === pathRefreshGeneration) loading.value = false
+    const pending = pendingPathRefresh
+    pendingPathRefresh = null
+    if (isPageActive && pending) void refreshPathes(pending)
   }
 }
 
-const updatePathesStatus = async () => {
-  try {
-    const paths = await fetchScrapePaths(http)
-    for (const p of paths || []) {
-      const path = pathes.value.find((pa) => pa.id === p.id)
-      if (path) {
-        path.is_running = p.is_running
-      }
-    }
-  } catch (error) {
-    reportError(error, '更新刮削目录状态失败')
-  }
-}
+const loadPathes = () => refreshPathes('snapshot')
+const updatePathesStatus = () => refreshPathes('status')
 
 const loadAccounts = async (sourceType?: string) => {
   try {
     accountsLoading.value = true
     accounts.value = await listAccounts(http, sourceType)
   } catch (error) {
-    const failure = parseHttpError(error, {
+    notifyHttpError(error, '加载账号列表失败：', {
       publicMessages: accountPublicMessages,
       fallbackMessage: '加载账号列表失败',
     })
-    if (failure.shouldNotify) {
-      console.error('加载账号列表失败：', failure.diagnostics)
-      ElMessage.error(failure.message)
-    }
     accounts.value = []
   } finally {
     accountsLoading.value = false
@@ -499,7 +574,7 @@ const handleDelete = async (row: ScrapePath, index: number) => {
     ElMessage.success('删除刮削目录成功')
     void loadPathes()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       reportError(error, '删除刮削目录失败')
     }
   } finally {
@@ -543,58 +618,70 @@ const toggleCron = async (row: ScrapePath) => {
   }
 }
 
-const loadSyncPaths = async (sourceType?: string) => {
+const loadSyncPathRelation = async () => {
+  const directory = currentScrapePath.value
+  if (!directory || !showSyncPathDialog.value) return
+  const requestId = ++syncPathRequestId
+  syncPathRelationReady.value = false
+  syncPathLoadFailed.value = false
+  syncPathLoadError.value = ''
+  selectedSyncPathIds.value = []
+  syncPathOptions.value = []
   try {
     syncPathsLoading.value = true
-    const result = await fetchSyncPaths(http, {
-      page: 1,
-      page_size: 9999,
-      source_type: sourceType,
-    })
+    const [result, selectedIDs] = await Promise.all([
+      fetchSyncPaths(http, {
+        page: 1,
+        page_size: 9999,
+        source_type: directory.source_type,
+      }),
+      fetchScrapeSyncPathIDs(http, directory.id),
+    ])
+    if (!isSyncPathRequestCurrent(requestId, directory.id)) return
     syncPathOptions.value = result.list.map((item) => ({
       id: item.id,
       label: `#${item.id} - ${item.source_type} - ${item.remote_path}`,
     }))
+    selectedSyncPathIds.value = selectedIDs || []
+    syncPathRelationReady.value = true
   } catch (error) {
+    if (!isSyncPathRequestCurrent(requestId, directory.id)) return
+    syncPathLoadFailed.value = true
     const parsed = parseHttpError(error, {
-      fallbackMessage: '加载同步目录失败',
-      publicMessages: syncPathPublicMessages,
+      fallbackMessage: '加载关联同步目录失败',
+      publicMessages: { ...syncPathPublicMessages, ...scrapePathErrorOptions.publicMessages },
     })
-    if (parsed.shouldNotify) ElMessage.error(parsed.message)
+    if (parsed.shouldNotify) {
+      syncPathLoadError.value = parsed.message
+      console.error('加载关联同步目录失败', parsed.diagnostics)
+    }
   } finally {
-    syncPathsLoading.value = false
+    if (isSyncPathRequestCurrent(requestId, directory.id)) syncPathsLoading.value = false
   }
 }
 
 const openSyncPathDialog = async (row: ScrapePath) => {
   currentScrapePath.value = row
-  selectedSyncPathIds.value = []
   showSyncPathDialog.value = true
-  await loadSyncPaths(row.source_type)
-  if (row.id) {
-    try {
-      selectedSyncPathIds.value = (await fetchScrapeSyncPathIDs(http, row.id)) || []
-    } catch (error) {
-      reportError(error, '加载已关联同步目录失败')
-    }
-  }
+  await loadSyncPathRelation()
 }
 
 const saveSyncPathRelation = async () => {
-  if (!currentScrapePath.value?.id) {
-    ElMessage.error('刮削目录 ID 不存在')
-    return
-  }
+  const directory = currentScrapePath.value
+  if (!directory?.id || !syncPathRelationReady.value || saveSyncPathLoading.value) return
+  const requestId = syncPathRequestId
 
   try {
     saveSyncPathLoading.value = true
-    await saveScrapeSyncPathIDs(http, currentScrapePath.value.id, selectedSyncPathIds.value)
+    await saveScrapeSyncPathIDs(http, directory.id, [...selectedSyncPathIds.value])
+    if (!isSyncPathRequestCurrent(requestId, directory.id)) return
     ElMessage.success('关联同步目录成功')
     showSyncPathDialog.value = false
   } catch (error) {
+    if (!isSyncPathRequestCurrent(requestId, directory.id)) return
     reportError(error, '关联同步目录失败')
   } finally {
-    saveSyncPathLoading.value = false
+    if (isSyncPathRequestCurrent(requestId, directory.id)) saveSyncPathLoading.value = false
   }
 }
 
@@ -611,7 +698,7 @@ useRealtimeEvent('scraper_item_complete', onScraperEvent)
 
 onMounted(async () => {
   await loadPathes()
-  await loadAccounts()
+  if (isPageActive) await loadAccounts()
 })
 </script>
 

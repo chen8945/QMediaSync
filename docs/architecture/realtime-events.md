@@ -28,9 +28,11 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 全局事件 payload 保留 `event_type`、`timestamp`、`data` 三个字段，事件类型包括队列状态、队列列表、刮削任务和同步任务事件。它的语义是“至多一次通知 + HTTP snapshot 最终收敛”：页面收到结构性事件或原生 EventSource 非首次 `open` 后，复用当前页的 HTTP 加载函数重新获取列表快照。
 
+刮削目录的媒体项完成事件可能密集到达，页面须合并其 HTTP 状态查询，并限制连续查询失败的提示次数；状态查询失败不改变 SSE 连接状态。请求合并、旧结果失效和提示规则见 [前端开发约定](../engineering/frontend-development.md#api-响应与请求错误)。
+
 上传队列的 `upload_queue_changed` 中，`progress` 和 `source_cleanup_changed` 是当前页已有任务的局部 patch 例外。目录监控源文件清理更新会同时携带 `source_cleanup_status`、可为空的 `source_cleanup_error` 与正值 `source_deleted_at`；前端将这些字段合并到现有行。缺少目标行、其他变更原因或原生重连仍通过 HTTP snapshot 收敛。
 
-全局流的前端连接状态分为 `idle`、`connecting`、`connected` 和 `reconnecting`。创建 `EventSource` 后先进入 `connecting`，首次 `open` 只更新为 `connected`，不显示断线提示；原生 `error` 才进入 `reconnecting` 并显示“实时更新暂时断开，正在重新连接…”。后台重连会等待页面重新可见后执行一次收敛，避免后台页无意义请求。同步记录和同步目录页面会在这次 HTTP snapshot 前清空本地 `sequence` 水位，避免后端进程重启后用旧水位丢弃重新计数的事件。最后一个全局监听器注销时关闭 source；登出或认证状态清理会关闭所有已登记的实时 source。
+全局流的前端连接状态分为 `idle`、`connecting`、`connected`、`reconnecting` 和 `disconnected`。创建 `EventSource` 后先进入 `connecting`，首次 `open` 只更新为 `connected`，不显示断线提示；原生 `error` 才进入 `reconnecting` 并显示“实时更新暂时断开，正在重新连接…”。后台重连会等待页面重新可见后执行一次收敛，避免后台页无意义请求。同步记录和同步目录页面会在这次 HTTP snapshot 前清空本地 `sequence` 水位，避免后端进程重启后用旧水位丢弃重新计数的事件。若 `error` 时 `readyState` 已为 `CLOSED`（浏览器放弃自动重连），前端释放该 source 并进入 `disconnected`，提示“实时更新已断开，请刷新页面恢复”，监听器保留，下一次订阅会重新建立 source。最后一个全局监听器注销时关闭 source；登出或认证状态清理会关闭所有已登记的实时 source。
 
 不支持 `EventSource` 的浏览器不创建 source、不引入全局轮询，应用壳层会提示“当前浏览器不支持自动刷新，请手动刷新页面查看最新状态”。连接暂时断开时显示“实时更新暂时断开，正在重新连接…”，由浏览器原生重连处理。
 
@@ -40,7 +42,7 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 初始快照和向前翻页均通过日志领域 API 读取，保留 Cookie、位置、条数和取消信号。失败复用公共 HTTP 分类，日志区域只显示安全说明；路径切换后的旧失败也不能写入新路径的日志。原生 `EventSource.onerror` 只表示连接暂时断开，不据此判断认证失效或服务不可达，也不新增会话探测。
 
-`log_append` 传递新增日志条目，`resync_required` 表示截断、轮转或 tailer 无法继续时应重新请求 HTTP 日志快照。日志查看器的连接状态为 `idle`、`connecting`、`connected`、`reconnecting` 或 `unsupported`：初始历史快照和 `EventSource` 建立期间显示“正在连接”，仅在原生连接错误后显示重连提示；初始快照请求失败时会记录错误并回退到 `idle`；不支持 `EventSource` 时进入 `unsupported`，仅显示不支持提示。普通连接错误不关闭 source，下一次 `open` 会重新加载 HTTP 历史快照。日志流不承诺严格投递、持久回放或客户端 cursor 补偿。
+`log_append` 传递新增日志条目，`resync_required` 表示截断、轮转或 tailer 无法继续时应重新请求 HTTP 日志快照。日志查看器的连接状态为 `idle`、`connecting`、`connected`、`reconnecting` 或 `unsupported`：初始历史快照和 `EventSource` 建立期间显示“正在连接”，仅在原生连接错误后显示重连提示；初始快照请求失败时会记录错误并回退到 `idle`；不支持 `EventSource` 时进入 `unsupported`，仅显示不支持提示。普通连接错误不关闭 source，下一次 `open` 会重新加载 HTTP 历史快照；`error` 时 `readyState` 已为 `CLOSED` 则关闭 source 回到 `idle`（显示已断开），由用户手动重新连接。日志流不承诺严格投递、持久回放或客户端 cursor 补偿。
 
 不支持 SSE 时，日志不轮询，界面提示“当前浏览器不支持实时日志，请手动刷新查看最新内容”。
 
@@ -50,9 +52,9 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 运行中任务会在单个进程 epoch 内缓存最近 64 条 `task_patch`。浏览器携带格式为 `<stream_epoch>:<sequence>` 的 `Last-Event-ID` 时，仅在 epoch 一致且缓存连续时回放后续 patch；空值、非法值、epoch 不同、缓存缺口或服务重启时均返回完整 snapshot。snapshot 带注册时的 sequence 水位线，后续只发送更大的 patch，避免旧事件回退快照。日志不参与回放，未命中时由 snapshot 中的最近日志恢复。
 
-任务详情前端同样区分 `idle`、`connecting`、`connected` 和 `reconnecting`：首次订阅期间不显示断线提示，原生连接错误后才显示重连提示。任务完成、失败或删除后，服务端清理该任务的回放缓存和 sequence 状态。已订阅客户端继续接收最多 2 秒的最终日志增量，再收到唯一 `complete`；客户端关闭 source，避免终态任务自动重连。后续新建连接通过终态 snapshot（或缺失记录的 `deleted complete`）收敛，不会在终态 snapshot 后重复发送 `complete`。浏览器不支持 SSE 时，详情页仅对运行中任务每 5 秒请求 `GET /api/sync/task?sync_id=...`，终态后停止；日志仍由用户手动刷新。
+任务详情前端同样区分 `idle`、`connecting`、`connected` 和 `reconnecting`：首次订阅期间不显示断线提示，原生连接错误后才显示重连提示。任务完成、失败或删除后，服务端清理该任务的回放缓存和 sequence 状态。已订阅客户端继续接收最多 2 秒的最终日志增量，再收到唯一 `complete`；客户端关闭 source，避免终态任务自动重连。后续新建连接通过终态 snapshot（或缺失记录的 `deleted complete`）收敛，不会在终态 snapshot 后重复发送 `complete`。原生 `error` 时 `readyState` 已为 `CLOSED` 表示浏览器不再重连，详情页关闭 source 回到 `idle` 并改用下述 HTTP 降级读取。浏览器不支持 SSE 时，详情页仅对运行中任务每 5 秒请求 `GET /api/sync/task?sync_id=...`，终态后停止；日志仍由用户手动刷新。
 
-该 HTTP 降级读取必须校验业务成功和任务 ID，同一轮查询不得重叠；失败保留已有任务快照，并显示公共错误说明，后续成功清除错误。显式停止、任务切换或卸载会使在途结果失效，旧请求不得回写状态或重新创建轮询。SSE 支持与连接状态不因 HTTP 错误分类而改变。
+该 HTTP 降级读取必须校验业务成功和任务 ID，同一轮查询不得重叠；失败保留已有任务快照，并显示公共错误说明，后续成功清除错误。HTTP `401`、`403`、`404` 或明确的认证、来源、CSRF 拒绝会停止该轮查询，须由后续显式连接重新开始；这也适用于第一次降级读取，不能在失败后再次创建定时器。显式停止、任务切换或卸载会使在途结果失效，旧请求不得回写状态或重新创建轮询。SSE 支持与连接状态不因 HTTP 错误分类而改变。
 
 ## 日志 tailer 与事件字段
 

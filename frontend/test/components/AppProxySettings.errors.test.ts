@@ -55,13 +55,27 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('代理设置请求反馈', () => {
+  it('首次读取失败不能保存默认空配置，重试读取成功后才允许保存', async () => {
+    const { wrapper, reply, act } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
+    const save = () => wrapper.findAll('button').find((button) => button.text() === '保存')!
+    expect(save().attributes('disabled')).toBeDefined()
+    await act('保存')
+    expect(reply).not.toHaveBeenCalled()
+    await act('重试加载')
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe(masked)
+    expect(save().attributes('disabled')).toBeUndefined()
+    await act('保存')
+    expect(reply).toHaveBeenCalledTimes(1)
+  })
+
   it('业务失败不回读、不报成功，输入与诊断安全边界保留', async () => {
     const { wrapper, reply, getReply, act } = await mountSettings()
     await wrapper.get('input').setValue(privateURL)
-    reply.mockResolvedValueOnce({ code: 500, message: `数据库错误 ${privateURL}`, data: null })
+    reply.mockResolvedValueOnce({ code: 500, message: '代理配置暂时不可写', data: null })
     await act('保存')
     expect(wrapper.get('.proxy-status').text()).toContain('保存代理设置失败')
     expect(wrapper.get('.proxy-status').text()).not.toMatch(/private|已保存/)
+    expect(wrapper.get('.proxy-status').text()).toContain('代理配置暂时不可写')
     expect((wrapper.get('input').element as HTMLInputElement).value).toBe(privateURL)
     expect(getReply).toHaveBeenCalledTimes(1)
     expect(ElMessage.error).not.toHaveBeenCalled()
@@ -79,15 +93,19 @@ describe('代理设置请求反馈', () => {
       else
         getReply.mockResolvedValueOnce({
           code: failure === 'business' ? 500 : 200,
-          message: privateURL,
+          message: '代理配置暂时不可读',
           data: null,
         })
       await act('保存')
       expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存，但刷新失败')
       expect(wrapper.get('.proxy-status').text()).not.toMatch(/private|已设置代理服务器/)
+      if (failure === 'business')
+        expect(wrapper.get('.proxy-status').text()).toContain('代理配置暂时不可读')
       expect((wrapper.get('input').element as HTMLInputElement).value).toBe(privateURL)
       expect(ElMessage.error).not.toHaveBeenCalled()
       expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
+      await act('保存')
+      expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存')
     },
   )
 
@@ -115,6 +133,7 @@ describe('代理设置请求反馈', () => {
     const { wrapper, reply, act } = await mountSettings()
     reply.mockRejectedValueOnce(rejectedRequest(code))
     await act('测试')
+    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
     expect(wrapper.get('.proxy-status').text()).toContain(message)
     expect(wrapper.get('.proxy-status').text()).not.toMatch(
       /无法连接|检查网络连接和代理设置|private/,
@@ -146,8 +165,20 @@ describe('代理设置请求反馈', () => {
 
   it('初始读取失败显示安全原因', async () => {
     const { wrapper } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
-    expect(wrapper.get('.proxy-status').text()).toContain('加载代理设置失败')
+    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
     expect(wrapper.get('.proxy-status').text()).toContain('访问地址校验失败')
     expect(wrapper.get('.proxy-status').text()).not.toContain('private')
   })
+
+  it.each(['REQUEST_ORIGIN_INVALID', 'CSRF_TOKEN_INVALID'])(
+    '保存后回读被 %s 拒绝仍说明代理已保存',
+    async (code) => {
+      const { wrapper, getReply, act } = await mountSettings()
+      getReply.mockRejectedValueOnce(rejectedRequest(code))
+      await act('保存')
+      expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存，但刷新失败')
+      expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
+      expect(wrapper.get('.proxy-status').text()).toContain('校验失败')
+    },
+  )
 })

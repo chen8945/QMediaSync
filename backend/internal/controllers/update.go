@@ -483,7 +483,8 @@ func UpdateProgress(c *gin.Context) {
 func CancelUpdate(c *gin.Context) {
 	currentUpdateMu.Lock()
 	cancel := currentUpdateCancel
-	if currentUpdateInfo == nil {
+	// 上一轮已结束时新任务可能尚未换入，不能把旧终态改写为已取消。
+	if !isUpdateTaskRunning(currentUpdateInfo) {
 		currentUpdateMu.Unlock()
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "未开始更新", Data: nil})
 		return

@@ -228,6 +228,7 @@
             placeholder="请选择刮削目录"
             style="width: 100%"
             :loading="scrapePathsLoading"
+            :disabled="!scrapeRelationLoaded || saveScrapePathLoading"
           >
             <el-option
               v-for="item in scrapePathOptions"
@@ -236,10 +237,21 @@
               :value="item.id"
             />
           </el-select>
+          <el-alert
+            v-if="scrapePathLoadError"
+            :title="scrapePathLoadError"
+            type="error"
+            :closable="false"
+            show-icon
+            style="margin-top: 16px"
+          />
         </div>
         <template #footer>
           <span class="dialog-footer">
             <el-button @click="showScrapePathDialog = false">取消</el-button>
+            <el-button v-if="scrapePathLoadFailed" @click="loadScrapePathRelation">
+              重新加载
+            </el-button>
             <el-button
               type="primary"
               @click="saveScrapePathRelation"
@@ -337,9 +349,12 @@ import {
 } from '@/api/syncPaths'
 import { fetchScrapePaths } from '@/api/scrapePaths'
 import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageStats from '@/components/common/PageStats.vue'
 import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
+import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useHttpClient } from '@/http/client'
 import {
   Calendar,
@@ -365,7 +380,16 @@ import {
   Warning,
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onMounted, ref, type Component } from 'vue'
+import {
+  computed,
+  onActivated,
+  onDeactivated,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+  type Component,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getDirectoryRunStatusClass,
@@ -425,6 +449,25 @@ const loading = ref(false)
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(9999)
+let isPageActive = true
+const directoryRequestGate = createActiveRequestGate(() => isPageActive)
+const statusRequestGate = createActiveRequestGate(() => isPageActive)
+let statusRefreshInFlight = false
+let statusRefreshPending = false
+let statusErrorNotified = false
+
+const deactivateRequests = () => {
+  isPageActive = false
+  directoryRequestGate.invalidate()
+  statusRequestGate.invalidate()
+  statusRefreshPending = false
+}
+onDeactivated(deactivateRequests)
+onActivated(() => {
+  if (isPageActive) return
+  isPageActive = true
+  void loadDirectories()
+})
 
 const showScrapePathDialog = ref(false)
 const selectedScrapePathIds = ref<number[]>([])
@@ -432,7 +475,34 @@ const scrapePathOptions = ref<{ id: number; label: string }[]>([])
 const scrapePathsLoading = ref(false)
 const saveScrapePathLoading = ref(false)
 const scrapeRelationLoaded = ref(false)
+const scrapePathLoadFailed = ref(false)
+const scrapePathLoadError = ref('')
 const currentSyncDirectory = ref<SyncDirectory | null>(null)
+let scrapePathRequestId = 0
+
+const isScrapePathRequestCurrent = (requestId: number, directoryId: number) =>
+  requestId === scrapePathRequestId &&
+  showScrapePathDialog.value &&
+  currentSyncDirectory.value?.id === directoryId
+
+watch(
+  showScrapePathDialog,
+  (visible) => {
+    if (visible) return
+    scrapePathRequestId += 1
+    currentSyncDirectory.value = null
+    scrapeRelationLoaded.value = false
+    scrapePathsLoading.value = false
+    saveScrapePathLoading.value = false
+  },
+  { flush: 'sync' },
+)
+
+onBeforeUnmount(() => {
+  deactivateRequests()
+  scrapePathRequestId += 1
+})
+
 const lastSyncPathEventSequence = new Map<number, number>()
 const lastSyncPathEventTime = new Map<number, number>()
 
@@ -598,15 +668,16 @@ const GetFullPath = (row: SyncDirectory) => {
 }
 
 const reportRequestError = (error: unknown, fallbackMessage: string) => {
-  const failure = parseHttpError(error, { publicMessages: syncPathPublicMessages, fallbackMessage })
-  if (failure.shouldNotify) {
-    console.error(fallbackMessage, failure.diagnostics)
-    ElMessage.error(failure.message)
-  }
-  return failure
+  return notifyHttpError(error, fallbackMessage, {
+    publicMessages: syncPathPublicMessages,
+    fallbackMessage,
+  })
 }
 
 const loadDirectories = async () => {
+  if (!isPageActive) return
+  const requestId = directoryRequestGate.next()
+  statusRequestGate.invalidate()
   try {
     loading.value = true
     const data = await fetchSyncPaths(
@@ -617,23 +688,27 @@ const loadDirectories = async () => {
       },
       { timeout: 5000 },
     )
+    if (!directoryRequestGate.isCurrent(requestId)) return
+    statusRequestGate.invalidate()
     directories.value = data.list
     total.value = data.total
-    await loadDirectoryUploadRules()
+    statusErrorNotified = false
+    await loadDirectoryUploadRules(requestId)
   } catch (error) {
-    reportRequestError(error, '加载同步目录失败')
+    if (directoryRequestGate.isCurrent(requestId)) reportRequestError(error, '加载同步目录失败')
   } finally {
-    loading.value = false
+    if (directoryRequestGate.isCurrent(requestId)) loading.value = false
   }
 }
 
-const loadDirectoryUploadRules = async () => {
+const loadDirectoryUploadRules = async (requestId: number) => {
   directoryUploadRulesLoadFailed.value = false
   try {
-    directoryUploadRules.value = groupDirectoryUploadRulesBySyncPath(
-      await fetchDirectoryUploadRules(http),
-    )
+    const rules = await fetchDirectoryUploadRules(http)
+    if (!directoryRequestGate.isCurrent(requestId)) return
+    directoryUploadRules.value = groupDirectoryUploadRulesBySyncPath(rules)
   } catch (error) {
+    if (!directoryRequestGate.isCurrent(requestId)) return
     const failure = reportRequestError(error, '加载目录监控上传规则失败')
     if (failure.shouldNotify) {
       directoryUploadRules.value = {}
@@ -643,14 +718,32 @@ const loadDirectoryUploadRules = async () => {
 }
 
 const updatePathesStatus = async () => {
+  if (!isPageActive) return
+  if (statusRefreshInFlight) {
+    statusRefreshPending = true
+    return
+  }
+  const requestId = statusRequestGate.next()
+  statusRefreshInFlight = true
   try {
     const data = await fetchSyncPaths(http)
+    if (!statusRequestGate.isCurrent(requestId)) return
+    statusErrorNotified = false
     for (const p of data.list) {
       const path = directories.value.find((pa) => pa.id === p.id)
       if (path) path.is_running = p.is_running
     }
   } catch (error) {
-    reportRequestError(error, '刷新同步目录状态失败')
+    if (!statusRequestGate.isCurrent(requestId)) return
+    if (!statusErrorNotified) {
+      statusErrorNotified = reportRequestError(error, '刷新同步目录状态失败').shouldNotify
+    }
+  } finally {
+    statusRefreshInFlight = false
+    if (isPageActive && statusRefreshPending) {
+      statusRefreshPending = false
+      void updatePathesStatus()
+    }
   }
 }
 
@@ -735,11 +828,11 @@ const handleDelete = async (row: SyncDirectory, index: number) => {
 
     directories.value[index].deleting = true
 
-    await deleteSyncPath(http, row.id || '')
+    await deleteSyncPath(http, row.id)
     ElMessage.success('删除同步目录成功')
     void loadDirectories()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') reportRequestError(error, '删除同步目录失败')
+    if (!isMessageBoxCancelError(error)) reportRequestError(error, '删除同步目录失败')
   } finally {
     if (directories.value[index]) {
       directories.value[index].deleting = false
@@ -751,7 +844,7 @@ const handleFullStart = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].starting = true
 
-    const data = await startSyncPath(http, row.id || '', true)
+    const data = await startSyncPath(http, row.id, true)
     applySyncPathRunningStatus(row.id, Number(data?.is_running ?? 1))
     ElMessage.success(`同步目录“${row.local_path}”启动成功`)
   } catch (error) {
@@ -767,7 +860,7 @@ const handleStart = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].starting = true
 
-    const data = await startSyncPath(http, row.id || '')
+    const data = await startSyncPath(http, row.id)
     applySyncPathRunningStatus(row.id, Number(data?.is_running ?? 1))
     ElMessage.success(`同步目录“${row.local_path}”启动成功`)
   } catch (error) {
@@ -783,7 +876,7 @@ const handleStop = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].stopping = true
 
-    await stopSyncPath(http, row.id || '')
+    await stopSyncPath(http, row.id)
     ElMessage.success('已请求停止同步任务')
   } catch (error) {
     reportRequestError(error, '停止同步目录失败')
@@ -834,7 +927,7 @@ const scanDirectoryUploadRule = async (row: SyncDirectory) => {
 
 const toggleCron = async (row: SyncDirectory) => {
   try {
-    await toggleSyncPathCron(http, row.id || '')
+    await toggleSyncPathCron(http, row.id)
     ElMessage.success(row.enable_cron ? '开启定时同步成功' : '关闭定时同步成功')
   } catch (error) {
     row.enable_cron = !row.enable_cron
@@ -842,57 +935,73 @@ const toggleCron = async (row: SyncDirectory) => {
   }
 }
 
-const loadScrapePaths = async () => {
+const loadScrapePathRelation = async () => {
+  const directoryId = currentSyncDirectory.value?.id
+  if (!directoryId || !showScrapePathDialog.value) return
+  const requestId = ++scrapePathRequestId
+  scrapeRelationLoaded.value = false
+  scrapePathLoadFailed.value = false
+  scrapePathLoadError.value = ''
+  selectedScrapePathIds.value = []
+  scrapePathOptions.value = []
+  saveScrapePathLoading.value = false
   try {
     scrapePathsLoading.value = true
-    const data = await fetchScrapePaths(http, { source_type: 'local' })
+    const [data, selectedIds] = await Promise.all([
+      fetchScrapePaths(http, { source_type: 'local' }),
+      fetchSyncPathScrapeRelations(http, directoryId),
+    ])
+    if (!isScrapePathRequestCurrent(requestId, directoryId)) return
     scrapePathOptions.value = (data || []).map((item) => ({
       id: item.id,
       label: `#${item.id} - ${item.source_path}`,
     }))
+    selectedScrapePathIds.value = selectedIds
+    scrapeRelationLoaded.value = true
   } catch (error) {
-    reportRequestError(error, '加载刮削目录失败')
+    if (!isScrapePathRequestCurrent(requestId, directoryId)) return
+    scrapePathLoadFailed.value = true
+    const failure = parseHttpError(error, {
+      publicMessages: syncPathPublicMessages,
+      fallbackMessage: '加载关联刮削目录失败',
+    })
+    if (failure.shouldNotify) {
+      scrapePathLoadError.value = failure.message
+      console.error('加载关联刮削目录失败', failure.diagnostics)
+    }
   } finally {
-    scrapePathsLoading.value = false
+    if (isScrapePathRequestCurrent(requestId, directoryId)) scrapePathsLoading.value = false
   }
 }
 
 const openScrapePathDialog = async (row: SyncDirectory) => {
   currentSyncDirectory.value = row
-  selectedScrapePathIds.value = []
-  scrapeRelationLoaded.value = false
   showScrapePathDialog.value = true
-  await loadScrapePaths()
-  if (row.id) {
-    try {
-      selectedScrapePathIds.value = await fetchSyncPathScrapeRelations(http, row.id)
-      scrapeRelationLoaded.value = true
-    } catch (error) {
-      reportRequestError(error, '加载已关联刮削目录失败')
-    }
-  }
+  await loadScrapePathRelation()
 }
 
 const saveScrapePathRelation = async () => {
-  if (!scrapeRelationLoaded.value) return
-  if (!currentSyncDirectory.value?.id) {
+  if (!scrapeRelationLoaded.value || !showScrapePathDialog.value || saveScrapePathLoading.value)
+    return
+  const directoryId = currentSyncDirectory.value?.id
+  if (!directoryId) {
     ElMessage.error('同步目录 ID 不存在')
     return
   }
+  const requestId = scrapePathRequestId
+  const selectedIds = [...selectedScrapePathIds.value]
 
   try {
     saveScrapePathLoading.value = true
-    await saveSyncPathScrapeRelations(
-      http,
-      currentSyncDirectory.value.id,
-      selectedScrapePathIds.value,
-    )
+    await saveSyncPathScrapeRelations(http, directoryId, selectedIds)
+    if (!isScrapePathRequestCurrent(requestId, directoryId)) return
     ElMessage.success('关联刮削目录成功')
     showScrapePathDialog.value = false
   } catch (error) {
+    if (!isScrapePathRequestCurrent(requestId, directoryId)) return
     reportRequestError(error, '关联刮削目录失败')
   } finally {
-    saveScrapePathLoading.value = false
+    if (isScrapePathRequestCurrent(requestId, directoryId)) saveScrapePathLoading.value = false
   }
 }
 

@@ -1,5 +1,5 @@
 import { SERVER_URL } from '@/const'
-import { resolveV115AppIdSearchBaseURL, useV115AppIdSearch } from '@/composables/useV115AppIdSearch'
+import { useV115AppIdSearch } from '@/composables/useV115AppIdSearch'
 import { effectScope } from 'vue'
 import axios, { AxiosError, CanceledError } from 'axios'
 import { markAuthInvalidationHandled } from '@/http/errors'
@@ -17,15 +17,6 @@ const searchResponse = (appId: string, total = 1) => ({
 })
 
 describe('useV115AppIdSearch', () => {
-  it('SERVER_URL 运行时异常时回退到 /api', () => {
-    expect(resolveV115AppIdSearchBaseURL(undefined)).toBe('/api')
-    expect(resolveV115AppIdSearchBaseURL('undefined')).toBe('/api')
-    expect(resolveV115AppIdSearchBaseURL('null')).toBe('/api')
-    expect(resolveV115AppIdSearchBaseURL(' http://localhost:12333/api/ ')).toBe(
-      'http://localhost:12333/api',
-    )
-  })
-
   it('不会把可调用的 axios 实例当作 getter 执行', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
@@ -110,7 +101,7 @@ describe('useV115AppIdSearch', () => {
     ],
     ['传输错误', new AxiosError('private-token', 'ERR_NETWORK'), '无法获取服务器响应'],
     ['程序异常', new Error('private-token'), '搜索 APP ID 失败'],
-  ])('搜索%s展示安全文案并保留当前结果', async (_name, error, message) => {
+  ])('搜索%s展示安全文案且不显示其他关键词的结果', async (_name, error, message) => {
     const http = axios.create()
     http.get = vi.fn().mockResolvedValueOnce(searchResponse('1001')).mockRejectedValueOnce(error)
     const scope = effectScope()
@@ -118,11 +109,60 @@ describe('useV115AppIdSearch', () => {
     await search.search()
     search.keyword.value = '新应用'
     await search.search()
-    expect(search.items.value.map((item) => item.app_id)).toEqual(['1001'])
+    expect(search.items.value).toEqual([])
+    expect(search.total.value).toBe(0)
     expect(search.errorMessage.value).toContain(message)
     expect(search.errorMessage.value).not.toContain('private-token')
     expect(search.keyword.value).toBe('新应用')
     expect(search.loading.value).toBe(false)
+    scope.stop()
+  })
+
+  it('新关键词搜索失败不能沿用旧分页，重试从新关键词第一页开始', async () => {
+    const http = axios.create()
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(searchResponse('old-1', 2))
+      .mockResolvedValueOnce({ data: { code: 500, data: null } })
+      .mockResolvedValueOnce(searchResponse('new-1', 2))
+      .mockResolvedValueOnce(searchResponse('new-2', 2))
+    http.get = get
+    const scope = effectScope()
+    const search = scope.run(() => useV115AppIdSearch({ http, pageSize: 1 }))!
+    search.keyword.value = '旧应用'
+    await search.search()
+    search.keyword.value = '新应用'
+    await search.search()
+    await search.loadMore()
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(search.items.value).toEqual([])
+    expect(search.hasMore.value).toBe(false)
+    expect(search.errorMessage.value).toBe('搜索 APP ID 失败')
+
+    await search.search()
+    expect(get).toHaveBeenLastCalledWith(`${SERVER_URL}/115/appids`, {
+      params: { keyword: '新应用', offset: 0, limit: 1 },
+    })
+    await search.loadMore()
+    expect(get).toHaveBeenLastCalledWith(`${SERVER_URL}/115/appids`, {
+      params: { keyword: '新应用', offset: 1, limit: 1 },
+    })
+    expect(search.items.value.map((item) => item.app_id)).toEqual(['new-1', 'new-2'])
+    scope.stop()
+  })
+
+  it('关键词已改变但新查询尚未发出时隐藏旧结果并拒绝旧分页', async () => {
+    const http = axios.create()
+    const get = vi.fn().mockResolvedValue(searchResponse('old-1', 2))
+    http.get = get
+    const scope = effectScope()
+    const search = scope.run(() => useV115AppIdSearch({ http, pageSize: 1 }))!
+    await search.search()
+    search.keyword.value = '新应用'
+    expect(search.items.value).toEqual([])
+    expect(search.total.value).toBe(0)
+    await search.loadMore()
+    expect(get).toHaveBeenCalledTimes(1)
     scope.stop()
   })
 
@@ -132,7 +172,7 @@ describe('useV115AppIdSearch', () => {
       .fn()
       .mockResolvedValueOnce(searchResponse('1001', 2))
       .mockResolvedValueOnce({
-        data: { code: 500, message: 'internal token=private-token', data: null },
+        data: { code: 500, message: 'APP ID 服务暂不可用', data: null },
       })
       .mockResolvedValueOnce(searchResponse('1002', 2))
     http.get = get
@@ -142,7 +182,7 @@ describe('useV115AppIdSearch', () => {
     await search.search()
     await search.loadMore()
     expect(search.items.value.map((item) => item.app_id)).toEqual(['1001'])
-    expect(search.errorMessage.value).toBe('加载更多 APP ID 失败')
+    expect(search.errorMessage.value).toBe('APP ID 服务暂不可用')
     expect(search.hasMore.value).toBe(true)
     await search.loadMore()
     expect(get).toHaveBeenLastCalledWith(`${SERVER_URL}/115/appids`, {

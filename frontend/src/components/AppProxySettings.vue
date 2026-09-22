@@ -14,7 +14,7 @@
           v-model="proxyData.proxy_url"
           @update:model-value="markProxyCredentialsEdited"
           :placeholder="PROXY_URL_PLACEHOLDER"
-          :disabled="proxyLoading"
+          :disabled="proxyLoading || proxyConfigLoading"
           clearable
         />
         <div class="form-help">{{ PROXY_URL_HELP }}</div>
@@ -31,7 +31,7 @@
               :icon="Connection"
               @click="testProxy"
               :loading="testingProxy"
-              :disabled="proxyLoading"
+              :disabled="proxyLoading || proxyConfigLoading"
             >
               测试
             </el-button>
@@ -43,11 +43,14 @@
               :icon="Check"
               @click="saveProxy"
               :loading="proxyLoading"
-              :disabled="testingProxy"
+              :disabled="testingProxy || proxyConfigLoading || !proxyConfigLoaded"
             >
               保存
             </el-button>
           </div>
+          <el-button v-if="!proxyConfigLoaded" :loading="proxyConfigLoading" @click="loadProxy()">
+            重试加载
+          </el-button>
         </div>
       </el-form-item>
     </el-form>
@@ -103,6 +106,8 @@ const http = useHttpClient()
 
 // 代理相关状态
 const proxyLoading = ref(false)
+const proxyConfigLoading = ref(false)
+const proxyConfigLoaded = ref(false)
 const testingProxy = ref(false)
 const proxyStatus = ref<ProxyStatus | null>(null)
 // 已保存的凭据是否被后端脱敏，决定是否展示占位串说明
@@ -174,14 +179,20 @@ const markProxyCredentialsEdited = (): void => {
 const shouldPreserveProxyCredentials = (): boolean =>
   credentialsMasked.value && !proxyCredentialsEdited.value
 
-const showProxyFailure = (error: unknown, title: string) => {
+const showProxyFailure = (error: unknown, title: string, preserveTitle = false) => {
   const failure = parseHttpError(error, {
     publicMessages: proxySettingsPublicMessages,
     fallbackMessage: title,
   })
   if (!failure.shouldNotify) return
   console.error(title, failure.diagnostics)
-  proxyStatus.value = { title, type: 'error', description: failure.message }
+  const qmsRejected = failure.kind === 'origin' || failure.kind === 'csrf'
+  proxyStatus.value = {
+    title: !preserveTitle && qmsRejected ? '请求被 QMS 拒绝' : title,
+    type: 'error',
+    description:
+      preserveTitle && qmsRejected ? `请求被 QMS 拒绝：${failure.message}` : failure.message,
+  }
 }
 
 // 测试代理连接
@@ -223,6 +234,7 @@ const testProxy = async () => {
 
 // 保存代理设置
 const saveProxy = async () => {
+  if (!proxyConfigLoaded.value || proxyConfigLoading.value || proxyLoading.value) return
   const trimmedUrl = proxyData.proxy_url.trim()
   // 留空表示清除代理，不做协议校验
   if (trimmedUrl) {
@@ -258,16 +270,22 @@ const saveProxy = async () => {
 }
 
 // 加载代理设置
-const loadProxy = async (failureTitle = '加载代理设置失败') => {
+const loadProxy = async (refreshFailureTitle?: string) => {
+  if (proxyConfigLoading.value) return false
+  proxyConfigLoading.value = true
+  if (!proxyConfigLoaded.value) proxyStatus.value = null
   try {
     const data = await fetchProxySettings(http)
     proxyData.proxy_url = data.http_proxy
     credentialsMasked.value = data.credentials_masked === '1'
     proxyCredentialsEdited.value = false
+    proxyConfigLoaded.value = true
     return true
   } catch (error) {
-    showProxyFailure(error, failureTitle)
+    showProxyFailure(error, refreshFailureTitle ?? '加载代理设置失败', !!refreshFailureTitle)
     return false
+  } finally {
+    proxyConfigLoading.value = false
   }
 }
 

@@ -12,6 +12,8 @@ export type BackupConfigInput = Pick<
 
 export interface BackupStatusResponse {
   type: string
+  // 旧版本仅提供 is_running；停止状态不足以证明任务成功。
+  status?: 'idle' | 'running' | 'completed' | 'failed'
   desc: string
   total: number
   count: number
@@ -20,18 +22,18 @@ export interface BackupStatusResponse {
   elapsed: number
 }
 
-// 固定文案来自 controllers/backup.go 与 requests/backup.go；不公开文件路径和底层错误。
+export function getBackupTaskStatus(
+  data: BackupStatusResponse,
+): 'running' | 'completed' | 'failed' | 'unknown' {
+  if (data.is_running === true) return 'running'
+  if (data.status === 'failed' || data.error_msg?.trim()) return 'failed'
+  if (data.status === 'completed') return 'completed'
+  return 'unknown'
+}
+
+// 仅改写需要本地化的业务字段和文案，其他原因使用服务端消息。
 export const backupPublicMessages: Readonly<Record<string, string>> = {
-  '备份任务正在运行，请稍后再试': '备份任务正在运行，请稍后再试',
-  '备份或恢复任务正在运行，请稍后再试': '备份或恢复任务正在运行，请稍后再试',
-  '无效的备份记录 ID': '无效的备份记录 ID',
-  备份记录不存在: '备份记录不存在',
   备份文件路径为空: '备份文件不可用',
-  请求参数不正确: '请求参数不正确',
-  '请指定要恢复的备份记录 ID': '请指定要恢复的备份记录 ID',
-  请上传备份文件: '请上传备份文件',
-  '仅支持 .zip 格式的备份文件': '仅支持 .zip 格式的备份文件',
-  保存上传文件失败: '保存上传文件失败',
   'backup_enabled：不是允许的取值': '自动备份设置无效',
   'backup_cron：仅支持 5 位 cron 表达式或 robfig 描述符': '仅支持 5 位 Cron 表达式或 robfig 描述符',
   'backup_retention：取值超出允许范围': '备份保留天数必须在 1 到 365 之间',
@@ -119,10 +121,7 @@ export async function downloadBackup(http: AxiosInstance, recordId: number): Pro
     throw error
   }
   const isErrorBody = await decodeDownloadError(response)
-  if (
-    isErrorBody ||
-    (response.status !== undefined && (response.status < 200 || response.status >= 300))
-  ) {
+  if (isErrorBody || response.status < 200 || response.status >= 300) {
     throw new HttpResponseError(response)
   }
   return response.data

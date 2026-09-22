@@ -28,7 +28,7 @@ func CreateBackup(c *gin.Context) {
 		req.Reason = "手动备份"
 	}
 
-	if backup.IsRunning() {
+	if err := backup.StartBackup(models.BackupTypeManual, req.Reason); err != nil {
 		c.JSON(http.StatusConflict, APIResponse[any]{
 			Code:    BadRequest,
 			Message: "备份任务正在运行，请稍后再试",
@@ -36,10 +36,6 @@ func CreateBackup(c *gin.Context) {
 		})
 		return
 	}
-
-	go func() {
-		backup.Backup(models.BackupTypeManual, req.Reason)
-	}()
 
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
@@ -250,10 +246,6 @@ func UpdateBackupConfig(c *gin.Context) {
 
 func GetBackupStatus(c *gin.Context) {
 	result := backup.GetRunningResult()
-	if result == nil {
-		result = &backup.BackupOrRestoreResult{}
-		result.IsRunning = false
-	}
 	c.JSON(http.StatusOK, APIResponse[backup.BackupOrRestoreResult]{
 		Code:    Success,
 		Message: "获取备份状态成功",
@@ -280,14 +272,6 @@ func RestoreFromBackup(c *gin.Context) {
 		})
 		return
 	}
-	if backup.IsRunning() {
-		c.JSON(http.StatusOK, APIResponse[any]{
-			Code:    BadRequest,
-			Message: "备份或恢复任务正在运行，请稍后再试",
-			Data:    nil,
-		})
-		return
-	}
 
 	var record models.BackupRecord
 	if err := db.Db.First(&record, req.RecordID).Error; err != nil {
@@ -299,9 +283,12 @@ func RestoreFromBackup(c *gin.Context) {
 		return
 	}
 
-	go func() {
-		backup.Restore(record.FilePath)
-	}()
+	if err := backup.StartRestore(record.FilePath, false); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{
+			Code: BadRequest, Message: "备份或恢复任务正在运行，请稍后再试", Data: nil,
+		})
+		return
+	}
 
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
@@ -342,7 +329,10 @@ func UploadAndRestore(c *gin.Context) {
 	}
 
 	tempDir := filepath.Join(helpers.ConfigDir, "backups", "temp")
-	os.MkdirAll(tempDir, 0755)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存上传文件失败", Data: nil})
+		return
+	}
 	tempPath := filepath.Join(tempDir, fmt.Sprintf("upload_%d%s", time.Now().UnixNano(), ext))
 
 	dst, err := os.Create(tempPath)
@@ -356,8 +346,8 @@ func UploadAndRestore(c *gin.Context) {
 	}
 
 	_, err = io.Copy(dst, file)
-	dst.Close()
-	if err != nil {
+	closeErr := dst.Close()
+	if err != nil || closeErr != nil {
 		os.Remove(tempPath)
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
@@ -367,10 +357,13 @@ func UploadAndRestore(c *gin.Context) {
 		return
 	}
 
-	go func() {
-		backup.Restore(tempPath)
+	if err := backup.StartRestore(tempPath, true); err != nil {
 		os.Remove(tempPath)
-	}()
+		c.JSON(http.StatusOK, APIResponse[any]{
+			Code: BadRequest, Message: "备份或恢复任务正在运行，请稍后再试", Data: nil,
+		})
+		return
+	}
 
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,

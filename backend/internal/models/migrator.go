@@ -1874,7 +1874,9 @@ func BatchRepairTableSeq() error {
 func ResetSequence(tableName string, columnName string) error {
 	var maxId int64
 	// 获取当前最大 ID，如果表为空则从 1 开始
-	db.Db.Table(tableName).Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", columnName)).Scan(&maxId)
+	if err := db.Db.Table(tableName).Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", columnName)).Scan(&maxId).Error; err != nil {
+		return err
+	}
 	if maxId == 0 {
 		// 如果没有值则不修复
 		return nil

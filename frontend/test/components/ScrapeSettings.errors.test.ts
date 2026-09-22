@@ -8,6 +8,7 @@ import AppTmdbSettings from '@/components/AppTmdbSettings.vue'
 import type { APIResponse } from '@/api/types'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
+import { createDeferred } from '../support/deferred'
 
 const settings = {
   ai_base_url: 'https://ai.example.com',
@@ -25,20 +26,30 @@ const settings = {
   local_max_threads: 8,
 }
 
-const mountSettings = async (component: Component, initial = settings, loadError?: unknown) => {
+const mountSettings = async (
+  component: Component,
+  initial = settings,
+  loadError?: unknown,
+  initialRead?: Promise<typeof settings>,
+) => {
+  const loadReply = vi.fn<() => Promise<typeof settings>>().mockResolvedValue(initial)
+  if (loadError) loadReply.mockRejectedValueOnce(loadError)
+  if (initialRead) loadReply.mockReturnValueOnce(initialRead)
   const reply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
     code: 200,
     message: '',
     data: null,
   })
   const adapter = vi.fn(async (config) => {
-    if (config.method === 'get' && loadError) throw loadError
     return {
       config,
       status: 200,
       statusText: 'OK',
       headers: {},
-      data: config.method === 'get' ? { code: 200, message: '', data: initial } : await reply(),
+      data:
+        config.method === 'get'
+          ? { code: 200, message: '', data: await loadReply() }
+          : await reply(),
     }
   })
   const http = axios.create({ adapter })
@@ -52,7 +63,7 @@ const mountSettings = async (component: Component, initial = settings, loadError
     await button!.trigger('click')
     await flushPromises()
   }
-  return { wrapper, reply, adapter, act }
+  return { wrapper, reply, loadReply, adapter, act }
 }
 
 const fieldInput = (wrapper: VueWrapper, label: string) => {
@@ -84,25 +95,23 @@ afterEach(() => {
 })
 
 describe.each([
-  { name: 'AI', component: AppAiSettings, urlLabel: 'API 接口地址', fallback: '保存 AI 设置失败' },
+  { name: 'AI', component: AppAiSettings, urlLabel: 'API 接口地址' },
   {
     name: 'TMDB',
     component: AppTmdbSettings,
     urlLabel: 'TMDB 接口地址',
-    fallback: '保存刮削设置失败',
   },
-])('$name 设置失败反馈', ({ component, urlLabel, fallback }) => {
+])('$name 设置失败反馈', ({ component, urlLabel }) => {
   it('HTTP 200 业务失败保留输入，恢复操作按钮，且不显示保存成功', async () => {
     const { wrapper, reply, act } = await mountSettings(component)
     const input = fieldInput(wrapper, urlLabel)
     await input.setValue('https://changed.example.com')
-    reply.mockResolvedValueOnce({ code: 500, message: 'database password=secret', data: null })
+    reply.mockResolvedValueOnce({ code: 500, message: '配置文件不可写', data: null })
 
     await act('保存设置')
 
-    expect(wrapper.get('.save-status').text()).toContain(fallback)
+    expect(wrapper.get('.save-status').text()).toContain('配置文件不可写')
     expect(wrapper.text()).not.toContain('保存成功')
-    expect(wrapper.text()).not.toContain('database password')
     expect((input.element as HTMLInputElement).value).toBe('https://changed.example.com')
     expect(input.attributes('disabled')).toBeUndefined()
     expect(ElMessage.error).not.toHaveBeenCalled()
@@ -116,12 +125,12 @@ describe.each([
 
   it('测试的业务失败即使携带 data:true 也不显示连接成功', async () => {
     const { wrapper, reply, act } = await mountSettings(component)
-    reply.mockResolvedValueOnce({ code: 500, message: 'internal token-secret', data: true })
+    reply.mockResolvedValueOnce({ code: 500, message: '接口地址不可达', data: true })
     await act('测试连通性')
     expect(wrapper.get('.test-status').text()).toContain('测试失败')
     expect(wrapper.get('.test-status').text()).not.toContain('连接成功')
     expect(wrapper.get('.test-status').text()).not.toContain('测试成功')
-    expect(wrapper.get('.test-status').text()).not.toContain('token-secret')
+    expect(wrapper.get('.test-status').text()).toContain('接口地址不可达')
     expect(ElMessage.error).not.toHaveBeenCalled()
   })
 
@@ -152,6 +161,81 @@ describe.each([
     expect(wrapper.get('.save-status').text()).toContain('访问地址校验失败')
     expect((fieldInput(wrapper, urlLabel).element as HTMLInputElement).value).toBe('')
     expect(ElMessage.error).not.toHaveBeenCalled()
+  })
+
+  it('首次读取失败后关闭提示仍不能保存，重试成功后恢复原配置和保存能力', async () => {
+    const { wrapper, reply, loadReply, act } = await mountSettings(
+      component,
+      settings,
+      rejectedRequest('REQUEST_ORIGIN_INVALID'),
+    )
+    const save = wrapper.findAll('button').find((button) => button.text() === '保存设置')!
+    expect(save.attributes('disabled')).toBeDefined()
+    await act('保存设置')
+    expect(reply).not.toHaveBeenCalled()
+
+    await wrapper.get('.save-status .el-alert__close-btn').trigger('click')
+    expect(wrapper.find('.save-status').exists()).toBe(false)
+    expect(save.attributes('disabled')).toBeDefined()
+    await act('保存设置')
+    expect(reply).not.toHaveBeenCalled()
+
+    loadReply.mockRejectedValueOnce(rejectedRequest('CSRF_TOKEN_INVALID'))
+    await act('重试加载')
+    expect(wrapper.get('.save-status').text()).toContain('请求安全校验失败')
+    expect(save.attributes('disabled')).toBeDefined()
+
+    await act('重试加载')
+    expect(save.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('.save-status').exists()).toBe(false)
+    expect((fieldInput(wrapper, urlLabel).element as HTMLInputElement).value).toBe(
+      component === AppAiSettings ? settings.ai_base_url : settings.tmdb_url,
+    )
+    await act('保存设置')
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.save-status').text()).toContain('保存成功')
+  })
+
+  it('首次读取在途时禁止保存默认配置', async () => {
+    const pending = createDeferred<typeof settings>()
+    const { wrapper, reply, act } = await mountSettings(
+      component,
+      settings,
+      undefined,
+      pending.promise,
+    )
+    const save = wrapper.findAll('button').find((button) => button.text() === '保存设置')!
+    expect(save.attributes('disabled')).toBeDefined()
+    await act('保存设置')
+    expect(reply).not.toHaveBeenCalled()
+    pending.resolve(settings)
+    await flushPromises()
+    expect(save.attributes('disabled')).toBeUndefined()
+  })
+
+  it.each([
+    ['保存设置', '.save-status'],
+    ['测试连通性', '.test-status'],
+  ])('%s 提示关闭后，新错误仍显示且不被旧成功计时器清除', async (action, statusSelector) => {
+    const { wrapper, reply, act } = await mountSettings(component)
+    reply.mockResolvedValueOnce({ code: 200, message: '', data: true })
+    await act(action)
+    await wrapper.get(`${statusSelector} .el-alert__close-btn`).trigger('click')
+    expect(wrapper.find(statusSelector).exists()).toBe(false)
+
+    reply.mockRejectedValueOnce(rejectedRequest('REQUEST_ORIGIN_INVALID'))
+    await act(action)
+    expect(wrapper.get(statusSelector).isVisible()).toBe(true)
+    expect(wrapper.get(statusSelector).text()).toContain('访问地址校验失败')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(wrapper.get(statusSelector).text()).toContain('访问地址校验失败')
+
+    await wrapper.get(`${statusSelector} .el-alert__close-btn`).trigger('click')
+    expect(wrapper.find(statusSelector).exists()).toBe(false)
+    reply.mockRejectedValueOnce(rejectedRequest('CSRF_TOKEN_INVALID'))
+    await act(action)
+    expect(wrapper.get(statusSelector).isVisible()).toBe(true)
+    expect(wrapper.get(statusSelector).text()).toContain('请求安全校验失败')
   })
 
   it.each(['保存设置', '测试连通性'])('取消或已处理的认证失败不在%s时重复提示', async (action) => {
@@ -191,7 +275,7 @@ describe('AI 识别设置', () => {
     expect(wrapper.find('.save-status').exists()).toBe(false)
   })
 
-  it('业务失败只公开核验过的字段原因，内部 AI 测试错误使用安全回退文案', async () => {
+  it('业务失败展示字段原因与服务端测试失败原因', async () => {
     const { wrapper, reply, act } = await mountSettings(AppAiSettings)
     reply.mockResolvedValueOnce({
       code: 500,
@@ -201,10 +285,9 @@ describe('AI 识别设置', () => {
     await act('保存设置')
     expect(wrapper.get('.save-status').text()).toContain('AI 接口地址只支持 HTTP 或 HTTPS')
 
-    reply.mockResolvedValueOnce({ code: 500, message: 'upstream Authorization=secret', data: null })
+    reply.mockResolvedValueOnce({ code: 500, message: 'AI 服务返回 401', data: null })
     await act('测试连通性')
-    expect(wrapper.get('.test-status').text()).toContain('AI 服务连通性测试失败，请检查设置')
-    expect(wrapper.get('.test-status').text()).not.toContain('secret')
+    expect(wrapper.get('.test-status').text()).toContain('AI 服务返回 401')
     expect(wrapper.get('.test-status').text()).not.toContain('测试成功')
     expect(ElMessage.error).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(6000)

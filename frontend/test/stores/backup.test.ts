@@ -15,9 +15,128 @@ describe('backup store 进度轮询', () => {
     vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'info').mockImplementation(() => ({ close: vi.fn() }))
+    vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(console, 'error').mockImplementation(() => {})
     setActivePinia(createPinia())
     Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+  })
+
+  it.each(['backup', 'restore'] as const)('%s 失败终态不能提示成功或泄露内部错误', async (type) => {
+    const http = {
+      get: vi.fn().mockResolvedValue({
+        data: {
+          code: 200,
+          data: {
+            type,
+            status: 'failed',
+            is_running: false,
+            count: 1,
+            total: 2,
+            elapsed: 1,
+            desc: '/private/secret/path',
+            error_msg: 'password=secret',
+          },
+        },
+      }),
+    }
+    const store = useBackupStore()
+    store.startProgressPolling(type, undefined, http as never)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.progress?.status).toBe('failed')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalledTimes(1)
+    expect(
+      JSON.stringify([
+        store.progress,
+        vi.mocked(ElMessage.error).mock.calls,
+        vi.mocked(console.error).mock.calls,
+      ]),
+    ).not.toContain('secret')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(http.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('旧后端仅返回停止状态时不推断成功，空总数不产生 NaN', async () => {
+    const http = {
+      get: vi.fn().mockResolvedValue({
+        data: {
+          code: 200,
+          data: {
+            type: 'backup',
+            is_running: false,
+            count: 0,
+            total: 0,
+            elapsed: 0,
+            desc: '',
+            error_msg: '',
+          },
+        },
+      }),
+    }
+    const store = useBackupStore()
+    store.startProgressPolling('backup', undefined, http as never)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledTimes(1)
+    expect(Number.isFinite(store.progress?.progress)).toBe(true)
+    expect(store.progress?.status).not.toBe('completed')
+    store.stopProgressPolling()
+  })
+
+  it.each(['backup', 'restore'] as const)('%s 只对明确完成状态提示成功且停止轮询', async (type) => {
+    const http = {
+      get: vi.fn().mockResolvedValue({
+        data: {
+          code: 200,
+          data: {
+            type,
+            status: 'completed',
+            is_running: false,
+            count: 1,
+            total: 2,
+            elapsed: 1,
+            desc: '完成',
+            error_msg: '',
+          },
+        },
+      }),
+    }
+    const store = useBackupStore()
+    store.startProgressPolling(type, undefined, http as never)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.progress?.status).toBe('completed')
+    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith(
+      type === 'backup' ? '备份任务完成！' : '恢复任务完成！',
+    )
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(http.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('旧后端的 error_msg 保留失败语义，不依赖进度计数', async () => {
+    const http = {
+      get: vi.fn().mockResolvedValue({
+        data: {
+          code: 200,
+          data: {
+            type: 'backup',
+            is_running: false,
+            count: 2,
+            total: 2,
+            elapsed: 0,
+            desc: 'private-secret',
+            error_msg: 'private-secret',
+          },
+        },
+      }),
+    }
+    const store = useBackupStore()
+    store.startProgressPolling('backup', undefined, http as never)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.progress?.status).toBe('failed')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('备份任务失败，请查看服务日志。')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    store.stopProgressPolling()
   })
 
   afterEach(() => {
@@ -128,9 +247,10 @@ describe('backup store 进度轮询', () => {
   })
   it('业务失败计入连续失败次数且不写回成功进度', async () => {
     const http = {
-      get: vi
-        .fn()
-        .mockResolvedValue({ status: 200, data: { code: 500, message: 'secret', data: null } }),
+      get: vi.fn().mockResolvedValue({
+        status: 200,
+        data: { code: 500, message: '进度文件不存在', data: null },
+      }),
     }
     const store = useBackupStore()
     store.startProgressPolling('backup', undefined, http as never)
@@ -139,7 +259,7 @@ describe('backup store 进度轮询', () => {
     expect(store.errorRetryCount).toBe(3)
     expect(store.progress).toBeNull()
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('查询备份或恢复进度失败，页面即将刷新…')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('进度文件不存在。页面即将刷新…')
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret')
     store.stopProgressPolling()
   })

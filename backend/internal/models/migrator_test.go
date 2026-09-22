@@ -16,6 +16,28 @@ import (
 	"qmediasync/internal/notification"
 )
 
+func TestResetSequenceReturnsMaxIDQueryFailure(t *testing.T) {
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := testDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDB := db.Db
+	db.Db = testDB
+	t.Cleanup(func() {
+		db.Db = originalDB
+		if err := sqlDB.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := ResetSequence("missing_restore_table", "id"); err == nil {
+		t.Fatal("查询失败不能当作空表而忽略序列修复失败")
+	}
+}
+
 func TestBatchCreateTableCreatesMigratorTable(t *testing.T) {
 	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

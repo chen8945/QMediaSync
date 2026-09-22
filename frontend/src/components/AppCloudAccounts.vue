@@ -114,7 +114,7 @@
                       text
                       :icon="RefreshRight"
                       :loading="account.statusLoading"
-                      @click="loadAccountStatus(account)"
+                      @click="loadAccountStatus(account, true)"
                     >
                       刷新
                     </el-button>
@@ -578,7 +578,9 @@ import { formatTimestamp } from '@/utils/timeUtils'
 import { sourceTypeMap, sourceTypeOptions, sourceTypeTagMap } from '@/utils/sourceTypeUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
+import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { getV115AppInfoRows, isCustomV115App } from '@/utils/cloudAccountUtils'
 import { collectOAuthCallbackParams } from '@/utils/oauthCallback'
 import {
@@ -605,16 +607,16 @@ interface CloudAccount extends AccountData {
 const http = useHttpClient()
 
 const reportError = (error: unknown, fallbackMessage: string) => {
-  const failure = parseHttpError(error, {
+  notifyHttpError(error, fallbackMessage, {
     publicMessages: authorizationPublicMessages,
     fallbackMessage,
   })
-  if (!failure.shouldNotify) return
-  console.error(fallbackMessage, failure.diagnostics)
-  ElMessage.error(failure.message)
 }
 
 const accounts = ref<CloudAccount[]>([])
+const accountStatusRequests = new WeakMap<CloudAccount, symbol>()
+const pageRequestGate = createActiveRequestGate(() => true)
+const pageRequestId = pageRequestGate.next()
 const loading = ref(false)
 const showAddAccountDialog = ref(false)
 const addAccountLoading = ref(false)
@@ -809,9 +811,11 @@ const getCardStatusClass = (account: CloudAccount) => {
 }
 
 const loadAccounts = async () => {
+  if (!pageRequestGate.isCurrent(pageRequestId)) return
   try {
     loading.value = true
     const data = await listAccounts(http)
+    if (!pageRequestGate.isCurrent(pageRequestId)) return
     accounts.value = data.map((item) => ({
       id: item.id,
       source_type: item.source_type,
@@ -844,28 +848,48 @@ const loadAccounts = async () => {
       }
     })
   } catch (error) {
+    if (!pageRequestGate.isCurrent(pageRequestId)) return
     reportError(error, '加载账号列表失败')
     accounts.value = []
   } finally {
-    loading.value = false
+    if (pageRequestGate.isCurrent(pageRequestId)) loading.value = false
   }
 }
 
-const loadAccountStatus = async (account: CloudAccount) => {
-  const index = accounts.value.findIndex((a) => a.id === account.id)
-  if (index === -1) return
+const loadAccountStatus = async (account: CloudAccount, notify = false) => {
+  if (
+    !pageRequestGate.isCurrent(pageRequestId) ||
+    !accounts.value.includes(account) ||
+    (account.source_type !== '115' && account.source_type !== 'baidupan')
+  ) {
+    return
+  }
 
-  accounts.value[index].statusLoading = true
+  const requestId = Symbol()
+  accountStatusRequests.set(account, requestId)
+  // 列表刷新会替换行对象，同一行的新请求也会使旧请求失效。
+  const isCurrentRequest = () =>
+    pageRequestGate.isCurrent(pageRequestId) &&
+    accounts.value.includes(account) &&
+    accountStatusRequests.get(account) === requestId
+  account.statusLoading = true
 
   try {
-    if (account.source_type !== '115' && account.source_type !== 'baidupan') {
-      return
-    }
-    accounts.value[index].status = await fetchAccountStatus(http, account.source_type, account.id)
+    const status = await fetchAccountStatus(http, account.source_type, account.id)
+    if (isCurrentRequest()) account.status = status
   } catch (error) {
-    reportError(error, '获取网盘状态失败')
+    if (!isCurrentRequest()) return
+    if (notify) {
+      reportError(error, '获取网盘状态失败')
+    } else {
+      const failure = parseHttpError(error)
+      if (failure.shouldNotify) console.error('获取网盘状态失败', failure.diagnostics)
+    }
   } finally {
-    accounts.value[index].statusLoading = false
+    if (isCurrentRequest()) {
+      account.statusLoading = false
+      accountStatusRequests.delete(account)
+    }
   }
 }
 
@@ -1328,6 +1352,8 @@ const getAddAccountValidationMessage = (): string | null => {
 }
 
 const handleAddAccount = async () => {
+  if (addAccountLoading.value) return
+  addAccountLoading.value = true
   try {
     const validationMessage = getAddAccountValidationMessage()
     if (validationMessage) {
@@ -1373,6 +1399,8 @@ const handleAddAccount = async () => {
     resetForm()
   } catch (error) {
     reportError(error, '添加账号失败')
+  } finally {
+    addAccountLoading.value = false
   }
 }
 
@@ -1464,6 +1492,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  pageRequestGate.invalidate()
   const qrAccountId = selectedV115Account.value?.id
   const qrAuthorizationId = selectedV115AuthorizationId.value
   const oauthContext = oauthPollingContext

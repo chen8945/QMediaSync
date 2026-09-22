@@ -13,7 +13,6 @@ import {
 } from 'vue'
 
 const V115_APPID_PAGE_SIZE = 50
-export { resolveV115AppIdSearchBaseURL, type V115AppIDOption } from '@/api/accounts'
 
 export interface UseV115AppIdSearchOptions {
   http: MaybeRef<AxiosInstance>
@@ -22,8 +21,11 @@ export interface UseV115AppIdSearchOptions {
 
 export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
   const keyword = shallowRef('')
-  const items = shallowRef<V115AppIDOption[]>([])
-  const total = shallowRef(0)
+  const resultKeyword = shallowRef<string | null>(null)
+  const resultItems = shallowRef<V115AppIDOption[]>([])
+  const resultTotal = shallowRef(0)
+  const items = computed(() => (resultKeyword.value === keyword.value ? resultItems.value : []))
+  const total = computed(() => (resultKeyword.value === keyword.value ? resultTotal.value : 0))
   const loading = shallowRef(false)
   const errorMessage = shallowRef('')
   const requestRunId = shallowRef(0)
@@ -36,21 +38,23 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
 
   const search = async () => {
     const http = unref(options.http)
+    const requestedKeyword = keyword.value
     const runId = requestRunId.value + 1
     requestRunId.value = runId
     loading.value = true
     errorMessage.value = ''
     try {
       const data = await fetchV115AppIds(http, {
-        keyword: keyword.value,
+        keyword: requestedKeyword,
         offset: 0,
         limit: pageSize.value,
       })
-      if (runId !== requestRunId.value) return
-      items.value = data?.items || []
-      total.value = data?.total || 0
+      if (runId !== requestRunId.value || requestedKeyword !== keyword.value) return
+      resultKeyword.value = requestedKeyword
+      resultItems.value = data.items || []
+      resultTotal.value = data.total || 0
     } catch (error) {
-      if (runId !== requestRunId.value) return
+      if (runId !== requestRunId.value || requestedKeyword !== keyword.value) return
       const failure = parseHttpError(error, {
         publicMessages: authorizationPublicMessages,
         fallbackMessage: '搜索 APP ID 失败',
@@ -63,22 +67,23 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
 
   const loadMore = async () => {
     const http = unref(options.http)
-    if (!hasMore.value) return
+    if (loading.value || !hasMore.value) return
+    const requestedKeyword = keyword.value
     const runId = requestRunId.value + 1
     requestRunId.value = runId
     loading.value = true
     errorMessage.value = ''
     try {
       const data = await fetchV115AppIds(http, {
-        keyword: keyword.value,
+        keyword: requestedKeyword,
         offset: offset.value,
         limit: pageSize.value,
       })
-      if (runId !== requestRunId.value) return
-      items.value = [...items.value, ...(data?.items || [])]
-      total.value = data?.total || total.value
+      if (runId !== requestRunId.value || requestedKeyword !== keyword.value) return
+      resultItems.value = [...resultItems.value, ...(data.items || [])]
+      resultTotal.value = data.total || resultTotal.value
     } catch (error) {
-      if (runId !== requestRunId.value) return
+      if (runId !== requestRunId.value || requestedKeyword !== keyword.value) return
       const failure = parseHttpError(error, {
         publicMessages: authorizationPublicMessages,
         fallbackMessage: '加载更多 APP ID 失败',
@@ -92,8 +97,9 @@ export function useV115AppIdSearch(options: UseV115AppIdSearchOptions) {
   const reset = () => {
     requestRunId.value += 1
     keyword.value = ''
-    items.value = []
-    total.value = 0
+    resultKeyword.value = null
+    resultItems.value = []
+    resultTotal.value = 0
     loading.value = false
     errorMessage.value = ''
   }

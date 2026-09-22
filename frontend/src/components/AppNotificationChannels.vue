@@ -494,7 +494,16 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onMounted, computed, useTemplateRef, type Component } from 'vue'
+import {
+  reactive,
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  computed,
+  watch,
+  useTemplateRef,
+  type Component,
+} from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import {
   Plus,
@@ -526,7 +535,9 @@ import {
   type NotificationChannelPayload,
 } from '@/api/notificationSettings'
 import { useHttpClient } from '@/http/client'
-import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
+import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveIconButton from '@/components/common/ResponsiveIconButton.vue'
 import WebhookHeadersEditor from '@/components/notification/WebhookHeadersEditor.vue'
@@ -590,13 +601,10 @@ const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
 
 const reportError = (error: unknown, fallbackMessage: string) => {
-  const failure = parseHttpError(error, {
+  notifyHttpError(error, fallbackMessage, {
     publicMessages: notificationPublicMessages,
     fallbackMessage,
   })
-  if (!failure.shouldNotify) return
-  console.error(fallbackMessage, failure.diagnostics)
-  ElMessage.error(failure.message)
 }
 
 const loading = ref(false)
@@ -612,6 +620,9 @@ const editingChannel = ref<NotificationChannel | null>(null)
 const currentChannel = ref<NotificationChannel | null>(null)
 const currentRules = ref<NotificationRule[]>([])
 const rulesLoading = ref(false)
+const rulesRequestGate = createActiveRequestGate(() => rulesDialogVisible.value)
+watch(rulesDialogVisible, () => rulesRequestGate.invalidate(), { flush: 'sync' })
+onBeforeUnmount(() => rulesRequestGate.invalidate())
 const channelFormRef = useTemplateRef<FormInstance>('channelFormRef')
 
 // 所有渠道类型选项
@@ -1035,7 +1046,7 @@ const deleteChannel = async (channel: NotificationChannel) => {
     ElMessage.success('删除成功')
     loadChannels()
   } catch (error: unknown) {
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       reportError(error, '删除渠道失败')
     }
   }
@@ -1048,19 +1059,22 @@ const showRulesDialog = async (channel: NotificationChannel) => {
   await loadRules(channel.id)
 }
 
-// 加载规则
+// 加载规则；规则开关按行内 channel_id 提交，只能展示当前渠道的读取结果。
 const loadRules = async (channelId: number) => {
+  const requestId = rulesRequestGate.next()
+  currentRules.value = []
   rulesLoading.value = true
   try {
     const data = await fetchNotificationRules(http, channelId)
+    if (!rulesRequestGate.isCurrent(requestId)) return
     currentRules.value = data.map((rule: NotificationRule): RuleWithStatus => ({
       ...rule,
       _updating: false,
     }))
   } catch (error: unknown) {
-    reportError(error, '加载通知规则失败')
+    if (rulesRequestGate.isCurrent(requestId)) reportError(error, '加载通知规则失败')
   } finally {
-    rulesLoading.value = false
+    if (rulesRequestGate.isCurrent(requestId)) rulesLoading.value = false
   }
 }
 

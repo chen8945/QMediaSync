@@ -1,10 +1,11 @@
 import { onMounted, onUnmounted, ref } from 'vue'
-import { SERVER_URL } from '@/const'
 import { useHttpClient } from '@/http/client'
 import { ElMessage } from 'element-plus'
 
 import * as updateAPI from '@/api/update'
 import { parseHttpError } from '@/http/errors'
+import { fetchSystemVersion } from '@/api/systemInfo'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import type { UpdateInfo, UpdateProgress, UpdateChannel, UpdateStatus } from '@/api/update'
 export type { UpdateInfo, UpdateProgress, UpdateChannel, UpdateStatus } from '@/api/update'
 
@@ -40,6 +41,9 @@ export function useUpdate() {
   let progressTimer: ReturnType<typeof setInterval> | null = null
   let progressInFlight = false
   let pollingGeneration = 0
+  // 业务操作只随新任务、终态或卸载失效；切换可见性仅更新轮询代次。
+  let operationGeneration = 0
+  let pendingStartGeneration: number | null = null
   let pageActive = true
   let countdownTimer: ReturnType<typeof setInterval> | null = null
 
@@ -51,34 +55,19 @@ export function useUpdate() {
       updateList.value = updates.map((item) => ({ ...item, url: item.url || '' }))
     } catch (error) {
       if (!pageActive) return
-      const parsed = parseUpdateError(error, '加载最新版本列表失败', 'get', '/update/last')
-      if (parsed.shouldNotify) ElMessage.error(parsed.message)
+      notifyHttpError(error, '加载最新版本列表失败', {
+        fallbackMessage: '加载最新版本列表失败',
+        publicMessages: updateAPI.updatePublicMessages,
+      })
       updateList.value = []
     } finally {
       updateLoading.value = false
     }
   }
 
-  const parseUpdateError = (
-    error: unknown,
-    fallbackMessage: string,
-    method: string,
-    path: string,
-  ) => {
-    const parsed = parseHttpError(error, {
-      fallbackMessage,
-      publicMessages: updateAPI.updatePublicMessages,
-      request: { method, url: `${SERVER_URL}${path}` },
-    })
-    if (parsed.shouldNotify && !updateAPI.isUpdateNotStarted(parsed)) {
-      console.error(fallbackMessage, parsed.diagnostics)
-    }
-    return parsed
-  }
-
   const checkUpdateStatusOnLoad = async () => {
     const generation = pollingGeneration
-    if (!pageActive) return
+    if (!pageActive || pendingStartGeneration !== null) return
     try {
       const progressData = await updateAPI.fetchUpdateProgress(http)
       if (!pageActive || generation !== pollingGeneration) return
@@ -95,13 +84,14 @@ export function useUpdate() {
       }
     } catch (error) {
       if (!pageActive || generation !== pollingGeneration) return
-      const parsed = parseUpdateError(error, '检查更新状态失败', 'get', '/update/progress')
+      const parsed = parseHttpError(error)
       if (parsed.shouldNotify && !updateAPI.isUpdateNotStarted(parsed))
-        ElMessage.error(parsed.message)
+        console.error('检查更新状态失败', parsed.diagnostics)
     }
   }
 
   const resetUpdateState = () => {
+    operationGeneration += 1
     if (countdownTimer) {
       clearInterval(countdownTimer)
       countdownTimer = null
@@ -118,6 +108,9 @@ export function useUpdate() {
   }
 
   const updateToVersion = async (version: string) => {
+    const generation = ++operationGeneration
+    pendingStartGeneration = generation
+    stopProgressPolling()
     isUpdating.value = true
     updatingVersion.value = version
     updateProgress.value = {
@@ -127,16 +120,20 @@ export function useUpdate() {
       status: 'downloading',
     }
 
-    const generation = ++pollingGeneration
     try {
       await updateAPI.startUpdate(http, version, updateChannel.value)
-      if (!pageActive || generation !== pollingGeneration) return
+      if (!pageActive || generation !== operationGeneration) return
+      pendingStartGeneration = null
       startProgressPolling()
     } catch (error) {
-      if (!pageActive || generation !== pollingGeneration) return
-      const parsed = parseUpdateError(error, '触发版本更新失败', 'post', '/update/to-version')
+      if (!pageActive || generation !== operationGeneration) return
       resetUpdateState()
-      if (parsed.shouldNotify) ElMessage.error(parsed.message)
+      notifyHttpError(error, '触发版本更新失败', {
+        fallbackMessage: '触发版本更新失败',
+        publicMessages: updateAPI.updatePublicMessages,
+      })
+    } finally {
+      if (pendingStartGeneration === generation) pendingStartGeneration = null
     }
   }
 
@@ -212,6 +209,7 @@ export function useUpdate() {
       if (status !== undefined) {
         updateProgress.value.status = status
         if (status === 'completed') {
+          operationGeneration += 1
           stopProgressPolling()
           updateProgress.value.progress = 100
           showUpdateCompleteNotification()
@@ -236,8 +234,34 @@ export function useUpdate() {
       }
     } catch (error) {
       if (!pageActive || document.hidden || generation !== pollingGeneration) return
-      const parsed = parseUpdateError(error, '查询更新进度失败', 'get', '/update/progress')
+      const parsed = parseHttpError(error, {
+        fallbackMessage: '查询更新进度失败',
+        publicMessages: updateAPI.updatePublicMessages,
+      })
       if (!parsed.shouldNotify) return
+      if (updateAPI.isUpdateNotStarted(parsed) && updatingVersion.value) {
+        try {
+          const installed = await fetchSystemVersion(http)
+          if (!pageActive || document.hidden || generation !== pollingGeneration) return
+          if (installed.version === updatingVersion.value) {
+            operationGeneration += 1
+            stopProgressPolling()
+            updateProgress.value.status = 'completed'
+            updateProgress.value.progress = 100
+            showUpdateCompleteNotification()
+            return
+          }
+          ElMessage.error('更新未生效，请查看服务日志或手动下载安装')
+        } catch (versionError) {
+          if (!pageActive || document.hidden || generation !== pollingGeneration) return
+          const failure = parseHttpError(versionError)
+          if (failure.shouldNotify) console.error('确认更新版本失败', failure.diagnostics)
+          return
+        }
+      }
+      if (!updateAPI.isUpdateNotStarted(parsed)) {
+        console.error('查询更新进度失败', parsed.diagnostics)
+      }
       if (parsed.kind === 'application') {
         stopProgressPolling()
         if (!updateAPI.isUpdateNotStarted(parsed)) ElMessage.error(parsed.message)
@@ -270,7 +294,7 @@ export function useUpdate() {
     if (!pageActive) return
     if (document.hidden) {
       stopProgressPolling(false)
-    } else if (isUpdating.value) {
+    } else if (isUpdating.value && pendingStartGeneration === null) {
       pollingGeneration += 1
       const generation = pollingGeneration
       void checkUpdateProgress(generation)
@@ -279,18 +303,20 @@ export function useUpdate() {
   }
 
   const cancelUpdate = async () => {
-    const generation = pollingGeneration
+    const generation = operationGeneration
     try {
       await updateAPI.cancelUpdate(http)
-      if (!pageActive || generation !== pollingGeneration) return
+      if (!pageActive || generation !== operationGeneration) return
       stopProgressPolling()
       resetUpdateState()
       ElMessage.success('已取消更新')
       scheduleUpdateListRefresh(1000)
     } catch (error) {
-      if (!pageActive || generation !== pollingGeneration) return
-      const parsed = parseUpdateError(error, '取消更新失败，请稍后重试', 'post', '/update/cancel')
-      if (parsed.shouldNotify) ElMessage.error(parsed.message)
+      if (!pageActive || generation !== operationGeneration) return
+      notifyHttpError(error, '取消更新失败，请稍后重试', {
+        fallbackMessage: '取消更新失败，请稍后重试',
+        publicMessages: updateAPI.updatePublicMessages,
+      })
     }
   }
 
@@ -305,6 +331,7 @@ export function useUpdate() {
 
   const cleanup = () => {
     pageActive = false
+    operationGeneration += 1
     pollingGeneration += 1
     stopProgressPolling(false)
     if (countdownTimer) {

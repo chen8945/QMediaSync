@@ -513,11 +513,15 @@
               type="success"
               @click="saveEmbyConfig"
               :loading="embyLoading"
+              :disabled="!embyConfigLoaded"
               :icon="Check"
               size="large"
               class="save-btn"
             >
               保存设置
+            </el-button>
+            <el-button v-if="!embyConfigLoaded" :loading="embyLoading" @click="loadEmbyConfig()">
+              重试加载
             </el-button>
             <el-button
               type="primary"
@@ -762,6 +766,7 @@ const formRef = useTemplateRef<FormInstance>('formRef')
 const { isMobile } = useDeviceType()
 
 const embyLoading = ref(false)
+const embyConfigLoaded = ref(false)
 
 const syncStartLoading = ref(false)
 const syncPolling = ref(false)
@@ -807,8 +812,9 @@ const lastSuccessSyncHelper = computed(() => {
     .join(' · ')
 })
 
+// 保存会在结束时写入共享提示条，期间不允许启动同步，避免同步失败被“保存成功”覆盖。
 const isStartSyncDisabled = computed(
-  () => !embyData.emby_url || !embyData.sync_enabled || isSyncRunning.value,
+  () => embyLoading.value || !embyData.emby_url || !embyData.sync_enabled || isSyncRunning.value,
 )
 
 const cronNextTimes = ref<string[]>([])
@@ -901,6 +907,7 @@ const defaultConfig = {
 }
 
 const loadEmbyConfig = async (failureTitle = '加载 Emby 配置失败') => {
+  if (!embyConfigLoaded.value) clearEmbyStatus()
   try {
     embyLoading.value = true
     const data = await fetchEmbyConfig(http)
@@ -929,10 +936,12 @@ const loadEmbyConfig = async (failureTitle = '加载 Emby 配置失败') => {
       }
 
       // 加载媒体库列表
+      embyConfigLoaded.value = true
       return await loadEmbyLibraries()
     } else {
       Object.assign(embyData, defaultConfig)
     }
+    embyConfigLoaded.value = true
     return true
   } catch (error) {
     showEmbyFailure(error, failureTitle)
@@ -966,6 +975,7 @@ const handleSyncModeChange = (value: number) => {
 }
 
 const saveEmbyConfig = async () => {
+  if (!embyConfigLoaded.value || embyLoading.value) return
   if (!formRef.value) return
   try {
     await formRef.value.validate()

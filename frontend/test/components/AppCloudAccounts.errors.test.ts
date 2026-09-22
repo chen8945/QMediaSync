@@ -1,11 +1,11 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import axios, { AxiosError, CanceledError, type InternalAxiosRequestConfig } from 'axios'
-import { ElDialog, ElMessage, ElMessageBox, type MessageBoxData } from 'element-plus'
+import { ElButton, ElDialog, ElMessage, ElMessageBox, type MessageBoxData } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AppCloudAccounts from '@/components/AppCloudAccounts.vue'
 import V115AuthorizationChangeDialog from '@/components/cloud-auth/V115AuthorizationChangeDialog.vue'
 import V115AuthorizationDialog from '@/components/cloud-auth/V115AuthorizationDialog.vue'
-import type { CloudAccount } from '@/api/accounts'
+import type { CloudAccount, CloudDiskStatus } from '@/api/accounts'
 import { httpKey } from '@/http/client'
 import { markAuthInvalidationHandled } from '@/http/errors'
 import {
@@ -18,7 +18,11 @@ interface Reply {
   data: { code: number; data: unknown; message?: string; error_code?: string }
 }
 const success = (data: unknown = null): Reply => ({ status: 200, data: { code: 200, data } })
-const failure = (message = 'internal token=private', status = 200, error_code?: string): Reply => ({
+const failure = (
+  message = '账号操作失败，请稍后重试',
+  status = 200,
+  error_code?: string,
+): Reply => ({
   status,
   data: { code: 500, data: null, message, error_code },
 })
@@ -173,7 +177,7 @@ describe('云盘账号请求失败', () => {
 
   it.each([
     [failure('创建开放平台账号失败：账号备注已存在，请换一个'), '账号备注已存在，请换一个'],
-    [failure(), '添加账号失败'],
+    [failure(), '账号操作失败，请稍后重试'],
     [
       failure('private', 403, 'REQUEST_ORIGIN_INVALID'),
       '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置',
@@ -218,6 +222,26 @@ describe('云盘账号请求失败', () => {
     expect(console.error).not.toHaveBeenCalled()
   })
 
+  it('账号创建在途时禁用确认并阻止重复提交，失败后允许重试', async () => {
+    const pending = deferred<Reply>()
+    const transport = createHTTP(() => pending.promise)
+    const wrapper = await mountPage(transport)
+    const form = await openAddForm(wrapper)
+    const confirm = form.findAllComponents(ElButton).find((button) => button.text() === '确定')!
+    confirm.vm.$emit('click')
+    confirm.vm.$emit('click')
+    await flushPromises()
+    expect(confirm.props('loading')).toBe(true)
+    expect(transport.calls('/api/account/add')).toHaveLength(1)
+    pending.resolve(failure())
+    await flushPromises()
+    expect(confirm.props('loading')).toBe(false)
+    expect(form.props('modelValue')).toBe(true)
+    confirm.vm.$emit('click')
+    await flushPromises()
+    expect(transport.calls('/api/account/add')).toHaveLength(2)
+  })
+
   it('成功后才关闭、清空表单并刷新列表，保留 115 授权来源字段', async () => {
     const transport = createHTTP()
     const wrapper = await mountPage(transport)
@@ -240,7 +264,7 @@ describe('云盘账号请求失败', () => {
   })
 
   it('OpenList 创建失败保留凭据，日志中不包含凭据', async () => {
-    const transport = createHTTP(() => failure('password-private token-private'))
+    const transport = createHTTP(() => failure())
     const wrapper = await mountPage(transport)
     const form = await openAddForm(wrapper, 'openlist')
     await form
@@ -260,7 +284,7 @@ describe('云盘账号请求失败', () => {
     expect(form.get<HTMLInputElement>('input[placeholder="请输入密码"]').element.value).toBe(
       'password-private',
     )
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('添加账号失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
   })
 
@@ -308,11 +332,222 @@ describe('云盘账号请求失败', () => {
         '修改保留',
       )
     }
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
-      action === '编辑' ? '更新账号失败' : '删除账号失败',
-    )
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(transport.calls('/api/account/list')).toHaveLength(1)
+  })
+})
+
+describe('网盘状态请求和列表生命周期', () => {
+  const authorizedAccount = { ...account, authorized: true }
+  const otherAccount: CloudAccount = {
+    ...authorizedAccount,
+    id: 43,
+    source_type: 'baidupan',
+    name: '另一个网盘',
+  }
+  const statusReply = (member_level: string) =>
+    success({
+      user_id: 'status-user',
+      username: '状态用户',
+      used_space: 1024,
+      total_space: 2048,
+      member_level,
+      expire_time: '',
+    } satisfies CloudDiskStatus)
+  const refreshButtons = (wrapper: VueWrapper) =>
+    wrapper.findAllComponents(ElButton).filter((button) => button.text() === '刷新')
+
+  it.each(['success', 'failure'])(
+    '删除最后一个账号后，在途状态 %s 不抛错、不提示',
+    async (result) => {
+      const pending = deferred<Reply>()
+      const rows = [authorizedAccount]
+      const transport = createHTTP((config) => {
+        if (config.url?.endsWith('/status')) return pending.promise
+        if (config.url === '/api/account/delete') rows.splice(0)
+        return success()
+      }, rows)
+      const wrapper = await mountPage(transport)
+      expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(true)
+
+      await click(wrapper, '删除')
+      expect(wrapper.findAll('.account-card')).toHaveLength(0)
+      expect(wrapper.text()).toContain('暂无网盘账号')
+
+      pending.resolve(result === 'success' ? statusReply('过期会员') : failure())
+      await flushPromises()
+      expect(wrapper.findAll('.account-card')).toHaveLength(0)
+      expect(ElMessage.error).not.toHaveBeenCalled()
+      expect(console.error).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    { name: '同 ID 的新账号快照', initial: [authorizedAccount], next: [authorizedAccount] },
+    { name: '另一个账号', initial: [authorizedAccount], next: [otherAccount] },
+    {
+      name: '账号顺序变化',
+      initial: [authorizedAccount, otherAccount],
+      next: [otherAccount, authorizedAccount],
+    },
+    {
+      name: '列表缩短',
+      initial: [authorizedAccount, otherAccount],
+      next: [otherAccount],
+    },
+  ])('列表刷新为 $name 后，旧结果不影响当前状态和 loading', async ({ initial, next }) => {
+    const requests: Array<ReturnType<typeof deferred<Reply>>> = []
+    const rows = [...initial]
+    const transport = createHTTP((config) => {
+      if (!config.url?.endsWith('/status')) return success()
+      const pending = deferred<Reply>()
+      requests.push(pending)
+      return pending.promise
+    }, rows)
+    const wrapper = await mountPage(transport)
+    const oldRequests = requests.splice(0)
+    expect(oldRequests).toHaveLength(initial.length)
+
+    rows.splice(0, rows.length, ...next)
+    wrapper.getComponent(V115AuthorizationDialog).vm.$emit('confirmed')
+    await flushPromises()
+    expect(requests).toHaveLength(next.length)
+    expect(wrapper.findAll('.card-name').map((card) => card.text())).toEqual(
+      next.map((row) => row.name),
+    )
+
+    oldRequests.forEach((request) => request.resolve(statusReply('过期会员')))
+    await flushPromises()
+    expect(refreshButtons(wrapper).map((button) => button.props('loading'))).toEqual(
+      next.map(() => true),
+    )
+    expect(wrapper.text()).not.toContain('过期会员')
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
+
+    requests.forEach((request, index) => request.resolve(statusReply(`当前会员 ${index}`)))
+    await flushPromises()
+    wrapper.findAll('.account-card').forEach((card, index) => {
+      expect(card.text()).toContain(`当前会员 ${index}`)
+    })
+    expect(refreshButtons(wrapper).map((button) => button.props('loading'))).toEqual(
+      next.map(() => false),
+    )
+  })
+
+  it('列表替换后旧状态失败静默，当前状态失败只记录诊断并结束 loading', async () => {
+    const oldRequest = deferred<Reply>()
+    const currentRequest = deferred<Reply>()
+    let requestCount = 0
+    const transport = createHTTP(
+      () => (++requestCount === 1 ? oldRequest.promise : currentRequest.promise),
+      [authorizedAccount],
+    )
+    const wrapper = await mountPage(transport)
+    wrapper.getComponent(V115AuthorizationDialog).vm.$emit('confirmed')
+    await flushPromises()
+
+    oldRequest.resolve(failure())
+    await flushPromises()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
+    expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(true)
+
+    currentRequest.resolve(failure())
+    await flushPromises()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('获取网盘状态失败', {
+      method: 'GET',
+      path: '/api/115/status',
+      status: 200,
+    })
+    expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(false)
+    expect(wrapper.text()).toContain('暂无状态信息')
+  })
+
+  it.each([
+    { result: 'success', order: '旧请求先完成' },
+    { result: 'failure', order: '旧请求先完成' },
+    { result: 'success', order: '新请求先完成' },
+    { result: 'failure', order: '新请求先完成' },
+  ])('同一账号再次刷新：$order，旧请求 $result 不干扰新请求', async ({ result, order }) => {
+    const oldRequest = deferred<Reply>()
+    const currentRequest = deferred<Reply>()
+    let requestCount = 0
+    const transport = createHTTP(
+      () => (++requestCount === 1 ? oldRequest.promise : currentRequest.promise),
+      [authorizedAccount],
+    )
+    const wrapper = await mountPage(transport)
+    // 通过按钮的公开事件重入同一行，不读取或改写页面内部状态。
+    refreshButtons(wrapper)[0]!.vm.$emit('click', new MouseEvent('click'))
+    await flushPromises()
+    expect(transport.calls('/api/115/status')).toHaveLength(2)
+
+    const resolveOld = async () => {
+      oldRequest.resolve(result === 'success' ? statusReply('过期会员') : failure())
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('过期会员')
+      expect(ElMessage.error).not.toHaveBeenCalled()
+      expect(console.error).not.toHaveBeenCalled()
+    }
+    if (order === '旧请求先完成') {
+      await resolveOld()
+      expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(true)
+    }
+
+    currentRequest.resolve(statusReply('当前会员'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前会员')
+    expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(false)
+
+    if (order === '新请求先完成') await resolveOld()
+    expect(wrapper.text()).toContain('当前会员')
+    expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(false)
+  })
+
+  it('批量状态查询失败静默，手动刷新失败给出提示并结束加载', async () => {
+    const transport = createHTTP(() => failure(), [authorizedAccount])
+    const wrapper = await mountPage(transport)
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    refreshButtons(wrapper)[0]!.vm.$emit('click')
+    await flushPromises()
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
+    expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(false)
+  })
+
+  it.each(['success', 'failure'])('页面卸载后在途状态 %s 保持静默', async (result) => {
+    const pending = deferred<Reply>()
+    const transport = createHTTP(() => pending.promise, [authorizedAccount])
+    const wrapper = await mountPage(transport)
+    wrapper.unmount()
+
+    pending.resolve(result === 'success' ? statusReply('过期会员') : failure())
+    await flushPromises()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
+    expect(transport.calls('/api/115/status')).toHaveLength(1)
+  })
+
+  it.each(['success', 'failure'])('卸载后账号列表 %s 不再请求状态或提示错误', async (result) => {
+    const pending = deferred<Reply>()
+    const transport = createHTTP()
+    transport.request.mockImplementationOnce(async (config) => ({
+      ...(await pending.promise),
+      config,
+      headers: {},
+      statusText: '',
+    }))
+    const wrapper = await mountPage(transport)
+    expect(transport.calls('/api/account/list')).toHaveLength(1)
+    wrapper.unmount()
+
+    pending.resolve(result === 'success' ? success([authorizedAccount]) : failure())
+    await flushPromises()
+    expect(transport.calls('/api/115/status')).toHaveLength(0)
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
   })
 })
 
@@ -351,7 +586,7 @@ describe('云盘 OAuth 请求和生命周期', () => {
     expect(transport.calls('/api/115/oauth-url')).toHaveLength(0)
     expect(loadPendingV115Authorization()).toBeNull()
     expect(wrapper.get('.card-name').text()).toBe('我的网盘')
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('准备更换授权失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -389,7 +624,7 @@ describe('云盘 OAuth 请求和生命周期', () => {
     expect(loadPendingV115Authorization()).toBeNull()
     await vi.advanceTimersByTimeAsync(12000)
     expect(transport.calls('/api/115/oauth-status')).toHaveLength(1)
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('授权状态查询失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
   })
@@ -561,7 +796,7 @@ describe('云盘 OAuth 请求和生命周期', () => {
     })
     expect(transport.calls('/api/account/authorization/cancel')).toHaveLength(1)
     expect(loadPendingV115Authorization()).toBeNull()
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('授权确认失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('账号操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(3000)
     expect(window.location.search).toContain('token_data=token-private')

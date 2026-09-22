@@ -6,13 +6,13 @@ import AppNotificationChannels from '@/components/AppNotificationChannels.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { ChannelType, NotificationConfig } from '@/utils/notificationUtils'
+import { createDeferred } from '../support/deferred'
 
 const success = (data: unknown = null) => ({ status: 200, data: { code: 0, message: '', data } })
-const failure = (
-  message = 'private token=https://user:password@notify.example',
-  status = 200,
-  error_code?: string,
-) => ({ status, data: { code: 1, message, data: null, error_code } })
+const failure = (message = '通知渠道操作失败，请稍后重试', status = 200, error_code?: string) => ({
+  status,
+  data: { code: 1, message, data: null, error_code },
+})
 const initialConfig: NotificationConfig = {
   bot_token: 'stored-token',
   chat_id: '123',
@@ -113,7 +113,7 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('通知渠道失败反馈', () => {
   it.each([
-    [failure('private'), '创建渠道失败'],
+    [failure('创建通知渠道失败：名称重复'), '创建通知渠道失败：名称重复'],
     [failure('bot_token：不能为空', 400), '请填写 Bot Token'],
     [failure('private', 403, 'REQUEST_ORIGIN_INVALID'), '访问地址校验失败'],
     [failure('CSRF 校验失败', 403), '请求安全校验失败'],
@@ -164,7 +164,7 @@ describe('通知渠道失败反馈', () => {
     expect(form.props('modelValue')).toBe(true)
     expect((field(form, 'Bot Token').element as HTMLInputElement).value).toBe('changed-private')
     expect(transport.read).toHaveBeenCalledTimes(2)
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('更新渠道失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -179,7 +179,7 @@ describe('通知渠道失败反馈', () => {
       is_enabled: false,
     })
     expect(wrapper.get('.channel-card-header .el-switch').classes()).toContain('is-checked')
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('切换渠道状态失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -198,13 +198,101 @@ describe('通知渠道失败反馈', () => {
       is_enabled: false,
     })
     expect(form.get('.el-switch').classes()).toContain('is-checked')
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('更新通知规则失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
+  it('切换渠道后上一渠道的规则和晚到响应不能被当前窗口修改', async () => {
+    const transport = createHTTP()
+    const channel = (id: number, channel_name: string) => ({
+      id,
+      channel_type: 'telegram',
+      channel_name,
+      is_enabled: true,
+      created_at: 1,
+      updated_at: 1,
+    })
+    const rules = (channel_id: number) =>
+      success([{ id: channel_id, channel_id, event_type: 'sync_finish', is_enabled: true }])
+    transport.read.mockResolvedValueOnce(success([channel(7, '渠道 A'), channel(8, '渠道 B')]))
+    const wrapper = await mountPage(transport)
+    const openRules = async (index: number) => {
+      await wrapper
+        .findAll('button')
+        .filter((item) => item.text() === '规则')
+        [index]!.trigger('click')
+      await flushPromises()
+    }
+    const late = createDeferred<ReturnType<typeof rules>>()
+    transport.read.mockReturnValueOnce(late.promise)
+    await openRules(0)
+    await click(dialog(wrapper, '渠道 A - 通知规则'), '关闭')
+    transport.read.mockResolvedValueOnce(rules(8))
+    await openRules(1)
+    late.resolve(rules(7))
+    await flushPromises()
+    const form = dialog(wrapper, '渠道 B - 通知规则')
+    await form.get('.el-switch').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(transport.adapter.mock.calls.at(-1)![0].data)).toEqual({
+      channel_id: 8,
+      event_type: 'sync_finish',
+      is_enabled: false,
+    })
+    await click(form, '关闭')
+    transport.read.mockResolvedValueOnce(failure())
+    await openRules(0)
+    expect(dialog(wrapper, '渠道 A - 通知规则').find('.el-switch').exists()).toBe(false)
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
+  })
+
+  it.each(['success', 'failure'])(
+    '关闭后重开同一渠道时旧规则 %s 不结束新加载或修改当前窗口',
+    async (outcome) => {
+      const transport = createHTTP()
+      const wrapper = await mountPage(transport)
+      const old = createDeferred<ReturnType<typeof success>>()
+      const current = createDeferred<ReturnType<typeof success>>()
+      transport.read.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+      await click(wrapper, '规则')
+      await click(dialog(wrapper, '通知渠道 - 通知规则'), '关闭')
+      await click(wrapper, '规则')
+      old.resolve(
+        outcome === 'success'
+          ? success([{ id: 1, channel_id: 7, event_type: 'sync_finish', is_enabled: true }])
+          : failure(),
+      )
+      await flushPromises()
+      const form = dialog(wrapper, '通知渠道 - 通知规则')
+      expect(form.find('.el-switch').exists()).toBe(false)
+      expect(form.find('.el-loading-mask').exists()).toBe(true)
+      expect(ElMessage.error).not.toHaveBeenCalled()
+      expect(console.error).not.toHaveBeenCalled()
+      current.resolve(
+        success([{ id: 2, channel_id: 7, event_type: 'sync_finish', is_enabled: false }]),
+      )
+      await flushPromises()
+      expect(form.find('.el-switch').exists()).toBe(true)
+      expect(form.get('.el-switch').classes()).not.toContain('is-checked')
+    },
+  )
+
+  it('卸载后旧规则请求失败不再提示', async () => {
+    const transport = createHTTP()
+    const wrapper = await mountPage(transport)
+    const pending = createDeferred<ReturnType<typeof success>>()
+    transport.read.mockReturnValueOnce(pending.promise)
+    await click(wrapper, '规则')
+    wrapper.unmount()
+    pending.resolve(failure())
+    await flushPromises()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
   })
 
   it.each([
     [
-      failure('测试失败：https://api.telegram.org/botprivate/sendMessage'),
+      failure('发送通知测试消息失败，请检查渠道配置或查看服务日志'),
       '发送通知测试消息失败，请检查渠道配置或查看服务日志',
     ],
     [failure('private', 403, 'REQUEST_ORIGIN_INVALID'), '访问地址校验失败'],
@@ -225,7 +313,7 @@ describe('通知渠道失败反馈', () => {
     await click(wrapper, '删除')
     expect(wrapper.get('.channel-name').text()).toBe('通知渠道')
     expect(transport.read).toHaveBeenCalledTimes(1)
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('删除渠道失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -244,7 +332,7 @@ describe('通知渠道失败反馈', () => {
     transport.read.mockResolvedValue(failure())
     await click(wrapper, '编辑')
     expect(dialog(wrapper, '编辑渠道 - 通知渠道').props('modelValue')).toBe(false)
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('获取渠道配置失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
   })
 
   it('保存成功后的刷新失败仍报告刷新失败，并保留已有列表', async () => {
@@ -256,7 +344,7 @@ describe('通知渠道失败反馈', () => {
     await click(form, '保存')
     expect(form.props('modelValue')).toBe(false)
     expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('更新成功')
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('加载通知渠道失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(wrapper.get('.channel-name').text()).toBe('通知渠道')
   })
 })

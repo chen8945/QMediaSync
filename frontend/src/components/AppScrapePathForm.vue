@@ -8,11 +8,19 @@
       </template>
     </PageHeader>
 
+    <el-alert v-if="directoryLoadError" type="error" :closable="false" show-icon>
+      <template #title>{{ directoryLoadError }}</template>
+      <el-button :loading="loading" @click="loadDirectoryData(Number(route.params.id))">
+        重新加载目录
+      </el-button>
+    </el-alert>
+
     <template v-if="checkIsMobile">
       <el-form
         ref="formRef"
         :model="form"
         :rules="formRules"
+        :disabled="isEditMode && !directoryLoaded"
         label-width="140px"
         label-position="top"
       >
@@ -370,7 +378,12 @@
 
       <div class="mobile-form-footer">
         <el-button @click="goBack">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="loading">
+        <el-button
+          type="primary"
+          @click="handleSubmit"
+          :loading="loading"
+          :disabled="isEditMode && !directoryLoaded"
+        >
           {{ isEditMode ? '保存修改' : '确定添加' }}
         </el-button>
       </div>
@@ -381,6 +394,7 @@
         ref="formRef"
         :model="form"
         :rules="formRules"
+        :disabled="isEditMode && !directoryLoaded"
         label-width="140px"
         label-position="left"
       >
@@ -743,7 +757,12 @@
       <template #footer>
         <div class="form-footer">
           <el-button @click="goBack">取消</el-button>
-          <el-button type="primary" @click="handleSubmit" :loading="loading">
+          <el-button
+            type="primary"
+            @click="handleSubmit"
+            :loading="loading"
+            :disabled="isEditMode && !directoryLoaded"
+          >
             {{ isEditMode ? '保存修改' : '确定添加' }}
           </el-button>
         </div>
@@ -776,6 +795,7 @@ import { SCRAPE_THREAD_LIMITS } from '@/constants/validation'
 import { useHttpClient } from '@/http/client'
 import { accountPublicMessages, listAccounts } from '@/api/accounts'
 import { parseHttpError } from '@/http/errors'
+import { notifyHttpError } from '@/utils/httpErrorNotification'
 import {
   fetchScrapePath,
   saveScrapePath,
@@ -783,7 +803,7 @@ import {
   scrapePathErrorOptions,
   type ScrapePath,
 } from '@/api/scrapePaths'
-import { onMounted, ref, reactive, watch, useTemplateRef } from 'vue'
+import { onMounted, ref, reactive, shallowRef, watch, useTemplateRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
@@ -821,6 +841,8 @@ const defaultAiPrompSuffix = [
 const { isMobile: checkIsMobile } = useDeviceType()
 const isEditMode = ref(false)
 const loading = ref(false)
+const directoryLoaded = shallowRef(false)
+const directoryLoadError = shallowRef('')
 
 const formRef = useTemplateRef<FormInstance>('formRef')
 const form = reactive<Omit<ScrapePath, 'is_running'>>({
@@ -902,10 +924,7 @@ const selectedSourceType = ref('')
 const selectedAccountId = ref(0)
 
 const reportError = (error: unknown, fallbackMessage: string) => {
-  const failure = parseHttpError(error, { ...scrapePathErrorOptions, fallbackMessage })
-  if (!failure.shouldNotify) return
-  console.error(fallbackMessage, failure.diagnostics)
-  ElMessage.error(failure.message)
+  notifyHttpError(error, fallbackMessage, { ...scrapePathErrorOptions, fallbackMessage })
 }
 
 const goBack = () => {
@@ -928,14 +947,10 @@ const loadAccounts = async () => {
     accountsLoading.value = true
     accounts.value = await listAccounts(http, form.source_type)
   } catch (error) {
-    const failure = parseHttpError(error, {
+    notifyHttpError(error, '加载账号列表失败：', {
       publicMessages: accountPublicMessages,
       fallbackMessage: '加载账号列表失败',
     })
-    if (failure.shouldNotify) {
-      console.error('加载账号列表失败：', failure.diagnostics)
-      ElMessage.error(failure.message)
-    }
     accounts.value = []
   } finally {
     accountsLoading.value = false
@@ -943,9 +958,13 @@ const loadAccounts = async () => {
 }
 
 const loadDirectoryData = async (id: number) => {
+  if (loading.value) return
   try {
     loading.value = true
+    directoryLoaded.value = false
+    directoryLoadError.value = ''
     const directory = await fetchScrapePath(http, id)
+    if (!directory || directory.id !== id) throw new Error('刮削目录响应不完整')
     form.id = directory.id || 0
     form.source_type = directory.source_type
     form.account_id = directory.account_id
@@ -971,8 +990,16 @@ const loadDirectoryData = async (id: number) => {
     form.cron_description = directory.cron_description || ''
     form.enable_fanart_tv = directory.enable_fanart_tv || false
     form.max_threads = parseInt(directory.max_threads + '') || SCRAPE_THREAD_LIMITS.remoteMax
+    directoryLoaded.value = true
   } catch (error) {
-    reportError(error, '加载刮削目录失败')
+    const failure = parseHttpError(error, {
+      ...scrapePathErrorOptions,
+      fallbackMessage: '加载刮削目录失败',
+    })
+    if (failure.shouldNotify) {
+      directoryLoadError.value = failure.message
+      console.error('加载刮削目录失败', failure.diagnostics)
+    }
   } finally {
     loading.value = false
   }
@@ -1037,6 +1064,7 @@ const applyCronPreset = () => {
 }
 
 const handleSubmit = async () => {
+  if (loading.value || (isEditMode.value && !directoryLoaded.value)) return
   if (!formRef.value) return
   if (form.scrape_type !== 'only_scrape' && form.dest_path_id === '') {
     ElMessage.error('请先选择目标路径，并确认重命名模板已填写')

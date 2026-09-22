@@ -43,7 +43,7 @@ interface BackupConfig {
 // 备份进度接口
 interface BackupProgress {
   running: boolean
-  status?: BackupStatus
+  status?: BackupStatus | 'unknown'
   progress?: number
   elapsed_seconds?: number
   estimated_seconds?: number

@@ -95,12 +95,16 @@
             type="success"
             @click="saveSettings"
             :loading="loading"
+            :disabled="loading || !settingsLoaded"
             size="large"
             :icon="Check"
           >
             保存设置
           </el-button>
         </div>
+        <el-button v-if="!settingsLoaded" :loading="loading" @click="fetchTmdbSettings">
+          重试加载
+        </el-button>
       </div>
     </el-form>
 
@@ -110,7 +114,8 @@
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
-      :closable="false"
+      closable
+      @close="saveStatus = null"
       show-icon
       class="save-status"
     />
@@ -121,7 +126,8 @@
       :title="testStatus.title"
       :type="testStatus.type"
       :description="testStatus.description"
-      :closable="false"
+      closable
+      @close="testStatus = null"
       show-icon
       class="test-status"
     />
@@ -173,6 +179,7 @@ interface SaveStatus {
 const http = useHttpClient()
 const { isMobile: checkIsMobile } = useDeviceType()
 const loading = ref(false)
+const settingsLoaded = ref(false)
 const testing = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
 const testStatus = ref<SaveStatus | null>(null)
@@ -197,8 +204,10 @@ onMounted(async () => {
 
 // 获取 TMDB 设置
 async function fetchTmdbSettings() {
+  if (loading.value) return
   try {
     loading.value = true
+    saveStatus.value = null
     const settings = await getTmdbSettings(http)
 
     formData.tmdbUrl = settings.tmdb_url || ''
@@ -210,6 +219,7 @@ async function fetchTmdbSettings() {
     formData.tmdbLanguage = settings.tmdb_language || 'zh-CN'
     formData.tmdbImageLanguage = settings.tmdb_image_language || 'en-US'
     formData.local_max_threads = settings.local_max_threads || 5
+    settingsLoaded.value = true
   } catch (error) {
     const parsed = parseHttpError(error, {
       fallbackMessage: '获取刮削设置失败，请稍后重试',
@@ -225,6 +235,7 @@ async function fetchTmdbSettings() {
 
 // 保存 TMDB 设置
 async function saveSettings() {
+  if (!settingsLoaded.value || loading.value) return
   try {
     loading.value = true
     saveStatus.value = null

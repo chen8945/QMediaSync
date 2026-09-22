@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -82,11 +83,10 @@ func ExtractTarGz(src, dst string) error {
 			}
 
 			// 复制文件内容
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+			_, copyErr := io.Copy(f, tr)
+			if err := errors.Join(copyErr, f.Close()); err != nil {
 				return err
 			}
-			f.Close()
 		case tar.TypeSymlink: // 符号链接
 			if err := safeArchiveSymlinkTarget(dstAbs, target, header.Linkname); err != nil {
 				return err
@@ -237,8 +237,7 @@ func ExtractZip(src, dst string) error {
 		_, err = io.Copy(dstFile, srcFile)
 
 		// 关闭文件（即使出错也要关闭）
-		dstFile.Close()
-		srcFile.Close()
+		err = errors.Join(err, dstFile.Close(), srcFile.Close())
 
 		if err != nil {
 			return err
@@ -333,17 +332,17 @@ func isSafePath(base, path string) bool {
 }
 
 // 将 src 目录内的所有文件打包成 ZIP 文件 dst
-func ZipDir(src, dst string) error {
+func ZipDir(src, dst string) (err error) {
 	// 创建目标 ZIP 文件
 	file, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 
 	// 创建 ZIP 写入器
 	w := zip.NewWriter(file)
-	defer w.Close()
+	defer func() { err = errors.Join(err, w.Close()) }()
 
 	// 遍历源目录
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {

@@ -14,7 +14,7 @@ describe('AppSyncDirectories 目录监控规则加载状态', () => {
     expect(source).toMatch(/directoryUploadRulesLoadFailed\.value[\s\S]*?加载失败/)
     expect(source).toMatch(/directoryUploadRulesLoadFailed\.value[\s\S]*?return\s+['"]danger['"]/)
     expect(source).toMatch(
-      /const\s+loadDirectoryUploadRules\s*=\s*async\s*\(\s*\)\s*=>\s*{[\s\S]*?directoryUploadRulesLoadFailed\.value\s*=\s*true/,
+      /const\s+loadDirectoryUploadRules\s*=\s*async\s*\([^)]*\)\s*=>\s*{[\s\S]*?directoryUploadRulesLoadFailed\.value\s*=\s*true/,
     )
   })
 })

@@ -100,6 +100,34 @@ func TestCancelUpdateMarksSnapshotCancelled(t *testing.T) {
 	}
 }
 
+func TestCancelUpdateRejectsFinishedTask(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldInfo := currentUpdateInfo
+	oldCancel := currentUpdateCancel
+	t.Cleanup(func() {
+		currentUpdateInfo = oldInfo
+		currentUpdateCancel = oldCancel
+	})
+
+	done := make(chan struct{})
+	close(done)
+	setCurrentUpdateInfoForTest(&updateInfo{Version: "v0.16.0", Status: string(updateStatusFailed), done: done})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/update/cancel", nil)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	CancelUpdate(c)
+
+	if body := rec.Body.String(); !containsAll(body, []string{`"code":500`, "未开始更新"}) {
+		t.Fatalf("响应体 = %s，期望拒绝取消已结束的任务", body)
+	}
+	if info := getCurrentUpdateInfoSnapshot(); info.Status != string(updateStatusFailed) {
+		t.Fatalf("已结束任务状态 = %s，期望保持 failed", info.Status)
+	}
+}
+
 func TestCancelledUpdateStillOccupiesUntilDone(t *testing.T) {
 	done := make(chan struct{})
 	info := &updateInfo{Status: string(updateStatusCancelled), done: done}
