@@ -26,14 +26,8 @@ export interface UpdateProgress {
   error_message?: string
 }
 
-// 固定文案来自 controllers/update.go；异步 error_message 可含下载地址或本机路径。
+// 仅改写需要本地化的业务字段和文案，其他原因使用服务端消息。
 export const updatePublicMessages: Readonly<Record<string, string>> = {
-  获取最新版本失败: '获取最新版本失败',
-  正在更新中: '正在更新中',
-  参数错误: '参数错误',
-  版本不存在: '版本不存在',
-  '无法连接 GitHub，且未设置代理，无法升级': '无法连接 GitHub，且未设置代理，无法升级',
-  未开始更新: '未开始更新',
   'version：不能为空': '请选择更新版本',
   'version：版本号格式不正确': '版本号格式不正确',
   'channel：不是允许的取值': '更新渠道无效',
@@ -44,7 +38,7 @@ export function isUpdateNotStarted(error: ParsedHttpError): boolean {
   const body = response?.data
   return (
     error.kind === 'application' &&
-    (response?.status === 200 || response?.status === undefined) &&
+    response?.status === 200 &&
     body !== null &&
     typeof body === 'object' &&
     'code' in body &&

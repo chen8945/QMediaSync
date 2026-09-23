@@ -83,11 +83,15 @@ systemctl status qmediasync
 
 脚本创建的服务从当前目录执行 `QMediaSync`，不依赖旧 `postgres.env`，也不向 shell 启动文件写入 `DB_*` 环境变量。脚本不会生成应用数据库配置；新实例应通过首次配置向导或 `config/config.yaml` 填写数据库连接信息，SSL 同样由 YAML 配置。
 
+在线更新只支持 Windows 发布版和 Docker 镜像；Docker 需由镜像默认入口脚本启动，它负责监视更新包并重启应用。Linux 发布二进制下载新包后无法自行替换运行文件，更新页启动在线更新会返回“当前运行方式不支持在线更新，请手动下载安装”；手动更新时停止服务，用新发布包的 `QMediaSync` 和 `web_statics/` 替换旧文件，保留 `config/` 后再启动。
+
 ## 飞牛 FPK
 
 飞牛 FPK 由发布流程生成；应用安装向导负责选择 SQLite 或PostgreSQL 并写入配置。飞牛运行时由平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_DATA_SHARE_PATHS` 等路径变量，程序会将实际配置目录迁移或定位到共享数据目录下的 `config/`。
 
 不要把 Docker 的 `/app/config` 路径、`GUID`/`GPID` 约定或裸机 systemd 服务直接套用到飞牛安装；在飞牛文件管理器中保留应用共享目录下的 `config/`，再按 [数据库运维](database.md) 执行备份和恢复。
+
+飞牛版本通过飞牛应用商店更新。更新页在飞牛环境只显示应用商店提示，后端同样拒绝在线更新请求。
 
 ## 管理员恢复
 

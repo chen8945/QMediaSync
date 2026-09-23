@@ -8,10 +8,8 @@ import { formatMaybeUnixDateTime } from '@/utils/timeUtils'
 import MarkdownIt from 'markdown-it'
 import 'github-markdown-css/github-markdown.css'
 import { CircleCheck, Refresh } from '@element-plus/icons-vue'
-import { SERVER_URL } from '@/const'
 import { fetchIsFnOS, updatePublicMessages } from '@/api/update'
 import { parseHttpError } from '@/http/errors'
-import { ElMessage } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import PageHeader from '@/components/common/PageHeader.vue'
 
@@ -60,15 +58,11 @@ const checkIsFnOS = async () => {
     isFnOSLoading.value = true
     isFnOS.value = await fetchIsFnOS(http)
   } catch (error) {
-    const parsed = parseHttpError(error, {
+    const failure = parseHttpError(error, {
       fallbackMessage: '检查飞牛环境失败',
       publicMessages: updatePublicMessages,
-      request: { method: 'get', url: `${SERVER_URL}/path/is-fn-os` },
     })
-    if (parsed.shouldNotify) {
-      console.error('检查飞牛环境失败', parsed.diagnostics)
-      ElMessage.error(parsed.message)
-    }
+    if (failure.shouldNotify) console.error('检查飞牛环境失败', failure.diagnostics)
     isFnOS.value = false
   } finally {
     isFnOSLoading.value = false
@@ -222,7 +216,13 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
                           : ''
                     }}</span>
                   </div>
-                  <el-button type="danger" size="small" @click="cancelUpdate" round>
+                  <el-button
+                    v-if="updateProgress.status === 'downloading'"
+                    type="danger"
+                    size="small"
+                    @click="cancelUpdate"
+                    round
+                  >
                     取消
                   </el-button>
                 </div>

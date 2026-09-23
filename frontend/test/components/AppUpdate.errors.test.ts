@@ -7,7 +7,7 @@ import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { APIResponse } from '@/api/types'
 
-const setup = async (platformError?: unknown, fnos = false) => {
+const setup = async (platformError?: unknown, fnos = false, progressStatus = 'downloading') => {
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
     .mockResolvedValue({ code: 200, message: '', data: null })
@@ -34,7 +34,7 @@ const setup = async (platformError?: unknown, fnos = false) => {
       data = running
         ? {
             code: 200,
-            data: { status: 'downloading', progress: 10, total_size: 100, downloaded: 10 },
+            data: { status: progressStatus, progress: 10, total_size: 100, downloaded: 10 },
           }
         : { code: 500, message: '未开始更新', data: null }
     }
@@ -71,13 +71,13 @@ describe('更新页面请求反馈', () => {
   it('初始化无更新任务保持静默，启动业务失败不开始进度轮询', async () => {
     const { wrapper, reply, adapter, click } = await setup()
     expect(ElMessage.error).not.toHaveBeenCalled()
-    reply.mockResolvedValueOnce({ code: 500, message: 'private secret', data: null })
+    reply.mockResolvedValueOnce({ code: 500, message: '更新操作失败，请稍后重试', data: null })
     adapter.mockClear()
     await click('在线更新')
     await vi.advanceTimersByTimeAsync(2500)
     expect(adapter.mock.calls).toHaveLength(1)
     expect(wrapper.find('.update-progress').exists()).toBe(false)
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('触发版本更新失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('更新操作失败，请稍后重试')
     expect(wrapper.text()).toContain('v1.2.3')
   })
 
@@ -87,30 +87,48 @@ describe('更新页面请求反馈', () => {
     await click('手动下载')
     expect(open).toHaveBeenCalledWith('https://example.test/update.zip', '_blank')
     await click('在线更新')
-    reply.mockResolvedValueOnce({ code: 500, message: 'private secret', data: null })
+    reply.mockResolvedValueOnce({ code: 500, message: '更新操作失败，请稍后重试', data: null })
     await click('取消')
     expect(wrapper.get('.update-progress').text()).toContain('下载中')
     expect(wrapper.get('.update-progress').text()).toContain('取消')
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('取消更新失败，请稍后重试')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('更新操作失败，请稍后重试')
+  })
+
+  it('进入安装阶段后不再提供取消', async () => {
+    const { wrapper, click } = await setup(undefined, false, 'install')
+    await click('在线更新')
+    expect(wrapper.get('.update-progress').text()).toContain('安装中')
+    expect(wrapper.get('.update-progress').text()).not.toContain('取消')
+  })
+
+  it.each([
+    ['在线更新', '当前运行方式不支持在线更新，请手动下载安装'],
+    ['取消', '正在安装更新，无法取消'],
+  ])('%s被拒绝时展示后端说明：%s', async (action, message) => {
+    const { reply, click } = await setup()
+    if (action === '取消') await click('在线更新')
+    reply.mockResolvedValueOnce({ code: 500, message, data: null })
+    await click(action)
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(message)
   })
 
   it.each(['business', 'cancel', 'handled'])(
-    '飞牛环境检测 %s 使用安全错误且保留平台回退',
+    '飞牛环境检测 %s 保持静默且保留平台回退',
     async (kind) => {
       const error =
         kind === 'cancel'
           ? new CanceledError()
           : new HttpResponseError({
               status: kind === 'handled' ? 401 : 200,
-              data: { code: 500, message: 'private secret' },
+              data: { code: 500, message: '更新操作失败，请稍后重试' },
             })
       if (kind === 'handled') markAuthInvalidationHandled(error)
       const { wrapper } = await setup(error)
       expect(wrapper.text()).toContain('可用版本')
-      if (kind === 'business')
-        expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('检查飞牛环境失败')
-      else expect(ElMessage.error).not.toHaveBeenCalled()
+      expect(ElMessage.error).not.toHaveBeenCalled()
+      if (kind === 'business') expect(console.error).toHaveBeenCalledOnce()
+      else expect(console.error).not.toHaveBeenCalled()
       expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret')
     },
   )

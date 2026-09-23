@@ -99,6 +99,9 @@ func isUpdateTaskRunning(info *updateInfo) bool {
 	if info == nil {
 		return false
 	}
+	if info.Status == string(updateStatusInstall) {
+		return true
+	}
 	if info.done == nil {
 		return !isUpdateTerminalStatus(info.Status)
 	}
@@ -116,6 +119,19 @@ func isUpdateTerminalStatus(status string) bool {
 		status == string(updateStatusCancelled)
 }
 
+// beginUpdateInstall 在任务未被取消时切换到安装阶段；与 CancelUpdate 共用锁，二者只有一个生效。
+func beginUpdateInstall() bool {
+	currentUpdateMu.Lock()
+	defer currentUpdateMu.Unlock()
+	if currentUpdateInfo == nil || currentUpdateInfo.Status == string(updateStatusCancelled) {
+		return false
+	}
+	currentUpdateInfo.Status = string(updateStatusInstall)
+	currentUpdateInfo.Progress = 100
+	currentUpdateInfo.Downloaded = currentUpdateInfo.TotalSize
+	return true
+}
+
 func cleanupUpdatePackageOnDownloadError(updateFilename string) {
 	if updateFilename == "" {
 		return
@@ -123,6 +139,15 @@ func cleanupUpdatePackageOnDownloadError(updateFilename string) {
 	if err := os.Remove(updateFilename); err != nil && !os.IsNotExist(err) {
 		helpers.AppLogger.Errorf("删除下载失败的临时更新包失败：%v", err)
 	}
+}
+
+// supportsOnlineUpdate 判断下载后能否替换程序文件；其他运行方式只能手动更新，飞牛由应用商店更新。
+// Docker 只认入口脚本导出的 DOCKER=1：绕过入口脚本运行的容器没有更新监视器和重启循环。
+func supportsOnlineUpdate() bool {
+	if helpers.IsFnOS {
+		return false
+	}
+	return runtime.GOOS == "windows" || os.Getenv("DOCKER") == "1"
 }
 
 // GetLastRelease 获取最新版本列表
@@ -167,6 +192,11 @@ func GetLastRelease(c *gin.Context) {
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func UpdateToVersion(c *gin.Context) {
+	// 不支持的运行方式下载后无法安装，会误报更新完成。
+	if !supportsOnlineUpdate() {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前运行方式不支持在线更新，请手动下载安装", Data: nil})
+		return
+	}
 	if isCurrentUpdateRunning() {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "正在更新中", Data: nil})
 		return
@@ -270,22 +300,12 @@ func UpdateToVersion(c *gin.Context) {
 			})
 			return
 		}
-		// 检查上下文是否被取消
-		select {
-		case <-ctx.Done():
-			// 上下文被取消，删除下载的文件
+		// 取消先于安装时删除下载的文件；进入安装后取消接口不再接受请求。
+		if !beginUpdateInstall() {
 			os.Remove(updateFilename)
 			helpers.AppLogger.Infof("更新已取消，删除下载的文件：%s", updateFilename)
 			return
-		default:
-			// 上下文未被取消，继续执行安装
 		}
-		// 修改为安装中
-		updateCurrentUpdateInfo(func(info *updateInfo) {
-			info.Status = string(updateStatusInstall)
-			info.Progress = 100
-			info.Downloaded = info.TotalSize
-		})
 		// Windows 平台解压到 helpers.ConfigDir/update 目录下。
 		if runtime.GOOS == "windows" {
 			updateDestpath := filepath.Join(helpers.ConfigDir, "update")
@@ -471,7 +491,7 @@ func UpdateProgress(c *gin.Context) {
 
 // CancelUpdate 取消更新
 // @Summary 取消更新
-// @Description 取消正在进行的更新任务
+// @Description 取消仍在下载的更新任务；进入安装后不能取消
 // @Tags 更新管理
 // @Accept json
 // @Produce json
@@ -487,6 +507,12 @@ func CancelUpdate(c *gin.Context) {
 	if !isUpdateTaskRunning(currentUpdateInfo) {
 		currentUpdateMu.Unlock()
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "未开始更新", Data: nil})
+		return
+	}
+	// 下载完成后开始替换文件并重启，取消已无法阻止。
+	if status := currentUpdateInfo.Status; status != string(updateStatusDownloading) && status != string(updateStatusCancelled) {
+		currentUpdateMu.Unlock()
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "正在安装更新，无法取消", Data: nil})
 		return
 	}
 	currentUpdateInfo.Status = string(updateStatusCancelled)
