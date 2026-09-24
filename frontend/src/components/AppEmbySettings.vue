@@ -346,7 +346,7 @@
           <el-divider class="feature-divider" />
 
           <div class="feature-item" :class="{ 'is-disabled': !embyData.sync_enabled }">
-            <el-form-item label="同步时间" prop="sync_cron">
+            <el-form-item label="同步时间" prop="sync_cron" :error="cronError">
               <el-input
                 v-model="embyData.sync_cron"
                 :placeholder="`请输入 Cron 表达式，如：${CRON_DEFAULTS.embySync}`"
@@ -513,14 +513,14 @@
               type="success"
               @click="saveEmbyConfig"
               :loading="embyLoading"
-              :disabled="!embyConfigLoaded"
+              :disabled="!embyConfigLoaded || syncStartLoading"
               :icon="Check"
               size="large"
               class="save-btn"
             >
               保存设置
             </el-button>
-            <el-button v-if="!embyConfigLoaded" :loading="embyLoading" @click="loadEmbyConfig()">
+            <el-button v-if="!embyConfigLoaded" :loading="embyLoading" @click="loadEmbySettings">
               重试加载
             </el-button>
             <el-button
@@ -528,7 +528,7 @@
               @click="praseEmby"
               :loading="embyLoading"
               :icon="Refresh"
-              :disabled="!embyData.emby_url || !embyData.emby_api_key"
+              :disabled="!embyData.emby_url || !embyData.emby_api_key || syncStartLoading"
               size="large"
               class="extract-btn"
             >
@@ -752,10 +752,11 @@ import {
   Calendar,
 } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { computed, onMounted, ref, reactive, onBeforeUnmount, useTemplateRef } from 'vue'
+import { computed, onMounted, ref, reactive, onBeforeUnmount, useTemplateRef, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveActionBar from '@/components/common/ResponsiveActionBar.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { copyText } from '@/utils/clipboard'
 import { formatMaybeUnixDateTime, formatRelativeTime } from '@/utils/timeUtils'
 
@@ -776,6 +777,7 @@ let syncPollInFlight = false
 let syncPollPending = false
 let syncPollingGeneration = 0
 let syncPageActive = true
+let syncPollErrorNotified = false
 
 const syncModeLabels: Record<Exclude<EmbySyncMode, ''>, string> = {
   idle: '空闲',
@@ -812,12 +814,14 @@ const lastSuccessSyncHelper = computed(() => {
     .join(' · ')
 })
 
-// 保存会在结束时写入共享提示条，期间不允许启动同步，避免同步失败被“保存成功”覆盖。
+// 保存、提取与启动同步共用提示条，彼此在途时互相禁用，避免后到的成功说明覆盖另一操作的失败。
 const isStartSyncDisabled = computed(
   () => embyLoading.value || !embyData.emby_url || !embyData.sync_enabled || isSyncRunning.value,
 )
 
 const cronNextTimes = ref<string[]>([])
+const cronError = ref('')
+const cronRequestGate = createActiveRequestGate(() => syncPageActive)
 
 const embyData = reactive<EmbyConfig>({
   emby_url: '',
@@ -867,15 +871,22 @@ const clearEmbyStatus = () => {
   embyStatus.value = null
 }
 
-const showEmbyFailure = (error: unknown, title: string, publicMessages = embyPublicMessages) => {
+const showEmbyFailure = (error: unknown, title: string, preserveTitle = false) => {
   const failure = parseHttpError(error, {
-    publicMessages,
+    publicMessages: embyPublicMessages,
     fallbackMessage: title,
   })
-  if (!failure.shouldNotify) return
+  if (!failure.shouldNotify) return false
   console.error(title, failure.diagnostics)
   clearEmbyStatus()
-  embyStatus.value = { title, type: 'error', description: failure.message }
+  const qmsRejected = failure.kind === 'origin' || failure.kind === 'csrf'
+  embyStatus.value = {
+    title: !preserveTitle && qmsRejected ? '请求被 QMS 拒绝' : title,
+    type: 'error',
+    description:
+      preserveTitle && qmsRejected ? `请求被 QMS 拒绝：${failure.message}` : failure.message,
+  }
+  return true
 }
 
 const formRules: FormRules = {
@@ -906,10 +917,9 @@ const defaultConfig = {
   enable_daily_first_full_sync: 1,
 }
 
-const loadEmbyConfig = async (failureTitle = '加载 Emby 配置失败') => {
-  if (!embyConfigLoaded.value) clearEmbyStatus()
+// 配置读取与第三方媒体库请求分开，读取成功即可允许保存。
+const loadEmbyConfig = async (refreshFailureTitle?: string) => {
   try {
-    embyLoading.value = true
     const data = await fetchEmbyConfig(http)
 
     if (data?.exists && data.config) {
@@ -934,35 +944,43 @@ const loadEmbyConfig = async (failureTitle = '加载 Emby 配置失败') => {
       } catch {
         selectedLibraryIds.value = []
       }
-
-      // 加载媒体库列表
-      embyConfigLoaded.value = true
-      return await loadEmbyLibraries()
     } else {
       Object.assign(embyData, defaultConfig)
     }
     embyConfigLoaded.value = true
     return true
   } catch (error) {
-    showEmbyFailure(error, failureTitle)
+    showEmbyFailure(error, refreshFailureTitle ?? '加载 Emby 配置失败', !!refreshFailureTitle)
     return false
-  } finally {
-    embyLoading.value = false
   }
 }
 
 // 加载 Emby 媒体库列表
-const loadEmbyLibraries = async () => {
+const loadEmbyLibraries = async (afterSave = false) => {
+  if (embyData.sync_all_libraries !== 0) return
   try {
     const libraries = await fetchEmbyLibraries(http)
     availableLibraries.value = libraries.map((lib) => ({
       library_id: lib.library_id,
       name: lib.name,
     }))
-    return true
   } catch (error) {
-    showEmbyFailure(error, '加载 Emby 媒体库失败')
-    return false
+    showEmbyFailure(
+      error,
+      afterSave ? 'Emby 配置已保存，但无法获取媒体库' : '无法获取 Emby 媒体库',
+      afterSave,
+    )
+  }
+}
+
+const loadEmbySettings = async () => {
+  if (embyLoading.value) return
+  embyLoading.value = true
+  clearEmbyStatus()
+  try {
+    if (await loadEmbyConfig()) await loadEmbyLibraries()
+  } finally {
+    embyLoading.value = false
   }
 }
 
@@ -1011,6 +1029,7 @@ const saveEmbyConfig = async () => {
       embyStatus.value = null
       embyStatusTimer = null
     }, 3000)
+    await loadEmbyLibraries(true)
   } catch (error) {
     showEmbyFailure(error, '保存 Emby 配置失败')
   } finally {
@@ -1022,10 +1041,7 @@ const praseEmby = async () => {
   try {
     embyLoading.value = true
     clearEmbyStatus()
-    await extractEmbyMediaInfo(http, {
-      emby_url: embyData.emby_url.trim(),
-      emby_api_key: embyData.emby_api_key.trim(),
-    })
+    await extractEmbyMediaInfo(http)
     embyStatus.value = {
       title: '触发提取媒体信息成功',
       type: 'success',
@@ -1049,6 +1065,8 @@ const copyWebhookUrl = async () => {
 }
 
 const fetchCronNextTimes = async () => {
+  const requestId = cronRequestGate.next()
+  cronError.value = ''
   if (!embyData.sync_cron || !embyData.sync_cron.trim()) {
     cronNextTimes.value = []
     return
@@ -1056,12 +1074,30 @@ const fetchCronNextTimes = async () => {
 
   try {
     const times = await fetchCronTimes(http, embyData.sync_cron.trim())
+    if (!cronRequestGate.isCurrent(requestId)) return
     cronNextTimes.value = times.map(formatMaybeUnixDateTime)
   } catch (error) {
+    if (!cronRequestGate.isCurrent(requestId)) return
     cronNextTimes.value = []
-    showEmbyFailure(error, '获取 Cron 执行时间失败', systemSettingsPublicMessages)
+    const failure = parseHttpError(error, {
+      fallbackMessage: '获取 Cron 执行时间失败',
+      publicMessages: systemSettingsPublicMessages,
+    })
+    if (!failure.shouldNotify) return
+    console.error('获取 Cron 执行时间失败', failure.diagnostics)
+    cronError.value = failure.message
   }
 }
+
+watch(
+  () => embyData.sync_cron,
+  () => {
+    cronRequestGate.invalidate()
+    cronNextTimes.value = []
+    cronError.value = ''
+  },
+  { flush: 'sync' },
+)
 
 const startSync = async () => {
   try {
@@ -1098,6 +1134,7 @@ const querySyncStatus = async (generation = syncPollingGeneration) => {
       return
     }
 
+    syncPollErrorNotified = false
     syncInfo.value = data
     syncPolling.value = Boolean(data?.is_running)
     if (syncPolling.value) {
@@ -1106,8 +1143,11 @@ const querySyncStatus = async (generation = syncPollingGeneration) => {
       stopSyncPolling()
     }
   } catch (error) {
-    if (generation === syncPollingGeneration && syncPageActive && !document.hidden)
-      showEmbyFailure(error, '查询 Emby 同步状态失败')
+    if (generation === syncPollingGeneration && syncPageActive && !document.hidden) {
+      if (!syncPollErrorNotified)
+        syncPollErrorNotified = showEmbyFailure(error, '查询 Emby 同步状态失败')
+      if (isSyncRunning.value) startSyncPolling()
+    }
   } finally {
     syncPollInFlight = false
     if (syncPollPending && syncPageActive && !document.hidden) {
@@ -1163,7 +1203,7 @@ const formatSyncAbsoluteTime = (timestamp: number | null | undefined) => {
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleSyncVisibilityChange)
-  loadEmbyConfig()
+  loadEmbySettings()
   querySyncStatus()
   updateWebhookUrl()
 })
