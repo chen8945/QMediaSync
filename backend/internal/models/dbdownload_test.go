@@ -306,8 +306,8 @@ func TestCreateDownloadTaskWithDBRejectsActiveDuplicateAtInsert(t *testing.T) {
 		RemoteFileId: "115-file-id",
 		Status:       DownloadStatusPending,
 	}
-	if err := createDownloadTaskWithDB(db.Db, duplicate); !errors.Is(err, errActiveDownloadTaskExists) {
-		t.Fatalf("活跃下载目标冲突错误 = %v，期望 errActiveDownloadTaskExists", err)
+	if err := createDownloadTaskWithDB(db.Db, duplicate); !errors.Is(err, ErrActiveDownloadTaskExists) {
+		t.Fatalf("活跃下载目标冲突错误 = %v，期望 ErrActiveDownloadTaskExists", err)
 	}
 
 	if err := createDownloadTaskWithDB(db.Db, &DbDownloadTask{
@@ -392,8 +392,8 @@ func TestCreateDownloadTaskWithDBUsesSourceSpecificDeduplicationLocator(t *testi
 			if err := createDownloadTaskWithDB(db.Db, &tt.task); err != nil {
 				t.Fatalf("创建基准下载任务失败: %v", err)
 			}
-			if err := createDownloadTaskWithDB(db.Db, &tt.other); !errors.Is(err, errActiveDownloadTaskExists) {
-				t.Fatalf("活跃下载目标冲突错误 = %v，期望 errActiveDownloadTaskExists", err)
+			if err := createDownloadTaskWithDB(db.Db, &tt.other); !errors.Is(err, ErrActiveDownloadTaskExists) {
+				t.Fatalf("活跃下载目标冲突错误 = %v，期望 ErrActiveDownloadTaskExists", err)
 			}
 		})
 	}
@@ -421,8 +421,8 @@ func TestCreateDownloadTaskWithDBSeparatesTemporaryLocalTargets(t *testing.T) {
 	if err := createDownloadTaskWithDB(db.Db, newTask("/temporary-b/meta.nfo")); err != nil {
 		t.Fatalf("不同本地目标的临时下载任务不应冲突: %v", err)
 	}
-	if err := createDownloadTaskWithDB(db.Db, newTask("/temporary-a/meta.nfo")); !errors.Is(err, errActiveDownloadTaskExists) {
-		t.Fatalf("相同本地目标的临时下载任务冲突错误 = %v，期望 errActiveDownloadTaskExists", err)
+	if err := createDownloadTaskWithDB(db.Db, newTask("/temporary-a/meta.nfo")); !errors.Is(err, ErrActiveDownloadTaskExists) {
+		t.Fatalf("相同本地目标的临时下载任务冲突错误 = %v，期望 ErrActiveDownloadTaskExists", err)
 	}
 }
 

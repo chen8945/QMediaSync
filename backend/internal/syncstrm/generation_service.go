@@ -251,7 +251,7 @@ func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Contex
 			return created, fmt.Errorf("保存元数据 SyncFile 失败：%w", err)
 		}
 		if err := models.AddDownloadTaskFromSyncFile(syncFile); err != nil {
-			if strings.Contains(err.Error(), "任务已存在") {
+			if errors.Is(err, models.ErrActiveDownloadTaskExists) {
 				continue
 			}
 			return created, err

@@ -73,7 +73,8 @@ type DbDownloadTask struct {
 	Account           *Account       `json:"-" gorm:"-"`                             // 账户信息
 }
 
-var errActiveDownloadTaskExists = errors.New("任务已存在")
+// ErrActiveDownloadTaskExists 表示已有同目标的待下载或下载中任务。
+var ErrActiveDownloadTaskExists = errors.New("任务已存在")
 
 func activeDownloadTaskStatuses() []DownloadStatus {
 	return []DownloadStatus{
@@ -84,15 +85,15 @@ func activeDownloadTaskStatuses() []DownloadStatus {
 
 func activeDownloadTaskExistsError(task *DbDownloadTask) error {
 	if task == nil {
-		return errActiveDownloadTaskExists
+		return ErrActiveDownloadTaskExists
 	}
 	switch task.Status {
 	case DownloadStatusPending:
-		return fmt.Errorf("%w，状态为待下载", errActiveDownloadTaskExists)
+		return fmt.Errorf("%w，状态为待下载", ErrActiveDownloadTaskExists)
 	case DownloadStatusDownloading:
-		return fmt.Errorf("%w，状态为下载中", errActiveDownloadTaskExists)
+		return fmt.Errorf("%w，状态为下载中", ErrActiveDownloadTaskExists)
 	default:
-		return errActiveDownloadTaskExists
+		return ErrActiveDownloadTaskExists
 	}
 }
 
@@ -560,7 +561,7 @@ func createDownloadTaskWithDB(tx *gorm.DB, task *DbDownloadTask) error {
 	setDownloadTaskDeduplicationKeys(task)
 	if err := tx.Create(task).Error; err != nil {
 		if isActiveDownloadTaskUniqueConstraintError(err) {
-			return errActiveDownloadTaskExists
+			return ErrActiveDownloadTaskExists
 		}
 		return err
 	}
@@ -647,7 +648,7 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 		task.LocalSourcePath = file.PickCode
 	}
 	err := createDownloadTaskWithDB(db.Db, task)
-	if errors.Is(err, errActiveDownloadTaskExists) {
+	if errors.Is(err, ErrActiveDownloadTaskExists) {
 		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
 	}
 	if err == nil {
@@ -675,7 +676,7 @@ func AddDownloadTaskFromEmbyMedia(url, itemId, itemName string) error {
 		SourceType:        SourceTypeEmbyMedia,
 	}
 	err := createDownloadTaskWithDB(db.Db, task)
-	if errors.Is(err, errActiveDownloadTaskExists) {
+	if errors.Is(err, ErrActiveDownloadTaskExists) {
 		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
 	}
 	if err == nil {

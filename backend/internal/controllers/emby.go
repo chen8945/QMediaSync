@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -155,8 +156,7 @@ func Webhook(ctx *gin.Context) {
 				go func() {
 					// 获取 Emby 地址和 Emby API Key。
 					url := fmt.Sprintf("%s/emby/Items/%s/PlaybackInfo?api_key=%s", models.GlobalEmbyConfig.EmbyUrl, event.Item.ID, models.GlobalEmbyConfig.EmbyApiKey)
-					models.AddDownloadTaskFromEmbyMedia(url, event.Item.ID, event.Item.Name)
-					if err != nil {
+					if err := models.AddDownloadTaskFromEmbyMedia(url, event.Item.ID, event.Item.Name); err != nil && !errors.Is(err, models.ErrActiveDownloadTaskExists) {
 						helpers.AppLogger.Errorf("触发 Emby 信息提取失败：%v", err)
 					}
 				}()

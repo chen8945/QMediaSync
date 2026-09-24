@@ -775,34 +775,37 @@ func extractPickCodeFromPath(path string) string {
 	return path
 }
 
-var EmbyMediaInfoStart bool = false
+var embyMediaInfoRunning int32
 
-func StartParseEmbyMediaInfo() {
-	if EmbyMediaInfoStart {
-		helpers.AppLogger.Info("Emby 媒体信息提取任务已在运行")
-		return
-	}
+// StartParseEmbyMediaInfo 在后台提取 Emby 媒体信息；缺少配置或已有提取任务运行时返回 false。
+func StartParseEmbyMediaInfo() bool {
 	if models.GlobalEmbyConfig.EmbyUrl == "" || models.GlobalEmbyConfig.EmbyApiKey == "" {
 		helpers.AppLogger.Info("Emby URL 或 API Key 为空，无法提取 Emby 媒体信息")
-		return
+		return false
 	}
-	EmbyMediaInfoStart = true
-	defer func() {
-		EmbyMediaInfoStart = false
-	}()
-	// 放入协程运行
+	// 运行标记随后台协程结束才释放，避免重复触发时并发扫描全部媒体库。
+	if !atomic.CompareAndSwapInt32(&embyMediaInfoRunning, 0, 1) {
+		helpers.AppLogger.Info("Emby 媒体信息提取任务已在运行")
+		return false
+	}
 	go func() {
+		defer atomic.StoreInt32(&embyMediaInfoRunning, 0)
 		tasks := embyclientrestgo.ProcessLibraries(models.GlobalEmbyConfig.EmbyUrl, models.GlobalEmbyConfig.EmbyApiKey, []string{})
 		helpers.AppLogger.Infof("Emby 库收集媒体信息已完成，共发现 %d 个影视剧需要提取媒体信息", len(tasks))
 		for _, itemTask := range tasks {
-			task := models.AddDownloadTaskFromEmbyMedia(itemTask["url"], itemTask["item_id"], itemTask["item_name"])
-			if task == nil {
-				helpers.AppLogger.Errorf("添加 Emby 媒体信息提取任务失败：Emby Item ID：%s，名称：%s", itemTask["item_id"], itemTask["item_name"])
+			err := models.AddDownloadTaskFromEmbyMedia(itemTask["url"], itemTask["item_id"], itemTask["item_name"])
+			if errors.Is(err, models.ErrActiveDownloadTaskExists) {
+				helpers.AppLogger.Infof("Emby 媒体信息提取已在操作队列中：Emby Item ID：%s，名称：%s", itemTask["item_id"], itemTask["item_name"])
+				continue
+			}
+			if err != nil {
+				helpers.AppLogger.Errorf("添加 Emby 媒体信息提取任务失败：Emby Item ID：%s，名称：%s，原因：%v", itemTask["item_id"], itemTask["item_name"], err)
 				continue
 			}
 			helpers.AppLogger.Infof("Emby 媒体信息提取已加入操作队列：Emby Item ID：%s，名称：%s", itemTask["item_id"], itemTask["item_name"])
 		}
 	}()
+	return true
 }
 
 var embyUserId string = ""
