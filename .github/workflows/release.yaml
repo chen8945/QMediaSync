@@ -345,6 +345,11 @@ jobs:
           name: fpk-assets
           path: release-assets
 
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum * > checksums.txt
+
       - name: Prepare release notes
         env:
           TAG: ${{ needs.metadata.outputs.tag }}

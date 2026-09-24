@@ -313,6 +313,8 @@ WorkingDirectory=$(pwd)
 ExecStart=$qmediasync_path
 Restart=always
 RestartSec=5
+# 允许在线更新：替换文件后程序自行退出，由 Restart=always 启动新版本
+Environment=QMS_SYSTEMD_UPDATE=1
 StandardOutput=journal
 StandardError=journal
 

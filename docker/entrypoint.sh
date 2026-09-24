@@ -112,6 +112,41 @@ handle_signal() {
 
 trap 'handle_signal' INT TERM
 
+# 在独立子 shell 中启用失败即退出；替换失败按相反顺序恢复已处理文件。
+apply_update() (
+    set -e
+    moved=""
+    rollback_update() {
+        status=$?
+        if [ "$status" -ne 0 ]; then
+            echo "安装更新失败，恢复旧版本..." >&2
+            for name in $moved; do
+                if ! rm -rf "/app/$name" || ! mv "/app/old/$name" "/app/$name"; then
+                    echo "恢复 $name 失败，旧文件保留在 /app/old" >&2
+                fi
+            done
+        fi
+        exit "$status"
+    }
+    trap rollback_update EXIT
+
+    rm -rf /app/update
+    mkdir /app/update
+    tar -zxf /app/qms.update.tar.gz -C /app/update
+    test -f /app/update/QMediaSync
+    test -d /app/update/web_statics
+    test -f /app/update/scripts/docker-entrypoint.sh
+    test -f /app/update/scripts/watch_update.sh
+    chmod +x /app/update/QMediaSync /app/update/scripts/*.sh
+    rm -rf /app/old
+    mkdir /app/old
+    for name in QMediaSync web_statics scripts; do
+        mv "/app/$name" "/app/old/$name"
+        moved="$name $moved"
+        mv "/app/update/$name" "/app/$name"
+    done
+)
+
 # 主循环，确保可以多次更新
 while true; do
     # 启动主进程，支持GPID和GUID环境变量
@@ -138,38 +173,16 @@ while true; do
     # 如果主进程退出，检查是否有更新
     if [ -f "/app/qms.update.tar.gz" ]; then
         echo "主进程退出，检测到新版本，执行更新..."
-        if [ -d "/app/update" ]; then
-            rm -rf /app/update
-            echo "旧版本更新目录已删除"
+        apply_update
+        update_status=$?
+        # 无论安装结果如何都不重复消费这个包；清理失败只告警。
+        rm -f /app/qms.update.tar.gz || echo "清理更新压缩包失败"
+        rm -rf /app/update || echo "清理更新目录失败"
+        if [ "$update_status" -eq 0 ]; then
+            echo "更新完成，准备重启主进程..."
+        else
+            echo "更新失败，已尝试恢复旧版本，准备重启主进程..." >&2
         fi
-        mkdir /app/update
-        echo "创建新版本更新目录 /app/update"
-        # 解压更新文件
-        echo "解压更新文件..."
-        tar -zxvf /app/qms.update.tar.gz -C /app/update
-        echo "更新文件已解压到 /app/update"
-        # 检查/app/old是否存在，存在则删除，不存在则创建
-        if [ -d "/app/old" ]; then
-            rm -rf /app/old
-            echo "旧版本目录已删除"
-        fi
-        mkdir /app/old
-        echo "创建备份目录 /app/old"
-        echo "备份旧版本..."
-        # 备份旧版本
-        mv /app/QMediaSync /app/old/QMediaSync
-        mv /app/web_statics /app/old/web_statics
-        mv /app/scripts /app/old/scripts
-        # 替换新版本
-        mv /app/update/QMediaSync /app/QMediaSync
-        mv /app/update/web_statics /app/web_statics
-        mv /app/update/scripts /app/scripts
-        chmod +x /app/QMediaSync
-        chmod +x /app/scripts/*.sh
-        # 删除压缩包
-        rm -f /app/qms.update.tar.gz
-        echo "更新压缩包已删除"
-        echo "更新完成，准备重启主进程..."
         # 继续循环，重启主进程
     else
         echo "主进程退出，未检测到更新文件，退出容器..."

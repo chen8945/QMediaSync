@@ -187,14 +187,19 @@ func (g *GitHubUpdater) findMatchingAsset(assets []Asset) (string, string) {
 		name := strings.ToLower(asset.Name)
 		// 查找匹配的二进制文件
 		helpers.AppLogger.Infof("匹配资源：%s => %s", name, filename)
-		if strings.Contains(name, filename) {
+		if downloadURL == "" && strings.Contains(name, filename) {
 			downloadURL = asset.BrowserDownloadURL
-			break
+		}
+		if name == ChecksumsAssetName {
+			checksumURL = asset.BrowserDownloadURL
 		}
 	}
 
 	return downloadURL, checksumURL
 }
+
+// ChecksumsAssetName 是 release 流水线发布的 sha256sum 格式校验文件名。
+const ChecksumsAssetName = "checksums.txt"
 
 // GetLatestReleases 获取最新的 release 版本
 func (g *GitHubUpdater) GetLatestReleases(limit int) ([]ReleaseInfo, error) {

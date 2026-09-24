@@ -18,7 +18,12 @@ var IsFirstRun bool = false // 默认为 false
 func StartApp(stopFunc func()) {
 }
 
-func StopApp() {}
+// StopApp 向自身发送 SIGTERM，与外部停止服务走同一套优雅退出流程。
+func StopApp() {
+	if err := unix.Kill(os.Getpid(), unix.SIGTERM); err != nil {
+		AppLogger.Errorf("发送停止信号失败：%v", err)
+	}
+}
 
 func StartNewProcess(exePath, updateDir string) bool {
 	return true

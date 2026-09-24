@@ -24,11 +24,11 @@
 
 公共 HTTP 错误分类、业务响应校验和认证请求的兼容性与安全回归沿用上述 Vitest 命令；刮削及账号授权请求迁移同时验证失败反馈、成功判定、第三方连接测试结果和授权生命周期，覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
-设置页回归同时覆盖 Emby、代理、通知、STRM 和用户安全设置的失败保护、专用成功码与敏感数据处理，沿用上述 Vitest 和类型检查入口。
+设置页回归同时覆盖 Emby、代理、通知、STRM、线程、日志和用户安全设置的失败保护、初次加载保存门槛、Cron 时序、专用成功码与敏感数据处理，沿用上述 Vitest 和类型检查入口。
 
 同步目录和队列领域请求的回归沿用同一入口，保护聚合字段错误、警告、幂等键，以及写入成功后刷新失败的反馈；队列统计、请求合并和生命周期测试继续执行。
 
-文件管理、记录、备份更新、API Key 与分类等其余请求，以及日志和任务 HTTP 快照的错误兼容测试，也统一纳入 Vitest。原生 SSE 连接行为与构建产物检查继续沿用原有入口。更新重启后的版本核对及版本未生效提示均随 Vitest 执行。
+文件管理、记录、备份更新、API Key 与分类等其余请求，以及日志和任务 HTTP 快照的错误兼容测试，也统一纳入 Vitest。原生 SSE 连接行为与构建产物检查继续沿用原有入口。业务错误默认消息与空值回退、同步任务降级遇到明确拒绝后停查、更新重启后的版本核对及版本未生效提示均随 Vitest 执行；Go 测试覆盖 Windows / Docker 更新准备失败和文件替换回滚，Linux 测试环境同时执行 Docker 入口脚本的成功与失败路径。
 
 发布前还须验证失败后的分页、双向关联窗口切换、设置初始化重试、账号列表变化后的旧请求失效、突发刮削事件的请求合并与错误提示去重，以及更新请求在途时的页面可见性切换。备份与恢复须覆盖真实失败终态、旧响应兼容和并发状态快照，命令与范围见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
@@ -88,9 +88,11 @@ scripts/release/release.sh major
 
 发布 Actions 从 GitHub Secrets 读取 `FANART_API_KEY`、`OAUTH_RELAY_ENCRYPTION_KEY`、`SC_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `TMDB_API_KEY`，分别注入发布二进制的 `ldflags` 或源码 Docker 构建参数。它们只是编译期默认值；运行时 `config/.env` / 环境变量仍按现有规则覆盖编译期值，数据库中的 UI 配置优先级也不变。
 
+创建 GitHub Release 前，workflow 对 `release-assets/` 下全部文件执行 `sha256sum` 生成 `checksums.txt` 并一同上传；在线更新依赖它校验下载包（见 [部署与持久化](deployment.md)），修改资产名称或删除该步骤时须同步 `updater.ChecksumsAssetName` 和 `controllers/update.go`。
+
 GitHub Release 的标题直接使用 `v<major>.<minor>.<patch>` tag，不额外添加 `Release` 前缀；正文取自上一步提交的 `.changes/v0.xx.xx.md`。release workflow 会拒绝重复 GitHub Release 和缺失 `.changes/<tag>.md` 的发布。
 
-发布二进制包按平台保留不同的运行文件：Linux `.tar.gz` 包包含 `scripts/docker-entrypoint.sh` 和 `scripts/watch_update.sh`，供 Docker 在线更新复用；Windows `.zip` 包只包含 `QMediaSync.exe`、`web_statics/` 和 `icon.ico`（存在时），不包含 Docker 脚本。Windows 在线更新由 `QMediaSync.exe -update <目录>` 完成，不执行这些 shell 脚本。
+发布二进制包按平台保留不同的运行文件：Linux `.tar.gz` 包包含 `scripts/docker-entrypoint.sh` 和 `scripts/watch_update.sh`，供 Docker 在线更新复用；systemd 在线更新只从该包取 `QMediaSync` 和 `web_statics/` 替换安装目录，修改包内这两项的名称或位置时须同步更新 `controllers/update.go`。Windows `.zip` 包只包含 `QMediaSync.exe`、`web_statics/` 和 `icon.ico`（存在时），不包含 Docker 脚本。Windows 在线更新由 `QMediaSync.exe -update <目录>` 完成，不执行这些 shell 脚本。
 
 发布包不携带内嵌 PostgreSQL 二进制或旧库迁移页面；正常首次数据库配置向导仍嵌入应用。升级旧内嵌实例前的数据处理要求见 [数据库运维](database.md#旧内嵌数据库)。
 

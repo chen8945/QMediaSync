@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -915,7 +917,10 @@ func main() {
 	parseParams()
 	getRootDir()
 	if Update {
-		runUpdateProcess()
+		if err := runUpdateProcess(); err != nil {
+			log.Printf("更新失败：%v", err)
+			os.Exit(1)
+		}
 		return
 	}
 	defer func() {
@@ -942,73 +947,30 @@ func main() {
 	}
 }
 
-func runUpdateProcess() {
+func runUpdateProcess() error {
 	if len(os.Args) < 3 {
-		fmt.Println("更新参数不足")
-		return
+		return errors.New("更新参数不足")
 	}
-
 	updateDir := os.Args[2]
-
-	fmt.Println("开始更新流程…")
-
 	parentPID := os.Getppid()
 	fmt.Printf("等待父进程退出（PID：%d）…\n", parentPID)
-
 	if err := waitForProcessExit(parentPID); err != nil {
-		fmt.Printf("等待父进程退出失败：%v\n", err)
+		return fmt.Errorf("等待父进程退出失败：%w", err)
 	}
 
-	fmt.Println("父进程已退出，开始更新…")
-
-	backupDir := filepath.Join(helpers.RootDir, "old")
-
-	if helpers.PathExists(backupDir) {
-		fmt.Println("删除旧的备份目录…")
-		os.RemoveAll(backupDir)
+	appPath := filepath.Join(helpers.RootDir, "QMediaSync.exe")
+	if err := controllers.InstallReleaseFiles(updateDir, helpers.RootDir, "QMediaSync.exe"); err != nil {
+		// 文件替换已回滚，恢复旧版本运行；仍将安装失败返回给更新进程。
+		return errors.Join(err, exec.Command(appPath).Start())
 	}
-
-	os.MkdirAll(backupDir, 0777)
-
-	appName := "QMediaSync.exe"
-	appPath := filepath.Join(helpers.RootDir, appName)
-	newAppPath := filepath.Join(updateDir, appName)
-	if helpers.PathExists(newAppPath) {
-		fmt.Printf("更新 %s…\n", appName)
-		// 将旧的可执行文件改名为 old.exe
-		oldAppPath := appPath + ".old.exe"
-		if helpers.PathExists(oldAppPath) {
-			if err := os.Remove(oldAppPath); err != nil {
-				fmt.Printf("删除旧 %s 失败：%v\n", appName, err)
-				os.Exit(1)
-			}
-		}
-		if err := os.Rename(appPath, oldAppPath); err != nil {
-			fmt.Printf("重命名旧 %s 失败：%v\n", appName, err)
-			os.Exit(1)
-		}
-		if err := helpers.CopyFile(newAppPath, appPath); err != nil {
-			fmt.Printf("更新主程序失败：%v\n", err)
-		}
-	} else {
-		fmt.Printf("更新目录中未找到 %s\n", appName)
+	if err := os.RemoveAll(updateDir); err != nil {
+		log.Printf("清理更新目录失败：%v", err)
 	}
-
-	replaceDir(filepath.Join(updateDir, "web_statics"), filepath.Join(helpers.RootDir, "web_statics"), backupDir)
-	replaceDir(filepath.Join(updateDir, "scripts"), filepath.Join(helpers.RootDir, "scripts"), backupDir)
-	// 删除临时 exe
-	tempExePath := newAppPath + ".temp.exe"
-	if helpers.PathExists(tempExePath) {
-		if err := os.Remove(tempExePath); err != nil {
-			fmt.Printf("删除临时 EXE 文件失败：%v\n", err)
-		}
+	if err := exec.Command(appPath).Start(); err != nil {
+		return fmt.Errorf("启动新版本失败：%w", err)
 	}
-	fmt.Println("更新完成！")
-	fmt.Println("启动新版本…")
-	// 启动新进程
-	if !helpers.StartNewProcess(appPath, "") {
-		fmt.Printf("启动新版本失败\n")
-	}
+	fmt.Println("更新完成，新版本已启动")
+	return nil
 }
 
 func waitForProcessExit(pid int) error {
@@ -1019,7 +981,7 @@ func waitForProcessExit(pid int) error {
 
 		alive, err := helpers.IsProcessAlive(pid)
 		if err != nil {
-			return nil
+			return err
 		}
 		// 检查进程是否已经退出
 		if !alive {
@@ -1031,32 +993,7 @@ func waitForProcessExit(pid int) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return nil
-}
-
-func replaceDir(srcDir, dstDir, backupDir string) {
-	if !helpers.PathExists(srcDir) {
-		return
-	}
-
-	dirName := filepath.Base(dstDir)
-	backupPath := filepath.Join(backupDir, dirName)
-
-	if helpers.PathExists(dstDir) {
-		fmt.Printf("备份 %s 目录…\n", dirName)
-		os.RemoveAll(backupPath)
-		if err := helpers.CopyDir(dstDir, backupPath); err != nil {
-			fmt.Printf("备份 %s 目录失败：%v\n", dirName, err)
-		}
-
-		fmt.Printf("删除旧 %s 目录…\n", dirName)
-		os.RemoveAll(dstDir)
-	}
-
-	fmt.Printf("更新 %s 目录…\n", dirName)
-	if err := helpers.CopyDir(srcDir, dstDir); err != nil {
-		fmt.Printf("更新 %s 目录失败：%v\n", dirName, err)
-	}
+	return fmt.Errorf("进程 %d 在 %s 内未退出", pid, maxWait)
 }
 
 func isInRestrictedDirectory() (bool, string) {

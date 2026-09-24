@@ -6,7 +6,7 @@
 >
 > 修改时机：修改 Dockerfile、容器入口脚本、管理员恢复入口、二进制运行目录、飞牛安装流程、运行端口或持久化目录时必须更新本文档。
 >
-> 相关代码：`docker/`、`backend/main.go`、`backend/admin_recovery.go`、`backend/FNOS/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`.github/workflows/release.yaml`。
+> 相关代码：`docker/`、`backend/main.go`、`backend/admin_recovery.go`、`backend/FNOS/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
 
 ## 部署选择与持久化边界
 
@@ -83,7 +83,25 @@ systemctl status qmediasync
 
 脚本创建的服务从当前目录执行 `QMediaSync`，不依赖旧 `postgres.env`，也不向 shell 启动文件写入 `DB_*` 环境变量。脚本不会生成应用数据库配置；新实例应通过首次配置向导或 `config/config.yaml` 填写数据库连接信息，SSL 同样由 YAML 配置。
 
-在线更新只支持 Windows 发布版和 Docker 镜像；Docker 需由镜像默认入口脚本启动，它负责监视更新包并重启应用。Linux 发布二进制下载新包后无法自行替换运行文件，更新页启动在线更新会返回“当前运行方式不支持在线更新，请手动下载安装”；手动更新时停止服务，用新发布包的 `QMediaSync` 和 `web_statics/` 替换旧文件，保留 `config/` 后再启动。
+在线更新支持 Windows 发布版、Docker 镜像和 `linux-init.sh` 创建的 systemd 服务；Docker 需由镜像默认入口脚本启动，它负责监视更新包并重启应用。下载完成后用 release 附带的 `checksums.txt` 校验更新包的 SHA-256，不一致时放弃安装；Windows 和 Docker 遇到未发布校验文件的旧版本只记录警告后继续。经 GitHub 代理下载时，校验文件复用更新包已经确定的代理前缀。
+
+Windows 在 `config/update/` 准备完整发布文件，启动独立更新进程后才退出原进程；更新进程替换程序和 `web_statics/`，将旧文件移到 `old/`，替换失败尝试回滚并重启旧版本，不替换 Docker 脚本。Docker 先在安装目录写完临时更新包，再改名为 `qms.update.tar.gz` 交给监视器；入口脚本检查解压和替换结果，中途失败尝试恢复旧文件。准备或启动更新器失败会报告失败，交付成功保持安装中，重启后由页面核对实际版本，不能仅凭进程重启提示更新完成。
+
+脚本创建的服务带有 `Restart=always` 和 `Environment=QMS_SYSTEMD_UPDATE=1`。程序同时检测到该标记和 systemd 为服务进程设置的 `INVOCATION_ID` 时才启用 systemd 在线更新；`INVOCATION_ID` 需要 systemd 232 及以上，更早的版本按不支持在线更新处理。
+
+- 发起更新时，下载前依次确认三项：安装目录对服务用户可写，否则返回“安装目录不可写，无法在线更新，请手动下载安装”；运行中的程序就是安装目录下的 `QMediaSync`，程序改名或经其他路径运行时返回“当前运行方式不支持在线更新，请手动下载安装”；该版本发布了 `checksums.txt`，否则返回“该版本未发布校验文件，无法在线更新，请手动下载安装”。
+- 下载并通过校验后，把发布包解压到安装目录下的 `update/`，用其中的 `QMediaSync` 和 `web_statics/` 替换当前文件，旧文件移到 `old/`。`old/` 在开始替换时清空，只保留最近一次；替换中途失败时旧文件恢复原位并报告更新失败，但此前的备份不再保留。`config/` 和包内仅供 Docker 使用的 `scripts/` 不会被替换。
+- 替换完成约 3 秒后程序自行优雅退出，由 systemd 在 `RestartSec` 之后用新版本启动；关闭流程超过 60 秒仍未结束时强制退出。新版本启动失败时 systemd 会持续重试，不会自动退回旧版本；需要回退时停止服务，把 `old/` 中的文件移回安装目录。
+
+旧版本脚本创建的服务没有该标记。确认服务使用 `Restart=always` 后，可以添加 drop-in 启用，不必重跑会初始化 PostgreSQL 的脚本：
+
+```bash
+sudo mkdir -p /etc/systemd/system/qmediasync.service.d
+printf '[Service]\nEnvironment=QMS_SYSTEMD_UPDATE=1\n' | sudo tee /etc/systemd/system/qmediasync.service.d/online-update.conf
+sudo systemctl daemon-reload && sudo systemctl restart qmediasync
+```
+
+手动运行、自定义服务等其他 Linux 运行方式返回“当前运行方式不支持在线更新，请手动下载安装”。手动更新时停止服务，用新发布包的 `QMediaSync` 和 `web_statics/` 替换旧文件，保留 `config/` 后再启动。
 
 ## 飞牛 FPK
 
