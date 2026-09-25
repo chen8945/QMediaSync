@@ -258,7 +258,7 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
     width="min(500px, calc(100vw - 32px))"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
-    show-close="false"
+    :show-close="false"
     :destroy-on-close="true"
   >
     <div class="dialog-content">
