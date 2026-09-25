@@ -130,6 +130,17 @@ function listButton(item: VueWrapper, label: string) {
   return button!
 }
 
+describe('STRM 直连地址校验', () => {
+  it('无效地址在客户端拦截，不提交保存', async () => {
+    const http = createHTTP()
+    const wrapper = await mountPage('global', http)
+    await listItem(wrapper, 'strm_base_url').get('input').setValue('ftp://qms.local')
+    await save(wrapper, 'global')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('请输入有效的 HTTP 或 HTTPS 地址'))
+    expect(http.post).not.toHaveBeenCalled()
+  })
+})
+
 describe('STRM 列表导入与清空', () => {
   it.each([1280, 375])(
     '目录表单在 %i px 下合并四类全局列表，重复导入不增加重复项',

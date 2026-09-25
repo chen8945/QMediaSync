@@ -110,7 +110,7 @@
       </el-form-item>
 
       <!-- STRM 直连地址 -->
-      <el-form-item label="STRM 直连地址" prop="direct_url">
+      <el-form-item label="STRM 直连地址" prop="strm_base_url">
         <el-input
           v-model="strmData.strm_base_url"
           placeholder="输入 HTTP 地址，如：http://192.168.1.100:8080"
