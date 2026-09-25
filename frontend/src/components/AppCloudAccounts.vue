@@ -260,7 +260,7 @@
                 :icon="Key"
                 :disabled="authorizationFlowBusy"
                 @click="handleAuthorize(account)"
-                v-if="account.source_type !== 'openlist'"
+                v-if="isAuthorizableSource(account.source_type)"
               >
                 {{ account.authorized ? '重新授权' : '授权' }}
               </el-button>
@@ -581,6 +581,7 @@ import { useHttpClient } from '@/http/client'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { parseHttpError } from '@/http/errors'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { getV115AppInfoRows, isCustomV115App } from '@/utils/cloudAccountUtils'
 import { collectOAuthCallbackParams } from '@/utils/oauthCallback'
 import {
@@ -652,8 +653,6 @@ const editAccountForm = ref({
   app_id_name: '',
 })
 
-const selectedAccountId = ref<number | undefined>(undefined)
-const show123AuthDialog = ref(false)
 const selectedV115Account = ref<CloudAccount | null>(null)
 const showV115AuthDialog = ref(false)
 const selectedV115AuthorizationId = ref<string | null>(null)
@@ -951,7 +950,7 @@ const handleDelete = async (row: CloudAccount) => {
     ElMessage.success('账号删除成功')
     loadAccounts()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       reportError(error, '删除账号失败')
     }
   }
@@ -1061,7 +1060,15 @@ const handleUpdateAccount = async () => {
   }
 }
 
+// 只有 115 和百度网盘有授权流程；123 网盘已下线，仅保留历史账号。
+const isAuthorizableSource = (sourceType: CloudAccount['source_type']) =>
+  sourceType === '115' || sourceType === 'baidupan'
+
 const handleAuthorize = async (row: CloudAccount) => {
+  if (!isAuthorizableSource(row.source_type)) {
+    ElMessage.error('不支持该网盘类型的授权')
+    return
+  }
   await cancelActiveAuthorizationFlow()
   if (row.source_type === '115') {
     authorizationFlowBusy.value = true
@@ -1080,14 +1087,7 @@ const handleAuthorize = async (row: CloudAccount) => {
     authorizationFlowBusy.value = false
     return
   }
-  if (row.source_type === '123') {
-    selectedAccountId.value = row.id
-    show123AuthDialog.value = true
-    return
-  }
-  if (row.source_type === 'baidupan') {
-    void handleBaiduOAuth(row.id)
-  }
+  void handleBaiduOAuth(row.id)
 }
 
 const handleChangeAuthorization = async (row: CloudAccount) => {
@@ -1185,7 +1185,7 @@ const handle115OAuth = async (accountId: number, authorizationId?: string, showP
     cancelOnFailure()
   } catch (error) {
     if (runId !== oauthPollingRunId) return
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       reportError(error, '获取 115 授权地址失败')
     }
     cancelOnFailure()
@@ -1295,7 +1295,7 @@ const handleBaiduOAuth = async (accountId: number) => {
     }
   } catch (error) {
     if (runId !== oauthPollingRunId) return
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       reportError(error, '获取百度网盘授权地址失败')
     }
   }

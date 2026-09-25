@@ -552,6 +552,11 @@ describe('网盘状态请求和列表生命周期', () => {
 })
 
 describe('云盘 OAuth 请求和生命周期', () => {
+  it.each(['123', 'openlist'] as const)('%s 账号不显示授权按钮', async (source_type) => {
+    const wrapper = await mountPage(createHTTP(undefined, [{ ...account, source_type }]))
+    expect(wrapper.findAll('button').map((button) => button.text())).not.toContain('授权')
+  })
+
   it.each(['115', 'baidupan'] as const)('%s 获取地址失败不跳转且安全提示', async (source_type) => {
     const transport = createHTTP(
       () => failure('private', 403, 'CSRF_TOKEN_INVALID'),

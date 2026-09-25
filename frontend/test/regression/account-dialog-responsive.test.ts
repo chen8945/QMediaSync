@@ -156,10 +156,8 @@ describe('115 授权流程生命周期', () => {
   })
 
   test('直接跳转 OAuth 会暂存会话并在回调返回后处理失效会话', () => {
-    expect(cloudAccountsSource).toContain(`v-if="account.source_type !== 'openlist'"`)
-    expect(cloudAccountsSource).not.toContain(
-      `v-if="account.source_type !== 'openlist' && !account.deprecated"`,
-    )
+    expect(cloudAccountsSource).toContain(`v-if="isAuthorizableSource(account.source_type)"`)
+    expect(cloudAccountsSource).not.toContain('!account.deprecated')
     expect(cloudAccountsSource).toContain(`v-if="account.source_type === '115'"`)
     expect(cloudAccountsSource).toContain('savePendingV115Authorization')
     expect(cloudAccountsSource).toContain('loadPendingV115Authorization')
