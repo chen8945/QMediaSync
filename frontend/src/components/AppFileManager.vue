@@ -712,11 +712,6 @@ async function loadAccountList() {
     return
   }
 
-  if (!http) {
-    console.warn('HTTP 客户端未注入，无法加载账号列表')
-    return
-  }
-
   try {
     const data = await listAccounts(http)
 
@@ -845,11 +840,6 @@ async function loadFileList(options: LoadFileListOptions = {}) {
     fileList.value = []
     total.value = 0
     pageStateStore.setExpandedRowKeys('file-manager', [])
-    return
-  }
-
-  if (!http) {
-    console.warn('HTTP 客户端未注入，无法加载文件列表')
     return
   }
 

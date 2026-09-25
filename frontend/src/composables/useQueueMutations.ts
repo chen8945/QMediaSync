@@ -74,7 +74,7 @@ export function useQueueMutations(options: UseQueueMutationsOptions) {
             type: 'warning',
           })
         } catch (error) {
-          if (error === 'cancel' || error === 'close' || isMessageBoxCancelError(error)) {
+          if (isMessageBoxCancelError(error)) {
             return
           }
           throw error
@@ -113,12 +113,7 @@ export function useQueueMutations(options: UseQueueMutationsOptions) {
         }
       }
     } catch (error) {
-      if (
-        !isCurrent() ||
-        error === 'cancel' ||
-        error === 'close' ||
-        isMessageBoxCancelError(error)
-      ) {
+      if (!isCurrent() || isMessageBoxCancelError(error)) {
         return
       }
       notifyHttpError(error, operation.requestErrorMessage, {

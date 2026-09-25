@@ -142,6 +142,7 @@ import {
   type CreatedApiKey,
 } from '@/api/apiKeys'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/timeUtils'
 import { useDeviceType } from '@/composables/useDeviceType'
@@ -243,11 +244,11 @@ const confirmDelete = async (row: ApiKey) => {
     ElMessage.success('删除成功')
     await loadKeys(true)
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') {
+    if (!isMessageBoxCancelError(error)) {
       notifyHttpError(error, '删除 API Key 失败', {
-      fallbackMessage: '删除 API Key 失败',
-      publicMessages: apiKeyPublicMessages,
-    })
+        fallbackMessage: '删除 API Key 失败',
+        publicMessages: apiKeyPublicMessages,
+      })
     }
   }
 }
