@@ -1070,9 +1070,10 @@ const handleSubmit = async () => {
     ElMessage.error('请先选择目标路径，并确认重命名模板已填写')
     return
   }
+  // 表单校验失败由字段自身展示，避免把校验对象作为请求错误处理。
+  if (!(await formRef.value.validate().catch(() => false))) return
 
   try {
-    await formRef.value.validate()
     loading.value = true
 
     if (isEditMode.value) {
