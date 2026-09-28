@@ -155,9 +155,9 @@ func TestGetFsListWithOptionsEnablesExplicitOrdering(t *testing.T) {
 		customOrder string
 	}{
 		{name: "默认排序不覆盖网盘设置"},
-		{name: "完整排序", options: FileListOptions{Order: "user_ptime", Asc: "0"}, customOrder: "2"},
-		{name: "仅排序字段", options: FileListOptions{Order: "file_name"}, customOrder: "2"},
-		{name: "仅排序方向", options: FileListOptions{Asc: "1"}, customOrder: "2"},
+		{name: "完整排序", options: FileListOptions{Order: "user_ptime", Asc: "0"}, customOrder: "1"},
+		{name: "仅排序字段", options: FileListOptions{Order: "file_name"}, customOrder: "1"},
+		{name: "仅排序方向", options: FileListOptions{Asc: "1"}, customOrder: "1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			transport := newCaptureOpenAPITransport(`{"state":true,"data":[]}`)

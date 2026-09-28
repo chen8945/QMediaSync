@@ -187,7 +187,9 @@ func (c *OpenClient) GetFsListWithOptions(ctx context.Context, fileId string, sh
 	}
 	if options.Order != "" || options.Asc != "" {
 		// 未显式启用自定义排序时，115 会静默沿用网盘目录保存的排序规则。
-		data["custom_order"] = "2"
+		// 取 1 表示按 o/asc 自定义排序并保留 115 自身的目录置顶行为；
+		// 取 2 会连目录置顶一起去掉，导致文件管理页目录与文件混排。
+		data["custom_order"] = "1"
 	}
 	url := fmt.Sprintf("%s/open/ufile/files", OPEN_BASE_URL)
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
