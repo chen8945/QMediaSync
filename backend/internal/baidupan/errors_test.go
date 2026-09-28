@@ -75,3 +75,14 @@ func TestHandleErrorClassifiesTokenErrno(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleErrorPreservesOtherAPIInfo(t *testing.T) {
+	ensureBaiduPanTestLoggers()
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(`{"errno":0,"info":{"errno":-9}}`)),
+		Request: &http.Request{Method: http.MethodGet, URL: &url.URL{RawQuery: "method=uinfo"}},
+	}
+	if err := (&Client{}).handleError(nil, resp, struct{}{}); err != nil {
+		t.Fatalf("其他接口的 info 不应按文件操作结果解析：%v", err)
+	}
+}

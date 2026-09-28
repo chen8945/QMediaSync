@@ -100,6 +100,8 @@ func TestBuildOpenListRemoveTarget(t *testing.T) {
 		{name: "根目录删除", parentID: "/", fileID: "/A.mkv", wantDir: "/", wantNames: []string{"A.mkv"}},
 		{name: "父目录为空时从文件路径推导", parentID: "", fileID: "/Movies/A.mkv", wantDir: "/Movies", wantNames: []string{"A.mkv"}},
 		{name: "拒绝根路径删除", parentID: "/", fileID: "/", wantErr: true},
+		{name: "拒绝父目录不匹配", parentID: "/Movies", fileID: "/Other/A.mkv", wantErr: true},
+		{name: "保留文件和父目录末尾空格", parentID: "/Movies ", fileID: "/Movies /A.mkv ", wantDir: "/Movies ", wantNames: []string{"A.mkv "}},
 	}
 
 	for _, tt := range tests {
@@ -132,6 +134,7 @@ func TestJoinOpenListPath(t *testing.T) {
 		{name: "空父路径按根目录处理", parent: "", child: "Movies", want: "/Movies"},
 		{name: "子目录拼接", parent: "/Media", child: "Movies", want: "/Media/Movies"},
 		{name: "清理父路径末尾斜杠", parent: "/Media/", child: "Movies", want: "/Media/Movies"},
+		{name: "保留父目录和文件名空格", parent: "/Media ", child: " Movies ", want: "/Media / Movies "},
 	}
 
 	for _, tt := range tests {
@@ -156,6 +159,8 @@ func TestNormalizeNetFileCachePathUsesSingleRootKey(t *testing.T) {
 		{name: "百度空路径按根目录缓存", sourceType: models.SourceTypeBaiduPan, path: "", want: "/"},
 		{name: "百度根路径保持根目录缓存", sourceType: models.SourceTypeBaiduPan, path: "/", want: "/"},
 		{name: "115 空路径仍按根 CID 缓存", sourceType: models.SourceType115, path: "", want: "0"},
+		{name: "OpenList 缓存键保留空白", sourceType: models.SourceTypeOpenList, path: "/Movies ", want: "/Movies "},
+		{name: "百度缓存键保留空白", sourceType: models.SourceTypeBaiduPan, path: "/Movies ", want: "/Movies "},
 	}
 
 	for _, tt := range tests {

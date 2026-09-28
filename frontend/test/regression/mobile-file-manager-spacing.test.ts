@@ -126,7 +126,9 @@ describe('移动端文件管理器顶部间距', () => {
 
   test('移动端通过账号标题旁的信息入口查看页面说明', () => {
     expect(fileManagerVue).toContain('class="mobile-file-manager-info show-on-mobile"')
-    expect(fileManagerVue).toContain('浏览和管理媒体文件，支持 STRM 生成、刮削整理和 ED2K 生成操作')
+    expect(fileManagerVue).toContain(
+      '浏览和管理媒体文件，支持 STRM 生成、移动、复制、重命名和删除操作',
+    )
     expect(fileManagerVue).toContain('InfoFilled')
   })
 })

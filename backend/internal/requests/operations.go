@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -277,6 +278,114 @@ func (r DeleteDirRequest) Validate() error {
 	return nil
 }
 
+// maxBatchFileIDs 限制单次批量操作的文件数量，对齐文件列表单页上限。
+const maxBatchFileIDs = 500
+
+// DeleteFilesRequest 批量删除远程文件请求。
+type DeleteFilesRequest struct {
+	ParentID  string   `json:"parent_id" form:"parent_id"`
+	FileIDs   []string `json:"file_ids"`
+	AccountID uint     `json:"account_id" form:"account_id"`
+}
+
+// Validate 校验批量删除远程文件请求。
+func (r DeleteFilesRequest) Validate() error {
+	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
+		return err
+	}
+	return validateFileIDs(r.FileIDs)
+}
+
+// NormalizedFileIDs 按来源规范化并去重；路径型 ID 保留原始空白。
+func (r DeleteFilesRequest) NormalizedFileIDs(sourceType models.SourceType) []string {
+	return normalizeFileIDs(r.FileIDs, sourceType)
+}
+
+// MoveFilesRequest 批量移动远程文件请求。
+type MoveFilesRequest struct {
+	ParentID       string   `json:"parent_id" form:"parent_id"`
+	FileIDs        []string `json:"file_ids"`
+	TargetParentID string   `json:"target_parent_id" form:"target_parent_id"`
+	AccountID      uint     `json:"account_id" form:"account_id"`
+}
+
+// Validate 校验批量移动远程文件请求。
+func (r MoveFilesRequest) Validate() error {
+	return validateFileTransferRequest(r.AccountID, r.TargetParentID, r.FileIDs)
+}
+
+// NormalizedFileIDs 按来源规范化并去重；路径型 ID 保留原始空白。
+func (r MoveFilesRequest) NormalizedFileIDs(sourceType models.SourceType) []string {
+	return normalizeFileIDs(r.FileIDs, sourceType)
+}
+
+// CopyFilesRequest 批量复制远程文件请求。
+type CopyFilesRequest = MoveFilesRequest
+
+// RenameFileRequest 重命名远程文件请求。
+type RenameFileRequest struct {
+	ParentID  string `json:"parent_id" form:"parent_id"`
+	FileID    string `json:"file_id" form:"file_id"`
+	NewName   string `json:"new_name" form:"new_name"`
+	AccountID uint   `json:"account_id" form:"account_id"`
+}
+
+// Validate 校验重命名远程文件请求。
+func (r RenameFileRequest) Validate() error {
+	if err := validation.PositiveID("account_id", r.AccountID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(r.FileID) == "" || r.FileID == "0" {
+		return validation.New("file_id", "不能为空")
+	}
+	return validateFileEntryName("new_name", r.NewName, "文件名不合法")
+}
+
+// validateFileIDs 校验批量文件 ID 列表：非空、不超上限且不含无效 ID。
+func validateFileIDs(fileIDs []string) error {
+	if len(fileIDs) == 0 {
+		return validation.New("file_ids", "不能为空")
+	}
+	if len(fileIDs) > maxBatchFileIDs {
+		return validation.New("file_ids", fmt.Sprintf("单次最多操作 %d 项", maxBatchFileIDs))
+	}
+	for _, fileID := range fileIDs {
+		trimmed := strings.TrimSpace(fileID)
+		if trimmed == "" || trimmed == "0" || fileID == "/" {
+			return validation.New("file_ids", "包含无效的文件 ID")
+		}
+	}
+	return nil
+}
+
+// validateFileTransferRequest 校验批量移动 / 复制请求的公共字段。
+func validateFileTransferRequest(accountID uint, targetParentID string, fileIDs []string) error {
+	if err := validation.PositiveID("account_id", accountID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(targetParentID) == "" {
+		return validation.New("target_parent_id", "不能为空")
+	}
+	return validateFileIDs(fileIDs)
+}
+
+// normalizeFileIDs 仅裁剪 115 数字 ID 的空白，并按原始顺序去重。
+func normalizeFileIDs(fileIDs []string, sourceType models.SourceType) []string {
+	seen := make(map[string]bool, len(fileIDs))
+	result := make([]string, 0, len(fileIDs))
+	for _, fileID := range fileIDs {
+		if sourceType == models.SourceType115 {
+			fileID = strings.TrimSpace(fileID)
+		}
+		if fileID == "" || seen[fileID] {
+			continue
+		}
+		seen[fileID] = true
+		result = append(result, fileID)
+	}
+	return result
+}
+
 // FNPathRequest 飞牛路径授权回调请求。
 type FNPathRequest struct {
 	Path string `json:"path" form:"path"`
@@ -495,19 +604,24 @@ func validateSourceType(sourceType models.SourceType) error {
 }
 
 func validateFolderName(name string) error {
+	return validateFileEntryName("name", name, "文件夹名不合法")
+}
+
+// validateFileEntryName 校验文件或目录条目名称：非空、合法且不含路径分隔符。
+func validateFileEntryName(field string, name string, illegalMessage string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return validation.New("name", "不能为空")
+		return validation.New(field, "不能为空")
 	}
 	if name == "." || name == ".." {
-		return validation.New("name", "文件夹名不合法")
+		return validation.New(field, illegalMessage)
 	}
 	if strings.ContainsAny(name, `/\`) {
-		return validation.New("name", "不能包含路径分隔符")
+		return validation.New(field, "不能包含路径分隔符")
 	}
 	for _, r := range name {
 		if r < 32 || r == 127 {
-			return validation.New("name", "不能包含控制字符")
+			return validation.New(field, "不能包含控制字符")
 		}
 	}
 	return nil

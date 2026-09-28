@@ -38,6 +38,24 @@ const operations: Array<(http: AxiosInstance) => Promise<unknown>> = [
 ]
 
 describe('file and sync record APIs', () => {
+  it('preserves transfer status/task IDs and accepts legacy null responses', async () => {
+    const payload = {
+      account_id: 3,
+      parent_id: '/source',
+      target_parent_id: '/',
+      file_ids: ['/source/A'],
+    }
+    for (const operation of [files.moveFiles, files.copyFiles]) {
+      for (const result of [
+        null,
+        { status: 'completed', task_ids: [] },
+        { status: 'submitted', task_ids: ['task-2', 'task-1'] },
+      ]) {
+        expect(await operation(createHTTP(result).http, payload)).toEqual(result)
+      }
+    }
+  })
+
   it('preserves file pagination, directory source/root and read timeouts', async () => {
     const snapshot = { list: [], total: 305, total_exact: false, has_more: true, page: 2 }
     const { http, adapter } = createHTTP(snapshot)

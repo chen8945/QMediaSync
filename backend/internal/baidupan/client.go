@@ -231,13 +231,28 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 	helpers.BaiduPanLog.Infof("百度 SDK 请求响应：%s %s\n%s", resp.Request.Method, resp.Request.URL, string(body))
 	// 解码 JSON
 	type ErrorResponse struct {
-		Errmsg string `json:"errmsg"`
-		Errno  int64  `json:"errno"`
+		Errmsg string          `json:"errmsg"`
+		Errno  int64           `json:"errno"`
+		Info   json.RawMessage `json:"info"`
 	}
 	var respBody ErrorResponse
 	err = json.Unmarshal(body, &respBody)
 	if err != nil {
 		return err
+	}
+	// 文件管理的顶层成功不代表每个条目成功；其他接口的 info 保持原有语义。
+	isFileManager := resp.Request.URL.Query().Get("method") == "filemanager"
+	if isFileManager && respBody.Errno == 0 && len(respBody.Info) > 0 {
+		var items []ErrorResponse
+		if err := json.Unmarshal(respBody.Info, &items); err != nil {
+			return err
+		}
+		for _, item := range items {
+			if item.Errno != 0 {
+				respBody = item
+				break
+			}
+		}
 	}
 	// 检查 errno 是否为 0
 	if respBody.Errno != 0 {
@@ -256,7 +271,7 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 		return fmt.Errorf("百度 SDK 请求失败：%s", msg)
 	}
 	// 检查 respData 是否为空
-	if respData == nil {
+	if respData == nil && !isFileManager {
 		helpers.BaiduPanLog.Errorf("百度 SDK 请求失败：响应数据为空")
 		return err
 	}

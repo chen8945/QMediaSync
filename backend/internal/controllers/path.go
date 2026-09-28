@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -853,4 +854,249 @@ func DeleteDir(c *gin.Context) {
 	}
 	invalidateNetFileCacheForDeletedPath(account.SourceType, req.AccountID, invalidateParentID, req.FileID)
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "删除目录成功", Data: nil})
+}
+
+func check115FileOperationResult(ok bool, err error) error {
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("115 未确认操作成功")
+	}
+	return nil
+}
+
+type fileTransferResult struct {
+	Status  string   `json:"status"`
+	TaskIDs []string `json:"task_ids"`
+}
+
+func sendFileTransferResult(c *gin.Context, action string, taskIDs []string) {
+	result := fileTransferResult{Status: "completed", TaskIDs: []string{}}
+	message := "批量" + action + "成功"
+	if len(taskIDs) > 0 {
+		result.Status = "submitted"
+		result.TaskIDs = taskIDs
+		message = "批量" + action + "已提交，请在 OpenList 查看任务进度和结果"
+	}
+	c.JSON(http.StatusOK, APIResponse[fileTransferResult]{Code: Success, Message: message, Data: result})
+}
+
+// DeleteFiles 批量删除网盘文件或目录。
+func DeleteFiles(c *gin.Context) {
+	var req requests.DeleteFilesRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	account, err := models.GetAccountById(req.AccountID)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		return
+	}
+	fileIDs := req.NormalizedFileIDs(account.SourceType)
+	invalidateParentID := req.ParentID
+	switch account.SourceType {
+	case models.SourceType115:
+		client := account.Get115Client()
+		err = check115FileOperationResult(client.Del(context.Background(), fileIDs, req.ParentID))
+	case models.SourceTypeBaiduPan:
+		client := account.GetBaiDuPanClient()
+		err = client.Del(context.Background(), fileIDs)
+	case models.SourceTypeOpenList:
+		client := account.GetOpenListClient()
+		var names []string
+		invalidateParentID, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
+		if err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			return
+		}
+		err = client.Del(invalidateParentID, names)
+	default:
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		return
+	}
+	// 上游可能已删除部分条目，即使返回错误也不能继续使用旧列表。
+	for _, fileID := range fileIDs {
+		invalidateNetFileCacheForDeletedPath(account.SourceType, req.AccountID, invalidateParentID, fileID)
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量删除失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "批量删除成功", Data: nil})
+}
+
+// buildBaiduTransferItems 构造百度网盘批量移动 / 复制条目，保持原文件名并补全路径分隔符。
+func buildBaiduTransferItems(fileIDs []string, targetParentID string) []baidupan.MoveOrCopyItem {
+	dest := "/" + strings.TrimPrefix(targetParentID, "/")
+	items := make([]baidupan.MoveOrCopyItem, 0, len(fileIDs))
+	for _, fileID := range fileIDs {
+		source := "/" + strings.TrimPrefix(fileID, "/")
+		items = append(items, baidupan.MoveOrCopyItem{
+			Path:    source,
+			Dest:    dest,
+			NewName: pathpkg.Base(source),
+		})
+	}
+	return items
+}
+
+// MoveFiles 批量移动网盘文件或目录。
+func MoveFiles(c *gin.Context) {
+	var req requests.MoveFilesRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	account, err := models.GetAccountById(req.AccountID)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		return
+	}
+	fileIDs := req.NormalizedFileIDs(account.SourceType)
+	var taskIDs []string
+	switch account.SourceType {
+	case models.SourceType115:
+		client := account.Get115Client()
+		err = check115FileOperationResult(client.Move(context.Background(), fileIDs, strings.TrimSpace(req.TargetParentID)))
+	case models.SourceTypeBaiduPan:
+		client := account.GetBaiDuPanClient()
+		err = client.MoveBatch(context.Background(), buildBaiduTransferItems(fileIDs, req.TargetParentID))
+	case models.SourceTypeOpenList:
+		client := account.GetOpenListClient()
+		var srcDir string
+		var names []string
+		srcDir, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
+		if err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			return
+		}
+		taskIDs, err = client.MoveWithTasks(srcDir, normalizeOpenListPath(req.TargetParentID), names)
+	default:
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		return
+	}
+	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.ParentID)
+	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.TargetParentID)
+	for _, fileID := range fileIDs {
+		targetPath := joinOpenListPath(req.TargetParentID, pathpkg.Base(normalizeOpenListPath(fileID)))
+		invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, fileID, targetPath)
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量移动失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		return
+	}
+	sendFileTransferResult(c, "移动", taskIDs)
+}
+
+// CopyFiles 批量复制网盘文件或目录。同名冲突不覆盖，由网盘服务端处理。
+func CopyFiles(c *gin.Context) {
+	var req requests.CopyFilesRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	account, err := models.GetAccountById(req.AccountID)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		return
+	}
+	fileIDs := req.NormalizedFileIDs(account.SourceType)
+	var taskIDs []string
+	switch account.SourceType {
+	case models.SourceType115:
+		client := account.Get115Client()
+		err = check115FileOperationResult(client.Copy(context.Background(), fileIDs, strings.TrimSpace(req.TargetParentID), false))
+	case models.SourceTypeBaiduPan:
+		client := account.GetBaiDuPanClient()
+		err = client.CopyBatch(context.Background(), buildBaiduTransferItems(fileIDs, req.TargetParentID))
+	case models.SourceTypeOpenList:
+		client := account.GetOpenListClient()
+		var srcDir string
+		var names []string
+		srcDir, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
+		if err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			return
+		}
+		taskIDs, err = client.CopyWithTasks(srcDir, normalizeOpenListPath(req.TargetParentID), names)
+	default:
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		return
+	}
+	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.TargetParentID)
+	for _, fileID := range fileIDs {
+		targetPath := joinOpenListPath(req.TargetParentID, pathpkg.Base(normalizeOpenListPath(fileID)))
+		invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, targetPath)
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量复制失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		return
+	}
+	sendFileTransferResult(c, "复制", taskIDs)
+}
+
+// RenameFile 重命名网盘文件或目录。
+func RenameFile(c *gin.Context) {
+	var req requests.RenameFileRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		return
+	}
+	if err := req.Validate(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		return
+	}
+	account, err := models.GetAccountById(req.AccountID)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		return
+	}
+	fileID := req.FileID
+	if account.SourceType == models.SourceType115 {
+		fileID = strings.TrimSpace(fileID)
+	}
+	newName := strings.TrimSpace(req.NewName)
+	switch account.SourceType {
+	case models.SourceType115:
+		client := account.Get115Client()
+		err = check115FileOperationResult(client.ReName(context.Background(), fileID, newName))
+	case models.SourceTypeBaiduPan:
+		client := account.GetBaiDuPanClient()
+		err = client.Rename(context.Background(), fileID, newName)
+	case models.SourceTypeOpenList:
+		client := account.GetOpenListClient()
+		var srcDir string
+		var names []string
+		srcDir, names, err = splitOpenListFileIDs(req.ParentID, []string{fileID})
+		if err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			return
+		}
+		err = client.RenameNoReplace(joinOpenListPath(srcDir, names[0]), newName)
+	default:
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		return
+	}
+	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.ParentID)
+	newPath := joinOpenListPath(pathpkg.Dir(normalizeOpenListPath(fileID)), newName)
+	invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, fileID, newPath)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "重命名失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "重命名成功", Data: nil})
 }

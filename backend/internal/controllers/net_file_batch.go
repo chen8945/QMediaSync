@@ -171,7 +171,7 @@ func normalizeNetFileCachePath(sourceType models.SourceType, value string) strin
 }
 
 func normalizeOpenListPath(value string) string {
-	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	value = strings.ReplaceAll(value, "\\", "/")
 	if value == "" {
 		return ""
 	}
@@ -193,20 +193,32 @@ func joinOpenListPath(parentPath string, name string) string {
 }
 
 func buildOpenListRemoveTarget(parentID string, fileID string) (string, []string, error) {
+	return splitOpenListFileIDs(parentID, []string{fileID})
+}
+
+// splitOpenListFileIDs 把同一父目录下的完整路径文件 ID 拆分为父目录和文件名列表。
+func splitOpenListFileIDs(parentID string, fileIDs []string) (string, []string, error) {
 	parentID = normalizeOpenListPath(parentID)
-	fileID = normalizeOpenListPath(fileID)
-	name := pathpkg.Base(fileID)
-	if name == "" || name == "." || name == "/" {
-		return "", nil, fmt.Errorf("OpenList 删除目标名称无效")
-	}
 	dir := parentID
-	if dir == "" || dir == "." {
-		dir = pathpkg.Dir(fileID)
+	names := make([]string, 0, len(fileIDs))
+	for _, fileID := range fileIDs {
+		fileID = normalizeOpenListPath(fileID)
+		name := pathpkg.Base(fileID)
+		if name == "" || name == "." || name == ".." || name == "/" {
+			return "", nil, fmt.Errorf("OpenList 操作目标名称无效")
+		}
+		if dir == "" || dir == "." {
+			dir = pathpkg.Dir(fileID)
+		}
+		if pathpkg.Dir(fileID) != dir {
+			return "", nil, fmt.Errorf("OpenList 操作的文件必须位于同一父目录，且与 parent_id 一致")
+		}
+		names = append(names, name)
 	}
 	if dir == "." || dir == "" {
 		dir = "/"
 	}
-	return dir, []string{name}, nil
+	return dir, names, nil
 }
 
 func invalidateNetFileCacheForPath(sourceType models.SourceType, accountID uint, parentID string) {
@@ -220,9 +232,22 @@ func invalidateNetFileCacheForDeletedPath(sourceType models.SourceType, accountI
 	if accountID == 0 {
 		return
 	}
+	if sourceType == models.SourceTypeBaiduPan || sourceType == models.SourceTypeOpenList {
+		parentID = pathpkg.Dir(normalizeNetFileCachePath(sourceType, fileID))
+	}
 	sourceTypeText := string(sourceType)
 	netFileCache.InvalidatePath(sourceTypeText, accountID, normalizeNetFileCachePath(sourceType, parentID))
 	netFileCache.InvalidatePathTree(sourceTypeText, accountID, normalizeNetFileCachePath(sourceType, fileID))
+}
+
+// invalidateNetFileCacheForChangedPaths 清理路径型文件的父目录和子树；115 使用稳定数字 ID。
+func invalidateNetFileCacheForChangedPaths(sourceType models.SourceType, accountID uint, paths ...string) {
+	if sourceType != models.SourceTypeBaiduPan && sourceType != models.SourceTypeOpenList {
+		return
+	}
+	for _, value := range paths {
+		invalidateNetFileCacheForDeletedPath(sourceType, accountID, "", value)
+	}
 }
 
 func buildBaiduSyntheticTotal(batchStart int, itemCount int, batchSize int) (int64, bool) {

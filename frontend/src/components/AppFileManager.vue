@@ -19,7 +19,7 @@
                 popper-class="file-manager-summary-popover"
               >
                 <p class="file-manager-summary-popover-text">
-                  浏览和管理媒体文件，支持 STRM 生成、刮削整理和 ED2K 生成操作
+                  浏览和管理媒体文件，支持 STRM 生成、移动、复制、重命名和删除操作
                 </p>
                 <template #reference>
                   <el-button
@@ -80,6 +80,13 @@
                 </el-breadcrumb-item>
               </el-breadcrumb>
               <div class="file-manager-toolbar-actions">
+                <el-checkbox
+                  v-model="batchMode"
+                  class="file-manager-batch-toggle"
+                  :disabled="!selectedAccountId"
+                >
+                  批量操作
+                </el-checkbox>
                 <template v-if="isFileManagerSortControlVisible && supportedSortFields.length > 1">
                   <el-select
                     v-model="sortBy"
@@ -125,15 +132,65 @@
               </div>
             </div>
 
+            <!-- 批量操作栏 -->
+            <div v-if="batchMode" class="file-manager-batch-bar">
+              <span class="file-manager-batch-summary">已选 {{ selectedFileItems.length }} 项</span>
+              <div class="file-manager-batch-actions">
+                <el-button
+                  size="small"
+                  :disabled="batchOperateLoading"
+                  @click="toggleSelectAllFiles"
+                >
+                  全选
+                </el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :disabled="selectedFileItems.length === 0 || batchOperateLoading"
+                  @click="openBatchTargetDialog('move')"
+                >
+                  移动
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="selectedFileItems.length === 0 || batchOperateLoading"
+                  @click="openBatchTargetDialog('copy')"
+                >
+                  复制
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="selectedFileItems.length === 0 || batchOperateLoading"
+                  @click="openBatchStrmDialog"
+                >
+                  STRM 生成
+                </el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  :disabled="selectedFileItems.length === 0 || batchOperateLoading"
+                  @click="handleBatchDelete"
+                >
+                  删除
+                </el-button>
+                <el-button size="small" :disabled="batchOperateLoading" @click="exitBatchMode">
+                  退出批量
+                </el-button>
+              </div>
+            </div>
+
             <!-- 桌面端表格 -->
             <el-table
               v-if="!isMobile"
+              ref="fileTableRef"
               v-loading="initialLoading"
               :data="fileList"
               :row-key="(row: FileSystemItem) => String(row.id || row.path)"
               style="width: 100%"
               @row-dblclick="handleRowDoubleClick"
+              @selection-change="handleFileSelectionChange"
             >
+              <el-table-column v-if="batchMode" type="selection" width="42" reserve-selection />
               <el-table-column label="名称" min-width="300">
                 <template #default="{ row }">
                   <div style="display: flex; align-items: center; gap: 8px">
@@ -169,7 +226,13 @@
                     <template #dropdown>
                       <el-dropdown-menu>
                         <el-dropdown-item command="STRM_GENERATE">STRM 生成</el-dropdown-item>
-                        <el-dropdown-item command="SCRAPE_ORGANIZE">刮削整理</el-dropdown-item>
+                        <!--
+                          刮削整理与生成 ED2K 尚未实装（点击后仅提示“功能开发中”），
+                          暂时隐藏入口避免误导用户；功能实装后恢复以下两个菜单项。
+                          处理分支保留在 handleSingleOperation 中，勿直接删除。
+                        -->
+                        <!-- <el-dropdown-item command="SCRAPE_ORGANIZE">刮削整理</el-dropdown-item> -->
+                        <!--
                         <el-dropdown-item
                           v-if="
                             !row.is_directory &&
@@ -179,6 +242,10 @@
                         >
                           生成 ED2K
                         </el-dropdown-item>
+                        -->
+                        <el-dropdown-item command="MOVE">移动</el-dropdown-item>
+                        <el-dropdown-item command="COPY">复制</el-dropdown-item>
+                        <el-dropdown-item command="RENAME">重命名</el-dropdown-item>
                         <el-dropdown-item command="DELETE" divided>删除</el-dropdown-item>
                       </el-dropdown-menu>
                     </template>
@@ -190,6 +257,7 @@
             <!-- 移动端表格 -->
             <el-table
               v-else
+              ref="fileTableRef"
               v-loading="initialLoading"
               :data="fileList"
               :row-key="(row: FileSystemItem) => String(row.id || row.path)"
@@ -197,7 +265,9 @@
               @expand-change="handleExpandChange"
               style="width: 100%"
               @row-dblclick="handleRowDoubleClick"
+              @selection-change="handleFileSelectionChange"
             >
+              <el-table-column v-if="batchMode" type="selection" width="42" reserve-selection />
               <el-table-column type="expand" width="30">
                 <template #default="{ row }">
                   <div style="padding: 0 20px">
@@ -206,7 +276,7 @@
                       >{{ row.is_directory ? '--' : formatFileSize(row.size) }}
                     </p>
                     <p><strong>修改时间：</strong>{{ formatDateTime(row.modified_time) }}</p>
-                    <div style="margin-top: 10px">
+                    <div class="file-manager-row-actions">
                       <el-button
                         size="small"
                         type="primary"
@@ -214,14 +284,18 @@
                       >
                         STRM 生成
                       </el-button>
-                      <el-button
+                      <!--
+                        刮削整理与生成 ED2K 尚未实装，暂时隐藏入口；功能实装后恢复以下按钮，
+                        处理分支保留在 handleSingleOperation 中，勿直接删除。
+                      -->
+                      <!-- <el-button
                         size="small"
                         type="success"
                         @click="handleSingleOperation('SCRAPE_ORGANIZE', row)"
                       >
                         刮削整理
-                      </el-button>
-                      <el-button
+                      </el-button> -->
+                      <!-- <el-button
                         v-if="
                           !row.is_directory &&
                           (getFileType(row.name) === 'video' || getFileType(row.name) === 'image')
@@ -231,6 +305,15 @@
                         @click="handleSingleOperation('GENERATE_ED2K', row)"
                       >
                         生成 ED2K
+                      </el-button> -->
+                      <el-button size="small" @click="handleSingleOperation('MOVE', row)">
+                        移动
+                      </el-button>
+                      <el-button size="small" @click="handleSingleOperation('COPY', row)">
+                        复制
+                      </el-button>
+                      <el-button size="small" @click="handleSingleOperation('RENAME', row)">
+                        重命名
                       </el-button>
                       <el-button
                         size="small"
@@ -297,16 +380,16 @@
 
     <el-dialog
       v-model="showStrmTargetDialog"
-      title="选择 STRM 目标目录"
+      :title="strmTargetDialogTitle"
       width="600px"
       :close-on-click-modal="false"
       @closed="resetStrmTargetDialog"
     >
       <div class="strm-target-dialog-content">
         <p class="dialog-tip">请选择 STRM 文件的目标存放目录：</p>
-        <div v-if="strmSourceItem" class="strm-source-info">
-          <span class="source-label">源文件：</span>
-          <span class="source-name">{{ strmSourceItem.name }}</span>
+        <div v-if="strmSourceItems.length > 0" class="strm-source-info">
+          <span class="source-label">{{ strmSourceInfoLabel }}：</span>
+          <span class="source-name">{{ strmSourceInfoText }}</span>
         </div>
         <div class="dir-selector-container">
           <DirectorySelector
@@ -323,6 +406,37 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog
+      v-model="showFileTargetDialog"
+      :title="fileTargetDialogTitle"
+      width="min(600px, calc(100vw - 32px))"
+      destroy-on-close
+      :close-on-click-modal="false"
+      :before-close="handleFileTargetDialogClose"
+      @closed="resetFileTargetDialog"
+    >
+      <div class="file-target-dialog-content">
+        <p class="dialog-tip">{{ fileTargetDialogTip }}</p>
+        <el-button
+          :loading="batchOperateLoading"
+          :disabled="!isFileTargetOperationContextCurrent(fileTargetOperationContext)"
+          @click="confirmFileRootTargetOperation"
+        >
+          {{ fileTargetOperation === 'copy' ? '复制到根目录' : '移动到根目录' }}
+        </el-button>
+        <div class="dir-selector-container">
+          <DirectorySelector
+            v-model="fileTargetDir"
+            :source-type="fileTargetSourceType"
+            :account-id="fileTargetAccountId"
+            :reset-on-select="false"
+            @cancel="handleFileTargetDialogClose"
+            @select="confirmFileTargetOperation"
+          />
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -335,8 +449,15 @@ import {
   onDeactivated,
   onUnmounted,
   useTemplateRef,
+  watch,
 } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import {
+  ElMessage,
+  ElMessageBox,
+  type FormInstance,
+  type FormRules,
+  type TableInstance,
+} from 'element-plus'
 import { ArrowDown, Files, FolderAdd, InfoFilled, Refresh } from '@element-plus/icons-vue'
 import type { FileSystemItem, FileOperationType, DirInfo } from '@/typing'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
@@ -353,11 +474,15 @@ import { getFileType, getFileIconByName } from '@/utils/fileIconUtils'
 import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import {
+  copyFiles,
   createDirectory,
   deleteFile,
+  deleteFiles,
   fetchFiles,
   filePublicMessages,
   generateManualStrm,
+  moveFiles,
+  renameFile,
   type NetFileListCacheMeta,
   type NetFileListPayload,
   type NetFileListQuery,
@@ -556,11 +681,54 @@ const createRules = ref<FormRules>({
 
 const showStrmTargetDialog = ref(false)
 const strmTargetDir = ref<DirInfo | null>(null)
-const strmSourceItem = ref<FileSystemItem | null>(null)
+// 提交目标在打开弹窗时快照；单项为单个生成，多项为批量逐项提交。
+const strmSourceItems = ref<FileSystemItem[]>([])
 const strmOperationContext = ref<FileOperationContextSnapshot | null>(null)
 const createDirectoryOperationContext = ref<FileOperationContextSnapshot | null>(null)
 const strmGenerateLoading = ref(false)
+const isBatchStrmOperation = ref(false)
 const contextVersion = ref(0)
+
+type BatchFileTargetOperation = 'move' | 'copy'
+
+const fileTableRef = useTemplateRef<TableInstance>('fileTableRef')
+const batchMode = ref(false)
+const selectedFileItems = ref<FileSystemItem[]>([])
+const batchOperateLoading = ref(false)
+let batchDeleteConfirmationPending = false
+const showFileTargetDialog = ref(false)
+const fileTargetOperation = ref<BatchFileTargetOperation | null>(null)
+const fileTargetDir = ref<DirInfo | null>(null)
+const fileTargetOperationContext = ref<FileOperationContextSnapshot | null>(null)
+const singleTargetItem = ref<FileSystemItem | null>(null)
+// 目录选择器的来源信息在打开弹窗时快照，关闭弹窗后保持不变：
+// DirectorySelector 监听 sourceType/accountId 变化会重新加载目录，
+// 若随弹窗关闭一起重置会以空 source_type 发出无效请求并误报“未知的同步源类型”。
+const fileTargetSourceType = ref('')
+const fileTargetAccountId = ref(0)
+
+const fileTargetDialogTitle = computed(() => {
+  const action = fileTargetOperation.value === 'copy' ? '复制' : '移动'
+  return singleTargetItem.value ? `${action}到` : `批量${action}`
+})
+const fileTargetDialogTip = computed(() => {
+  const action = fileTargetOperation.value === 'copy' ? '复制' : '移动'
+  if (singleTargetItem.value) {
+    return `请选择“${singleTargetItem.value.name}”的${action}目标目录：`
+  }
+  return `请选择${action} ${selectedFileItems.value.length} 项的目标目录：`
+})
+
+const strmTargetDialogTitle = computed(() =>
+  strmSourceItems.value.length > 1 ? '批量 STRM 生成' : '选择 STRM 目标目录',
+)
+const strmSourceInfoLabel = computed(() => (strmSourceItems.value.length > 1 ? '已选' : '源文件'))
+const strmSourceInfoText = computed(() => {
+  if (strmSourceItems.value.length === 1) {
+    return strmSourceItems.value[0].name
+  }
+  return `${strmSourceItems.value.length} 项`
+})
 
 interface FileOperationContextSnapshot {
   accountId: number | null
@@ -657,12 +825,19 @@ function isCreateDirectoryOperationContextCurrent(
   )
 }
 
+function isFileTargetOperationContextCurrent(
+  snapshot: FileOperationContextSnapshot | null,
+): snapshot is FileOperationContextSnapshot {
+  return fileTargetOperationContext.value === snapshot && isFileOperationContextCurrent(snapshot)
+}
+
 function resetStrmTargetDialog() {
   showStrmTargetDialog.value = false
-  strmSourceItem.value = null
+  strmSourceItems.value = []
   strmTargetDir.value = null
   strmOperationContext.value = null
   strmGenerateLoading.value = false
+  isBatchStrmOperation.value = false
 }
 
 function resetCreateDirectoryDialog() {
@@ -672,33 +847,87 @@ function resetCreateDirectoryDialog() {
   createLoading.value = false
 }
 
+function resetFileTargetDialog() {
+  showFileTargetDialog.value = false
+  fileTargetOperation.value = null
+  fileTargetDir.value = null
+  fileTargetOperationContext.value = null
+  singleTargetItem.value = null
+}
+
+function handleFileTargetDialogClose(done?: () => void) {
+  if (batchOperateLoading.value) return
+  done?.()
+  resetFileTargetDialog()
+}
+
 function invalidateFileOperationContext() {
   contextVersion.value += 1
   resetStrmTargetDialog()
   resetCreateDirectoryDialog()
+  resetFileTargetDialog()
 }
+
+function clearFileSelection() {
+  selectedFileItems.value = []
+  fileTableRef.value?.clearSelection?.()
+}
+
+function handleFileSelectionChange(rows: FileSystemItem[]) {
+  selectedFileItems.value = rows
+}
+
+function toggleSelectAllFiles() {
+  fileTableRef.value?.toggleAllSelection?.()
+}
+
+function exitBatchMode() {
+  batchMode.value = false
+}
+
+watch(batchMode, (enabled) => {
+  if (!enabled) {
+    clearFileSelection()
+  }
+})
+
+watch(isMobile, () => {
+  clearFileSelection()
+  if (batchDeleteConfirmationPending) {
+    batchDeleteConfirmationPending = false
+    ElMessageBox.close()
+  }
+  if (!batchOperateLoading.value && !singleTargetItem.value) {
+    resetFileTargetDialog()
+  }
+  if (!strmGenerateLoading.value && isBatchStrmOperation.value) {
+    resetStrmTargetDialog()
+  }
+})
 
 function clearFileListForContextSwitch() {
   invalidateFileOperationContext()
   fileListRequestGate.invalidate()
   fileList.value = []
   total.value = 0
+  clearFileSelection()
   pageStateStore.setExpandedRowKeys('file-manager', [])
 }
 
 function clearFileListForPageChange() {
   fileListRequestGate.invalidate()
   fileList.value = []
+  clearFileSelection()
   pageStateStore.setExpandedRowKeys('file-manager', [])
 }
 
 // 计算属性
+// 存放路径预览只在单个生成时展示；批量提交逐项解析路径，预览没有意义。
 const strmStorePath = computed(() => {
-  if (!strmTargetDir.value || !strmSourceItem.value) return ''
+  if (!strmTargetDir.value || strmSourceItems.value.length !== 1) return ''
+  const sourceName = strmSourceItems.value[0].name
   const currentPathStr = pathItems.value.map((p) => p.name).join('/')
-  const itemPath = currentPathStr
-    ? `${currentPathStr}/${strmSourceItem.value.name}`
-    : strmSourceItem.value.name
+  const itemPath = currentPathStr ? `${currentPathStr}/${sourceName}` : sourceName
   return `${strmTargetDir.value.path}/${itemPath}`
 })
 
@@ -885,6 +1114,7 @@ async function loadFileList(options: LoadFileListOptions = {}) {
 
       const pageStart = (currentPage.value - 1) * pageSize.value
       if (responseTotal > 0 && pageStart >= responseTotal) {
+        clearFileSelection()
         pageStateStore.setPagination('file-manager', 1, pageSize.value)
         await loadFileList({ refresh: options.refresh })
         return
@@ -901,6 +1131,12 @@ async function loadFileList(options: LoadFileListOptions = {}) {
       }))
 
       fileList.value = mergeStableList(fileList.value, rows, (row) => row.id || row.path)
+      const existingIds = new Set(fileList.value.map((row) => row.id || row.path))
+      for (const selected of selectedFileItems.value) {
+        if (!existingIds.has(selected.id || selected.path)) {
+          fileTableRef.value?.toggleRowSelection(selected, false)
+        }
+      }
       pageStateStore.setExpandedRowKeys(
         'file-manager',
         retainExistingKeys(pageState.expandedRowKeys, fileList.value, (row) => row.id || row.path),
@@ -934,6 +1170,7 @@ function loadFileListForPageChange() {
 }
 
 async function handleRefreshFileList() {
+  clearFileSelection()
   await loadFileList({ refresh: true })
 }
 
@@ -984,17 +1221,18 @@ async function handleSingleOperation(operation: FileOperationType, item: FileSys
     return
   }
 
-  if (operation === 'STRM_GENERATE') {
-    const operationContext = createFileOperationContextSnapshot()
-    if (!operationContext.accountId) {
-      ElMessage.warning('请先选择网盘账号')
-      return
-    }
+  if (operation === 'RENAME') {
+    await handleRenameItem(item)
+    return
+  }
 
-    strmSourceItem.value = item
-    strmTargetDir.value = null
-    strmOperationContext.value = operationContext
-    showStrmTargetDialog.value = true
+  if (operation === 'MOVE' || operation === 'COPY') {
+    openSingleTargetDialog(operation === 'COPY' ? 'copy' : 'move', item)
+    return
+  }
+
+  if (operation === 'STRM_GENERATE') {
+    openStrmTargetDialog([item])
     return
   }
 
@@ -1065,6 +1303,276 @@ async function handleDeleteItem(item: FileSystemItem) {
   }
 }
 
+async function handleRenameItem(item: FileSystemItem) {
+  const operationContext = createFileOperationContextSnapshot()
+
+  try {
+    await ElMessageBox.prompt(`将“${item.name}”重命名为：`, '重命名', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: item.name,
+      inputPattern: /\S+/,
+      inputErrorMessage: '请输入新名称',
+      beforeClose: async (action, instance, done) => {
+        if (instance.confirmButtonLoading) return
+        if (action !== 'confirm' || !isFileOperationContextCurrent(operationContext)) {
+          done()
+          return
+        }
+        if (!operationContext.accountId) {
+          ElMessage.warning('请先选择网盘账号')
+          return
+        }
+
+        instance.confirmButtonLoading = true
+        try {
+          await renameFile(http, {
+            parent_id: operationContext.parentId,
+            file_id: item.id,
+            new_name: instance.inputValue.trim(),
+            account_id: operationContext.accountId,
+          })
+          // 提交期间被拦截的取消动作不能把已完成的写入变成取消结果。
+          instance.action = 'confirm'
+          done()
+        } catch (error) {
+          if (isFileOperationContextCurrent(operationContext)) {
+            reportFileError(error, '重命名失败')
+          } else {
+            done()
+          }
+        } finally {
+          instance.confirmButtonLoading = false
+        }
+      },
+    })
+
+    if (!isFileOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    ElMessage.success('重命名成功')
+    await loadFileList({ refresh: true })
+  } catch (error) {
+    if (!isFileOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    if (!isMessageBoxCancelError(error)) {
+      reportFileError(error, '重命名失败')
+    }
+  }
+}
+
+async function handleBatchDelete() {
+  const items = selectedFileItems.value
+  if (items.length === 0) {
+    return
+  }
+
+  const operationContext = createFileOperationContextSnapshot()
+  const folderCount = items.filter((item) => item.is_directory).length
+  let submitted = false
+
+  try {
+    batchDeleteConfirmationPending = true
+    await ElMessageBox.confirm(
+      `确认删除选中的 ${items.length} 项吗？${folderCount > 0 ? '所选文件夹内的所有内容也将被删除。' : ''}`,
+      '确认批量删除',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    batchDeleteConfirmationPending = false
+
+    if (items !== selectedFileItems.value || !isFileOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    if (!operationContext.accountId) {
+      ElMessage.warning('请先选择网盘账号')
+      return
+    }
+
+    batchOperateLoading.value = true
+
+    submitted = true
+    await deleteFiles(http, {
+      parent_id: operationContext.parentId,
+      file_ids: items.map((item) => item.id),
+      account_id: operationContext.accountId,
+    })
+
+    if (!isFileOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    ElMessage.success(`已删除 ${items.length} 项`)
+    clearFileSelection()
+    await loadFileList({ refresh: true })
+  } catch (error) {
+    if (!isFileOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    if (!isMessageBoxCancelError(error)) {
+      reportFileError(error, '批量删除失败')
+      if (submitted) {
+        clearFileSelection()
+        await loadFileList({ refresh: true })
+      }
+    }
+  } finally {
+    batchDeleteConfirmationPending = false
+    batchOperateLoading.value = false
+  }
+}
+
+// 单个和批量 STRM 生成共用目标目录弹窗；提交列表在打开时快照，
+// 弹窗打开期间的选择变化不影响本次提交范围。
+function openStrmTargetDialog(items: FileSystemItem[], isBatch = false) {
+  const operationContext = createFileOperationContextSnapshot()
+  if (!operationContext.accountId) {
+    ElMessage.warning('请先选择网盘账号')
+    return
+  }
+
+  strmSourceItems.value = items
+  isBatchStrmOperation.value = isBatch
+  strmTargetDir.value = null
+  strmOperationContext.value = operationContext
+  showStrmTargetDialog.value = true
+}
+
+function openBatchStrmDialog() {
+  if (selectedFileItems.value.length === 0) {
+    return
+  }
+
+  openStrmTargetDialog([...selectedFileItems.value], true)
+}
+
+function openBatchTargetDialog(operation: BatchFileTargetOperation) {
+  if (selectedFileItems.value.length === 0) {
+    return
+  }
+
+  const operationContext = createFileOperationContextSnapshot()
+  if (!operationContext.accountId || !operationContext.sourceType) {
+    ElMessage.warning('请先选择网盘账号')
+    return
+  }
+
+  fileTargetOperation.value = operation
+  fileTargetDir.value = null
+  fileTargetOperationContext.value = operationContext
+  singleTargetItem.value = null
+  fileTargetSourceType.value = operationContext.sourceType ?? ''
+  fileTargetAccountId.value = operationContext.accountId ?? 0
+  showFileTargetDialog.value = true
+}
+
+function openSingleTargetDialog(operation: BatchFileTargetOperation, item: FileSystemItem) {
+  const operationContext = createFileOperationContextSnapshot()
+  if (!operationContext.accountId || !operationContext.sourceType) {
+    ElMessage.warning('请先选择网盘账号')
+    return
+  }
+
+  fileTargetOperation.value = operation
+  fileTargetDir.value = null
+  fileTargetOperationContext.value = operationContext
+  singleTargetItem.value = item
+  fileTargetSourceType.value = operationContext.sourceType
+  fileTargetAccountId.value = operationContext.accountId
+  showFileTargetDialog.value = true
+}
+
+async function confirmFileRootTargetOperation() {
+  if (
+    batchOperateLoading.value ||
+    !isFileTargetOperationContextCurrent(fileTargetOperationContext.value)
+  ) {
+    return
+  }
+
+  fileTargetDir.value = {
+    id: fileTargetSourceType.value === '115' ? '0' : '/',
+    name: '根目录',
+    path: '/',
+  }
+  await confirmFileTargetOperation()
+}
+
+async function confirmFileTargetOperation() {
+  if (batchOperateLoading.value) {
+    return
+  }
+
+  const operation = fileTargetOperation.value
+  const targetDir = fileTargetDir.value
+  if (!operation || !targetDir) {
+    ElMessage.warning('请选择目标目录')
+    return
+  }
+
+  const operationContext = fileTargetOperationContext.value
+  if (!isFileTargetOperationContextCurrent(operationContext)) {
+    resetFileTargetDialog()
+    return
+  }
+
+  if (!operationContext.accountId) {
+    ElMessage.warning('请先选择网盘账号')
+    return
+  }
+
+  const isSingleOperation = singleTargetItem.value !== null
+  const items = isSingleOperation ? [singleTargetItem.value!] : selectedFileItems.value
+  try {
+    batchOperateLoading.value = true
+
+    const payload = {
+      parent_id: operationContext.parentId,
+      file_ids: items.map((item) => item.id),
+      target_parent_id: targetDir.id,
+      account_id: operationContext.accountId,
+    }
+    const result =
+      operation === 'move' ? await moveFiles(http, payload) : await copyFiles(http, payload)
+
+    if (!isFileTargetOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    if (result?.status === 'submitted') {
+      ElMessage.info('已提交到 OpenList，请查看任务结果，完成后点击刷新更新文件列表')
+    } else {
+      ElMessage.success(operation === 'move' ? '移动成功' : '复制成功')
+    }
+    resetFileTargetDialog()
+    if (!isSingleOperation) {
+      clearFileSelection()
+    }
+    await loadFileList({ refresh: true })
+  } catch (error) {
+    if (!isFileTargetOperationContextCurrent(operationContext)) {
+      return
+    }
+
+    reportFileError(error, operation === 'move' ? '移动失败' : '复制失败')
+    resetFileTargetDialog()
+    clearFileSelection()
+    await loadFileList({ refresh: true })
+  } finally {
+    // 成功路径会先 resetFileTargetDialog 清掉上下文，这里必须无条件复位，
+    // 否则 batchOperateLoading 卡在 true 导致批量操作栏按钮全部禁用。
+    batchOperateLoading.value = false
+  }
+}
+
 function openCreateDialog() {
   const operationContext = createFileOperationContextSnapshot()
 
@@ -1132,7 +1640,8 @@ async function handleCreateDirectory() {
 async function confirmStrmGenerate() {
   if (strmGenerateLoading.value) return
 
-  if (!strmTargetDir.value || !strmSourceItem.value) {
+  const items = strmSourceItems.value
+  if (!strmTargetDir.value || items.length === 0) {
     ElMessage.warning('请选择目标目录')
     return
   }
@@ -1148,27 +1657,58 @@ async function confirmStrmGenerate() {
     return
   }
 
+  const targetPath = strmTargetDir.value.path
+
   try {
     strmGenerateLoading.value = true
 
-    await generateManualStrm(http, {
-      path_id: strmSourceItem.value.id,
-      target_path: strmTargetDir.value.path,
-      account_id: operationContext.accountId,
-    })
+    let succeededCount = 0
+    let firstError: unknown = null
+    for (const item of items) {
+      // 提交期间目录或账号被切换时中止剩余提交，避免向新上下文误发任务
+      if (!isStrmOperationContextCurrent(operationContext)) {
+        return
+      }
+
+      try {
+        await generateManualStrm(http, {
+          path_id: item.id,
+          target_path: targetPath,
+          account_id: operationContext.accountId,
+        })
+        succeededCount += 1
+      } catch (error) {
+        if (!isStrmOperationContextCurrent(operationContext)) {
+          return
+        }
+        firstError ??= error
+      }
+    }
 
     if (!isStrmOperationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('STRM 生成任务已提交')
-    resetStrmTargetDialog()
-  } catch (error) {
-    if (!isStrmOperationContextCurrent(operationContext)) {
+    if (succeededCount === items.length) {
+      ElMessage.success(
+        items.length > 1 ? `已提交 ${items.length} 项 STRM 生成任务` : 'STRM 生成任务已提交',
+      )
+      resetStrmTargetDialog()
       return
     }
 
-    reportFileError(error, 'STRM 生成失败')
+    if (succeededCount > 0) {
+      // 部分成功时已入队任务无法撤回，关闭弹窗并汇总结果；
+      // 失败项可重新选择后再次提交，队列会拒绝重复任务。
+      ElMessage.warning(
+        `STRM 生成任务提交：成功 ${succeededCount} 项，失败 ${items.length - succeededCount} 项`,
+      )
+      resetStrmTargetDialog()
+      return
+    }
+
+    // 全部失败时保留弹窗和已选目标目录，便于修正后重试，与单个提交一致
+    reportFileError(firstError, items.length > 1 ? '批量 STRM 生成失败' : 'STRM 生成失败')
   } finally {
     if (strmOperationContext.value === operationContext) {
       strmGenerateLoading.value = false
@@ -1192,6 +1732,7 @@ function deactivateFileManagerPage() {
   pendingFileListRefresh.value = null
   accountListRequestGate.invalidate()
   fileListRequestGate.invalidate()
+  clearFileSelection()
   invalidateFileOperationContext()
 }
 
@@ -1264,6 +1805,41 @@ onUnmounted(() => {
 
 .file-manager-sort-order {
   width: 76px;
+}
+
+.file-manager-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+}
+
+.file-manager-batch-summary {
+  color: var(--el-text-color-regular);
+  font-size: 14px;
+}
+
+.file-manager-batch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.file-manager-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.file-manager-row-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .sidebar-header {
@@ -1439,6 +2015,18 @@ onUnmounted(() => {
   .file-manager-sort-order {
     width: 70px;
   }
+
+  .file-manager-batch-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .file-manager-batch-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
 }
 
 .strm-target-dialog-content {
@@ -1448,6 +2036,18 @@ onUnmounted(() => {
 }
 
 .strm-target-dialog-content .dialog-tip {
+  margin: 0;
+  color: var(--el-text-color-regular);
+  font-size: 14px;
+}
+
+.file-target-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.file-target-dialog-content .dialog-tip {
   margin: 0;
   color: var(--el-text-color-regular);
   font-size: 14px;

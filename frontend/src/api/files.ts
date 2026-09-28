@@ -54,6 +54,28 @@ export interface DeleteFileQuery {
   account_id: number
 }
 
+export interface BatchFilePayload {
+  parent_id: string
+  file_ids: string[]
+  account_id: number
+}
+
+export interface MoveFilesPayload extends BatchFilePayload {
+  target_parent_id: string
+}
+
+export interface FileTransferResult {
+  status: 'completed' | 'submitted'
+  task_ids: string[]
+}
+
+export interface RenameFilePayload {
+  parent_id: string
+  file_id: string
+  new_name: string
+  account_id: number
+}
+
 export interface ManualStrmPayload {
   path_id: string
   target_path: string
@@ -65,6 +87,13 @@ export const filePublicMessages: Readonly<Record<string, string>> = {
   'account_id：必须大于 0': '请先选择网盘账号',
   'source_type：不是允许的取值': '未知的同步源类型',
   'file_id：不能为空': '请选择要删除的文件或目录',
+  'file_ids：不能为空': '请选择要操作的文件或目录',
+  'file_ids：包含无效的文件 ID': '选中项包含无效的文件或目录',
+  'target_parent_id：不能为空': '请选择目标目录',
+  'new_name：不能为空': '请输入新名称',
+  'new_name：文件名不合法': '新名称不合法',
+  'new_name：不能包含路径分隔符': '新名称不能包含路径分隔符',
+  'new_name：不能包含控制字符': '新名称不能包含控制字符',
   'path_id：不能为空': '请选择源文件或目录',
   'target_path：不能为空': '请选择目标目录',
   'name：不能为空': '请输入文件夹名称',
@@ -99,6 +128,26 @@ export async function createDirectory(http: AxiosInstance, payload: CreateDirect
 
 export async function deleteFile(http: AxiosInstance, params: DeleteFileQuery): Promise<void> {
   unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/path`, { params }))
+}
+
+export async function deleteFiles(http: AxiosInstance, payload: BatchFilePayload): Promise<void> {
+  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/path/delete-batch`, payload))
+}
+
+export async function moveFiles(http: AxiosInstance, payload: MoveFilesPayload) {
+  return unwrapResponse(
+    await http.post<APIResponse<FileTransferResult | null>>(`${SERVER_URL}/path/move`, payload),
+  )
+}
+
+export async function copyFiles(http: AxiosInstance, payload: MoveFilesPayload) {
+  return unwrapResponse(
+    await http.post<APIResponse<FileTransferResult | null>>(`${SERVER_URL}/path/copy`, payload),
+  )
+}
+
+export async function renameFile(http: AxiosInstance, payload: RenameFilePayload): Promise<void> {
+  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/path/rename`, payload))
 }
 
 export async function generateManualStrm(

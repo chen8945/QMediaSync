@@ -180,3 +180,155 @@ func TestUploadAuthenticationRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestFileTransferRetryPolicy(t *testing.T) {
+	previous := helpers.OpenListLog
+	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { helpers.OpenListLog = previous })
+	for _, operation := range []struct {
+		name string
+		call func(*Client, string, string, []string) ([]string, error)
+	}{
+		{name: "move", call: (*Client).MoveWithTasks},
+		{name: "copy", call: (*Client).CopyWithTasks},
+	} {
+		for _, tc := range []struct {
+			name           string
+			refresh        bool
+			networkFailure bool
+		}{
+			{name: "响应丢失不重发", networkFailure: true},
+			{name: "认证恢复后成功", refresh: true},
+			{name: "认证恢复后响应丢失不重发", refresh: true, networkFailure: true},
+		} {
+			t.Run(operation.name+"/"+tc.name, func(t *testing.T) {
+				var writes, logins int
+				client := NewTemporaryClient("http://openlist.invalid", "user", "password", "old-token")
+				defer client.Close()
+				client.client.SetTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					isWrite := r.URL.Path == "/api/fs/"+operation.name
+					resp, err := handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "application/json")
+						if r.URL.Path == "/api/auth/login" {
+							logins++
+							_, _ = io.WriteString(w, `{"code":200,"data":{"token":"new-token"}}`)
+							return
+						}
+						if !isWrite || r.Method != http.MethodPost {
+							t.Errorf("意外请求：%s %s", r.Method, r.URL.Path)
+						}
+						writes++
+						if tc.refresh && writes == 1 {
+							_, _ = io.WriteString(w, `{"code":401,"message":"expired"}`)
+							return
+						}
+						if tc.refresh && r.Header.Get("Authorization") != "new-token" {
+							t.Error("认证恢复后未使用新凭据")
+						}
+						_, _ = io.WriteString(w, `{"code":200,"data":{"tasks":[{"id":"accepted"}]}}`)
+					}).RoundTrip(r)
+					// 模拟上游已受理写入，但响应在返回途中丢失。
+					if isWrite && tc.networkFailure && (!tc.refresh || writes > 1) {
+						_ = resp.Body.Close()
+						return nil, io.ErrUnexpectedEOF
+					}
+					return resp, err
+				}))
+				ids, err := operation.call(client, "/source", "/target", []string{"movie.mkv"})
+				wantWrites, wantLogins := 1, 0
+				if tc.refresh {
+					wantWrites, wantLogins = 2, 1
+				}
+				if writes != wantWrites || logins != wantLogins {
+					t.Errorf("写入 %d 次，登录 %d 次，期望 %d、%d", writes, logins, wantWrites, wantLogins)
+				}
+				if tc.networkFailure {
+					if !errors.Is(err, io.ErrUnexpectedEOF) {
+						t.Errorf("错误 = %v，期望保留网络错误", err)
+					}
+				} else if err != nil || len(ids) != 1 || ids[0] != "accepted" {
+					t.Errorf("任务 ID = %v，错误 = %v", ids, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRenameNoReplace(t *testing.T) {
+	previous := helpers.OpenListLog
+	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { helpers.OpenListLog = previous })
+	for _, tc := range []struct {
+		name        string
+		target      string
+		unsupported bool
+		legacy      bool
+		wantErr     bool
+	}{
+		{name: "新名称", target: "new.mkv"},
+		{name: "已有目标不覆盖", target: "existing.mkv", wantErr: true},
+		{name: "自身名称", target: "source.mkv "},
+		{name: "旧服务不支持时禁止回退", target: "new.mkv", unsupported: true, wantErr: true},
+		{name: "刮削保留原批量接口", target: "new.mkv", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"source.mkv ": "source", "existing.mkv": "destination"}
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if tc.legacy {
+					if r.URL.Path != "/api/fs/batch_rename" {
+						t.Errorf("刮削接口被修改：%s", r.URL.Path)
+					}
+					_, _ = io.WriteString(w, `{"code":200,"data":null}`)
+					return
+				}
+				var req struct {
+					Path      string `json:"path"`
+					Name      string `json:"name"`
+					Overwrite *bool  `json:"overwrite"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				if r.URL.Path != "/api/fs/rename" || req.Path != "/source.mkv " || req.Name != tc.target || req.Overwrite == nil || *req.Overwrite {
+					t.Errorf("重命名请求不符合不覆盖契约：%s %+v", r.URL.Path, req)
+					_, _ = io.WriteString(w, `{"code":400,"message":"invalid request"}`)
+					return
+				}
+				if tc.unsupported {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = io.WriteString(w, `{"code":404,"message":"unsupported"}`)
+					return
+				}
+				if _, exists := files[req.Name]; exists && req.Name != "source.mkv " {
+					_, _ = io.WriteString(w, `{"code":403,"message":"file exists"}`)
+					return
+				}
+				content := files["source.mkv "]
+				delete(files, "source.mkv ")
+				files[req.Name] = content
+				_, _ = io.WriteString(w, `{"code":200,"data":null}`)
+			}))
+			defer server.Close()
+			client := NewTemporaryClient(server.URL, "", "", "fixture-token")
+			defer client.Close()
+			var err error
+			if tc.legacy {
+				err = client.Rename("/", "source.mkv ", tc.target)
+			} else {
+				err = client.RenameNoReplace("/source.mkv ", tc.target)
+			}
+			if (err != nil) != tc.wantErr || calls != 1 {
+				t.Fatalf("错误=%v，期望失败=%v，请求次数=%d", err, tc.wantErr, calls)
+			}
+			if files["existing.mkv"] != "destination" || (tc.wantErr && files["source.mkv "] != "source") {
+				t.Fatalf("不应修改的文件内容发生变化：%v", files)
+			}
+			if !tc.legacy && !tc.wantErr && files[tc.target] != "source" {
+				t.Fatalf("重命名未生效：%v", files)
+			}
+		})
+	}
+}

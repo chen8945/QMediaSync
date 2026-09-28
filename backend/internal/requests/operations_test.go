@@ -281,3 +281,118 @@ func TestQueueStatsRequestValidate(t *testing.T) {
 		t.Fatal("Validate() error = nil, want error")
 	}
 }
+
+func TestFileBatchRequestValidate(t *testing.T) {
+	t.Run("根目录下的空格名称不是根路径", func(t *testing.T) {
+		if err := (DeleteFilesRequest{AccountID: 1, FileIDs: []string{"/ "}}).Validate(); err != nil {
+			t.Fatalf("合法路径被拒绝：%v", err)
+		}
+	})
+
+	t.Run("路径型 ID 保留空白并按原文去重", func(t *testing.T) {
+		for _, source := range []models.SourceType{models.SourceTypeBaiduPan, models.SourceTypeOpenList} {
+			t.Run(string(source), func(t *testing.T) {
+				ids := []string{"/Movies/a.mkv ", "/Movies/a.mkv", "/Movies/a.mkv "}
+				deletion := DeleteFilesRequest{AccountID: 1, FileIDs: ids}
+				transfer := MoveFilesRequest{AccountID: 1, FileIDs: ids, TargetParentID: "/target "}
+				for _, got := range [][]string{deletion.NormalizedFileIDs(source), transfer.NormalizedFileIDs(source)} {
+					if len(got) != 2 || got[0] != ids[0] || got[1] != ids[1] {
+						t.Fatalf("文件身份被修改：%q", got)
+					}
+				}
+				if ids[0] != "/Movies/a.mkv " {
+					t.Fatal("原始请求被修改")
+				}
+			})
+		}
+	})
+
+	t.Run("批量删除通过并去重", func(t *testing.T) {
+		req := DeleteFilesRequest{AccountID: 1, FileIDs: []string{" 11 ", "11", "12"}}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		got := req.NormalizedFileIDs(models.SourceType115)
+		if len(got) != 2 || got[0] != "11" || got[1] != "12" {
+			t.Fatalf("NormalizedFileIDs() = %+v", got)
+		}
+	})
+
+	t.Run("批量删除空列表失败", func(t *testing.T) {
+		req := DeleteFilesRequest{AccountID: 1}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+
+	t.Run("批量删除包含无效 ID 失败", func(t *testing.T) {
+		for _, fileIDs := range [][]string{{""}, {"0"}, {"/"}, {"1", "  "}} {
+			req := DeleteFilesRequest{AccountID: 1, FileIDs: fileIDs}
+			if err := req.Validate(); err == nil {
+				t.Fatalf("Validate() error = nil, want error for %v", fileIDs)
+			}
+		}
+	})
+
+	t.Run("批量删除超过单页上限失败", func(t *testing.T) {
+		fileIDs := make([]string, maxBatchFileIDs+1)
+		for i := range fileIDs {
+			fileIDs[i] = strconv.Itoa(i + 1)
+		}
+		req := DeleteFilesRequest{AccountID: 1, FileIDs: fileIDs}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+
+	t.Run("批量移动通过", func(t *testing.T) {
+		req := MoveFilesRequest{AccountID: 1, FileIDs: []string{"1"}, TargetParentID: "0"}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("批量移动缺少目标目录失败", func(t *testing.T) {
+		req := MoveFilesRequest{AccountID: 1, FileIDs: []string{"1"}, TargetParentID: " "}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+
+	t.Run("批量复制通过", func(t *testing.T) {
+		req := CopyFilesRequest{AccountID: 1, FileIDs: []string{"1"}, TargetParentID: "/dest"}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("批量复制缺少账号失败", func(t *testing.T) {
+		req := CopyFilesRequest{FileIDs: []string{"1"}, TargetParentID: "/dest"}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+
+	t.Run("重命名通过", func(t *testing.T) {
+		req := RenameFileRequest{AccountID: 1, FileID: "11", NewName: " 新名称.mkv "}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("重命名非法新名称失败", func(t *testing.T) {
+		for _, newName := range []string{"", "  ", ".", "..", "a/b", "a\\b", "a\x00b"} {
+			req := RenameFileRequest{AccountID: 1, FileID: "11", NewName: newName}
+			if err := req.Validate(); err == nil {
+				t.Fatalf("Validate() error = nil, want error for %q", newName)
+			}
+		}
+	})
+
+	t.Run("重命名保留根文件 ID 校验", func(t *testing.T) {
+		req := RenameFileRequest{AccountID: 1, FileID: "0", NewName: "新名称"}
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+	})
+}

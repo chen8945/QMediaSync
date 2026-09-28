@@ -172,7 +172,9 @@ describe('file manager HTTP feedback', () => {
     expect(ElMessage.error).toHaveBeenCalledWith('创建目录失败：名称已存在')
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
-    expect((wrapper.get('input').element as HTMLInputElement).value).toBe(' 保留名称 ')
+    expect(
+      (wrapper.get('input[placeholder="请输入文件夹名称"]').element as HTMLInputElement).value,
+    ).toBe(' 保留名称 ')
     expect(
       adapter.mock.calls.filter(([config]) => config.url?.endsWith('/path/files')),
     ).toHaveLength(1)
@@ -205,7 +207,9 @@ describe('file manager HTTP feedback', () => {
       await click(wrapper, '确定')
       expect(ElMessage.error).not.toHaveBeenCalled()
       expect(ElMessage.success).not.toHaveBeenCalled()
-      expect((wrapper.get('input').element as HTMLInputElement).value).toBe(' 保留名称 ')
+      expect(
+        (wrapper.get('input[placeholder="请输入文件夹名称"]').element as HTMLInputElement).value,
+      ).toBe(' 保留名称 ')
     },
   )
 

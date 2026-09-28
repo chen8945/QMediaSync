@@ -635,6 +635,10 @@ func setRouter(r *gin.Engine) {
 		api.GET("/path/list", controllers.GetPathList)                                      // 目录列表
 		api.POST("/path/create", controllers.CreateDir)                                     // 创建目录接口
 		api.DELETE("/path", controllers.DeleteDir)                                          // 删除目录接口
+		api.POST("/path/delete-batch", controllers.DeleteFiles)                             // 批量删除网盘文件接口
+		api.POST("/path/move", controllers.MoveFiles)                                       // 批量移动网盘文件接口
+		api.POST("/path/copy", controllers.CopyFiles)                                       // 批量复制网盘文件接口
+		api.POST("/path/rename", controllers.RenameFile)                                    // 重命名网盘文件接口
 		api.GET("/path/files", controllers.GetNetFileList)                                  // 查询网盘文件列表
 		api.POST("/user/change", controllers.ChangePassword)                                // 修改当前用户密码
 

@@ -469,7 +469,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       title: '网盘文件管理',
       page: {
-        description: '浏览和管理媒体文件，支持 STRM 生成、刮削整理和 ED2K 生成操作',
+        description: '浏览和管理媒体文件，支持 STRM 生成、移动、复制、重命名和删除操作',
         icon: 'Folder',
         variant: 'management',
       },

@@ -2,6 +2,7 @@ package baidupan
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,73 @@ import (
 
 	openapiclient "qmediasync/openxpanapi"
 )
+
+func TestFileManagerChecksItemErrors(t *testing.T) {
+	ensureBaiduPanTestLoggers()
+	items := []MoveOrCopyItem{{Path: "/source/A", Dest: "/target", NewName: "B"}}
+	operations := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{name: "删除", call: func(c *Client) error { return c.Del(t.Context(), []string{"/source/A"}) }},
+		{name: "重命名", call: func(c *Client) error { return c.Rename(t.Context(), "/source/A", "B") }},
+		{name: "批量重命名", call: func(c *Client) error {
+			return c.RenameBatch(t.Context(), []ReNameItem{{Path: "/source/A", NewName: "B"}})
+		}},
+		{name: "移动", call: func(c *Client) error { return c.Move(t.Context(), "/source/A", "/target", "B") }},
+		{name: "批量移动", call: func(c *Client) error { return c.MoveBatch(t.Context(), items) }},
+		{name: "复制", call: func(c *Client) error { return c.Copy(t.Context(), "/source/A", "/target") }},
+		{name: "批量复制", call: func(c *Client) error { return c.CopyBatch(t.Context(), items) }},
+	}
+	for _, tc := range []struct {
+		name      string
+		body      string
+		wantErr   bool
+		wantToken bool
+	}{
+		{name: "全部成功", body: `{"errno":0,"info":[{"errno":0},{"errno":0}]}`},
+		{name: "旧版无逐项结果", body: `{"errno":0}`},
+		{name: "部分失败", body: `{"errno":0,"info":[{"errno":0},{"errno":-9}]}`, wantErr: true},
+		{name: "全部失败", body: `{"errno":0,"info":[{"errno":-9},{"errno":-7}]}`, wantErr: true},
+		{name: "顶层失败优先", body: `{"errno":-6,"info":[{"errno":-9}]}`, wantErr: true, wantToken: true},
+		{name: "逐项凭据错误", body: `{"errno":0,"info":[{"errno":20016}]}`, wantErr: true, wantToken: true},
+		{name: "逐项格式错误", body: `{"errno":0,"info":{"errno":-9}}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Query().Get("method") != "filemanager" {
+					t.Errorf("非文件管理请求：%s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			config := openapiclient.NewConfiguration()
+			for _, name := range []string{"copy", "delete", "move", "rename"} {
+				config.OperationServers["FilemanagerApiService.Filemanager"+name][0].URL = server.URL
+			}
+			client := &Client{client: openapiclient.NewAPIClient(config)}
+			client.SetAuthToken("test-token")
+			for _, operation := range operations {
+				t.Run(operation.name, func(t *testing.T) {
+					err := operation.call(client)
+					if (err != nil) != tc.wantErr {
+						t.Fatalf("错误 = %v，期望失败 = %v", err, tc.wantErr)
+					}
+					var tokenErr *TokenInvalidError
+					if errors.As(err, &tokenErr) != tc.wantToken {
+						t.Fatalf("凭据错误分类不符：%v", err)
+					}
+				})
+			}
+			if calls != len(operations) {
+				t.Fatalf("请求次数 = %d，期望 %d，操作不能自动重发", calls, len(operations))
+			}
+		})
+	}
+}
 
 func TestGetFileDetailRejectsEmptyList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
