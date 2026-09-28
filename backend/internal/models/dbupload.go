@@ -1030,13 +1030,13 @@ func ClearPendingUploadTasks() error {
 
 func ClearExpireUploadTasks() error {
 	err := db.Db.Model(&DbUploadTask{}).
-		Where("created_at < ?", time.Now().AddDate(0, 0, -3).Unix()).
+		Where("created_at < ?", time.Now().AddDate(0, 0, -7).Unix()).
 		Delete(&DbUploadTask{}).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("清除 3 天前的上传任务失败：%v", err)
+		helpers.AppLogger.Errorf("清除 7 天前的上传任务失败：%v", err)
 		return err
 	} else {
-		helpers.AppLogger.Infof("已清除 3 天前的上传任务")
+		helpers.AppLogger.Infof("已清除 7 天前的上传任务")
 	}
 	clearAllUploadProgressThrottle()
 	return err

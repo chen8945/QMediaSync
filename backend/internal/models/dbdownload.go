@@ -837,13 +837,13 @@ func ClearDownloadPendingTasks() error {
 
 func ClearExpireDownloadTasks() error {
 	err := db.Db.Model(&DbDownloadTask{}).
-		Where("created_at < ?", time.Now().AddDate(0, 0, -3).Unix()).
+		Where("created_at < ?", time.Now().AddDate(0, 0, -7).Unix()).
 		Delete(&DbDownloadTask{}).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("清除 3 天前的下载任务失败：%v", err)
+		helpers.AppLogger.Errorf("清除 7 天前的下载任务失败：%v", err)
 		return err
 	} else {
-		helpers.AppLogger.Infof("已清除 3 天前的下载任务")
+		helpers.AppLogger.Infof("已清除 7 天前的下载任务")
 	}
 	return err
 }

@@ -433,7 +433,8 @@ const routes: RouteRecordRaw[] = [
     meta: {
       title: '上传队列',
       page: {
-        description: '查看 STRM 同步和刮削流程产生的元数据上传任务',
+        description:
+          '查看 STRM 同步和刮削流程产生的元数据上传任务，每天 1 点会删除 7 天前的所有任务（含排队中的任务）',
         icon: 'Upload',
         variant: 'compact',
       },
@@ -450,7 +451,8 @@ const routes: RouteRecordRaw[] = [
     meta: {
       title: '下载队列',
       page: {
-        description: '查看 STRM 同步产生的下载任务和处理进度',
+        description:
+          '查看 STRM 同步产生的下载任务和处理进度，每天 1 点会删除 7 天前的所有任务（含排队中的任务）',
         icon: 'Download',
         variant: 'compact',
       },

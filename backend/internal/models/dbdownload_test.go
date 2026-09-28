@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"qmediasync/internal/db"
 )
@@ -503,5 +504,33 @@ func TestRetryFailedDownloadTasksSkipsTaskWithActiveTarget(t *testing.T) {
 	}
 	if gotUnrelated.Status != DownloadStatusPending || gotUnrelated.RetryCount != 1 || gotUnrelated.Error != "" {
 		t.Fatalf("无冲突失败任务应被重试: %+v", gotUnrelated)
+	}
+}
+
+func TestClearExpireDownloadTasksDeletesTasksOlderThanSevenDays(t *testing.T) {
+	setupQueueStatusTestDB(t)
+
+	now := time.Now().Unix()
+	seed := []*DbDownloadTask{
+		{BaseModel: BaseModel{CreatedAt: now - 8*24*3600}, Status: DownloadStatusPending},
+		{BaseModel: BaseModel{CreatedAt: now - 6*24*3600}, Status: DownloadStatusPending},
+		{BaseModel: BaseModel{CreatedAt: now - 8*24*3600}, Status: DownloadStatusCompleted},
+	}
+	for _, task := range seed {
+		if err := db.Db.Create(task).Error; err != nil {
+			t.Fatalf("创建测试下载任务失败: %v", err)
+		}
+	}
+
+	if err := ClearExpireDownloadTasks(); err != nil {
+		t.Fatalf("清理过期下载任务失败: %v", err)
+	}
+
+	var remaining []DbDownloadTask
+	if err := db.Db.Order("id").Find(&remaining).Error; err != nil {
+		t.Fatalf("查询剩余下载任务失败: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Status != DownloadStatusPending {
+		t.Fatalf("清理后剩余下载任务 = %+v，期望仅保留 7 天内的任务", remaining)
 	}
 }

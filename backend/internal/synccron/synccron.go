@@ -415,9 +415,9 @@ func syncCachedToken(account *models.Account, pending pendingToken) {
 }
 
 func startClearDownloadUploadTasks() {
-	helpers.AppLogger.Info("开始清除 3 天前的上传任务")
+	helpers.AppLogger.Info("开始清除 7 天前的上传任务")
 	models.ClearExpireUploadTasks()
-	helpers.AppLogger.Info("开始清除 3 天前的下载任务")
+	helpers.AppLogger.Info("开始清除 7 天前的下载任务")
 	models.ClearExpireDownloadTasks()
 }
 
