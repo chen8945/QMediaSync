@@ -1,8 +1,10 @@
 package syncstrm
 
 import (
+	"fmt"
 	"io"
 	"log"
+	"strings"
 	"testing"
 
 	"qmediasync/internal/helpers"
@@ -114,5 +116,32 @@ func TestNewSyncStrmRejectsInvalidRegex(t *testing.T) {
 				t.Fatalf("非法正则 %q 不应创建同步器", pattern)
 			}
 		})
+	}
+}
+
+func TestSyncStrmConfigStringOmitsCompiledRegexCache(t *testing.T) {
+	config := SyncStrmConfig{
+		StrmBaseUrl:           "http://127.0.0.1:12333",
+		EnableDownloadMeta:    1,
+		NetNotFoundFileAction: models.SyncTreeItemMetaActionUpload,
+		VideoExt:              []string{".mp4", ".mkv"},
+		MetaExt:               []string{".jpg", ".nfo"},
+		ExcludeNameRegexes:    []string{`(?i)^eXtras( \d+)?$`},
+		StrmUrlNeedPath:       2,
+		DelEmptyLocalDir:      true,
+		CheckMetaMtime:        1,
+	}
+	// 先填充编译缓存，确保 %+v 输出不会把缓存字段带成内存地址。
+	if err := config.compileExcludeNameRegexes(); err != nil {
+		t.Fatalf("编译排除正则失败: %v", err)
+	}
+
+	got := fmt.Sprintf("%+v", config)
+	want := "{StrmBaseUrl:http://127.0.0.1:12333 MinVideoSize:0 EnableDownloadMeta:1 NetNotFoundFileAction:1 VideoExt:[.mp4 .mkv] MetaExt:[.jpg .nfo] ExcludeNames:[] ExcludeNameRegexes:[(?i)^eXtras( \\d+)?$] StrmUrlNeedPath:2 DelEmptyLocalDir:true CheckMetaMtime:1}"
+	if got != want {
+		t.Fatalf("配置日志格式 = %q，期望 %q", got, want)
+	}
+	if strings.Contains(got, "excludeNameRegexes") {
+		t.Fatalf("配置日志不应包含编译缓存字段: %q", got)
 	}
 }

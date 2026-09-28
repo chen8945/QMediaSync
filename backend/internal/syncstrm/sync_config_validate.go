@@ -43,6 +43,26 @@ type SyncStrmConfig struct {
 	excludeNameRegexes []*regexp.Regexp
 }
 
+// String 供 %v 日志格式化使用，只输出导出配置项，与结构体字段保持一致；
+// 编译后的正则缓存不参与格式化，避免日志把正则对象打印成内存地址。
+// 新增配置字段时需同步更新本方法。
+func (config SyncStrmConfig) String() string {
+	return fmt.Sprintf(
+		"{StrmBaseUrl:%s MinVideoSize:%d EnableDownloadMeta:%d NetNotFoundFileAction:%d VideoExt:%v MetaExt:%v ExcludeNames:%v ExcludeNameRegexes:%v StrmUrlNeedPath:%d DelEmptyLocalDir:%t CheckMetaMtime:%d}",
+		config.StrmBaseUrl,
+		config.MinVideoSize,
+		config.EnableDownloadMeta,
+		config.NetNotFoundFileAction,
+		config.VideoExt,
+		config.MetaExt,
+		config.ExcludeNames,
+		config.ExcludeNameRegexes,
+		config.StrmUrlNeedPath,
+		config.DelEmptyLocalDir,
+		config.CheckMetaMtime,
+	)
+}
+
 func (config *SyncStrmConfig) compileExcludeNameRegexes() error {
 	compiled := make([]*regexp.Regexp, 0, len(config.ExcludeNameRegexes))
 	for i, pattern := range config.ExcludeNameRegexes {
