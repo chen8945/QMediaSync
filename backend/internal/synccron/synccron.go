@@ -79,6 +79,9 @@ var cleanup115PlaybackAccount = func(ctx context.Context, account models.Account
 }
 
 func cleanup115PlaybackDirectories(ctx context.Context) {
+	if _, enabled := models.GetPlaybackSettings(); !enabled {
+		return
+	}
 	if !playbackCleanupRunning.CompareAndSwap(false, true) {
 		return
 	}
@@ -95,7 +98,7 @@ func cleanup115PlaybackDirectories(ctx context.Context) {
 		if account.SourceType != models.SourceType115 || account.Token == "" || account.UserId == "" {
 			continue
 		}
-		// 开关关闭后仍回收历史残留；每个账号的扫描预算由播放编排器负责。
+		// 每个账号的扫描预算由播放编排器负责。
 		if err := cleanup115PlaybackAccount(ctx, account); err != nil {
 			helpers.AppLogger.Warnf("115 多端播放定时清理失败：账号=%d，错误=%v", account.ID, err)
 		}

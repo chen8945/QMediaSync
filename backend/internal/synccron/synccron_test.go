@@ -52,6 +52,9 @@ func TestSyncRecordRetentionDays(t *testing.T) {
 }
 
 func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T) {
+	previousSettings := models.SettingsGlobal
+	models.SettingsGlobal = &models.Settings{MultiPlaybackEnabled: 1}
+	t.Cleanup(func() { models.SettingsGlobal = previousSettings })
 	if err := db.Db.Where("1 = 1").Delete(&models.Account{}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +100,25 @@ func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T)
 	cleanup115PlaybackDirectories(ctx)
 	if len(seen) != 0 {
 		t.Fatal("已取消的维护不能继续调用网盘接口")
+	}
+	for _, tc := range []struct {
+		name      string
+		enabled   int
+		wantCalls int
+	}{
+		{name: "disabled", enabled: 0, wantCalls: 0},
+		{name: "enabled", enabled: 1, wantCalls: 2},
+		{name: "disabled_again", enabled: 0, wantCalls: 0},
+		{name: "reenabled", enabled: 1, wantCalls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			models.SettingsGlobal.MultiPlaybackEnabled = tc.enabled
+			clear(seen)
+			cleanup115PlaybackDirectories(t.Context())
+			if len(seen) != tc.wantCalls {
+				t.Fatalf("多端播放开关 = %d，清理账号数 = %d，期望 %d", tc.enabled, len(seen), tc.wantCalls)
+			}
+		})
 	}
 }
 
