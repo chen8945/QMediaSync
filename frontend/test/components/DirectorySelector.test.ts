@@ -2,10 +2,14 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia } from 'pinia'
+import { browseSortOptions } from '../support/browseSort'
 
 import DirectorySelector from '@/components/DirectorySelector.vue'
+import BrowseSortControl from '@/components/BrowseSortControl.vue'
+import { ElMessage } from 'element-plus'
 import { httpKey } from '@/http/client'
 
 const directorySelectorSource = readFileSync(
@@ -39,14 +43,29 @@ const mountSelector = (
       ...additionalProps,
     },
     global: {
+      plugins: [createPinia()],
       provide: {
         [httpKey]: {
-          get,
+          get: (url: string, config: { params: Record<string, unknown> }) =>
+            url.endsWith('/path/sort-options')
+              ? Promise.resolve({
+                  data: {
+                    code: 200,
+                    data: browseSortOptions(String(config.params.source_type), 'directories'),
+                  },
+                })
+              : get(url, config),
           post,
         },
       },
     },
   })
+
+enableAutoUnmount(afterEach)
+beforeEach(() => {
+  localStorage.clear()
+  vi.restoreAllMocks()
+})
 
 describe('DirectorySelector', () => {
   it('有根目录 ID 时从该目录加载初始和刷新列表', async () => {
@@ -477,12 +496,16 @@ describe('DirectorySelector', () => {
     const pendingChildListing = createDeferred<{
       data: { code: number; data: (typeof createdDirectory)[] }
     }>()
-    const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) => {
-      if (params.parent_id === '') {
-        return Promise.resolve({ data: { code: 200, data: [parent] } })
-      }
-      return pendingChildListing.promise
-    })
+    const get = vi.fn(
+      (_url: string, { params }: { params: { parent_id: string; refresh?: number } }) => {
+        if (params.parent_id === '') {
+          return Promise.resolve({ data: { code: 200, data: [parent] } })
+        }
+        if (params.refresh)
+          return Promise.resolve({ data: { code: 200, data: [createdDirectory] } })
+        return pendingChildListing.promise
+      },
+    )
     const post = vi.fn().mockResolvedValue({ data: { code: 200, data: createdDirectory } })
     const wrapper = mountSelector(get, {}, post)
 
@@ -521,4 +544,123 @@ describe('DirectorySelector', () => {
 
     expect(wrapper.text()).toContain('新建目录')
   })
+  it('远程目录保留上游顺序，切换排序保留当前选择并丢弃旧子节点', async () => {
+    const parent = { id: 'parent', name: '父目录', path: '/parent' }
+    const child = { id: 'child', name: '子目录', path: '/parent/child' }
+    const sibling = { id: 'sibling', name: '另一个目录', path: '/sibling' }
+    const get = vi.fn(
+      (_url: string, { params }: { params: { parent_id: string; sort_by: string } }) =>
+        Promise.resolve({
+          data: {
+            code: 200,
+            data:
+              params.parent_id === ''
+                ? params.sort_by === 'time'
+                  ? [sibling, parent]
+                  : [parent, sibling]
+                : params.parent_id === 'parent'
+                  ? [child]
+                  : [],
+          },
+        }),
+    )
+    const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 })
+    await flushPromises()
+    await wrapper.findAll('[role="treeitem"]')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('[role="treeitem"]')[1]!.trigger('click')
+    await flushPromises()
+    wrapper
+      .findComponent(BrowseSortControl)
+      .vm.$emit('change', { sort_by: 'time', sort_order: 'desc' })
+    await flushPromises()
+    expect(
+      wrapper
+        .findAll('.tree-container > div > .tree-node > .node-content .node-label')
+        .map((item) => item.text()),
+    ).toEqual(['另一个目录', '父目录'])
+    expect(wrapper.find('[data-testid="directory-breadcrumb-child"]').exists()).toBe(true)
+    expect(wrapper.emitted('select')).toBeUndefined()
+    expect(get.mock.calls.at(-1)?.[1].params).toMatchObject({
+      sort_by: 'time',
+      sort_order: 'desc',
+      parent_id: 'child',
+    })
+  })
+
+  it('排序失败回滚控件并保留旧目录，旧排序请求不能覆盖最新结果', async () => {
+    const delayed = createDeferred<{ data: { code: number; data: (typeof emptyDirectory)[] } }>()
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 })
+    await flushPromises()
+    const control = wrapper.findComponent(BrowseSortControl)
+    get.mockReturnValueOnce(delayed.promise)
+    control.vm.$emit('change', { sort_by: 'time', sort_order: 'desc' })
+    await flushPromises()
+    control.vm.$emit('change', { sort_by: 'name', sort_order: 'desc' })
+    await flushPromises()
+    delayed.resolve({ data: { code: 200, data: [] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('空目录')
+    expect(control.props('modelValue')).toEqual({ sort_by: 'name', sort_order: 'desc' })
+    vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    get.mockRejectedValueOnce(new Error('sort failed'))
+    control.vm.$emit('change', { sort_by: 'time', sort_order: 'desc' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('空目录')
+    expect(control.props('modelValue')).toEqual({ sort_by: 'name', sort_order: 'desc' })
+    expect(ElMessage.error).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['受限根目录', '已选子目录'])(
+    '%s 新建成功后刷新失败不会误报为创建失败',
+    async (location) => {
+      const success = vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+      const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const parent = { id: 'source', name: '父目录', path: '/source' }
+      const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+      if (location === '已选子目录') {
+        get.mockResolvedValueOnce({ data: { code: 200, data: [parent] } })
+      }
+      const post = vi.fn().mockResolvedValue({
+        data: { code: 200, data: { id: 'new', name: '新目录', path: '/source/new' } },
+      })
+      const wrapper = mountSelector(
+        get,
+        location === '受限根目录' ? { rootId: 'source', rootPath: '/source' } : {},
+        post,
+      )
+      await flushPromises()
+      if (location === '已选子目录') {
+        await wrapper.get('[role="treeitem"]').trigger('click')
+        await flushPromises()
+      }
+      await wrapper
+        .findAll('button')
+        .find((button) => button.text() === '新建文件夹')!
+        .trigger('click')
+      await flushPromises()
+      const dialog = Array.from(document.body.querySelectorAll<HTMLElement>('.el-dialog')).at(-1)!
+      const input = dialog.querySelector<HTMLInputElement>('input')!
+      input.value = '新目录'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      get.mockRejectedValueOnce(new Error('refresh failed'))
+      Array.from(dialog.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('确定'))!
+        .click()
+      await flushPromises()
+      await flushPromises()
+      expect(success).toHaveBeenCalledWith('创建文件夹成功')
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('文件夹已创建，但刷新目录失败'))
+      expect(post).toHaveBeenCalledTimes(1)
+      expect(get.mock.calls.at(-1)?.[1].params).toMatchObject({
+        refresh: 1,
+        sort_by: 'name',
+        sort_order: 'asc',
+      })
+    },
+  )
 })

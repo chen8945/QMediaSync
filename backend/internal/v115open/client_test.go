@@ -1,9 +1,12 @@
 package v115open
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime"
 	"strings"
@@ -11,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"qmediasync/internal/helpers"
 
 	"golang.org/x/time/rate"
 )
@@ -450,4 +455,37 @@ func TestOpenClientRequestsUseCredentialsAfterClearAndReauthorization(t *testing
 		t.Fatal("旧凭据的清空不应覆盖重新授权")
 	}
 	checkRequest("new-token")
+}
+
+type cancelRetryLogWriter struct {
+	cancel context.CancelFunc
+}
+
+func (w cancelRetryLogWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "秒后重试") {
+		w.cancel()
+	}
+	return len(p), nil
+}
+
+func TestDoAuthRequestCancellationStopsRetryWait(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	previousLogger := helpers.V115Log
+	helpers.V115Log = &helpers.QLogger{Logger: log.New(cancelRetryLogWriter{cancel: cancel}, "", 0)}
+	t.Cleanup(func() { helpers.V115Log = previousLogger })
+	transport := &refreshStubTransport{response: `{"state":false,"code":12345,"message":"fixture failure"}`}
+	client := newRefreshTestClient(transport)
+	started := time.Now()
+	_, _, err := client.doAuthRequest(ctx, OPEN_BASE_URL+"/open/ufile/files", client.client.R().SetMethod("GET"),
+		&RequestConfig{BypassRateLimit: true, Timeout: time.Second, MaxRetries: 3, RetryDelay: time.Second}, nil)
+	if !errors.Is(err, context.Canceled) || transport.requests.Load() != 1 || time.Since(started) >= 500*time.Millisecond {
+		t.Fatalf("取消后不能等待或重试：错误=%v，请求数=%d，耗时=%s", err, transport.requests.Load(), time.Since(started))
+	}
+	_, _, err = client.doAuthRequest(ctx, OPEN_BASE_URL+"/open/ufile/files", client.client.R().SetMethod("GET"),
+		&RequestConfig{BypassRateLimit: true, Timeout: time.Second}, nil)
+	if !errors.Is(err, context.Canceled) || transport.requests.Load() != 1 {
+		t.Fatal("已取消请求不能再次进入队列")
+	}
 }

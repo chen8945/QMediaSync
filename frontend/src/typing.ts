@@ -6,6 +6,7 @@ interface Setting {
 }
 
 interface DirInfo {
+  modified_time?: number
   id: string
   name: string
   path: string

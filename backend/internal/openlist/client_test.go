@@ -427,3 +427,82 @@ func TestClientConcurrentTokenRefreshDeduplicatesLogins(t *testing.T) {
 		}
 	})
 }
+
+func TestClientCancellationDuringSharedRefresh(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setupConcurrentClientTest(t)
+		helpers.InitEventBus()
+		t.Cleanup(helpers.InitEventBus)
+		gate := make(chan struct{})
+		defer func() {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}()
+		var logins atomic.Int64
+		client := NewClient(1, "http://openlist.invalid", "user", "user", "expired-token")
+		client.client.SetTransport(handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/api/auth/login" {
+				logins.Add(1)
+				<-gate
+				_, _ = io.WriteString(w, `{"code":200,"data":{"token":"shared-token"}}`)
+			} else if r.Header.Get("Authorization") != "shared-token" {
+				_, _ = io.WriteString(w, `{"code":401,"message":"expired"}`)
+			} else {
+				_, _ = io.WriteString(w, `{"code":200,"data":[]}`)
+			}
+		}))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		canceled, active := make(chan error, 1), make(chan error, 1)
+		go func() { _, err := client.DirList(ctx, "/", false); canceled <- err }()
+		go func() { _, err := client.DirList(t.Context(), "/", false); active <- err }()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-canceled:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("取消错误=%v", err)
+			}
+		default:
+			t.Fatal("取消的目录请求仍在等待共享登录")
+		}
+		close(gate)
+		if err := <-active; err != nil {
+			t.Fatalf("取消不应破坏另一目录请求：%v", err)
+		}
+		if logins.Load() != 1 {
+			t.Fatalf("共享登录次数=%d，期望1", logins.Load())
+		}
+	})
+}
+
+func TestClientCancellationDuringRetryDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setupConcurrentClientTest(t)
+		var calls atomic.Int64
+		client := NewClient(1, "http://openlist.invalid", "", "", "fixture-token")
+		client.client.SetTransport(handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"code":500,"message":"unavailable"}`)
+		}))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { _, err := client.DirList(ctx, "/", false); result <- err }()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消错误=%v", err)
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("取消后不应重试，请求次数=%d", calls.Load())
+		}
+	})
+}

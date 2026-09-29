@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"qmediasync/internal/helpers"
@@ -78,6 +79,8 @@ func (f File) ModifiedAt() int64 {
 }
 
 type FileListResp struct {
+	Order *string `json:"order,omitempty"`
+	IsAsc *int    `json:"is_asc,omitempty"`
 	RespBaseBool[[]File]
 	Count    int              `json:"count"`
 	SysCount int              `json:"sys_count"`
@@ -121,8 +124,10 @@ type MkDirData struct {
 }
 
 type FileListOptions struct {
-	Order string
-	Asc   string
+	// CustomOrder 为空保持旧行为；0 跟随网盘，1 文件夹置顶，2 混排。
+	CustomOrder *int
+	Order       string
+	Asc         string
 }
 
 // CopyCandidate 是复制响应中可解析的候选身份，调用方仍须核对目标目录和文件内容。
@@ -154,11 +159,22 @@ func (d *FileDetail) GetFullPath() string {
 // 要查询的父目录 CID，0 是根目录
 // showCur bool true-只显示当前目录下的列表，false-查询当前目录以及子目录内的所有列表
 // offset 和 limit 搭配实现分页，limit 最大 1150
-func (c *OpenClient) GetFsList(ctx context.Context, fileId string, showCur bool, onlyDir bool, showDir bool, offset int, limit int) (*FileListResp, error) {
-	return c.GetFsListWithOptions(ctx, fileId, showCur, onlyDir, showDir, offset, limit, FileListOptions{})
+func (c *OpenClient) GetFsList(
+	ctx context.Context,
+	fileId string,
+	showCur, includeDirWhenFiltering, showDir bool,
+	offset, limit int,
+) (*FileListResp, error) {
+	return c.GetFsListWithOptions(ctx, fileId, showCur, includeDirWhenFiltering, showDir, offset, limit, FileListOptions{})
 }
 
-func (c *OpenClient) GetFsListWithOptions(ctx context.Context, fileId string, showCur bool, onlyDir bool, showDir bool, offset int, limit int, options FileListOptions) (*FileListResp, error) {
+func (c *OpenClient) GetFsListWithOptions(
+	ctx context.Context,
+	fileId string,
+	showCur, includeDirWhenFiltering, showDir bool,
+	offset, limit int,
+	options FileListOptions,
+) (*FileListResp, error) {
 	data := make(map[string]string)
 	data["cid"] = fileId
 	if limit != 0 {
@@ -171,13 +187,19 @@ func (c *OpenClient) GetFsListWithOptions(ctx context.Context, fileId string, sh
 	if showCur {
 		data["cur"] = "1"
 	}
-	// 是否包含文件夹
-	if onlyDir {
+	// 筛选时包含目录；stdir=1 不保证只返回目录。
+	if includeDirWhenFiltering {
 		data["stdir"] = "1"
 	}
-	// 是否只显示文件夹
+	// 是否在文件列表中显示文件夹
 	if showDir {
 		data["show_dir"] = "1"
+	}
+	if options.CustomOrder != nil && (*options.CustomOrder < 0 || *options.CustomOrder > 2) {
+		return nil, fmt.Errorf("custom_order 必须为 0、1 或 2")
+	}
+	if options.CustomOrder != nil && *options.CustomOrder == 0 && (options.Order != "" || options.Asc != "") {
+		return nil, fmt.Errorf("跟随网盘时不能指定排序字段或方向")
 	}
 	if options.Order != "" {
 		data["o"] = options.Order
@@ -185,10 +207,10 @@ func (c *OpenClient) GetFsListWithOptions(ctx context.Context, fileId string, sh
 	if options.Asc != "" {
 		data["asc"] = options.Asc
 	}
-	if options.Order != "" || options.Asc != "" {
-		// 未显式启用自定义排序时，115 会静默沿用网盘目录保存的排序规则。
-		// 取 1 表示按 o/asc 自定义排序并保留 115 自身的目录置顶行为；
-		// 取 2 会连目录置顶一起去掉，导致文件管理页目录与文件混排。
+	if options.CustomOrder != nil {
+		data["custom_order"] = strconv.Itoa(*options.CustomOrder)
+	} else if options.Order != "" || options.Asc != "" {
+		// 显式启用自定义排序，否则 115 会沿用网盘记忆规则。
 		data["custom_order"] = "1"
 	}
 	url := fmt.Sprintf("%s/open/ufile/files", OPEN_BASE_URL)

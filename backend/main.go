@@ -632,6 +632,7 @@ func setRouter(r *gin.Engine) {
 		api.POST("/user/two-factor/setup", controllers.SetupTwoFactor)                      // 创建两步验证配置草稿
 		api.POST("/user/two-factor/enable", controllers.EnableTwoFactor)                    // 启用两步验证
 		api.POST("/user/two-factor/disable", controllers.DisableTwoFactor)                  // 关闭两步验证
+		api.GET("/path/sort-options", controllers.GetBrowseSortOptions)                     // 浏览排序能力
 		api.GET("/path/list", controllers.GetPathList)                                      // 目录列表
 		api.POST("/path/create", controllers.CreateDir)                                     // 创建目录接口
 		api.DELETE("/path", controllers.DeleteDir)                                          // 删除目录接口

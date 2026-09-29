@@ -1,3 +1,4 @@
+import { browseSortOptions } from '../support/browseSort'
 // @vitest-environment happy-dom
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
@@ -54,6 +55,7 @@ function createFilesResponse(page: number, total = 305) {
 describe('AppFileManager 分页总数', () => {
   beforeEach(() => {
     sessionStorage.clear()
+    localStorage.clear()
     vi.restoreAllMocks()
   })
 
@@ -62,6 +64,8 @@ describe('AppFileManager 分页总数', () => {
 
     const http = {
       get: vi.fn((url: string) => {
+        if (url.endsWith('/path/sort-options'))
+          return Promise.resolve({ data: { code: 200, data: browseSortOptions() } })
         if (url.endsWith('/account/list')) {
           return Promise.resolve({
             data: {
@@ -139,6 +143,8 @@ describe('AppFileManager 分页总数', () => {
     const pageTwoResponse = createDeferred<ReturnType<typeof createFilesResponse>>()
     const http = {
       get: vi.fn((url: string, config?: { params?: { page?: number } }) => {
+        if (url.endsWith('/path/sort-options'))
+          return Promise.resolve({ data: { code: 200, data: browseSortOptions() } })
         if (url.endsWith('/account/list')) {
           return Promise.resolve({
             data: {

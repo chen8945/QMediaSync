@@ -115,7 +115,7 @@ type DirRep struct {
 
 // 文件夹列表
 // /api/fs/dirs
-func (c *Client) DirList(path string, forceRoot bool) ([]DirRep, error) {
+func (c *Client) DirList(ctx context.Context, path string, forceRoot bool) ([]DirRep, error) {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -129,7 +129,7 @@ func (c *Client) DirList(path string, forceRoot bool) ([]DirRep, error) {
 		ForceRoot: forceRoot,
 	}
 	result := &Resp[[]DirRep]{}
-	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
+	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/dirs", req, nil)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 获取文件夹列表失败：%s", err.Error())

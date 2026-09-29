@@ -1,3 +1,4 @@
+import { browseSortOptions } from '../support/browseSort'
 // @vitest-environment happy-dom
 import axios from 'axios'
 import {
@@ -12,6 +13,7 @@ import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import AppFileManager from '@/components/AppFileManager.vue'
+import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 
@@ -56,12 +58,24 @@ const resize = async (width: number) => {
   await flushPromises()
 }
 
-const mountPage = async (sourceType = '115', parentId = '', realDialogs = false) => {
+const mountPage = async (
+  sourceType = '115',
+  parentId = '',
+  realDialogs = false,
+  initialFilesPage = filesPage,
+) => {
   const readReply = vi.fn(
     async (url: string, params?: Record<string, unknown>): Promise<unknown> => {
       void params
+      if (url.endsWith('/path/sort-options'))
+        return envelope(
+          browseSortOptions(
+            String(params?.source_type),
+            params?.scope === 'directories' ? 'directories' : 'files',
+          ),
+        )
       if (url.endsWith('/account/list')) return envelope([{ id: 1, source_type: sourceType }])
-      if (url.endsWith('/path/files')) return envelope(filesPage)
+      if (url.endsWith('/path/files')) return envelope(initialFilesPage)
       if (url.endsWith('/path/list')) return envelope([directory])
       return envelope(null)
     },
@@ -151,6 +165,7 @@ describe('AppFileManager 批量操作', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true })
     sessionStorage.clear()
+    localStorage.clear()
     vi.restoreAllMocks()
     vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
@@ -167,7 +182,74 @@ describe('AppFileManager 批量操作', () => {
     ElMessageBox.close()
     await flushPromises()
     sessionStorage.clear()
+    localStorage.clear()
   })
+
+  it.each([1200, 600])('宽度 %s 下根目录不显示返回上级入口', async (width) => {
+    await resize(width)
+    const { wrapper } = await mountPage()
+    expect(button(wrapper, '返回上级目录')).toBeUndefined()
+  })
+
+  it.each([
+    [1200, '115', '100', '101'],
+    [600, '115', '100', '101'],
+    [1200, 'baidupan', '/source', '/source/child'],
+    [600, 'baidupan', '/source', '/source/child'],
+    [1200, 'openlist', '/source', '/source/child'],
+    [600, 'openlist', '/source', '/source/child'],
+  ] as const)(
+    '宽度 %s 的 %s 从空子目录逐层返回，导航不计入全选和分页',
+    async (width, source, parentId, childId) => {
+      await resize(width)
+      const child = { ...file, id: childId, name: 'child', is_directory: true }
+      const parentPage = { ...filesPage, list: [child], total: 1 }
+      const { wrapper, readReply } = await mountPage(source, parentId, false, parentPage)
+      expect(button(wrapper, '返回上级目录').element.tagName).toBe('BUTTON')
+      expect(wrapper.get('.el-table').text()).not.toContain('返回上级目录')
+      expect(wrapper.findComponent(ResponsivePagination).props('total')).toBe(1)
+      await toggleBatchMode(wrapper)
+      await click(wrapper, '全选')
+      await waitDebounce()
+      expect(batchSummary(wrapper)).toBe('已选 1 项')
+
+      readReply.mockResolvedValueOnce(envelope({ ...filesPage, list: [], total: 0 }))
+      await wrapper.get('.el-table__row').trigger('dblclick')
+      await flushPromises()
+      expect(readReply).toHaveBeenLastCalledWith(
+        expect.stringContaining('/path/files'),
+        expect.objectContaining({ path: childId, page: 1 }),
+      )
+      expect(wrapper.text()).toContain('当前目录为空')
+      expect(button(wrapper, '返回上级目录').exists()).toBe(true)
+      expect(wrapper.findComponent(ResponsivePagination).props('total')).toBe(0)
+      expect(batchSummary(wrapper)).toBe('已选 0 项')
+
+      const pendingParent = createDeferred<unknown>()
+      readReply.mockReturnValueOnce(pendingParent.promise)
+      await click(wrapper, '返回上级目录')
+      expect(readReply).toHaveBeenLastCalledWith(
+        expect.stringContaining('/path/files'),
+        expect.objectContaining({ path: parentId, page: 1 }),
+      )
+      const requestCount = readReply.mock.calls.length
+      expect(button(wrapper, '返回上级目录').attributes('disabled')).toBeDefined()
+      ;(button(wrapper, '返回上级目录').element as HTMLButtonElement).click()
+      await flushPromises()
+      expect(readReply).toHaveBeenCalledTimes(requestCount)
+      pendingParent.resolve(envelope(parentPage))
+      await flushPromises()
+      expect(button(wrapper, '返回上级目录').attributes('disabled')).toBeUndefined()
+      expect(wrapper.findComponent(ResponsivePagination).props('total')).toBe(1)
+
+      await click(wrapper, '返回上级目录')
+      expect(readReply).toHaveBeenLastCalledWith(
+        expect.stringContaining('/path/files'),
+        expect.objectContaining({ path: '', page: 1 }),
+      )
+      expect(button(wrapper, '返回上级目录')).toBeUndefined()
+    },
+  )
 
   it('进入批量模式后展示批量操作栏，全选后按选择数汇总', async () => {
     const { wrapper } = await mountPage()
@@ -183,6 +265,60 @@ describe('AppFileManager 批量操作', () => {
     expect(batchSummary(wrapper)).toBe('已选 2 项')
   })
 
+  it.each([1200, 600])('宽度 %s 下切换批量模式复用图标与菜单且不请求列表', async (width) => {
+    await resize(width)
+    const { wrapper, adapter } = await mountPage()
+    const icons = wrapper.findAll('.file-item-icon svg').map((icon) => icon.element)
+    const menus = wrapper.findAllComponents(ElDropdown).map((menu) => menu.element)
+    const checkboxes = wrapper
+      .findAll('.el-table__body-wrapper .el-checkbox__original')
+      .map((checkbox) => checkbox.element)
+    const requestCount = adapter.mock.calls.length
+    expect(icons).toHaveLength(2)
+    expect(checkboxes).toHaveLength(2)
+    expect(menus).toHaveLength(width === 1200 ? 2 : 0)
+    expect(wrapper.get('.el-table').classes()).toContain('batch-selection-hidden')
+
+    const expectStableCells = () => {
+      wrapper.findAll('.file-item-icon svg').forEach((icon, index) => {
+        expect(icon.element).toBe(icons[index])
+      })
+      wrapper.findAllComponents(ElDropdown).forEach((menu, index) => {
+        expect(menu.element).toBe(menus[index])
+      })
+      wrapper
+        .findAll('.el-table__body-wrapper .el-checkbox__original')
+        .forEach((checkbox, index) => expect(checkbox.element).toBe(checkboxes[index]))
+      expect(adapter.mock.calls).toHaveLength(requestCount)
+    }
+
+    await toggleBatchMode(wrapper)
+    expect(wrapper.get('.el-table').classes()).not.toContain('batch-selection-hidden')
+    expectStableCells()
+    await selectRow(wrapper, 0)
+    await click(wrapper, '退出批量')
+    expect(wrapper.get('.el-table').classes()).toContain('batch-selection-hidden')
+    expectStableCells()
+    await toggleBatchMode(wrapper)
+    expect(batchSummary(wrapper)).toBe('已选 0 项')
+    expectStableCells()
+  })
+
+  it('复用的行内菜单在刷新后使用当前文件信息', async () => {
+    const { wrapper, readReply } = await mountPage()
+    readReply.mockResolvedValueOnce(
+      envelope({ ...filesPage, list: [{ ...file, name: 'renamed.mkv' }, secondFile] }),
+    )
+    await click(wrapper, '刷新')
+    expect(wrapper.find('[aria-label="操作 renamed.mkv"]').exists()).toBe(true)
+    await fileAction(wrapper, 'DELETE')
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      '确认删除“renamed.mkv”吗？',
+      '确认删除',
+      expect.any(Object),
+    )
+  })
+
   it('退出批量模式清空选择', async () => {
     const { wrapper } = await mountPage()
     await toggleBatchMode(wrapper)
@@ -195,6 +331,29 @@ describe('AppFileManager 批量操作', () => {
 
     await toggleBatchMode(wrapper)
     expect(batchSummary(wrapper)).toBe('已选 0 项')
+  })
+
+  it.each([1200, 600])('宽度 %s 下退出批量后忽略尚未执行的全选', async (width) => {
+    await resize(width)
+    const { wrapper } = await mountPage()
+    await toggleBatchMode(wrapper)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      await click(wrapper, '全选')
+      expect(batchSummary(wrapper)).toBe('已选 0 项')
+      await click(wrapper, '退出批量')
+      await vi.advanceTimersByTimeAsync(20)
+      await flushPromises()
+      expect(
+        wrapper
+          .findAll('.el-table__body-wrapper .el-checkbox__original')
+          .some((checkbox) => (checkbox.element as HTMLInputElement).checked),
+      ).toBe(false)
+      await toggleBatchMode(wrapper)
+      expect(batchSummary(wrapper)).toBe('已选 0 项')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([

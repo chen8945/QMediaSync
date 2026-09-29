@@ -253,6 +253,9 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 
 // doAuthRequest 带重试的认证请求方法（使用全局队列）
 func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.Request, options *RequestConfig, respData any) (*resty.Response, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if c.playback {
 		return c.doPlaybackRequest(ctx, url, req, options, respData)
 	}
@@ -271,6 +274,9 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 	var lastErr error
 	var lastRespBytes []byte
 	for attempt := 0; attempt <= options.MaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		// 使用全局队列执行器处理请求
 		executor := GetGlobalExecutor()
 		respChan := make(chan *RequestResponse, 1)
@@ -289,7 +295,15 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		executor.EnqueueRequest(queuedReq)
 
 		// 等待响应
-		queueResp := <-respChan
+		var queueResp *RequestResponse
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case queueResp = <-respChan:
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 
 		if queueResp.Error == nil && queueResp.RespData != nil {
 			// 请求成功
@@ -323,7 +337,9 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		if queueResp.IsThrottled {
 			helpers.V115Log.Warn("检测到限流，等待 1 分钟后重试")
 			// 等待 1 分钟后重试
-			time.Sleep(1 * time.Minute)
+			if err := sleepWithTimer(ctx, time.Minute); err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
 
@@ -331,7 +347,9 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		if attempt < options.MaxRetries && lastErr != nil {
 			helpers.V115Log.Warnf("%s %s 请求失败：%+v", req.Method, url, lastErr)
 			helpers.V115Log.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试）", req.Method, url, options.RetryDelay.Seconds(), attempt+1)
-			time.Sleep(options.RetryDelay)
+			if err := sleepWithTimer(ctx, options.RetryDelay); err != nil {
+				return nil, nil, err
+			}
 		}
 		lastRespBytes = queueResp.RespBytes
 	}

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"qmediasync/internal/helpers"
 
@@ -330,5 +331,44 @@ func TestRenameNoReplace(t *testing.T) {
 				t.Fatalf("重命名未生效：%v", files)
 			}
 		})
+	}
+}
+
+func TestDirListPropagatesCancellation(t *testing.T) {
+	previousLogger := helpers.OpenListLog
+	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { helpers.OpenListLog = previousLogger })
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/fs/dirs" {
+			t.Errorf("意外路径：%s", r.URL.Path)
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer server.Close()
+	client := &Client{client: resty.New().SetBaseURL(server.URL)}
+	defer client.client.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := client.DirList(ctx, "/", false); result <- err }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("目录请求未开始")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("期望取消错误，得到%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("目录请求没有随context取消")
 	}
 }

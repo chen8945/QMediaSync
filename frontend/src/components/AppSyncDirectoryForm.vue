@@ -1206,6 +1206,7 @@
       :width="checkIsMobile ? '90%' : '600px'"
       :close-on-click-modal="false"
       body-class="directory-selector"
+      destroy-on-close
     >
       <div class="dir-selector">
         <DirectorySelector

@@ -184,10 +184,14 @@ func validateIDItems(field string, ids []uint) error {
 
 // PathListRequest 路径列表请求。
 type PathListRequest struct {
-	ParentID   string            `json:"parent_id" form:"parent_id"`
-	ParentPath string            `json:"parent_path" form:"parent_path"`
-	SourceType models.SourceType `json:"source_type" form:"source_type"`
-	AccountID  uint              `json:"account_id" form:"account_id"`
+	SortBy       string            `json:"sort_by" form:"sort_by"`
+	SortOrder    string            `json:"sort_order" form:"sort_order"`
+	FoldersFirst *bool             `json:"folders_first" form:"folders_first"`
+	Refresh      int               `json:"refresh" form:"refresh"`
+	ParentID     string            `json:"parent_id" form:"parent_id"`
+	ParentPath   string            `json:"parent_path" form:"parent_path"`
+	SourceType   models.SourceType `json:"source_type" form:"source_type"`
+	AccountID    uint              `json:"account_id" form:"account_id"`
 	PaginationRequest
 }
 
@@ -201,16 +205,20 @@ func (r *PathListRequest) Validate() error {
 			return err
 		}
 	}
-	return nil
+	if r.Refresh != 0 && r.Refresh != 1 {
+		return validation.New("refresh", "仅支持 0 或 1")
+	}
+	return ValidateBrowseSort(r.SourceType, "directories", r.SortBy, r.SortOrder, r.FoldersFirst)
 }
 
 // NetFileListRequest 网盘文件列表请求。
 type NetFileListRequest struct {
-	ParentID  string `json:"parent_id" form:"path"`
-	AccountID uint   `json:"account_id" form:"account_id"`
-	Refresh   bool   `json:"refresh" form:"refresh"`
-	SortBy    string `json:"sort_by" form:"sort_by"`
-	SortOrder string `json:"sort_order" form:"sort_order"`
+	FoldersFirst *bool  `json:"folders_first" form:"folders_first"`
+	ParentID     string `json:"parent_id" form:"path"`
+	AccountID    uint   `json:"account_id" form:"account_id"`
+	Refresh      bool   `json:"refresh" form:"refresh"`
+	SortBy       string `json:"sort_by" form:"sort_by"`
+	SortOrder    string `json:"sort_order" form:"sort_order"`
 	PaginationRequest
 }
 

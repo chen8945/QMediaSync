@@ -14,16 +14,26 @@
           </button>
         </el-breadcrumb-item>
       </el-breadcrumb>
-      <el-button
-        plain
-        :icon="Refresh"
-        :loading="loading"
-        :disabled="createLoading"
-        aria-label="刷新目录"
-        @click="refreshDirectories"
-      >
-        刷新
-      </el-button>
+      <div class="selector-toolbar-actions">
+        <BrowseSortControl
+          v-if="sortReady && sortCapabilities"
+          :options="sortCapabilities"
+          :model-value="sortSelection"
+          :disabled="createLoading"
+          @change="handleSortChange"
+        />
+        <el-button
+          plain
+          size="small"
+          :icon="Refresh"
+          :loading="loading"
+          :disabled="createLoading"
+          aria-label="刷新目录"
+          @click="refreshDirectories"
+        >
+          刷新
+        </el-button>
+      </div>
     </div>
 
     <div
@@ -91,13 +101,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useHttpClient } from '@/http/client'
 import type { DirInfo } from '@/typing'
 import TreeNode from './TreeNode.vue'
-import { createDirectory, fetchDirectories, filePublicMessages } from '@/api/files'
+import {
+  createDirectory,
+  fetchDirectories,
+  filePublicMessages,
+  type BrowseSortValue,
+} from '@/api/files'
+import { browseSortQuery, sortLocalDirectories, useBrowseSort } from '@/composables/useBrowseSort'
+import BrowseSortControl from './BrowseSortControl.vue'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 
 interface Props {
@@ -122,6 +139,7 @@ interface TreeNodeData extends DirInfo {
 interface LoadNodeOptions {
   force?: boolean
   notify?: boolean
+  refresh?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -140,6 +158,37 @@ const emit = defineEmits<{
 }>()
 
 const http = useHttpClient()
+const {
+  capabilities: sortCapabilities,
+  selection: sortSelection,
+  ready: sortReady,
+  contextKey: sortContextKey,
+  prepare: prepareSort,
+  choose: chooseSort,
+  commit: commitSort,
+  rollback: rollbackSort,
+} = useBrowseSort(
+  http,
+  () => props.sourceType,
+  () => props.accountId,
+  'directories',
+)
+const requests = new Set<AbortController>()
+let disposed = false
+
+function invalidateRequests() {
+  latestRootLoadId += 1
+  for (const request of requests) request.abort()
+  requests.clear()
+  const invalidateChildren = (nodes: TreeNodeData[]) => {
+    for (const node of nodes) {
+      node.latestChildLoadId += 1
+      if (node.loadState === 'loading') node.loadState = 'unloaded'
+      invalidateChildren(node.children)
+    }
+  }
+  invalidateChildren(treeData.value)
+}
 
 const showCreateDialog = ref(false)
 const createLoading = ref(false)
@@ -188,39 +237,65 @@ const toDirInfo = (node: TreeNodeData): DirInfo => ({
   path: node.path,
 })
 
-const requestDirectories = async (parentID: string, parentPath: string): Promise<DirInfo[]> =>
-  (await fetchDirectories(http, {
-    parent_id: parentID,
-    parent_path: parentPath,
-    source_type: props.sourceType,
-    account_id: props.accountId || 0,
-  })) || []
+const requestDirectories = async (
+  parentID: string,
+  parentPath: string,
+  refresh = false,
+): Promise<DirInfo[]> => {
+  const sourceType = props.sourceType
+  const sort = { ...sortSelection.value }
+  const controller = new AbortController()
+  requests.add(controller)
+  try {
+    const directories =
+      (await fetchDirectories(
+        http,
+        {
+          parent_id: parentID,
+          parent_path: parentPath,
+          source_type: sourceType,
+          account_id: props.accountId || 0,
+          ...browseSortQuery(sort),
+          refresh: refresh ? 1 : 0,
+        },
+        controller.signal,
+      )) || []
+    return sourceType === 'local' ? sortLocalDirectories(directories, sort) : directories
+  } finally {
+    requests.delete(controller)
+  }
+}
 
-const reportDirectoryError = (error: unknown, fallbackMessage: string) => {
+const reportDirectoryError = (error: unknown, fallbackMessage: string, includeContext = false) => {
   notifyHttpError(error, fallbackMessage, {
     fallbackMessage,
     publicMessages: filePublicMessages,
+    messagePrefix: includeContext ? fallbackMessage : undefined,
   })
 }
 
 const loadNodeChildren = async (
   node: TreeNodeData,
-  { force = false, notify = true }: LoadNodeOptions = {},
+  { force = false, notify = true, refresh = false }: LoadNodeOptions = {},
 ): Promise<boolean> => {
-  if (node.loadState === 'loading' || (!force && node.loadState === 'loaded')) return true
+  if (!force && node.loadState === 'loaded') return true
+  if (!force && node.loadState === 'loading') return false
+  const rootLoadId = latestRootLoadId
 
   const childLoadId = ++node.latestChildLoadId
   node.loadState = 'loading'
   try {
-    const directories = await requestDirectories(node.id, node.path)
-    if (childLoadId !== node.latestChildLoadId) return false
+    const directories = await requestDirectories(node.id, node.path, refresh)
+    if (disposed || rootLoadId !== latestRootLoadId || childLoadId !== node.latestChildLoadId)
+      return false
 
     node.children = directories.map(createNode)
     node.isLeaf = node.children.length === 0
     node.loadState = 'loaded'
     return true
   } catch (error) {
-    if (childLoadId !== node.latestChildLoadId) return false
+    if (disposed || rootLoadId !== latestRootLoadId || childLoadId !== node.latestChildLoadId)
+      return false
 
     node.loadState = 'error'
     node.isLeaf = false
@@ -259,6 +334,7 @@ const findNodeAncestors = (
 const restoreSelection = async (
   ancestors: DirInfo[],
   rootNodes: TreeNodeData[],
+  refresh: boolean,
 ): Promise<TreeNodeData | null> => {
   let nodes = rootNodes
   let lastExisting: TreeNodeData | null = null
@@ -268,7 +344,7 @@ const restoreSelection = async (
     if (!node) return lastExisting
 
     lastExisting = node
-    const loaded = await loadNodeChildren(node, { notify: false })
+    const loaded = await loadNodeChildren(node, { notify: false, refresh })
     if (!loaded) {
       throw new Error('加载目录失败')
     }
@@ -285,68 +361,59 @@ const selectDirectory = (node: TreeNodeData) => {
   emit('update:modelValue', directory)
 }
 
-const loadRootDirectories = async () => {
-  const rootLoadId = ++latestRootLoadId
+const reloadDirectories = async (preserveSelection = false, refresh = false): Promise<boolean> => {
+  const ancestors =
+    preserveSelection && selectedDir.value
+      ? findNodeAncestors(treeData.value, selectedDir.value.id)
+      : null
+  invalidateRequests()
+  const rootLoadId = latestRootLoadId
   loading.value = true
   try {
-    const directories = await requestDirectories(props.rootId || '', props.rootPath || '')
-    if (rootLoadId !== latestRootLoadId) return
-    treeData.value = directories.map(createNode)
-  } catch (error) {
-    if (rootLoadId !== latestRootLoadId) return
-    treeData.value = []
-    reportDirectoryError(error, '加载目录失败')
-  } finally {
-    if (rootLoadId === latestRootLoadId) {
-      loading.value = false
+    if (!(await prepareSort()) || disposed || rootLoadId !== latestRootLoadId) return false
+    const requestedSort = { ...sortSelection.value }
+    const directories = await requestDirectories(props.rootId || '', props.rootPath || '', refresh)
+    if (disposed || rootLoadId !== latestRootLoadId) return false
+    const refreshedTree = directories.map(createNode)
+    const restoredNode = ancestors?.length
+      ? await restoreSelection(ancestors, refreshedTree, refresh)
+      : null
+    if (disposed || rootLoadId !== latestRootLoadId) return false
+    treeData.value = refreshedTree
+    commitSort(requestedSort)
+    if (ancestors?.length) {
+      if (restoredNode) {
+        selectDirectory(restoredNode)
+      } else {
+        selectedDir.value = null
+        emit('update:modelValue', null)
+        ElMessage.warning('所选目录已不存在，已回到根目录，请重新选择')
+      }
     }
+    return true
+  } catch (error) {
+    if (!disposed && rootLoadId === latestRootLoadId) {
+      rollbackSort()
+      reportDirectoryError(error, '加载目录失败')
+    }
+    return false
+  } finally {
+    if (rootLoadId === latestRootLoadId) loading.value = false
   }
 }
 
-const refreshDirectories = async () => {
+const loadRootDirectories = () => reloadDirectories()
+const refreshDirectories = () => {
   if (loading.value || createLoading.value) return
-
-  const ancestors = selectedDir.value
-    ? findNodeAncestors(treeData.value, selectedDir.value.id)
-    : null
-
-  const rootLoadId = ++latestRootLoadId
-  loading.value = true
-  try {
-    const directories = await requestDirectories(props.rootId || '', props.rootPath || '')
-    if (rootLoadId !== latestRootLoadId) return
-    const refreshedTree = directories.map(createNode)
-
-    if (!ancestors?.length) {
-      treeData.value = refreshedTree
-      return
-    }
-
-    const restoredNode = await restoreSelection(ancestors, refreshedTree)
-    if (rootLoadId !== latestRootLoadId) return
-    treeData.value = refreshedTree
-
-    if (restoredNode) {
-      selectDirectory(restoredNode)
-      return
-    }
-
-    selectedDir.value = null
-    emit('update:modelValue', null)
-    ElMessage.warning('所选目录已不存在，已回到根目录，请重新选择')
-  } catch (error) {
-    if (rootLoadId === latestRootLoadId) {
-      reportDirectoryError(error, '加载目录失败')
-    }
-  } finally {
-    if (rootLoadId === latestRootLoadId) {
-      loading.value = false
-    }
-  }
+  return reloadDirectories(true, true)
+}
+const handleSortChange = (value: BrowseSortValue) => {
+  chooseSort(value)
+  void reloadDirectories(true)
 }
 
 const handleToggle = async (node: TreeNodeData) => {
-  if (node.isLeaf) return
+  if (loading.value || node.isLeaf) return
 
   if (node.expanded) {
     node.expanded = false
@@ -361,10 +428,12 @@ const handleToggle = async (node: TreeNodeData) => {
 }
 
 const handleNodeSelect = (node: TreeNodeData) => {
+  if (loading.value) return
   selectDirectory(node)
 }
 
 const handleBreadcrumbNavigate = (directory: DirInfo) => {
+  if (loading.value) return
   const node = findNode(treeData.value, directory.id)
   if (!node) return
 
@@ -373,6 +442,7 @@ const handleBreadcrumbNavigate = (directory: DirInfo) => {
 }
 
 const retryNode = async (node: TreeNodeData) => {
+  if (loading.value) return
   await loadNodeChildren(node, { force: true })
 }
 
@@ -396,31 +466,18 @@ const resetState = () => {
 }
 
 watch(
-  () => props.sourceType,
-  () => {
+  () => [sortContextKey.value, props.rootPath, props.rootId],
+  (_value, previous) => {
+    treeData.value = []
+    if (previous) {
+      selectedDir.value = null
+      emit('update:modelValue', null)
+      showCreateDialog.value = false
+      createLoading.value = false
+    }
     void loadRootDirectories()
   },
-)
-
-watch(
-  () => props.accountId,
-  () => {
-    void loadRootDirectories()
-  },
-)
-
-watch(
-  () => props.rootPath,
-  () => {
-    void loadRootDirectories()
-  },
-)
-
-watch(
-  () => props.rootId,
-  () => {
-    void loadRootDirectories()
-  },
+  { immediate: true },
 )
 
 watch(
@@ -431,8 +488,9 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
-  void loadRootDirectories()
+onBeforeUnmount(() => {
+  disposed = true
+  invalidateRequests()
 })
 
 const openCreateDialog = () => {
@@ -446,9 +504,11 @@ const handleCreateDirectory = async () => {
   const parent = createParent.value
   if (!createFormRef.value || !parent || loading.value || createLoading.value) return
 
+  const contextId = latestRootLoadId
   try {
     createLoading.value = true
     await createFormRef.value.validate()
+    if (disposed || contextId !== latestRootLoadId) return
 
     const newDirectory = await createDirectory(http, {
       parent_id: parent.id,
@@ -458,29 +518,38 @@ const handleCreateDirectory = async () => {
       account_id: props.accountId,
     })
 
+    if (disposed || contextId !== latestRootLoadId) return
     ElMessage.success('创建文件夹成功')
     showCreateDialog.value = false
     createForm.value.name = ''
 
-    const parentNode = findNode(treeData.value, parent.id)
-    if (parentNode) {
-      parentNode.latestChildLoadId += 1
-      parentNode.children.push(createNode(newDirectory))
-      parentNode.isLeaf = false
-      parentNode.loadState = 'loaded'
-      parentNode.expanded = true
-    } else if (parent.id === props.rootId) {
-      latestRootLoadId += 1
-      loading.value = false
-      treeData.value.push(createNode(newDirectory))
+    // 创建成功后重新读取父目录，让新目录遵守当前排序，并废弃创建前的子目录请求。
+    try {
+      const parentNode = findNode(treeData.value, parent.id)
+      if (parentNode) {
+        const loaded = await loadNodeChildren(parentNode, {
+          force: true,
+          notify: false,
+          refresh: true,
+        })
+        if (!loaded) return
+        parentNode.expanded = !parentNode.isLeaf
+      } else if (parent.id === props.rootId) {
+        const directories = await requestDirectories(props.rootId, props.rootPath, true)
+        if (disposed || contextId !== latestRootLoadId) return
+        treeData.value = directories.map(createNode)
+      }
+      const createdNode = findNode(treeData.value, newDirectory.id)
+      if (createdNode) selectDirectory(createdNode)
+    } catch (error) {
+      if (!disposed && contextId === latestRootLoadId) {
+        reportDirectoryError(error, '文件夹已创建，但刷新目录失败，请点击刷新重试', true)
+      }
     }
-
-    selectedDir.value = newDirectory
-    emit('update:modelValue', newDirectory)
   } catch (error) {
-    reportDirectoryError(error, '创建文件夹失败')
+    if (!disposed && contextId === latestRootLoadId) reportDirectoryError(error, '创建文件夹失败')
   } finally {
-    createLoading.value = false
+    if (contextId === latestRootLoadId) createLoading.value = false
   }
 }
 
@@ -499,9 +568,21 @@ defineExpose({
 
 .selector-toolbar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.selector-toolbar-actions {
+  display: flex;
+  align-items: flex-start;
+  max-width: 100%;
+  gap: 8px;
+}
+
+.selector-toolbar-actions > .el-button {
+  flex-shrink: 0;
 }
 
 .directory-breadcrumb {
@@ -573,8 +654,12 @@ defineExpose({
 }
 
 @media (max-width: 768px) {
-  .selector-toolbar {
-    align-items: flex-start;
+  .directory-breadcrumb {
+    flex-basis: 100%;
+  }
+
+  .selector-toolbar-actions {
+    width: 100%;
   }
 
   .footer-buttons {

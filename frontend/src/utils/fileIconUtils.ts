@@ -1,4 +1,6 @@
 import type { FileType } from '@/typing'
+import type { Component } from 'vue'
+import { getIconComponent } from '@/components/common/iconRegistry'
 
 /**
  * 根据文件名获取文件类型
@@ -44,20 +46,19 @@ export function getFileType(filename: string): FileType {
  * 根据文件类型获取对应的 Element Plus 图标
  * @param type 文件类型
  * @param isDirectory 是否为目录
- * @returns Element Plus 图标名称
+ * @returns 可直接用于动态组件的 Element Plus 图标
  */
-export function getFileIcon(type: FileType, isDirectory = false): string {
-  if (isDirectory) return 'Folder'
+export function getFileIcon(type: FileType, isDirectory = false): Component {
+  if (isDirectory) return getIconComponent('Folder')
 
   switch (type) {
     case 'video':
-      return 'VideoPlay'
+      return getIconComponent('VideoPlay')
     case 'image':
-      return 'Picture'
+      return getIconComponent('Picture')
     case 'nfo':
-      return 'Document'
     default:
-      return 'Document'
+      return getIconComponent('Document')
   }
 }
 
@@ -65,9 +66,9 @@ export function getFileIcon(type: FileType, isDirectory = false): string {
  * 根据文件名直接获取图标
  * @param filename 文件名
  * @param isDirectory 是否为目录
- * @returns Element Plus 图标名称
+ * @returns 可直接用于动态组件的 Element Plus 图标
  */
-export function getFileIconByName(filename: string, isDirectory = false): string {
+export function getFileIconByName(filename: string, isDirectory = false): Component {
   const type = getFileType(filename)
   return getFileIcon(type, isDirectory)
 }

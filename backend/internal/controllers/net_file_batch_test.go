@@ -205,3 +205,26 @@ func TestInvalidateNetFileCacheForDeletedPath(t *testing.T) {
 		t.Fatal("删除目录不应清理相似前缀兄弟目录")
 	}
 }
+
+func TestBrowse115Options(t *testing.T) {
+	first, mixed := true, false
+	for _, tc := range []struct {
+		name, field, direction, order, asc string
+		first                              *bool
+		custom                             int
+	}{
+		{name: "文件列表旧默认", order: "file_name", asc: "1", custom: 1},
+		{name: "修改时间升序默认置顶", field: "time", direction: "asc", order: "user_utime", asc: "1", custom: 1},
+		{name: "修改时间降序置顶", field: "time", direction: "desc", first: &first, order: "user_utime", asc: "0", custom: 1},
+		{name: "大小降序混排", field: "size", direction: "desc", first: &mixed, order: "file_size", asc: "0", custom: 2},
+		{name: "类型升序", field: "type", direction: "asc", order: "file_type", asc: "1", custom: 1},
+		{name: "跟随网盘不发送字段方向", field: "default", custom: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			options, err := browse115Options(tc.field, tc.direction, tc.first)
+			if err != nil || options.Order != tc.order || options.Asc != tc.asc || options.CustomOrder == nil || *options.CustomOrder != tc.custom {
+				t.Fatalf("选项 = %+v，错误 = %v", options, err)
+			}
+		})
+	}
+}

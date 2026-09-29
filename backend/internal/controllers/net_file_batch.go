@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"qmediasync/internal/models"
+	"qmediasync/internal/requests"
+	"qmediasync/internal/v115open"
 )
 
 type netFileCacheStatus string
@@ -20,13 +22,6 @@ const (
 type netFileSourceCapability struct {
 	BatchSize  int
 	TotalExact bool
-}
-
-type netFileSortParams struct {
-	V115Order  string
-	V115Asc    string
-	BaiduOrder string
-	BaiduDesc  int32
 }
 
 type netFileBatchRange struct {
@@ -54,31 +49,30 @@ type netFileListResponse struct {
 	Cache      netFileCacheMeta `json:"cache"`
 }
 
+func (b netFileBatch) fileItems() []*FileItem {
+	if b.Raw115 == nil {
+		return b.Items
+	}
+	items := make([]*FileItem, 0, len(b.Raw115.Data))
+	for _, item := range b.Raw115.Data {
+		items = append(items, &FileItem{
+			Id: item.FileId, IsDirectory: item.FileCategory == v115open.TypeDir,
+			Name: item.FileName, Size: item.FileSize, ModifiedAt: item.ModifiedAt(),
+		})
+	}
+	return items
+}
+
 func getNetFileSourceCapability(sourceType models.SourceType, sortBy string, sortOrder string) (netFileSourceCapability, error) {
+	if err := requests.ValidateBrowseSort(sourceType, "files", sortBy, sortOrder, nil); err != nil {
+		return netFileSourceCapability{}, err
+	}
 	switch sourceType {
 	case models.SourceType115:
-		if sortBy == "" {
-			sortBy = "name"
-		}
-		if _, _, err := map115Sort(sortBy, sortOrder); err != nil {
-			return netFileSourceCapability{}, err
-		}
 		return netFileSourceCapability{BatchSize: 1000, TotalExact: true}, nil
 	case models.SourceTypeBaiduPan:
-		if sortBy == "" {
-			sortBy = "name"
-		}
-		if _, _, err := mapBaiduSort(sortBy, sortOrder); err != nil {
-			return netFileSourceCapability{}, err
-		}
 		return netFileSourceCapability{BatchSize: 1000, TotalExact: false}, nil
 	case models.SourceTypeOpenList:
-		if sortBy == "" {
-			sortBy = "default"
-		}
-		if sortBy != "default" {
-			return netFileSourceCapability{}, fmt.Errorf("OpenList 暂不支持排序")
-		}
 		return netFileSourceCapability{BatchSize: 500, TotalExact: true}, nil
 	default:
 		return netFileSourceCapability{}, fmt.Errorf("未知的网盘类型")
@@ -86,18 +80,12 @@ func getNetFileSourceCapability(sourceType models.SourceType, sortBy string, sor
 }
 
 func map115Sort(sortBy string, sortOrder string) (string, string, error) {
-	var order string
-	switch sortBy {
-	case "", "name":
-		order = "file_name"
-	case "size":
-		order = "file_size"
-	case "time":
-		order = "user_utime"
-	case "type":
-		order = "file_type"
-	default:
-		return "", "", fmt.Errorf("115 不支持排序字段：%s", sortBy)
+	if sortBy == "" {
+		sortBy = "name"
+	}
+	order, err := requests.BrowseSortParameter(models.SourceType115, sortBy)
+	if err != nil || sortBy == "default" {
+		return order, "", err
 	}
 	asc := "1"
 	if sortOrder == "desc" {
@@ -107,22 +95,29 @@ func map115Sort(sortBy string, sortOrder string) (string, string, error) {
 }
 
 func mapBaiduSort(sortBy string, sortOrder string) (string, int32, error) {
-	var order string
-	switch sortBy {
-	case "", "name":
-		order = "name"
-	case "size":
-		order = "size"
-	case "time":
-		order = "time"
-	default:
-		return "", 0, fmt.Errorf("百度网盘不支持排序字段：%s", sortBy)
+	if sortBy == "" {
+		sortBy = "name"
 	}
+	order, err := requests.BrowseSortParameter(models.SourceTypeBaiduPan, sortBy)
 	var desc int32
 	if sortOrder == "desc" {
 		desc = 1
 	}
-	return order, desc, nil
+	return order, desc, err
+}
+
+func browse115Options(sortBy, sortOrder string, foldersFirst *bool) (v115open.FileListOptions, error) {
+	order, asc, err := map115Sort(sortBy, sortOrder)
+	if err != nil {
+		return v115open.FileListOptions{}, err
+	}
+	customOrder := 1
+	if sortBy == "default" {
+		customOrder = 0
+	} else if foldersFirst != nil && !*foldersFirst {
+		customOrder = 2
+	}
+	return v115open.FileListOptions{Order: order, Asc: asc, CustomOrder: &customOrder}, nil
 }
 
 func computeNetFileBatchRanges(page int, pageSize int, batchSize int) []netFileBatchRange {
@@ -143,12 +138,11 @@ func normalizeNetFileSort(sourceType models.SourceType, sortBy string) string {
 	if sortBy != "" {
 		return sortBy
 	}
-	switch sourceType {
-	case models.SourceTypeOpenList:
-		return "default"
-	default:
-		return "name"
+	options, err := requests.BrowseSortOptionsFor(sourceType, "files")
+	if err != nil {
+		return sortBy
 	}
+	return options.Default.SortBy
 }
 
 func normalizeNetFileCachePath(sourceType models.SourceType, value string) string {

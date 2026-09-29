@@ -140,10 +140,16 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 	var lastErr error
 	authRetried := false
 	for attempt := 0; attempt <= options.MaxRetries; {
+		if err := req.Context().Err(); err != nil {
+			return nil, err
+		}
 		// 保留未执行的模板，让 multipart 每次重新打开文件；Clone 默认会新建 Result。
 		attemptReq := req.Clone(req.Context())
 		attemptReq.Result = req.Result
 		resp, err := c.request(path, attemptReq, &state)
+		if contextErr := req.Context().Err(); contextErr != nil {
+			return nil, contextErr
+		}
 		if err == nil {
 			// 正常返回
 			return resp, nil
@@ -159,17 +165,23 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 			}
 			// 同一客户端按地址和登录凭据合并并发刷新，避免跨地址复用 Token。
 			key := strings.TrimRight(state.baseURL, "/") + "\x00" + state.username + "\x00" + state.password
-			refreshed, err, _ := c.refreshGroup.Do(key, func() (any, error) {
+			refresh := c.refreshGroup.DoChan(key, func() (any, error) {
 				current := c.snapshot()
 				if current.sameLogin(state) && current.accessToken != "" && current.accessToken != state.accessToken {
 					return &TokenData{Token: current.accessToken}, nil
 				}
 				return c.getToken(state)
 			})
-			if err != nil {
-				return nil, errTokenExpired
+			// 共享登录继续服务其他等待者；取消当前浏览只结束当前等待。
+			select {
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			case refreshed := <-refresh:
+				if refreshed.Err != nil {
+					return nil, errTokenExpired
+				}
+				state.accessToken = refreshed.Val.(*TokenData).Token
 			}
-			state.accessToken = refreshed.(*TokenData).Token
 			authRetried = true
 			helpers.OpenListLog.Warn("访问凭证已更新，重新发送请求")
 			continue
@@ -178,7 +190,13 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 		if attempt < options.MaxRetries {
 			// helpers.OpenListLog.Warnf("%s %s 请求失败：%+v", req.Method, req.URL, lastErr)
 			helpers.OpenListLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误：%+v", attemptReq.Method, attemptReq.URL, options.RetryDelay.Seconds(), attempt+1, lastErr)
-			time.Sleep(options.RetryDelay)
+			timer := time.NewTimer(options.RetryDelay)
+			select {
+			case <-req.Context().Done():
+				timer.Stop()
+				return nil, req.Context().Err()
+			case <-timer.C:
+			}
 		}
 		attempt++
 	}

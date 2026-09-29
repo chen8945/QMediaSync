@@ -87,30 +87,12 @@
                 >
                   批量操作
                 </el-checkbox>
-                <template v-if="isFileManagerSortControlVisible && supportedSortFields.length > 1">
-                  <el-select
-                    v-model="sortBy"
-                    class="file-manager-sort-field"
-                    size="small"
-                    @change="handleSortChange"
-                  >
-                    <el-option
-                      v-for="field in supportedSortFields"
-                      :key="field"
-                      :label="getSortFieldLabel(field)"
-                      :value="field"
-                    />
-                  </el-select>
-                  <el-select
-                    v-model="sortOrder"
-                    class="file-manager-sort-order"
-                    size="small"
-                    @change="handleSortChange"
-                  >
-                    <el-option label="升序" value="asc" />
-                    <el-option label="降序" value="desc" />
-                  </el-select>
-                </template>
+                <BrowseSortControl
+                  v-if="sortReady && sortCapabilities"
+                  :options="sortCapabilities"
+                  :model-value="sortSelection"
+                  @change="handleSortChange"
+                />
                 <el-button
                   :icon="Refresh"
                   size="small"
@@ -179,22 +161,41 @@
               </div>
             </div>
 
+            <button
+              v-if="pathItems.length > 0"
+              type="button"
+              class="file-manager-parent-directory"
+              :disabled="initialLoading || isRefreshing"
+              @click="navigateToPath(pathItems.length - 2)"
+            >
+              <el-icon :size="18" aria-hidden="true"><Back /></el-icon>
+              返回上级目录
+            </button>
+
             <!-- 桌面端表格 -->
             <el-table
               v-if="!isMobile"
               ref="fileTableRef"
               v-loading="initialLoading"
+              :class="{ 'batch-selection-hidden': !batchMode }"
               :data="fileList"
               :row-key="(row: FileSystemItem) => String(row.id || row.path)"
               style="width: 100%"
               @row-dblclick="handleRowDoubleClick"
               @selection-change="handleFileSelectionChange"
             >
-              <el-table-column v-if="batchMode" type="selection" width="42" reserve-selection />
+              <!-- 选择列常驻，避免插入列时重建整页单元格；0 会触发 Element Plus 默认宽度。 -->
+              <el-table-column type="selection" :width="batchMode ? 42 : 1" reserve-selection />
               <el-table-column label="名称" min-width="300">
                 <template #default="{ row }">
                   <div style="display: flex; align-items: center; gap: 8px">
-                    <el-icon :size="18">
+                    <el-icon
+                      :size="18"
+                      class="file-item-icon"
+                      :class="{ 'is-directory': row.is_directory }"
+                      role="img"
+                      :aria-label="row.is_directory ? '文件夹' : '文件'"
+                    >
                       <component :is="getFileIconByName(row.name, row.is_directory)" />
                     </el-icon>
                     <span>{{ row.name }}</span>
@@ -214,42 +215,7 @@
               </el-table-column>
               <el-table-column label="操作" width="120" align="center">
                 <template #default="{ row }">
-                  <el-dropdown
-                    trigger="click"
-                    @command="
-                      (command: string) => handleSingleOperation(command as FileOperationType, row)
-                    "
-                  >
-                    <el-button type="primary" size="small">
-                      操作 <el-icon class="el-icon--right"><arrow-down /></el-icon>
-                    </el-button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item command="STRM_GENERATE">STRM 生成</el-dropdown-item>
-                        <!--
-                          刮削整理与生成 ED2K 尚未实装（点击后仅提示“功能开发中”），
-                          暂时隐藏入口避免误导用户；功能实装后恢复以下两个菜单项。
-                          处理分支保留在 handleSingleOperation 中，勿直接删除。
-                        -->
-                        <!-- <el-dropdown-item command="SCRAPE_ORGANIZE">刮削整理</el-dropdown-item> -->
-                        <!--
-                        <el-dropdown-item
-                          v-if="
-                            !row.is_directory &&
-                            (getFileType(row.name) === 'video' || getFileType(row.name) === 'image')
-                          "
-                          command="GENERATE_ED2K"
-                        >
-                          生成 ED2K
-                        </el-dropdown-item>
-                        -->
-                        <el-dropdown-item command="MOVE">移动</el-dropdown-item>
-                        <el-dropdown-item command="COPY">复制</el-dropdown-item>
-                        <el-dropdown-item command="RENAME">重命名</el-dropdown-item>
-                        <el-dropdown-item command="DELETE" divided>删除</el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
+                  <FileOperationMenu :row="row" @command="handleSingleOperation" />
                 </template>
               </el-table-column>
             </el-table>
@@ -259,6 +225,7 @@
               v-else
               ref="fileTableRef"
               v-loading="initialLoading"
+              :class="{ 'batch-selection-hidden': !batchMode }"
               :data="fileList"
               :row-key="(row: FileSystemItem) => String(row.id || row.path)"
               :expand-row-keys="pageState.expandedRowKeys"
@@ -267,7 +234,8 @@
               @row-dblclick="handleRowDoubleClick"
               @selection-change="handleFileSelectionChange"
             >
-              <el-table-column v-if="batchMode" type="selection" width="42" reserve-selection />
+              <!-- 选择列常驻，避免插入列时重建整页单元格；0 会触发 Element Plus 默认宽度。 -->
+              <el-table-column type="selection" :width="batchMode ? 42 : 1" reserve-selection />
               <el-table-column type="expand" width="30">
                 <template #default="{ row }">
                   <div style="padding: 0 20px">
@@ -329,7 +297,13 @@
               <el-table-column label="文件">
                 <template #default="{ row }">
                   <div style="display: flex; align-items: center; gap: 8px">
-                    <el-icon :size="18">
+                    <el-icon
+                      :size="18"
+                      class="file-item-icon"
+                      :class="{ 'is-directory': row.is_directory }"
+                      role="img"
+                      :aria-label="row.is_directory ? '文件夹' : '文件'"
+                    >
                       <component :is="getFileIconByName(row.name, row.is_directory)" />
                     </el-icon>
                     <span>{{ row.name }}</span>
@@ -380,6 +354,7 @@
 
     <el-dialog
       v-model="showStrmTargetDialog"
+      destroy-on-close
       :title="strmTargetDialogTitle"
       width="600px"
       :close-on-click-modal="false"
@@ -458,10 +433,11 @@ import {
   type FormRules,
   type TableInstance,
 } from 'element-plus'
-import { ArrowDown, Files, FolderAdd, InfoFilled, Refresh } from '@element-plus/icons-vue'
+import { Back, Files, FolderAdd, InfoFilled, Refresh } from '@element-plus/icons-vue'
 import type { FileSystemItem, FileOperationType, DirInfo } from '@/typing'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
+import { browseSortQuery, useBrowseSort } from '@/composables/useBrowseSort'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { useHttpClient } from '@/http/client'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
@@ -488,10 +464,13 @@ import {
   type NetFileListQuery,
   type NetFileSortBy,
   type NetFileSortOrder,
+  type BrowseSortValue,
 } from '@/api/files'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import DirectorySelector from './DirectorySelector.vue'
+import BrowseSortControl from './BrowseSortControl.vue'
+import FileOperationMenu from './FileOperationMenu.vue'
 
 interface NetdiskAccount {
   id: number
@@ -515,10 +494,6 @@ interface LoadFileListOptions {
 const netFileSortFields = ['default', 'name', 'time', 'size', 'type'] as const
 const netFileSortOrders = ['asc', 'desc'] as const
 const fileManagerPageSizes = [50, 100, 200, 500] as const
-// 115 Open API 当前返回顺序与排序参数不一致，OpenList 也只使用默认顺序；
-// 排序控件先整体隐藏，待后端全量排序视图缓存完成后再恢复。
-const isFileManagerSortControlVisible = false
-
 function isNetFileSortBy(value: unknown): value is NetFileSortBy {
   return typeof value === 'string' && netFileSortFields.includes(value as NetFileSortBy)
 }
@@ -602,10 +577,11 @@ const pageState = pageStateStore.getPageState('file-manager', {
     currentPath: '',
     pathItems: '[]',
     selectedAccountId: null,
-    sortBy: 'name',
-    sortOrder: 'asc',
   },
 })
+// 排序偏好由 useBrowseSort 按用户、账号与场景维护，不再写入会话页面状态。
+delete pageState.filters.sortBy
+delete pageState.filters.sortOrder
 if (!fileManagerPageSizes.includes(pageState.pageSize as (typeof fileManagerPageSizes)[number])) {
   pageStateStore.setPagination('file-manager', pageState.currentPage, 50)
 }
@@ -641,28 +617,16 @@ const selectedAccountId = computed<number | null>({
 const selectedAccount = computed(() =>
   accountList.value.find((account) => account.id === selectedAccountId.value),
 )
-const supportedSortFields = computed(() =>
-  getSupportedSortFields(selectedAccount.value?.source_type),
-)
-const defaultSortByForSelectedAccount = computed<NetFileSortBy>(() => {
-  const fields = supportedSortFields.value
-  return fields[0] ?? 'name'
-})
-const sortBy = computed<NetFileSortBy>({
-  get: () => {
-    const stored = pageState.filters.sortBy
-    if (isNetFileSortBy(stored) && supportedSortFields.value.includes(stored)) {
-      return stored
-    }
-    return defaultSortByForSelectedAccount.value
-  },
-  set: (value) => pageStateStore.setFilter('file-manager', 'sortBy', value),
-})
-const sortOrder = computed<NetFileSortOrder>({
-  get: () =>
-    isNetFileSortOrder(pageState.filters.sortOrder) ? pageState.filters.sortOrder : 'asc',
-  set: (value) => pageStateStore.setFilter('file-manager', 'sortOrder', value),
-})
+const {
+  capabilities: sortCapabilities,
+  selection: sortSelection,
+  ready: sortReady,
+  prepare: prepareSort,
+  choose: chooseSort,
+  commit: commitSort,
+  rollback: rollbackSort,
+} = useBrowseSort(http, () => selectedAccount.value?.source_type || '', selectedAccountId, 'files')
+let fileListAbortController: AbortController | null = null
 const pendingFileListRefresh = ref<LoadFileListOptions | null>(null)
 let isPageActive = false
 const accountListRequestGate = createActiveRequestGate(() => isPageActive)
@@ -874,6 +838,11 @@ function clearFileSelection() {
 }
 
 function handleFileSelectionChange(rows: FileSystemItem[]) {
+  // 原生全选有延迟，退出批量后到达的事件不能恢复隐藏选择。
+  if (!batchMode.value && rows.length > 0) {
+    clearFileSelection()
+    return
+  }
   selectedFileItems.value = rows
 }
 
@@ -908,6 +877,7 @@ watch(isMobile, () => {
 function clearFileListForContextSwitch() {
   invalidateFileOperationContext()
   fileListRequestGate.invalidate()
+  fileListAbortController?.abort()
   fileList.value = []
   total.value = 0
   clearFileSelection()
@@ -916,6 +886,7 @@ function clearFileListForContextSwitch() {
 
 function clearFileListForPageChange() {
   fileListRequestGate.invalidate()
+  fileListAbortController?.abort()
   fileList.value = []
   clearFileSelection()
   pageStateStore.setExpandedRowKeys('file-manager', [])
@@ -1012,36 +983,6 @@ function getAccountTypeName(sourceType: string): string {
   }
 }
 
-function getSupportedSortFields(sourceType?: NetdiskAccount['source_type']): NetFileSortBy[] {
-  switch (sourceType) {
-    case '115':
-      return ['name', 'size', 'time', 'type']
-    case 'baidupan':
-      return ['name', 'size', 'time']
-    case 'openlist':
-      return ['default']
-    default:
-      return ['name']
-  }
-}
-
-function getSortFieldLabel(field: NetFileSortBy): string {
-  switch (field) {
-    case 'default':
-      return '默认'
-    case 'name':
-      return '名称'
-    case 'time':
-      return '时间'
-    case 'size':
-      return '大小'
-    case 'type':
-      return '类型'
-    default:
-      return field
-  }
-}
-
 function reportFileError(error: unknown, fallbackMessage: string, isRead = false) {
   notifyHttpError(error, fallbackMessage, {
     fallbackMessage,
@@ -1057,6 +998,7 @@ async function loadFileList(options: LoadFileListOptions = {}) {
   }
 
   const requestId = fileListRequestGate.next()
+  fileListAbortController?.abort()
 
   if (isRefreshing.value) {
     pendingFileListRefresh.value = {
@@ -1074,6 +1016,8 @@ async function loadFileList(options: LoadFileListOptions = {}) {
 
   try {
     await runRefresh(async () => {
+      if (!(await prepareSort()) || !fileListRequestGate.isCurrent(requestId)) return
+      const requestedSort = { ...sortSelection.value }
       const accountId = selectedAccountId.value
       if (!accountId) {
         return
@@ -1088,28 +1032,20 @@ async function loadFileList(options: LoadFileListOptions = {}) {
         page: currentPage.value,
         page_size: pageSize.value,
         refresh: options.refresh ? 1 : 0,
+        ...browseSortQuery(requestedSort),
       }
-      if (isFileManagerSortControlVisible) {
-        requestParams.sort_by = sortBy.value
-        requestParams.sort_order = sortOrder.value
-      }
-
-      const data = await fetchFiles(http, requestParams)
+      fileListAbortController = new AbortController()
+      const data = await fetchFiles(http, requestParams, fileListAbortController.signal)
 
       if (!fileListRequestGate.isCurrent(requestId)) {
         return
       }
 
-      const {
-        list: items,
-        total: responseTotal,
-        sort_by: responseSortBy,
-        sort_order: responseSortOrder,
-      } = normalizeNetFileListPayload(data, {
+      const { list: items, total: responseTotal } = normalizeNetFileListPayload(data, {
         page: currentPage.value,
         pageSize: pageSize.value,
-        sortBy: sortBy.value,
-        sortOrder: sortOrder.value,
+        sortBy: requestedSort.sort_by,
+        sortOrder: requestedSort.sort_order,
       })
 
       const pageStart = (currentPage.value - 1) * pageSize.value
@@ -1142,13 +1078,13 @@ async function loadFileList(options: LoadFileListOptions = {}) {
         retainExistingKeys(pageState.expandedRowKeys, fileList.value, (row) => row.id || row.path),
       )
       total.value = responseTotal
-      sortBy.value = responseSortBy
-      sortOrder.value = responseSortOrder
+      commitSort(requestedSort)
     })
   } catch (error) {
     if (!fileListRequestGate.isCurrent(requestId)) {
       return
     }
+    rollbackSort()
     reportFileError(error, '加载文件列表失败', true)
   } finally {
     if (pendingFileListRefresh.value && isPageActive) {
@@ -1174,7 +1110,8 @@ async function handleRefreshFileList() {
   await loadFileList({ refresh: true })
 }
 
-function handleSortChange() {
+function handleSortChange(value: BrowseSortValue) {
+  chooseSort(value)
   pageStateStore.setPagination('file-manager', 1, pageState.pageSize)
   loadFileListForContextSwitch()
 }
@@ -1732,6 +1669,7 @@ function deactivateFileManagerPage() {
   pendingFileListRefresh.value = null
   accountListRequestGate.invalidate()
   fileListRequestGate.invalidate()
+  fileListAbortController?.abort()
   clearFileSelection()
   invalidateFileOperationContext()
 }
@@ -1752,10 +1690,20 @@ onUnmounted(() => {
   deactivateFileManagerPage()
   accountListRequestGate.invalidate()
   fileListRequestGate.invalidate()
+  fileListAbortController?.abort()
 })
 </script>
 
 <style scoped>
+.file-item-icon {
+  width: 18px;
+  flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+}
+.file-item-icon.is-directory {
+  color: var(--el-color-primary);
+}
+
 .file-manager-container {
   padding: 20px;
 }
@@ -1799,12 +1747,43 @@ onUnmounted(() => {
   gap: 6px;
 }
 
-.file-manager-sort-field {
-  width: 82px;
+.file-manager-parent-directory {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: transparent;
+  color: var(--el-color-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.file-manager-sort-order {
-  width: 76px;
+.file-manager-parent-directory:hover:not(:disabled) {
+  background: var(--el-fill-color-light);
+}
+
+.file-manager-parent-directory:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: -2px;
+}
+
+.file-manager-parent-directory:disabled {
+  color: var(--el-text-color-disabled);
+  cursor: not-allowed;
+}
+
+/* 隐藏内部控件而非单元格，保持 colgroup 对齐并移除键盘 / 辅助技术入口。 */
+.batch-selection-hidden :deep(.el-table-column--selection) {
+  padding: 0;
+}
+
+.batch-selection-hidden :deep(.el-table-column--selection .cell) {
+  display: none;
 }
 
 .file-manager-batch-bar {
@@ -2006,14 +1985,6 @@ onUnmounted(() => {
   .file-manager-toolbar-actions {
     justify-content: flex-start;
     width: 100%;
-  }
-
-  .file-manager-sort-field {
-    width: 76px;
-  }
-
-  .file-manager-sort-order {
-    width: 70px;
   }
 
   .file-manager-batch-bar {

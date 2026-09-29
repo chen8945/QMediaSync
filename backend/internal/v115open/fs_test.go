@@ -148,6 +148,7 @@ func mustParseURLPath(t *testing.T, rawURL string) string {
 }
 
 func TestGetFsListWithOptionsEnablesExplicitOrdering(t *testing.T) {
+	follow, mixed := 0, 2
 	withUnlimitedOpenAPIRequests(t)
 	for _, tt := range []struct {
 		name        string
@@ -155,7 +156,9 @@ func TestGetFsListWithOptionsEnablesExplicitOrdering(t *testing.T) {
 		customOrder string
 	}{
 		{name: "默认排序不覆盖网盘设置"},
-		{name: "完整排序", options: FileListOptions{Order: "user_ptime", Asc: "0"}, customOrder: "1"},
+		{name: "完整排序", options: FileListOptions{Order: "user_utime", Asc: "0"}, customOrder: "1"},
+		{name: "跟随网盘", options: FileListOptions{CustomOrder: &follow}, customOrder: "0"},
+		{name: "关闭目录置顶", options: FileListOptions{Order: "file_size", Asc: "0", CustomOrder: &mixed}, customOrder: "2"},
 		{name: "仅排序字段", options: FileListOptions{Order: "file_name"}, customOrder: "1"},
 		{name: "仅排序方向", options: FileListOptions{Asc: "1"}, customOrder: "1"},
 	} {
@@ -322,6 +325,40 @@ func TestOpenClientCopyKeepsLegacyDuplicateFlag(t *testing.T) {
 			values, err := url.ParseQuery(req.Body)
 			if err != nil || values.Get("nodupli") != tt.wantFlag {
 				t.Fatalf("原 Copy 重复标记改变：%s", req.Body)
+			}
+		})
+	}
+}
+
+func TestFileListSortEchoPreservesAbsentAndDescending(t *testing.T) {
+	var descending, absent FileListResp
+	if err := json.Unmarshal([]byte(`{"count":7,"sys_count":2,"order":"user_utime","is_asc":0}`), &descending); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+		t.Fatal(err)
+	}
+	if descending.Order == nil || *descending.Order != "user_utime" || descending.IsAsc == nil || *descending.IsAsc != 0 || absent.Order != nil || absent.IsAsc != nil {
+		t.Fatal("实际降序与缺失回显必须可区分")
+	}
+	if descending.Count != 7 {
+		t.Fatal("系统目录已经计入count")
+	}
+}
+
+func TestFileListRejectsInvalidCustomOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		custom int
+		order  string
+	}{
+		{name: "负数", custom: -1}, {name: "未知模式", custom: 3}, {name: "跟随同时指定字段", custom: 0, order: "file_name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := newCaptureOpenAPITransport(`{"state":true,"data":[]}`)
+			client := newTestOpenClient(transport)
+			if _, err := client.GetFsListWithOptions(t.Context(), "0", true, false, true, 0, 1000, FileListOptions{Order: tc.order, CustomOrder: &tc.custom}); err == nil {
+				t.Fatal("非法排序参数应在发起请求前拒绝")
 			}
 		})
 	}

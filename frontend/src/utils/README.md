@@ -68,7 +68,7 @@ const { isMobile } = useDeviceType()
 
 ## fileIconUtils.ts
 
-文件类型识别和 Element Plus 图标名称映射：
+文件类型识别和 Element Plus 图标组件映射：
 
 - `getFileType(filename)`
 - `getFileIcon(type, isDirectory)`
@@ -77,6 +77,8 @@ const { isMobile } = useDeviceType()
 ```typescript
 const icon = getFileIconByName('movie.mp4')
 ```
+
+图标函数通过 `components/common/iconRegistry.ts` 返回实际 Vue 组件，可直接交给 `<component :is="icon">`，无需全局注册图标名称。目录判断优先于扩展名；文件夹使用 `Folder`，视频使用 `VideoPlay`，图片使用 `Picture`，NFO 和未知文件使用 `Document`。这些分类只用于展示及现有筛选，不替代网盘的原生类型排序。
 
 支持的视频扩展名：`mp4`、`mkv`、`avi`、`mov`、`wmv`、`flv`、`m4v`、`webm`、`ts`、`rmvb`、`rm`、`3gp`、`mpg`、`mpeg`。
 

@@ -38,6 +38,38 @@ const operations: Array<(http: AxiosInstance) => Promise<unknown>> = [
 ]
 
 describe('file and sync record APIs', () => {
+  it('保留排序能力、置顶关闭、目录刷新和取消参数', async () => {
+    const { http, adapter } = createHTTP({
+      fields: ['name'],
+      folders_first: false,
+      default: { sort_by: 'name', sort_order: 'asc' },
+    })
+    await files.fetchBrowseSortOptions(http, '115', 'directories')
+    expect(adapter.mock.calls[0]![0]).toMatchObject({
+      url: '/api/path/sort-options',
+      params: { source_type: '115', scope: 'directories' },
+    })
+    const signal = new AbortController().signal
+    await files.fetchFiles(
+      http,
+      { ...filesQuery, sort_by: 'time', sort_order: 'desc', folders_first: false },
+      signal,
+    )
+    expect(adapter.mock.calls[1]![0]).toMatchObject({
+      params: { sort_by: 'time', sort_order: 'desc', folders_first: false },
+      signal,
+    })
+    await files.fetchDirectories(
+      http,
+      { ...directoryQuery, sort_by: 'name', sort_order: 'asc', refresh: 1 },
+      signal,
+    )
+    expect(adapter.mock.calls[2]![0]).toMatchObject({
+      params: { sort_by: 'name', sort_order: 'asc', refresh: 1 },
+      signal,
+    })
+  })
+
   it('preserves transfer status/task IDs and accepts legacy null responses', async () => {
     const payload = {
       account_id: 3,

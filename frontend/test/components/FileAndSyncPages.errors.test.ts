@@ -1,3 +1,4 @@
+import { browseSortOptions } from '../support/browseSort'
 import axios, { AxiosError, CanceledError } from 'axios'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElDropdown, ElMessage, ElMessageBox, type MessageBoxData } from 'element-plus'
@@ -93,6 +94,13 @@ const click = async (wrapper: VueWrapper, label: string) => {
 const mountPage = async (kind: 'files' | 'records' | 'directories' = 'files') => {
   const readReply = vi.fn(
     async (url: string, params?: Record<string, unknown>): Promise<unknown> => {
+      if (url.endsWith('/path/sort-options'))
+        return envelope(
+          browseSortOptions(
+            String(params?.source_type),
+            params?.scope === 'directories' ? 'directories' : 'files',
+          ),
+        )
       if (url.endsWith('/account/list')) return envelope(accounts)
       if (url.endsWith('/path/files')) return envelope(filesPage)
       if (url.endsWith('/path/list')) return envelope(params?.parent_id ? [] : [directory])
@@ -288,6 +296,7 @@ describe('file manager HTTP feedback', () => {
     const old = createDeferred<unknown>()
     readReply
       .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(envelope(browseSortOptions('openlist')))
       .mockResolvedValueOnce(
         envelope({ ...filesPage, list: [{ ...file, name: 'new-account.mkv' }] }),
       )
@@ -310,7 +319,9 @@ describe('directory selector HTTP feedback', () => {
     await click(wrapper, '确定')
     expect(ElMessage.error).toHaveBeenCalledWith('创建目录失败：名称已存在')
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect((wrapper.get('input').element as HTMLInputElement).value).toBe(' 保留名称 ')
+    expect(
+      (wrapper.get('input[placeholder="请输入文件夹名称"]').element as HTMLInputElement).value,
+    ).toBe(' 保留名称 ')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
   })
 
