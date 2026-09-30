@@ -114,7 +114,6 @@ const clickButton = async (wrapper: VueWrapper, label: string) => {
 
 beforeEach(() => {
   route.params.id = '12'
-  vi.clearAllMocks()
   realtimeListeners.clear()
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))

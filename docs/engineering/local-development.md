@@ -21,14 +21,19 @@ go run .
 
 ## 前端启动
 
-前端依赖要求 Node `>=22.22.2`，pnpm 使用 11.x。
+前端依赖要求 Node `>=26`，pnpm 使用 12.x。本地开发、CI、正式发布与源码 Docker 构建均按主版本选择 pnpm，不固定次版本或补丁版本。
 
-当前依赖基线为 Vue 3.5、Pinia 3、TypeScript 6、Vite 8 和 Vitest 4；`@types/node` 保持 22.x，与 CI 和 Docker 的 Node 22 环境对应。依赖声明见 `frontend/package.json`，实际安装版本以 `frontend/pnpm-lock.yaml` 为准。
+当前依赖基线为 Vue 3.5、Pinia 4、Element Plus 2.14、ECharts 6.1、TypeScript 6、Vite 8 和 Vitest 5；`@types/node` 使用 26.x，与 CI 和 Docker 的 Node 26 环境对应。依赖声明见 `frontend/package.json`，实际安装版本以 `frontend/pnpm-lock.yaml` 为准。
+
+Pinia 4 使用 ESM，并显式安装其必需 peer `@vue/devtools-api`；升级时同时检查该 peer 与 Vue、TypeScript 的兼容范围。Vitest 5 支持 Node `^22.12.0 || ^24.0.0 || >=26.0.0`，本地工具链须同时满足项目最低版本与 Vitest 的支持范围。
+
+前端依赖升级必须满足 pnpm 的最小发布时间要求；尚未满足要求的版本暂缓升级，保留上一可用版本，不添加发布时间例外。
+
+Node 25 起不再内置 Corepack，使用 npm 显式安装 pnpm：
 
 ```bash
 cd frontend
-corepack enable
-corepack prepare pnpm@11 --activate
+npm install --global pnpm@12
 pnpm install
 pnpm run dev
 ```

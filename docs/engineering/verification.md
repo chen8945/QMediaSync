@@ -157,13 +157,13 @@ Windows 的窗口可见性和 `Ctrl+C` 复制不能由交叉编译证明，需�
 (cd frontend && pnpm run check:build)
 ```
 
-Vitest 对 `element-plus` 使用 Vite 内联依赖处理，让真实表单校验获得与浏览器构建一致的 `async-validator` CommonJS 互操作；否则 Node 的嵌套默认导出可能使校验异常被表单聚合逻辑忽略。该设置仅位于 `vite.config.ts` 的 `test` 配置中。
+Vitest 5 通过 `vite.config.ts` 中的 `environments.client.resolve.noExternal: ['element-plus']` 使用 Vite 内联依赖处理，让真实表单校验获得与浏览器构建一致的 `async-validator` CommonJS 互操作；否则 Node 的嵌套默认导出可能使校验异常被表单聚合逻辑忽略。该设置替代已弃用的 `test.server.deps.inline`，仅在 `mode === 'test'` 时启用；Vitest 会将环境中的内联规则汇总为项目级配置。调整此配置须回归真实 Element Plus 表单的非法输入拦截与保存行为。
 
 ## 构建和发布命令
 
 ```bash
-# 构建前端静态文件
-(cd frontend && corepack enable && corepack prepare pnpm@11 --activate && pnpm install --frozen-lockfile && pnpm run build)
+# 使用 Node 26 构建前端静态文件
+(cd frontend && npm install --global pnpm@12 && pnpm install --frozen-lockfile && pnpm run build)
 
 # 本地后端构建
 (cd backend && go build -o QMediaSync .)

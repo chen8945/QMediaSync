@@ -14,9 +14,6 @@
     "types": ["node", "element-plus/global"]
   },
   "include": [
-    "vite.config.*",
-    "vitest.config.*",
-    "cypress.config.*",
-    "nightwatch.conf.*"
+    "vite.config.*"
   ]
 }

@@ -6,7 +6,7 @@ import { AxiosError, CanceledError } from 'axios'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import AppLogin from '@/components/AppLogin.vue'
 import LoginForm from '@/components/auth/LoginForm.vue'
@@ -72,10 +72,6 @@ const createWrapper = async (http = createHTTP()) => {
 }
 
 describe('AppLogin', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('使用可被密码管理器识别的原生登录表单语义', async () => {
     const { wrapper } = await createWrapper()
 

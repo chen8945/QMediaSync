@@ -3,7 +3,6 @@ import { fileURLToPath, URL } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
-import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
@@ -158,10 +157,6 @@ export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
     elementPlusRuntimeImportPlugin(),
-    AutoImport({
-      dts: false,
-      resolvers: createElementPlusResolver(mode === 'test' ? false : 'css'),
-    }),
     Components({
       dts: false,
       resolvers: createElementPlusResolver(mode === 'test' ? false : 'css'),
@@ -181,11 +176,20 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
+  // 测试时内联 Element Plus，让真实表单校验使用 Vite 的 CJS 默认导出互操作。
+  environments:
+    mode === 'test'
+      ? {
+          client: {
+            resolve: {
+              noExternal: ['element-plus'],
+            },
+          },
+        }
+      : undefined,
   test: {
     environment: 'happy-dom',
     include: ['test/**/*.test.{ts,mjs}'],
-    // 让真实表单校验使用 Vite 的 CJS 互操作，避免 async-validator 的 default 嵌套导出。
-    server: { deps: { inline: ['element-plus'] } },
   },
   build: {
     chunkSizeWarningLimit: 700,

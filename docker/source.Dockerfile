@@ -1,10 +1,8 @@
 # check=skip=SecretsUsedInArgOrEnv
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend-builder
 
 WORKDIR /app
-RUN corepack enable && \
-    corepack prepare pnpm@11 --activate
+RUN npm install --global pnpm@12
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./frontend/
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store cd frontend && pnpm install --frozen-lockfile
 COPY frontend ./frontend

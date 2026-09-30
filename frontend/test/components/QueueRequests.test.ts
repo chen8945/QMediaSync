@@ -104,7 +104,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
-  vi.clearAllMocks()
 })
 
 const failure =

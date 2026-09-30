@@ -11,7 +11,6 @@ import { createDeferred } from '../support/deferred'
 describe('backup store 进度轮询', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    vi.clearAllMocks()
     vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'info').mockImplementation(() => ({ close: vi.fn() }))

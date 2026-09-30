@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { CanceledError } from 'axios'
 import { ElMessage } from 'element-plus'
 
@@ -61,8 +61,6 @@ const mountLogin = (http: { get: ReturnType<typeof vi.fn>; post: ReturnType<type
   })
 
 describe('AppLogin 初始化模式', () => {
-  beforeEach(() => vi.clearAllMocks())
-
   it('用户表为空时显示创建管理员表单', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({

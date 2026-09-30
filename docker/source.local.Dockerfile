@@ -2,15 +2,12 @@
 # 本地测试专用：apk / pnpm / Go 全部走国内镜像源，构建产物与 source.Dockerfile 完全一致。
 # 用法：docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 # 注意：CI/正式构建请用 docker/source.Dockerfile（官方源），此文件勿用于发布。
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend-builder
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
-    PNPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
-    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    PNPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /app
-RUN corepack enable && \
-    corepack prepare pnpm@11 --activate
+RUN npm install --global pnpm@12
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./frontend/
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store cd frontend && pnpm install --frozen-lockfile
 COPY frontend ./frontend

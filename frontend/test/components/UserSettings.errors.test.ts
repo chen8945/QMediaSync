@@ -75,7 +75,6 @@ async function click(wrapper: VueWrapper, label: string) {
   await flushPromises()
 }
 beforeEach(() => {
-  vi.clearAllMocks()
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
