@@ -152,11 +152,8 @@ func TestEnqueueStrmGenerationTaskConcurrentSameRequestHashReusesExisting(t *tes
 	start := make(chan struct{})
 	ids := make(chan uint, workers)
 	errs := make(chan error, workers)
-	for i := 0; i < workers; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range workers {
+		wg.Go(func() {
 			<-start
 			task, err := EnqueueStrmGenerationTask(&StrmGenerationTask{
 				Source:      StrmGenerationSourceWebhook,
@@ -181,10 +178,10 @@ func TestEnqueueStrmGenerationTaskConcurrentSameRequestHashReusesExisting(t *tes
 				return
 			}
 			ids <- task.ID
-		}()
+		})
 	}
 	close(start)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		select {
 		case <-ready:
 		case <-time.After(3 * time.Second):
@@ -836,10 +833,10 @@ func TestUpdateStrmGenerationParentProgressUsesAtomicIncrements(t *testing.T) {
 		t.Fatalf("批量父任务入队失败: %v", err)
 	}
 
-	var injected int32
+	var injected atomic.Int32
 	callbackName := "test:inject_strm_parent_progress_increment"
 	if err := db.Db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
-		if atomic.CompareAndSwapInt32(&injected, 0, 1) {
+		if injected.CompareAndSwap(0, 1) {
 			if err := tx.Exec("UPDATE strm_generation_tasks SET accepted_items = accepted_items + 1 WHERE id = ?", parent.ID).Error; err != nil {
 				t.Fatalf("注入并发父任务进度失败: %v", err)
 			}

@@ -79,11 +79,9 @@ func setupDirectoryUploadServiceTestDB(t *testing.T) {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 	models.SettingsGlobal = &models.Settings{
-		SettingStrm: models.SettingStrm{
-			VideoExtArr:  []string{".mkv", ".mp4"},
-			MetaExtArr:   []string{".nfo"},
-			MinVideoSize: 0,
-		},
+		VideoExtArr:  []string{".mkv", ".mp4"},
+		MetaExtArr:   []string{".nfo"},
+		MinVideoSize: 0,
 	}
 }
 
@@ -155,7 +153,7 @@ func createDirectoryUploadRuleForTest(t *testing.T, monitorPath string) (*models
 		LocalPath:              filepath.Join(t.TempDir(), "strm"),
 		RemotePath:             "/remote",
 		DirectoryUploadEnabled: true,
-		SettingStrm:            models.SettingStrm{VideoExtArr: []string{".mkv", ".mp4"}, MinVideoSize: 0},
+		VideoExtArr:            []string{".mkv", ".mp4"}, MinVideoSize: 0,
 	}
 	if err := db.Db.Create(syncPath).Error; err != nil {
 		t.Fatalf("创建同步目录失败: %v", err)

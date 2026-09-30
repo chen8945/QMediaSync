@@ -67,10 +67,8 @@ func TestInitSqlite3先读后写事务在并发写入下不返回锁错误(t *te
 	// 后台写入者模拟请求统计的异步落库，与授权事务竞争写锁。
 	stop := make(chan struct{})
 	var writers sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		writers.Add(1)
-		go func() {
-			defer writers.Done()
+	for range 4 {
+		writers.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -79,7 +77,7 @@ func TestInitSqlite3先读后写事务在并发写入下不返回锁错误(t *te
 					sqliteDb.Exec("INSERT INTO stat_probe (value) VALUES ('s')")
 				}
 			}
-		}()
+		})
 	}
 	t.Cleanup(func() {
 		close(stop)
@@ -87,7 +85,7 @@ func TestInitSqlite3先读后写事务在并发写入下不返回锁错误(t *te
 	})
 
 	// 反复执行先读后写事务，任何一次返回锁错误都说明写升级遇到了快照冲突。
-	for attempt := 0; attempt < 30; attempt++ {
+	for attempt := range 30 {
 		if err := runReadThenWriteTx(sqliteDb); err != nil {
 			t.Fatalf("第 %d 次先读后写事务返回错误：%v", attempt+1, err)
 		}

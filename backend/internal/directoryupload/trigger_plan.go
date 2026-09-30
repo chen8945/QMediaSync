@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"qmediasync/internal/models"
@@ -43,21 +44,14 @@ func (plan *triggerPlan) addReason(reason triggerReason) {
 	if reason == "" {
 		return
 	}
-	for _, existing := range plan.reasons {
-		if existing == reason {
-			return
-		}
+	if slices.Contains(plan.reasons, reason) {
+		return
 	}
 	plan.reasons = append(plan.reasons, reason)
 }
 
 func (plan triggerPlan) hasReason(reason triggerReason) bool {
-	for _, existing := range plan.reasons {
-		if existing == reason {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(plan.reasons, reason)
 }
 
 func (plan triggerPlan) reasonString() string {

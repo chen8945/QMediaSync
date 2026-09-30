@@ -590,7 +590,7 @@ func setRouter(r *gin.Engine) {
 
 		// 获取应用版本与运行环境信息
 		api.GET("/version", func(c *gin.Context) {
-			c.JSON(http.StatusOK, map[string]interface{}{
+			c.JSON(http.StatusOK, map[string]any{
 				"version":    Version,
 				"build_time": parseBuildUnixTime(PublishDate),
 				"date":       PublishDate,

@@ -111,8 +111,7 @@ func saveSyncPathAggregate(c *gin.Context, syncPathID uint) {
 		DirectoryUpload: directoryInput,
 	})
 	if err != nil {
-		var saveErr *syncconfig.SaveError
-		if errors.As(err, &saveErr) {
+		if saveErr, ok := errors.AsType[*syncconfig.SaveError](err); ok {
 			status := http.StatusBadRequest
 			switch saveErr.Code {
 			case syncconfig.ErrorCodeSyncPathNotFound:
@@ -137,12 +136,11 @@ func saveSyncPathAggregate(c *gin.Context, syncPathID uint) {
 
 // syncPathRequestFieldErrors 将请求绑定和基础配置校验错误映射到表单字段。
 func syncPathRequestFieldErrors(err error) []syncconfig.FieldError {
-	var requestErr validation.Error
-	if errors.As(err, &requestErr) {
+	if requestErr, ok := errors.AsType[validation.Error](err); ok {
 		return []syncconfig.FieldError{{Field: requestErr.Field, Message: requestErr.Message}}
 	}
-	var bindingErrs validator.ValidationErrors
-	if !errors.As(err, &bindingErrs) {
+	bindingErrs, ok := errors.AsType[validator.ValidationErrors](err)
+	if !ok {
 		return nil
 	}
 	fieldNames := map[string]string{

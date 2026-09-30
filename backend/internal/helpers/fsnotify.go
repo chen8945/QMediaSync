@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,12 +62,7 @@ func (afw *AdvancedFolderWatcher) isWatchedExtension(path string) bool {
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))
-	for _, watchedExt := range afw.extensions {
-		if ext == watchedExt {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(afw.extensions, ext)
 }
 
 // addWatchRecursive 递归添加监控

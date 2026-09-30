@@ -64,7 +64,7 @@ func prepareAdminRecoveryTest(t *testing.T) string {
 	if err := conn.AutoMigrate(&models.User{}, &models.UserSession{}, &models.ApiKey{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Create(&models.User{BaseModel: models.BaseModel{ID: 42}, Username: "admin", Password: "damaged", TwoFactorEnabled: true, TwoFactorSecret: "damaged"}).Error; err != nil {
+	if err := conn.Create(&models.User{ID: 42, Username: "admin", Password: "damaged", TwoFactorEnabled: true, TwoFactorSecret: "damaged"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := conn.DB()

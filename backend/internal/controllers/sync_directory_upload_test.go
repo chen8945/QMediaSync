@@ -124,7 +124,7 @@ func TestUpdateSyncPathAggregateReloadsDirectoryUploadServiceWhenMasterSwitchCha
 		&models.DirectoryUploadProcessedFile{},
 	)
 	models.SettingsGlobal = &models.Settings{
-		SettingStrm: models.SettingStrm{VideoExtArr: []string{".mkv"}, MinVideoSize: 0},
+		VideoExtArr: []string{".mkv"}, MinVideoSize: 0,
 	}
 	t.Cleanup(directoryupload.StopDirectoryUploadService)
 
@@ -139,7 +139,7 @@ func TestUpdateSyncPathAggregateReloadsDirectoryUploadServiceWhenMasterSwitchCha
 		LocalPath:              filepath.Join(t.TempDir(), "strm"),
 		RemotePath:             "/remote",
 		DirectoryUploadEnabled: true,
-		SettingStrm:            models.SettingStrm{VideoExtArr: []string{".mkv"}, MinVideoSize: 0},
+		VideoExtArr:            []string{".mkv"}, MinVideoSize: 0,
 	}
 	if err := db.Db.Create(syncPath).Error; err != nil {
 		t.Fatalf("创建同步目录失败: %v", err)

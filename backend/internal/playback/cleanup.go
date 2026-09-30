@@ -194,8 +194,7 @@ func logCleanupFailure(source SourceKey, operation string, err error) {
 		return
 	}
 	// 远端和传输错误可能携带 URL，日志只记录类别与已知状态码。
-	var apiErr *v115open.OpenAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*v115open.OpenAPIError](err); ok {
 		helpers.AppLogger.Warnf("115 多端播放目录清理失败：账号=%d，操作=%s，HTTP=%d，code=%d", source.AccountID, operation, apiErr.HTTPStatus, apiErr.Code)
 		return
 	}

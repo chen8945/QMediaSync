@@ -166,7 +166,7 @@ func (s *ScrapeSettings) SaveTmdb(apiKey, accessToken string, apiUrl string, ima
 	s.TmdbEnableProxy = enableProxy
 
 	// 准备更新数据
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["tmdb_api_key"] = apiKey
 	updateData["tmdb_access_token"] = accessToken
 	updateData["tmdb_url"] = apiUrl
@@ -197,7 +197,7 @@ func (s *ScrapeSettings) SaveTmdb(apiKey, accessToken string, apiUrl string, ima
 // SaveKeys 保存 Fanart 密钥，并立即刷新生效值。
 func (s *ScrapeSettings) SaveKeys(fanartApiKey string) error {
 	s.FanartApiKey = fanartApiKey
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"fanart_api_key": fanartApiKey,
 	}
 	if err := db.Db.Model(s).Where("id = ?", s.ID).Updates(updateData).Error; err != nil {
@@ -255,7 +255,7 @@ func (s *ScrapeSettings) SaveAi(apiKey string, baseUrl string, modelName string,
 	s.AiBaseUrl = baseUrl
 	s.AiModelName = modelName
 	s.AiTimeout = timeout
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["ai_api_key"] = apiKey
 	updateData["ai_base_url"] = baseUrl
 	updateData["ai_model_name"] = modelName

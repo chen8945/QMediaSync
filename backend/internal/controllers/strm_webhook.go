@@ -386,7 +386,7 @@ func newStrmWebhookFileTask(syncPath *models.SyncPath, parentTaskID uint, option
 
 func enqueueStrmWebhookBatch(syncPath *models.SyncPath, options strmWebhookOptions, preparedFiles []strmWebhookPreparedFile, results []strmWebhookItemResult) error {
 	var err error
-	for attempt := 0; attempt < strmWebhookBatchTransactionMaxAttempts; attempt++ {
+	for attempt := range strmWebhookBatchTransactionMaxAttempts {
 		err = db.Db.Transaction(func(tx *gorm.DB) error {
 			parent, err := enqueueStrmWebhookBatchParentWithDB(tx, syncPath, options, preparedFiles)
 			if err != nil {
@@ -410,10 +410,11 @@ func isRetryableSQLiteLockError(err error) bool {
 		return false
 	}
 	type sqliteError interface {
+		error
 		Code() int
 	}
-	var sqliteErr sqliteError
-	if !errors.As(err, &sqliteErr) {
+	sqliteErr, ok := errors.AsType[sqliteError](err)
+	if !ok {
 		return false
 	}
 	switch sqliteErr.Code() & 0xff {

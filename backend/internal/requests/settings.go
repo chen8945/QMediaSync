@@ -165,15 +165,13 @@ func (r UpdateThreadsRequest) Validate() error {
 // ToModel 转换为线程配置模型。
 func (r UpdateThreadsRequest) ToModel(base models.SettingThreadAndRapidWait) models.SettingThreadAndRapidWait {
 	modelReq := models.SettingThreadAndRapidWait{
-		SettingThreads: models.SettingThreads{
-			DownloadThreads:    r.DownloadThreads,
-			UploadThreads:      base.UploadThreads,
-			FileDetailThreads:  r.FileDetailThreads,
-			OpenlistQPS:        r.OpenlistQPS,
-			OpenlistRetry:      r.OpenlistRetry,
-			OpenlistRetryDelay: r.OpenlistRetryDelay,
-			FileListPageSize:   r.FileListPageSize,
-		},
+		DownloadThreads:         r.DownloadThreads,
+		UploadThreads:           base.UploadThreads,
+		FileDetailThreads:       r.FileDetailThreads,
+		OpenlistQPS:             r.OpenlistQPS,
+		OpenlistRetry:           r.OpenlistRetry,
+		OpenlistRetryDelay:      r.OpenlistRetryDelay,
+		FileListPageSize:        r.FileListPageSize,
 		SettingUploadRapidWait:  base.SettingUploadRapidWait,
 		SettingURLValidityCheck: base.SettingURLValidityCheck,
 	}

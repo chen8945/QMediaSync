@@ -164,7 +164,35 @@ func TestBackupTerminalStatusAndHistory(t *testing.T) {
 	}
 }
 
-func writeBackupArchive(t *testing.T, files map[string]string) string {
+func TestBackupArchiveRoundTrip(t *testing.T) {
+	testDB := setupBackupTest(t)
+	want := backupTestItem{ID: 1, Name: strings.Repeat("媒体记录", 100)}
+	if err := testDB.Create(&want).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Backup(models.BackupTypeManual, "round trip"); err != nil {
+		t.Fatal(err)
+	}
+	var record models.BackupRecord
+	if err := testDB.First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.Model(&backupTestItem{}).Where("id = ?", want.ID).Update("name", "changed").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(record.FilePath); err != nil {
+		t.Fatal(err)
+	}
+	var got backupTestItem
+	if err := testDB.First(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("restored=%+v, want %+v", got, want)
+	}
+}
+
+func writeBackupArchive(t *testing.T, files map[string]string, method uint16) string {
 	t.Helper()
 	archivePath := filepath.Join(t.TempDir(), "input.zip")
 	file, err := os.Create(archivePath)
@@ -173,7 +201,7 @@ func writeBackupArchive(t *testing.T, files map[string]string) string {
 	}
 	writer := zip.NewWriter(file)
 	for name, content := range files {
-		entry, err := writer.Create(name)
+		entry, err := writer.CreateHeader(&zip.FileHeader{Name: name, Method: method})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,7 +219,7 @@ func writeBackupArchive(t *testing.T, files map[string]string) string {
 }
 
 func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
-	for _, scenario := range []string{"success", "old_missing_table", "invalid_zip", "empty_zip", "invalid_json", "insert", "scanner", "temp_directory", "sequence"} {
+	for _, scenario := range []string{"success", "old_store", "old_missing_table", "invalid_zip", "empty_zip", "invalid_json", "insert", "scanner", "temp_directory", "sequence"} {
 		t.Run(scenario, func(t *testing.T) {
 			testDB := setupBackupTest(t)
 			if scenario == "sequence" {
@@ -220,7 +248,11 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 			case "scanner":
 				files["backupTestItem.json"] = strings.Repeat("x", 17*1024*1024)
 			}
-			archivePath := writeBackupArchive(t, files)
+			method := uint16(zip.Deflate)
+			if scenario == "old_store" {
+				method = zip.Store
+			}
+			archivePath := writeBackupArchive(t, files, method)
 			if scenario == "invalid_zip" {
 				if err := os.WriteFile(archivePath, []byte("invalid"), 0600); err != nil {
 					t.Fatal(err)
@@ -235,7 +267,7 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 				}
 			}
 			err := Restore(archivePath)
-			wantSuccess := scenario == "success" || scenario == "old_missing_table"
+			wantSuccess := scenario == "success" || scenario == "old_store" || scenario == "old_missing_table"
 			if (err == nil) != wantSuccess {
 				t.Fatalf("error=%v，场景=%s", err, scenario)
 			}
@@ -246,7 +278,7 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 			if !wantSuccess && (result.Status != models.BackupStatusFailed || result.ErrorMsg == "") {
 				t.Fatalf("失败缺少安全说明：%+v", result)
 			}
-			if scenario == "invalid_json" || scenario == "insert" || scenario == "success" {
+			if scenario == "invalid_json" || scenario == "insert" || scenario == "success" || scenario == "old_store" {
 				var item backupTestItem
 				var other backupOtherTestItem
 				if err := testDB.First(&item).Error; err != nil {
@@ -317,13 +349,13 @@ func TestProgressSnapshotsAreConcurrentSafe(t *testing.T) {
 	workers.Add(2)
 	go func() {
 		defer workers.Done()
-		for count := 0; count < 1000; count++ {
+		for count := range 1000 {
 			SetRunningResult("backup", "运行中", 1000, count, "")
 		}
 	}()
 	go func() {
 		defer workers.Done()
-		for count := 0; count < 1000; count++ {
+		for range 1000 {
 			data, err := json.Marshal(GetRunningResult())
 			if err != nil || len(data) == 0 {
 				t.Errorf("快照序列化失败：%v", err)

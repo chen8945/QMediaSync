@@ -643,7 +643,7 @@ func validateLogPath(path string) error {
 	if strings.Contains(rawPath, `\`) {
 		return validation.New("path", "只能是日志文件名或同步任务日志目录下的日志文件")
 	}
-	for _, part := range strings.Split(rawPath, "/") {
+	for part := range strings.SplitSeq(rawPath, "/") {
 		if part == "." || part == ".." {
 			return validation.New("path", "不能包含路径穿越")
 		}

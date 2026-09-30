@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store cd frontend && pnpm 
 COPY frontend ./frontend
 RUN cd frontend && pnpm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS backend-builder
 ENV TZ=Asia/Shanghai \
     GOSUMDB=off \
     CGO_ENABLED=0

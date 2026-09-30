@@ -55,16 +55,10 @@ func calculateOptimalThreads(fileSize int64, config AutoThreadConfig) int {
 
 	// 基于文件大小的启发式计算
 	// 每 50 MB 分配一个线程，但不超过最大值
-	threadsBasedOnSize := int(fileSize / (50 * 1024 * 1024))
-	if threadsBasedOnSize < 1 {
-		threadsBasedOnSize = 1
-	}
+	threadsBasedOnSize := max(int(fileSize/(50*1024*1024)), 1)
 
 	// 取两者较小值
-	optimalThreads := threadsBasedOnChunks
-	if threadsBasedOnSize < optimalThreads {
-		optimalThreads = threadsBasedOnSize
-	}
+	optimalThreads := min(threadsBasedOnSize, threadsBasedOnChunks)
 
 	// 不超过最大线程数
 	if optimalThreads > config.MaxThreads {
@@ -158,7 +152,7 @@ func downloadAndCalculateEd2kCore(url string, filename string, fileSize int64, n
 
 	// 发送块任务
 	go func() {
-		for i := int64(0); i < numChunks; i++ {
+		for i := range numChunks {
 			chunkChan <- i
 		}
 		close(chunkChan)
@@ -262,7 +256,7 @@ func downloadWorkerWithConfig(client *http.Client, url string, config AutoThread
 		var retryCount int
 		var md4Hash []byte
 
-		for retry := 0; retry < 3; retry++ {
+		for retry := range 3 {
 			md4Hash, err = downloadChunkWithRetry(client, req, config.ReadBufferSize, retry)
 			if err == nil {
 				break
@@ -419,13 +413,7 @@ func adaptiveThreadAdjustment(currentSpeed float64, currentThreads int, fileSize
 	}
 
 	// 计算理想线程数
-	idealThreads := int(currentSpeed / targetSpeedPerThread)
-	if idealThreads < 1 {
-		idealThreads = 1
-	}
-	if idealThreads > 16 {
-		idealThreads = 16
-	}
+	idealThreads := min(max(int(currentSpeed/targetSpeedPerThread), 1), 16)
 
 	// 平滑调整（不超过当前线程数的 2 倍）
 	maxIncrease := currentThreads * 2

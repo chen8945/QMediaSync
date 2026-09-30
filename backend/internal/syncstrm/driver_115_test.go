@@ -17,7 +17,7 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.V115Log = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	models.SettingsGlobal = &models.Settings{
-		SettingThreads: models.SettingThreads{FileListPageSize: 100},
+		FileListPageSize: 100,
 	}
 	originalList115FilesPage := list115FilesPage
 	list115FilesPage = func(_ context.Context, _ *v115open.OpenClient, parentPathID string, _ bool, _ bool, _ bool, offset int, limit int) (*v115open.FileListResp, error) {
@@ -73,7 +73,7 @@ func TestOpen115DriverExcludesPlaybackFilesAfterResolvingPath(t *testing.T) {
 	t.Cleanup(func() {
 		list115FilesPage, models.SettingsGlobal = originalList, originalSettings
 	})
-	models.SettingsGlobal = &models.Settings{SettingThreads: models.SettingThreads{FileListPageSize: 100}}
+	models.SettingsGlobal = &models.Settings{FileListPageSize: 100}
 	for _, tt := range []struct {
 		name         string
 		parent       string

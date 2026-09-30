@@ -322,7 +322,7 @@ func (task *DbUploadTask) claimRemoteCompletedFinalize() (bool, error) {
 	}
 	result := db.Db.Model(&DbUploadTask{}).
 		Where("id = ? AND status = ?", task.ID, UploadStatusRemoteCompletedPendingFinalize).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status": UploadStatusRemoteCompletedFinalizing,
 			"error":  "",
 		})
@@ -342,7 +342,7 @@ func (task *DbUploadTask) revertRemoteCompletedFinalizing(err error) error {
 	if task == nil {
 		return errors.New("上传任务为空")
 	}
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"status": UploadStatusRemoteCompletedPendingFinalize,
 	}
 	if err != nil {
@@ -412,7 +412,7 @@ func (task *DbUploadTask) claimPendingUpload() (bool, error) {
 	startTime := time.Now().Unix()
 	result := db.Db.Model(&DbUploadTask{}).
 		Where("id = ? AND status = ?", task.ID, UploadStatusPending).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":     UploadStatusUploading,
 			"start_time": startTime,
 		})
@@ -1084,7 +1084,7 @@ func RetryFailedUploadTasks(maxRetry int) error {
 		return err
 	}
 
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"status":          UploadStatusPending,
 		"error":           "",
 		"retry_count":     gorm.Expr("retry_count + 1"),

@@ -153,7 +153,7 @@ func (m *Media) DecodeJson() {
 func (m *Media) UpdateSeasonCount(i int) {
 	m.NumberOfSeasons += i
 	// 保存
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"number_of_seasons": m.NumberOfSeasons,
 	}
 	// 保存到数据库
@@ -166,7 +166,7 @@ func (m *Media) UpdateSeasonCount(i int) {
 func (m *Media) UpdateEpisodeCount(i int) {
 	m.NumberOfEpisodes += i
 	// 保存
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"number_of_episodes": m.NumberOfEpisodes,
 	}
 	// 保存到数据库

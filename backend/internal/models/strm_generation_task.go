@@ -138,7 +138,7 @@ func EnqueueStrmGenerationTaskWithDBAndLegacyHashes(tx *gorm.DB, task *StrmGener
 		}
 		return task, nil
 	}
-	for attempts := 0; attempts < 4; attempts++ {
+	for range 4 {
 		existing, found, err := findStrmGenerationTaskByRequestHash(tx, task.RequestHash)
 		if err != nil {
 			return nil, err
@@ -436,7 +436,7 @@ func MarkStrmGenerationChildFailed(childTaskID uint, parentTaskID uint, message 
 	err := db.Db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&StrmGenerationTask{}).
 			Where("id = ? AND status = ?", childTaskID, StrmGenerationStatusRunning).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status":          StrmGenerationStatusFailed,
 				"retry_count":     gorm.Expr("retry_count + ?", 1),
 				"last_retry_time": now,
@@ -465,7 +465,7 @@ func (task *StrmGenerationTask) MarkRunning() error {
 	}
 	result := db.Db.Model(task).
 		Where("id = ? AND status = ?", task.ID, StrmGenerationStatusPending).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":     StrmGenerationStatusRunning,
 			"last_error": "",
 		})
@@ -576,7 +576,7 @@ func MarkStrmGenerationChildFinalizing(childTaskId uint, parentTaskId uint, prog
 	err := db.Db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&StrmGenerationTask{}).
 			Where("id = ? AND status = ?", childTaskId, StrmGenerationStatusRunning).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status":     StrmGenerationStatusFinalizing,
 				"last_error": "",
 			})
@@ -603,7 +603,7 @@ func MarkStrmGenerationChildFinalizing(childTaskId uint, parentTaskId uint, prog
 func updateStrmGenerationParentProgressWithDB(tx *gorm.DB, parentTaskId uint, progress StrmGenerationParentProgress) (*StrmGenerationTask, error) {
 	if err := tx.Model(&StrmGenerationTask{}).
 		Where("id = ?", parentTaskId).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"accepted_items": gorm.Expr("accepted_items + ?", progress.Accepted),
 			"failed_items":   gorm.Expr("failed_items + ?", progress.Failed),
 			"changed_items":  gorm.Expr("changed_items + ?", progress.Changed),
@@ -618,7 +618,7 @@ func updateStrmGenerationParentProgressWithDB(tx *gorm.DB, parentTaskId uint, pr
 	}
 	processedItems := parent.AcceptedItems + parent.FailedItems
 	hasFixedTotalItems := parent.TotalItems > 0
-	updates := map[string]interface{}{}
+	updates := map[string]any{}
 	if parent.TotalItems < processedItems {
 		parent.TotalItems = processedItems
 		updates["total_items"] = parent.TotalItems

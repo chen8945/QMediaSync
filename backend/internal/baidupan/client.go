@@ -64,8 +64,8 @@ func IsRefreshTokenDead(err error) bool {
 	if err == nil {
 		return false
 	}
-	var oauthErr *OAuthError
-	if !errors.As(err, &oauthErr) {
+	oauthErr, ok := errors.AsType[*OAuthError](err)
+	if !ok {
 		return false
 	}
 	switch oauthErr.Code {

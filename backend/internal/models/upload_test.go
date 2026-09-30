@@ -71,7 +71,7 @@ func setupUploadQueueTest(t *testing.T, concurrency, taskCount int) (*UQ, *contr
 		stopped: make(chan struct{}),
 	}
 	tasks := make([]*DbUploadTask, 0, taskCount)
-	for i := 0; i < taskCount; i++ {
+	for i := range taskCount {
 		task := &DbUploadTask{
 			AccountId:      account.ID,
 			Source:         UploadSourceStrm,

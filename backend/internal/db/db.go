@@ -87,7 +87,7 @@ func ConnectPostgres(dbConfig *database.Config) error {
 	var sqlDB *sql.DB
 	var err error
 	maxRetries := 3
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.DBName, dbConfig.SSLMode)
 		helpers.AppLogger.Infof("连接数据库：%s", connStr)

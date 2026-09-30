@@ -24,6 +24,8 @@ Emby 海报、背景原图模式通过持久化主配置 `config/config.yaml` �
 
 ## Docker
 
+源码构建镜像的 Go 版本与更新方式见 [发布流程](release.md#持续集成与预发布镜像)；Windows 二进制升级时同时检查 [出站证书信任](configuration.md#emby-302-出站-https)。
+
 正式发布镜像为 `ghcr.io/chen8945/qmediasync:latest`，同时提供 `linux/amd64` 和 `linux/arm64`。固定版本使用 `ghcr.io/chen8945/qmediasync:<tag>`；`beta` 和功能分支镜像的生成规则见 [发布流程](release.md)。
 
 以下示例把全部运行状态保存到宿主机的 `./config`，并按需给应用挂载媒体目录：

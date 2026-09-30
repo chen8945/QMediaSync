@@ -22,7 +22,7 @@ type ScanOpenlistImpl struct {
 }
 
 func NewOpenlistScanImpl(scrapePath *models.ScrapePath, client *openlist.Client, ctx context.Context) *ScanOpenlistImpl {
-	return &ScanOpenlistImpl{scanBaseImpl: scanBaseImpl{ctx: ctx, scrapePath: scrapePath}, client: client}
+	return &ScanOpenlistImpl{ctx: ctx, scrapePath: scrapePath, client: client}
 }
 
 // 检查来源目录和目标目录是否存在

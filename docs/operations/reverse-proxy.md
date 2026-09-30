@@ -22,6 +22,8 @@
 
 ## 不变量
 
+内置 Emby WebSocket 回源保留客户端的 `Host`、转义路径和原始查询串；已有转发头及 `X-Forwarded-For` 追加规则保持兼容，但 `Connection` 指定的逐跳头不得转发。转码重定向遇到非法请求 Host 时按既有拒绝或回源策略处理，不生成无效播放地址。
+
 - SSE 代理不得缓存或缓冲事件流。
 - 前端和 API 的生产访问必须同源；本项目不支持跨 origin Cookie SSE。
 - 只有可信代理的 `X-Forwarded-Proto` 可以参与 Secure Cookie 和同源判断。

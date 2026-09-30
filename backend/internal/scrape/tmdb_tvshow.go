@@ -17,11 +17,9 @@ type TmdbTvShowImpl struct {
 
 func NewTmdbTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context) *TmdbTvShowImpl {
 	return &TmdbTvShowImpl{
-		TmdbBase: TmdbBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-			Client:     models.GlobalScrapeSettings.GetTmdbClient(),
-		},
+		scrapePath: scrapePath,
+		ctx:        ctx,
+		Client:     models.GlobalScrapeSettings.GetTmdbClient(),
 	}
 }
 

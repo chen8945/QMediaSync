@@ -450,8 +450,10 @@ func isOSSCheckpointInvalidError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var ossServiceError interface{ ErrorCode() string }
-	if errors.As(err, &ossServiceError) {
+	if ossServiceError, ok := errors.AsType[interface {
+		error
+		ErrorCode() string
+	}](err); ok {
 		switch ossServiceError.ErrorCode() {
 		case "NoSuchUpload", "InvalidUploadId":
 			return true

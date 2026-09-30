@@ -137,9 +137,7 @@ func (executor *scanExecutor) start(entry *scanEntry) {
 		return
 	}
 
-	executor.wg.Add(1)
-	go func() {
-		defer executor.wg.Done()
+	executor.wg.Go(func() {
 		defer executor.releaseSemaphore()
 		defer executor.releaseInflight(entry)
 		scan := entry.request.scan
@@ -151,7 +149,7 @@ func (executor *scanExecutor) start(entry *scanEntry) {
 			!errors.Is(err, context.Canceled) {
 			helpers.AppLogger.Warnf("[目录上传] 规则 %d 扫描目录 %s 失败：%v", entry.request.rule.ID, entry.request.root, err)
 		}
-	}()
+	})
 }
 
 func (executor *scanExecutor) Wait() {

@@ -155,8 +155,8 @@ func TestSaveSyncPathUpdateRejectsSourceTypeOrAccountChange(t *testing.T) {
 				},
 				DirectoryUpload: &DirectoryUploadInput{Enabled: false, Rules: []DirectoryUploadRuleInput{}},
 			})
-			var saveErr *SaveError
-			if !errors.As(err, &saveErr) {
+			saveErr, ok := errors.AsType[*SaveError](err)
+			if !ok {
 				t.Fatalf("错误类型 = %T，期望 SaveError", err)
 			}
 			if saveErr.Code != ErrorCodeInvalidRequest || len(saveErr.FieldErrors) != 1 ||
@@ -200,8 +200,8 @@ func TestSaveSyncPathReturnsClientIDsForConflictingRules(t *testing.T) {
 			{ClientID: "rule-b", Enabled: true, MonitorPath: monitorPath, RemoteRootPath: "/remote/uploads", RemoteRootID: "uploads"},
 		}},
 	})
-	var saveErr *SaveError
-	if !errors.As(err, &saveErr) {
+	saveErr, ok := errors.AsType[*SaveError](err)
+	if !ok {
 		t.Fatalf("保存错误 = %v，期望 SaveError", err)
 	}
 	if saveErr.Code != ErrorCodeRuleConflict {

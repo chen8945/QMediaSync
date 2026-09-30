@@ -70,25 +70,23 @@ func TestSyncPathRequestValidate(t *testing.T) {
 
 func TestSyncPathRequestValidateTopLevelStrmFields(t *testing.T) {
 	req := SyncPathRequest{
-		SourceType:   models.SourceType115,
-		AccountID:    1,
-		BaseCid:      "123",
-		LocalPath:    "/media/strm",
-		RemotePath:   "/movies",
-		CustomConfig: true,
-		SyncPathStrmRequest: SyncPathStrmRequest{
-			LocalProxy:     -1,
-			StrmBaseURL:    "http://127.0.0.1:8096",
-			Cron:           "0 2 * * *",
-			MinVideoSize:   -1,
-			VideoExtArr:    []string{".mp4"},
-			MetaExtArr:     []string{".nfo"},
-			UploadMeta:     -1,
-			DownloadMeta:   -1,
-			DeleteDir:      -1,
-			AddPath:        -1,
-			CheckMetaMtime: -1,
-		},
+		SourceType:     models.SourceType115,
+		AccountID:      1,
+		BaseCid:        "123",
+		LocalPath:      "/media/strm",
+		RemotePath:     "/movies",
+		CustomConfig:   true,
+		LocalProxy:     -1,
+		StrmBaseURL:    "http://127.0.0.1:8096",
+		Cron:           "0 2 * * *",
+		MinVideoSize:   -1,
+		VideoExtArr:    []string{".mp4"},
+		MetaExtArr:     []string{".nfo"},
+		UploadMeta:     -1,
+		DownloadMeta:   -1,
+		DeleteDir:      -1,
+		AddPath:        -1,
+		CheckMetaMtime: -1,
 	}
 
 	if err := req.Validate(); err != nil {
@@ -98,14 +96,12 @@ func TestSyncPathRequestValidateTopLevelStrmFields(t *testing.T) {
 
 func TestSyncPathRequestUpdateValidate(t *testing.T) {
 	req := UpdateSyncPathRequest{
-		ID: 1,
-		SyncPathRequest: SyncPathRequest{
-			SourceType: models.SourceType115,
-			AccountID:  1,
-			BaseCid:    "123",
-			LocalPath:  "/media/strm",
-			RemotePath: "/movies",
-		},
+		ID:         1,
+		SourceType: models.SourceType115,
+		AccountID:  1,
+		BaseCid:    "123",
+		LocalPath:  "/media/strm",
+		RemotePath: "/movies",
 	}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -133,7 +129,7 @@ func TestSyncPathRequestNormalizedRemotePath(t *testing.T) {
 func TestSyncPathRequestRegexFieldCompatibility(t *testing.T) {
 	const pattern = " (?i)^Sample\\.[^.]+$ "
 	req := SyncPathRequest{
-		SyncPathStrmRequest: SyncPathStrmRequest{ExcludeNameRegexArr: []string{pattern}},
+		ExcludeNameRegexArr: []string{pattern},
 	}
 	if got := req.StrmSettingModel().ExcludeNameRegexArr; len(got) != 1 || got[0] != pattern {
 		t.Fatalf("顶层正则字段 = %q，期望原文 %q", got, pattern)

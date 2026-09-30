@@ -164,15 +164,13 @@ func TestConcurrentTokenAccess(t *testing.T) {
 	tokenCounts := make(map[string]int)
 	var mu sync.Mutex
 
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 100 {
+		wg.Go(func() {
 			token := client.GetAccessToken()
 			mu.Lock()
 			tokenCounts[token]++
 			mu.Unlock()
-		}()
+		})
 	}
 
 	wg.Wait()

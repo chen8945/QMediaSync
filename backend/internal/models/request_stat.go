@@ -114,8 +114,8 @@ func GetRequestStatsWindow(now int64, timeWindowSeconds int) (RequestStatsWindow
 }
 
 // GetHourlyRequestStats 获取按小时分组的请求统计
-func GetHourlyRequestStats(startTime, endTime int64) ([]map[string]interface{}, error) {
-	var results []map[string]interface{}
+func GetHourlyRequestStats(startTime, endTime int64) ([]map[string]any, error) {
+	var results []map[string]any
 
 	// SQLite 使用整除取整，PostgreSQL 使用 date_trunc
 	var query string
@@ -157,8 +157,8 @@ func GetHourlyRequestStats(startTime, endTime int64) ([]map[string]interface{}, 
 }
 
 // GetDailyRequestStats 获取按天分组的请求统计
-func GetDailyRequestStats(startTime, endTime int64) ([]map[string]interface{}, error) {
-	var results []map[string]interface{}
+func GetDailyRequestStats(startTime, endTime int64) ([]map[string]any, error) {
+	var results []map[string]any
 
 	var query string
 	if db.IsPostgres() {
@@ -199,7 +199,7 @@ func GetDailyRequestStats(startTime, endTime int64) ([]map[string]interface{}, e
 }
 
 // decodeBase64Value 解码结果集中的 Base64 字段
-func decodeBase64Value(results []map[string]interface{}, fieldName string) {
+func decodeBase64Value(results []map[string]any, fieldName string) {
 	for _, row := range results {
 		if val, ok := row[fieldName]; ok {
 			if bytes, ok := val.([]byte); ok {

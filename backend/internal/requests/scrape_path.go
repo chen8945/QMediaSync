@@ -144,7 +144,7 @@ func validateNameTemplate(field string, template string) error {
 	if strings.HasPrefix(template, "/") {
 		return validation.New(field, "不能以 / 开头")
 	}
-	for _, segment := range strings.Split(template, "/") {
+	for segment := range strings.SplitSeq(template, "/") {
 		if strings.TrimSpace(segment) == ".." {
 			return validation.New(field, "不能包含 .. 路径片段")
 		}
@@ -182,7 +182,7 @@ func validateScrapePathRenameType(sourceType models.SourceType, scrapeType model
 // ToModel 转换为刮削路径模型。
 func (r SaveScrapePathRequest) ToModel() models.ScrapePath {
 	return models.ScrapePath{
-		BaseModel:             models.BaseModel{ID: r.ID},
+		ID:                    r.ID,
 		AccountId:             r.AccountID,
 		SourceType:            r.SourceType,
 		MediaType:             r.MediaType,

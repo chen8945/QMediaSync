@@ -67,9 +67,8 @@ func TestSettingStrmLegacyRegexDefaultsToEmpty(t *testing.T) {
 func TestSyncPathRegexInheritance(t *testing.T) {
 	originalSettings := SettingsGlobal
 	t.Cleanup(func() { SettingsGlobal = originalSettings })
-	SettingsGlobal = &Settings{SettingStrm: SettingStrm{
-		ExcludeNameRegexArr: []string{"(?i)global"},
-	}}
+	SettingsGlobal = &Settings{
+		ExcludeNameRegexArr: []string{"(?i)global"}}
 	path := &SyncPath{CustomConfig: true, SettingStrm: GetStrmSettingDefault()}
 	if got := path.GetExcludeNameRegexArr(); !reflect.DeepEqual(got, []string{"(?i)global"}) {
 		t.Fatalf("空自定义列表应继承全局，实际为 %q", got)
@@ -83,10 +82,8 @@ func TestSyncPathRegexInheritance(t *testing.T) {
 func TestStrmSnapshotOwnsMutableLists(t *testing.T) {
 	settings := &Settings{
 		MultiPlaybackEnabled: 1,
-		SettingStrm: SettingStrm{
-			VideoExtArr: []string{".mkv"}, MetaExtArr: []string{".nfo"},
-			ExcludeNameArr: []string{"sample"}, ExcludeNameRegexArr: []string{"^sample$"},
-		},
+		VideoExtArr:          []string{".mkv"}, MetaExtArr: []string{".nfo"},
+		ExcludeNameArr: []string{"sample"}, ExcludeNameRegexArr: []string{"^sample$"},
 	}
 	snapshot, enabled := settings.StrmSnapshot()
 	if enabled != 1 {

@@ -2,12 +2,63 @@ package helpers
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestZipDirCompressesAndRestoresFiles(t *testing.T) {
+	src := t.TempDir()
+	if err := os.Mkdir(filepath.Join(src, "nested"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"nested/items.json": strings.Repeat("{\"name\":\"媒体条目\",\"type\":\"Movie\"}\n", 100),
+		"empty.json":        "",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(content), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst := filepath.Join(t.TempDir(), "backup.zip")
+	if err := ZipDir(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.OpenReader(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	if len(archive.File) != 3 {
+		t.Fatalf("entries=%d, want 3", len(archive.File))
+	}
+	for _, entry := range archive.File {
+		wantMethod := uint16(zip.Deflate)
+		if entry.FileInfo().IsDir() {
+			wantMethod = zip.Store
+		}
+		if entry.Method != wantMethod {
+			t.Fatalf("%s method=%d, want %d", entry.Name, entry.Method, wantMethod)
+		}
+		if entry.UncompressedSize64 > 0 && entry.CompressedSize64 >= entry.UncompressedSize64 {
+			t.Fatalf("JSON Lines 未压缩：%s", entry.Name)
+		}
+	}
+	restored := t.TempDir()
+	if err := ExtractZip(dst, restored); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range files {
+		got, err := os.ReadFile(filepath.Join(restored, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s restored content differs, error=%v", name, err)
+		}
+	}
+}
 
 func TestZipDirReportsFinalWriteFailure(t *testing.T) {
 	if _, err := os.Stat("/dev/full"); err != nil {

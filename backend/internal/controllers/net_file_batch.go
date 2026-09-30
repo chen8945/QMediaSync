@@ -267,17 +267,11 @@ func sliceNetFileItems(items []*FileItem, baseStart int, page int, pageSize int)
 	if page < 1 || pageSize < 1 {
 		return []*FileItem{}
 	}
-	start := (page-1)*pageSize - baseStart
-	if start < 0 {
-		start = 0
-	}
+	start := max((page-1)*pageSize-baseStart, 0)
 	if start >= len(items) {
 		return []*FileItem{}
 	}
-	end := start + pageSize
-	if end > len(items) {
-		end = len(items)
-	}
+	end := min(start+pageSize, len(items))
 	return items[start:end]
 }
 
@@ -289,10 +283,7 @@ func buildNetFileListResponse(options netFileListResponseOptions) netFileListRes
 		options.PageSize = len(options.List)
 	}
 	loadedTotal := int64((options.Page-1)*options.PageSize + len(options.List))
-	total := options.Total
-	if total < loadedTotal {
-		total = loadedTotal
-	}
+	total := max(options.Total, loadedTotal)
 	return netFileListResponse{
 		List:       options.List,
 		Total:      total,

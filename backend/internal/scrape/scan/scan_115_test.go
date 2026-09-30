@@ -48,7 +48,7 @@ func Test115ScanExcludesPlaybackDirectoryAndSubtree(t *testing.T) {
 			}
 			db.Db = testDB
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-			models.SettingsGlobal = &models.Settings{SettingThreads: models.SettingThreads{FileListPageSize: 100}}
+			models.SettingsGlobal = &models.Settings{FileListPageSize: 100}
 			paths := map[string]string{
 				"0": "", "playback": "多端播放", "playback-child": "多端播放/child",
 				"media": "Media", "nested": "Media/多端播放",
@@ -77,7 +77,7 @@ func Test115ScanExcludesPlaybackDirectoryAndSubtree(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			scanner := New115ScanImpl(&models.ScrapePath{
-				BaseModel: models.BaseModel{ID: 1}, SourceType: models.SourceType115,
+				ID: 1, SourceType: models.SourceType115,
 				MediaType: models.MediaTypeMovie, VideoExtList: []string{".mkv"},
 			}, nil, ctx)
 			scanner.pathTasks = make(chan string, 10)

@@ -389,10 +389,7 @@ func replayPendingTokenPersist(account *models.Account, pending pendingToken) {
 		return
 	}
 	// 按轮换时刻锚定过期时间，补写延迟不得延长凭证有效期
-	expiresIn := pending.rotatedAt + pending.expiresIn - time.Now().Unix()
-	if expiresIn < 1 {
-		expiresIn = 1
-	}
+	expiresIn := max(pending.rotatedAt+pending.expiresIn-time.Now().Unix(), 1)
 	if err := persistTokenWithRetry(account, pending.token, pending.refreshToken, expiresIn); err != nil {
 		if models.IsTokenCredentialsChanged(err) {
 			delete(pendingTokenPersists, account.ID)

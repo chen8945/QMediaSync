@@ -1,6 +1,9 @@
 package models
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"qmediasync/internal/helpers"
@@ -914,6 +917,55 @@ func TestNewSyntax_ActorAlias(t *testing.T) {
 			result := sm.GenerateNameByTemplate(tt.template)
 			if result != tt.expected {
 				t.Errorf("模板 '%s' 生成失败\n期望: %s\n实际: %s", tt.template, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNewSyntaxPongoRegression(t *testing.T) {
+	sm := createTestMovieData()
+	for _, tc := range []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{"removetags_literal_metacharacter", `{{ title|removetags:"[" }}`, "星际穿越"},
+		{"ifchanged_without_else", `{% for x in "aa" %}{% ifchanged x %}{{ x }}{% endifchanged %}{% endfor %}`, "a"},
+		{"html_escaping", `{{ "A&B<>" }}`, "A&amp;B&lt;&gt;"},
+		{"explicit_safe", `{{ "A&B<>"|safe }}`, "A&B<>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if value := recover(); value != nil {
+					t.Fatalf("template panicked: %v", value)
+				}
+			}()
+			if got := sm.GenerateNameByTemplate(tc.template); got != tc.want {
+				t.Fatalf("render = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewSyntaxBlockSuperNativeOutput(t *testing.T) {
+	sm := createTestMovieData()
+	sm.Name = "A&B"
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"literal", "A&B", "A&B"},
+		{"escaped_variable", "{{ title }}", "A&amp;B"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := filepath.Join(t.TempDir(), "base.tpl")
+			if err := os.WriteFile(base, []byte("{% block title %}"+tc.body+"{% endblock %}"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			template := fmt.Sprintf(`{%% extends %q %%}{%% block title %%}{{ block.Super }}{%% endblock %%}`, filepath.ToSlash(base))
+			if got := sm.GenerateNameByTemplateOrKeep(template, "fallback"); got != tc.want {
+				t.Fatalf("block.Super filename = %q, want %q", got, tc.want)
 			}
 		})
 	}

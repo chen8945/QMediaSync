@@ -69,7 +69,7 @@ func TestOSSMultipartUploaderResumesExistingParts(t *testing.T) {
 	filePath := writeMultipartTestFile(t, "abcdef")
 	fakeClient := &fakeOSSMultipartClient{
 		listParts: []oss.Part{
-			{PartNumber: 1, ETag: oss.Ptr("etag-1"), Size: 3},
+			{PartNumber: 1, ETag: new("etag-1"), Size: 3},
 		},
 	}
 	uploader := &OSSMultipartUploader{client: fakeClient}
@@ -192,7 +192,7 @@ func (c *fakeOSSMultipartClient) InitiateMultipartUpload(_ context.Context, requ
 	if uploadID == "" {
 		uploadID = "upload-new"
 	}
-	return &oss.InitiateMultipartUploadResult{UploadId: oss.Ptr(uploadID)}, nil
+	return &oss.InitiateMultipartUploadResult{UploadId: new(uploadID)}, nil
 }
 
 func (c *fakeOSSMultipartClient) UploadPart(_ context.Context, request *oss.UploadPartRequest, _ ...func(*oss.Options)) (*oss.UploadPartResult, error) {
@@ -203,7 +203,7 @@ func (c *fakeOSSMultipartClient) UploadPart(_ context.Context, request *oss.Uplo
 	if c.uploadErr != nil {
 		return nil, c.uploadErr
 	}
-	return &oss.UploadPartResult{ETag: oss.Ptr("etag-uploaded")}, nil
+	return &oss.UploadPartResult{ETag: new("etag-uploaded")}, nil
 }
 
 func (c *fakeOSSMultipartClient) ListParts(context.Context, *oss.ListPartsRequest, ...func(*oss.Options)) (*oss.ListPartsResult, error) {

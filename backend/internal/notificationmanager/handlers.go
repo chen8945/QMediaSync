@@ -120,18 +120,19 @@ func (h *TelegramChannelHandler) Send(ctx context.Context, notification *notific
 func (h *TelegramChannelHandler) formatMessage(notification *notification.Notification) string {
 	// timestamp := notification.Timestamp.Format("2006-01-02 15:04:05")
 
-	message := fmt.Sprintf("<b>%s</b>\n", notification.Title)
-	message += fmt.Sprintf("%s\n", notification.Content)
+	var message strings.Builder
+	message.WriteString(fmt.Sprintf("<b>%s</b>\n", notification.Title))
+	message.WriteString(fmt.Sprintf("%s\n", notification.Content))
 
 	if len(notification.Metadata) > 0 {
 		for key, value := range notification.Metadata {
-			message += fmt.Sprintf("<b>%s:</b> %v\n", key, value)
+			message.WriteString(fmt.Sprintf("<b>%s:</b> %v\n", key, value))
 		}
-		message += "\n"
+		message.WriteString("\n")
 	}
 
 	// message += fmt.Sprintf("⏰ <b>时间：</b> %s", timestamp)
-	return message
+	return message.String()
 }
 
 // 内部初始化方法，确保只创建一个 bot 实例
@@ -268,7 +269,7 @@ func (h *MeoWChannelHandler) Send(ctx context.Context, notification *notificatio
 	endpoint := fmt.Sprintf("%s/%s", h.config.Endpoint, h.config.Nickname)
 
 	// 构建 POST 请求体（JSON 格式）
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"title": notification.Title,
 		"msg":   notification.Content,
 	}
@@ -320,7 +321,7 @@ func (h *MeoWChannelHandler) Send(ctx context.Context, notification *notificatio
 		return fmt.Errorf("MeoW 返回错误：status=%d，body=%s", resp.StatusCode, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	json.Unmarshal(body, &result)
 
 	if status, ok := result["status"].(float64); ok && int(status) != 200 {
@@ -359,7 +360,7 @@ func (h *BarkChannelHandler) Send(ctx context.Context, notification *notificatio
 
 	endpoint := fmt.Sprintf("%s/push", h.config.ServerURL)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"device_key": h.config.DeviceKey,
 		"title":      notification.Title,
 		"body":       notification.Content,
@@ -468,7 +469,7 @@ func (h *ServerChanChannelHandler) Send(ctx context.Context, notification *notif
 		return fmt.Errorf("Server酱返回错误：status=%d，body=%s", resp.StatusCode, string(body))
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	json.Unmarshal(body, &result)
 
 	if code, ok := result["code"].(float64); ok && int(code) != 0 {
@@ -702,7 +703,7 @@ func renderJSONTemplate(template string, vars map[string]string) string {
 	}
 
 	// 3. 解析为 JSON 对象
-	var jsonObj interface{}
+	var jsonObj any
 	if err := json.Unmarshal([]byte(result), &jsonObj); err != nil {
 		helpers.AppLogger.Debugf("[Webhook] JSON 模板解析失败：%v，使用原始替换", err)
 		return result
@@ -725,16 +726,16 @@ func renderJSONTemplate(template string, vars map[string]string) string {
 }
 
 // cleanEmptyValues 递归清理空值（Discord 特殊处理）
-func cleanEmptyValues(obj interface{}) interface{} {
+func cleanEmptyValues(obj any) any {
 	switch v := obj.(type) {
-	case map[string]interface{}:
-		result := make(map[string]interface{})
+	case map[string]any:
+		result := make(map[string]any)
 		for key, value := range v {
 			cleaned := cleanEmptyValues(value)
 
 			// Discord 特殊处理：如果 image.url 为空，移除整个 image 对象
 			if key == "image" {
-				if imgMap, ok := cleaned.(map[string]interface{}); ok {
+				if imgMap, ok := cleaned.(map[string]any); ok {
 					if url, exists := imgMap["url"]; exists && url == "" {
 						continue // 跳过空的 image 字段
 					}
@@ -750,8 +751,8 @@ func cleanEmptyValues(obj interface{}) interface{} {
 		}
 		return result
 
-	case []interface{}:
-		result := make([]interface{}, 0)
+	case []any:
+		result := make([]any, 0)
 		for _, value := range v {
 			cleaned := cleanEmptyValues(value)
 			if cleaned != nil && cleaned != "" {

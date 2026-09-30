@@ -247,7 +247,7 @@ func (sp *SyncPath) Update(sourceType SourceType, accountId uint, baseCid, local
 	sp.EnableCron = enableCron
 	sp.DirectoryUploadEnabled = directoryUploadEnabled
 	// 使用 map 保存需要更新的字段
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"custom_config":            customConfig,
 		"base_cid":                 baseCid,
 		"local_path":               localPath,
@@ -442,7 +442,7 @@ func CreateSyncPath(sourceType SourceType, accountId uint, baseCid, localPath, r
 		syncPathSetting = GetStrmSettingDefault()
 	}
 	// 使用 map[string]interface{} 格式入库，避免 0 值不入库
-	syncPathData := map[string]interface{}{
+	syncPathData := map[string]any{
 		"source_type":              sourceType,
 		"base_cid":                 baseCid,
 		"local_path":               localPath,

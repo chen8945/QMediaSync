@@ -15,7 +15,7 @@ func GetNextTimeByCronStr(cronStr string, count int) []time.Time {
 	var times []time.Time
 	var preTime time.Time
 	now := time.Now()
-	for i := 0; i < count; i++ {
+	for range count {
 		if preTime.IsZero() {
 			preTime = now
 		}

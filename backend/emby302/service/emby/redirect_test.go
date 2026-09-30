@@ -446,3 +446,19 @@ func runSTRMRedirectTest(t *testing.T, source, ua string) (*httptest.ResponseRec
 	router.ServeHTTP(rec, req)
 	return rec, output.String()
 }
+
+func TestRedirect2TranscodeMalformedHost(t *testing.T) {
+	router, output := newSTRMRedirectTestRouter(t, "", false)
+	config.C.Emby.ProxyErrorStrategy = config.PeStrategyReject
+	router.GET("/master.m3u8", Redirect2Transcode)
+	request := httptest.NewRequest(http.MethodGet, "/master.m3u8?template_id=test&openlist_path=movie&api_key=secret", nil)
+	request.Host = "[::1"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || response.Header().Get("Location") != "" {
+		t.Fatalf("invalid Host response = %d, %q", response.Code, response.Header().Get("Location"))
+	}
+	if strings.Contains(output.String(), "api_key=secret") {
+		t.Fatal("logged credentials")
+	}
+}

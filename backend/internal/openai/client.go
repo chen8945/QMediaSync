@@ -83,7 +83,7 @@ type ChatCompletionResponse struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage,omitempty"`
+	Usage   Usage    `json:"usage"`
 }
 
 // Choice 表示聊天补全响应中的候选项。

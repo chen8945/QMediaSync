@@ -3,9 +3,11 @@ package emby
 import (
 	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"qmediasync/emby302/web/cache"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/net/http/httpguts"
 )
 
 func ProxySocket() func(*gin.Context) {
@@ -32,15 +35,32 @@ func ProxySocket() func(*gin.Context) {
 			panic("转换 Emby Host 失败: " + err.Error())
 		}
 
-		proxy = httputil.NewSingleHostReverseProxy(u)
 		// WebSocket 直接连接 Emby，避免受系统代理环境变量影响。
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.Proxy = nil
-		proxy.Transport = transport
-
-		proxy.Director = func(r *http.Request) {
-			r.URL.Scheme = u.Scheme
-			r.URL.Host = u.Host
+		proxy = &httputil.ReverseProxy{
+			Transport: transport,
+			Rewrite: func(r *httputil.ProxyRequest) {
+				r.Out.URL.Scheme = u.Scheme
+				r.Out.URL.Host = u.Host
+				// 保留原始路径、Host 和查询串，避免重编码认证参数。
+				r.Out.URL.RawQuery = r.In.URL.RawQuery
+				// 沿用既有转发头，但不能恢复被 Connection 指定为逐跳的字段。
+				for _, name := range []string{"Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-For"} {
+					if values, ok := r.In.Header[name]; ok && !httpguts.HeaderValuesContainsToken(r.In.Header.Values("Connection"), name) {
+						r.Out.Header[name] = slices.Clone(values)
+					}
+				}
+				if clientIP, _, err := net.SplitHostPort(r.In.RemoteAddr); err == nil {
+					prior, ok := r.Out.Header["X-Forwarded-For"]
+					if !ok || prior != nil {
+						if len(prior) > 0 {
+							clientIP = strings.Join(prior, ", ") + ", " + clientIP
+						}
+						r.Out.Header.Set("X-Forwarded-For", clientIP)
+					}
+				}
+			},
 		}
 	}
 

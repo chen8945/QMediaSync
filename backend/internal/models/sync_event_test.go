@@ -63,7 +63,7 @@ func TestSyncTaskEventPayloadUsesRealSyncID(t *testing.T) {
 	helpers.GlobalConfig.Log.SyncLogDir = "logs/sync"
 
 	sync := &Sync{
-		BaseModel:         BaseModel{ID: 42, CreatedAt: 100, UpdatedAt: 110},
+		ID: 42, CreatedAt: 100, UpdatedAt: 110,
 		SyncPathId:        7,
 		Status:            SyncStatusInProgress,
 		SubStatus:         SyncSubStatusProcessNetFileList,

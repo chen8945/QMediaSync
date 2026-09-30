@@ -1157,7 +1157,7 @@ func cleanRemoteFilePath(rootPath string, rel string) string {
 		rootPath = "/" + rootPath
 	}
 	parts := []string{rootPath}
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+	for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
 		if part != "" && part != "." {
 			parts = append(parts, part)
 		}
@@ -1379,7 +1379,7 @@ func (client *open115RemoteClient) EnsureDir(ctx context.Context, rule *models.D
 	if currentPath == "." {
 		currentPath = "/"
 	}
-	for _, segment := range strings.Split(relativeDir, "/") {
+	for segment := range strings.SplitSeq(relativeDir, "/") {
 		segment = strings.TrimSpace(segment)
 		if segment == "" || segment == "." {
 			continue

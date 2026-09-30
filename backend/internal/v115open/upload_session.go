@@ -319,7 +319,7 @@ func WaitForRapidUpload(
 		sleep = sleepWithTimer
 	}
 	attempts := rapidWaitAttempts(policy.Timeout, policy.Interval)
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		sleepDuration := rapidWaitSleepDuration(policy.Timeout, policy.Interval, i)
 		if err := sleep(ctx, sleepDuration); err != nil {
 			return outcome, err

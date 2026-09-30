@@ -31,19 +31,15 @@ func RangeInt64(field string, value int64, min int64, max int64) error {
 }
 
 func OneOfInt(field string, value int, allowed []int) error {
-	for _, item := range allowed {
-		if value == item {
-			return nil
-		}
+	if slices.Contains(allowed, value) {
+		return nil
 	}
 	return New(field, "不是允许的取值")
 }
 
 func OneOfString(field string, value string, allowed []string) error {
-	for _, item := range allowed {
-		if value == item {
-			return nil
-		}
+	if slices.Contains(allowed, value) {
+		return nil
 	}
 	return New(field, "不是允许的取值")
 }

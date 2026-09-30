@@ -1,7 +1,6 @@
 package logstream
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +16,7 @@ func TestManagerSharesTailerForSamePath(t *testing.T) {
 	}
 
 	manager := NewManager()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	first, firstClose, err := manager.Subscribe(ctx, path, 0, 8)
 	if err != nil {

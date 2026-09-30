@@ -123,7 +123,7 @@ func TestStrmGenerationDirectoryScanExcludesPlaybackSubtree(t *testing.T) {
 				path = ""
 			}
 			task := &models.StrmGenerationTask{
-				BaseModel: models.BaseModel{ID: 1}, Source: models.StrmGenerationSourceWebhook,
+				ID: 1, Source: models.StrmGenerationSourceWebhook,
 				TaskType: models.StrmGenerationTaskTypeDirectoryScan, AccountId: account.ID, SyncPathId: syncPath.ID,
 				DirectoryId: tt.rootID, DirectoryPath: path,
 			}

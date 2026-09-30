@@ -12,7 +12,7 @@ type BaseModel struct {
 	UpdatedAt int64 `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
-func GetTableName(model interface{}) string {
+func GetTableName(model any) string {
 	stmt := &gorm.Statement{DB: db.Db}
 
 	// 解析模型

@@ -11,7 +11,7 @@ func TestOpen115AuthStateExpires(t *testing.T) {
 	open115AuthStates.Lock()
 	open115AuthStates.items = map[string]*open115AuthState{}
 	open115AuthStates.Unlock()
-	data := &v115open.QrCodeDataReturn{QrCodeData: v115open.QrCodeData{Uid: "u1"}}
+	data := &v115open.QrCodeDataReturn{Uid: "u1"}
 	saveOpen115AuthState(1, data)
 	state, ok := getOpen115AuthState(1, "u1")
 	if !ok || state.CodeData.Uid != "u1" {
@@ -33,7 +33,7 @@ func TestMarkOpen115AuthTokenSavingOnlyOnce(t *testing.T) {
 	open115AuthStates.Lock()
 	open115AuthStates.items = map[string]*open115AuthState{}
 	open115AuthStates.Unlock()
-	saveOpen115AuthState(1, &v115open.QrCodeDataReturn{QrCodeData: v115open.QrCodeData{Uid: "u2"}})
+	saveOpen115AuthState(1, &v115open.QrCodeDataReturn{Uid: "u2"})
 	if !markOpen115AuthTokenSaving(1, "u2") {
 		t.Fatalf("第一次标记换 token 应成功")
 	}
@@ -51,7 +51,7 @@ func TestInvalidatedOpen115AuthStateCannotCommit(t *testing.T) {
 	open115AuthStates.items = map[string]*open115AuthState{}
 	open115AuthStates.Unlock()
 
-	saveOpen115AuthState(1, &v115open.QrCodeDataReturn{QrCodeData: v115open.QrCodeData{Uid: "u3"}})
+	saveOpen115AuthState(1, &v115open.QrCodeDataReturn{Uid: "u3"})
 	if !markOpen115AuthTokenSaving(1, "u3") {
 		t.Fatal("标记换 token 应成功")
 	}

@@ -56,10 +56,9 @@ func TestGenrateCategory清理分类名中的路径穿越(t *testing.T) {
 				NewPathName:    "影片 (2024)",
 				VideoFilename:  "影片.mkv",
 			}
-			impl := &movieScrapeImpl{ScrapeBase: ScrapeBase{
+			impl := &movieScrapeImpl{
 				scrapePath:   scrapePath,
-				categoryImpl: stubCategoryImpl{name: tt.categoryName, category: &models.ScrapePathCategory{}},
-			}}
+				categoryImpl: stubCategoryImpl{name: tt.categoryName, category: &models.ScrapePathCategory{}}}
 
 			if err := impl.GenrateCategory(mediaFile); err != nil {
 				t.Fatalf("计算二级分类失败: %v", err)

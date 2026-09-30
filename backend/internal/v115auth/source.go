@@ -1340,10 +1340,7 @@ func SearchBuiltInAppIDSources(keyword string, offset int, limit int) AppIDSearc
 	if offset > total {
 		offset = total
 	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
+	end := min(offset+limit, total)
 	items := append([]Source(nil), matched[offset:end]...)
 	return AppIDSearchResult{Items: items, Total: total, Offset: offset, Limit: limit}
 }

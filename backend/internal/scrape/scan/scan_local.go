@@ -20,7 +20,7 @@ type ScanLocalImpl struct {
 }
 
 func NewLocalScanImpl(scrapePath *models.ScrapePath, ctx context.Context) *ScanLocalImpl {
-	return &ScanLocalImpl{scanBaseImpl: scanBaseImpl{ctx: ctx, scrapePath: scrapePath}}
+	return &ScanLocalImpl{ctx: ctx, scrapePath: scrapePath}
 }
 
 // 检查来源目录和目标目录是否存在

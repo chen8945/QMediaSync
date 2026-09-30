@@ -22,7 +22,7 @@ type Scan115Impl struct {
 }
 
 func New115ScanImpl(scrapePath *models.ScrapePath, client *v115open.OpenClient, ctx context.Context) *Scan115Impl {
-	return &Scan115Impl{scanBaseImpl: scanBaseImpl{ctx: ctx, scrapePath: scrapePath}, client: client}
+	return &Scan115Impl{ctx: ctx, scrapePath: scrapePath, client: client}
 }
 
 var list115ScanFilesPage = func(ctx context.Context, client *v115open.OpenClient, parentID string, offset, limit int) (*v115open.FileListResp, error) {

@@ -30,7 +30,7 @@ func TestStabilityQueueWaitsForStableFile(t *testing.T) {
 
 	queue := NewStabilityQueue(StabilityQueueOptions{Now: clock.Now})
 	rule := &models.DirectoryUploadRule{
-		BaseModel: models.BaseModel{ID: 1},
+		ID: 1,
 	}
 	queue.Track(rule.ID, path)
 
@@ -86,7 +86,7 @@ func TestStabilityQueueResetsWhenSignatureChanges(t *testing.T) {
 
 	queue := NewStabilityQueue(StabilityQueueOptions{Now: clock.Now})
 	rule := &models.DirectoryUploadRule{
-		BaseModel: models.BaseModel{ID: 2},
+		ID: 2,
 	}
 	queue.Track(rule.ID, path)
 
@@ -118,7 +118,7 @@ func TestStabilityQueueUsesBuiltInWindowAndCount(t *testing.T) {
 
 	queue := NewStabilityQueue(StabilityQueueOptions{Now: clock.Now})
 	rule := &models.DirectoryUploadRule{
-		BaseModel:              models.BaseModel{ID: 3},
+		ID:                     3,
 		StabilitySeconds:       3600,
 		StabilityRequiredCount: 99,
 	}
@@ -165,7 +165,7 @@ func TestStabilityQueueDropsSymlinkWhenTargetEscapesMonitor(t *testing.T) {
 
 	queue := NewStabilityQueue(StabilityQueueOptions{Now: clock.Now})
 	rule := &models.DirectoryUploadRule{
-		BaseModel:   models.BaseModel{ID: 4},
+		ID:          4,
 		MonitorPath: monitorPath,
 	}
 	queue.Track(rule.ID, linkPath)

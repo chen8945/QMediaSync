@@ -57,30 +57,26 @@ func TestLogEffectiveStrmConfigUsesGlobalSources(t *testing.T) {
 		t.Fatal("编码 STRM 设置失败")
 	}
 	settings := &models.Settings{
-		SettingThreads: models.SettingThreads{
-			FileDetailThreads: 2,
-			OpenlistQPS:       3,
-		},
-		SettingStrm: *encodedSettingStrm,
+		FileDetailThreads: 2,
+		OpenlistQPS:       3,
+		SettingStrm:       *encodedSettingStrm,
 	}
 	if err := db.Db.Create(settings).Error; err != nil {
 		t.Fatalf("创建测试设置失败: %v", err)
 	}
 
 	syncPath := &models.SyncPath{
-		BaseModel: models.BaseModel{ID: 1},
-		SettingStrm: models.SettingStrm{
-			MinVideoSize:   -1,
-			AddPath:        -1,
-			UploadMeta:     -1,
-			DownloadMeta:   -1,
-			DeleteDir:      -1,
-			CheckMetaMtime: -1,
-		},
-		CustomConfig: false,
-		LocalPath:    helpers.ConfigDir,
-		RemotePath:   "动漫",
-		SourceType:   models.SourceTypeLocal,
+		ID:             1,
+		MinVideoSize:   -1,
+		AddPath:        -1,
+		UploadMeta:     -1,
+		DownloadMeta:   -1,
+		DeleteDir:      -1,
+		CheckMetaMtime: -1,
+		CustomConfig:   false,
+		LocalPath:      helpers.ConfigDir,
+		RemotePath:     "动漫",
+		SourceType:     models.SourceTypeLocal,
 	}
 
 	syncStrm := NewSyncStrmFromSyncPath(syncPath)
@@ -151,32 +147,28 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 		t.Fatal("编码 STRM 设置失败")
 	}
 	settings := &models.Settings{
-		SettingThreads: models.SettingThreads{
-			FileDetailThreads: 2,
-			OpenlistQPS:       3,
-		},
-		SettingStrm: *encodedSettingStrm,
+		FileDetailThreads: 2,
+		OpenlistQPS:       3,
+		SettingStrm:       *encodedSettingStrm,
 	}
 	if err := db.Db.Create(settings).Error; err != nil {
 		t.Fatalf("创建测试设置失败: %v", err)
 	}
 
 	syncPath := &models.SyncPath{
-		BaseModel: models.BaseModel{ID: 5},
-		SettingStrm: models.SettingStrm{
-			MetaExtArr:          []string{".ass", ".srt"},
-			ExcludeNameRegexArr: []string{"^Custom$"},
-			MinVideoSize:        -1,
-			AddPath:             -1,
-			UploadMeta:          -1,
-			DownloadMeta:        -1,
-			DeleteDir:           -1,
-			CheckMetaMtime:      -1,
-		},
-		CustomConfig: true,
-		LocalPath:    helpers.ConfigDir,
-		RemotePath:   "动漫",
-		SourceType:   models.SourceTypeLocal,
+		ID:                  5,
+		MetaExtArr:          []string{".ass", ".srt"},
+		ExcludeNameRegexArr: []string{"^Custom$"},
+		MinVideoSize:        -1,
+		AddPath:             -1,
+		UploadMeta:          -1,
+		DownloadMeta:        -1,
+		DeleteDir:           -1,
+		CheckMetaMtime:      -1,
+		CustomConfig:        true,
+		LocalPath:           helpers.ConfigDir,
+		RemotePath:          "动漫",
+		SourceType:          models.SourceTypeLocal,
 	}
 
 	syncStrm := NewSyncStrmFromSyncPath(syncPath)
@@ -230,21 +222,17 @@ func TestNewSyncStrmForStrmGenerationDoesNotLogEffectiveStrmConfig(t *testing.T)
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 	settings := &models.Settings{
-		SettingThreads: models.SettingThreads{
-			FileDetailThreads: 2,
-			OpenlistQPS:       3,
-		},
-		SettingStrm: models.SettingStrm{
-			VideoExtArr: []string{".mp4", ".mkv"},
-			MetaExtArr:  []string{".nfo", ".jpg"},
-		},
+		FileDetailThreads: 2,
+		OpenlistQPS:       3,
+		VideoExtArr:       []string{".mp4", ".mkv"},
+		MetaExtArr:        []string{".nfo", ".jpg"},
 	}
 	if err := db.Db.Create(settings).Error; err != nil {
 		t.Fatalf("创建测试设置失败: %v", err)
 	}
 
 	syncPath := &models.SyncPath{
-		BaseModel:    models.BaseModel{ID: 7},
+		ID:           7,
 		CustomConfig: false,
 		LocalPath:    helpers.ConfigDir,
 		RemotePath:   "动漫",

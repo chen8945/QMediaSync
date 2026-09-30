@@ -343,9 +343,9 @@ func TestHttpProxyAdvancedStopsAtFirstSuccess(t *testing.T) {
 	useTestLogLevel(t, LogLevelInfo)
 	captureAppLogger(t)
 
-	var proxied int32
+	var proxied atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&proxied, 1)
+		proxied.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -364,7 +364,7 @@ func TestHttpProxyAdvancedStopsAtFirstSuccess(t *testing.T) {
 	if result.SuccessCount != 1 || result.TotalCount != 1 {
 		t.Fatalf("统计应只覆盖实际探测过的 URL，实际 SuccessCount=%d TotalCount=%d", result.SuccessCount, result.TotalCount)
 	}
-	if got := atomic.LoadInt32(&proxied); got != 1 {
+	if got := proxied.Load(); got != 1 {
 		t.Fatalf("期望只向代理发起 1 次请求，实际 %d 次", got)
 	}
 }

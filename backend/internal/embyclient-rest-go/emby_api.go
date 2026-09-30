@@ -351,7 +351,7 @@ func (c *Client) CheckPlaybackInfo(item BaseItemDtoV2, userID string) error {
 
 	var lastErr error
 
-	for i := 0; i < 1; i++ {
+	for i := range 1 {
 		// 创建新的 HTTP POST 请求
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
 		if err != nil {

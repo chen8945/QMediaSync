@@ -360,7 +360,7 @@ func validateWebhookTemplate(method string, format string, template string) erro
 	switch format {
 	case "json":
 		s := replaceWebhookVarsWithEmpty(template)
-		var js interface{}
+		var js any
 		if err := json.Unmarshal([]byte(s), &js); err != nil {
 			return validation.New("template", "JSON 模板无效："+err.Error())
 		}

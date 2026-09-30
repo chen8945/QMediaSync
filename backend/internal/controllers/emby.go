@@ -786,7 +786,7 @@ func createPlaybackNotification(webhook *models.EmbyPlaybackWebhook) *notificati
 	}
 
 	// 构造通知元数据
-	metadata := map[string]interface{}{}
+	metadata := map[string]any{}
 	playbackDuration := webhook.GetPlaybackDuration()
 	if playbackDuration > 0 {
 		metadata["观看时长"] = models.FormatPlaybackDuration(playbackDuration)

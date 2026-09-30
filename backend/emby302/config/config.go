@@ -7,7 +7,7 @@ import (
 
 	"qmediasync/emby302/web/webport"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 type Config struct {
@@ -46,11 +46,10 @@ func ReadFromFile(bytes []byte) error {
 	}
 
 	cVal := reflect.ValueOf(C).Elem()
-	for i := 0; i < cVal.NumField(); i++ {
-		field := cVal.Field(i)
+	for _, field := range cVal.Fields() {
 
 		// 为配置项初始化零值
-		if field.Kind() == reflect.Ptr && field.IsNil() {
+		if field.Kind() == reflect.Pointer && field.IsNil() {
 			elmType := field.Type().Elem()
 			field.Set(reflect.New(elmType))
 		}

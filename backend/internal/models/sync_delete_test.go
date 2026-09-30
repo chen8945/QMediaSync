@@ -117,7 +117,7 @@ func TestDeleteTemporarySyncRecordById允许删除待处理记录(t *testing.T) 
 func TestClearExpiredSyncRecords清理过期待处理记录(t *testing.T) {
 	setupSyncDeleteTestDB(t)
 	expired := &Sync{
-		BaseModel:  BaseModel{CreatedAt: time.Now().AddDate(0, 0, -8).Unix()},
+		CreatedAt:  time.Now().AddDate(0, 0, -8).Unix(),
 		SyncPathId: 1,
 		Status:     SyncStatusPending,
 		LocalPath:  "/local",

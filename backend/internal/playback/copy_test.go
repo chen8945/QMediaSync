@@ -331,8 +331,7 @@ func (f *copyFixture) fullPath(id string) string {
 func awaitCleanup(t *testing.T, f *copyFixture) {
 	t.Helper()
 	synctest.Wait()
-	time.Sleep(cleanupDelay)
-	synctest.Wait()
+	synctest.Sleep(cleanupDelay)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.deleted) != len(f.createdDirs) || len(f.files) != 1 || f.files["99"].FileId != "99" || len(f.dirs) != 1 {
@@ -1210,8 +1209,7 @@ func TestCopyURLRecoversFromMovedRootWithoutExtraPlaybackRequests(t *testing.T) 
 					t.Fatal("固定根应先查后建，存在时直接复用")
 				}
 				synctest.Wait()
-				time.Sleep(cleanupDelay)
-				synctest.Wait()
+				synctest.Sleep(cleanupDelay)
 				f.mu.Lock()
 				deleted, remaining := len(f.deleted), len(f.files)
 				oldRoot, newRoot := f.dirs["90"], f.dirs[rootID]

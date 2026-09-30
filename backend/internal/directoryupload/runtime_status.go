@@ -117,10 +117,7 @@ func (runtime *RuleRuntime) recordScan(now time.Time, startedAt time.Time, candi
 	if skipped > candidates {
 		skipped = candidates
 	}
-	durationMs := now.Sub(startedAt).Milliseconds()
-	if durationMs < 0 {
-		durationMs = 0
-	}
+	durationMs := max(now.Sub(startedAt).Milliseconds(), 0)
 
 	runtime.statusMu.Lock()
 	defer runtime.statusMu.Unlock()

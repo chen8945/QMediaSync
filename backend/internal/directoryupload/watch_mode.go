@@ -330,7 +330,7 @@ func (detector *osWatchModeDetector) currentInotifyUsage() (int, int, error) {
 
 func countInotifyWatchesInFDInfo(content string) int {
 	count := 0
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		if strings.HasPrefix(line, "inotify wd:") {
 			count++
 		}
@@ -380,7 +380,7 @@ func filesystemTypeFromMountInfo(monitorPath string, mountInfo string) (string, 
 	monitorPath = filepath.Clean(monitorPath)
 	longestMountPoint := ""
 	filesystemType := ""
-	for _, line := range strings.Split(mountInfo, "\n") {
+	for line := range strings.SplitSeq(mountInfo, "\n") {
 		fields := strings.Fields(line)
 		separatorIndex := -1
 		for i, field := range fields {

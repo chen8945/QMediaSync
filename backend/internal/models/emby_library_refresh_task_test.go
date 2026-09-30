@@ -307,8 +307,8 @@ func TestRequestEmbyLibraryRefreshSkipsUnlinkedSyncPath(t *testing.T) {
 
 func TestRefreshTaskWaitsForRelatedDownloadsOnly(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 1}, SyncPathId: 10})
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 2}, SyncPathId: 20})
+	db.Db.Create(&SyncFile{ID: 1, SyncPathId: 10})
+	db.Db.Create(&SyncFile{ID: 2, SyncPathId: 20})
 	db.Db.Create(&DbDownloadTask{SyncFileId: 1, Status: DownloadStatusPending})
 	db.Db.Create(&DbDownloadTask{SyncFileId: 2, Status: DownloadStatusPending})
 
@@ -337,7 +337,7 @@ func TestRefreshTaskWaitsForDownloadTaskWithSyncPathId(t *testing.T) {
 
 func TestRefreshTaskKeepsSyncFileFallbackForOldDownloadTasks(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 1}, SyncPathId: 10})
+	db.Db.Create(&SyncFile{ID: 1, SyncPathId: 10})
 	db.Db.Create(&DbDownloadTask{SyncFileId: 1, Status: DownloadStatusPending})
 
 	count, err := CountActiveDownloadTasksBySyncPathIds([]uint{10})
@@ -351,7 +351,7 @@ func TestRefreshTaskKeepsSyncFileFallbackForOldDownloadTasks(t *testing.T) {
 
 func TestRefreshTaskKeepsSyncFileFallbackForNullSyncPathIDOldDownloadTasks(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 1}, SyncPathId: 10})
+	db.Db.Create(&SyncFile{ID: 1, SyncPathId: 10})
 	if err := db.Db.Exec("INSERT INTO db_download_tasks (sync_file_id, sync_path_id, status) VALUES (?, NULL, ?)", 1, DownloadStatusPending).Error; err != nil {
 		t.Fatalf("插入 NULL sync_path_id 旧下载任务失败: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestExecuteEmbyRefreshTaskDoesNotUseFallbackWithoutItemIDs(t *testing.T) {
 
 func TestRefreshTaskWaitsForRetryableFailedDownload(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 1}, SyncPathId: 10})
+	db.Db.Create(&SyncFile{ID: 1, SyncPathId: 10})
 	db.Db.Create(&DbDownloadTask{SyncFileId: 1, Status: DownloadStatusFailed, RetryCount: 0})
 
 	count, err := CountActiveDownloadTasksBySyncPathIds([]uint{10})
@@ -943,10 +943,7 @@ func TestEmbyRefreshTimerTriggersCheckChannel(t *testing.T) {
 
 	ScheduleNextEmbyLibraryRefreshCheck()
 
-	timeout := time.Until(time.Unix(task.RefreshAfterAt, 0)) + 500*time.Millisecond
-	if timeout < 500*time.Millisecond {
-		timeout = 500 * time.Millisecond
-	}
+	timeout := max(time.Until(time.Unix(task.RefreshAfterAt, 0))+500*time.Millisecond, 500*time.Millisecond)
 	select {
 	case <-embyRefreshCheckChan:
 	case <-time.After(timeout):
@@ -1122,7 +1119,7 @@ func TestDownloadTaskChangedEventIsBatched(t *testing.T) {
 	task := newPendingEmbyLibraryRefreshTask("lib-movie", "电影", []uint{10}, now-100)
 	task.RefreshAfterAt = now - 1
 	db.Db.Create(task)
-	db.Db.Create(&SyncFile{BaseModel: BaseModel{ID: 1}, SyncPathId: 10})
+	db.Db.Create(&SyncFile{ID: 1, SyncPathId: 10})
 
 	HandleDownloadTaskStatusChanged(helpers.Event{Data: DownloadTaskStatusChangedPayload{SyncFileId: 1}})
 
@@ -1188,7 +1185,7 @@ func TestMarkEmbyRefreshTaskCompleted(t *testing.T) {
 func TestReconcilePendingEmbyRefreshTasksPromotesTenItems(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	now := nowUnix()
-	for i := 0; i < EmbyRefreshItemAggregationThreshold; i++ {
+	for i := range EmbyRefreshItemAggregationThreshold {
 		task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("item-%02d", i),
@@ -1241,7 +1238,7 @@ func TestReconcilePendingEmbyRefreshTasksHandlesCreateConflict(t *testing.T) {
 			now := nowUnix()
 			expectedItemIDs := []string{"existing-item"}
 			expectedSyncPathIDs := make([]uint, 0, EmbyRefreshItemAggregationThreshold+1)
-			for i := 0; i < EmbyRefreshItemAggregationThreshold; i++ {
+			for i := range EmbyRefreshItemAggregationThreshold {
 				itemID := fmt.Sprintf("item-%02d", i)
 				syncPathID := uint(10 + i)
 				task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
@@ -1581,7 +1578,7 @@ func TestReconcilePendingEmbyRefreshTasksResetsHistoricalItemIDsForNewCycle(t *t
 				t.Fatalf("创建已有媒体库刷新任务失败: %v", err)
 			}
 			expectedItemIDs := make([]string, 0, EmbyRefreshItemAggregationThreshold+1)
-			for i := 0; i < EmbyRefreshItemAggregationThreshold; i++ {
+			for i := range EmbyRefreshItemAggregationThreshold {
 				itemID := fmt.Sprintf("current-item-%02d", i)
 				task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 					TargetType:          EmbyRefreshTargetTypeItem,
@@ -1618,7 +1615,7 @@ func TestReconcilePendingEmbyRefreshTasksKeepsNineItemsAndSharesDebounce(t *test
 	setupEmbyRefreshTestDB(t)
 	now := nowUnix()
 	maxRefreshAfter := now + 20
-	for i := 0; i < EmbyRefreshItemAggregationThreshold-1; i++ {
+	for i := range EmbyRefreshItemAggregationThreshold - 1 {
 		task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("item-%02d", i),
@@ -1664,7 +1661,7 @@ func TestReconcilePendingEmbyRefreshTasksLibraryFallbackAbsorbsItems(t *testing.
 	if err := db.Db.Create(libraryTask).Error; err != nil {
 		t.Fatalf("创建媒体库刷新任务失败: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("item-%02d", i),
@@ -1703,7 +1700,7 @@ func TestReconcilePendingEmbyRefreshTasksLibraryFallbackAbsorbsItems(t *testing.
 func TestReconcilePendingEmbyRefreshTasksExcludesUnresolvedItem(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	now := nowUnix()
-	for i := 0; i < EmbyRefreshItemAggregationThreshold-1; i++ {
+	for i := range EmbyRefreshItemAggregationThreshold - 1 {
 		task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("resolved-%02d", i),
@@ -1744,7 +1741,7 @@ func TestReconcilePendingEmbyRefreshTasksExcludesUnresolvedItem(t *testing.T) {
 func TestReconcilePendingEmbyRefreshTasksKeepsLibrariesIndependent(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	now := nowUnix()
-	for i := 0; i < EmbyRefreshItemAggregationThreshold; i++ {
+	for i := range EmbyRefreshItemAggregationThreshold {
 		for _, libraryID := range []string{"lib-a", "lib-b"} {
 			task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 				TargetType:          EmbyRefreshTargetTypeItem,
@@ -1781,7 +1778,7 @@ func TestReconcilePendingEmbyRefreshTasksDoesNotAbsorbIntoRefreshingLibrary(t *t
 	if err := db.Db.Create(libraryTask).Error; err != nil {
 		t.Fatalf("创建 refreshing 媒体库任务失败: %v", err)
 	}
-	for i := 0; i < EmbyRefreshItemAggregationThreshold; i++ {
+	for i := range EmbyRefreshItemAggregationThreshold {
 		task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("item-%02d", i),
@@ -1817,7 +1814,7 @@ func TestMarkEmbyRefreshTaskCompletedDoesNotOverwriteRequeuedPendingTask(t *test
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建刷新任务失败: %v", err)
 	}
-	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]any{
 		"status": EmbyLibraryRefreshStatusPending,
 	}).Error; err != nil {
 		t.Fatalf("模拟刷新任务重新排队失败: %v", err)
@@ -1930,7 +1927,6 @@ func TestUpsertEmbyLibraryRefreshTaskStartsNewDeadlineForTerminalStatus(t *testi
 		EmbyLibraryRefreshStatusFailed,
 		EmbyLibraryRefreshStatusCancelled,
 	} {
-		status := status
 		t.Run(status, func(t *testing.T) {
 			setupEmbyRefreshTestDB(t)
 			now := nowUnix()
@@ -1974,7 +1970,7 @@ func TestEmbyRefreshAggregationCoversPendingItemsAcrossSubmissions(t *testing.T)
 			FallbackLibraryName: "电影库",
 		}
 	}
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		if err := RequestEmbyRefreshTargets(10, []EmbyRefreshTarget{makeTarget(i)}); err != nil {
 			t.Fatalf("第一批提交刷新目标失败: %v", err)
 		}
@@ -1988,7 +1984,7 @@ func TestEmbyRefreshAggregationCoversPendingItemsAcrossSubmissions(t *testing.T)
 	now := nowUnix()
 	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).
 		Where("target_type = ? AND status = ?", EmbyLibraryRefreshTargetTypeItem, EmbyLibraryRefreshStatusPending).
-		Updates(map[string]interface{}{"refresh_after_at": now - 1}).Error; err != nil {
+		Updates(map[string]any{"refresh_after_at": now - 1}).Error; err != nil {
 		t.Fatalf("设置测试防抖时间失败: %v", err)
 	}
 	if err := reconcilePendingEmbyRefreshTasks(now); err != nil {
@@ -2012,7 +2008,7 @@ func TestReconcilePendingEmbyRefreshTasksCancelsExpiredLibraryBeforeAggregation(
 	if err := db.Db.Create(libraryTask).Error; err != nil {
 		t.Fatalf("创建过期媒体库刷新任务失败: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		itemTask := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              fmt.Sprintf("item-%d", i),
@@ -2151,13 +2147,13 @@ func TestUpdatePendingEmbyRefreshTaskCheckResultDoesNotOverwriteChangedTask(t *t
 
 			if tt.concurrentStatus != "" {
 				if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).
-					Updates(map[string]interface{}{"status": tt.concurrentStatus, "error": ""}).Error; err != nil {
+					Updates(map[string]any{"status": tt.concurrentStatus, "error": ""}).Error; err != nil {
 					t.Fatalf("模拟并发状态变化失败: %v", err)
 				}
 			} else {
 				updatedTask := *task
 				updatedTask.SetSyncPathIds([]uint{10, 11})
-				if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]any{
 					"last_event_at":     now + 1,
 					"refresh_after_at":  now + DefaultEmbyRefreshDebounceSeconds + 1,
 					"deadline_at":       now + 200,
@@ -2242,7 +2238,7 @@ func TestMarkEmbyRefreshTaskCancelledDoesNotCancelRenewedDeadline(t *testing.T) 
 	snapshot := *task
 
 	newDeadlineAt := now + 120
-	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]any{
 		"last_event_at":    now + 1,
 		"refresh_after_at": now + DefaultEmbyRefreshDebounceSeconds + 1,
 		"deadline_at":      newDeadlineAt,

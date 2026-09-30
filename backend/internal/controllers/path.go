@@ -136,8 +136,8 @@ func GetLocalPath(parentPath string) ([]DirResp, error) {
 					}
 					helpers.AppLogger.Debugf("合并后有权限访问的目录为：%s", accessiblePaths)
 					// 用冒号分割
-					paths := strings.Split(accessiblePaths, ":")
-					for _, path := range paths {
+					paths := strings.SplitSeq(accessiblePaths, ":")
+					for path := range paths {
 						// 去掉首尾空格
 						path = strings.TrimSpace(path)
 						// 加入列表

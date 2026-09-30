@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -121,7 +122,7 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 	// 反向检查，找到哪一级不存在，再正向创建
 	notExistIndex := -1
 	lastExistsPathId := ""
-	for i := len(pathParts) - 1; i >= 0; i-- {
+	for i := range slices.Backward(pathParts) {
 		dir := filepath.Join(pathParts[:i+1]...)
 		fsDetail, err := d.client.GetFsDetailByPath(ctx, dir)
 		if err != nil || fsDetail == nil || fsDetail.FileId == "" {

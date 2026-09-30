@@ -431,7 +431,7 @@ func Test115PlaybackExpiredURLDoesNotPublishOrLeavePending(t *testing.T) {
 func TestCopy115URLRequiresAccountScoped115FileIdentity(t *testing.T) {
 	setup115PlaybackCache(t)
 	setupControllerTestDB(t, &models.SyncFile{})
-	account := &models.Account{BaseModel: models.BaseModel{ID: 1}, UserId: "uid-1"}
+	account := &models.Account{ID: 1, UserId: "uid-1"}
 	for _, file := range []models.SyncFile{
 		{AccountId: 2, SourceType: models.SourceType115, PickCode: "same-pick", FileId: "other-account"},
 		{AccountId: 1, SourceType: models.SourceType123, PickCode: "same-pick", FileId: "other-provider"},

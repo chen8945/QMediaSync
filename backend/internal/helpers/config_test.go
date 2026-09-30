@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
-	"gopkg.in/yaml.v2"
+	"go.yaml.in/yaml/v3"
 )
 
 const testSQLiteConfig = "db:\n  engine: sqlite\n  sqliteFile: qmediasync.db\n"
@@ -54,6 +55,48 @@ func TestInitConfigPrefersConfigYamlOverConfigYml(t *testing.T) {
 			t.Fatalf("GlobalConfig.JwtSecret = %q, want %q", GlobalConfig.JwtSecret, "from-yaml")
 		}
 	})
+}
+
+func TestLoadExistingConfigRejectsDuplicateKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "top-level", yaml: "cacheSize: 8\ncacheSize: 16\n"},
+		{name: "nested", yaml: "log:\n  level: info\n  level: error\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempConfigDir(t, func(configDir string) {
+				files := map[string][]byte{
+					ConfigFileName:       []byte(testSQLiteConfig + tc.yaml),
+					legacyConfigFileName: []byte(testSQLiteConfig + "jwtSecret: legacy-secret\n"),
+				}
+				for name, data := range files {
+					if err := os.WriteFile(filepath.Join(configDir, name), data, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				GlobalConfig = *MakeDefaultConfig()
+				want := GlobalConfig
+
+				if err := LoadExistingConfig(); err == nil || !strings.Contains(err.Error(), "already defined") {
+					t.Fatalf("LoadExistingConfig() error = %v, want duplicate-key error", err)
+				}
+				if !reflect.DeepEqual(GlobalConfig, want) {
+					t.Fatal("failed load changed the active configuration or fell back to config.yml")
+				}
+				for name, before := range files {
+					after, err := os.ReadFile(filepath.Join(configDir, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(before, after) {
+						t.Fatalf("failed load rewrote %s", name)
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestExistingConfigFilePathDefaultsToConfigYaml(t *testing.T) {
@@ -284,7 +327,7 @@ func TestSaveLogSetting保存配置并更新运行时设置(t *testing.T) {
 				t.Fatalf("配置文件缺少 %q: %s", want, text)
 			}
 		}
-		if strings.Contains(text, "\n  file:") {
+		if strings.Contains(text, "\n    file:") {
 			t.Fatalf("保存后的推荐配置不应继续写入 log.file: %s", text)
 		}
 	})
@@ -477,4 +520,50 @@ func TestDefaultDatabaseConfigUsesPostgres(t *testing.T) {
 	if err := cfg.Db.Validate(); err != nil {
 		t.Fatalf("default database config is invalid: %v", err)
 	}
+}
+
+func TestConfigYAMLSemanticsRoundTrip(t *testing.T) {
+	withTempConfigDir(t, func(configDir string) {
+		// 主配置升级后仍保留旧布尔、八进制、锚点合并和字符串语义。
+		data := []byte(`defaults: &defaults
+  httpHost: 127.0.0.1:12333
+  cacheSize: 010
+<<: *defaults
+db:
+  engine: sqlite
+  sqliteFile: "媒体库.db"
+jwtSecret: 'secret: # literal'
+trustedOrigins: [https://qms.example.com]
+emby302:
+  insecure_skip_verify: no
+  images_original: yes
+strm:
+  videoExt: [.mkv, .mp4]
+`)
+		path := filepath.Join(configDir, ConfigFileName)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InitConfig(); err != nil {
+			t.Fatal(err)
+		}
+		if GlobalConfig.HttpHost != "127.0.0.1:12333" || GlobalConfig.CacheSize != 8 ||
+			GlobalConfig.Db.SqliteFile != "媒体库.db" || GlobalConfig.JwtSecret != "secret: # literal" ||
+			GlobalConfig.Emby302.InsecureSkipVerify || !GlobalConfig.Emby302.ImagesOriginal ||
+			!reflect.DeepEqual(GlobalConfig.TrustedOrigins, []string{"https://qms.example.com"}) ||
+			!reflect.DeepEqual(GlobalConfig.Strm.VideoExt, []string{".mkv", ".mp4"}) {
+			t.Fatal("YAML configuration semantics changed")
+		}
+		want := GlobalConfig
+		if err := SaveConfig(&GlobalConfig); err != nil {
+			t.Fatal(err)
+		}
+		GlobalConfig = Config{}
+		if err := InitConfig(); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(GlobalConfig, want) {
+			t.Fatal("configuration values changed after saving and reloading")
+		}
+	})
 }

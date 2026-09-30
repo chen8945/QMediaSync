@@ -150,11 +150,9 @@ func (u *OSSMultipartUploader) UploadFileWithResult(ctx context.Context, input O
 	uploadId := input.UploadId
 	if uploadId == "" {
 		initRequest := &oss.InitiateMultipartUploadRequest{
-			Bucket: oss.Ptr(input.Bucket),
-			Key:    oss.Ptr(input.Object),
-			RequestCommon: oss.RequestCommon{
-				Parameters: map[string]string{"sequential": "1"},
-			},
+			Bucket:     new(input.Bucket),
+			Key:        new(input.Object),
+			Parameters: map[string]string{"sequential": "1"},
 		}
 		initResult, err := u.client.InitiateMultipartUpload(ctx, initRequest)
 		if err != nil {
@@ -203,16 +201,13 @@ func (u *OSSMultipartUploader) UploadFileWithResult(ctx context.Context, input O
 	completeParts := make([]oss.UploadPart, 0, totalParts)
 	for partNumber := 1; partNumber <= totalParts; partNumber++ {
 		offset := int64(partNumber-1) * partSize
-		length := minInt64(partSize, input.FileSize-offset)
-		if length < 0 {
-			length = 0
-		}
+		length := max(minInt64(partSize, input.FileSize-offset), 0)
 		if existing, ok := existingPartMap[int32(partNumber)]; ok && existing.Size == length && existing.ETag != "" {
 			uploadedBytes += existing.Size
 			uploadedParts++
 			completeParts = append(completeParts, oss.UploadPart{
 				PartNumber: int32(partNumber),
-				ETag:       oss.Ptr(existing.ETag),
+				ETag:       new(existing.ETag),
 			})
 			reportOSSMultipartProgress(input, OSSMultipartProgress{
 				UploadId:       uploadId,
@@ -234,7 +229,7 @@ func (u *OSSMultipartUploader) UploadFileWithResult(ctx context.Context, input O
 		uploadedParts++
 		completeParts = append(completeParts, oss.UploadPart{
 			PartNumber: int32(partNumber),
-			ETag:       oss.Ptr(etag),
+			ETag:       new(etag),
 		})
 		reportOSSMultipartProgress(input, OSSMultipartProgress{
 			UploadId:       uploadId,
@@ -268,14 +263,14 @@ func (u *OSSMultipartUploader) UploadFileWithResult(ctx context.Context, input O
 		input.CallbackVar,
 	)
 	completeResult, err := u.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
-		Bucket:   oss.Ptr(input.Bucket),
-		Key:      oss.Ptr(input.Object),
-		UploadId: oss.Ptr(uploadId),
+		Bucket:   new(input.Bucket),
+		Key:      new(input.Object),
+		UploadId: new(uploadId),
 		CompleteMultipartUpload: &oss.CompleteMultipartUpload{
 			Parts: completeParts,
 		},
-		Callback:    oss.Ptr(headers.Callback),
-		CallbackVar: oss.Ptr(headers.CallbackVar),
+		Callback:    new(headers.Callback),
+		CallbackVar: new(headers.CallbackVar),
 	})
 	if err != nil {
 		logV115OSSInfof(
@@ -324,9 +319,9 @@ func (u *OSSMultipartUploader) ListUploadedParts(ctx context.Context, bucket str
 	var marker int32
 	for {
 		result, err := u.client.ListParts(ctx, &oss.ListPartsRequest{
-			Bucket:           oss.Ptr(bucket),
-			Key:              oss.Ptr(object),
-			UploadId:         oss.Ptr(uploadId),
+			Bucket:           new(bucket),
+			Key:              new(object),
+			UploadId:         new(uploadId),
 			MaxParts:         1000,
 			PartNumberMarker: marker,
 		})
@@ -369,9 +364,9 @@ func (u *OSSMultipartUploader) ListUploadedParts(ctx context.Context, bucket str
 // Abort 取消 OSS multipart 上传。
 func (u *OSSMultipartUploader) Abort(ctx context.Context, bucket string, object string, uploadId string) error {
 	_, err := u.client.AbortMultipartUpload(ctx, &oss.AbortMultipartUploadRequest{
-		Bucket:   oss.Ptr(bucket),
-		Key:      oss.Ptr(object),
-		UploadId: oss.Ptr(uploadId),
+		Bucket:   new(bucket),
+		Key:      new(object),
+		UploadId: new(uploadId),
 	})
 	return err
 }
@@ -389,12 +384,12 @@ func (u *OSSMultipartUploader) uploadPartWithRetry(
 	for attempt := 0; attempt < input.PartRetryMax; attempt++ {
 		reader := io.NewSectionReader(file, offset, length)
 		result, err := u.client.UploadPart(ctx, &oss.UploadPartRequest{
-			Bucket:        oss.Ptr(input.Bucket),
-			Key:           oss.Ptr(input.Object),
+			Bucket:        new(input.Bucket),
+			Key:           new(input.Object),
 			PartNumber:    partNumber,
-			UploadId:      oss.Ptr(uploadId),
+			UploadId:      new(uploadId),
 			Body:          reader,
-			ContentLength: oss.Ptr(length),
+			ContentLength: new(length),
 		})
 		if err == nil {
 			if result.ETag == nil || *result.ETag == "" {

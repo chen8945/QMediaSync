@@ -16,6 +16,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/v115open"
 
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"gorm.io/gorm"
 )
 
@@ -43,6 +44,30 @@ func setupUpload115ProcessedTestDB(t *testing.T) {
 	}
 	if err := db.Db.AutoMigrate(&DbUploadTask{}, &UploadSession{}, &DirectoryUploadProcessedFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
+	}
+}
+
+func TestIsOSSCheckpointInvalidError(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "无错误"},
+		{name: "错误文本不能代替错误码", err: errors.New("NoSuchUpload")},
+		{name: "空错误码", err: &oss.ServiceError{}},
+		{name: "上传不存在", err: &oss.ServiceError{Code: "NoSuchUpload"}, want: true},
+		{name: "上传 ID 无效", err: &oss.ServiceError{Code: "InvalidUploadId"}, want: true},
+		{name: "其他错误码", err: &oss.ServiceError{Code: "AccessDenied"}},
+		{name: "包装错误", err: fmt.Errorf("upload: %w", &oss.ServiceError{Code: "NoSuchUpload"}), want: true},
+		{name: "组合错误", err: errors.Join(errors.New("other"), &oss.ServiceError{Code: "InvalidUploadId"}), want: true},
+		{name: "首个匹配错误优先", err: errors.Join(&oss.ServiceError{Code: "AccessDenied"}, &oss.ServiceError{Code: "NoSuchUpload"})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isOSSCheckpointInvalidError(tt.err); got != tt.want {
+				t.Fatalf("isOSSCheckpointInvalidError(%v) = %v，期望 %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -233,7 +258,7 @@ func TestEnqueueHistoricalStrmUploadFailsWithoutCreatingInvalidPathTask(t *testi
 		RemoteFileId: "completed-file-id",
 		FileName:     "movie.mkv",
 		UploadResult: UploadResultMultipartUploaded,
-		Account:      &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115},
+		Account:      &Account{ID: 1, SourceType: SourceType115},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
@@ -445,7 +470,7 @@ func TestUpload115CompletionMarksDirectoryMonitorProcessedUploaded(t *testing.T)
 				FileName:          "movie.mkv",
 				SourceFingerprint: fingerprint,
 				Status:            UploadStatusPending,
-				Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
+				Account:           &Account{ID: 1, SourceType: SourceType115, Name: "115"},
 			}
 			if err := db.Db.Create(task).Error; err != nil {
 				t.Fatalf("创建上传任务失败: %v", err)
@@ -514,7 +539,7 @@ func TestUpload115CompletionDoesNotAdvanceDirectoryLedgerWhenFinalizePersistFail
 		FileName:          "movie.mkv",
 		SourceFingerprint: BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()),
 		Status:            UploadStatusPending,
-		Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
+		Account:           &Account{ID: 1, SourceType: SourceType115, Name: "115"},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
@@ -929,7 +954,7 @@ func TestUpload115StrmEnqueueFailureMarksRemoteExistsProcessedFailed(t *testing.
 		FileSize:          1024,
 		SourceFingerprint: BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()),
 		Status:            UploadStatusPending,
-		Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
+		Account:           &Account{ID: 1, SourceType: SourceType115, Name: "115"},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)
@@ -1099,7 +1124,7 @@ func TestUploadSkipsDirectoryMonitorSymlinkChangedOutsideBeforeUpload(t *testing
 		RemotePathId:      "parent-1",
 		FileName:          "movie.mkv",
 		Status:            UploadStatusPending,
-		Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
+		Account:           &Account{ID: 1, SourceType: SourceType115, Name: "115"},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)

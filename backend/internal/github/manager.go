@@ -78,6 +78,7 @@ func UpdateConfig(httpProxy string) {
 	defaultManager.httpProxy = httpProxy
 
 	// 清除缓存，以便使用新配置
+	defaultManager.closeIdleConnectionsLocked()
 	defaultManager.current = nil
 	logPrintf("GitHub 管理器配置已更新，缓存已清除")
 }
@@ -123,6 +124,7 @@ func (m *Manager) TestConnection(connType ConnectionType, proxyURL string) bool 
 
 	if transport != nil {
 		client.Transport = transport
+		defer transport.CloseIdleConnections()
 	}
 
 	resp, err := client.Get("https://api.github.com/repos/chen8945/QMediaSync/releases")
@@ -154,6 +156,8 @@ func (m *Manager) GetBestConnection() (*GitHubAccess, error) {
 		m.current.Cached = true // 标记为缓存
 		return m.current, nil
 	}
+	// 回收过期私有池的空闲连接；探测失败时仍保留缓存对象供调用方回退。
+	m.closeIdleConnectionsLocked()
 
 	// 1. 测试用户代理（优先使用用户代理，因为直连可能无法下载安装包）
 	if m.httpProxy != "" {
@@ -242,6 +246,14 @@ func (m *Manager) GetClientWithCache() (*http.Client, error) {
 func (m *Manager) ClearCache() {
 	m.Lock()
 	defer m.Unlock()
+	m.closeIdleConnectionsLocked()
 	m.current = nil
 	logPrintf("GitHub 连接缓存已清除")
+}
+
+// closeIdleConnectionsLocked 在持有写锁时回收私有连接池，不关闭共享默认池或活动请求。
+func (m *Manager) closeIdleConnectionsLocked() {
+	if m.current != nil && m.current.Client != nil && m.current.Client.Transport != nil {
+		m.current.Client.CloseIdleConnections()
+	}
 }

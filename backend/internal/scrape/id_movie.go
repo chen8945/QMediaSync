@@ -18,11 +18,9 @@ type IdMovieImpl struct {
 
 func NewIdMovieImpl(scrapePath *models.ScrapePath, ctx context.Context, tmdbImpl TmdbImpl) *IdMovieImpl {
 	return &IdMovieImpl{
-		IdBase: IdBase{
-			tmdbImpl:   tmdbImpl,
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
+		tmdbImpl:   tmdbImpl,
+		scrapePath: scrapePath,
+		ctx:        ctx,
 	}
 }
 

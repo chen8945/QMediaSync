@@ -85,7 +85,7 @@ func TestAddUploadTaskFromSyncFileKeepsOnlyStableParentID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setupQueueStatusTestDB(t)
 			file := &SyncFile{
-				BaseModel:  BaseModel{ID: uint(index + 1)},
+				ID:         uint(index + 1),
 				SourceType: tt.sourceType,
 				ParentId:   tt.parentID,
 				Path:       "/remote/target",
@@ -179,7 +179,7 @@ func TestAddUploadTaskFromSyncFileDeduplicatesActiveTasksWithinStorageScope(t *t
 
 	newFile := func(id uint, sourceType SourceType, accountID, syncPathID uint) *SyncFile {
 		return &SyncFile{
-			BaseModel:  BaseModel{ID: id},
+			ID:         id,
 			SourceType: sourceType,
 			AccountId:  accountID,
 			SyncPathId: syncPathID,
@@ -312,7 +312,7 @@ func TestClearExpireUploadTasksDeletesTasksOlderThanSevenDays(t *testing.T) {
 	now := time.Now().Unix()
 	seed := []*DbUploadTask{
 		{
-			BaseModel:      BaseModel{CreatedAt: now - 8*24*3600},
+			CreatedAt:      now - 8*24*3600,
 			Source:         UploadSourceStrm,
 			SourceType:     SourceType115,
 			AccountId:      1,
@@ -320,7 +320,7 @@ func TestClearExpireUploadTasksDeletesTasksOlderThanSevenDays(t *testing.T) {
 			Status:         UploadStatusPending,
 		},
 		{
-			BaseModel:      BaseModel{CreatedAt: now - 6*24*3600},
+			CreatedAt:      now - 6*24*3600,
 			Source:         UploadSourceStrm,
 			SourceType:     SourceType115,
 			AccountId:      1,
@@ -328,7 +328,7 @@ func TestClearExpireUploadTasksDeletesTasksOlderThanSevenDays(t *testing.T) {
 			Status:         UploadStatusPending,
 		},
 		{
-			BaseModel:      BaseModel{CreatedAt: now - 8*24*3600},
+			CreatedAt:      now - 8*24*3600,
 			Source:         UploadSourceStrm,
 			SourceType:     SourceType115,
 			AccountId:      1,

@@ -31,11 +31,9 @@ func setupDirectoryUploadControllerTest(t *testing.T) (*gin.Engine, *models.Sync
 		&models.DirectoryUploadProcessedFile{},
 	)
 	models.SettingsGlobal = &models.Settings{
-		SettingStrm: models.SettingStrm{
-			VideoExtArr:  []string{".mkv", ".mp4"},
-			MetaExtArr:   []string{".nfo"},
-			MinVideoSize: 0,
-		},
+		VideoExtArr:  []string{".mkv", ".mp4"},
+		MetaExtArr:   []string{".nfo"},
+		MinVideoSize: 0,
 	}
 	account := &models.Account{SourceType: models.SourceType115, Name: "115"}
 	if err := db.Db.Create(account).Error; err != nil {
@@ -48,7 +46,7 @@ func setupDirectoryUploadControllerTest(t *testing.T) (*gin.Engine, *models.Sync
 		LocalPath:              filepath.Join(t.TempDir(), "strm"),
 		RemotePath:             "/remote",
 		DirectoryUploadEnabled: true,
-		SettingStrm:            models.SettingStrm{VideoExtArr: []string{".mkv", ".mp4"}, MinVideoSize: 0},
+		VideoExtArr:            []string{".mkv", ".mp4"}, MinVideoSize: 0,
 	}
 	if err := db.Db.Create(syncPath).Error; err != nil {
 		t.Fatalf("创建同步目录失败: %v", err)

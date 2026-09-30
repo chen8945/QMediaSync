@@ -19,11 +19,9 @@ type RenameOpenList struct {
 
 func NewRenameOpenList(ctx context.Context, scrapePath *models.ScrapePath, client *openlist.Client) *RenameOpenList {
 	return &RenameOpenList{
-		RenameBase: RenameBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
-		client: client,
+		scrapePath: scrapePath,
+		ctx:        ctx,
+		client:     client,
 	}
 }
 

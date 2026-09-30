@@ -72,7 +72,7 @@ func (t *tvShowScrapeImpl) UploadSeasonScrapeFile(seasonMediaFile *models.Scrape
 
 func (t *tvShowScrapeImpl) ScrapeFailedAllEpisodeBySeason(seasonMediaFile *models.ScrapeMediaFile, failedReason string) error {
 	// 将所有集标记为失败
-	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.TvshowPathId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]interface{}{
+	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.TvshowPathId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]any{
 		"status":        models.ScrapeMediaStatusScrapeFailed,
 		"failed_reason": failedReason,
 	}).Error
@@ -88,7 +88,7 @@ func (t *tvShowScrapeImpl) ScrapeFailedAllEpisodeBySeason(seasonMediaFile *model
 
 func (t *tvShowScrapeImpl) RenamedFailedAllEdpisodeBySeason(seasonMediaFile *models.ScrapeMediaFile, failedReason string) {
 	// 将所有集标记为失败
-	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.TvshowPathId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]interface{}{
+	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.TvshowPathId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]any{
 		"status":        models.ScrapeMediaStatusScrapeFailed,
 		"failed_reason": failedReason,
 	}).Error
@@ -101,7 +101,7 @@ func (t *tvShowScrapeImpl) RenamedFailedAllEdpisodeBySeason(seasonMediaFile *mod
 
 func (t *tvShowScrapeImpl) UpdateSeasonDataToAllEpisodeBySeason(seasonMediaFile *models.ScrapeMediaFile) error {
 	// 更新所有集的 NewPathId 为新创建的文件夹 ID
-	err := db.Db.Table("scrape_media_files").Where("media_id = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.MediaId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]interface{}{
+	err := db.Db.Table("scrape_media_files").Where("media_id = ? AND batch_no = ? AND season_number = ?", seasonMediaFile.MediaId, seasonMediaFile.BatchNo, seasonMediaFile.SeasonNumber).Updates(map[string]any{
 		"new_season_path_id":   seasonMediaFile.NewSeasonPathId,
 		"new_season_path_name": seasonMediaFile.NewSeasonPathName,
 		"media_season_id":      seasonMediaFile.MediaSeasonId,
@@ -327,7 +327,7 @@ func (t *tvShowScrapeImpl) RollbackTvShowSeason(mediaFile *models.ScrapeMediaFil
 
 func (t *tvShowScrapeImpl) UpdateSeasonPathAndIdToAllEpisode(mediaFile *models.ScrapeMediaFile) error {
 	// 更新所有集的路径
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"path_id": mediaFile.PathId,
 		"path":    mediaFile.Path,
 	}

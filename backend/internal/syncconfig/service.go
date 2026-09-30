@@ -285,8 +285,7 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 		return nil
 	})
 	if err != nil {
-		var saveErr *SaveError
-		if errors.As(err, &saveErr) {
+		if saveErr, ok := errors.AsType[*SaveError](err); ok {
 			return nil, saveErr
 		}
 		return nil, newSaveError(ErrorCodeDatabaseSave, "保存同步目录失败", err)

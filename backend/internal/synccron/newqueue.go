@@ -32,13 +32,13 @@ func (t SyncTaskType) DisplayName() string {
 	}
 }
 
-func logInfo(format string, args ...interface{}) {
+func logInfo(format string, args ...any) {
 	if helpers.AppLogger != nil {
 		helpers.AppLogger.Infof(format, args...)
 	}
 }
 
-func logError(format string, args ...interface{}) {
+func logError(format string, args ...any) {
 	if helpers.AppLogger != nil {
 		helpers.AppLogger.Errorf(format, args...)
 	}
@@ -97,7 +97,7 @@ type NewSyncQueuePerType struct {
 	processorStartMu sync.Mutex
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
-	runningFlag      int32
+	runningFlag      atomic.Int32
 	scrapeInstance   *scrape.Scrape
 	strmSync         *syncstrm.SyncStrm
 }
@@ -206,8 +206,8 @@ func (q *NewSyncQueuePerType) isTaskExistsUnsafe(task *NewSyncTask) bool {
 
 func (q *NewSyncQueuePerType) startProcessorIfNotRunningUnsafe() {
 	// 打印任务运行状态
-	logInfo("队列运行状态：%d", atomic.LoadInt32(&q.runningFlag))
-	if atomic.CompareAndSwapInt32(&q.runningFlag, 0, 1) {
+	logInfo("队列运行状态：%d", q.runningFlag.Load())
+	if q.runningFlag.CompareAndSwap(0, 1) {
 		go q.process()
 	}
 }
@@ -223,7 +223,7 @@ func (q *NewSyncQueuePerType) StartProcessor() {
 
 func (q *NewSyncQueuePerType) process() {
 	logInfo("队列处理协程已启动：SourceType=%s", q.sourceType)
-	defer atomic.StoreInt32(&q.runningFlag, 0)
+	defer q.runningFlag.Store(0)
 
 	for {
 		select {
@@ -492,7 +492,7 @@ done:
 	}
 }
 
-func (q *NewSyncQueuePerType) GetStatus() map[string]interface{} {
+func (q *NewSyncQueuePerType) GetStatus() map[string]any {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
 
@@ -503,13 +503,13 @@ func (q *NewSyncQueuePerType) GetStatus() map[string]interface{} {
 		currentTaskType = string(q.currentTask.TaskType)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"source_type":       q.sourceType,
 		"status":            q.status,
 		"waiting_count":     len(q.waitingQueue),
 		"current_task_id":   currentTaskID,
 		"current_task_type": currentTaskType,
-		"is_running":        atomic.LoadInt32(&q.runningFlag) == 1,
+		"is_running":        q.runningFlag.Load() == 1,
 	}
 }
 
@@ -678,11 +678,11 @@ func (m *NewSyncQueueManager) ResumeAll() {
 	}
 }
 
-func (m *NewSyncQueueManager) GetAllStatus() map[models.SourceType]map[string]interface{} {
+func (m *NewSyncQueueManager) GetAllStatus() map[models.SourceType]map[string]any {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	status := make(map[models.SourceType]map[string]interface{})
+	status := make(map[models.SourceType]map[string]any)
 	for sourceType, queue := range m.queues {
 		status[sourceType] = queue.GetStatus()
 	}
@@ -690,7 +690,7 @@ func (m *NewSyncQueueManager) GetAllStatus() map[models.SourceType]map[string]in
 	return status
 }
 
-func (m *NewSyncQueueManager) GetQueueStatus(sourceType models.SourceType) map[string]interface{} {
+func (m *NewSyncQueueManager) GetQueueStatus(sourceType models.SourceType) map[string]any {
 	queue := m.getQueue(sourceType)
 	return queue.GetStatus()
 }
@@ -730,7 +730,7 @@ func ResumeAllNewSyncQueues() {
 	GlobalNewSyncQueueManager.ResumeAll()
 }
 
-func GetAllNewQueueStatus() map[models.SourceType]map[string]interface{} {
+func GetAllNewQueueStatus() map[models.SourceType]map[string]any {
 	if GlobalNewSyncQueueManager == nil {
 		return nil
 	}

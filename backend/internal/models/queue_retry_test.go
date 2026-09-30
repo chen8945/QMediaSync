@@ -428,7 +428,7 @@ func TestUpload115FilePersistsResultAndEnqueuesStrmTask(t *testing.T) {
 		SourceFingerprint: BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()),
 		RemoteFullPath:    "/remote/movie.mkv",
 		RemotePathId:      "100",
-		Account:           &Account{BaseModel: BaseModel{ID: 1}, SourceType: SourceType115, Name: "115"},
+		Account:           &Account{ID: 1, SourceType: SourceType115, Name: "115"},
 	}
 	if err := db.Db.Create(task).Error; err != nil {
 		t.Fatalf("创建上传任务失败: %v", err)

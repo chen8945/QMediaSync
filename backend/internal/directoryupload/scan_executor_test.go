@@ -12,7 +12,7 @@ import (
 )
 
 func TestScanExecutorMergesSameRuleAndRoot(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 7}}
+	rule := &models.DirectoryUploadRule{ID: 7}
 	root := filepath.Join(t.TempDir(), "Show")
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -56,7 +56,7 @@ func TestScanExecutorSkipsCanceledContext(t *testing.T) {
 	cancel()
 
 	executor.Enqueue(ctx, scanRequest{
-		rule: &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 8}},
+		rule: &models.DirectoryUploadRule{ID: 8},
 		root: t.TempDir(),
 	})
 
@@ -74,7 +74,7 @@ func TestScanExecutorReplacesCanceledQueuedRequest(t *testing.T) {
 	oldMaxProcs := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(oldMaxProcs)
 
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 11}}
+	rule := &models.DirectoryUploadRule{ID: 11}
 	baseDir := t.TempDir()
 	rootA := filepath.Join(baseDir, "A")
 	rootK := filepath.Join(baseDir, "K")
@@ -130,7 +130,7 @@ func TestScanExecutorReplacesCanceledQueuedRequest(t *testing.T) {
 }
 
 func TestScanExecutorReplacesCanceledRunningRequest(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 12}}
+	rule := &models.DirectoryUploadRule{ID: 12}
 	root := filepath.Join(t.TempDir(), "K")
 	started := make(chan string, 2)
 	finished := make(chan string, 2)
@@ -170,7 +170,7 @@ func TestScanExecutorReplacesCanceledRunningRequest(t *testing.T) {
 }
 
 func TestScanExecutorUsesRequestScanFunc(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 13}}
+	rule := &models.DirectoryUploadRule{ID: 13}
 	root := t.TempDir()
 	started := make(chan string, 1)
 	var defaultCalls atomic.Int32
@@ -198,7 +198,7 @@ func TestScanExecutorUsesRequestScanFunc(t *testing.T) {
 }
 
 func TestScanExecutorRequestScanFuncDoesNotReplaceDefaultForSameKey(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 15}}
+	rule := &models.DirectoryUploadRule{ID: 15}
 	root := t.TempDir()
 	started := make(chan string, 2)
 
@@ -226,7 +226,7 @@ func TestScanExecutorRequestScanFuncDoesNotReplaceDefaultForSameKey(t *testing.T
 }
 
 func TestScanExecutorCanceledQueuedReplacementUsesNewRequestScanFunc(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 14}}
+	rule := &models.DirectoryUploadRule{ID: 14}
 	baseDir := t.TempDir()
 	rootA := filepath.Join(baseDir, "A")
 	rootK := filepath.Join(baseDir, "K")
@@ -280,7 +280,7 @@ func TestScanExecutorCanceledQueuedReplacementUsesNewRequestScanFunc(t *testing.
 }
 
 func TestScanExecutorCanceledRunningReplacementUsesNewRequestScanFunc(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 16}}
+	rule := &models.DirectoryUploadRule{ID: 16}
 	root := filepath.Join(t.TempDir(), "K")
 	started := make(chan string, 2)
 	releaseOld := make(chan struct{})
@@ -324,7 +324,7 @@ func TestScanExecutorCanceledRunningReplacementUsesNewRequestScanFunc(t *testing
 }
 
 func TestScanExecutorReleasesInflightAfterScan(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 9}}
+	rule := &models.DirectoryUploadRule{ID: 9}
 	root := t.TempDir()
 	started := make(chan int, 2)
 	release := make(chan struct{})
@@ -384,7 +384,7 @@ func TestScanExecutorLimitsConcurrentScans(t *testing.T) {
 		return 0, nil
 	})
 
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 10}}
+	rule := &models.DirectoryUploadRule{ID: 10}
 	executor.Enqueue(context.Background(), scanRequest{rule: rule, root: filepath.Join(t.TempDir(), "A")})
 	executor.Enqueue(context.Background(), scanRequest{rule: rule, root: filepath.Join(t.TempDir(), "B")})
 
@@ -399,7 +399,7 @@ func TestScanExecutorLimitsConcurrentScans(t *testing.T) {
 }
 
 func TestScanExecutorWaitBlocksUntilRunningScanFinishes(t *testing.T) {
-	rule := &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: 17}}
+	rule := &models.DirectoryUploadRule{ID: 17}
 	started := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})

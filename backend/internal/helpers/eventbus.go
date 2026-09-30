@@ -75,7 +75,7 @@ func Subscribe(eventType EventType, handler EventHandler) {
 }
 
 // 发布事件
-func Publish(eventType EventType, data interface{}) {
+func Publish(eventType EventType, data any) {
 	if globalEventBus == nil {
 		AppLogger.Error("事件总线未初始化")
 		return
@@ -200,9 +200,9 @@ func Unsubscribe(eventType EventType, handler EventHandler) {
 }
 
 // 获取事件总线状态
-func GetEventBusStatus() map[string]interface{} {
+func GetEventBusStatus() map[string]any {
 	if globalEventBus == nil {
-		return map[string]interface{}{
+		return map[string]any{
 			"initialized": false,
 			"handlers":    0,
 		}
@@ -219,7 +219,7 @@ func GetEventBusStatus() map[string]interface{} {
 		handlerCount += len(handlers)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"initialized":   true,
 		"event_types":   eventTypes,
 		"handler_count": handlerCount,

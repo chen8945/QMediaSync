@@ -41,8 +41,7 @@ func TestRuntimeStatusReportsModeFallbackScanAndPendingCount(t *testing.T) {
 			return nil, errors.New("watcher unavailable")
 		},
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if err := service.Start(ctx); err != nil {
 		t.Fatalf("启动目录监控服务失败: %v", err)
 	}
@@ -114,8 +113,7 @@ func TestRuntimeStatusRecordsPollingScanError(t *testing.T) {
 		PollInterval:           time.Hour,
 		StabilityCheckInterval: time.Hour,
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if err := service.Start(ctx); err != nil {
 		t.Fatalf("polling baseline 失败不应阻止服务启动: %v", err)
 	}
@@ -243,7 +241,7 @@ func TestFSNotifyWatcherErrorRecordsRuntimeStatus(t *testing.T) {
 	runtime := &RuleRuntime{RuleID: 99}
 	runtime.setRuntimeMode(string(models.DirectoryUploadWatchModeFSNotify), RuleRuntimeModeWatcher, "")
 	watcher := &fsNotifyRuleWatcher{
-		rule:                 &models.DirectoryUploadRule{BaseModel: models.BaseModel{ID: runtime.RuleID}},
+		rule:                 &models.DirectoryUploadRule{ID: runtime.RuleID},
 		runtimeErrorRecorder: runtime,
 	}
 

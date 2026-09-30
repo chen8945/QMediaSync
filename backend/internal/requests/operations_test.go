@@ -194,7 +194,7 @@ func TestPathRequestValidate(t *testing.T) {
 }
 
 func TestQueueRequestValidate(t *testing.T) {
-	req := QueueListRequest{PaginationRequest: PaginationRequest{Page: 1, PageSize: 100}}
+	req := QueueListRequest{Page: 1, PageSize: 100}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}

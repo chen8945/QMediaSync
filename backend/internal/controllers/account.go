@@ -16,8 +16,8 @@ import (
 )
 
 func friendlyAccountValidationMessage(err error) string {
-	var validationErr validation.Error
-	if !errors.As(err, &validationErr) {
+	validationErr, ok := errors.AsType[validation.Error](err)
+	if !ok {
 		return err.Error()
 	}
 

@@ -221,7 +221,7 @@ func (m *ScrapePath) Save() error {
 		}
 		helpers.AppLogger.Infof("最大线程数：%d", m.MaxThreads)
 		// 只能更新部分字段
-		updates := map[string]interface{}{
+		updates := map[string]any{
 			"scrape_type":              m.ScrapeType,
 			"rename_type":              m.RenameType,
 			"source_path":              m.SourcePath,
@@ -359,10 +359,8 @@ func (sp *ScrapePath) MakeScrapeMediaFile(path, pathId, fileName, fileId, pickCo
 		SubtitleCodec:  make([]*Subtitle, 0),
 		TvshowFiles:    make([]*MediaMetaFiles, 0),
 		SeasonFiles:    make([]*MediaMetaFiles, 0),
-		MediaFiles: MediaFiles{
-			ImageFiles:    make([]*MediaMetaFiles, 0),
-			SubtitleFiles: make([]*MediaMetaFiles, 0),
-		},
+		ImageFiles:     make([]*MediaMetaFiles, 0),
+		SubtitleFiles:  make([]*MediaMetaFiles, 0),
 	}
 	// 电视剧默认没有季目录，后续通过识别来判断是否有季目录
 	if sp.MediaType == MediaTypeTvShow {
@@ -649,7 +647,7 @@ func (sp *ScrapePath) ToggleCron() error {
 	} else {
 		sp.EnableCron = true
 	}
-	return db.Db.Model(&ScrapePath{}).Where("id = ?", sp.ID).Updates(map[string]interface{}{
+	return db.Db.Model(&ScrapePath{}).Where("id = ?", sp.ID).Updates(map[string]any{
 		"enable_cron": sp.EnableCron,
 	}).Error
 }
@@ -831,7 +829,7 @@ func (sp *ScrapePath) UpdateCronExpression(cronExpr string) error {
 	}
 
 	// 更新数据库
-	return db.Db.Model(&ScrapePath{}).Where("id = ?", sp.ID).Updates(map[string]interface{}{
+	return db.Db.Model(&ScrapePath{}).Where("id = ?", sp.ID).Updates(map[string]any{
 		"cron_expression":  cronExpr,
 		"cron_description": description,
 		"next_cron_run":    nextRun.Format("2006-01-02 15:04:05"),
@@ -1068,7 +1066,7 @@ func DeleteScrapePath(id uint) error {
 
 // 将整理中和刮削中改为未执行
 func ResetScrapePathStatus() {
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["is_scraping"] = false
 	err := db.Db.Model(&ScrapePath{}).Where("is_scraping = ?", true).Updates(updateData).Error
 	if err != nil {

@@ -126,7 +126,7 @@ func restoreFromJsonFile(backupDir string, modelName string, totalTable int, cou
 	// 统计还原数量
 	var restoredCount int
 	typ := reflect.TypeOf(model)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	setCount := 0

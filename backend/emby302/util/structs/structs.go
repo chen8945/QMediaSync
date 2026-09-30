@@ -13,7 +13,7 @@ func String(s any) string {
 	}
 	t := reflect.TypeOf(s)
 	v := reflect.ValueOf(s)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t, v = t.Elem(), v.Elem()
 	}
 	sb := strings.Builder{}
@@ -40,7 +40,7 @@ func IsStruct(v any) bool {
 		return false
 	}
 	t := reflect.TypeOf(v)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Kind() == reflect.Struct

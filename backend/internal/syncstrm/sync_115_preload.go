@@ -31,10 +31,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 
 	// 使用 errgroup 管理并发生命周期
 	eg, ctx := errgroup.WithContext(s.Context)
-	workerCount := int(s.PathWorkerMax) + 2
-	if workerCount < 1 {
-		workerCount = 1
-	}
+	workerCount := max(int(s.PathWorkerMax)+2, 1)
 	// 使用无界队列，避免 TryGo 丢任务或递归阻塞
 	type pathQueue struct {
 		mu     sync.Mutex
@@ -53,16 +50,16 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 			q.cond.Broadcast()
 		})
 	}
-	var pending int64
+	var pending atomic.Int64
 	enqueue := func(item *pathQueueItem) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		atomic.AddInt64(&pending, 1)
+		pending.Add(1)
 		q.mu.Lock()
 		if q.closed {
 			q.mu.Unlock()
-			if atomic.AddInt64(&pending, -1) == 0 {
+			if pending.Add(-1) == 0 {
 				closeQueue()
 			}
 			return false
@@ -154,7 +151,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 		return nil
 	}
 
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		eg.Go(func() error {
 			for {
 				item, ok := dequeue()
@@ -162,18 +159,18 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 					return nil
 				}
 				if ctx.Err() != nil {
-					if atomic.AddInt64(&pending, -1) == 0 {
+					if pending.Add(-1) == 0 {
 						closeQueue()
 					}
 					return nil
 				}
 				if err := processPath(item); err != nil {
-					if atomic.AddInt64(&pending, -1) == 0 {
+					if pending.Add(-1) == 0 {
 						closeQueue()
 					}
 					return err
 				}
-				if atomic.AddInt64(&pending, -1) == 0 {
+				if pending.Add(-1) == 0 {
 					closeQueue()
 				}
 			}

@@ -191,10 +191,7 @@ func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan
 	itemId, _ := source.Attr("ItemId").String()
 	originName, _ := source.Attr("Name").String()
 	for idx, transcode := range transcodingList {
-		idx, transcode := idx, transcode
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if config.C.VideoPreview.IsTemplateIgnore(transcode.TemplateId) {
 				// 当前清晰度被忽略
 				return
@@ -235,7 +232,7 @@ func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan
 			addSubtitles2MediaStreams(copySource, subtitleList, openlistPathRes.Path, transcode.TemplateId, clientApiKey)
 
 			res[idx] = copySource
-		}()
+		})
 	}
 	wg.Wait()
 

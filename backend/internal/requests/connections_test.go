@@ -86,8 +86,8 @@ func TestHTTPProxyRequestPreserveProxyCredentialsBinding(t *testing.T) {
 		body string
 		want *bool
 	}{
-		{name: "显式保留", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":true}`, want: boolPtr(true)},
-		{name: "显式替换", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":false}`, want: boolPtr(false)},
+		{name: "显式保留", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":true}`, want: new(true)},
+		{name: "显式替换", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080","preserve_proxy_credentials":false}`, want: new(false)},
 		{name: "兼容旧客户端缺省字段", body: `{"http_proxy":"socks5://xxxxx:xxxxx@127.0.0.1:1080"}`},
 	}
 
@@ -108,10 +108,6 @@ func TestHTTPProxyRequestPreserveProxyCredentialsBinding(t *testing.T) {
 			}
 		})
 	}
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }
 
 func TestOAuthRequestValidate(t *testing.T) {

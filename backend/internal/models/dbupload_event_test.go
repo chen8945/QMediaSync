@@ -12,7 +12,7 @@ func TestPublishUploadQueueChangedIncludesSourceDeletedAt(t *testing.T) {
 	defer unsubscribe()
 
 	publishUploadQueueChanged(&DbUploadTask{
-		BaseModel:           BaseModel{ID: 7},
+		ID:                  7,
 		Source:              UploadSourceDirectoryMonitor,
 		SourceCleanupStatus: UploadSourceCleanupStatusCompleted,
 		SourceDeletedAt:     1_700_000_000,

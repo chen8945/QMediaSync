@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"testing"
@@ -283,5 +284,79 @@ func TestConnectionType_String(t *testing.T) {
 				t.Errorf("期望%q, 实际%q", tt.want, tt.ct)
 			}
 		})
+	}
+}
+
+type idleCloseTransport struct {
+	closed int
+}
+
+func (tr *idleCloseTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unexpected HTTP request")
+}
+
+func (tr *idleCloseTransport) CloseIdleConnections() {
+	tr.closed++
+}
+
+func TestManagerRetiresPrivateConnections(t *testing.T) {
+	for _, action := range []string{"clear", "update", "expired", "cached"} {
+		for _, shared := range []bool{false, true} {
+			name := action + "/private"
+			if shared {
+				name = action + "/shared"
+			}
+			t.Run(name, func(t *testing.T) {
+				transport := &idleCloseTransport{}
+				client := &http.Client{Transport: transport}
+				if shared {
+					previous := http.DefaultTransport
+					http.DefaultTransport = transport
+					t.Cleanup(func() { http.DefaultTransport = previous })
+					client.Transport = nil
+				}
+				manager := &Manager{
+					current:    &GitHubAccess{Client: client, LastTested: time.Now().Add(-time.Hour)},
+					cacheValid: time.Minute,
+					httpProxy:  "://invalid-url",
+				}
+				switch action {
+				case "clear":
+					manager.ClearCache()
+				case "update":
+					previous := defaultManager
+					defaultManager = manager
+					t.Cleanup(func() { defaultManager = previous })
+					UpdateConfig("://new-invalid-url")
+					if manager.httpProxy != "://new-invalid-url" {
+						t.Fatal("proxy configuration was not updated")
+					}
+				case "expired":
+					if _, err := manager.GetBestConnection(); err == nil {
+						t.Fatal("invalid proxy must fail without making a network request")
+					}
+				case "cached":
+					manager.current.LastTested = time.Now()
+					if _, err := manager.GetBestConnection(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wantClosed := 1
+				if shared || action == "cached" {
+					wantClosed = 0
+				}
+				if transport.closed != wantClosed {
+					t.Fatalf("CloseIdleConnections calls = %d, want %d", transport.closed, wantClosed)
+				}
+				cached, err := manager.GetClientWithCache()
+				if action == "expired" || action == "cached" {
+					if err != nil || cached != client {
+						t.Fatalf("cached client changed: client = %p, error = %v", cached, err)
+					}
+				} else if err == nil {
+					t.Fatal("cleared cache still returned a client")
+				}
+			})
+		}
 	}
 }

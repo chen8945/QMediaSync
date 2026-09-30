@@ -133,7 +133,7 @@ func TestDirectoryUploadRuleSaveAndDefaults(t *testing.T) {
 	setupDirectoryUploadRuleTestDB(t)
 
 	syncPath := &SyncPath{
-		BaseModel:              BaseModel{ID: 10},
+		ID:                     10,
 		AccountId:              3,
 		SourceType:             SourceType115,
 		LocalPath:              "/strm",

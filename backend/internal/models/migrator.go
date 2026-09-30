@@ -189,7 +189,7 @@ func Migrate() {
 		// 给同步目录增加更多设置
 		db.Db.AutoMigrate(SyncPath{})
 		// 修改默认值
-		updates := map[string]interface{}{
+		updates := map[string]any{
 			"delete_dir":     -1,
 			"download_meta":  -1,
 			"upload_meta":    -1,
@@ -202,12 +202,12 @@ func Migrate() {
 		// 给同步目录增加添加路径设置
 		db.Db.AutoMigrate(SyncPath{}, Settings{})
 		// 修改默认值
-		updates := map[string]interface{}{
+		updates := map[string]any{
 			"add_path": -1,
 		}
 		db.Db.Model(&SyncPath{}).Where("id > ?", 0).Updates(updates)
 		// 修改配置表默认值
-		updates = map[string]interface{}{
+		updates = map[string]any{
 			"add_path": 2,
 		}
 		db.Db.Model(&Settings{}).Where("id > ?", 0).Updates(updates)
@@ -312,7 +312,7 @@ func Migrate() {
 	if migrator.VersionCode == 21 {
 		db.Db.AutoMigrate(Settings{}) // 增加 OpenList 限速新字段
 		// 给新字段添加默认值
-		updateData := make(map[string]interface{})
+		updateData := make(map[string]any)
 		// 将下载 QPS 默认改为 1，防止限流
 		updateData["download_threads"] = 1
 		updateData["openlist_qps"] = 2
@@ -346,7 +346,7 @@ func Migrate() {
 		db.Db.AutoMigrate(BackupConfig{}, BackupRecord{})
 		// 插入默认配置
 		db.Db.Save(&BackupConfig{
-			BaseModel:       BaseModel{ID: 1},
+			ID:              1,
 			BackupEnabled:   0,
 			BackupPath:      "backups",
 			BackupRetention: 7,
@@ -1326,7 +1326,7 @@ func BatchCreateTable() error {
 
 func InitMigrationTable(version int) {
 	var migrator Migrator = Migrator{}
-	migrator = Migrator{BaseModel: BaseModel{ID: 1}, VersionCode: version} // 初始版本为 version
+	migrator = Migrator{ID: 1, VersionCode: version} // 初始版本为 version
 	db.Db.Save(&migrator)
 	helpers.AppLogger.Infof("初始化数据库版本表，当前版本为 %d", version)
 }
@@ -1437,39 +1437,31 @@ func InitSettings() {
 	ipv4, _ := helpers.GetLocalIP()
 	defaultSettings = Settings{
 		// 设置默认值
-		TelegramBotToken: "",
-		TelegramChatId:   "",
-		HttpProxy:        "",
-		SettingStrm: SettingStrm{
-			Cron:         helpers.GlobalConfig.Strm.Cron,
-			MetaExt:      string(metaExtStr),
-			VideoExt:     string(videoExtStr),
-			MinVideoSize: helpers.GlobalConfig.Strm.MinVideoSize,
-			DeleteDir:    0,
-			UploadMeta:   0,
-			DownloadMeta: 0,
-			StrmBaseUrl:  fmt.Sprintf("http://%s:12333", ipv4),
-		},
-		SettingThreads: SettingThreads{
-			DownloadThreads:    1,
-			UploadThreads:      DefaultUploadThreads,
-			FileDetailThreads:  3,
-			OpenlistQPS:        3,
-			OpenlistRetry:      1,
-			OpenlistRetryDelay: 60,
-		},
-		SettingUploadRapidWait: SettingUploadRapidWait{
-			UploadRapidWaitEnabled:         0,
-			UploadRapidWaitTimeoutSeconds:  0,
-			UploadRapidWaitIntervalSeconds: 60,
-			UploadRapidWaitMinSize:         0,
-			UploadRapidWaitForceSize:       0,
-			UploadRapidWaitSkipUpload:      0,
-		},
-		SettingURLValidityCheck: SettingURLValidityCheck{
-			URLValidityCheckEnabled:        DefaultURLValidityCheckEnabled,
-			URLValidityCheckTimeoutSeconds: DefaultURLValidityCheckTimeoutSeconds,
-		},
+		TelegramBotToken:               "",
+		TelegramChatId:                 "",
+		HttpProxy:                      "",
+		Cron:                           helpers.GlobalConfig.Strm.Cron,
+		MetaExt:                        string(metaExtStr),
+		VideoExt:                       string(videoExtStr),
+		MinVideoSize:                   helpers.GlobalConfig.Strm.MinVideoSize,
+		DeleteDir:                      0,
+		UploadMeta:                     0,
+		DownloadMeta:                   0,
+		StrmBaseUrl:                    fmt.Sprintf("http://%s:12333", ipv4),
+		DownloadThreads:                1,
+		UploadThreads:                  DefaultUploadThreads,
+		FileDetailThreads:              3,
+		OpenlistQPS:                    3,
+		OpenlistRetry:                  1,
+		OpenlistRetryDelay:             60,
+		UploadRapidWaitEnabled:         0,
+		UploadRapidWaitTimeoutSeconds:  0,
+		UploadRapidWaitIntervalSeconds: 60,
+		UploadRapidWaitMinSize:         0,
+		UploadRapidWaitForceSize:       0,
+		UploadRapidWaitSkipUpload:      0,
+		URLValidityCheckEnabled:        DefaultURLValidityCheckEnabled,
+		URLValidityCheckTimeoutSeconds: DefaultURLValidityCheckTimeoutSeconds,
 	}
 	db.Db.Save(&defaultSettings)
 	helpers.AppLogger.Info("已默认添加配置")

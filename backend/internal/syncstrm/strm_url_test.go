@@ -136,3 +136,15 @@ func TestCompareStrmRequiresCanonicalQueryOrder(t *testing.T) {
 		t.Fatalf("CompareStrm() = %d，旧 STRM query 顺序不规范时应返回 0 触发重写", got)
 	}
 }
+
+func TestBaiduMakeStrmContentRejectsMalformedBaseURL(t *testing.T) {
+	for _, base := range []string{"http://[::1", "http://user:secret@host:bad", "http://host/%zz"} {
+		t.Run(base, func(t *testing.T) {
+			driver := NewBaiduPanDriver(nil)
+			driver.SetSyncStrm(&SyncStrm{Config: SyncStrmConfig{StrmBaseUrl: base}})
+			if got := driver.MakeStrmContent(&SyncFileCache{FileName: "movie.mkv"}); got != "" {
+				t.Fatalf("malformed base generated STRM content %q", got)
+			}
+		})
+	}
+}

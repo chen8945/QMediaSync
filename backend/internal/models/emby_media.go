@@ -183,10 +183,7 @@ func CleanupOrphanedEmbyMediaItems(validItemIds []string) error {
 
 	// 分批删除
 	for i := 0; i < len(itemsToDelete); i += batchSize {
-		end := i + batchSize
-		if end > len(itemsToDelete) {
-			end = len(itemsToDelete)
-		}
+		end := min(i+batchSize, len(itemsToDelete))
 
 		batch := itemsToDelete[i:end]
 		if err := db.Db.Where("item_id IN ?", batch).Delete(&EmbyMediaItem{}).Error; err != nil {

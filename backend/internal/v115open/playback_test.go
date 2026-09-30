@@ -198,8 +198,7 @@ func TestPlaybackClientReturnsErrorsWithoutInnerRetry(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			_, err := client.GetDownloadURLWithError(ctx, "pick", "agent", true)
-			var apiErr *OpenAPIError
-			if !errors.As(err, &apiErr) || apiErr.Code != tt.code || apiErr.HTTPStatus != tt.status {
+			if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.Code != tt.code || apiErr.HTTPStatus != tt.status {
 				t.Fatalf("未保留原始状态与业务码：%v", err)
 			}
 			if calls.Load() != 1 {
@@ -275,9 +274,8 @@ func TestPlaybackCopyReadFailurePreservesRejection(t *testing.T) {
 			defer cancel()
 			_, err := client.CopyWithResult(ctx, []string{"1"}, "2", true)
 			rejected := status >= 400 && status < 500 && status != 408
-			var apiErr *OpenAPIError
 			if rejected {
-				if !errors.As(err, &apiErr) || apiErr.HTTPStatus != status || apiErr.Code != 0 {
+				if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.HTTPStatus != status || apiErr.Code != 0 {
 					t.Errorf("截断响应丢失明确拒绝状态：HTTP=%d，err=%v", status, err)
 				}
 			} else if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -420,8 +418,8 @@ func TestPlaybackFSMethodsPreserveAPIError(t *testing.T) {
 			transport := newCaptureOpenAPITransport(`{"state":false,"code":40140125,"message":"token expired"}`)
 			client := NewPlaybackClient(1, "app", "token", "refresh")
 			setPlaybackTestTransport(t, client, transport)
-			var apiErr *OpenAPIError
-			if err := action.call(client); !errors.As(err, &apiErr) || apiErr.Code != ACCESS_TOKEN_EXPIRY_CODE {
+			err := action.call(client)
+			if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.Code != ACCESS_TOKEN_EXPIRY_CODE {
 				t.Fatalf("FS 方法丢失了可分类错误：%v", err)
 			}
 			if len(transport.requests) != 1 {

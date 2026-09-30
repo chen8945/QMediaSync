@@ -37,8 +37,7 @@ func failedCleanupFixture(t *testing.T, count int) *copyFixture {
 		}
 	}
 	synctest.Wait()
-	time.Sleep(cleanupDelay)
-	synctest.Wait()
+	synctest.Sleep(cleanupDelay)
 	f.api.del = del
 	return f
 }
@@ -516,8 +515,7 @@ func TestCleanupHasIndependentTenSecondBudgetAndShutdownCancellation(t *testing.
 				}
 				cancel()
 				synctest.Wait()
-				time.Sleep(cleanupDelay)
-				synctest.Wait()
+				synctest.Sleep(cleanupDelay)
 				if budget != 10*time.Second {
 					t.Fatalf("清理继承了播放器期限或取消：budget=%v", budget)
 				}

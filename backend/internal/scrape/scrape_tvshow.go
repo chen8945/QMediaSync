@@ -33,17 +33,15 @@ type tvshowTask struct {
 func NewTvShowScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) scrapeImpl {
 	tmdbImpl := NewTmdbTvShowImpl(scrapePath, ctx)
 	return &tvShowScrapeImpl{
-		ScrapeBase: ScrapeBase{
-			scrapePath:     scrapePath,
-			ctx:            ctx,
-			identifyImpl:   NewIdTvShowImpl(scrapePath, ctx, tmdbImpl),
-			categoryImpl:   NewCategoryTvShowImpl(scrapePath),
-			renameImpl:     NewRenameTvShowImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
-			tmdbClient:     tmdbImpl.Client,
-			v115Client:     v115Client,
-			baiduPanClient: baiduPanClient,
-			openlistClient: openlistClient,
-		},
+		scrapePath:     scrapePath,
+		ctx:            ctx,
+		identifyImpl:   NewIdTvShowImpl(scrapePath, ctx, tmdbImpl),
+		categoryImpl:   NewCategoryTvShowImpl(scrapePath),
+		renameImpl:     NewRenameTvShowImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
+		tmdbClient:     tmdbImpl.Client,
+		v115Client:     v115Client,
+		baiduPanClient: baiduPanClient,
+		openlistClient: openlistClient,
 	}
 }
 
@@ -629,7 +627,7 @@ func (t *tvShowScrapeImpl) UpdateTvshowDataToAllEpisode(mediaFile *models.Scrape
 	// 批量更新
 	// 将所有其他相同电视剧的季也修改信息
 	// 构造更新数据
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"media_id":                mediaFile.MediaId,
 		"tvshow_path_id":          mediaFile.TvshowPathId,
 		"name":                    mediaFile.Name,
@@ -653,7 +651,7 @@ func (t *tvShowScrapeImpl) UpdateTvshowDataToAllEpisode(mediaFile *models.Scrape
 // 更新电视剧下所有集的 NewPathId
 func (t *tvShowScrapeImpl) UpdateNewPathIdToAllEpisode(mediaFile *models.ScrapeMediaFile) error {
 	// 更新所有集的 NewPathId 为新创建的文件夹 ID
-	affectedRows := db.Db.Table("scrape_media_files").Where("scrape_path_id =? AND tvshow_path_id = ? AND batch_no = ?", mediaFile.ScrapePathId, mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]interface{}{
+	affectedRows := db.Db.Table("scrape_media_files").Where("scrape_path_id =? AND tvshow_path_id = ? AND batch_no = ?", mediaFile.ScrapePathId, mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]any{
 		"new_path_id": mediaFile.NewPathId,
 	}).RowsAffected
 	if affectedRows == 0 {
@@ -666,7 +664,7 @@ func (t *tvShowScrapeImpl) UpdateNewPathIdToAllEpisode(mediaFile *models.ScrapeM
 
 func (t *tvShowScrapeImpl) ScrapeFailedAllEdpisode(mediaFile *models.ScrapeMediaFile, failedReason string) error {
 	// 将所有集标记为失败
-	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ?", mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]interface{}{
+	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ?", mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]any{
 		"status":        models.ScrapeMediaStatusScrapeFailed,
 		"failed_reason": failedReason,
 	}).Error
@@ -680,7 +678,7 @@ func (t *tvShowScrapeImpl) ScrapeFailedAllEdpisode(mediaFile *models.ScrapeMedia
 
 func (t *tvShowScrapeImpl) RenamedFailedAllEdpisode(mediaFile *models.ScrapeMediaFile, failedReason string) error {
 	// 将所有集标记为失败
-	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ?", mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]interface{}{
+	err := db.Db.Table("scrape_media_files").Where("tvshow_path = ? AND batch_no = ?", mediaFile.TvshowPathId, mediaFile.BatchNo).Updates(map[string]any{
 		"status":        models.ScrapeMediaStatusRenameFailed,
 		"failed_reason": failedReason,
 	}).Error
@@ -812,7 +810,7 @@ func (t *tvShowScrapeImpl) UpdateTvshowPathAndIdToAllEpisode(mediaFile *models.S
 	// 批量更新
 	// 将所有其他相同电视剧的季也修改信息
 	// 构造更新数据
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"tvshow_path_id": mediaFile.TvshowPathId,
 		"tvshow_path":    mediaFile.TvshowPath,
 	}

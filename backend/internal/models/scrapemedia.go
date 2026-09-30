@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/tmdb"
 
-	"github.com/flosch/pongo2/v5"
+	"github.com/flosch/pongo2/v6"
 	"gorm.io/gorm"
 )
 
@@ -358,7 +358,7 @@ func (sm *ScrapeMediaFile) Failed(reason string) {
 	sm.FailedReason = reason
 	sm.ScrapeTime = time.Now().Unix()
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	updateData["failed_reason"] = sm.FailedReason
 	updateData["scrape_time"] = sm.ScrapeTime
@@ -385,7 +385,7 @@ func (sm *ScrapeMediaFile) Failed(reason string) {
 func (sm *ScrapeMediaFile) Scanned() {
 	sm.Status = ScrapeMediaStatusScraped
 	sm.ScanTime = time.Now().Unix()
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	updateData["failed_reason"] = ""
 	updateData["scan_time"] = sm.ScanTime
@@ -399,7 +399,7 @@ func (sm *ScrapeMediaFile) Scanned() {
 func (sm *ScrapeMediaFile) Scraping() {
 	sm.Status = ScrapeMediaStatusScraping
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	// 提交写入请求（同步）
 	if err := db.Db.Model(&ScrapeMediaFile{}).Where("id = ?", sm.ID).Updates(updateData).Error; err != nil {
@@ -414,7 +414,7 @@ func (sm *ScrapeMediaFile) ScrapeFinish() {
 	sm.FailedReason = ""
 	sm.IsReScrape = false
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	updateData["scrape_time"] = sm.ScrapeTime
 	updateData["failed_reason"] = sm.FailedReason
@@ -434,7 +434,7 @@ func (sm *ScrapeMediaFile) StatusScrapeFinish() {
 	sm.Status = ScrapeMediaStatusScraped
 	sm.RenameTime = time.Now().Unix()
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	// 提交写入请求（同步）
 	if err := db.Db.Model(&ScrapeMediaFile{}).Where("id = ?", sm.ID).Updates(updateData).Error; err != nil {
@@ -445,7 +445,7 @@ func (sm *ScrapeMediaFile) StatusScrapeFinish() {
 func (sm *ScrapeMediaFile) Renaming() {
 	sm.Status = ScrapeMediaStatusRenaming
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	if err := db.Db.Model(&ScrapeMediaFile{}).Where("id = ?", sm.ID).Updates(updateData).Error; err != nil {
 		helpers.AppLogger.Errorf("更新刮削媒体失败：id=%d %v", sm.ID, err)
@@ -456,7 +456,7 @@ func (sm *ScrapeMediaFile) StatusFinish() {
 	sm.Status = ScrapeMediaStatusRenamed
 	sm.RenameTime = time.Now().Unix()
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	updateData["rename_time"] = sm.RenameTime
 	if err := db.Db.Model(&ScrapeMediaFile{}).Where("id = ?", sm.ID).Updates(updateData).Error; err != nil {
@@ -469,7 +469,7 @@ func (sm *ScrapeMediaFile) RenameFailed(reason string) {
 	sm.FailedReason = reason
 	sm.RenameTime = time.Now().Unix()
 	// 保存到数据库
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["status"] = sm.Status
 	updateData["failed_reason"] = sm.FailedReason
 	updateData["rename_time"] = sm.RenameTime
@@ -1244,7 +1244,7 @@ func GetScrapeMediaFiles(page int, pageSize int, mediaType string, status string
 	var scrapeMediaFiles []*ScrapeMediaFile
 	tx := db.Db.Order("id desc").Offset(offset).Limit(pageSize).Order("id DESC")
 	txc := db.Db.Model(&ScrapeMediaFile{})
-	condition := make(map[string]interface{})
+	condition := make(map[string]any)
 	if mediaType != "" {
 		condition["media_type"] = mediaType
 	}
@@ -1544,7 +1544,7 @@ func ClearFailedScrapeRecords(ids []uint) error {
 }
 
 func RenameFailedScrapeRecords(ids []uint) error {
-	updateData := make(map[string]interface{}, 0)
+	updateData := make(map[string]any, 0)
 	updateData["status"] = ScrapeMediaStatusScanned
 	updateData["failed_reason"] = ""
 	err := db.Db.Model(&ScrapeMediaFile{}).Where("id IN ?", ids).Updates(updateData).Error

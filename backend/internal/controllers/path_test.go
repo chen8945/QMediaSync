@@ -659,7 +659,7 @@ func TestBaiduDirectoryBrowseUsesListPagination(t *testing.T) {
 		payload, _ := json.Marshal(map[string]any{"errno": 0, "list": items})
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(payload)), Request: r}, nil
 	})
-	account := &models.Account{BaseModel: models.BaseModel{ID: 900001}, SourceType: models.SourceTypeBaiduPan, Token: "fixture-token"}
+	account := &models.Account{ID: 900001, SourceType: models.SourceTypeBaiduPan, Token: "fixture-token"}
 	got, err := GetBaiduPanPathList(t.Context(), requests.PathListRequest{ParentID: "/parent ", SortBy: "time", SortOrder: "desc"}, account)
 	if err != nil || len(got) != 1591 || calls != 2 {
 		t.Fatalf("目录数=%d，请求数=%d，错误=%v", len(got), calls, err)
@@ -769,7 +769,7 @@ func Test115BrowseSharesRawBatchAcrossFilesAndDirectories(t *testing.T) {
 	previous := netFileCache
 	netFileCache = newNetFileBatchCache(200, 180*time.Second)
 	t.Cleanup(func() { netFileCache = previous })
-	account := &models.Account{BaseModel: models.BaseModel{ID: 900011}, SourceType: models.SourceType115}
+	account := &models.Account{ID: 900011, SourceType: models.SourceType115}
 	raw := &v115open.FileListResp{Count: 3, PathStr: "parent"}
 	raw.State = true
 	raw.Data = []v115open.File{
@@ -876,7 +876,7 @@ func TestBaiduBrowseCacheSeparatesFolderFilterAndRefreshesAllSorts(t *testing.T)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: r}, nil
 	})
-	account := &models.Account{BaseModel: models.BaseModel{ID: 900012}, SourceType: models.SourceTypeBaiduPan, Token: "fixture-token"}
+	account := &models.Account{ID: 900012, SourceType: models.SourceTypeBaiduPan, Token: "fixture-token"}
 	readFiles := func(sortBy string) {
 		t.Helper()
 		files, err := getNetFileListPage(t.Context(), netFileListQuery{Account: account, ParentID: "/parent", SortBy: sortBy, Page: 1, PageSize: 50})

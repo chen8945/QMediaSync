@@ -10,6 +10,8 @@
 
 ## 后端启动
 
+使用 Go 1.27.1 或更新的兼容工具链，最低版本以 `backend/go.mod` 为准。
+
 ```bash
 cd backend
 go run .
@@ -20,6 +22,8 @@ go run .
 ## 前端启动
 
 前端依赖要求 Node `>=22.22.2`，pnpm 使用 11.x。
+
+当前依赖基线为 Vue 3.5、Pinia 3、TypeScript 6、Vite 8 和 Vitest 4；`@types/node` 保持 22.x，与 CI 和 Docker 的 Node 22 环境对应。依赖声明见 `frontend/package.json`，实际安装版本以 `frontend/pnpm-lock.yaml` 为准。
 
 ```bash
 cd frontend

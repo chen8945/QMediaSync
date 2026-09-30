@@ -107,14 +107,14 @@ const (
 
 // Notification 统一通知对象
 type Notification struct {
-	ID        string                 `json:"id"`
-	Type      NotificationType       `json:"type"`
-	Title     string                 `json:"title"`
-	Content   string                 `json:"content"`
-	Metadata  map[string]interface{} `json:"metadata"`
-	Timestamp time.Time              `json:"timestamp"`
-	Priority  NotificationPriority   `json:"priority"`
-	Image     string                 `json:"image"`
+	ID        string               `json:"id"`
+	Type      NotificationType     `json:"type"`
+	Title     string               `json:"title"`
+	Content   string               `json:"content"`
+	Metadata  map[string]any       `json:"metadata"`
+	Timestamp time.Time            `json:"timestamp"`
+	Priority  NotificationPriority `json:"priority"`
+	Image     string               `json:"image"`
 }
 
 // CustomWebhookChannelConfig 自定义 Webhook 渠道配置

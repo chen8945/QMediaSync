@@ -413,7 +413,7 @@ func TestCleanupDirectoryUploadProcessedFilesContinuesAfterActiveQueuedBatch(t *
 	now := time.Unix(1_000, 0)
 	expiredAt := now.Add(-48 * time.Hour).Unix()
 
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		status := UploadStatusPending
 		if i%2 == 1 {
 			status = UploadStatusUploading

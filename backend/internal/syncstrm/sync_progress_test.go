@@ -9,7 +9,7 @@ import (
 
 func TestShouldPublishProgressHonorsIntervalAndForce(t *testing.T) {
 	s := &SyncStrm{
-		Sync: &models.Sync{BaseModel: models.BaseModel{ID: 3}},
+		Sync: &models.Sync{ID: 3},
 	}
 	now := time.Unix(100, 0)
 

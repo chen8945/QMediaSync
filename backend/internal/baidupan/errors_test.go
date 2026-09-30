@@ -61,8 +61,7 @@ func TestHandleErrorClassifiesTokenErrno(t *testing.T) {
 			if err == nil {
 				t.Fatal("非零 errno 应返回错误")
 			}
-			var tokenErr *TokenInvalidError
-			isToken := errors.As(err, &tokenErr)
+			tokenErr, isToken := errors.AsType[*TokenInvalidError](err)
 			if isToken != tt.wantToken {
 				t.Fatalf("errno %d 的凭证错误判定 = %v，期望 %v（错误：%v）", tt.errno, isToken, tt.wantToken, err)
 			}

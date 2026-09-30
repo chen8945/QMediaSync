@@ -68,7 +68,7 @@ func testRecoverAdmin(t *testing.T, openDB func(*testing.T) *gorm.DB) {
 				hash = []byte("damaged hash")
 			}
 			user := User{
-				BaseModel: BaseModel{ID: 42}, Username: "admin42", Password: string(hash),
+				ID: 42, Username: "admin42", Password: string(hash),
 				TwoFactorEnabled: true, TwoFactorSecret: "unreadable ciphertext", TwoFactorPendingSecret: "unreadable pending ciphertext",
 			}
 			if tc.failure == "empty" {

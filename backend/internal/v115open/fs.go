@@ -342,7 +342,7 @@ func (c *OpenClient) ReName(ctx context.Context, fileId string, newName string) 
 	data["file_name"] = newName
 	url := fmt.Sprintf("%s/open/ufile/update", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	respData := RespBaseBool[interface{}]{}
+	respData := RespBaseBool[any]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
 		helpers.V115Log.Errorf("调用文件更新接口失败：%v", err)
@@ -366,7 +366,7 @@ func (c *OpenClient) Move(ctx context.Context, fileIds []string, toFileId string
 	data["to_cid"] = toFileId
 	url := fmt.Sprintf("%s/open/ufile/move", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	respData := RespBaseBool[interface{}]{}
+	respData := RespBaseBool[any]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
 		helpers.V115Log.Errorf("调用文件移动接口失败：%v", err)
@@ -484,7 +484,7 @@ func (c *OpenClient) Del(ctx context.Context, fileIds []string, parentFileId str
 	}
 	url := fmt.Sprintf("%s/open/ufile/delete", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	respData := RespBaseBool[interface{}]{}
+	respData := RespBaseBool[any]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
 		if !c.playback || !IsAlreadyDeleted(err) {

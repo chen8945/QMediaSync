@@ -16,10 +16,8 @@ type RenameLocal struct {
 
 func NewRenameLocal(ctx context.Context, scrapePath *models.ScrapePath) *RenameLocal {
 	return &RenameLocal{
-		RenameBase: RenameBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
+		scrapePath: scrapePath,
+		ctx:        ctx,
 	}
 }
 

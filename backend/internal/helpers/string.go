@@ -268,8 +268,8 @@ func ChineseToPinyin(s string) (bool, string) {
 	return hasChinese, result.String()
 }
 
-func GetStructName(obj interface{}) string {
-	if t := reflect.TypeOf(obj); t.Kind() == reflect.Ptr {
+func GetStructName(obj any) string {
+	if t := reflect.TypeOf(obj); t.Kind() == reflect.Pointer {
 		return t.Elem().Name()
 	} else {
 		return t.Name()

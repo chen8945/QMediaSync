@@ -377,7 +377,7 @@ func TestExpandDirectoryScanChildrenEnqueuesOnlyLatestCollisionOwner(t *testing.
 	}
 	service := NewStrmGenerationService()
 	parent := &models.StrmGenerationTask{
-		BaseModel:  models.BaseModel{ID: 9001},
+		ID:         9001,
 		Source:     models.StrmGenerationSourceWebhook,
 		TaskType:   models.StrmGenerationTaskTypeDirectoryScan,
 		SyncPathId: syncPath.ID,

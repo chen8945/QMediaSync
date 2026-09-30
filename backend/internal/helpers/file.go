@@ -82,7 +82,7 @@ func MoveFile(src, dst string, overwrite bool) error {
 	return err
 }
 
-func WriteJsonFile(filePath string, data interface{}) error {
+func WriteJsonFile(filePath string, data any) error {
 	jsonData, jsonErr := json.Marshal(data)
 	if jsonErr != nil {
 		return jsonErr
@@ -90,7 +90,7 @@ func WriteJsonFile(filePath string, data interface{}) error {
 	return os.WriteFile(filePath, jsonData, 0666)
 }
 
-func ReadJsonFile(filePath string, data interface{}) error {
+func ReadJsonFile(filePath string, data any) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -345,10 +345,7 @@ func readLinesForward(filename string, startPos int64, maxLines int) ([]string, 
 
 	for currentPos > 0 && len(lines) < maxLines {
 		// 计算本次读取的大小
-		readSize := int64(bufferSize)
-		if currentPos < readSize {
-			readSize = currentPos
-		}
+		readSize := min(currentPos, int64(bufferSize))
 
 		// 计算读取位置
 		readPos := currentPos - readSize
@@ -403,15 +400,12 @@ func readLinesForward(filename string, startPos int64, maxLines int) ([]string, 
 	// 翻转 lines
 	newLines := make([]string, len(lines))
 	// 从后往前循环 lines
-	for i := len(lines) - 1; i >= 0; i-- {
-		newLines[len(lines)-1-i] = lines[i]
+	for i, line := range slices.Backward(lines) {
+		newLines[len(lines)-1-i] = line
 	}
 
 	// 计算新的读取位置
-	newPosition := startPos - totalBytesRead
-	if newPosition < 0 {
-		newPosition = 0
-	}
+	newPosition := max(startPos-totalBytesRead, 0)
 
 	return newLines, newPosition, nil
 }
@@ -536,10 +530,7 @@ func CalculateFileChunkMD5(filePath string, chunkSize int64) (*FileChunkMD5Resul
 
 	for position < fileSize {
 		remaining := fileSize - position
-		readSize := chunkSize
-		if remaining < chunkSize {
-			readSize = remaining
-		}
+		readSize := min(remaining, chunkSize)
 
 		n, err := file.ReadAt(buf[:readSize], position)
 		if err != nil && err != io.EOF {
@@ -626,10 +617,7 @@ func ExtractFileChunkToTemp(filePath string, chunkSize int64, chunkIndex int) (s
 	}
 
 	remaining := fileSize - offset
-	readSize := chunkSize
-	if remaining < chunkSize {
-		readSize = remaining
-	}
+	readSize := min(remaining, chunkSize)
 
 	buf := make([]byte, readSize)
 	n, err := file.ReadAt(buf, offset)

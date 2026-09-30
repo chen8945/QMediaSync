@@ -13,7 +13,7 @@ import (
 // Message 是 tailer 发给订阅者的消息。
 type Message struct {
 	Type   string `json:"type"`
-	Entry  Entry  `json:"entry,omitempty"`
+	Entry  Entry  `json:"entry"`
 	Cursor int64  `json:"cursor,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }

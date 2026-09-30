@@ -196,7 +196,7 @@ func Fetch(uri, method string, header http.Header, body map[string]any, v any, c
 
 	// 3 如果 v 参数为不为 nil 的指针, 写入响应数据
 	vf := reflect.ValueOf(v)
-	if vf.Kind() != reflect.Ptr || vf.IsNil() {
+	if vf.Kind() != reflect.Pointer || vf.IsNil() {
 		return nil
 	}
 	if err = json.Unmarshal(res.Data, v); err != nil {

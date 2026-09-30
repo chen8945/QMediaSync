@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"qmediasync/internal/helpers"
@@ -505,8 +506,9 @@ func getStrmPath(args []string) helpers.CommandResponse {
 	syncPaths, total := models.GetSyncPathList(page, pageSize, false, "")
 
 	// 格式化输出
-	result := "📋 STRM 同步路径列表\n"
-	result += fmt.Sprintf("第 %d 页，共 %d 条记录\n\n", page, total)
+	var result strings.Builder
+	result.WriteString("📋 STRM 同步路径列表\n")
+	result.WriteString(fmt.Sprintf("第 %d 页，共 %d 条记录\n\n", page, total))
 
 	for _, sp := range syncPaths {
 		status := synccron.CheckNewTaskStatus(sp.ID, synccron.SyncTaskTypeStrm)
@@ -518,12 +520,12 @@ func getStrmPath(args []string) helpers.CommandResponse {
 			statusStr = "⏳ 等待中"
 		}
 
-		result += fmt.Sprintf("  ID：#%d\n", sp.ID)
-		result += fmt.Sprintf("  原始路径：%s\n", sp.RemotePath)
-		result += fmt.Sprintf("  目标路径：%s\n", sp.LocalPath)
-		result += fmt.Sprintf("  状态：%s\n", statusStr)
-		result += fmt.Sprintf("  来源：%s\n", sp.SourceType)
-		result += fmt.Sprintf("  最后同步：%s\n\n", time.Unix(sp.UpdatedAt, 0).Format("2006-01-02 15:04"))
+		result.WriteString(fmt.Sprintf("  ID：#%d\n", sp.ID))
+		result.WriteString(fmt.Sprintf("  原始路径：%s\n", sp.RemotePath))
+		result.WriteString(fmt.Sprintf("  目标路径：%s\n", sp.LocalPath))
+		result.WriteString(fmt.Sprintf("  状态：%s\n", statusStr))
+		result.WriteString(fmt.Sprintf("  来源：%s\n", sp.SourceType))
+		result.WriteString(fmt.Sprintf("  最后同步：%s\n\n", time.Unix(sp.UpdatedAt, 0).Format("2006-01-02 15:04")))
 	}
 
 	// 构建内联键盘
@@ -545,7 +547,7 @@ func getStrmPath(args []string) helpers.CommandResponse {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 	return helpers.CommandResponse{
-		Text:        result,
+		Text:        result.String(),
 		ReplyMarkup: keyboard,
 	}
 }
@@ -571,8 +573,9 @@ func getScrapePath(args []string) helpers.CommandResponse {
 	scrapePaths := models.GetScrapePathes(sourceType)
 
 	// 格式化输出
-	result := "🧹 刮削路径列表\n"
-	result += fmt.Sprintf("共 %d 条记录\n\n", len(scrapePaths))
+	var result strings.Builder
+	result.WriteString("🧹 刮削路径列表\n")
+	result.WriteString(fmt.Sprintf("共 %d 条记录\n\n", len(scrapePaths)))
 
 	for _, sp := range scrapePaths {
 		status := synccron.CheckNewTaskStatus(sp.ID, synccron.SyncTaskTypeScrape)
@@ -584,13 +587,13 @@ func getScrapePath(args []string) helpers.CommandResponse {
 			statusStr = "⏳ 等待中"
 		}
 
-		result += fmt.Sprintf("  ID：#%d\n", sp.ID)
-		result += fmt.Sprintf("  原始路径：%s\n", sp.SourcePath)
-		result += fmt.Sprintf("  目标路径：%s\n", sp.DestPath)
-		result += fmt.Sprintf("  状态：%s\n", statusStr)
-		result += fmt.Sprintf("  来源：%s\n", sp.SourceType)
-		result += fmt.Sprintf("  媒体类型：%s\n", sp.MediaType)
-		result += fmt.Sprintf("  最后刮削：%s\n\n", time.Unix(sp.UpdatedAt, 0).Format("2006-01-02 15:04"))
+		result.WriteString(fmt.Sprintf("  ID：#%d\n", sp.ID))
+		result.WriteString(fmt.Sprintf("  原始路径：%s\n", sp.SourcePath))
+		result.WriteString(fmt.Sprintf("  目标路径：%s\n", sp.DestPath))
+		result.WriteString(fmt.Sprintf("  状态：%s\n", statusStr))
+		result.WriteString(fmt.Sprintf("  来源：%s\n", sp.SourceType))
+		result.WriteString(fmt.Sprintf("  媒体类型：%s\n", sp.MediaType))
+		result.WriteString(fmt.Sprintf("  最后刮削：%s\n\n", time.Unix(sp.UpdatedAt, 0).Format("2006-01-02 15:04")))
 	}
 
 	// 构建内联键盘
@@ -606,7 +609,7 @@ func getScrapePath(args []string) helpers.CommandResponse {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 	return helpers.CommandResponse{
-		Text:        result,
+		Text:        result.String(),
 		ReplyMarkup: keyboard,
 	}
 }

@@ -126,10 +126,7 @@ func (tm *ThrottleManager) GetThrottleStatus() ThrottleStatus {
 		elapsed := time.Since(tm.throttleStartTime)
 		status.WaitTime = tm.throttleDuration
 		status.ElapsedTime = elapsed
-		status.RemainingTime = tm.throttleDuration - elapsed
-		if status.RemainingTime < 0 {
-			status.RemainingTime = 0
-		}
+		status.RemainingTime = max(tm.throttleDuration-elapsed, 0)
 	}
 
 	return status

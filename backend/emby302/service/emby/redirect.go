@@ -49,7 +49,10 @@ func Redirect2Transcode(c *gin.Context) {
 		return
 	}
 
-	tu, _ := url.Parse(https.ClientRequestHost(c.Request) + "/videos/proxy_playlist")
+	tu, err := url.Parse(https.ClientRequestHost(c.Request) + "/videos/proxy_playlist")
+	if checkErr(c, helpers.URLRequestErrorForLog(err)) {
+		return
+	}
 	q := tu.Query()
 	q.Set("openlist_path", openlistPath)
 	q.Set(QueryApiKeyName, apiKey)

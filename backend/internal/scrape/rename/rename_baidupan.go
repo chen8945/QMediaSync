@@ -18,11 +18,9 @@ type RenameBaiduPan struct {
 
 func NewRenameBaiduPan(ctx context.Context, scrapePath *models.ScrapePath, client *baidupan.Client) *RenameBaiduPan {
 	return &RenameBaiduPan{
-		RenameBase: RenameBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
-		client: client,
+		scrapePath: scrapePath,
+		ctx:        ctx,
+		client:     client,
 	}
 }
 

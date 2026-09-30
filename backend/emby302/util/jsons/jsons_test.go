@@ -3,11 +3,70 @@ package jsons_test
 import (
 	"encoding/json"
 	"log"
+	"reflect"
 	"strconv"
 	"testing"
 
 	"qmediasync/emby302/util/jsons"
 )
+
+func TestFromObjectStructFields(t *testing.T) {
+	type Embedded struct{ ID string }
+	value := struct {
+		Embedded
+		Name   string `json:"title"`
+		hidden string
+		Nested struct{ Count int }
+	}{ID: "item", Name: "media", hidden: "private", Nested: struct{ Count int }{Count: 2}}
+	want := map[string]any{
+		"Embedded": map[string]any{"ID": "item"},
+		"Name":     "media",
+		"Nested":   map[string]any{"Count": float64(2)},
+	}
+	for _, input := range []any{value, &value} {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(jsons.FromObject(input).String()), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("结构体转换必须保留导出字段并跳过私有字段：got=%v, want=%v", got, want)
+		}
+	}
+}
+
+func TestFromObjectMap(t *testing.T) {
+	value := map[string]any{
+		"Name":         "media",
+		"Null":         nil,
+		"MediaStreams": []any{map[string]any{"Codec": "hevc", "Index": 0}},
+	}
+	for _, tt := range []struct {
+		name  string
+		input any
+		want  map[string]any
+	}{
+		{name: "nested", input: value, want: value},
+		{name: "pointer", input: &value, want: value},
+		{name: "typed value", input: map[string]string{"Name": "media"}, want: map[string]any{"Name": "media"}},
+		{name: "empty", input: map[string]any{}, want: map[string]any{}},
+		{name: "nil", input: map[string]any(nil), want: map[string]any{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := jsons.FromObject(tt.input).Struct()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("map 转换结果不符：got=%v, want=%v", got, tt.want)
+			}
+		})
+	}
+	t.Run("non-string key", func(t *testing.T) {
+		defer func() {
+			if got := recover(); got != "不支持的 map 类型" {
+				t.Fatalf("非 string 键必须保持拒绝：panic=%v", got)
+			}
+		}()
+		jsons.FromObject(map[int]string{1: "media"})
+	})
+}
 
 func TestMarshal(t *testing.T) {
 	log.Println(jsons.FromValue("Ambitious"))

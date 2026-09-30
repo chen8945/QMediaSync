@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -118,7 +119,7 @@ func (t *EmbyLibraryRefreshTask) GetSyncPathIds() []uint {
 		helpers.AppLogger.Warnf("解析 Emby 媒体库刷新任务 sync_path_ids 失败：%v", err)
 		return []uint{}
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	return ids
 }
 
@@ -171,7 +172,7 @@ func mergeSyncPathIds(left []uint, right []uint) []uint {
 	for id := range seen {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	return ids
 }
 
@@ -453,7 +454,7 @@ func repairPendingEmbyGroupItemFallbackLibrariesWithDB(tx *gorm.DB, items []*Emb
 		}
 		result := tx.Model(&EmbyLibraryRefreshTask{}).
 			Where("id = ? AND status = ? AND target_type = ?", task.ID, EmbyLibraryRefreshStatusPending, EmbyLibraryRefreshTargetTypeItem).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"library_id":            fallbackLibraryID,
 				"fallback_library_id":   fallbackLibraryID,
 				"fallback_library_name": fallbackLibraryName,
@@ -685,7 +686,7 @@ func cancelExpiredPendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64) error {
 	return tx.Model(&EmbyLibraryRefreshTask{}).
 		Where("status = ?", EmbyLibraryRefreshStatusPending).
 		Where("deadline_at > 0 AND deadline_at <= ?", now).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":          EmbyLibraryRefreshStatusCancelled,
 			"last_checked_at": now,
 			"error":           "等待超过最大时长，取消刷新",
@@ -782,7 +783,7 @@ func cancelAbsorbedEmbyItemTasksWithDB(tx *gorm.DB, items []*EmbyLibraryRefreshT
 	}
 	result := tx.Model(&EmbyLibraryRefreshTask{}).
 		Where("id IN ? AND target_type = ? AND status = ?", ids, EmbyLibraryRefreshTargetTypeItem, EmbyLibraryRefreshStatusPending).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status": EmbyLibraryRefreshStatusCancelled,
 			"error":  "已由媒体库刷新任务 " + embyLibraryRefreshTaskKey(libraryID) + " 覆盖",
 		})
@@ -989,7 +990,7 @@ func cancelPendingEmbyLibraryRefreshTasksBySyncPathIdsWithDB(tx *gorm.DB, syncPa
 	now := nowUnix()
 	return tx.Model(&EmbyLibraryRefreshTask{}).
 		Where("id IN ? AND status = ?", taskIds, EmbyLibraryRefreshStatusPending).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":          EmbyLibraryRefreshStatusCancelled,
 			"last_checked_at": now,
 			"error":           reason,
@@ -1089,10 +1090,7 @@ func setNextEmbyLibraryRefreshCheckTimer(nextCheckAt int64, hasNext bool) {
 		embyRefreshTimerState.timer.Stop()
 	}
 
-	delay := time.Until(time.Unix(nextCheckAt, 0))
-	if delay < 0 {
-		delay = 0
-	}
+	delay := max(time.Until(time.Unix(nextCheckAt, 0)), 0)
 	scheduledAt := nextCheckAt
 	embyRefreshTimerState.generation++
 	generation := embyRefreshTimerState.generation
@@ -1161,12 +1159,7 @@ func HasActiveStrmSyncTask(syncPathIds []uint) bool {
 	if IsStrmSyncTaskActiveFunc == nil {
 		return false
 	}
-	for _, syncPathId := range syncPathIds {
-		if IsStrmSyncTaskActiveFunc(syncPathId) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(syncPathIds, IsStrmSyncTaskActiveFunc)
 }
 
 func getEmbyRefreshTaskLibraryIds(task *EmbyLibraryRefreshTask) []string {
@@ -1455,7 +1448,7 @@ func notifyEmbyRefreshDownloadTasksChangedBySyncPathIdsWithDB(tx *gorm.DB, syncP
 	now := nowUnix()
 	if err := tx.Model(&EmbyLibraryRefreshTask{}).
 		Where("id IN ? AND status = ?", taskIds, EmbyLibraryRefreshStatusPending).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"last_event_at":    now,
 			"refresh_after_at": now + DefaultEmbyRefreshDebounceSeconds,
 		}).Error; err != nil {
@@ -1541,7 +1534,7 @@ func resetRefreshingEmbyLibraryRefreshTasks() {
 	now := nowUnix()
 	if err := db.Db.Model(&EmbyLibraryRefreshTask{}).
 		Where("status = ?", EmbyLibraryRefreshStatusRefreshing).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":           EmbyLibraryRefreshStatusPending,
 			"last_event_at":    now,
 			"refresh_after_at": now + DefaultEmbyRefreshDebounceSeconds,
@@ -1555,7 +1548,7 @@ func updatePendingEmbyRefreshTaskCheckResult(task *EmbyLibraryRefreshTask, now i
 	if task == nil || task.ID == 0 {
 		return nil
 	}
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"last_checked_at": now,
 	}
 	if checkErr != nil {
@@ -1693,7 +1686,7 @@ func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask) (bool, error
 			}
 			result := tx.Model(&EmbyLibraryRefreshTask{}).
 				Where("id = ? AND status = ?", current.ID, EmbyLibraryRefreshStatusPending).
-				Updates(map[string]interface{}{
+				Updates(map[string]any{
 					"status":          EmbyLibraryRefreshStatusRefreshing,
 					"last_checked_at": now,
 				})
@@ -1738,7 +1731,7 @@ func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRe
 				}
 				task.FallbackLibraryId = resolution.LibraryID
 				task.FallbackLibraryName = resolution.LibraryName
-				if saveErr := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				if saveErr := db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ?", task.ID).Updates(map[string]any{
 					"fallback_library_id":   task.FallbackLibraryId,
 					"fallback_library_name": task.FallbackLibraryName,
 				}).Error; saveErr != nil {
@@ -1759,7 +1752,7 @@ func markEmbyRefreshTaskCompleted(task *EmbyLibraryRefreshTask) error {
 	now := nowUnix()
 	result := db.Db.Model(&EmbyLibraryRefreshTask{}).
 		Where("id = ? AND status = ?", task.ID, EmbyLibraryRefreshStatusRefreshing).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":          EmbyLibraryRefreshStatusCompleted,
 			"last_refresh_at": now,
 			"last_checked_at": now,
@@ -1784,7 +1777,7 @@ func markEmbyRefreshTaskFailed(task *EmbyLibraryRefreshTask, reason string) erro
 	}
 	result := db.Db.Model(&EmbyLibraryRefreshTask{}).
 		Where("id = ? AND status = ?", task.ID, EmbyLibraryRefreshStatusRefreshing).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status": EmbyLibraryRefreshStatusFailed,
 			"error":  reason,
 		})
@@ -1813,7 +1806,7 @@ func markEmbyRefreshTaskCancelled(task *EmbyLibraryRefreshTask, reason string) e
 				0,
 				now,
 			).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status":          EmbyLibraryRefreshStatusCancelled,
 				"last_checked_at": now,
 				"error":           reason,

@@ -118,8 +118,7 @@ func logPlaybackRequest(req *QueuedRequest, queueWait, httpDuration time.Duratio
 	if data != nil {
 		code, errno = data.Code, data.Errno
 	} else {
-		var apiErr *OpenAPIError
-		if errors.As(err, &apiErr) {
+		if apiErr, ok := errors.AsType[*OpenAPIError](err); ok {
 			code = apiErr.Code
 		}
 	}

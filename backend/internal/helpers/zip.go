@@ -295,7 +295,7 @@ func ensureNoSymlinkInPath(base, target string) error {
 	}
 
 	current := base
-	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+	for part := range strings.SplitSeq(rel, string(os.PathSeparator)) {
 		if part == "" || part == "." {
 			continue
 		}
@@ -366,9 +366,9 @@ func ZipDir(src, dst string) (err error) {
 		}
 		header.Name = relPath
 
-		// 如果是目录，需要设置压缩方法为 Store
-		if info.IsDir() {
-			header.Method = zip.Store
+		// 普通文件使用 Deflate 压缩；目录等条目保留默认 Store。
+		if info.Mode().IsRegular() {
+			header.Method = zip.Deflate
 		}
 
 		// 写入 header

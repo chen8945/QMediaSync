@@ -22,7 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
-	"gopkg.in/yaml.v2"
+	"go.yaml.in/yaml/v3"
 	"gorm.io/gorm"
 )
 

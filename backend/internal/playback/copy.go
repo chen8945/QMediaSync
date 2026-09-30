@@ -148,12 +148,13 @@ func (m *Manager) copyOnce(ctx context.Context, source SourceKey, file File, ua 
 		return "", ctx.Err()
 	}
 	if err != nil {
-		var apiErr *v115open.OpenAPIError
 		// 明确失败直接退出；传输或响应结果不明时只读列表核验，不重发复制。
 		if errors.Is(err, v115open.ErrPlaybackRequestNotSent) ||
-			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-			(errors.As(err, &apiErr) && (apiErr.Code != 0 ||
-				(apiErr.HTTPStatus != http.StatusRequestTimeout && apiErr.HTTPStatus < http.StatusInternalServerError))) {
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("复制文件：%w", err)
+		}
+		if apiErr, ok := errors.AsType[*v115open.OpenAPIError](err); ok && (apiErr.Code != 0 ||
+			(apiErr.HTTPStatus != http.StatusRequestTimeout && apiErr.HTTPStatus < http.StatusInternalServerError)) {
 			return "", fmt.Errorf("复制文件：%w", err)
 		}
 	} else if result == nil {
@@ -236,8 +237,8 @@ func copyDownloadMissing(err error) bool {
 	if v115open.IsAlreadyDeleted(err) {
 		return true
 	}
-	var apiErr *v115open.OpenAPIError
-	return errors.As(err, &apiErr) && (apiErr.HTTPStatus == 0 ||
+	apiErr, ok := errors.AsType[*v115open.OpenAPIError](err)
+	return ok && (apiErr.HTTPStatus == 0 ||
 		(apiErr.HTTPStatus >= http.StatusOK && apiErr.HTTPStatus < http.StatusMultipleChoices)) &&
 		(apiErr.Code == 50003 || apiErr.Code == 50015)
 }
@@ -250,12 +251,13 @@ func (m *Manager) createOperation(ctx context.Context, source SourceKey, name, o
 	id, err := api.mkdir(ctx, rootID, name)
 	if err != nil {
 		m.invalidateDirectory(source, rootID)
-		var apiErr *v115open.OpenAPIError
 		// 仅明确业务失败且根目录确已变化时重试创建；传输结果不明可能已经创建，留待维护回收。
-		if ctx.Err() == nil && errors.As(err, &apiErr) && apiErr.Code != 0 && !terminalRootError(err) {
-			if newRoot, lookupErr := m.rootDirectory(ctx, source, api, true); lookupErr == nil && newRoot != rootID {
-				rootID = newRoot
-				id, err = api.mkdir(ctx, rootID, name)
+		if ctx.Err() == nil {
+			if apiErr, ok := errors.AsType[*v115open.OpenAPIError](err); ok && apiErr.Code != 0 && !terminalRootError(err) {
+				if newRoot, lookupErr := m.rootDirectory(ctx, source, api, true); lookupErr == nil && newRoot != rootID {
+					rootID = newRoot
+					id, err = api.mkdir(ctx, rootID, name)
+				}
 			}
 		}
 	}
@@ -311,8 +313,7 @@ func terminalRootError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || v115open.IsRateLimited(err) {
 		return true
 	}
-	var apiErr *v115open.OpenAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*v115open.OpenAPIError](err); ok {
 		return apiErr.HTTPStatus == http.StatusUnauthorized || apiErr.HTTPStatus == http.StatusForbidden ||
 			apiErr.Code == v115open.ACCESS_AUTH_INVALID || apiErr.Code == v115open.ACCESS_TOKEN_AUTH_FAIL ||
 			apiErr.Code == v115open.ACCESS_TOKEN_EXPIRY_CODE

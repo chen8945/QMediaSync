@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func TestStartParseEmbyMediaInfoRunsOneAtATime(t *testing.T) {
 	models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "key"}
 	waitIdle := func() bool {
 		deadline := time.Now().Add(5 * time.Second)
-		for atomic.LoadInt32(&embyMediaInfoRunning) == 1 {
+		for embyMediaInfoRunning.Load() == 1 {
 			if time.Now().After(deadline) {
 				return false
 			}

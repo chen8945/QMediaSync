@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sync"
 	"time"
@@ -83,9 +84,7 @@ func (runtime *RuleRuntime) snapshot() map[string]string {
 	defer runtime.pollingMu.Unlock()
 
 	snapshot := make(map[string]string, len(runtime.pollingSnapshot))
-	for rel, fingerprint := range runtime.pollingSnapshot {
-		snapshot[rel] = fingerprint
-	}
+	maps.Copy(snapshot, runtime.pollingSnapshot)
 	return snapshot
 }
 
@@ -94,9 +93,7 @@ func (runtime *RuleRuntime) replaceSnapshot(snapshot map[string]string) {
 		return
 	}
 	next := make(map[string]string, len(snapshot))
-	for rel, fingerprint := range snapshot {
-		next[rel] = fingerprint
-	}
+	maps.Copy(next, snapshot)
 	runtime.pollingMu.Lock()
 	defer runtime.pollingMu.Unlock()
 
@@ -205,17 +202,13 @@ func (service *Service) StartRule(ctx context.Context, rule *models.DirectoryUpl
 
 	var wg sync.WaitGroup
 	if runtime.Mode == RuleRuntimeModePolling {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			service.runPollingLoop(ruleCtx, runtime, rule)
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		service.runStabilityLoop(ruleCtx, rule)
-	}()
+	})
 	go func() {
 		wg.Wait()
 		close(runtime.done)

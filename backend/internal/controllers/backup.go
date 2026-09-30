@@ -62,10 +62,10 @@ func GetBackupList(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, APIResponse[map[string]interface{}]{
+	c.JSON(http.StatusOK, APIResponse[map[string]any]{
 		Code:    Success,
 		Message: "获取备份列表成功",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"list":      records,
 			"total":     total,
 			"page":      req.Page,

@@ -231,7 +231,7 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 		helpers.OpenListLog.Errorf("OpenList 请求 %s %s 序列化失败：%+v", req.Method, req.URL, err)
 		return response, err
 	}
-	var jsonResult map[string]interface{}
+	var jsonResult map[string]any
 	err = json.Unmarshal(data, &jsonResult)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 请求 %s %s 反序列化失败：%+v", req.Method, req.URL, err)

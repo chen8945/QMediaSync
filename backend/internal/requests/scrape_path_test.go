@@ -130,7 +130,7 @@ func TestSaveScrapePathRequestValidateCreate(t *testing.T) {
 
 func TestSaveScrapePathRequestValidateUpdate(t *testing.T) {
 	oldScrapePath := &models.ScrapePath{
-		BaseModel:  models.BaseModel{ID: 1},
+		ID:         1,
 		AccountId:  1,
 		SourceType: models.SourceType115,
 		MediaType:  models.MediaTypeMovie,

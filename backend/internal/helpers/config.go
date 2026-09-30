@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"gopkg.in/yaml.v2"
+	"go.yaml.in/yaml/v3"
 )
 
 var Version = "0.0.1"
@@ -270,7 +270,7 @@ func LoadEnvFromFile(envPath string) error {
 	return scanner.Err()
 }
 
-func loadYaml(configPath string, cfg interface{}) error {
+func loadYaml(configPath string, cfg any) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败：%w", err)

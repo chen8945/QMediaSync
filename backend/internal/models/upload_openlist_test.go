@@ -129,7 +129,7 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 			for i := range accounts {
 				id := uint(1_000_000 + openListQueueAccountID.Add(1))
 				accounts[i] = &Account{
-					BaseModel:  BaseModel{ID: id},
+					ID:         id,
 					SourceType: SourceTypeOpenList,
 					BaseUrl:    server.URL,
 					Token:      fmt.Sprintf("token-%d", id),

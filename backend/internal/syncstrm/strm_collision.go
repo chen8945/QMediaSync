@@ -105,7 +105,6 @@ func (s *SyncStrm) process115CollectedFiles() error {
 	eg, ctx := errgroup.WithContext(s.Context)
 	eg.SetLimit(int(s.PathWorkerMax))
 	for _, file := range files {
-		file := file
 		if file == nil || file.FileType == v115open.TypeDir {
 			continue
 		}

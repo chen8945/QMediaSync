@@ -18,11 +18,9 @@ type Rename115 struct {
 
 func NewRename115(ctx context.Context, scrapePath *models.ScrapePath, client *v115open.OpenClient) *Rename115 {
 	return &Rename115{
-		RenameBase: RenameBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
-		client: client,
+		scrapePath: scrapePath,
+		ctx:        ctx,
+		client:     client,
 	}
 }
 

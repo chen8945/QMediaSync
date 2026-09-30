@@ -77,10 +77,7 @@ func SetGlobalExecutorStatSaver(saver RequestStatSaver) {
 // NewQueueExecutor 创建新的队列执行器
 func NewQueueExecutor(qps, qpm, qph int) *QueueExecutor {
 	// 计算 Worker 数量：max(qps, 5) + 3
-	workerCount := qps
-	if workerCount < 5 {
-		workerCount = 5
-	}
+	workerCount := max(qps, 5)
 	workerCount += 3
 
 	executor := &QueueExecutor{
@@ -118,10 +115,7 @@ func (qe *QueueExecutor) SetRateLimitConfig(qps, qpm, qph int) {
 	qe.qphLimiter = rate.NewLimiter(rate.Every(time.Hour/time.Duration(qph)), qph)
 
 	// 重新计算 Worker 数量
-	newWorkerCount := qps
-	if newWorkerCount < 5 {
-		newWorkerCount = 5
-	}
+	newWorkerCount := max(qps, 5)
 	newWorkerCount += 3
 
 	needRestart := newWorkerCount != qe.workerCount && qe.running
@@ -177,7 +171,7 @@ func (qe *QueueExecutor) startLocked() {
 		workerCount, qpsConfig, qpmConfig, qphConfig)
 
 	// 启动 Worker
-	for i := 0; i < workerCount; i++ {
+	for i := range workerCount {
 		qe.workerWG.Add(1)
 		go qe.worker(i, queue)
 	}

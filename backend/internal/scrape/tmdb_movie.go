@@ -18,11 +18,9 @@ type TmdbMovieImpl struct {
 
 func NewTmdbMovieImpl(scrapePath *models.ScrapePath, ctx context.Context) *TmdbMovieImpl {
 	return &TmdbMovieImpl{
-		TmdbBase: TmdbBase{
-			scrapePath: scrapePath,
-			ctx:        ctx,
-			Client:     models.GlobalScrapeSettings.GetTmdbClient(),
-		},
+		scrapePath: scrapePath,
+		ctx:        ctx,
+		Client:     models.GlobalScrapeSettings.GetTmdbClient(),
 	}
 }
 

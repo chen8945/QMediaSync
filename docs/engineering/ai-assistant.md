@@ -33,7 +33,7 @@
 
 QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网盘、OpenList 等云存储与 Emby 媒体服务器之间的文件同步、STRM 生成和媒体刮削。
 
-- 语言：Go 1.25。
+- 语言：Go 1.27.1。
 - 后端：Gin、GORM，模块名为 `qmediasync`，位于 `backend/`。
 - 数据库：SQLite 或 PostgreSQL，默认 PostgreSQL；不包含内嵌 PostgreSQL 和旧库自动迁移能力。
 - 前端：Vue 3、Vite、TypeScript，位于 `frontend/`；本地生产构建输出 `frontend/dist`，发布流程将其复制为 `backend/web_statics`，运行目录使用 `web_statics`。
@@ -81,6 +81,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 ### 错误、响应和请求绑定
 
 - `panic` 仅用于不可恢复的启动错误。常规数据库和业务错误按所在模块既有的返回和日志模式处理。
+- 生产与测试代码统一使用 `errors.AsType[T]` 进行错误类型匹配；SQLite、OSS 等错误码能力接口显式嵌入 `error`。迁移时检查实际错误类型及自定义 `As(any)` 适配是否支持目标类型，保留错误链匹配顺序、短路判断、错误码和重试语义。
 - 控制器修改必须保持所在控制器的响应风格。多数业务接口使用 `APIResponse[T]` 的 `Code` 表达业务状态；认证、参数、文件和部分历史接口可能直接返回 HTTP `400`、`401`、`404` 或 `409`。
 - 查询参数使用 `c.ShouldBindQuery(&req)` 和 `form` 标签；JSON Body 使用 `c.ShouldBindJSON(&req)` 和 `json` 标签；路径参数使用 `c.Param("id")`。
 

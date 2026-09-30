@@ -22,7 +22,7 @@ type ScanBaiduPanImpl struct {
 }
 
 func NewBaiduPanScanImpl(scrapePath *models.ScrapePath, client *baidupan.Client, ctx context.Context) *ScanBaiduPanImpl {
-	return &ScanBaiduPanImpl{scanBaseImpl: scanBaseImpl{ctx: ctx, scrapePath: scrapePath}, client: client}
+	return &ScanBaiduPanImpl{ctx: ctx, scrapePath: scrapePath, client: client}
 }
 
 // 检查来源目录和目标目录是否存在

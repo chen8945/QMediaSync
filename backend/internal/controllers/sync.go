@@ -73,7 +73,7 @@ func GetSyncRecords(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取同步记录成功", Data: map[string]interface{}{
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取同步记录成功", Data: map[string]any{
 		"records": records,
 		"total":   total,
 	}})

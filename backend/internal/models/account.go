@@ -744,7 +744,7 @@ func GetPathByPathFileId(account *Account, fileId string) string {
 
 // 处理 115 访问凭证失效事件（异步版本）
 func HandleV115TokenInvalid(event helpers.Event) helpers.EventResult {
-	eventData := event.Data.(map[string]interface{})
+	eventData := event.Data.(map[string]any)
 	helpers.AppLogger.Infof("收到 V115 访问凭证失效事件，开始处理，账号 ID：%d", eventData["account_id"].(uint))
 	account, err := GetAccountById(eventData["account_id"].(uint))
 	if err != nil {

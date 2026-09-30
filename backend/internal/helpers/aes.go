@@ -31,7 +31,7 @@ func EncryptWithKey(plaintext string, keyText string) (string, error) {
 	// PKCS7 填充
 	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
 	padtext := append([]byte(plaintext), make([]byte, padding)...)
-	for i := 0; i < padding; i++ {
+	for i := range padding {
 		padtext[len(plaintext)+i] = byte(padding)
 	}
 

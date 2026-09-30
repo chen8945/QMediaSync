@@ -161,7 +161,7 @@ func TestRemoteCompletedFinalizeClaimAllowsSingleOwner(t *testing.T) {
 	if !claimed {
 		t.Fatal("首次抢占待收尾任务应成功")
 	}
-	duplicate := &DbUploadTask{BaseModel: BaseModel{ID: task.ID}}
+	duplicate := &DbUploadTask{ID: task.ID}
 	claimedAgain, err := duplicate.claimRemoteCompletedFinalize()
 	if err != nil {
 		t.Fatalf("重复抢占待收尾任务失败: %v", err)

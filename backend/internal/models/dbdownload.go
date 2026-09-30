@@ -724,7 +724,7 @@ func RetryFailedDownloadTasks(maxRetry int) error {
 	for i := range failedTasks {
 		task := &failedTasks[i]
 		setDownloadTaskDeduplicationKeys(task)
-		updateData := map[string]interface{}{
+		updateData := map[string]any{
 			"status":          DownloadStatusPending,
 			"error":           "",
 			"retry_count":     gorm.Expr("retry_count + 1"),

@@ -615,7 +615,7 @@ func UpdateCustomWebhookChannel(c *gin.Context) {
 	}
 
 	// 准备更新配置字段
-	updates := make(map[string]interface{})
+	updates := make(map[string]any)
 
 	if r.Endpoint != "" {
 		updates["endpoint"] = r.Endpoint
@@ -735,7 +735,7 @@ func UpdateTelegramChannel(c *gin.Context) {
 	}
 
 	// 准备更新配置字段
-	updates := make(map[string]interface{})
+	updates := make(map[string]any)
 	if r.BotToken != "" {
 		updates["bot_token"] = r.BotToken
 	}
@@ -817,7 +817,7 @@ func UpdateMeoWChannel(c *gin.Context) {
 	}
 
 	// 准备更新配置字段
-	updates := make(map[string]interface{})
+	updates := make(map[string]any)
 	if r.Nickname != "" {
 		updates["nickname"] = r.Nickname
 	}
@@ -901,7 +901,7 @@ func UpdateBarkChannel(c *gin.Context) {
 	}
 
 	// 准备更新配置字段
-	updates := make(map[string]interface{})
+	updates := make(map[string]any)
 	if r.DeviceKey != "" {
 		updates["device_key"] = r.DeviceKey
 	}
@@ -989,7 +989,7 @@ func UpdateServerChanChannel(c *gin.Context) {
 	}
 
 	// 准备更新配置字段
-	updates := make(map[string]interface{})
+	updates := make(map[string]any)
 	if r.SCKEY != "" {
 		updates["sckey"] = r.SCKEY
 	}

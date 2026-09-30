@@ -120,8 +120,7 @@ func TestRefreshTokenOAuthErrorDoesNotRetry(t *testing.T) {
 	if !IsRefreshTokenDead(err) {
 		t.Fatalf("invalid_grant 应判定为刷新令牌失效，实际错误：%v", err)
 	}
-	var oauthErr *OAuthError
-	if !errors.As(err, &oauthErr) || oauthErr.Description != "Refresh Token invalid" {
+	if oauthErr, ok := errors.AsType[*OAuthError](err); !ok || oauthErr.Description != "Refresh Token invalid" {
 		t.Fatalf("应返回携带原始描述的 OAuthError，实际：%v", err)
 	}
 	if got := requests.Load(); got != 1 {

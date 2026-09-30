@@ -33,7 +33,7 @@ func FromObject(obj any) *Item {
 	}
 
 	v := reflect.ValueOf(obj)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct && v.Kind() != reflect.Map {
@@ -42,9 +42,8 @@ func FromObject(obj any) *Item {
 
 	item := NewEmptyObj()
 	if v.Kind() == reflect.Struct {
-		for i := 0; i < v.NumField(); i++ {
-			fieldVal := v.Field(i)
-			fieldType := v.Type().Field(i)
+		for fieldType := range v.Type().Fields() {
+			fieldVal := v.FieldByIndex(fieldType.Index)
 			if !fieldVal.CanInterface() {
 				continue
 			}
@@ -53,11 +52,11 @@ func FromObject(obj any) *Item {
 	}
 
 	if v.Kind() == reflect.Map {
-		if v.Type().Key() != reflect.TypeOf("") {
+		if v.Type().Key() != reflect.TypeFor[string]() {
 			panic("不支持的 map 类型")
 		}
-		for _, key := range v.MapKeys() {
-			item.Put(key.Interface().(string), FromValue(v.MapIndex(key).Interface()))
+		for iter := v.MapRange(); iter.Next(); {
+			item.Put(iter.Key().String(), FromValue(iter.Value().Interface()))
 		}
 	}
 	return item
@@ -70,7 +69,7 @@ func FromArray(arr any) *Item {
 	}
 
 	v := reflect.ValueOf(arr)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Array && v.Kind() != reflect.Slice {
@@ -100,7 +99,7 @@ func FromValue(val any) *Item {
 	}
 
 	t := reflect.TypeOf(val)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

@@ -307,7 +307,7 @@ func TestExtractFileChunkToTemp_MultipleChunks(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < maxChunks; i++ {
+	for i := range maxChunks {
 		tempFile, err := ExtractFileChunkToTemp(testFilePath, result.ChunkSize, i)
 		if err != nil {
 			t.Fatalf("提取分片%d到临时文件失败: %v", i, err)

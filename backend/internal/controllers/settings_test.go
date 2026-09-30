@@ -40,7 +40,7 @@ func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 			setupControllerTestDB(t, &models.Settings{})
 			models.SettingsGlobal = &models.Settings{
 				MultiPlaybackEnabled: tt.previous,
-				SettingStrm:          models.SettingStrm{Cron: "0 * * * *", StrmBaseUrl: "http://old.local"},
+				Cron:                 "0 * * * *", StrmBaseUrl: "http://old.local",
 			}
 			if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
 				t.Fatal(err)
@@ -111,7 +111,7 @@ func TestStrmConfigRegexSaveRoundTripAndValidation(t *testing.T) {
 	})
 	setupControllerTestDB(t, &models.Settings{})
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	models.SettingsGlobal = &models.Settings{SettingStrm: models.SettingStrm{Cron: "0 * * * *"}}
+	models.SettingsGlobal = &models.Settings{Cron: "0 * * * *"}
 	if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -329,14 +329,12 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	settings := &models.Settings{
-		SettingThreads: models.SettingThreads{
-			DownloadThreads:    1,
-			FileDetailThreads:  2,
-			OpenlistQPS:        2,
-			OpenlistRetry:      1,
-			OpenlistRetryDelay: 30,
-			FileListPageSize:   1150,
-		},
+		DownloadThreads:    1,
+		FileDetailThreads:  2,
+		OpenlistQPS:        2,
+		OpenlistRetry:      1,
+		OpenlistRetryDelay: 30,
+		FileListPageSize:   1150,
 	}
 	if err := db.Db.Create(settings).Error; err != nil {
 		t.Fatalf("创建测试 settings 失败：%v", err)
@@ -435,10 +433,9 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setupControllerTestDB(t, &models.Settings{}, &models.DbDownloadTask{})
-			settings := &models.Settings{SettingThreads: models.SettingThreads{
+			settings := &models.Settings{
 				DownloadThreads: 1, UploadThreads: 7, FileDetailThreads: 3,
-				OpenlistQPS: 2, OpenlistRetry: 1, OpenlistRetryDelay: 30, FileListPageSize: 1150,
-			}}
+				OpenlistQPS: 2, OpenlistRetry: 1, OpenlistRetryDelay: 30, FileListPageSize: 1150}
 			if err := db.Db.Create(settings).Error; err != nil {
 				t.Fatal(err)
 			}

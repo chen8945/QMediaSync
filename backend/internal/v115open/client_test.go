@@ -246,7 +246,7 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 		{
 			name: "二维码取令牌",
 			update: func(client *OpenClient, _, _ string) error {
-				_, err := client.GetToken(&QrCodeDataReturn{QrCodeData: QrCodeData{Uid: "test-uid"}})
+				_, err := client.GetToken(&QrCodeDataReturn{Uid: "test-uid"})
 				return err
 			},
 		},

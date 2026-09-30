@@ -368,7 +368,7 @@ func FailAllRunningSyncTasks() {
 	helpers.AppLogger.Infof("发现 %d 个运行中的同步任务，将设置为失败状态", len(runningSyncs))
 
 	// 批量更新状态为失败
-	if err := db.Db.Model(&Sync{}).Where("status IN (?, ?)", SyncStatusPending, SyncStatusInProgress).Updates(map[string]interface{}{
+	if err := db.Db.Model(&Sync{}).Where("status IN (?, ?)", SyncStatusPending, SyncStatusInProgress).Updates(map[string]any{
 		"status": SyncStatusFailed,
 	}).Error; err != nil {
 		helpers.AppLogger.Errorf("批量更新运行中的同步任务状态失败：%v", err)
@@ -379,7 +379,7 @@ func FailAllRunningSyncTasks() {
 		syncPathId = append(syncPathId, sync.SyncPathId)
 	}
 	// 批量更新同步路径的 IsFullSync 为 false
-	if err := db.Db.Model(&SyncPath{}).Where("id IN ?", syncPathId).Updates(map[string]interface{}{
+	if err := db.Db.Model(&SyncPath{}).Where("id IN ?", syncPathId).Updates(map[string]any{
 		"is_full_sync": false,
 	}).Error; err != nil {
 		helpers.AppLogger.Errorf("批量更新同步路径状态失败：%v", err)

@@ -61,8 +61,7 @@ func RedactParsedProxyURL(parsed *url.URL) string {
 // ProxyParseError 剥掉 url.Error 中回显的原始地址。
 // url.Error.Error() 会打印 parse "<原串>"，代理地址常带用户名密码，直接外抛会把凭据写进日志和接口响应。
 func ProxyParseError(err error) error {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return fmt.Errorf("代理 URL 格式无效：%v", urlErr.Err)
 	}
 	return fmt.Errorf("代理 URL 格式无效：%v", err)

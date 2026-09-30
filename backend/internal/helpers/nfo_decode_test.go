@@ -311,6 +311,8 @@ func TestLooksLikeMediaNum(t *testing.T) {
 	}{
 		{name: "番号", value: "ABC-123", expected: true},
 		{name: "无分隔符番号", value: "ABC123", expected: true},
+		{name: "Unicode 新增字母", value: "\u1c89-123", expected: true},
+		{name: "Unicode 新增数字", value: "ABC-\U00011bf0", expected: true},
 		{name: "TT 开头的番号", value: "TT-123", expected: true},
 		{name: "IMDb ID", value: "tt0816692", expected: false},
 		{name: "大写 IMDb ID", value: "TT0816692", expected: false},

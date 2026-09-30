@@ -152,8 +152,8 @@ func (s *SyncStrm) IsExcludePath(path string) bool {
 		return true
 	}
 	// 分隔路径
-	pathParts := strings.Split(filepath.ToSlash(path), "/")
-	for _, part := range pathParts {
+	pathParts := strings.SplitSeq(filepath.ToSlash(path), "/")
+	for part := range pathParts {
 		// 根路径的空段和路径导航符不是实际目录名称。
 		if part == "" || part == "." || part == ".." {
 			continue

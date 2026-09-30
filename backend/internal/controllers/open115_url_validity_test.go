@@ -151,10 +151,8 @@ func TestGet115UrlByPickCodeSkipsHEADWhenURLValidityCheckDisabled(t *testing.T) 
 		CacheSize:     1024 * 1024,
 	}
 	models.SettingsGlobal = &models.Settings{
-		SettingURLValidityCheck: models.SettingURLValidityCheck{
-			URLValidityCheckEnabled:        0,
-			URLValidityCheckTimeoutSeconds: 1,
-		},
+		URLValidityCheckEnabled:        0,
+		URLValidityCheckTimeoutSeconds: 1,
 	}
 	t.Cleanup(func() {
 		db.Cache = originalCache
@@ -214,10 +212,8 @@ func TestGet115UrlByPickCode获取缓存锁超时时返回错误响应(t *testin
 		CacheSize:     1024 * 1024,
 	}
 	models.SettingsGlobal = &models.Settings{
-		SettingURLValidityCheck: models.SettingURLValidityCheck{
-			URLValidityCheckEnabled:        1,
-			URLValidityCheckTimeoutSeconds: 3,
-		},
+		URLValidityCheckEnabled:        1,
+		URLValidityCheckTimeoutSeconds: 3,
 	}
 	v115URLCacheLockWait = 20 * time.Millisecond
 	t.Cleanup(func() {
@@ -270,13 +266,9 @@ func TestGet115UrlByPickCode关闭校验时按播放模式隔离缓存(t *testin
 		CacheSize:     1024 * 1024,
 	}
 	models.SettingsGlobal = &models.Settings{
-		SettingStrm: models.SettingStrm{
-			LocalProxy: 1,
-		},
-		SettingURLValidityCheck: models.SettingURLValidityCheck{
-			URLValidityCheckEnabled:        0,
-			URLValidityCheckTimeoutSeconds: 1,
-		},
+		LocalProxy:                     1,
+		URLValidityCheckEnabled:        0,
+		URLValidityCheckTimeoutSeconds: 1,
 	}
 	t.Cleanup(func() {
 		db.Cache = originalCache

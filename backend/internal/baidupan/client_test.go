@@ -72,8 +72,7 @@ func TestFileManagerChecksItemErrors(t *testing.T) {
 					if (err != nil) != tc.wantErr {
 						t.Fatalf("错误 = %v，期望失败 = %v", err, tc.wantErr)
 					}
-					var tokenErr *TokenInvalidError
-					if errors.As(err, &tokenErr) != tc.wantToken {
+					if _, ok := errors.AsType[*TokenInvalidError](err); ok != tc.wantToken {
 						t.Fatalf("凭据错误分类不符：%v", err)
 					}
 				})

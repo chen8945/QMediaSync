@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -844,7 +845,7 @@ func TestFSNotifyWatcherStartReturnsCanceledWhenContextCanceledDuringRecursiveAd
 	}
 	monitorPath := t.TempDir()
 	const directoryCount = 4096
-	for i := 0; i < directoryCount; i++ {
+	for i := range directoryCount {
 		if err := os.Mkdir(filepath.Join(monitorPath, fmt.Sprintf("dir-%04d", i)), 0o755); err != nil {
 			t.Fatalf("创建测试目录失败: %v", err)
 		}
@@ -1022,10 +1023,8 @@ func waitForPendingPath(t *testing.T, service *Service, ruleID uint, filePath st
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		for _, pending := range service.PendingPaths(ruleID) {
-			if pending == filePath {
-				return
-			}
+		if slices.Contains(service.PendingPaths(ruleID), filePath) {
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -50,8 +50,8 @@ func IsRefreshTokenDead(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *OpenAPIError
-	if !errors.As(err, &apiErr) {
+	apiErr, ok := errors.AsType[*OpenAPIError](err)
+	if !ok {
 		return false
 	}
 	switch apiErr.Code {
@@ -96,8 +96,8 @@ func playbackResponseError(status int, resp *RespBaseBool[json.RawMessage]) *Ope
 
 // IsRateLimited 根据 HTTP 状态和已知 115 错误码判断限流。
 func IsRateLimited(err error) bool {
-	var apiErr *OpenAPIError
-	if !errors.As(err, &apiErr) {
+	apiErr, ok := errors.AsType[*OpenAPIError](err)
+	if !ok {
 		return false
 	}
 	if apiErr.HTTPStatus == http.StatusTooManyRequests {
@@ -115,8 +115,8 @@ func IsAlreadyDeleted(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	var apiErr *OpenAPIError
-	if !errors.As(err, &apiErr) || (apiErr.HTTPStatus != 0 &&
+	apiErr, ok := errors.AsType[*OpenAPIError](err)
+	if !ok || (apiErr.HTTPStatus != 0 &&
 		(apiErr.HTTPStatus < http.StatusOK || apiErr.HTTPStatus >= http.StatusMultipleChoices)) {
 		return false
 	}
@@ -132,8 +132,7 @@ func IsPlaybackRetryable(err error) bool {
 	if errors.Is(err, ErrDownloadURLNotReady) {
 		return true
 	}
-	var apiErr *OpenAPIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*OpenAPIError](err); ok {
 		if apiErr.HTTPStatus == http.StatusUnauthorized || apiErr.HTTPStatus == http.StatusForbidden {
 			return false
 		}
@@ -145,6 +144,6 @@ func IsPlaybackRetryable(err error) bool {
 		}
 		return apiErr.HTTPStatus == http.StatusRequestTimeout || apiErr.HTTPStatus >= http.StatusInternalServerError
 	}
-	var networkErr net.Error
-	return errors.As(err, &networkErr)
+	_, ok := errors.AsType[net.Error](err)
+	return ok
 }

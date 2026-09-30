@@ -370,9 +370,7 @@ func SaveMovieCategory(c *gin.Context) {
 		return
 	}
 	movieCategory := &models.MovieCategory{
-		BaseModel: models.BaseModel{
-			ID: reqData.ID,
-		},
+		ID:   reqData.ID,
 		Name: reqData.Name,
 	}
 	if err := movieCategory.Save(reqData.Name, reqData.GenreIDArray, reqData.LanguageArray); err != nil {
@@ -408,9 +406,7 @@ func SaveTvshowCategory(c *gin.Context) {
 		return
 	}
 	tvshowCategory := &models.TvShowCategory{
-		BaseModel: models.BaseModel{
-			ID: reqData.ID,
-		},
+		ID:   reqData.ID,
 		Name: reqData.Name,
 	}
 	if err := tvshowCategory.Save(reqData.Name, reqData.GenreIDArray, reqData.CountryArray); err != nil {

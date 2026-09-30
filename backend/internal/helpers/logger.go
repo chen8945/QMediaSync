@@ -235,14 +235,14 @@ func (q *QLogger) shouldLog(level LogLevel) bool {
 	return level >= q.Level()
 }
 
-func (q *QLogger) logf(level LogLevel, format string, args ...interface{}) {
+func (q *QLogger) logf(level LogLevel, format string, args ...any) {
 	if q == nil || q.Logger == nil || !q.shouldLog(level) {
 		return
 	}
 	q.Logger.Printf("[%s] %s", level.Label(), RedactSensitiveLog(fmt.Sprintf(format, args...)))
 }
 
-func (q *QLogger) logfUnfiltered(level LogLevel, format string, args ...interface{}) {
+func (q *QLogger) logfUnfiltered(level LogLevel, format string, args ...any) {
 	if q == nil || q.Logger == nil {
 		return
 	}
@@ -256,7 +256,7 @@ func (q *QLogger) log(level LogLevel, message string) {
 	q.Logger.Println("[" + level.Label() + "] " + RedactSensitiveLog(message))
 }
 
-func (q *QLogger) Infof(format string, args ...interface{}) {
+func (q *QLogger) Infof(format string, args ...any) {
 	q.logf(LogLevelInfo, format, args...)
 }
 
@@ -264,7 +264,7 @@ func (q *QLogger) Info(format string) {
 	q.log(LogLevelInfo, format)
 }
 
-func (q *QLogger) Debugf(format string, args ...interface{}) {
+func (q *QLogger) Debugf(format string, args ...any) {
 	q.logf(LogLevelDebug, format, args...)
 }
 
@@ -272,7 +272,7 @@ func (q *QLogger) Debug(format string) {
 	q.log(LogLevelDebug, format)
 }
 
-func (q *QLogger) SensitiveDebugf(format string, args ...interface{}) {
+func (q *QLogger) SensitiveDebugf(format string, args ...any) {
 	if q == nil || q.Logger == nil || !q.shouldLog(LogLevelDebug) {
 		return
 	}
@@ -294,7 +294,7 @@ func (q *QLogger) SensitiveDebug(format string) {
 	q.Logger.Println("[DEBUG] " + message)
 }
 
-func (q *QLogger) Errorf(format string, args ...interface{}) {
+func (q *QLogger) Errorf(format string, args ...any) {
 	q.logf(LogLevelError, format, args...)
 }
 
@@ -302,21 +302,21 @@ func (q *QLogger) Error(format string) {
 	q.log(LogLevelError, format)
 }
 
-func (q *QLogger) Fatalf(format string, args ...interface{}) {
+func (q *QLogger) Fatalf(format string, args ...any) {
 	if q == nil || q.Logger == nil {
 		log.Fatalf("[FATAL] %s", RedactSensitiveLog(fmt.Sprintf(format, args...)))
 	}
 	q.Logger.Fatalf("[FATAL] %s", RedactSensitiveLog(fmt.Sprintf(format, args...)))
 }
 
-func (q *QLogger) Panicf(format string, args ...interface{}) {
+func (q *QLogger) Panicf(format string, args ...any) {
 	if q == nil || q.Logger == nil {
 		log.Panicf("[PANIC] %s", RedactSensitiveLog(fmt.Sprintf(format, args...)))
 	}
 	q.Logger.Panicf("[PANIC] %s", RedactSensitiveLog(fmt.Sprintf(format, args...)))
 }
 
-func (q *QLogger) Warnf(format string, args ...interface{}) {
+func (q *QLogger) Warnf(format string, args ...any) {
 	q.logf(LogLevelWarn, format, args...)
 }
 
@@ -325,7 +325,7 @@ func (q *QLogger) Warn(format string) {
 }
 
 // RequiredWarnf 输出运行必要的 Warn 日志，忽略当前日志等级过滤。
-func (q *QLogger) RequiredWarnf(format string, args ...interface{}) {
+func (q *QLogger) RequiredWarnf(format string, args ...any) {
 	q.logfUnfiltered(LogLevelWarn, format, args...)
 }
 

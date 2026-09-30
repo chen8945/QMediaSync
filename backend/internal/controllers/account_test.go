@@ -359,7 +359,7 @@ func TestPrepareAccountAuthorizationBindsSessionAndRejectsCrossSource(t *testing
 	if err := db.Db.Create(&account).Error; err != nil {
 		t.Fatalf("创建测试账号失败: %v", err)
 	}
-	saveOpen115AuthState(account.ID, &v115open.QrCodeDataReturn{QrCodeData: v115open.QrCodeData{Uid: "legacy-qr"}})
+	saveOpen115AuthState(account.ID, &v115open.QrCodeDataReturn{Uid: "legacy-qr"})
 	v115auth.SaveOAuthState(v115auth.OAuthState{
 		State:     "legacy-oauth",
 		AccountID: account.ID,
@@ -439,7 +439,7 @@ func TestPrepareAccountAuthorizationBindsSessionAndRejectsCrossSource(t *testing
 
 func TestGetV115AuthorizationTargetKeepsLegacyDeprecatedSourceButRejectsReplacement(t *testing.T) {
 	account := &models.Account{
-		BaseModel:  models.BaseModel{ID: 9},
+		ID:         9,
 		SourceType: models.SourceType115,
 		AppId:      "100197665",
 		AppIdName:  "Q115-STRM",
@@ -506,7 +506,7 @@ func TestCancelAccountAuthorizationInvalidatesAllPendingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建授权会话失败: %v", err)
 	}
-	saveOpen115AuthState(account.ID, &v115open.QrCodeDataReturn{QrCodeData: v115open.QrCodeData{Uid: "cancel-qr"}}, session.ID)
+	saveOpen115AuthState(account.ID, &v115open.QrCodeDataReturn{Uid: "cancel-qr"}, session.ID)
 	v115auth.SaveOAuthState(v115auth.OAuthState{
 		State:           "cancel-oauth",
 		AccountID:       account.ID,

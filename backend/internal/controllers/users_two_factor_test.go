@@ -63,7 +63,7 @@ func TestLoginFailuresHaveIdenticalResponses(t *testing.T) {
 		validCodes[code] = true
 	}
 	invalidCode := ""
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		code := fmt.Sprintf("%06d", i)
 		if !validCodes[code] {
 			invalidCode = code

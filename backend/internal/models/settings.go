@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -178,12 +179,8 @@ func (s SettingURLValidityCheck) ToMap() map[string]any {
 
 func (s SettingThreadAndRapidWait) ToMap() map[string]any {
 	dataMap := s.SettingThreads.ToMap()
-	for key, value := range s.SettingUploadRapidWait.ToMap() {
-		dataMap[key] = value
-	}
-	for key, value := range s.SettingURLValidityCheck.ToMap() {
-		dataMap[key] = value
-	}
+	maps.Copy(dataMap, s.SettingUploadRapidWait.ToMap())
+	maps.Copy(dataMap, s.SettingURLValidityCheck.ToMap())
 	return dataMap
 }
 
@@ -363,7 +360,7 @@ func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
 	// 注意不能只靠"把赋值挪到写库之后"：GORM 的 Updates(map) 在生成 SQL 阶段就会把 map 里的值
 	// 回写进模型字段（callbacks/update.go 的 assignValue），所以这里显式保存旧值并在失败时还原。
 	previousProxy := settings.HttpProxy
-	updateData := make(map[string]interface{})
+	updateData := make(map[string]any)
 	updateData["http_proxy"] = httpProxy
 	err := db.Db.Model(settings).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
@@ -469,10 +466,7 @@ func IsURLValidityCheckEnabled() bool {
 func URLValidityCheckTimeout() time.Duration {
 	timeoutSeconds := DefaultURLValidityCheckTimeoutSeconds
 	if SettingsGlobal != nil && SettingsGlobal.URLValidityCheckTimeoutSeconds >= 1 {
-		timeoutSeconds = SettingsGlobal.URLValidityCheckTimeoutSeconds
-		if timeoutSeconds > MaxURLValidityCheckTimeoutSeconds {
-			timeoutSeconds = MaxURLValidityCheckTimeoutSeconds
-		}
+		timeoutSeconds = min(SettingsGlobal.URLValidityCheckTimeoutSeconds, MaxURLValidityCheckTimeoutSeconds)
 	}
 	return time.Duration(timeoutSeconds) * time.Second
 }

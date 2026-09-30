@@ -29,17 +29,15 @@ type movieScrapeImpl struct {
 func NewMovieScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) scrapeImpl {
 	tmdbImpl := NewTmdbMovieImpl(scrapePath, ctx)
 	return &movieScrapeImpl{
-		ScrapeBase: ScrapeBase{
-			scrapePath:     scrapePath,
-			ctx:            ctx,
-			identifyImpl:   NewIdMovieImpl(scrapePath, ctx, tmdbImpl),
-			tmdbClient:     tmdbImpl.Client,
-			categoryImpl:   NewCategoryMovieImpl(scrapePath),
-			renameImpl:     NewRenameMovieImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
-			v115Client:     v115Client,
-			openlistClient: openlistClient,
-			baiduPanClient: baiduPanClient,
-		},
+		scrapePath:     scrapePath,
+		ctx:            ctx,
+		identifyImpl:   NewIdMovieImpl(scrapePath, ctx, tmdbImpl),
+		tmdbClient:     tmdbImpl.Client,
+		categoryImpl:   NewCategoryMovieImpl(scrapePath),
+		renameImpl:     NewRenameMovieImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
+		v115Client:     v115Client,
+		openlistClient: openlistClient,
+		baiduPanClient: baiduPanClient,
 	}
 }
 
@@ -56,7 +54,7 @@ func (m *movieScrapeImpl) Start() error {
 		return nil
 	}
 	threads := min(max, int(total))
-	for i := 0; i < threads; i++ {
+	for i := range threads {
 		go m.scrapeWorker(i+1, wg)
 	}
 mainloop:

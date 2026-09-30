@@ -73,7 +73,7 @@ func GetEmbyConfigFromDB() (*EmbyConfig, error) {
 }
 
 // Update 更新配置
-func (c *EmbyConfig) Update(updates map[string]interface{}) error {
+func (c *EmbyConfig) Update(updates map[string]any) error {
 	if err := db.Db.Model(c).Updates(updates).Error; err != nil {
 		return err
 	}

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -201,7 +202,7 @@ func verifyUpdatePackage(ctx context.Context, httpProxy, checksumURL, packagePat
 	}
 	name := filepath.Base(packagePath)
 	var expected string
-	for _, line := range strings.Split(string(content), "\n") {
+	for line := range strings.SplitSeq(string(content), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
 			expected = strings.ToLower(fields[0])
@@ -374,18 +375,18 @@ func InstallReleaseFiles(srcDir, rootDir, binaryName string) (err error) {
 		if err == nil {
 			return
 		}
-		for i := len(moved) - 1; i >= 0; i-- {
-			dst := filepath.Join(rootDir, moved[i])
-			backup := filepath.Join(backupDir, moved[i])
+		for _, m := range slices.Backward(moved) {
+			dst := filepath.Join(rootDir, m)
+			backup := filepath.Join(backupDir, m)
 			if removeErr := os.RemoveAll(dst); removeErr != nil {
-				err = errors.Join(err, fmt.Errorf("回滚时删除新版本 %s 失败：%w", moved[i], removeErr))
+				err = errors.Join(err, fmt.Errorf("回滚时删除新版本 %s 失败：%w", m, removeErr))
 				continue
 			}
 			if _, statErr := os.Lstat(backup); statErr != nil {
 				continue
 			}
 			if restoreErr := os.Rename(backup, dst); restoreErr != nil {
-				err = errors.Join(err, fmt.Errorf("回滚时恢复 %s 失败：%w", moved[i], restoreErr))
+				err = errors.Join(err, fmt.Errorf("回滚时恢复 %s 失败：%w", m, restoreErr))
 			}
 		}
 	}()

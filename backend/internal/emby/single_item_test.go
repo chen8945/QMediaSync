@@ -53,7 +53,7 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		changed, err := SyncEmbyItemByID("122145")
 		if err != nil {
 			t.Fatalf("SyncEmbyItemByID() error = %v", err)

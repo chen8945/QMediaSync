@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -108,7 +109,7 @@ func (d *openListDriver) CreateDirRecursively(ctx context.Context, path string) 
 	pathParts := strings.Split(relPath, "/")
 	// 反向检查，找到哪一级不存在，再正向创建
 	notExistIndex := -1
-	for i := len(pathParts) - 1; i >= 0; i-- {
+	for i := range slices.Backward(pathParts) {
 		dir := filepath.Join(pathParts[:i+1]...)
 		fsDetail, err := d.client.FileDetail(dir)
 		if err != nil || (fsDetail != nil && fsDetail.Name == "") {

@@ -171,3 +171,74 @@ func TestHandleImagesUpstreamParameters(t *testing.T) {
 		})
 	}
 }
+
+func TestProxySocketPreservesRequestSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		forwardedFor     []string
+		connection       string
+		remoteAddr       string
+		wantForwardedFor string
+	}{
+		{"forwarded chain", []string{"192.0.2.1", "192.0.2.2"}, "keep-alive, X-Hop", "[2001:db8::1]:1234", "192.0.2.1, 192.0.2.2, 2001:db8::1"},
+		{"no forwarding", nil, "X-Hop", "192.0.2.3:1234", ""},
+		{"hop forwarding", []string{"192.0.2.1"}, "X-Hop, x-forwarded-for, Forwarded, X-Forwarded-Host, X-Forwarded-Proto", "192.0.2.3:1234", "192.0.2.3"},
+		{"invalid remote", []string{"192.0.2.1"}, "X-Hop", "invalid", "192.0.2.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan *http.Request, 1)
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r.Clone(context.Background())
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer origin.Close()
+			oldConfig := config.C
+			config.C = &config.Config{Emby: &config.Emby{Host: origin.URL + "/ignored?configured=ignored"}}
+			t.Cleanup(func() { config.C = oldConfig })
+			router := gin.New()
+			router.GET("/embywebsocket", ProxySocket())
+			uri := "/%65mbywebsocket?api_key=a%2Bb&duplicate=1&duplicate=2&raw=a;b&invalid=%zz"
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, uri, nil)
+			request.Host = "public.example:8096"
+			request.RemoteAddr = tc.remoteAddr
+			request.Header = http.Header{
+				"X-Forwarded-For":   tc.forwardedFor,
+				"Forwarded":         {"for=192.0.2.1;proto=https"},
+				"X-Forwarded-Host":  {"public.example:8096"},
+				"X-Forwarded-Proto": {"https"},
+				"Connection":        {tc.connection},
+				"X-Hop":             {"must be removed"},
+				"Range":             {"bytes=0-9"},
+				"Authorization":     {"Bearer test"},
+			}
+			original := request.Clone(context.Background())
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("response = %d", response.Code)
+			}
+			upstream := <-requests
+			if upstream.RequestURI != uri || upstream.Host != request.Host {
+				t.Fatalf("upstream URI/Host = %q/%q", upstream.RequestURI, upstream.Host)
+			}
+			if got := upstream.Header.Get("X-Forwarded-For"); got != tc.wantForwardedFor {
+				t.Fatalf("forwarded chain = %q, want %q", got, tc.wantForwardedFor)
+			}
+			for _, name := range []string{"Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "Range", "Authorization"} {
+				want := original.Header.Get(name)
+				if tc.name == "hop forwarding" && (name == "Forwarded" || strings.HasPrefix(name, "X-Forwarded-")) {
+					want = ""
+				}
+				if got := upstream.Header.Get(name); got != want {
+					t.Fatalf("%s = %q, want %q", name, got, want)
+				}
+			}
+			if upstream.Header.Get("X-Hop") != "" || upstream.Header.Get("Connection") != "" {
+				t.Fatal("forwarded hop-by-hop header")
+			}
+			if !reflect.DeepEqual(request.Header, original.Header) || *request.URL != *original.URL {
+				t.Fatal("proxy modified incoming request")
+			}
+		})
+	}
+}

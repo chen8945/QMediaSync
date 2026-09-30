@@ -23,7 +23,7 @@ import (
 
 func TestBuildSyncTaskSnapshotMessageIncludesCursorAndVersion(t *testing.T) {
 	task := &models.Sync{
-		BaseModel:  models.BaseModel{ID: 9, CreatedAt: 100, UpdatedAt: 120},
+		ID: 9, CreatedAt: 100, UpdatedAt: 120,
 		SyncPathId: 5,
 		Status:     models.SyncStatusInProgress,
 		SubStatus:  models.SyncSubStatusProcessNetFileList,
@@ -49,7 +49,7 @@ func TestBuildSyncTaskSnapshotMessageIncludesCursorAndVersion(t *testing.T) {
 }
 
 func TestBuildSyncTaskSnapshotMessageUsesSelectedLogPath(t *testing.T) {
-	task := &models.Sync{BaseModel: models.BaseModel{ID: 9}}
+	task := &models.Sync{ID: 9}
 	msg := buildSyncTaskSnapshotMessage(task, nil, 0, 0, "libs/sync_9.log")
 	data, ok := msg.Data.(syncTaskSnapshot)
 	if !ok {

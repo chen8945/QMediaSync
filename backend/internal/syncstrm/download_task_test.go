@@ -31,7 +31,7 @@ func TestPendingDownloadFileIDsIncludesFinalPage(t *testing.T) {
 			}
 
 			tasks := make([]models.DbDownloadTask, 0, count)
-			for index := 0; index < count; index++ {
+			for index := range count {
 				tasks = append(tasks, models.DbDownloadTask{
 					Source:         models.DownloadSourceStrm,
 					AccountId:      1,
@@ -47,7 +47,7 @@ func TestPendingDownloadFileIDsIncludesFinalPage(t *testing.T) {
 			}
 
 			syncer := &SyncStrm{
-				Account:    &models.Account{BaseModel: models.BaseModel{ID: 1}, SourceType: models.SourceType115},
+				Account:    &models.Account{ID: 1, SourceType: models.SourceType115},
 				SyncPathId: 10,
 				Sync:       &models.Sync{Logger: helpers.AppLogger},
 			}
@@ -83,7 +83,7 @@ func TestPendingDownloadFileIDsUsesSourceSpecificLocator(t *testing.T) {
 	}
 
 	syncer := &SyncStrm{
-		Account:    &models.Account{BaseModel: models.BaseModel{ID: 1}, SourceType: models.SourceTypeBaiduPan},
+		Account:    &models.Account{ID: 1, SourceType: models.SourceTypeBaiduPan},
 		SyncPathId: 10,
 		Sync:       &models.Sync{Logger: helpers.AppLogger},
 	}
@@ -137,7 +137,7 @@ func TestPendingDownloadFileIDsIsolatesAccountAndSyncPath(t *testing.T) {
 	}
 
 	syncer := &SyncStrm{
-		Account:    &models.Account{BaseModel: models.BaseModel{ID: 1}, SourceType: models.SourceType115},
+		Account:    &models.Account{ID: 1, SourceType: models.SourceType115},
 		SyncPathId: 10,
 		Sync:       &models.Sync{Logger: helpers.AppLogger},
 	}

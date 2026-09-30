@@ -64,7 +64,7 @@ func TestUploadQueueBaiduPanConcurrency(t *testing.T) {
 				// 重复运行时使用新账号，使首批请求始终从冷缓存开始。
 				id := uint(2_000_000 + baiduQueueAccountID.Add(1))
 				accounts[i] = &Account{
-					BaseModel:  BaseModel{ID: id},
+					ID:         id,
 					SourceType: SourceTypeBaiduPan,
 					Token:      fmt.Sprintf("token-%d", id),
 				}

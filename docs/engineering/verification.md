@@ -56,6 +56,20 @@
 
 ## 后端命令
 
+Go 工具链或直接依赖升级须运行全部后端测试、`go vet ./...`、`go mod verify`，并按发布参数交叉构建 Linux / Windows 的 amd64、arm64。约 2 GiB 内存、4 个逻辑 CPU 的环境使用 `GOMAXPROCS=4 GOFLAGS=-p=1 GOMEMLIMIT=1GiB GOGC=100`，测试加 `-parallel=4`；允许单个进程使用 4 个 CPU，包级编译和独立验证命令仍串行执行。`GOMEMLIMIT` 是每进程的 Go 内存软限制，不是所有进程的内存总额上限；保留 `-p=1`，避免多个编译进程同时占用接近 1 GiB。`GOMAXPROCS` 不限制创建的 goroutine 总数，仍须观察 RSS；Linux 可额外用 `taskset` 限定 CPU。不要并行运行基准与其他编译任务。
+
+YAML 配置变更运行 `go test ./internal/helpers ./emby302/config ./internal/controllers .`，覆盖统一 v3 后的布尔字段、八进制、锚点合并、主配置保存回读和非法合并键返回错误；顶层与嵌套重复键必须报错，原文件保持不变，不能因解析失败退回旧 `config.yml`。同时保留首次配置、管理员恢复、JWT 自动保存、日志设置和可信来源配置回归；格式与兼容边界见 [配置文件](../operations/configuration.md#配置文件与默认端口)。反射转换回归运行 `go test ./emby302/util/jsons ./emby302/service/emby`，覆盖导出字段、嵌套对象、空值、指针和 map 键类型边界。
+
+性能比较使用同一工具链、CPU 和 GC 参数，至少重复 6 次并用 `benchstat` 比较：`go test ./emby302/util/jsons ./internal/helpers -run '^$' -bench 'Benchmark(FromObject|ConfigYAML)$' -benchmem -benchtime=200ms -count=6 -cpu=1`。以改动前工作区为对照，同时报告耗时与分配；无显著差异不得宣称提速，依赖维护收益与运行时性能收益分开记录。
+
+备份压缩回归通过 `go test ./internal/helpers ./internal/backup` 验证 Deflate 输出、备份恢复往返和旧版 Store 包兼容。性能测量可运行 `go test ./internal/helpers ./internal/embyclient-rest-go -run '^$' -bench 'Benchmark(ZipDir|FetchMediaItemsPage)$' -benchmem`；使用合成 JSON 数据，ZIP 结果包括文件 I/O，不代表真实数据库导出总耗时。
+
+网络升级回归覆盖非法百度 STRM 地址与转码 Host、WebSocket 原始请求语义，以及私有 HTTP transport 在成功、错误和重定向后的连接释放；运行 `go test -race ./internal/helpers ./internal/syncstrm ./emby302/service/emby`。密码与 NFO 的 Unicode 分类随工具链升级，分别由 `requests` 和 `helpers` 包测试保护；Windows 证书环境变量须按 [出站证书信任](../operations/configuration.md#emby-302-出站-https) 在目标机器验收。
+
+Pongo2 升级运行 `go test ./internal/models -run 'Test(NewSyntax|OldSyntax|BackwardCompatibility|SyntaxDetection|GenerateNameByTemplateOrKeep)'`，并对模型包运行 `-race`。覆盖普通变量转义、显式 `safe`、父块字面量与变量的原生继承输出，以及 `removetags` 正则元字符、无 `else` 的 `ifchanged` 不发生 panic；文件名契约见 [模板渲染流程](../reference/scrape-rename-templates.md#模板渲染流程)。
+
+GitHub 私有连接池回收运行 `go test -race ./internal/github -run '^TestManagerRetiresPrivateConnections$'`，覆盖更新配置、清缓存、过期重探测、有效缓存复用，以及共享默认连接池隔离和重探测失败后的旧客户端回退。
+
 ```bash
 # 全部测试
 (cd backend && go test ./...)

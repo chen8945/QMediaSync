@@ -1,6 +1,18 @@
 package helpers
 
-import "testing"
+import (
+	"context"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestURLFileName(t *testing.T) {
 	for _, tt := range []struct {
@@ -22,5 +34,97 @@ func TestURLFileName(t *testing.T) {
 				t.Fatalf("文件名 = %q，期望 %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPrivateHTTPHelpersCloseConnections(t *testing.T) {
+	oldLogger := AppLogger
+	AppLogger = &QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { AppLogger = oldLogger })
+	for _, operation := range []string{"read", "file", "progress", "post", "head"} {
+		for _, scenario := range []string{"success", "error", "redirect", "redirect_error"} {
+			t.Run(operation+"/"+scenario, func(t *testing.T) {
+				closed := make(chan struct{}, 4)
+				requests := make(chan *http.Request, 4)
+				var server *httptest.Server
+				server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests <- r.Clone(context.Background())
+					if strings.HasPrefix(scenario, "redirect") && r.URL.Path == "/start" {
+						w.Header().Set("Location", server.URL+"/final")
+						w.WriteHeader(http.StatusFound)
+					} else if strings.HasSuffix(scenario, "error") {
+						w.WriteHeader(http.StatusBadGateway)
+					}
+					_, _ = io.WriteString(w, "content")
+				}))
+				server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+					if state == http.StateClosed {
+						closed <- struct{}{}
+					}
+				}
+				server.Start()
+				defer server.Close()
+				target := server.URL + "/start"
+				filename := filepath.Join(t.TempDir(), "download")
+				var err error
+				var content []byte
+				switch operation {
+				case "read":
+					content, err = ReadFromUrl(target, "test-agent")
+				case "file":
+					err = DownloadFile(target, filename, "test-agent")
+				case "progress":
+					err = DownloadFileWithProgress(context.Background(), "", target, filename, "test-agent", nil)
+				case "post":
+					err = PostUrl(target)
+				case "head":
+					_, err = TestURLConnection("", target, 2)
+				}
+				wantError := strings.HasSuffix(scenario, "error") && operation != "post"
+				if (err != nil) != wantError {
+					t.Fatalf("error = %v, want error %t", err, wantError)
+				}
+				if err == nil {
+					if operation == "file" || operation == "progress" {
+						content, err = os.ReadFile(filename)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if operation == "read" || operation == "file" || operation == "progress" {
+						if string(content) != "content" {
+							t.Fatalf("content = %q", content)
+						}
+					}
+				}
+				wantRequests := 1
+				if strings.HasPrefix(scenario, "redirect") && operation != "post" {
+					wantRequests = 2
+				}
+				for range wantRequests {
+					select {
+					case request := <-requests:
+						if operation == "read" || operation == "file" || operation == "progress" {
+							if got := request.UserAgent(); got != "test-agent" {
+								t.Fatalf("UA = %q", got)
+							}
+						}
+					default:
+						t.Fatal("missing upstream request")
+					}
+				}
+				wantConnections := 1
+				if strings.HasPrefix(scenario, "redirect") && (operation == "read" || operation == "file") {
+					wantConnections = 2
+				}
+				for range wantConnections {
+					select {
+					case <-closed:
+					case <-time.After(2 * time.Second):
+						t.Fatal("private transport retained a connection after returning")
+					}
+				}
+			})
+		}
 	}
 }

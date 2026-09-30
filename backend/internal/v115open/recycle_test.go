@@ -212,8 +212,7 @@ func TestRecycleWrites(t *testing.T) {
 					t.Fatalf("回收站写操作错误：err=%v，calls=%d", err, calls.Load())
 				}
 				if err != nil {
-					var apiErr *OpenAPIError
-					if !errors.As(err, &apiErr) || apiErr.HTTPStatus != 200 || strings.Contains(err.Error(), "secret-token") {
+					if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.HTTPStatus != 200 || strings.Contains(err.Error(), "secret-token") {
 						t.Fatalf("还原错误未保留安全状态：%v", err)
 					}
 				}
@@ -275,8 +274,7 @@ func TestRecycleErrorsPreserveStatusWithoutSecrets(t *testing.T) {
 				} {
 					GetGlobalExecutor().SetThrottledForTesting(false)
 					err := call()
-					var apiErr *OpenAPIError
-					if !errors.As(err, &apiErr) || apiErr.Code != tt.code || apiErr.HTTPStatus != tt.status || strings.Contains(err.Error(), "secret-token") {
+					if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.Code != tt.code || apiErr.HTTPStatus != tt.status || strings.Contains(err.Error(), "secret-token") {
 						t.Fatalf("丢失安全状态：%v", err)
 					}
 				}

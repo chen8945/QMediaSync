@@ -99,7 +99,10 @@ func (d *BaiduPanDriver) GetPathIdByPath(ctx context.Context, path string) (stri
 
 func (d *BaiduPanDriver) MakeStrmContent(sf *SyncFileCache) string {
 	// 生成 URL
-	u, _ := url.Parse(d.s.Config.StrmBaseUrl)
+	u, err := url.Parse(d.s.Config.StrmBaseUrl)
+	if err != nil {
+		return ""
+	}
 	ext := filepath.Ext(sf.FileName)
 	u.Path = fmt.Sprintf("/baidupan/url/video%s", ext)
 	params := url.Values{}

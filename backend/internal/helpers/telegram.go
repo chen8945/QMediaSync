@@ -19,10 +19,10 @@ type TelegramBot struct {
 
 // TelegramResponse Telegram API 响应结构
 type TelegramResponse struct {
-	OK          bool        `json:"ok"`
-	Result      interface{} `json:"result"`
-	ErrorCode   int         `json:"error_code"`
-	Description string      `json:"description"`
+	OK          bool   `json:"ok"`
+	Result      any    `json:"result"`
+	ErrorCode   int    `json:"error_code"`
+	Description string `json:"description"`
 }
 
 // TelegramMessage 发送消息的结构
@@ -35,7 +35,7 @@ type TelegramMessage struct {
 // CommandResponse 命令响应结构
 type CommandResponse struct {
 	Text        string
-	ReplyMarkup interface{}
+	ReplyMarkup any
 }
 
 // maskToken 掩码 Token，用于日志输出

@@ -147,12 +147,12 @@ func TestStartOtherHonorsGlobalAndCustomExclusions(t *testing.T) {
 				syncer = NewSyncStrmByPath(nil, selected, selected, target, false)
 			} else {
 				directory := &models.SyncPath{
-					SourceType:   models.SourceTypeLocal,
-					RemotePath:   selected,
-					BaseCid:      selected,
-					LocalPath:    target,
-					CustomConfig: tt.custom,
-					SettingStrm:  models.SettingStrm{ExcludeNameRegexArr: tt.patterns},
+					SourceType:          models.SourceTypeLocal,
+					RemotePath:          selected,
+					BaseCid:             selected,
+					LocalPath:           target,
+					CustomConfig:        tt.custom,
+					ExcludeNameRegexArr: tt.patterns,
 				}
 				directory.ID = syncPath.ID
 				syncer = NewSyncStrmFromSyncPath(directory)

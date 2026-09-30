@@ -1714,7 +1714,7 @@ func TestMigrateTransferRemoteIdentityPreservesAlreadyMovedDownloadLocators(t *t
 		t.Fatalf("创建当前传输任务表失败: %v", err)
 	}
 	if err := db.Db.Create(&SyncFile{
-		BaseModel:  BaseModel{ID: 1},
+		ID:         1,
 		SourceType: SourceType115,
 		FileId:     "already-migrated-file-id",
 	}).Error; err != nil {

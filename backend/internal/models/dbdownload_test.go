@@ -177,7 +177,7 @@ func TestAddDownloadTaskFromSyncFileSeparatesRemoteIdentity(t *testing.T) {
 func TestDownloadTasksWithoutStableIDDeduplicateByHiddenLocator(t *testing.T) {
 	setupQueueStatusTestDB(t)
 	openListFile := &SyncFile{
-		BaseModel:     BaseModel{ID: 1},
+		ID:            1,
 		SourceType:    SourceTypeOpenList,
 		FileId:        "/remote/movie.mkv",
 		PickCode:      "https://openlist.example/d/remote/movie.mkv?sign=secret",
@@ -206,7 +206,7 @@ func TestAddDownloadTaskFromSyncFileDeduplicatesWithinRemoteScope(t *testing.T) 
 
 	newFile := func(id uint, sourceType SourceType, accountID, syncPathID uint, localPath string) *SyncFile {
 		file := &SyncFile{
-			BaseModel:     BaseModel{ID: id},
+			ID:            id,
 			SourceType:    sourceType,
 			AccountId:     accountID,
 			SyncPathId:    syncPathID,
@@ -433,7 +433,7 @@ func TestCreateDownloadTaskWithDBAllowsTasksWithoutReliableLocator(t *testing.T)
 		t.Fatalf("创建活跃下载任务唯一索引失败: %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		task := &DbDownloadTask{
 			Source:     DownloadSourceStrm,
 			SourceType: SourceType115,
@@ -512,9 +512,9 @@ func TestClearExpireDownloadTasksDeletesTasksOlderThanSevenDays(t *testing.T) {
 
 	now := time.Now().Unix()
 	seed := []*DbDownloadTask{
-		{BaseModel: BaseModel{CreatedAt: now - 8*24*3600}, Status: DownloadStatusPending},
-		{BaseModel: BaseModel{CreatedAt: now - 6*24*3600}, Status: DownloadStatusPending},
-		{BaseModel: BaseModel{CreatedAt: now - 8*24*3600}, Status: DownloadStatusCompleted},
+		{CreatedAt: now - 8*24*3600, Status: DownloadStatusPending},
+		{CreatedAt: now - 6*24*3600, Status: DownloadStatusPending},
+		{CreatedAt: now - 8*24*3600, Status: DownloadStatusCompleted},
 	}
 	for _, task := range seed {
 		if err := db.Db.Create(task).Error; err != nil {

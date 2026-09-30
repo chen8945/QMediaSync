@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -525,10 +526,5 @@ func resolveEmbyTargetLibraryRemoteUncached(target EmbyRefreshTarget) EmbyLibrar
 }
 
 func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, target)
 }

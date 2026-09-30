@@ -42,7 +42,7 @@ func GenerateAPIKey() (string, error) {
 	}
 
 	// 将随机字节映射到字符集
-	for i := 0; i < randomLength; i++ {
+	for i := range randomLength {
 		randomBytes[i] = charset[int(randomBytes[i])%len(charset)]
 	}
 

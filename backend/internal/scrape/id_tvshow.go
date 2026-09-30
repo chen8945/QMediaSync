@@ -18,11 +18,9 @@ type IdTvShowImpl struct {
 
 func NewIdTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context, tmdbImpl *TmdbTvShowImpl) *IdTvShowImpl {
 	return &IdTvShowImpl{
-		IdBase: IdBase{
-			tmdbImpl:   tmdbImpl,
-			scrapePath: scrapePath,
-			ctx:        ctx,
-		},
+		tmdbImpl:   tmdbImpl,
+		scrapePath: scrapePath,
+		ctx:        ctx,
 	}
 }
 

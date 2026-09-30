@@ -50,12 +50,10 @@ func setupStrmGenerationServiceTestDB(t *testing.T) (*models.Account, *models.Sy
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 	models.SettingsGlobal = &models.Settings{
-		SettingThreads: models.SettingThreads{FileDetailThreads: 2},
-		SettingStrm: models.SettingStrm{
-			VideoExtArr: []string{".mkv", ".mp4"},
-			MetaExtArr:  []string{".nfo"},
-			AddPath:     3,
-		},
+		FileDetailThreads: 2,
+		VideoExtArr:       []string{".mkv", ".mp4"},
+		MetaExtArr:        []string{".nfo"},
+		AddPath:           3,
 	}
 	if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
 		t.Fatalf("创建测试设置失败: %v", err)
@@ -75,12 +73,10 @@ func setupStrmGenerationServiceTestDB(t *testing.T) (*models.Account, *models.Sy
 		RemotePath:   "/remote",
 		BaseCid:      "root",
 		CustomConfig: true,
-		SettingStrm: models.SettingStrm{
-			StrmBaseUrl: "http://qms.local",
-			VideoExtArr: []string{".mkv", ".mp4"},
-			MetaExtArr:  []string{".nfo"},
-			AddPath:     3,
-		},
+		StrmBaseUrl:  "http://qms.local",
+		VideoExtArr:  []string{".mkv", ".mp4"},
+		MetaExtArr:   []string{".nfo"},
+		AddPath:      3,
 	}
 	if err := db.Db.Create(syncPath).Error; err != nil {
 		t.Fatalf("创建同步目录失败: %v", err)
@@ -1744,7 +1740,7 @@ func TestBuildDirectoryScanChildTaskUsesShortRequestHashAndPreservesRemoteFields
 	longPath := "/remote/" + strings.Repeat("very-long-path-segment/", 20)
 	longFileName := strings.Repeat("movie-", 60) + ".mkv"
 	parent := &models.StrmGenerationTask{
-		BaseModel:    models.BaseModel{ID: 42},
+		ID:           42,
 		Source:       models.StrmGenerationSourceWebhook,
 		SyncPathId:   10,
 		AccountId:    2,
@@ -1752,7 +1748,7 @@ func TestBuildDirectoryScanChildTaskUsesShortRequestHashAndPreservesRemoteFields
 		RefreshEmby:  true,
 	}
 	syncPath := &models.SyncPath{
-		BaseModel: models.BaseModel{ID: 10},
+		ID:        10,
 		AccountId: 2,
 	}
 	file := &SyncFileCache{

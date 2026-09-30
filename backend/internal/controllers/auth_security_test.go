@@ -16,7 +16,7 @@ import (
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
-	"gopkg.in/yaml.v2"
+	"go.yaml.in/yaml/v3"
 )
 
 func setupAuthSecurityTest(t *testing.T) (*gin.Engine, *models.User, *models.UserSession, string) {

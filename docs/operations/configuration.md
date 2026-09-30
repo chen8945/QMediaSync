@@ -18,6 +18,10 @@
 - 数据库连接信息只从主配置读取，旧 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`、`DB_SSLMODE` 环境变量不再作为数据库配置入口。
 - 数据库引擎、备份恢复和修复操作见 [数据库运维](database.md)；表、版本和迁移语义见 [数据库 schema 与迁移](../reference/database-schema.md)。
 
+主配置和内嵌 Emby 302 配置统一使用 `go.yaml.in/yaml/v3`。主配置中解码到布尔字段的 `yes` / `no`、八进制数字、锚点合并和保存后回读保持兼容；非法合并键返回解析错误。
+
+同一映射内的重复键会被拒绝，包括嵌套字段；不再采用旧主配置解析器的“后值覆盖”行为。遇到重复键时按错误行号修正配置，再启动程序；解析失败不会自动覆盖原文件，也不会退回读取旧 `config.yml`。正常配置无需预先改写，程序下次保存时使用 v3 默认的 4 空格缩进。
+
 管理员恢复使用二进制参数 `--reset-admin-password` 或 `--delete-admin --yes`，可通过 `--config-dir` 指定已有配置目录；这些参数不能写入长期运行的服务配置，不新增 YAML 字段。恢复只读取配置，不补写默认 JWT 密钥或本机加密密钥。操作命令和 Compose 自动识别规则见 [管理员恢复](deployment.md#管理员恢复)。
 
 ## STRM 列表与继承
@@ -115,6 +119,8 @@ Emby 客户端访问内置 `socket` / `embywebsocket` 入口时，WebSocket 直�
 
 ## Emby 302 出站 HTTPS
 
+出站证书信任默认使用系统根证书。Windows 上若进程环境中的 `SSL_CERT_FILE` 或 `SSL_CERT_DIR` 非空，Go 1.27 会改用指定的磁盘证书来源，路径无效不会回退 Windows 证书库；不需要自定义信任库时应移除这些变量。升级后须在目标 Windows 环境验证 Emby、网盘及更新源的 HTTPS 连接。
+
 Emby 302 代理访问 Emby、OpenList、m3u8 和下载资源时默认校验证书，并复用共享 HTTP client 的空闲连接。仅在受控内网自签名证书或临时排障场景下，才设置：
 
 ```yaml
@@ -146,6 +152,8 @@ emby302:
 - 只有写库成功后才更新内存全局值 `models.SettingsGlobal.HttpProxy`。写库失败必须还原旧值：GORM 的 `Updates(map)` 在生成 SQL 阶段就会把 map 里的值回写进模型字段，因此仅调整赋值顺序不够，`models.Settings.UpdateHttpProxy` 显式保存并回滚旧值。若不回滚，内存持新地址而数据库、GitHub 管理器和通知管理器仍持旧地址，接口却已报告保存失败，重启后又静默回退。
 - 保存成功后必须刷新所有直读生效值的下游客户端，由 `models.RefreshProxyConsumers` 统一完成：`helpers.HTTP_PROXY`（Fanart 客户端每次构造都直读）和 TMDB 全局单例 `tmdb.GlobalTmdbClient`。刮削设置里的「是否启用 TMDB 代理」开关同样是 `ScrapeSettings.GetProxyUrl` 的入参，改动后也要刷新。
 - 清空代理或关闭代理开关时，TMDB 单例必须调用 resty 的 `RemoveProxy()` 显式清除；只在地址非空时 `SetProxy` 会让"清空"变成空操作，请求会继续带 API Key 走用户已撤销的隧道。
+
+GitHub 连接探测结束后释放本次创建的私有连接池中的空闲连接；代理配置变更、显式清缓存或缓存过期重新探测时，也回收旧私有池的空闲连接。共享的默认连接池和正在进行的请求不受影响；重新探测失败时仍保留旧缓存客户端，供既有缓存回退接口使用。
 
 `GET /setting/http-proxy` 一律回传脱敏地址，不回传明文凭据，任何 JWT 或 API Key 持有者都读不到代理密码。响应额外带 `credentials_masked`（`"1"` 表示地址里的凭据已被遮蔽），前端据此提示输入框里的 `xxxxx` 是占位串。
 
