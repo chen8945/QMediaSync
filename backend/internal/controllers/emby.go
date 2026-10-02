@@ -199,24 +199,31 @@ func Webhook(ctx *gin.Context) {
 				// 	helpers.AppLogger.Infof("Emby 媒体库 %s 未配置允许删除，跳过删除", event.Item.LibraryId)
 				// 	return
 				// }
+				var deleteErr error
 				switch event.Item.Type {
 				case "Movie":
 					// 电影：在网盘中将视频文件的父目录一起删除
 					// 查找 Item.ID 对应的 SyncFileID。
-					models.DeleteNetdiskMovieByEmbyItemId(event.Item.ID)
+					deleteErr = models.DeleteNetdiskMovieByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Episode":
 					// 集：删除视频文件和元数据（NFO、封面）。
 					// 查找 Item.ID 对应的 SyncFileID。
-					models.DeleteNetdiskEpisodeByEmbyItemId(event.Item.ID)
+					deleteErr = models.DeleteNetdiskEpisodeByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Season":
 					// 季：先检查视频文件的父目录。如果父目录是季文件夹，则删除该文件夹；如果父目录有 tvshow.nfo，则只删除该季所有集对应的视频文件和元数据（NFO、封面）。
 					// 查找 EmbyMediaItem.SeasonID = Item.ID 的记录，取其中一条记录的 SyncFile.Path 作为季目录来处理。
-					models.DeleteNetdiskSeasonByItemId(event.Item.ID)
+					deleteErr = models.DeleteNetdiskSeasonByItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Series":
 					// 剧：在网盘中删除 tvshow.nfo 的父目录。
 					// 查找 EmbyMediaItem.SeriesID = Item.ID 的记录，取其中一条记录的 SyncFile.Path 作为剧目录来处理。
-					models.DeleteNetdiskTvshowByItemId(event.Item.ID)
+					deleteErr = models.DeleteNetdiskTvshowByItemIdContext(ctx.Request.Context(), event.Item.ID)
 				default:
+				}
+				if errors.Is(deleteErr, context.Canceled) || errors.Is(deleteErr, context.DeadlineExceeded) {
+					// 排队取消后保留关联，重试时仍能找到需要删除的网盘文件。
+					helpers.AppLogger.Warnf("Webhook 联动删除已取消，保留本地索引，Item ID=%s：%v", event.Item.ID, deleteErr)
+					ctx.JSON(http.StatusOK, gin.H{"message": "webhook"})
+					return
 				}
 			}
 			if err := deleteLocalEmbyItemForWebhook(event.Item.Type, event.Item.ID); err != nil {

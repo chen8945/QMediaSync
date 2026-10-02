@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,7 +148,10 @@ func (t *tvShowScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
 			return uerr
 		}
 	} else {
-		t.SyncFilesToSTRMPath(mediaFile, nil)
+		if err := t.SyncFilesToSTRMPath(mediaFile, nil); err != nil {
+			mediaFile.RenameFailed(err.Error())
+			return err
+		}
 	}
 	// 将自己标记为完成，状态立即完成，网盘的临时文件等网盘上传完成删除
 	t.FinishEpisode(mediaFile)
@@ -157,7 +161,11 @@ func (t *tvShowScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
 
 // 删除集的临时文件
 func (t *tvShowScrapeImpl) RemoveEpisodeTmpFiles(mediaFile *models.ScrapeMediaFile) {
-	episodeUploadFiles := t.GetEpisodeUploadFiles(mediaFile)
+	episodeUploadFiles, err := t.GetEpisodeUploadFiles(mediaFile)
+	if err != nil {
+		helpers.AppLogger.Errorf("读取集 %s 的刮削临时文件失败：%v", mediaFile.Name, err)
+		return
+	}
 	for _, f := range episodeUploadFiles {
 		os.Remove(f.SourcePath)
 		helpers.AppLogger.Infof("删除集 %s 的刮削临时文件 %s 成功", mediaFile.Name, f.SourcePath)
@@ -332,7 +340,8 @@ func (t *tvShowScrapeImpl) GenerateEpisodeNfo(mediaFile *models.ScrapeMediaFile)
 	return nil
 }
 
-func (t *tvShowScrapeImpl) GetEpisodeUploadFiles(mediaFile *models.ScrapeMediaFile) []uploadFile {
+// GetEpisodeUploadFiles 校验本集必需的 NFO，只在海报存在时将其加入文件列表。
+func (t *tvShowScrapeImpl) GetEpisodeUploadFiles(mediaFile *models.ScrapeMediaFile) ([]uploadFile, error) {
 	destPath := mediaFile.GetDestFullSeasonPath()
 	destPathId := mediaFile.NewSeasonPathId
 	if destPathId == "" {
@@ -348,6 +357,9 @@ func (t *tvShowScrapeImpl) GetEpisodeUploadFiles(mediaFile *models.ScrapeMediaFi
 		FileName:   nfoName,
 		SourcePath: filepath.Join(sourcePath, nfoName),
 	}
+	if _, err := os.Stat(file.SourcePath); err != nil {
+		return nil, fmt.Errorf("读取集 NFO 文件 %s 失败：%w", file.SourcePath, err)
+	}
 	fileList = append(fileList, file)
 	jpgName := mediaFile.GetEpisodePosterName()
 	file = uploadFile{
@@ -357,68 +369,44 @@ func (t *tvShowScrapeImpl) GetEpisodeUploadFiles(mediaFile *models.ScrapeMediaFi
 		FileName:   jpgName,
 		SourcePath: filepath.Join(sourcePath, jpgName),
 	}
+	if _, err := os.Stat(file.SourcePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fileList, nil
+		}
+		return nil, fmt.Errorf("读取集海报文件 %s 失败：%w", file.SourcePath, err)
+	}
 	fileList = append(fileList, file)
-	return fileList
+	return fileList, nil
 }
 
-// 先命中一个 syncPath，使用 newPath
-func (t *tvShowScrapeImpl) SyncFilesToSTRMPath(mediaFile *models.ScrapeMediaFile, files []uploadFile) {
-	syncPath := t.scrapePath.GetSyncPathByPath(mediaFile.Media.Path)
-	if syncPath == nil {
-		helpers.AppLogger.Errorf("未命中任何 STRM 同步目录，无法将文件同步到 STRM 目录 %s", mediaFile.Media.Path)
-		return
-	}
-	// 先生成 STRM 文件
-	// 1. 构造 STRM 文件路径
-	syncStrm := syncstrm.NewSyncStrmFromSyncPath(syncPath)
-	defer cleanupTemporarySyncRecord(syncStrm)
+// SyncFilesToSTRMPath 将剧集 STRM 和元数据写入关联的同步目录。
+func (t *tvShowScrapeImpl) SyncFilesToSTRMPath(mediaFile *models.ScrapeMediaFile, files []uploadFile) error {
 	path := mediaFile.GetDestFullSeasonPath()
-	strmErr := syncStrm.ProcessStrmFile(&syncstrm.SyncFileCache{
-		Path:          path,
-		ParentId:      path,
-		FileType:      v115open.TypeFile,
-		FileName:      mediaFile.MediaEpisode.VideoFileName,
-		FileId:        mediaFile.MediaEpisode.VideoFileId,
-		PickCode:      mediaFile.MediaEpisode.VideoPickCode,
-		OpenlistSign:  mediaFile.MediaEpisode.VideoOpenListSign,
-		FileSize:      0,
-		MTime:         0,
-		IsVideo:       true,
-		IsMeta:        false,
-		LocalFilePath: filepath.Join(syncPath.LocalPath, path, mediaFile.NewVideoBaseName+".strm"),
-	})
-	if strmErr != nil {
-		helpers.AppLogger.Errorf("生成 STRM 文件失败，失败原因：%v", strmErr)
-		return
-	}
-
-	// 将其他文件放入 STRM 同步目录内
-	if files == nil {
-		return
-	}
-	for _, file := range files {
-		destPath := filepath.Join(syncPath.LocalPath, file.DestPath)
-		if !helpers.PathExists(destPath) {
-			err := os.MkdirAll(destPath, 0755)
-			if err != nil {
-				helpers.AppLogger.Errorf("创建目录 %s 失败，失败原因：%v", destPath, err)
-			}
-		}
-		destFile := filepath.Join(destPath, file.FileName)
-		// 复制过去
-		err := helpers.CopyFile(file.SourcePath, destFile)
-		if err != nil {
-			helpers.AppLogger.Errorf("复制文件 %s 到 %s 失败，失败原因：%v", file.SourcePath, destFile, err)
-		}
-		helpers.AppLogger.Infof("复制文件 %s 到 %s 成功", file.SourcePath, destFile)
-	}
+	return t.syncFilesToSTRMPath(mediaFile.Media.Path, mediaFile.NewVideoBaseName, &syncstrm.SyncFileCache{
+		Path:         path,
+		ParentId:     path,
+		FileType:     v115open.TypeFile,
+		FileName:     mediaFile.MediaEpisode.VideoFileName,
+		FileId:       mediaFile.MediaEpisode.VideoFileId,
+		PickCode:     mediaFile.MediaEpisode.VideoPickCode,
+		OpenlistSign: mediaFile.MediaEpisode.VideoOpenListSign,
+		FileSize:     0,
+		MTime:        0,
+		IsVideo:      true,
+		IsMeta:       false,
+	}, files)
 }
 
 func (t *tvShowScrapeImpl) UploadEpisodeScrapeFile(mediaFile *models.ScrapeMediaFile) error {
 	// helpers.AppLogger.Infof("开始处理电视剧 %s 季 %d 集 %d 的元数据", mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
-	files := t.GetEpisodeUploadFiles(mediaFile)
+	files, err := t.GetEpisodeUploadFiles(mediaFile)
+	if err != nil {
+		return err
+	}
 	// 将文件同步到 STRM 同步目录内
-	t.SyncFilesToSTRMPath(mediaFile, files)
+	if err := t.SyncFilesToSTRMPath(mediaFile, files); err != nil {
+		return err
+	}
 	// 如果是本地文件直接移动到目标位置
 	ok, err := t.MoveLocalTempFileToDest(mediaFile, files)
 	if err == nil {

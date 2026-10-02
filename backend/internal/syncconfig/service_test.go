@@ -7,13 +7,16 @@ import (
 	"errors"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/syncscope"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -296,6 +299,7 @@ func setupSyncConfigServiceTest(t *testing.T) *gorm.DB {
 	if err := testDB.AutoMigrate(
 		&models.Account{},
 		&models.SyncPath{},
+		&models.SyncFile{},
 		&models.DirectoryUploadRule{},
 		&models.DirectoryUploadProcessedFile{},
 		&models.DbUploadTask{},
@@ -532,5 +536,131 @@ func TestSaveSyncPathReplaysExistingAggregateForSameIdempotencyKeyWithDifferentP
 	}
 	if total != 1 {
 		t.Fatalf("幂等冲突后同步目录数量 = %d，期望仍为 1", total)
+	}
+}
+
+func TestSaveSyncPathWaitsForOldAndNewLocations(t *testing.T) {
+	for _, holdNew := range []bool{false, true} {
+		t.Run(map[bool]string{false: "old", true: "new"}[holdNew], func(t *testing.T) {
+			testDB := setupSyncConfigServiceTest(t)
+			account := &models.Account{SourceType: models.SourceType115}
+			if err := testDB.Create(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			sp := &models.SyncPath{SourceType: models.SourceType115, AccountId: account.ID, BaseCid: "old", LocalPath: t.TempDir(), RemotePath: "/old"}
+			if err := testDB.Create(sp).Error; err != nil {
+				t.Fatal(err)
+			}
+			command := SaveSyncPathCommand{ID: sp.ID, SyncPath: SyncPathInput{
+				SourceType: sp.SourceType, AccountID: sp.AccountId, BaseCid: "new", LocalPath: t.TempDir(), RemotePath: "/new",
+			}}
+			heldScope := sp.Scope()
+			if holdNew {
+				heldScope = syncscope.Scope{LocalPath: filepath.Join(command.SyncPath.LocalPath, command.SyncPath.RemotePath)}
+			}
+			busy, err := syncscope.Acquire(t.Context(), heldScope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer busy()
+			service := NewService(ServiceOptions{DB: testDB, ReloadSyncCronWithError: func() error {
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+				defer cancel()
+				release, err := syncscope.Acquire(ctx, heldScope)
+				if release != nil {
+					release()
+				}
+				return err
+			}})
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+			defer cancel()
+			if _, err := service.Save(ctx, command); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("保存应等待旧新位置: %v", err)
+			}
+			var current models.SyncPath
+			if err := testDB.First(&current, sp.ID).Error; err != nil || current.RemotePath != sp.RemotePath {
+				t.Fatalf("取消等待后配置应保持不变: %+v, %v", current, err)
+			}
+			busy()
+			result, err := service.Save(t.Context(), command)
+			if err != nil || len(result.Warnings) != 0 {
+				t.Fatalf("保存后重载服务前应释放范围: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestSaveSyncPathWithUnresolvableOldLocation(t *testing.T) {
+	for _, brokenRoot := range []bool{true, false} {
+		t.Run(map[bool]string{true: "root", false: "ledger"}[brokenRoot], func(t *testing.T) {
+			testDB := setupSyncConfigServiceTest(t)
+			account := &models.Account{SourceType: models.SourceType115}
+			if err := testDB.Create(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			localFile := filepath.Join(t.TempDir(), "keep.strm")
+			if err := os.WriteFile(localFile, []byte("keep"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), "broken")
+			if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), link); err != nil {
+				t.Fatal(err)
+			}
+			sp := &models.SyncPath{SourceType: account.SourceType, AccountId: account.ID, BaseCid: "old", LocalPath: t.TempDir(), RemotePath: "/old"}
+			if brokenRoot {
+				sp.LocalPath = link
+			}
+			if err := testDB.Create(sp).Error; err != nil {
+				t.Fatal(err)
+			}
+			file := &models.SyncFile{SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId,
+				Path: sp.RemotePath, LocalFilePath: localFile}
+			if !brokenRoot {
+				file.LocalFilePath = filepath.Join(link, "old.strm")
+			}
+			if err := testDB.Create(file).Error; err != nil {
+				t.Fatal(err)
+			}
+			command := SaveSyncPathCommand{ID: sp.ID, SyncPath: SyncPathInput{
+				SourceType: sp.SourceType, AccountID: sp.AccountId, BaseCid: "new", LocalPath: t.TempDir(), RemotePath: "/new",
+			}}
+			service := NewService(ServiceOptions{DB: testDB, CreateLocalDirectory: func(path string) error { return os.MkdirAll(path, 0755) }})
+			busy, err := syncscope.Acquire(t.Context(), syncscope.Scope{SourceType: "baidupan", AccountID: 99, LocalPath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer busy()
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+			defer cancel()
+			if _, err := service.Save(ctx, command); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("失效旧路径应全局等待且允许取消：%v", err)
+			}
+			busy()
+			invalid := command
+			invalid.SyncPath.LocalPath = link
+			if _, err := service.Save(t.Context(), invalid); err == nil {
+				t.Fatal("新的输出路径失效时仍应拒绝保存")
+			}
+			var current models.SyncPath
+			if err := testDB.First(&current, sp.ID).Error; err != nil || current.LocalPath != sp.LocalPath || current.BaseCid != sp.BaseCid {
+				t.Fatalf("取消等待或新路径无效时配置应保留：%+v, %v", current, err)
+			}
+			result, err := service.Save(t.Context(), command)
+			if err != nil {
+				t.Fatalf("旧路径无法解析也应允许保存有效新路径：%v", err)
+			}
+			if len(result.Warnings) != 0 || result.SyncPath.LocalPath != command.SyncPath.LocalPath {
+				t.Fatalf("应成功保存新路径：%+v", result)
+			}
+			if info, err := os.Stat(result.SyncPath.GetFullLocalPath()); err != nil || !info.IsDir() {
+				t.Fatalf("应创建新的输出目录：%v", err)
+			}
+			if err := testDB.First(&models.SyncFile{}, file.ID).Error; err != nil {
+				t.Fatalf("修改目录应保留旧账本：%v", err)
+			}
+			if content, err := os.ReadFile(localFile); err != nil || string(content) != "keep" {
+				t.Fatalf("本地文件应保留：%q, %v", content, err)
+			}
+		})
 	}
 }

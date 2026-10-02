@@ -1,9 +1,8 @@
 package models
 
 import (
+	"context"
 	"errors"
-	"maps"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -12,6 +11,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/syncscope"
 
 	"gorm.io/gorm"
 )
@@ -47,6 +47,8 @@ func (s SourceType) String() string {
 }
 
 type SyncPath struct {
+	ScopeLocalRoot string `gorm:"-" json:"-"`
+	scopeHeld      []syncscope.Scope
 	BaseModel
 	SettingStrm
 	CustomConfig           bool       `json:"custom_config"`                                 // 是否自定义配置
@@ -220,55 +222,8 @@ func (sp *SyncPath) GetStrmBaseUrl() string {
 	return sp.StrmBaseUrl
 }
 
-// 修改同步路径
-func (sp *SyncPath) Update(sourceType SourceType, accountId uint, baseCid, localPath, remotePath string, enableCron bool, customConfig bool, directoryUploadEnabled bool, syncPathSetting SettingStrm) error {
-	if runtime.GOOS != "windows" {
-		localPath = strings.TrimRight(localPath, "/")
-		remotePath = strings.Trim(remotePath, "/")
-	} else {
-		localPath = strings.TrimRight(localPath, "\\")
-		remotePath = strings.TrimRight(remotePath, "\\")
-	}
-	if customConfig {
-		strmSetting := syncPathSetting.EncodeArr()
-		if strmSetting == nil {
-			helpers.AppLogger.Errorf("将同步路径设置编码为 JSON 字符串失败")
-			return errors.New("将同步路径设置编码为 JSON 字符串失败")
-		}
-		sp.SettingStrm = *strmSetting
-	} else {
-		// 全部使用默认值
-		sp.SettingStrm = GetStrmSettingDefault()
-	}
-	sp.CustomConfig = customConfig
-	sp.BaseCid = baseCid
-	sp.LocalPath = localPath
-	sp.RemotePath = remotePath
-	sp.EnableCron = enableCron
-	sp.DirectoryUploadEnabled = directoryUploadEnabled
-	// 使用 map 保存需要更新的字段
-	updates := map[string]any{
-		"custom_config":            customConfig,
-		"base_cid":                 baseCid,
-		"local_path":               localPath,
-		"remote_path":              remotePath,
-		"enable_cron":              enableCron,
-		"directory_upload_enabled": directoryUploadEnabled,
-		"updated_at":               time.Now().Unix(),
-	}
-	strmSettingMap := sp.SettingStrm.ToMap(true, false)
-	maps.Copy(updates, strmSettingMap)
-	// helpers.AppLogger.Infof("更新同步路径 %d 数据：%+v", sp.ID, updates)
-	result := db.Db.Model(sp).Updates(updates)
-	// 创建同步路径
-	fullPath := filepath.Join(localPath, remotePath)
-	os.MkdirAll(fullPath, 0777)
-	// 更新同步路径
-	// helpers.AppLogger.Debugf("更新同步路径：%s", fullPath)
-	return result.Error
-}
-
 // CreateSyncPathWithDB 在指定事务中创建同步目录并通过实体获得回填 ID。
+// 调用方须在开启事务前申请同步范围。
 func CreateSyncPathWithDB(tx *gorm.DB, input SyncPathWriteInput) (*SyncPath, error) {
 	if tx == nil {
 		return nil, errors.New("数据库连接为空")
@@ -284,6 +239,7 @@ func CreateSyncPathWithDB(tx *gorm.DB, input SyncPathWriteInput) (*SyncPath, err
 }
 
 // UpdateSyncPathWithDB 在指定事务中更新同步目录。
+// 调用方须在开启事务前申请旧、新范围，并在等待后重新读取目录。
 func UpdateSyncPathWithDB(tx *gorm.DB, syncPath *SyncPath, input SyncPathWriteInput) error {
 	if tx == nil {
 		return errors.New("数据库连接为空")
@@ -332,9 +288,12 @@ func applySyncPathWriteInput(syncPath *SyncPath, input SyncPathWriteInput) error
 	return nil
 }
 
-func (sp *SyncPath) SetIsFullSync(isFullSync bool) {
+func (sp *SyncPath) SetIsFullSync(isFullSync bool) error {
+	if err := updateSyncPathField(sp.ID, "is_full_sync", isFullSync); err != nil {
+		return err
+	}
 	sp.IsFullSync = isFullSync
-	db.Db.Save(sp)
+	return nil
 }
 
 // 给同步路径创建一个同步任务
@@ -378,14 +337,32 @@ func (sp *SyncPath) ParseVideoAndMetaExt() {
 	sp.SettingStrm = *sp.SettingStrm.DecodeArr(false)
 }
 
-func (sp *SyncPath) UpdateLastSync() {
-	sp.LastSyncAt = time.Now().Unix()
-	db.Db.Save(sp)
+func (sp *SyncPath) UpdateLastSync() error {
+	finishedAt := time.Now().Unix()
+	if err := updateSyncPathField(sp.ID, "last_sync_at", finishedAt); err != nil {
+		return err
+	}
+	sp.LastSyncAt = finishedAt
+	return nil
 }
 
-func (sp *SyncPath) ToggleCron() {
+func (sp *SyncPath) ToggleCron() error {
+	if err := updateSyncPathField(sp.ID, "enable_cron", !sp.EnableCron); err != nil {
+		return err
+	}
 	sp.EnableCron = !sp.EnableCron
-	db.Db.Save(sp)
+	return nil
+}
+
+func updateSyncPathField(id uint, column string, value any) error {
+	result := db.Db.Model(&SyncPath{}).Where("id = ?", id).Update(column, value)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (sp *SyncPath) IsValidVideoExt(name string) bool {
@@ -426,116 +403,38 @@ func (sp *SyncPath) MakeFullLocalPath(pid, name string) string {
 	return ""
 }
 
-// 创建同步路径
-func CreateSyncPath(sourceType SourceType, accountId uint, baseCid, localPath, remotePath string, enableCron bool, customConfig bool, directoryUploadEnabled bool, syncPathSetting SettingStrm) *SyncPath {
-	if runtime.GOOS != "windows" {
-		localPath = strings.TrimRight(localPath, "/")
-		remotePath = strings.TrimRight(remotePath, "/")
-	} else {
-		localPath = strings.TrimRight(localPath, "\\")
-		remotePath = strings.TrimRight(remotePath, "\\")
-	}
-
-	if customConfig {
-		syncPathSetting = *syncPathSetting.EncodeArr()
-	} else {
-		syncPathSetting = GetStrmSettingDefault()
-	}
-	// 使用 map[string]interface{} 格式入库，避免 0 值不入库
-	syncPathData := map[string]any{
-		"source_type":              sourceType,
-		"base_cid":                 baseCid,
-		"local_path":               localPath,
-		"remote_path":              remotePath,
-		"account_id":               accountId,
-		"enable_cron":              enableCron,
-		"directory_upload_enabled": directoryUploadEnabled,
-		"custom_config":            customConfig,
-		"created_at":               time.Now().Unix(),
-		"updated_at":               time.Now().Unix(),
-	}
-	strmSettingMap := syncPathSetting.ToMap(true, false)
-	maps.Copy(syncPathData, strmSettingMap)
-
-	// helpers.AppLogger.Infof("创建同步路径数据：%+v", syncPathData)
-
-	// 使用 Create 方法插入数据
-	result := db.Db.Model(&SyncPath{}).Create(syncPathData)
-	if result.Error != nil {
-		helpers.AppLogger.Errorf("创建同步路径失败：%v", result.Error)
-		return nil
-	}
-
-	// 获取创建的同步路径对象
-	syncPath := &SyncPath{}
-	if err := db.Db.Where("source_type = ? AND base_cid = ? AND local_path = ? AND remote_path = ?",
-		sourceType, baseCid, localPath, remotePath).Order("id DESC").First(syncPath).Error; err != nil {
-		helpers.AppLogger.Errorf("获取创建的同步路径失败：%v", err)
-		return nil
-	}
-	return syncPath
+// DeleteSyncPathById 删除同步目录及其记录，保留已有调用方式。
+func DeleteSyncPathById(id uint) bool {
+	return DeleteSyncPathByID(context.Background(), id) == nil
 }
 
-// 使用 ID 删除同步路径
-func DeleteSyncPathById(id uint) bool {
-	syncPath := GetSyncPathById(id)
-	if syncPath == nil {
-		return false
+// DeleteSyncPathByID 等待文件处理结束后删除同步目录，不删除本地文件。
+func DeleteSyncPathByID(ctx context.Context, id uint) error {
+	_, release, err := AcquireSyncPathConfigScope(ctx, db.Db, id)
+	if err != nil {
+		return err
 	}
-	tx := db.Db.Begin()
-	result := tx.Delete(&SyncPath{}, id)
-	if result.Error != nil || result.RowsAffected <= 0 {
-		helpers.AppLogger.Errorf("删除同步路径失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	// 清空数据表
-	// Delete by ID
-	result = tx.Delete(SyncFile{}, "sync_path_id = ?", syncPath.ID)
-	if result.Error != nil {
-		helpers.AppLogger.Errorf("删除同步路径数据失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	if result = tx.Delete(&DirectoryUploadRule{}, "sync_path_id = ?", syncPath.ID); result.Error != nil {
-		helpers.AppLogger.Errorf("删除同步路径目录监控规则失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	if result = tx.Delete(&DirectoryUploadProcessedFile{}, "sync_path_id = ?", syncPath.ID); result.Error != nil {
-		helpers.AppLogger.Errorf("删除同步路径目录监控 processed 记录失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	if result = tx.Delete(EmbyLibrarySyncPath{}, "sync_path_id = ?", syncPath.ID); result.Error != nil {
-		helpers.AppLogger.Errorf("删除同步路径 Emby 媒体库关联失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	if result = tx.Delete(EmbyMediaSyncFile{}, "sync_path_id = ?", syncPath.ID); result.Error != nil {
-		helpers.AppLogger.Errorf("删除同步路径 Emby 媒体文件关联失败：%v", result.Error)
-		tx.Rollback()
-		return false
-	}
-	if err := tx.Commit().Error; err != nil {
-		helpers.AppLogger.Errorf("提交删除同步路径事务失败：%v", err)
-		return false
-	}
-	// 其他类型删除 localPath/remotePath
-	fullPath := filepath.Join(syncPath.LocalPath, syncPath.RemotePath)
-	if syncPath.SourceType == SourceTypeLocal {
-		// 本地目录类型直接删除 localPath
-		fullPath = syncPath.LocalPath
-	}
-
-	helpers.AppLogger.Infof("暂时不删除目标路径，先观察是否稳定：%s", fullPath)
-	// err := os.RemoveAll(fullPath)
-	// if err != nil {
-	// 	helpers.AppLogger.Errorf("删除本地目录失败：%v", err)
-	// 	return false
-	// }
-	// helpers.AppLogger.Debugf("删除本地目录成功：%s", fullPath)
-	return true
+	defer release()
+	finish := BeginSyncPositionMutation()
+	defer finish()
+	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Delete(&SyncPath{}, id)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		for _, model := range []any{
+			&SyncFile{}, &DirectoryUploadRule{}, &DirectoryUploadProcessedFile{},
+			&EmbyLibrarySyncPath{}, &EmbyMediaSyncFile{},
+		} {
+			if err := tx.Where("sync_path_id = ?", id).Delete(model).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // 根据 ID 获取同步路径

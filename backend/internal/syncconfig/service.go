@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/models"
 	"qmediasync/internal/synccron"
+	"qmediasync/internal/syncscope"
 
 	"gorm.io/gorm"
 )
@@ -201,10 +202,37 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 	if err != nil {
 		return nil, err
 	}
+	nextPath := &models.SyncPath{
+		SourceType: command.SyncPath.SourceType, AccountId: command.SyncPath.AccountID,
+		LocalPath: command.SyncPath.LocalPath, RemotePath: command.SyncPath.RemotePath,
+	}
+	var release func()
+	positionChanged := command.ID == 0
+	if command.ID == 0 {
+		release, err = syncscope.Acquire(ctx, nextPath.Scope())
+	} else {
+		var current *models.SyncPath
+		current, release, err = models.AcquireSyncPathConfigScope(ctx, service.db, command.ID, nextPath.Scope())
+		if err == nil {
+			positionChanged = current.SourceType != nextPath.SourceType || current.AccountId != nextPath.AccountId || current.LocalPath != nextPath.LocalPath || current.RemotePath != nextPath.RemotePath
+		}
+	}
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, newSaveError(ErrorCodeSyncPathNotFound, "同步目录不存在", err)
+		}
+		return nil, newSaveError(ErrorCodeDatabaseSave, "保存同步目录失败", err)
+	}
+	defer release()
 	idempotencyKey := strings.TrimSpace(command.IdempotencyKey)
 	idempotencyKeyHash := hashIdempotencyKey(idempotencyKey)
 	var result *SaveSyncPathResult
 	replayed := false
+	finishPosition := func() {}
+	if positionChanged {
+		finishPosition = models.BeginSyncPositionMutation()
+	}
+	defer finishPosition()
 	err = service.runTransaction(ctx, service.db, func(tx *gorm.DB) error {
 		if command.ID == 0 && idempotencyKey != "" {
 			existing, found, err := findIdempotencyRecordWithDB(tx, idempotencyKeyHash)
@@ -284,6 +312,7 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 		}
 		return nil
 	})
+	finishPosition()
 	if err != nil {
 		if saveErr, ok := errors.AsType[*SaveError](err); ok {
 			return nil, saveErr
@@ -296,6 +325,8 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 	if err := service.createLocalDirectory(result.SyncPath.GetFullLocalPath()); err != nil {
 		result.Warnings = append(result.Warnings, "同步目录已保存，但创建本地目录失败")
 	}
+	// 重载服务可能等待任务结束，先让其他文件处理继续。
+	release()
 	if err := service.reloadSyncCron(); err != nil {
 		result.Warnings = append(result.Warnings, "同步目录已保存，但重载定时同步任务失败")
 	}

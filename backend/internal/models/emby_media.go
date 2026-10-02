@@ -10,6 +10,7 @@ import (
 	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/openlist"
+	"qmediasync/internal/syncscope"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -388,6 +389,21 @@ func RefreshEmbyLibraryBySyncPathId(syncPathId uint) error {
 
 // 联动删除网盘的电影
 func DeleteNetdiskMovieByEmbyItemId(itemId string) error {
+	return DeleteNetdiskMovieByEmbyItemIdContext(context.Background(), itemId)
+}
+
+// DeleteNetdiskMovieByEmbyItemIdContext 等待相关文件处理结束后执行 Emby 联动删除。
+func DeleteNetdiskMovieByEmbyItemIdContext(ctx context.Context, itemId string) error {
+	// ponytail: 现有查询会跨账号读取同名目录，先等待全部同步；限定查询账号后可缩小范围。
+	release, err := syncscope.Acquire(ctx, syncscope.Scope{Global: true})
+	if err != nil {
+		return err
+	}
+	defer release()
+	return deleteNetdiskMovieByEmbyItemId(itemId)
+}
+
+func deleteNetdiskMovieByEmbyItemId(itemId string) error {
 	itemIdUint := uint(helpers.StringToInt(itemId))
 	embyItem := &EmbyMediaSyncFile{}
 	if err := db.Db.Where("emby_item_id = ?", itemIdUint).First(embyItem).Error; err != nil {
@@ -481,6 +497,21 @@ func DeleteNetdiskMovieByEmbyItemId(itemId string) error {
 
 // 联动删除网盘的集
 func DeleteNetdiskEpisodeByEmbyItemId(itemId string) error {
+	return DeleteNetdiskEpisodeByEmbyItemIdContext(context.Background(), itemId)
+}
+
+// DeleteNetdiskEpisodeByEmbyItemIdContext 等待相关文件处理结束后执行 Emby 联动删除。
+func DeleteNetdiskEpisodeByEmbyItemIdContext(ctx context.Context, itemId string) error {
+	// ponytail: 现有查询会跨账号读取同名目录，先等待全部同步；限定查询账号后可缩小范围。
+	release, err := syncscope.Acquire(ctx, syncscope.Scope{Global: true})
+	if err != nil {
+		return err
+	}
+	defer release()
+	return deleteNetdiskEpisodeByEmbyItemId(itemId)
+}
+
+func deleteNetdiskEpisodeByEmbyItemId(itemId string) error {
 	itemIdUint := uint(helpers.StringToInt(itemId))
 	embyItem := &EmbyMediaSyncFile{}
 	if err := db.Db.Where("emby_item_id = ?", itemIdUint).First(embyItem).Error; err != nil {
@@ -552,6 +583,21 @@ func DeleteNetdiskEpisodeByEmbyItemId(itemId string) error {
 
 // 联动删除网盘的季
 func DeleteNetdiskSeasonByItemId(itemId string) error {
+	return DeleteNetdiskSeasonByItemIdContext(context.Background(), itemId)
+}
+
+// DeleteNetdiskSeasonByItemIdContext 等待相关文件处理结束后执行 Emby 联动删除。
+func DeleteNetdiskSeasonByItemIdContext(ctx context.Context, itemId string) error {
+	// ponytail: 现有查询会跨账号读取同名目录，先等待全部同步；限定查询账号后可缩小范围。
+	release, err := syncscope.Acquire(ctx, syncscope.Scope{Global: true})
+	if err != nil {
+		return err
+	}
+	defer release()
+	return deleteNetdiskSeasonByItemId(itemId)
+}
+
+func deleteNetdiskSeasonByItemId(itemId string) error {
 	// 根据 itemId 先查找所有 EmbyMediaItem 记录
 	var embyItems []EmbyMediaItem
 	if err := db.Db.Where("season_id = ?", itemId).Find(&embyItems).Error; err != nil {
@@ -611,7 +657,7 @@ func DeleteNetdiskSeasonByItemId(itemId string) error {
 	} else {
 		// 不是单独的季目录，仅删除季下所有集对应的视频文件和元数据（NFO、封面）
 		for _, embyItem := range embyItems {
-			if err := DeleteNetdiskEpisodeByEmbyItemId(embyItem.ItemId); err != nil {
+			if err := deleteNetdiskEpisodeByEmbyItemId(embyItem.ItemId); err != nil {
 				continue
 			}
 		}
@@ -634,6 +680,21 @@ func DeleteNetdiskSeasonByItemId(itemId string) error {
 
 // 联动删除网盘的剧
 func DeleteNetdiskTvshowByItemId(itemId string) error {
+	return DeleteNetdiskTvshowByItemIdContext(context.Background(), itemId)
+}
+
+// DeleteNetdiskTvshowByItemIdContext 等待相关文件处理结束后执行 Emby 联动删除。
+func DeleteNetdiskTvshowByItemIdContext(ctx context.Context, itemId string) error {
+	// ponytail: 现有查询会跨账号读取同名目录，先等待全部同步；限定查询账号后可缩小范围。
+	release, err := syncscope.Acquire(ctx, syncscope.Scope{Global: true})
+	if err != nil {
+		return err
+	}
+	defer release()
+	return deleteNetdiskTvshowByItemId(itemId)
+}
+
+func deleteNetdiskTvshowByItemId(itemId string) error {
 	// 根据 itemId 先查找所有 EmbyMediaItem 记录
 	var embyItems []EmbyMediaItem
 	if err := db.Db.Where("series_id = ?", itemId).Find(&embyItems).Error; err != nil {

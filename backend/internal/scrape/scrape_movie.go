@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/realtime"
+	"qmediasync/internal/syncscope"
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
 	"qmediasync/internal/v115open"
@@ -156,7 +158,10 @@ func (m *movieScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
 		}
 	} else {
 		// 将文件同步到 STRM 同步目录内
-		m.SyncFilesToSTRMPath(mediaFile, nil)
+		if err := m.SyncFilesToSTRMPath(mediaFile, nil); err != nil {
+			mediaFile.RenameFailed(err.Error())
+			return err
+		}
 	}
 	// 将自己标记为完成，状态立即完成，网盘的临时文件等网盘上传完成删除
 	m.FinishMovie(mediaFile)
@@ -330,55 +335,164 @@ func (m *movieScrapeImpl) GenerateNewName(mediaFile *models.ScrapeMediaFile) {
 	mediaFile.Media.Save()
 }
 
-// 先命中一个 syncPath，使用 newPath
-func (m *movieScrapeImpl) SyncFilesToSTRMPath(mediaFile *models.ScrapeMediaFile, files []uploadFile) {
-	syncPath := m.scrapePath.GetSyncPathByPath(mediaFile.Media.Path)
-	if syncPath == nil {
-		helpers.AppLogger.Errorf("未命中任何 STRM 同步目录，无法将文件同步到 STRM 目录 %s", mediaFile.Media.Path)
-		return
+// SyncFilesToSTRMPath 将电影 STRM 和元数据写入关联的同步目录。
+func (m *movieScrapeImpl) SyncFilesToSTRMPath(mediaFile *models.ScrapeMediaFile, files []uploadFile) error {
+	return m.syncFilesToSTRMPath(mediaFile.Media.Path, mediaFile.NewVideoBaseName, &syncstrm.SyncFileCache{
+		Path:         mediaFile.Media.Path,
+		ParentId:     mediaFile.Media.PathId,
+		FileType:     v115open.TypeFile,
+		FileName:     mediaFile.Media.VideoFileName,
+		FileId:       mediaFile.Media.VideoFileId,
+		PickCode:     mediaFile.Media.VideoPickCode,
+		OpenlistSign: mediaFile.Media.VideoOpenListSign,
+		FileSize:     0,
+		MTime:        0,
+		IsVideo:      true,
+		IsMeta:       false,
+	}, files)
+}
+
+func (s *ScrapeBase) syncFilesToSTRMPath(remotePath, videoBaseName string, video *syncstrm.SyncFileCache, files []uploadFile) error {
+	var syncPath *models.SyncPath
+	var protectedTargets []syncscope.Scope
+	for {
+		candidate, err := s.scrapePath.GetSyncPathByPathContext(s.ctx, remotePath)
+		if err != nil {
+			return err
+		}
+		if candidate == nil {
+			helpers.AppLogger.Infof("没有关联的 STRM 同步目录，跳过文件同步：%s", remotePath)
+			return nil
+		}
+		video.LocalFilePath = filepath.Join(candidate.LocalPath, video.Path, videoBaseName+".strm")
+		scopes, err := s.strmOutputScopes(candidate, video, files)
+		if err != nil {
+			return err
+		}
+		// 一次等待所有写入位置，不能拿着目标文件锁再等待其他同步。
+		release, err := syncscope.Acquire(s.ctx, scopes...)
+		if err != nil {
+			return err
+		}
+		syncPath, err = s.scrapePath.GetSyncPathByPathContext(s.ctx, remotePath)
+		if err != nil {
+			release()
+			return err
+		}
+		if syncPath == nil || candidate.Scope() != syncPath.Scope() {
+			// 等待时关联目录可能已被修改或删除，按新配置重新选择。
+			release()
+			continue
+		}
+		currentScopes, err := s.strmOutputScopes(syncPath, video, files)
+		if err != nil {
+			release()
+			return err
+		}
+		if !slices.Equal(scopes, currentScopes) {
+			release()
+			continue
+		}
+
+		protectedTargets = scopes
+		defer release()
+		break
 	}
-	// 先生成 STRM 文件
-	// 1. 构造 STRM 文件路径
 	syncStrm := syncstrm.NewSyncStrmFromSyncPath(syncPath)
+	if syncStrm == nil {
+		return fmt.Errorf("初始化 STRM 同步目录失败：%s", remotePath)
+	}
 	defer cleanupTemporarySyncRecord(syncStrm)
-	strmErr := syncStrm.ProcessStrmFile(&syncstrm.SyncFileCache{
-		Path:          mediaFile.Media.Path,
-		ParentId:      mediaFile.Media.PathId,
-		FileType:      v115open.TypeFile,
-		FileName:      mediaFile.Media.VideoFileName,
-		FileId:        mediaFile.Media.VideoFileId,
-		PickCode:      mediaFile.Media.VideoPickCode,
-		OpenlistSign:  mediaFile.Media.VideoOpenListSign,
-		FileSize:      0,
-		MTime:         0,
-		IsVideo:       true,
-		IsMeta:        false,
-		LocalFilePath: filepath.Join(syncPath.LocalPath, mediaFile.Media.Path, mediaFile.NewVideoBaseName+".strm"),
-	})
-	if strmErr != nil {
-		helpers.AppLogger.Errorf("生成 STRM 文件失败，失败原因：%v", strmErr)
-		return
+	defer syncStrm.Sync.Logger.Close()
+	defer syncStrm.Cancel()
+	syncStrm.Context = s.ctx
+	if err := s.ctx.Err(); err != nil {
+		return err
 	}
-	if files == nil {
-		return
+	if err := checkScrapeOutputPath(video.LocalFilePath, protectedTargets[1].LocalPath); err != nil {
+		return err
 	}
-	// 将其他文件放入 STRM 同步目录内
-	for _, file := range files {
+	if err := syncStrm.ProcessStrmFile(video); err != nil {
+		return fmt.Errorf("生成 STRM 文件失败：%w", err)
+	}
+	for i, file := range files {
+		if err := checkScrapeOutputPath(filepath.Join(syncPath.LocalPath, file.DestPath, file.FileName), protectedTargets[i+2].LocalPath); err != nil {
+			return err
+		}
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
 		destPath := filepath.Join(syncPath.LocalPath, file.DestPath)
-		if !helpers.PathExists(destPath) {
-			err := os.MkdirAll(destPath, 0755)
-			if err != nil {
-				helpers.AppLogger.Errorf("创建目录 %s 失败，失败原因：%v", destPath, err)
-			}
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return fmt.Errorf("创建目录 %s 失败：%w", destPath, err)
 		}
 		destFile := filepath.Join(destPath, file.FileName)
-		// 复制过去
-		err := helpers.CopyFile(file.SourcePath, destFile)
-		if err != nil {
-			helpers.AppLogger.Errorf("复制文件 %s 到 %s 失败，失败原因：%v", file.SourcePath, destFile, err)
+		if err := helpers.CopyFile(file.SourcePath, destFile); err != nil {
+			return fmt.Errorf("复制文件 %s 到 %s 失败：%w", file.SourcePath, destFile, err)
 		}
 		helpers.AppLogger.Infof("复制文件 %s 到 %s 成功", file.SourcePath, destFile)
 	}
+	return s.ctx.Err()
+}
+
+func checkScrapeOutputPath(target, protected string) error {
+	resolved, err := syncscope.ResolveLocalPath(target)
+	if err != nil {
+		return err
+	}
+	if resolved != protected {
+		return fmt.Errorf("刮削输出位置在等待后已变更：%s", target)
+	}
+	return nil
+}
+
+// strmOutputScopes 共享关联配置，分别保护视频新旧位置及元数据输出。
+func (s *ScrapeBase) strmOutputScopes(candidate *models.SyncPath, video *syncstrm.SyncFileCache, files []uploadFile) ([]syncscope.Scope, error) {
+	scopes := []syncscope.Scope{{SyncPathID: candidate.ID, SharedConfig: true}, {
+		SourceType: string(candidate.SourceType), AccountID: candidate.AccountId,
+		RemotePath: filepath.Join(video.Path, video.FileName), LocalPath: video.LocalFilePath,
+	}}
+	for _, file := range files {
+		scopes = append(scopes, syncscope.Scope{
+			SourceType: string(candidate.SourceType), AccountID: candidate.AccountId,
+			RemotePath: filepath.Join(file.DestPath, file.FileName),
+			LocalPath:  filepath.Join(candidate.LocalPath, file.DestPath, file.FileName),
+		})
+	}
+	if video.FileId != "" || video.PickCode != "" {
+		query := db.Db.WithContext(s.ctx).Where("sync_path_id = ?", candidate.ID)
+		switch {
+		case video.FileId != "" && video.PickCode != "":
+			query = query.Where("file_id = ? OR pick_code = ?", video.FileId, video.PickCode)
+		case video.FileId != "":
+			query = query.Where("file_id = ?", video.FileId)
+		default:
+			query = query.Where("pick_code = ?", video.PickCode)
+		}
+		var old []models.SyncFile
+		if err := query.Order("id").Find(&old).Error; err != nil {
+			return nil, err
+		}
+		for _, file := range old {
+			if file.LocalFilePath == "" || file.Path == "" || file.SourceType == "" {
+				scopes = append(scopes, syncscope.Scope{Global: true})
+				continue
+			}
+			scopes = append(scopes, syncscope.Scope{SourceType: string(file.SourceType), AccountID: file.AccountId,
+				RemotePath: filepath.Join(file.Path, file.FileName), LocalPath: file.LocalFilePath})
+		}
+	}
+	for i := range scopes {
+		if scopes[i].LocalPath == "" {
+			continue
+		}
+		resolved, err := syncscope.ResolveLocalPath(scopes[i].LocalPath)
+		if err != nil {
+			return nil, err
+		}
+		scopes[i].LocalPath = resolved
+	}
+	return scopes, nil
 }
 
 func (m *movieScrapeImpl) UploadMovieScrapeFile(mediaFile *models.ScrapeMediaFile) error {
@@ -390,7 +504,9 @@ func (m *movieScrapeImpl) UploadMovieScrapeFile(mediaFile *models.ScrapeMediaFil
 	// 整理要上传的文件
 	files := m.GetMovieUploadFiles(mediaFile)
 	// 将文件同步到 STRM 同步目录内
-	m.SyncFilesToSTRMPath(mediaFile, files)
+	if err := m.SyncFilesToSTRMPath(mediaFile, files); err != nil {
+		return err
+	}
 	// 如果是本地文件直接移动到目标位置
 	ok, err := m.MoveLocalTempFileToDest(mediaFile, files)
 	if err == nil {

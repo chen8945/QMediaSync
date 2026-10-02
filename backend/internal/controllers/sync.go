@@ -186,8 +186,7 @@ func DeleteSyncPath(c *gin.Context) {
 		return
 	}
 	// 删除同步路径
-	success := models.DeleteSyncPathById(req.ID)
-	if !success {
+	if err := models.DeleteSyncPathByID(c.Request.Context(), req.ID); err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "删除同步路径失败", Data: nil})
 		return
 	}
@@ -414,7 +413,10 @@ func ToggleSyncByPath(c *gin.Context) {
 		c.JSON(http.StatusNotFound, APIResponse[any]{Code: BadRequest, Message: "同步路径不存在", Data: nil})
 		return
 	}
-	syncPath.ToggleCron()
+	if err := syncPath.ToggleCron(); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新定时同步开关失败", Data: nil})
+		return
+	}
 	synccron.InitCron()
 	// 重启自定义定时任务
 	if syncPath.Cron != "" {
@@ -463,7 +465,10 @@ func FullStart115Sync(c *gin.Context) {
 	// 		return
 	// 	}
 	// }
-	syncPath.SetIsFullSync(true)
+	if err := syncPath.SetIsFullSync(true); err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "设置全量同步失败", Data: nil})
+		return
+	}
 	// 添加同步任务到队列
 	taskObj := &synccron.NewSyncTask{
 		ID:           syncPath.ID,

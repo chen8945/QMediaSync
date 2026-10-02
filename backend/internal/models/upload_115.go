@@ -8,11 +8,13 @@ import (
 	"math"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/syncscope"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -357,6 +359,7 @@ func (runner open115UploadRunner) uploadMultipart(
 	task.publish115UploadPhase(session, uploadPhaseMultipartUploading)
 
 	ossResult, err := upload115MultipartWithResult(ctx, client, v115open.UploadMultipartInput{
+		ParentID:    session.ParentFileId,
 		Bucket:      session.Bucket,
 		Object:      session.Object,
 		Callback:    session.Callback,
@@ -377,6 +380,7 @@ func (runner open115UploadRunner) uploadMultipart(
 		task.mark115SessionRestarted(session, err)
 		task.publish115UploadPhase(session, uploadPhaseMultipartUploading)
 		ossResult, err = upload115MultipartWithResult(ctx, client, v115open.UploadMultipartInput{
+			ParentID:    session.ParentFileId,
 			Bucket:      session.Bucket,
 			Object:      session.Object,
 			Callback:    session.Callback,
@@ -1025,7 +1029,10 @@ func (task *DbUploadTask) EnqueueStrmGenerationAfterUploadAndMarkDirectoryProces
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
-	strmTask, err := task.prepareStrmGenerationAfterUpload()
+	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope()
+	if release != nil {
+		defer release()
+	}
 	if err != nil || strmTask == nil {
 		return err
 	}
@@ -1034,7 +1041,10 @@ func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
 }
 
 func (task *DbUploadTask) enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed() error {
-	strmTask, err := task.prepareStrmGenerationAfterUpload()
+	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope()
+	if release != nil {
+		defer release()
+	}
 	if err == nil && strmTask != nil {
 		err = db.Db.Transaction(func(tx *gorm.DB) error {
 			if _, err := EnqueueStrmGenerationTaskWithDB(tx, strmTask); err != nil {
@@ -1063,6 +1073,68 @@ func (task *DbUploadTask) markDirectoryUploadProcessedStrmEnqueueFailed() error 
 		return nil
 	}
 	return MarkDirectoryUploadProcessedStrmEnqueueFailed(task.ID)
+}
+
+// prepareStrmGenerationAfterUploadWithScope 保护旧文件信息，直到后续任务入队完成。
+func (task *DbUploadTask) prepareStrmGenerationAfterUploadWithScope() (*StrmGenerationTask, func(), error) {
+	if db.Db == nil {
+		return nil, nil, errors.New("数据库连接为空")
+	}
+	if task == nil || (task.Source != UploadSourceDirectoryMonitor && task.Source != UploadSourceStrm) ||
+		task.UploadResult == UploadResultSkippedAfterRapidWait || !task.hasStrmGenerationCompletionLocator() {
+		result, err := task.prepareStrmGenerationAfterUpload()
+		return result, nil, err
+	}
+	// 上传 worker 暂无取消 Context；等待超时沿用入队失败重试，不一直占着上传位置。
+	ctx, cancel := context.WithTimeout(db.Db.Statement.Context, 30*time.Second)
+	defer cancel()
+	for {
+		scopes, err := task.uploadStrmScopes(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		release, err := syncscope.Acquire(ctx, scopes...)
+		if err != nil {
+			return nil, nil, err
+		}
+		current, err := task.uploadStrmScopes(ctx)
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		if !slices.Equal(scopes, current) {
+			release()
+			continue
+		}
+		result, err := task.prepareStrmGenerationAfterUpload()
+		return result, release, err
+	}
+}
+
+func (task *DbUploadTask) uploadStrmScopes(ctx context.Context) ([]syncscope.Scope, error) {
+	scope := syncscope.Scope{
+		SyncPathID: task.SyncPathId, SourceType: string(task.SourceType), AccountID: task.AccountId,
+		RemotePath: remoteParentPathForStrmTask(task.RemoteFullPath, task.FileName),
+	}
+	scope.WholeAccount = scope.RemotePath == ""
+	scope.Global = task.SourceType == "" || (task.SyncPathId == 0 && task.AccountId == 0)
+	scopes := []syncscope.Scope{scope}
+	if task.SyncFileId == 0 {
+		return scopes, nil
+	}
+	var file SyncFile
+	if err := db.Db.WithContext(ctx).First(&file, task.SyncFileId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return scopes, nil
+		}
+		return nil, err
+	}
+	scopes = append(scopes, syncscope.Scope{
+		SyncPathID: file.SyncPathId, SourceType: string(file.SourceType), AccountID: file.AccountId,
+		RemotePath: file.Path, LocalPath: file.LocalFilePath,
+		Global: file.SourceType == "" || file.Path == "" || file.LocalFilePath == "",
+	})
+	return scopes, nil
 }
 
 // prepareStrmGenerationAfterUpload 在事务外读取恢复信息和远端详情，避免占用 SQLite 唯一连接。

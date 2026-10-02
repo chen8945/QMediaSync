@@ -93,7 +93,10 @@ func runStrmTaskSync(taskID uint, isFullSync bool) {
 		if syncPath != nil {
 			// 如果是全量同步，设置标志
 			if isFullSync {
-				syncPath.SetIsFullSync(true)
+				if err := syncPath.SetIsFullSync(true); err != nil {
+					helpers.AppLogger.Errorf("设置全量同步失败：%v", err)
+					return
+				}
 			}
 			// 同步指定目录
 			taskObj := &synccron.NewSyncTask{
@@ -122,7 +125,10 @@ func runStrmTaskSync(taskID uint, isFullSync bool) {
 		for _, syncPath := range allSyncPaths {
 			// 全量同步时设置标志
 			if isFullSync {
-				syncPath.SetIsFullSync(true)
+				if err := syncPath.SetIsFullSync(true); err != nil {
+					helpers.AppLogger.Errorf("设置全量同步失败：%v", err)
+					continue
+				}
 			}
 			// 同步目录
 			taskObj := &synccron.NewSyncTask{

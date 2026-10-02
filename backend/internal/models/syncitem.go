@@ -54,10 +54,6 @@ func (sf *SyncFile) GetAccount() *Account {
 	return sf.Account
 }
 
-func (sf *SyncFile) Save() error {
-	return db.Db.Save(sf).Error
-}
-
 func GetSyncFileById(id uint) *SyncFile {
 	if id == 0 {
 		return nil

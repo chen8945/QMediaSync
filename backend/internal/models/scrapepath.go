@@ -907,30 +907,42 @@ func (sp *ScrapePath) GetSyncPathes() []*SyncPath {
 	return syncPathes
 }
 
-// 根据给定的路径查找命中的 syncPath，判断路径是否以 syncPath.RemotePath 开头
+// GetSyncPathByPath 返回远端路径前缀匹配的第一个关联同步目录。
 func (sp *ScrapePath) GetSyncPathByPath(path string) *SyncPath {
-	syncPathes := sp.GetSyncPathes()
-	if len(syncPathes) == 0 {
-		helpers.AppLogger.Errorf("刮削目录 %d 没有关联的同步目录", sp.ID)
-		return nil
+	syncPath, err := sp.GetSyncPathByPathContext(context.Background(), path)
+	if err != nil {
+		helpers.AppLogger.Errorf("查询刮削目录关联的 STRM 同步目录失败：%v", err)
+	}
+	return syncPath
+}
+
+// GetSyncPathByPathContext 查找关联同步目录，并返回查询失败或取消的原因。
+func (sp *ScrapePath) GetSyncPathByPathContext(ctx context.Context, path string) (*SyncPath, error) {
+	var syncPaths []*SyncPath
+	if err := db.Db.WithContext(ctx).Model(&SyncPath{}).Select("sync_paths.*").
+		Joins("JOIN scrape_strm_paths ON scrape_strm_paths.strm_path_id = sync_paths.id").
+		Where("scrape_strm_paths.scrape_path_id = ?", sp.ID).
+		Order("scrape_strm_paths.id").Find(&syncPaths).Error; err != nil {
+		return nil, fmt.Errorf("查询关联的 STRM 同步目录失败：%w", err)
 	}
 	path = filepath.ToSlash(path)
 	// 如果 path 不以 / 开头，则添加 /
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	for _, syncPath := range syncPathes {
+	for _, syncPath := range syncPaths {
 		// 如果 syncPath.RemotePath 不以 / 开头，则添加 /
 		remotePath := syncPath.RemotePath
 		if !strings.HasPrefix(remotePath, "/") {
 			remotePath = "/" + remotePath
 		}
 		if strings.HasPrefix(path, remotePath) {
-			return syncPath
+			syncPath.ParseVideoAndMetaExt()
+			return syncPath, nil
 		}
 		helpers.AppLogger.Debugf("路径 %s 不匹配同步目录 %s", path, remotePath)
 	}
-	return nil
+	return nil, nil
 }
 
 func (sp *ScrapePath) Decode() error {
