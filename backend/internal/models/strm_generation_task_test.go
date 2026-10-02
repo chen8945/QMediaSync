@@ -951,3 +951,31 @@ func TestMarkStrmGenerationChildFailedUpdatesChildAndParent(t *testing.T) {
 		t.Fatalf("子任务 = %+v，期望 failed、retry_count=1 且保存错误", gotChild)
 	}
 }
+
+func TestStrmGenerationRetryLegacyNulls(t *testing.T) {
+	setupStrmGenerationTaskTestDB(t)
+	task := &StrmGenerationTask{Status: StrmGenerationStatusFinalizing}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Model(task).Updates(map[string]any{"retry_count": nil, "last_retry_time": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := GetPendingStrmGenerationTasks(1)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("tasks=%v err=%v", tasks, err)
+	}
+	if err := tasks[0].MarkFinalizingRetry("retry"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.First(task, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.RetryCount != 1 || task.LastRetryTime <= 0 {
+		t.Fatalf("task=%+v", task)
+	}
+	tasks, err = GetPendingStrmGenerationTasks(1)
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("backoff tasks=%v err=%v", tasks, err)
+	}
+}

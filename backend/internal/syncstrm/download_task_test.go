@@ -51,7 +51,10 @@ func TestPendingDownloadFileIDsIncludesFinalPage(t *testing.T) {
 				SyncPathId: 10,
 				Sync:       &models.Sync{Logger: helpers.AppLogger},
 			}
-			existing := syncer.pendingDownloadFileIDs()
+			existing, err := syncer.pendingDownloadFileIDs()
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(existing) != count || !existing["pick-0"] || !existing[fmt.Sprintf("pick-%d", count-1)] {
 				t.Fatalf("去重集合 = %d 条，期望 %d 条并包含首尾任务", len(existing), count)
 			}
@@ -87,7 +90,10 @@ func TestPendingDownloadFileIDsUsesSourceSpecificLocator(t *testing.T) {
 		SyncPathId: 10,
 		Sync:       &models.Sync{Logger: helpers.AppLogger},
 	}
-	existing := syncer.pendingDownloadFileIDs()
+	existing, err := syncer.pendingDownloadFileIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(existing) != 1 || !existing["baidu-fs-id"] {
 		t.Fatalf("百度下载去重集合 = %#v，期望使用 fs_id", existing)
 	}
@@ -141,7 +147,10 @@ func TestPendingDownloadFileIDsIsolatesAccountAndSyncPath(t *testing.T) {
 		SyncPathId: 10,
 		Sync:       &models.Sync{Logger: helpers.AppLogger},
 	}
-	existing := syncer.pendingDownloadFileIDs()
+	existing, err := syncer.pendingDownloadFileIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(existing) != 1 || !existing["current-scope"] || existing["other-account"] || existing["other-sync-path"] {
 		t.Fatalf("去重集合 = %#v，期望只包含当前账号和同步目录任务", existing)
 	}
@@ -166,6 +175,7 @@ func TestAddMetaDownloadTaskCountsNewMeta(t *testing.T) {
 		SyncPathId:    10,
 		SourceType:    models.SourceType115,
 		PickCode:      "pick-meta",
+		FileId:        "file-meta",
 		FileName:      "movie.nfo",
 		LocalFilePath: "/media/movie/movie.nfo",
 		SyncPath:      &models.SyncPath{},
@@ -178,6 +188,12 @@ func TestAddMetaDownloadTaskCountsNewMeta(t *testing.T) {
 		t.Fatalf("NewMeta = %d，期望 1", got)
 	}
 
+	if err := s.addMetaDownloadTask(file, "baseline"); err != nil {
+		t.Fatalf("duplicate enqueue: %v", err)
+	}
+	if s.NewMeta != 1 {
+		t.Fatalf("duplicate counted: %d", s.NewMeta)
+	}
 	var task models.DbDownloadTask
 	if err := db.Db.Where("remote_pick_code = ?", "pick-meta").First(&task).Error; err != nil {
 		t.Fatalf("查询下载任务失败: %v", err)

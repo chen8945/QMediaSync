@@ -363,3 +363,16 @@ func TestFileListRejectsInvalidCustomOrdering(t *testing.T) {
 		})
 	}
 }
+
+func TestGetFsListRejectsFailedResponseWithoutCode(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, body := range []string{`{"state":false,"count":0,"data":[]}`, `{"state":true,"errno":40140125,"count":0,"data":[]}`} {
+		t.Run(body, func(t *testing.T) {
+			client := newRefreshTestClient(&refreshStubTransport{response: body})
+			files, err := client.GetFsList(t.Context(), "root", false, false, false, 0, 1)
+			if err == nil || files != nil {
+				t.Fatalf("failed response accepted as empty view: files=%+v error=%v", files, err)
+			}
+		})
+	}
+}

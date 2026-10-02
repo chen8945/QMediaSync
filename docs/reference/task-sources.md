@@ -47,6 +47,8 @@
 | `SyncTaskTypeStrm` | `strm_sync` | `STRM 同步` | STRM 同步队列任务 |
 | `SyncTaskTypeScrape` | `scrape_organize` | `刮削整理` | 刮削整理队列任务 |
 
+同步记录状态由 `syncTaskStatusUtils.ts` 统一展示；新增的部分完成、扫描不完整和已取消仍属于 `strm_sync` 类型，不产生新的任务来源。整数与结果字段见 [同步记录 schema](database-schema.md#syncs)。
+
 ## STRM 生成任务
 
 `strm_generation_tasks.source` 和 `task_type` 会持久化到数据库；完整字段语义见 [数据库 schema 与迁移](database-schema.md#strm_generation_tasks)，状态流转见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md)。这些机器值没有对应的队列页面展示映射。

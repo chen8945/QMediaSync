@@ -2,9 +2,12 @@ package syncstrm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +112,33 @@ func TestOpen115DriverExcludesPlaybackFilesAfterResolvingPath(t *testing.T) {
 			}
 			if len(files) != tt.want || driver.s.TotalFile != int64(tt.want) {
 				t.Fatalf("扫描得到 %d 条文件、计数 %d，期望 %d", len(files), driver.s.TotalFile, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpen115DriverCreateDirPreservesAuthenticationFailure(t *testing.T) {
+	for _, stage := range []string{"probe", "create"} {
+		t.Run(stage, func(t *testing.T) {
+			logger := &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+			oldLogger := helpers.V115Log
+			helpers.V115Log = logger
+			t.Cleanup(func() { helpers.V115Log = oldLogger })
+			target := t.TempDir()
+			driver := NewOpen115Driver(v115open.NewClient(9902, "fixture", "", ""))
+			driver.SetSyncStrm(&SyncStrm{TargetPath: target, Sync: &models.Sync{Logger: logger}})
+			path, prefix := filepath.Join(target, "media", "extras"), "查询目录失败"
+			if stage == "create" {
+				// 根目录详情在客户端本地拒绝；既有创建分支随后由缺失凭证终止，不发远端请求。
+				path, prefix = target, "创建目录失败"
+			}
+			_, _, err := driver.CreateDirRecursively(t.Context(), path)
+			apiErr, ok := errors.AsType[*v115open.OpenAPIError](err)
+			if !ok || apiErr.Code != v115open.ACCESS_AUTH_INVALID || !isFatalSyncError(err) {
+				t.Fatalf("authentication identity lost: %v", err)
+			}
+			if !strings.HasPrefix(err.Error(), prefix) {
+				t.Fatalf("failure stage=%v, want %s", err, stage)
 			}
 		})
 	}

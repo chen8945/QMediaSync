@@ -23,6 +23,9 @@ const (
 	SyncStatusInProgress                   // 进行中
 	SyncStatusCompleted                    // 已完成
 	SyncStatusFailed                       // 失败
+	SyncStatusPartial                      // 部分完成
+	SyncStatusIncomplete                   // 扫描不完整
+	SyncStatusCancelled                    // 已取消
 )
 
 var SyncStatusText map[SyncStatus]string = map[SyncStatus]string{
@@ -30,12 +33,18 @@ var SyncStatusText map[SyncStatus]string = map[SyncStatus]string{
 	SyncStatusInProgress: "进行中",
 	SyncStatusCompleted:  "已完成",
 	SyncStatusFailed:     "失败",
+	SyncStatusPartial:    "部分完成",
+	SyncStatusIncomplete: "扫描不完整",
+	SyncStatusCancelled:  "已取消",
 }
 
 var (
 	errSyncRecordNotFound     = errors.New("同步记录不存在")
 	errSyncRecordNotDeletable = errors.New("同步记录未完成，不能删除")
 )
+
+// ErrSyncLedgerRecordDeleted 表示后台状态写入时已确认历史记录被删除。
+var ErrSyncLedgerRecordDeleted = errors.New("同步文件记录更新对应的同步历史已删除")
 
 type SyncSubStatus int
 
@@ -54,26 +63,30 @@ var SyncSubStatusText map[SyncSubStatus]string = map[SyncSubStatus]string{
 // 同步任务
 type Sync struct {
 	BaseModel
-	SyncPathId        uint             `json:"sync_path_id"`
-	Status            SyncStatus       `json:"status"`
-	SubStatus         SyncSubStatus    `json:"sub_status"`  // 子状态，记录当前同步的子任务状态
-	FileOffset        int              `json:"file_offset"` // 文件偏移量，用于继续任务时的定位
-	Total             int              `json:"total"`
-	FinishAt          int64            `json:"finish_at"`
-	NewStrm           int              `json:"new_strm"`
-	NewMeta           int              `json:"new_meta"`
-	NewUpload         int              `json:"new_upload" gorm:"default:0"` // 新增上传的文件数量
-	NetFileStartAt    int64            `json:"net_file_start_at"`           // 开始处理网盘文件时间
-	NetFileFinishAt   int64            `json:"net_file_finish_at"`          // 处理网盘文件完成时间
-	LocalFileStartAt  int64            `json:"local_file_start_at"`         // 开始处理本地文件列表时间
-	LocalFileFinishAt int64            `json:"local_file_finish_at"`        // 处理本地文件列表完成时间
-	LocalPath         string           `json:"local_path"`                  // 本地同步路径
-	RemotePath        string           `json:"remote_path"`                 // 远程同步路径
-	BaseCid           string           `json:"base_cid"`                    // 基础 CID，用于标识同步的根目录
-	FailReason        string           `json:"fail_reason"`                 // 失败原因
-	IsFullSync        bool             `json:"is_full_sync"`                // 是否全量同步
-	SyncPath          *SyncPath        `gorm:"-" json:"-"`                  // 同步路径实例
-	Logger            *helpers.QLogger `gorm:"-" json:"-"`                  // 日志句柄，不参与数据读写
+	LedgerStatus      *realtime.SyncLedgerStatus `json:"ledger_status"`
+	LedgerFinishedAt  *int64                     `json:"ledger_finished_at"`
+	LedgerError       string                     `json:"ledger_error"`
+	ScanResult        *realtime.SyncScanResult   `json:"scan_result" gorm:"serializer:json;type:text"`
+	SyncPathId        uint                       `json:"sync_path_id"`
+	Status            SyncStatus                 `json:"status"`
+	SubStatus         SyncSubStatus              `json:"sub_status"`  // 子状态，记录当前同步的子任务状态
+	FileOffset        int                        `json:"file_offset"` // 文件偏移量，用于继续任务时的定位
+	Total             int                        `json:"total"`
+	FinishAt          int64                      `json:"finish_at"`
+	NewStrm           int                        `json:"new_strm"`
+	NewMeta           int                        `json:"new_meta"`
+	NewUpload         int                        `json:"new_upload" gorm:"default:0"` // 新增上传的文件数量
+	NetFileStartAt    int64                      `json:"net_file_start_at"`           // 开始处理网盘文件时间
+	NetFileFinishAt   int64                      `json:"net_file_finish_at"`          // 处理网盘文件完成时间
+	LocalFileStartAt  int64                      `json:"local_file_start_at"`         // 开始处理本地文件列表时间
+	LocalFileFinishAt int64                      `json:"local_file_finish_at"`        // 处理本地文件列表完成时间
+	LocalPath         string                     `json:"local_path"`                  // 本地同步路径
+	RemotePath        string                     `json:"remote_path"`                 // 远程同步路径
+	BaseCid           string                     `json:"base_cid"`                    // 基础 CID，用于标识同步的根目录
+	FailReason        string                     `json:"fail_reason"`                 // 失败原因
+	IsFullSync        bool                       `json:"is_full_sync"`                // 是否全量同步
+	SyncPath          *SyncPath                  `gorm:"-" json:"-"`                  // 同步路径实例
+	Logger            *helpers.QLogger           `gorm:"-" json:"-"`                  // 日志句柄，不参与数据读写
 }
 
 // SyncLogRelativePath 返回前端日志接口使用的同步任务日志相对路径。
@@ -124,6 +137,10 @@ func ExistingSyncLogRelativePath(syncID uint) string {
 // SyncTaskEventPayload 生成同步任务结构化事件数据。
 func (s *Sync) SyncTaskEventPayload() realtime.SyncTaskEventPayload {
 	return realtime.SyncTaskEventPayload{
+		LedgerStatus:      s.LedgerStatus,
+		LedgerFinishedAt:  s.LedgerFinishedAt,
+		LedgerError:       s.LedgerError,
+		ScanResult:        s.ScanResult,
 		SyncID:            s.ID,
 		SyncPathID:        s.SyncPathId,
 		Status:            int(s.Status),
@@ -153,121 +170,242 @@ func (s *Sync) broadcastSyncTaskEvent(eventType string) {
 	realtime.BroadcastSyncTaskEvent(eventType, s.SyncTaskEventPayload())
 }
 
-// 完成本地同步任务
-func (s *Sync) Complete(sourceType SourceType) bool {
-	s.Status = SyncStatusCompleted
-	s.FinishAt = time.Now().Unix()
-	s.LocalFileFinishAt = s.FinishAt
-	// 回写数据库
-	if err := db.Db.Save(s).Error; err != nil {
-		s.Logger.Errorf("完成同步失败：%v", err)
-		return false
-	}
-	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
-	// s.SyncPath.SetIsFullSync(false) // 改回默认值，下次非全量同步
-	s.Logger.Infof("同步任务已完成：%d", s.ID)
-	if s.NewUpload > 0 || s.NewMeta > 0 || s.NewStrm > 0 {
-		ctx := context.Background()
-
-		notif := &Notification{
-			Type:      SyncFinished,
-			Title:     fmt.Sprintf("✅ %s %s 同步完成", sourceType.String(), s.RemotePath),
-			Content:   fmt.Sprintf("📊 耗时：%s，生成 STRM：%s，下载：%s，上传：%s\n⏰ 时间：%s", s.GetDuration(), helpers.IntToString(s.NewStrm), helpers.IntToString(s.NewMeta), helpers.IntToString(s.NewUpload), time.Now().Format("2006-01-02 15:04:05")),
-			Timestamp: time.Now(),
-			Priority:  NormalPriority,
-		}
-		if notificationmanager.GlobalEnhancedNotificationManager != nil {
-			if err := notificationmanager.GlobalEnhancedNotificationManager.SendNotification(ctx, notif); err != nil {
-				s.Logger.Errorf("发送同步完成通知失败：%v", err)
-			}
-		}
-	}
-	// 关闭日志
-	s.Logger.Close()
-	return true
+// Complete 持久化生成完成结果，保留直接调用方的兼容入口。
+func (s *Sync) Complete(ctx context.Context, sourceType SourceType) error {
+	return s.FinishGeneration(ctx, sourceType, SyncStatusCompleted, "", false)
 }
 
-func (s *Sync) Failed(reason string) {
-	s.FailReason = reason
-	s.FinishAt = time.Now().Unix()
-	s.LocalFileFinishAt = s.FinishAt
-	s.UpdateStatus(SyncStatusFailed)
-	ctx := context.Background()
-	notif := &Notification{
-		Type:      SyncError,
-		Title:     "❌ 同步错误",
-		Content:   fmt.Sprintf("🔍 错误：%s\n⏰ 时间：%s", reason, time.Now().Format("2006-01-02 15:04:05")),
-		Timestamp: time.Now(),
-		Priority:  HighPriority,
+// FinishGeneration 将前台结果和成功水位原子提交，再发布事件及原条件通知。
+func (s *Sync) FinishGeneration(ctx context.Context, sourceType SourceType, status SyncStatus, reason string, advanceWatermark bool) error {
+	if err := s.SaveGeneration(ctx, status, reason, advanceWatermark); err != nil {
+		return err
 	}
-	if notificationmanager.GlobalEnhancedNotificationManager != nil {
+	s.NotifyGeneration(ctx, sourceType)
+	if status == SyncStatusCompleted && s.Logger != nil {
+		s.Logger.Close()
+	}
+	return nil
+}
+
+// SaveGeneration 只提交生成结果及成功水位，通知和日志生命周期由执行器拥有。
+func (s *Sync) SaveGeneration(ctx context.Context, status SyncStatus, reason string, advanceWatermark bool) error {
+	release, err := syncRecordEvents.acquire(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !status.IsTerminal() {
+		return fmt.Errorf("无效的生成终态：%d", status)
+	}
+	completed := *s
+	if completed.LedgerStatus == nil {
+		ledgerStatus := realtime.SyncLedgerNotRequired
+		completed.LedgerStatus = &ledgerStatus
+	}
+	if *completed.LedgerStatus != realtime.SyncLedgerNotRequired && *completed.LedgerStatus != realtime.SyncLedgerPending {
+		return fmt.Errorf("无效的初始后台状态：%s", *completed.LedgerStatus)
+	}
+	completed.LedgerFinishedAt, completed.LedgerError = nil, ""
+	reason = helpers.RedactSensitiveLog(reason)
+	completed.Status, completed.FailReason = status, reason
+	completed.FinishAt = time.Now().Unix()
+	completed.LocalFileFinishAt = completed.FinishAt
+	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&completed).Where("id = ? AND status IN (?, ?)", s.ID, SyncStatusPending, SyncStatusInProgress).
+			Select("status", "fail_reason", "finish_at", "local_file_finish_at", "total", "new_strm", "new_meta", "new_upload", "is_full_sync", "scan_result", "ledger_status", "ledger_finished_at", "ledger_error", "updated_at").Updates(&completed)
+		if err := syncUpdateError(result); err != nil {
+			return err
+		}
+		if advanceWatermark && status == SyncStatusCompleted {
+			changes := map[string]any{"last_sync_at": completed.FinishAt}
+			if completed.IsFullSync {
+				changes["is_full_sync"] = false
+			}
+			result = tx.Model(&SyncPath{}).Where("id = ?", s.SyncPathId).Updates(changes)
+			if err := syncUpdateError(result); err != nil {
+				return fmt.Errorf("保存同步成功水位失败：%w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Errorf("保存同步结果失败：%v", err)
+		}
+		return err
+	}
+	s.Status, s.FailReason, s.FinishAt, s.LocalFileFinishAt, s.UpdatedAt = completed.Status, completed.FailReason, completed.FinishAt, completed.LocalFileFinishAt, completed.UpdatedAt
+	s.LedgerStatus, s.LedgerFinishedAt, s.LedgerError = completed.LedgerStatus, completed.LedgerFinishedAt, completed.LedgerError
+	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
+	if s.Logger != nil {
+		s.Logger.Infof("同步任务结果：%d，%s", s.ID, SyncStatusText[status])
+	}
+	return nil
+}
+
+// NotifyGeneration 按既有条件发送已保存的生成结果，不等待或修改账本状态。
+func (s *Sync) NotifyGeneration(ctx context.Context, sourceType SourceType) {
+	if !s.Status.IsTerminal() || s.FinishAt <= 0 {
+		return
+	}
+	status, reason := s.Status, s.FailReason
+	var notif *Notification
+	if status == SyncStatusCompleted {
+		if s.NewUpload > 0 || s.NewMeta > 0 || s.NewStrm > 0 {
+			notif = &Notification{Type: SyncFinished, Title: fmt.Sprintf("✅ %s %s STRM 生成完成", sourceType.String(), s.RemotePath), Content: fmt.Sprintf("📊 生成耗时：%s，生成 STRM：%s，下载：%s，上传：%s\n⏰ 时间：%s", s.GetDuration(), helpers.IntToString(s.NewStrm), helpers.IntToString(s.NewMeta), helpers.IntToString(s.NewUpload), time.Now().Format("2006-01-02 15:04:05")), Timestamp: time.Now(), Priority: NormalPriority}
+		}
+	} else {
+		notif = &Notification{Type: SyncError, Title: "❌ STRM 生成" + SyncStatusText[status], Content: fmt.Sprintf("🔍 %s\n⏰ 时间：%s", reason, time.Now().Format("2006-01-02 15:04:05")), Timestamp: time.Now(), Priority: HighPriority}
+	}
+	if notif != nil && notificationmanager.GlobalEnhancedNotificationManager != nil {
 		if err := notificationmanager.GlobalEnhancedNotificationManager.SendNotification(ctx, notif); err != nil {
-			s.Logger.Errorf("发送同步错误通知失败：%v", err)
+			helpers.AppLogger.Errorf("发送同步结果通知失败：%v", err)
 		}
 	}
+}
+
+// UpdateLedger 只推进尚在途的后台状态，以持久化的生成快照发布结果。
+func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatus, finishedAt *int64, reason string) error {
+	release, err := syncRecordEvents.acquire(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	allowed := []realtime.SyncLedgerStatus{realtime.SyncLedgerPending, realtime.SyncLedgerRunning}
+	switch status {
+	case realtime.SyncLedgerRunning:
+		if finishedAt != nil {
+			return errors.New("同步文件记录仍在更新，不能记录结束时间")
+		}
+		allowed = allowed[:1]
+	case realtime.SyncLedgerCompleted, realtime.SyncLedgerFailed:
+		if finishedAt == nil || *finishedAt <= 0 {
+			return errors.New("同步文件记录更新结束时必须记录实际结束时间")
+		}
+	case realtime.SyncLedgerInterrupted:
+		if finishedAt != nil && *finishedAt <= 0 {
+			return errors.New("同步文件记录更新结束时间必须为正值或未知")
+		}
+	default:
+		return fmt.Errorf("无效的同步文件记录更新状态：%s", status)
+	}
+	if status == realtime.SyncLedgerRunning || status == realtime.SyncLedgerCompleted {
+		reason = ""
+	}
+	updated := Sync{LedgerStatus: &status, LedgerFinishedAt: finishedAt, LedgerError: helpers.RedactSensitiveLog(reason)}
+	var persisted Sync
+	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&updated).Where("id = ? AND ledger_status IN ? AND status BETWEEN ? AND ?", s.ID, allowed, SyncStatusCompleted, SyncStatusCancelled).
+			Select("ledger_status", "ledger_finished_at", "ledger_error", "updated_at").Updates(&updated)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			var count int64
+			if err := tx.Model(&Sync{}).Where("id = ?", s.ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return ErrSyncLedgerRecordDeleted
+			}
+			return errors.New("同步文件记录更新状态已变更，不能继续更新状态")
+		}
+		return tx.First(&persisted, s.ID).Error
+	})
+	if err != nil {
+		return err
+	}
+	s.LedgerStatus, s.LedgerFinishedAt, s.LedgerError, s.UpdatedAt = persisted.LedgerStatus, persisted.LedgerFinishedAt, persisted.LedgerError, persisted.UpdatedAt
+	persisted.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
+	return nil
+}
+
+// InterruptRunningSyncLedgers 仅在服务启动时标记未知退出的旧账本，不推断时间或触发重扫。
+func InterruptRunningSyncLedgers(ctx context.Context) error {
+	return db.Db.WithContext(ctx).Model(&Sync{}).
+		Where("ledger_status IN ?", []realtime.SyncLedgerStatus{realtime.SyncLedgerPending, realtime.SyncLedgerRunning}).
+		Updates(map[string]any{
+			"ledger_status":      realtime.SyncLedgerInterrupted,
+			"ledger_finished_at": nil,
+			"ledger_error":       "服务中断，未记录同步文件记录更新的实际结束时间",
+		}).Error
+}
+
+func (s *Sync) Failed(ctx context.Context, reason string) error {
+	return s.FinishGeneration(ctx, "", SyncStatusFailed, reason, false)
+}
+
+// IsTerminal 判断前台生成结果是否已收敛。
+func (status SyncStatus) IsTerminal() bool {
+	return status >= SyncStatusCompleted && status <= SyncStatusCancelled
 }
 
 func (s *Sync) GetDuration() string {
 	return helpers.FormatDuration(s.FinishAt - s.CreatedAt)
 }
 
-func (s *Sync) UpdateTotal() {
-	// 回写数据库
-	ctx := context.Background()
-	_, err := gorm.G[Sync](db.Db).Where("id = ?", s.ID).Updates(ctx, Sync{
-		Total: s.Total,
-	})
-	if err != nil {
-		s.Logger.Errorf("更新文件总数失败：%v", err)
-		return
-	}
-	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
-	// s.Logger.Infof("更新文件总数：%d", s.Total)
-}
-
 // UpdateProgress 更新同步任务运行中计数。
-func (s *Sync) UpdateProgress(total, newStrm, newMeta, newUpload int) bool {
-	s.Total = total
-	s.NewStrm = newStrm
-	s.NewMeta = newMeta
-	s.NewUpload = newUpload
-	ctx := context.Background()
-	_, err := gorm.G[Sync](db.Db).Where("id = ?", s.ID).Updates(ctx, Sync{
+func (s *Sync) UpdateProgress(ctx context.Context, total, newStrm, newMeta, newUpload int) error {
+	release, err := syncRecordEvents.acquire(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	progress := Sync{
 		Total:     total,
 		NewStrm:   newStrm,
 		NewMeta:   newMeta,
 		NewUpload: newUpload,
-	})
-	if err != nil {
-		s.Logger.Errorf("更新同步进度失败：%v", err)
-		return false
 	}
+	result := db.Db.WithContext(ctx).Model(&progress).Where("id = ?", s.ID).
+		Select("total", "new_strm", "new_meta", "new_upload", "updated_at").Updates(&progress)
+	if err := syncUpdateError(result); err != nil {
+		s.Logger.Errorf("更新同步进度失败：%v", err)
+		return err
+	}
+	s.Total, s.NewStrm, s.NewMeta, s.NewUpload = total, newStrm, newMeta, newUpload
+	s.UpdatedAt = progress.UpdatedAt
 	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
-	return true
+	return nil
 }
 
 // 修改同步任务的状态
-func (s *Sync) UpdateStatus(status SyncStatus) bool {
+func (s *Sync) UpdateStatus(ctx context.Context, status SyncStatus) error {
+	release, err := syncRecordEvents.acquire(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	oldStatus := s.Status
-	s.Status = status
 	// 回写数据库
-	ctx := context.Background()
-	_, err := gorm.G[Sync](db.Db).Where("id = ?", s.ID).Updates(ctx, Sync{
+	updated := Sync{
 		Status:            status,
 		FailReason:        s.FailReason,
 		FinishAt:          s.FinishAt,
 		LocalFileFinishAt: s.LocalFileFinishAt,
-	})
-	if err != nil {
-		s.Logger.Errorf("更新同步状态失败：%v", err)
-		return false
+		Total:             s.Total,
+		NewStrm:           s.NewStrm,
+		NewMeta:           s.NewMeta,
+		NewUpload:         s.NewUpload,
 	}
+	result := db.Db.WithContext(ctx).Model(&updated).Where("id = ?", s.ID).
+		Select("status", "fail_reason", "finish_at", "local_file_finish_at", "total", "new_strm", "new_meta", "new_upload", "updated_at").Updates(&updated)
+	if err := syncUpdateError(result); err != nil {
+		s.Logger.Errorf("更新同步状态失败：%v", err)
+		return err
+	}
+	s.Status, s.UpdatedAt = status, updated.UpdatedAt
 	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
 	s.Logger.Infof("更新任务状态：%s => %s", SyncStatusText[oldStatus], SyncStatusText[status])
-	return true
+	return nil
 }
 
-func (s *Sync) UpdateSubStatus(subStatus SyncSubStatus) bool {
+func (s *Sync) UpdateSubStatus(ctx context.Context, subStatus SyncSubStatus) error {
+	release, err := syncRecordEvents.acquire(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	oldSubStatus := s.SubStatus
 	s.SubStatus = subStatus
 	var updateSync Sync
@@ -289,14 +427,25 @@ func (s *Sync) UpdateSubStatus(subStatus SyncSubStatus) bool {
 			LocalFileStartAt: s.LocalFileStartAt,
 		}
 	}
-	err := db.Db.Model(&Sync{}).Where("id = ?", s.ID).Updates(&updateSync).Error
-	if err != nil {
+	result := db.Db.WithContext(ctx).Model(&updateSync).Where("id = ?", s.ID).Updates(&updateSync)
+	if err := syncUpdateError(result); err != nil {
 		s.Logger.Errorf("更新同步子状态失败：%v", err)
-		return false
+		return err
 	}
+	s.UpdatedAt = updateSync.UpdatedAt
 	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
 	s.Logger.Infof("更新任务子状态：%s => %s", SyncSubStatusText[oldSubStatus], SyncSubStatusText[subStatus])
-	return true
+	return nil
+}
+
+func syncUpdateError(result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errSyncRecordNotFound
+	}
+	return nil
 }
 
 func (s *Sync) InitLogger() {
@@ -374,14 +523,12 @@ func FailAllRunningSyncTasks() {
 		helpers.AppLogger.Errorf("批量更新运行中的同步任务状态失败：%v", err)
 		return
 	}
-	syncPathId := make([]uint, 0)
-	for _, sync := range runningSyncs {
-		syncPathId = append(syncPathId, sync.SyncPathId)
+	syncPathIDs := make([]uint, 0, len(runningSyncs))
+	for _, record := range runningSyncs {
+		syncPathIDs = append(syncPathIDs, record.SyncPathId)
 	}
-	// 批量更新同步路径的 IsFullSync 为 false
-	if err := db.Db.Model(&SyncPath{}).Where("id IN ?", syncPathId).Updates(map[string]any{
-		"is_full_sync": false,
-	}).Error; err != nil {
+	// 保留既有前台遗留任务的启动恢复语义。
+	if err := db.Db.Model(&SyncPath{}).Where("id IN ?", syncPathIDs).Update("is_full_sync", false).Error; err != nil {
 		helpers.AppLogger.Errorf("批量更新同步路径状态失败：%v", err)
 		return
 	}
@@ -399,6 +546,11 @@ func DeleteTemporarySyncRecordById(id uint) error {
 }
 
 func deleteSyncRecordById(id uint, requireFinished bool) error {
+	release, err := syncRecordEvents.acquire(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	existing := &Sync{}
 	if err := db.Db.First(existing, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -426,7 +578,7 @@ func deleteSyncRecordById(id uint, requireFinished bool) error {
 }
 
 func canDeleteSyncRecord(status SyncStatus) bool {
-	return status == SyncStatusCompleted || status == SyncStatusFailed
+	return status.IsTerminal()
 }
 
 func syncStatusText(status SyncStatus) string {
@@ -480,21 +632,37 @@ func CreateSync(syncPathId uint, sourcePath, sourcePathId, targetPath string) *S
 		FailReason: "",
 		IsFullSync: false,
 	}
-	// 写入数据库
 	if err := db.Db.Save(sync).Error; err != nil {
 		helpers.AppLogger.Errorf("创建同步任务失败：%v", err)
 		return nil
 	}
-	sync.broadcastSyncTaskEvent(realtime.EventSyncTaskCreated)
+	// 创建后按同一 ID 重新读取，避免并发清理后发布迟到的创建事件。
+	release, err := syncRecordEvents.acquire(context.Background(), sync.ID)
+	if err != nil {
+		return sync
+	}
+	defer release()
+	var persisted Sync
+	if err := db.Db.First(&persisted, sync.ID).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			helpers.AppLogger.Errorf("读取新建同步任务失败：%v", err)
+		}
+		return sync
+	}
+	persisted.broadcastSyncTaskEvent(realtime.EventSyncTaskCreated)
 	return sync
 }
 
-func GetTodayFirstSyncByPathId(syncPathId uint) *Sync {
-	var sync Sync
-	// 计算今天 0 点的时间戳
-	today := time.Now().Truncate(24 * time.Hour).Unix()
-	if err := db.Db.Where("sync_path_id = ? AND created_at >= ?", syncPathId, today).First(&sync).Error; err != nil {
-		return nil
+// GetTodaySuccessfulFullSyncByPathID 只接受服务器当地自然日内已完成的全量任务。
+func GetTodaySuccessfulFullSyncByPathID(ctx context.Context, syncPathID, currentSyncID uint, now time.Time) (*Sync, error) {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	var record Sync
+	err := db.Db.WithContext(ctx).Where("sync_path_id = ? AND id <> ? AND status = ? AND is_full_sync = ? AND finish_at >= ? AND finish_at < ?", syncPathID, currentSyncID, SyncStatusCompleted, true, start.Unix(), start.AddDate(0, 0, 1).Unix()).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
 	}
-	return &sync
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
 }

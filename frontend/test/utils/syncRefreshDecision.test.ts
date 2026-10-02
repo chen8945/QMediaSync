@@ -3,6 +3,18 @@ import { describe, expect, it } from 'vitest'
 import { getEmbyRefreshDecision } from '@/utils/syncRefreshDecision'
 
 describe('getEmbyRefreshDecision', () => {
+  it.each([4, 5])('终态 %s 保留成功范围的刷新相关变更', (status) => {
+    expect(getEmbyRefreshDecision({ createdStrm: 1, downloadedMeta: 0, status }).label).toBe(
+      '有刷新相关变更',
+    )
+  })
+
+  it('取消不显示任务完成后仍会刷新', () => {
+    expect(getEmbyRefreshDecision({ createdStrm: 1, downloadedMeta: 0, status: 6 }).label).toBe(
+      '未提交媒体库刷新',
+    )
+  })
+
   it('新增 STRM 和元数据下载皆为 0 时展示无需刷新', () => {
     expect(getEmbyRefreshDecision({ createdStrm: 0, downloadedMeta: 0 })).toEqual({
       hasRefreshRelatedChanges: false,

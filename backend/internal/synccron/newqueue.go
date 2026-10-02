@@ -335,6 +335,8 @@ func (q *NewSyncQueuePerType) executeStrmSync(task *NewSyncTask) {
 			"success": true,
 		}
 		if q.strmSync != nil && q.strmSync.Sync != nil {
+			completePayload["status"] = q.strmSync.Sync.Status
+			completePayload["scan_result"] = q.strmSync.Sync.ScanResult
 			completePayload["sync_id"] = q.strmSync.Sync.ID
 			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
 			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)
@@ -349,6 +351,8 @@ func (q *NewSyncQueuePerType) executeStrmSync(task *NewSyncTask) {
 			"error":   startErr.Error(),
 		}
 		if q.strmSync != nil && q.strmSync.Sync != nil {
+			completePayload["status"] = q.strmSync.Sync.Status
+			completePayload["scan_result"] = q.strmSync.Sync.ScanResult
 			completePayload["sync_id"] = q.strmSync.Sync.ID
 			completePayload["sync_path_id"] = q.strmSync.Sync.SyncPathId
 			completePayload["log_path"] = models.SyncLogRelativePath(q.strmSync.Sync.ID)

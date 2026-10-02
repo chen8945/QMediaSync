@@ -118,7 +118,7 @@ func TestClientPasswordAuthDoesNotRetryWhenLoginFails(t *testing.T) {
 			}()
 			select {
 			case err := <-done:
-				if !errors.Is(err, errTokenExpired) {
+				if !errors.Is(err, ErrTokenExpired) {
 					t.Fatalf("登录失败错误 = %v，期望凭据失效", err)
 				}
 			case <-time.After(2 * time.Second):
@@ -178,7 +178,7 @@ func TestGetUserInfoPasswordAuthRecoversOnce(t *testing.T) {
 				t.Errorf("用户信息请求 %d 次，登录 %d 次，期望 2、1", requests, logins)
 			}
 			if tc.wantErr != "" {
-				if err == nil || err.Error() != tc.wantErr {
+				if !errors.Is(err, ErrTokenExpired) || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("认证恢复后的错误 = %v，期望 %q", err, tc.wantErr)
 				}
 			} else if err != nil || info == nil || info.ID != 17 || info.Username != "refreshed-user" {

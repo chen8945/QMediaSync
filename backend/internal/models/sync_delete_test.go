@@ -52,6 +52,9 @@ func TestDeleteSyncRecordById只允许删除已结束记录(t *testing.T) {
 		{name: "进行中记录不能删除", status: SyncStatusInProgress, wantErr: errSyncRecordNotDeletable},
 		{name: "已完成记录可以删除", status: SyncStatusCompleted, wantDelete: true},
 		{name: "失败记录可以删除", status: SyncStatusFailed, wantDelete: true},
+		{name: "部分完成记录可以删除", status: SyncStatusPartial, wantDelete: true},
+		{name: "不完整记录可以删除", status: SyncStatusIncomplete, wantDelete: true},
+		{name: "取消记录可以删除", status: SyncStatusCancelled, wantDelete: true},
 	}
 
 	for _, tt := range tests {

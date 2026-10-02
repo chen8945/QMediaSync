@@ -139,7 +139,8 @@ func SyncTaskStream(c *gin.Context) {
 		return
 	}
 
-	if replayed {
+	// 订阅后的二次读取可能先于终态事件发布；终态必须以最新快照收敛，不能只回放旧 patch。
+	if replayed && !isTerminalSyncTask(task) {
 		if err := replaySyncTaskEvents(streamCtx, replay, func(event realtime.TaskStreamEvent) error {
 			return writeSyncTaskStreamEvent(c, syncTaskStreamTaskPatch, taskStreamMessage(event), realtime.GlobalSyncTaskHub.EventID(event.Payload.Sequence))
 		}); err != nil {
@@ -309,7 +310,7 @@ func completeTaskMessage(payload realtime.SyncTaskEventPayload) syncTaskStreamMe
 }
 
 func isTerminalSyncTask(task *models.Sync) bool {
-	return task.Status == models.SyncStatusCompleted || task.Status == models.SyncStatusFailed
+	return task.SyncTaskEventPayload().IsTerminal()
 }
 
 func replaySyncTaskEvents(streamCtx context.Context, replay []realtime.TaskStreamEvent, write func(realtime.TaskStreamEvent) error) error {

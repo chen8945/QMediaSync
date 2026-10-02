@@ -1,6 +1,7 @@
 package syncstrm
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -15,7 +16,10 @@ import (
 
 // 启动路径队列调度器
 func (s *SyncStrm) StartOther() {
-	s.Sync.UpdateSubStatus(models.SyncSubStatusProcessNetFileList)
+	if err := s.updateSyncSubStatus(models.SyncSubStatusProcessNetFileList); err != nil {
+		s.PathErrChan <- err
+		return
+	}
 
 	eg, ctx := errgroup.WithContext(s.Context)
 	workerCount := max(int(s.PathWorkerMax)+3, 1)
@@ -98,17 +102,18 @@ func (s *SyncStrm) StartOther() {
 		for {
 			fileItems, err = s.SyncDriver.GetNetFileFiles(ctx, pathItem.Path, pathItem.PathId)
 			if err != nil {
+				if isFatalSyncError(err) {
+					return err
+				}
 				if retryCount >= models.SettingsGlobal.OpenlistRetry {
 					s.Sync.Logger.Errorf("重试 %d 次后，获取目录 %s 下的文件列表失败：%v", models.SettingsGlobal.OpenlistRetry, pathItem.Path, err)
-					select {
-					case s.PathErrChan <- err:
-					default:
-					}
-					return err
+					return s.recordOtherDirectoryFailure(ctx, pathItem, err)
 				} else {
 					retryCount++
-					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，休息 1 分钟后重试第 1 次：%v", pathItem.Path, err)
-					time.Sleep(time.Duration(models.SettingsGlobal.OpenlistRetryDelay) * time.Second)
+					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，等待 %d 秒后重试第 %d 次：%v", pathItem.Path, models.SettingsGlobal.OpenlistRetryDelay, retryCount, err)
+					if err := waitForScanRetry(ctx, time.Duration(models.SettingsGlobal.OpenlistRetryDelay)*time.Second); err != nil {
+						return err
+					}
 					continue apiloop
 				}
 			}
@@ -121,33 +126,62 @@ func (s *SyncStrm) StartOther() {
 		s.Sync.Logger.Infof("请求完成，目录 %s 下共有 %d 个文件和子目录", pathItem.Path, len(fileItems))
 		// 递归处理子目录
 		for _, fileItem := range fileItems {
-			if s.IsExcludeName(filepath.Base(fileItem.FileName)) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if fileItem == nil {
+				if err := s.recordOtherDirectoryFailure(ctx, pathItem, fmt.Errorf("文件列表包含空记录")); err != nil {
+					return err
+				}
+				continue
+			}
+			// 普通文件由 ValidFile 检查；目录和带路径的名称保留原有检查。
+			baseName := filepath.Base(fileItem.FileName)
+			if (fileItem.FileType == v115open.TypeDir || baseName != fileItem.FileName) && s.IsExcludeName(baseName) {
 				s.Sync.Logger.Warnf("文件 %s 被排除，跳过它和其下所有内容", fileItem.FileName)
+				s.recordFileSkipped(fileItem)
 				continue
 			}
 			if fileItem.FileType == v115open.TypeDir {
 				fileItem.GetLocalFilePath(s.TargetPath, s.SourcePath) // 生成本地路径缓存
 				// 放入临时表
-				s.memSyncCache.Insert(fileItem)
+				if err := s.memSyncCache.Insert(fileItem); err != nil {
+					if err := s.recordOtherDirectoryFailure(ctx, pathItem, err); err != nil {
+						return err
+					}
+					continue
+				}
 				// 继续处理该目录下的文件
 				subPath := pathQueueItem{
-					Path:   fileItem.GetFullRemotePath(),
-					PathId: fileItem.GetFileId(),
+					Path:     fileItem.GetFullRemotePath(),
+					PathId:   fileItem.GetFileId(),
+					PickCode: fileItem.PickCode,
 				}
 				s.Sync.Logger.Debugf("发现子目录 %s，准备放入路径队列继续处理", subPath.Path)
 				enqueue(subPath)
 			} else {
 				// 处理文件
 				if !s.ValidFile(fileItem) {
+					s.recordFileSkipped(fileItem)
 					continue
 				}
 				fileItem.GetLocalFilePath(s.TargetPath, s.SourcePath) // 生成本地路径缓存
 				// s.Sync.Logger.Infof("发现文件：%s 文件名：%s", fileItem.LocalFilePath, fileItem.FileName)
 				// 放入临时表
-				s.memSyncCache.Insert(fileItem)
-				// s.Sync.Logger.Infof("文件加入临时表：%s", fileItem.LocalFilePath)
-				// 处理文件
-				s.processNetFile(fileItem)
+				if err := s.memSyncCache.Insert(fileItem); err != nil {
+					if err := s.recordOtherDirectoryFailure(ctx, pathItem, err); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := s.processNetFile(fileItem); err != nil {
+					if isFatalSyncError(err) {
+						return err
+					}
+					s.recordFileFailure(fileItem, err)
+					continue
+				}
+				s.recordFileSuccess(fileItem)
 				// s.Sync.Logger.Infof("文件处理完成：%s", fileItem.LocalFilePath)
 			}
 		}
@@ -187,6 +221,11 @@ func (s *SyncStrm) StartOther() {
 
 	if err := eg.Wait(); err != nil {
 		s.Sync.Logger.Errorf("路径处理失败：%v", err)
+		s.PathErrChan <- err
+		return
+	}
+	if err := s.Context.Err(); err != nil {
+		s.PathErrChan <- err
 		return
 	}
 	s.Sync.Logger.Infof("已经遍历了全部目录")
@@ -200,6 +239,9 @@ func (s *SyncStrm) StartFile() error {
 		s.Sync.Logger.Errorf("获取文件 %s 详情失败：%v", s.SourcePath, err)
 		return err
 	}
+	if s.scopeRelease != nil && !sameSourceDirectory(filepath.Dir(s.SourcePath), file.GetPath()) {
+		return fmt.Errorf("文件所在目录已变更，请重新生成 STRM：%s", file.GetFullRemotePath())
+	}
 	if !file.IsVideo {
 		s.Sync.Logger.Warnf("文件 %s 不是视频文件，跳过", file.FileName)
 		return fmt.Errorf("文件 %s 不是视频文件，跳过", file.FileName)
@@ -208,8 +250,26 @@ func (s *SyncStrm) StartFile() error {
 	// 验证文件有效性
 	if !s.ValidFile(file) {
 		s.Sync.Logger.Warnf("文件 %s 无效，跳过", file.FileName)
+		s.recordFileSkipped(file)
 		return nil
 	}
 	// 生成 STRM
-	return s.processNetFile(file)
+	if err := s.processNetFile(file); err != nil {
+		s.recordFileFailure(file, err)
+		return err
+	}
+	s.recordFileSuccess(file)
+	return nil
+}
+
+// waitForScanRetry 保留既有等待时长，并在取消后立即结束重试。
+func waitForScanRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
 }

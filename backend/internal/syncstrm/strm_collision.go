@@ -34,7 +34,7 @@ func lockStrmTarget(targetPath string) func() {
 	return lock.Unlock
 }
 
-// selectLatest115StrmOwners 为每个本地 STRM 路径选择上传时间最新的 115 文件。
+// selectLatest115StrmOwners 为每个本地 STRM 路径选择修改时间最新的 115 文件。
 func selectLatest115StrmOwners(files []*SyncFileCache) map[string]*SyncFileCache {
 	owners := make(map[string]*SyncFileCache)
 	for _, file := range files {
@@ -60,6 +60,12 @@ func isNewer115StrmCandidate(candidate, current *SyncFileCache) bool {
 // process115CollectedFiles 在 115 文件和路径收集完成后统一处理文件。
 func (s *SyncStrm) process115CollectedFiles() error {
 	files := s.memSyncCache.ListAllFiles()
+	unknownNames := make(map[string]bool)
+	for _, file := range files {
+		if file != nil && file.IsVideo && file.Path == "" {
+			unknownNames[strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))] = true
+		}
+	}
 	owners := selectLatest115StrmOwners(files)
 	conflicts := make(map[string][]*SyncFileCache)
 	for _, file := range files {
@@ -85,7 +91,7 @@ func (s *SyncStrm) process115CollectedFiles() error {
 		}
 		sort.Strings(names)
 		s.Sync.Logger.Warnf(
-			"[STRM 路径冲突] 目标 %s 存在 %d 个远端视频：%s，选择上传时间最新的 %s",
+			"[STRM 路径冲突] 目标 %s 存在 %d 个远端视频：%s，选择修改时间最新的 %s",
 			targetPath,
 			len(candidates),
 			strings.Join(names, "、"),
@@ -103,14 +109,26 @@ func (s *SyncStrm) process115CollectedFiles() error {
 	})
 
 	eg, ctx := errgroup.WithContext(s.Context)
-	eg.SetLimit(int(s.PathWorkerMax))
+	eg.SetLimit(max(1, int(s.PathWorkerMax)))
 	for _, file := range files {
+		if ctx.Err() != nil {
+			break
+		}
 		if file == nil || file.FileType == v115open.TypeDir {
 			continue
 		}
+		if file.Path == "" {
+			// 没有可信路径，不能向目标根写入或把文件当作已处理。
+			continue
+		}
 		if file.IsVideo {
+			if (s.sync115 != nil && s.sync115.incompletePages) || unknownNames[strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))] {
+				// 未知页可能包含任何同名候选；已知文件的未知路径只影响相同 basename。
+				continue
+			}
 			targetPath := filepath.ToSlash(filepath.Clean(file.LocalFilePath))
 			if owners[targetPath] != file {
+				s.recordFileSkipped(file)
 				continue
 			}
 		}
@@ -119,16 +137,34 @@ func (s *SyncStrm) process115CollectedFiles() error {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
-				return s.processNetFile(file)
+				if err := s.processNetFile(file); err != nil {
+					s.recordFileFailure(file, err)
+					if isFatalSyncError(err) {
+						return err
+					}
+					return nil
+				}
+				s.recordFileSuccess(file)
+				return nil
 			}
 		})
 	}
-	return eg.Wait()
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+	return s.Context.Err()
 }
 
 func resolveLatest115StrmOwner(ctx context.Context, syncer *SyncStrm, file *SyncFileCache) (bool, error) {
+	return resolveLatest115StrmOwnerWithDirectory(ctx, syncer, file, &generationDirectory{})
+}
+
+func resolveLatest115StrmOwnerWithDirectory(ctx context.Context, syncer *SyncStrm, file *SyncFileCache, directory *generationDirectory) (bool, error) {
 	if syncer == nil || file == nil || file.SourceType != models.SourceType115 || !file.IsVideo {
 		return true, nil
+	}
+	if syncer.generationSkipReason(file) != "" {
+		return false, nil
 	}
 	targetPath := file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath)
 	if targetPath == "" {
@@ -154,7 +190,8 @@ func resolveLatest115StrmOwner(ctx context.Context, syncer *SyncStrm, file *Sync
 		return false, fmt.Errorf("检查同路径 STRM 冲突失败：同步驱动为空")
 	}
 
-	remoteFiles, err := syncer.SyncDriver.GetNetFileFiles(ctx, file.Path, file.ParentId)
+	// 同名归属仍读取当前目录，不能用上一项的快照决定跳过或源文件清理。
+	remoteFiles, err := directory.listFresh(ctx, syncer, file)
 	if err != nil {
 		return false, fmt.Errorf("检查同路径 STRM 冲突失败：%w", err)
 	}
@@ -175,7 +212,7 @@ func resolveLatest115StrmOwner(ctx context.Context, syncer *SyncStrm, file *Sync
 			candidate.Path = file.Path
 		}
 		candidate.IsVideo = syncer.IsValidVideoExt(candidate.FileName)
-		if !candidate.IsVideo {
+		if !candidate.IsVideo || syncer.generationSkipReason(candidate) != "" {
 			continue
 		}
 		candidateTargetPath := candidate.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath)
@@ -197,7 +234,7 @@ func resolveLatest115StrmOwner(ctx context.Context, syncer *SyncStrm, file *Sync
 	isOwner := owner.GetFileId() == file.GetFileId()
 	if !isOwner {
 		syncer.Sync.Logger.Warnf(
-			"[STRM 路径冲突] 目标 %s 选择上传时间最新的 %s，跳过 %s",
+			"[STRM 路径冲突] 目标 %s 选择修改时间最新的 %s，跳过 %s",
 			targetPath,
 			owner.FileName,
 			file.FileName,

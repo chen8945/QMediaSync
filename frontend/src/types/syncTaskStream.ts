@@ -1,10 +1,28 @@
-export interface SyncTask {
+export type SyncTaskStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6
+
+export interface SyncLedgerState {
+  ledger_status?:
+    'not_required' | 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | null
+  ledger_finished_at?: number | null
+  ledger_error?: string
+}
+
+export interface SyncScanResult {
+  succeeded_files: number
+  failed_files: number
+  skipped_files: number
+  failures: { kind: 'file' | 'directory'; path: string; file_id?: string; reason: string }[]
+  cleanup_status: 'completed' | 'partial' | 'skipped'
+  cleanup_reason: string
+}
+
+export interface SyncTask extends SyncLedgerState {
   id: number
   sync_path_id: number
   created_at: number
   updated_at: number
   finish_at: number
-  status: 0 | 1 | 2 | 3
+  status: SyncTaskStatus
   sub_status: 0 | 1 | 2
   total: number
   new_strm: number
@@ -17,9 +35,10 @@ export interface SyncTask {
   local_path: string
   remote_path: string
   fail_reason: string
+  scan_result?: SyncScanResult | null
 }
 
-export interface SyncTaskEventPayload {
+export interface SyncTaskEventPayload extends SyncLedgerState {
   sync_id: number
   sync_path_id: number
   status: number
@@ -41,6 +60,7 @@ export interface SyncTaskEventPayload {
   local_path?: string
   remote_path?: string
   fail_reason?: string
+  scan_result?: SyncScanResult | null
   deleted?: boolean
   resync_reason?: string
 }

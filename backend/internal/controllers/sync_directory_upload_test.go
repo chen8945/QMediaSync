@@ -28,7 +28,7 @@ func TestSyncPathAggregateRegexSaveRoundTripAndValidation(t *testing.T) {
 	t.Cleanup(func() {
 		newSyncPathConfigService, helpers.AppLogger = originalFactory, originalLogger
 	})
-	testDB := setupControllerTestDB(t, &models.Account{}, &models.SyncPath{},
+	testDB := setupControllerTestDB(t, &models.Account{}, &models.SyncPath{}, &models.SyncFile{},
 		&models.DirectoryUploadRule{}, &models.SyncPathIdempotencyRecord{})
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	newSyncPathConfigService = func() *syncconfig.Service {
@@ -120,6 +120,7 @@ func TestUpdateSyncPathAggregateReloadsDirectoryUploadServiceWhenMasterSwitchCha
 		t,
 		&models.Account{},
 		&models.SyncPath{},
+		&models.SyncFile{},
 		&models.DirectoryUploadRule{},
 		&models.DirectoryUploadProcessedFile{},
 	)

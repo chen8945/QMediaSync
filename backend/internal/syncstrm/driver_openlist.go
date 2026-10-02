@@ -112,6 +112,9 @@ func (d *openListDriver) CreateDirRecursively(ctx context.Context, path string) 
 	for i := range slices.Backward(pathParts) {
 		dir := filepath.Join(pathParts[:i+1]...)
 		fsDetail, err := d.client.FileDetail(dir)
+		if isFatalSyncError(err) {
+			return "", "", fmt.Errorf("查询目录失败：%s，错误：%w", dir, err)
+		}
 		if err != nil || (fsDetail != nil && fsDetail.Name == "") {
 			notExistIndex = i
 			continue
@@ -127,7 +130,7 @@ func (d *openListDriver) CreateDirRecursively(ctx context.Context, path string) 
 		dir := filepath.Join(pathParts[:i+1]...)
 		err := d.client.Mkdir(dir)
 		if err != nil {
-			return "", "", fmt.Errorf("创建目录失败：%s，错误：%v", dir, err)
+			return "", "", fmt.Errorf("创建目录失败：%s，错误：%w", dir, err)
 		}
 		// fullLocalPath := filepath.ToSlash(filepath.Join(d.s.TargetPath, dir))
 		// 将新添加的目录加入同步缓存

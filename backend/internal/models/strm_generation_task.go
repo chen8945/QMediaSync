@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -44,6 +45,7 @@ const (
 	StrmGenerationStatusFinalizing      StrmGenerationStatus = "finalizing"
 	StrmGenerationStatusWaitingChildren StrmGenerationStatus = "waiting_children"
 	StrmGenerationStatusCompleted       StrmGenerationStatus = "completed"
+	StrmGenerationStatusSkipped         StrmGenerationStatus = "skipped"
 	StrmGenerationStatusFailed          StrmGenerationStatus = "failed"
 	StrmGenerationStatusCancelled       StrmGenerationStatus = "cancelled"
 )
@@ -75,6 +77,8 @@ type StrmGenerationTask struct {
 	TotalItems    int    `json:"total_items"`
 	AcceptedItems int    `json:"accepted_items"`
 	FailedItems   int    `json:"failed_items"`
+	SkippedItems  int    `json:"skipped_items" gorm:"default:0"`
+	SkipReason    string `json:"skip_reason" gorm:"type:text;default:''"`
 	ChangedItems  int    `json:"changed_items"`
 	NewMetaItems  int    `json:"new_meta_items"`
 
@@ -233,6 +237,7 @@ func archiveStrmGenerationTaskRequestHash(tx *gorm.DB, taskID uint, requestHash 
 // StrmGenerationParentProgress 描述父任务需要累计的子任务结果。
 type StrmGenerationParentProgress struct {
 	Accepted       int
+	Skipped        int
 	Failed         int
 	Changed        int
 	NewMeta        int
@@ -287,7 +292,7 @@ func (task *StrmGenerationTask) IsReadyToSubmitRefresh() bool {
 	if task.TotalItems == 0 {
 		return false
 	}
-	return task.AcceptedItems+task.FailedItems >= task.TotalItems
+	return task.AcceptedItems+task.FailedItems+task.SkippedItems >= task.TotalItems
 }
 
 func normalizeEmbyRefreshTargets(targets []EmbyRefreshTarget) []EmbyRefreshTarget {
@@ -423,6 +428,80 @@ func (task *StrmGenerationTask) MarkFailed(message string) error {
 	return db.Db.Save(task).Error
 }
 
+// MarkRunningFinalizationFailed 仅将仍在运行的独立文件任务记为收尾失败，不覆盖其他终态。
+func (task *StrmGenerationTask) MarkRunningFinalizationFailed(ctx context.Context, message string) error {
+	now := time.Now().Unix()
+	result := db.Db.WithContext(ctx).Model(&StrmGenerationTask{}).
+		Where("id = ? AND status = ? AND COALESCE(parent_task_id, 0) = 0", task.ID, StrmGenerationStatusRunning).
+		Where("COALESCE(task_type, '') IN ?", []StrmGenerationTaskType{StrmGenerationTaskTypeFile, ""}).
+		Updates(map[string]any{
+			"status":          StrmGenerationStatusFailed,
+			"retry_count":     gorm.Expr("COALESCE(retry_count, 0) + 1"),
+			"last_retry_time": now,
+			"last_error":      message,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("STRM 独立文件任务状态已变化，未标记收尾失败")
+	}
+	task.Status = StrmGenerationStatusFailed
+	task.RetryCount++
+	task.LastRetryTime = now
+	task.LastError = message
+	return nil
+}
+
+// RetireStrmGenerationTasksForMissingSyncPath 重新确认目录缺失，并原子保存任务组和父进度。
+// 返回 true 表示目录确实缺失；数据库错误和取消不能被当作目录删除。
+func RetireStrmGenerationTasksForMissingSyncPath(ctx context.Context, syncPathID uint) (bool, error) {
+	missing := false
+	err := db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var sp SyncPath
+		err := tx.Where("id = ?", syncPathID).First(&sp).Error
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		missing = true
+		message := fmt.Sprintf("同步目录已删除（ID: %d），STRM 任务无法继续；保留已生成文件和上传源文件", syncPathID)
+		var afterID uint
+		for {
+			var tasks []StrmGenerationTask
+			if err := tx.Where("sync_path_id = ? AND id > ? AND status IN ?", syncPathID, afterID,
+				[]StrmGenerationStatus{StrmGenerationStatusPending, StrmGenerationStatusRunning, StrmGenerationStatusFinalizing, StrmGenerationStatusWaitingChildren}).
+				Order("id ASC").Limit(256).Find(&tasks).Error; err != nil {
+				return err
+			}
+			for _, task := range tasks {
+				result := tx.Model(&StrmGenerationTask{}).Where("id = ? AND status = ?", task.ID, task.Status).
+					Updates(map[string]any{"status": StrmGenerationStatusFailed, "last_error": message})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected == 0 || task.ParentTaskId == 0 {
+					continue
+				}
+				// finalizing 已累计生成或跳过结果，只记录收尾失败，不能再累计一次。
+				if task.Status == StrmGenerationStatusPending || task.Status == StrmGenerationStatusRunning {
+					if _, err := updateStrmGenerationParentProgressWithDB(tx, task.ParentTaskId, StrmGenerationParentProgress{Failed: 1}); err != nil {
+						return err
+					}
+				}
+				if err := tx.Model(&StrmGenerationTask{}).Where("id = ?", task.ParentTaskId).
+					Updates(map[string]any{"status": StrmGenerationStatusFailed, "last_error": message}).Error; err != nil {
+					return err
+				}
+			}
+			if len(tasks) < 256 {
+				return nil
+			}
+			afterID = tasks[len(tasks)-1].ID
+		}
+	})
+	return missing && err == nil, err
+}
+
 // MarkStrmGenerationChildFailed 原子标记子任务失败并累计父任务失败进度。
 func MarkStrmGenerationChildFailed(childTaskID uint, parentTaskID uint, message string) (*StrmGenerationTask, error) {
 	if childTaskID == 0 {
@@ -480,12 +559,30 @@ func (task *StrmGenerationTask) MarkRunning() error {
 	return nil
 }
 
+// ReturnPending 将尚未写入文件、仍需等待依赖的任务放回队列。
+func (task *StrmGenerationTask) ReturnPending() error {
+	result := db.Db.Model(&StrmGenerationTask{}).Where("id = ? AND status = ?", task.ID, StrmGenerationStatusRunning).
+		Updates(map[string]any{"status": StrmGenerationStatusPending, "file_id": task.FileId, "pick_code": task.PickCode,
+			"parent_id": task.ParentId, "path": task.Path, "file_name": task.FileName, "file_size": task.FileSize, "mtime": task.Mtime, "sha1": task.Sha1})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("STRM 生成任务状态已变化")
+	}
+	task.Status = StrmGenerationStatusPending
+	return nil
+}
+
 // MarkCompleted 标记 STRM 生成任务执行完成。
 func (task *StrmGenerationTask) MarkCompleted() error {
 	if task == nil {
 		return errors.New("STRM 生成任务为空")
 	}
 	task.Status = StrmGenerationStatusCompleted
+	if task.SkipReason != "" {
+		task.Status = StrmGenerationStatusSkipped
+	}
 	task.LastError = ""
 	return db.Db.Save(task).Error
 }
@@ -501,6 +598,8 @@ func (task *StrmGenerationTask) MarkDirectoryScanExpanded(totalItems int) error 
 	task.TotalItems = totalItems
 	task.AcceptedItems = 0
 	task.FailedItems = 0
+	task.SkippedItems = 0
+	task.SkipReason = ""
 	task.ChangedItems = 0
 	task.NewMetaItems = 0
 	task.LastError = ""
@@ -512,20 +611,73 @@ func (task *StrmGenerationTask) MarkDirectoryScanExpanded(totalItems int) error 
 	return db.Db.Save(task).Error
 }
 
-// GetPendingStrmGenerationTasks 按创建顺序获取待执行或待收尾 STRM 生成任务。
+const strmGenerationQueueOrder = "CASE WHEN status = 'finalizing' AND last_retry_time > 0 THEN last_retry_time ELSE created_at END"
+const strmGenerationQueueActive = "status IN ('pending', 'finalizing')"
+
+// StrmGenerationTaskCursor 保存队列排序位置，避免前页状态变化导致跳过后续项。
+type StrmGenerationTaskCursor struct {
+	Time int64
+	ID   uint
+}
+
+// QueueCursor 返回任务当前的公平排队位置。
+func (task *StrmGenerationTask) QueueCursor() *StrmGenerationTaskCursor {
+	queuedAt := task.CreatedAt
+	if task.Status == StrmGenerationStatusFinalizing && task.LastRetryTime > 0 {
+		queuedAt = task.LastRetryTime
+	}
+	return &StrmGenerationTaskCursor{Time: queuedAt, ID: task.ID}
+}
+
+// GetPendingStrmGenerationTasks 获取已到执行时间的任务，较早等待的任务优先。
 func GetPendingStrmGenerationTasks(limit int) ([]*StrmGenerationTask, error) {
+	return GetPendingStrmGenerationTaskPage(limit, nil, time.Now().Unix())
+}
+
+func pendingStrmGenerationTaskQuery(conn *gorm.DB, limit int, after *StrmGenerationTaskCursor, now int64) *gorm.DB {
 	if limit <= 0 {
 		limit = 10
 	}
+	// 固定状态谓词与部分索引一致，PostgreSQL 的预备语句也能确定索引适用。
+	query := conn.Model(&StrmGenerationTask{}).Where(strmGenerationQueueActive).
+		Where("status = 'pending' OR last_retry_time IS NULL OR last_retry_time = 0 OR last_retry_time <= ?", now-5)
+	if after != nil {
+		// SQLite 对表达式元组比较只做过滤；显式下界让它从游标时间开始索引查找。
+		query = query.Where(strmGenerationQueueOrder+" >= ?", after.Time).
+			Where("("+strmGenerationQueueOrder+", id) > (?, ?)", after.Time, after.ID)
+	}
+	return query.Order(strmGenerationQueueOrder + " ASC").Order("id ASC").Limit(limit)
+}
+
+// GetPendingStrmGenerationTaskPage 按排序游标筛选依赖；筛选完成前不要更新队列。
+func GetPendingStrmGenerationTaskPage(limit int, after *StrmGenerationTaskCursor, now int64) ([]*StrmGenerationTask, error) {
 	var tasks []*StrmGenerationTask
-	err := db.Db.Where("status IN ?", []StrmGenerationStatus{
-		StrmGenerationStatusPending,
-		StrmGenerationStatusFinalizing,
-	}).
-		Order("id ASC").
-		Limit(limit).
-		Find(&tasks).Error
+	err := pendingStrmGenerationTaskQuery(db.Db, limit, after, now).Find(&tasks).Error
 	return tasks, err
+}
+
+// GetStrmGenerationFinalizingRetries 返回尚未成功收尾的重试项，包括退避中的任务。
+func GetStrmGenerationFinalizingRetries() ([]*StrmGenerationTask, error) {
+	var tasks []*StrmGenerationTask
+	err := db.Db.Where("status = ? AND retry_count > 0", StrmGenerationStatusFinalizing).Order("id ASC").Find(&tasks).Error
+	return tasks, err
+}
+
+// MarkFinalizingRetry 保存收尾错误；生成结果和父任务计数保持不变。
+func (task *StrmGenerationTask) MarkFinalizingRetry(message string) error {
+	now := time.Now().Unix()
+	result := db.Db.Model(&StrmGenerationTask{}).Where("id = ? AND status = ?", task.ID, StrmGenerationStatusFinalizing).
+		Updates(map[string]any{"retry_count": gorm.Expr("COALESCE(retry_count, 0) + 1"), "last_retry_time": now, "last_error": message})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("STRM 收尾任务状态已变化")
+	}
+	task.RetryCount++
+	task.LastRetryTime = now
+	task.LastError = message
+	return nil
 }
 
 // ResetRunningStrmGenerationTasks 将进程退出前的运行中任务恢复为待处理。
@@ -606,6 +758,7 @@ func updateStrmGenerationParentProgressWithDB(tx *gorm.DB, parentTaskId uint, pr
 		Updates(map[string]any{
 			"accepted_items": gorm.Expr("accepted_items + ?", progress.Accepted),
 			"failed_items":   gorm.Expr("failed_items + ?", progress.Failed),
+			"skipped_items":  gorm.Expr("COALESCE(skipped_items, 0) + ?", progress.Skipped),
 			"changed_items":  gorm.Expr("changed_items + ?", progress.Changed),
 			"new_meta_items": gorm.Expr("new_meta_items + ?", progress.NewMeta),
 		}).Error; err != nil {
@@ -616,7 +769,7 @@ func updateStrmGenerationParentProgressWithDB(tx *gorm.DB, parentTaskId uint, pr
 	if err := tx.First(&parent, parentTaskId).Error; err != nil {
 		return nil, err
 	}
-	processedItems := parent.AcceptedItems + parent.FailedItems
+	processedItems := parent.AcceptedItems + parent.FailedItems + parent.SkippedItems
 	hasFixedTotalItems := parent.TotalItems > 0
 	updates := map[string]any{}
 	if parent.TotalItems < processedItems {
@@ -629,6 +782,11 @@ func updateStrmGenerationParentProgressWithDB(tx *gorm.DB, parentTaskId uint, pr
 		if parent.FailedItems > 0 {
 			parent.Status = StrmGenerationStatusFailed
 			updates["status"] = parent.Status
+		} else if parent.AcceptedItems == 0 && parent.SkippedItems > 0 {
+			parent.Status = StrmGenerationStatusSkipped
+			parent.SkipReason = "所有子项均已跳过"
+			updates["status"] = parent.Status
+			updates["skip_reason"] = parent.SkipReason
 		} else {
 			parent.Status = StrmGenerationStatusCompleted
 			parent.LastError = ""
@@ -673,4 +831,37 @@ func MarkStrmGenerationRefreshSubmitted(parentTaskId uint) error {
 	return db.Db.Model(&StrmGenerationTask{}).
 		Where("id = ?", parentTaskId).
 		Update("refresh_submitted", true).Error
+}
+
+// MarkSkipping 保存跳过原因并累计父任务，随后完成刷新等收尾。
+func (task *StrmGenerationTask) MarkSkipping(reason string) (*StrmGenerationTask, error) {
+	skipped := 1
+	// 未展开的目录没有已枚举子项，不猜测跳过的文件数量。
+	if task.TaskType == StrmGenerationTaskTypeDirectoryScan {
+		skipped = 0
+	}
+	var parent *StrmGenerationTask
+	err := db.Db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&StrmGenerationTask{}).Where("id = ? AND status = ?", task.ID, StrmGenerationStatusRunning).
+			Updates(map[string]any{"status": StrmGenerationStatusFinalizing, "skip_reason": reason, "skipped_items": skipped, "last_error": ""})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return errors.New("STRM 任务状态不可跳过")
+		}
+		if task.ParentTaskId > 0 {
+			var err error
+			parent, err = updateStrmGenerationParentProgressWithDB(tx, task.ParentTaskId, StrmGenerationParentProgress{Skipped: 1})
+			return err
+		}
+		return nil
+	})
+	if err == nil {
+		task.Status = StrmGenerationStatusFinalizing
+		task.SkipReason = reason
+		task.SkippedItems = skipped
+		task.LastError = ""
+	}
+	return parent, err
 }

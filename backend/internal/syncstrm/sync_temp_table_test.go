@@ -1,8 +1,11 @@
 package syncstrm
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log"
+	"slices"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -12,6 +15,79 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 )
+
+func TestHandleTempTableDiffDeletesExactIDs(t *testing.T) {
+	for _, count := range []int{0, 1, 255, 256, 257, 999, 1000, 1001, 2000, 2001, 2501} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			setupSyncStateTestDB(t)
+			rows := make([]models.SyncFile, count+1)
+			for i := range rows {
+				rows[i] = models.SyncFile{SyncPathId: 1, FileId: fmt.Sprint(i)}
+			}
+			rows[count].SyncPathId = 2
+			if err := db.Db.CreateInBatches(rows, 100).Error; err != nil {
+				t.Fatal(err)
+			}
+			s := &SyncStrm{Context: t.Context(), Account: &models.Account{}, SyncPathId: 1, Sync: &models.Sync{Logger: helpers.AppLogger}, memSyncCache: NewMemorySyncCache(1)}
+			if err := s.handleTempTableDiff(); err != nil {
+				t.Fatal(err)
+			}
+			var got []uint
+			if err := db.Db.Model(&models.SyncFile{}).Order("id").Pluck("id", &got).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, []uint{rows[count].ID}) {
+				t.Fatalf("剩余 ID = %v，期望仅保留其他目录的 %d", got, rows[count].ID)
+			}
+		})
+	}
+}
+
+func TestHandleTempTableDiffPreservesPartialDeleteOnFailure(t *testing.T) {
+	setupSyncStateTestDB(t)
+	rows := make([]models.SyncFile, 2501)
+	for i := range rows {
+		rows[i] = models.SyncFile{SyncPathId: 1, FileId: fmt.Sprint(i)}
+	}
+	if err := db.Db.CreateInBatches(rows, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("second delete failed")
+	calls := 0
+	if err := db.Db.Callback().Delete().Before("gorm:delete").Register("fail_second_delete", func(tx *gorm.DB) {
+		calls++
+		if calls == 2 {
+			tx.AddError(wantErr)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &SyncStrm{Context: t.Context(), Account: &models.Account{}, SyncPathId: 1, Sync: &models.Sync{Logger: helpers.AppLogger}, memSyncCache: NewMemorySyncCache(1)}
+	if err := s.handleTempTableDiff(); !errors.Is(err, wantErr) {
+		t.Fatalf("错误 = %v，期望 %v", err, wantErr)
+	}
+	var got []uint
+	if err := db.Db.Model(&models.SyncFile{}).Order("id").Pluck("id", &got).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := make([]uint, 0, len(rows)-256)
+	for _, row := range rows[256:] {
+		want = append(want, row.ID)
+	}
+	if calls != 2 || !slices.Equal(got, want) {
+		t.Fatalf("失败后已提交/未开始批次不符：calls=%d，剩余 ID=%v", calls, got)
+	}
+	if err := db.Db.Callback().Delete().Remove("fail_second_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.handleTempTableDiff(); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int64
+	if err := db.Db.Model(&models.SyncFile{}).Count(&remaining).Error; err != nil || remaining != 0 {
+		t.Fatalf("重跑未收敛：remaining=%d err=%v", remaining, err)
+	}
+}
 
 func TestHandleTempTableDiffRefreshesOpenListRemoteIdentity(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
@@ -51,6 +127,7 @@ func TestHandleTempTableDiffRefreshesOpenListRemoteIdentity(t *testing.T) {
 	}
 
 	syncer := &SyncStrm{
+		Context:      t.Context(),
 		Account:      &models.Account{},
 		Sync:         &models.Sync{Logger: helpers.AppLogger},
 		SyncPathId:   1,
@@ -106,6 +183,7 @@ func TestHandleTempTableDiffKeepsBaiduPathShapedSyncFile(t *testing.T) {
 	}
 
 	syncer := &SyncStrm{
+		Context:      t.Context(),
 		Account:      &models.Account{},
 		Sync:         &models.Sync{Logger: helpers.AppLogger},
 		SyncPathId:   1,

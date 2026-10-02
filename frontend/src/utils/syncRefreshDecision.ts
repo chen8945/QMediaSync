@@ -29,7 +29,7 @@ export const getEmbyRefreshDecision = ({
     }
   }
 
-  if (status === 3) {
+  if (status === 3 || status === 6) {
     return {
       hasRefreshRelatedChanges: true,
       label: '未提交媒体库刷新',
@@ -38,7 +38,7 @@ export const getEmbyRefreshDecision = ({
     }
   }
 
-  if (status === 2) {
+  if (status === 2 || status === 4 || status === 5) {
     return {
       hasRefreshRelatedChanges: true,
       label: '有刷新相关变更',

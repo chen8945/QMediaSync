@@ -40,6 +40,8 @@ func (d *open115Driver) GetNetFileFiles(ctx context.Context, parentPath, parentP
 	limit := models.GetFileListPageSize()
 	offset := 0
 	fileItems := make([]*SyncFileCache, 0)
+	expectedTotal := -1
+	seen := make(map[string]struct{})
 mainloop:
 	for {
 		select {
@@ -60,8 +62,17 @@ mainloop:
 				d.s.Sync.Logger.Errorf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，%v", parentPathId, offset, limit, err)
 				return nil, err
 			}
-			if len(resp.Data) == 0 {
-				break mainloop
+			if resp == nil {
+				return nil, fmt.Errorf("115 目录列表响应为空")
+			}
+			if expectedTotal < 0 {
+				expectedTotal = resp.Count
+			}
+			if resp.Count != expectedTotal {
+				return nil, fmt.Errorf("115 目录总数在分页期间变化")
+			}
+			if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
+				return nil, err
 			}
 			if resp.PathStr != "" {
 				parentPath = resp.PathStr
@@ -98,7 +109,7 @@ mainloop:
 				fileItems = append(fileItems, &fileItem)
 			}
 			// 如果返回数据不足一页，说明已经取完了
-			if int64(resp.Count) <= int64(limit) {
+			if offset+len(resp.Data) >= expectedTotal {
 				break mainloop
 			}
 		}
@@ -125,6 +136,9 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 	for i := range slices.Backward(pathParts) {
 		dir := filepath.Join(pathParts[:i+1]...)
 		fsDetail, err := d.client.GetFsDetailByPath(ctx, dir)
+		if isFatalSyncError(err) {
+			return "", "", fmt.Errorf("查询目录失败：%s，错误：%w", dir, err)
+		}
 		if err != nil || fsDetail == nil || fsDetail.FileId == "" {
 			notExistIndex = i
 			continue
@@ -140,7 +154,7 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 		currentFileId, err = d.client.MkDir(ctx, lastExistsPathId, filepath.Base(dir))
 		// 完整本地路径
 		if err != nil {
-			return "", "", fmt.Errorf("创建目录失败：%s，错误：%v", dir, err)
+			return "", "", fmt.Errorf("创建目录失败：%s，错误：%w", dir, err)
 		}
 		// 将新添加的目录加入同步缓存
 		syncFileCache := &SyncFileCache{
@@ -169,6 +183,18 @@ func (d *open115Driver) GetPathIdByPath(ctx context.Context, path string) (strin
 	return fsDetail.FileId, nil
 }
 
+// DetailByPath 保留路径查询已经返回的详情，供上传父目录确认复用。
+func (d *open115Driver) DetailByPath(ctx context.Context, path string) (*SyncFileCache, error) {
+	resp, err := d.client.GetFsDetailByPath(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("115 路径详情为空")
+	}
+	return d.fileDetailCache(resp), nil
+}
+
 func (d *open115Driver) MakeStrmContent(sf *SyncFileCache) string {
 	// 生成 URL
 	u, err := url.Parse(d.s.Config.StrmBaseUrl)
@@ -189,10 +215,18 @@ func (d *open115Driver) MakeStrmContent(sf *SyncFileCache) string {
 }
 
 func (d *open115Driver) GetTotalFileCount(ctx context.Context) (int64, string, error) {
-	resp, err := d.client.GetFsList(ctx, d.s.SourcePathId, false, false, false, 0, 1)
-	if err != nil || len(resp.Data) == 0 {
-		d.s.Sync.Logger.Errorf("获取 115 网盘文件总数失败：目录=%s，%v", d.s.SourcePath, err)
+	resp, err := list115FilesPage(ctx, d.client, d.s.SourcePathId, false, false, false, 0, 1)
+	if err != nil {
 		return 0, "", err
+	}
+	if resp == nil {
+		return 0, "", fmt.Errorf("115 文件计数响应为空")
+	}
+	if err := validate115FilePage(resp.Data, int64(resp.Count), 0, 1, make(map[string]struct{})); err != nil {
+		return 0, "", err
+	}
+	if resp.Count == 0 {
+		return 0, "", nil
 	}
 	return int64(resp.Count), resp.Data[0].FileId, nil
 }
@@ -202,8 +236,10 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 	offset := 0
 	limit := models.GetFileListPageSize()
 	pathDirs := make([]pathQueueItem, 0)
+	expectedTotal := -1
+	seen := make(map[string]struct{})
 	for {
-		resp, err := d.client.GetFsList(ctx, pathId, true, true, true, offset, limit)
+		resp, err := list115FilesPage(ctx, d.client, pathId, true, true, true, offset, limit)
 		if err != nil {
 			if err.Error() == "访问频率过高" {
 				// 访问频率过高，暂停 30 秒后重试。
@@ -214,10 +250,19 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 				continue
 			}
 			d.s.Sync.Logger.Errorf("获取 115 网盘目录失败：目录 ID %s，%v", pathId, err)
-			break
+			return nil, err
 		}
-		if len(resp.Data) == 0 {
-			break
+		if resp == nil {
+			return nil, fmt.Errorf("115 子目录列表响应为空")
+		}
+		if expectedTotal < 0 {
+			expectedTotal = resp.Count
+		}
+		if resp.Count != expectedTotal {
+			return nil, fmt.Errorf("115 子目录总数在分页期间变化")
+		}
+		if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
+			return nil, err
 		}
 		for _, file := range resp.Data {
 			if file.Aid != "1" {
@@ -234,7 +279,7 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 				Mtime:  file.ModifiedAt(),
 			})
 		}
-		if resp.Count < limit {
+		if offset+len(resp.Data) >= expectedTotal {
 			break
 		}
 		offset += limit
@@ -256,12 +301,15 @@ func wait115RateLimitRetry(ctx context.Context) error {
 
 // 查询目录下的所有文件
 func (d *open115Driver) GetFilesByPathId(ctx context.Context, rootPathId string, offset, limit int) ([]v115open.File, error) {
-	resp, err := d.client.GetFsList(ctx, rootPathId, false, false, false, offset, limit)
+	resp, err := list115FilesPage(ctx, d.client, rootPathId, false, false, false, offset, limit)
 	if err != nil {
 		return nil, err
 	}
-	if len(resp.Data) == 0 {
-		return nil, nil
+	if resp == nil {
+		return nil, fmt.Errorf("115 文件列表响应为空：offset=%d", offset)
+	}
+	if d.s.sync115 != nil && int64(resp.Count) != d.s.sync115.expectedTotal {
+		return nil, fmt.Errorf("115 文件总数在分页期间变化：offset=%d，预期=%d，实际=%d", offset, d.s.sync115.expectedTotal, resp.Count)
 	}
 	return resp.Data, nil
 }
@@ -272,7 +320,17 @@ func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*Syn
 	if err != nil {
 		return nil, err
 	}
-	parentId := resp.Paths[len(resp.Paths)-1].FileId
+	if resp == nil || resp.FileId != fileId || (len(resp.Paths) == 0 && fileId != "0") {
+		return nil, fmt.Errorf("115 详情缺少匹配身份或祖先路径：file_id=%s", fileId)
+	}
+	return d.fileDetailCache(resp), nil
+}
+
+func (d *open115Driver) fileDetailCache(resp *v115open.FileDetail) *SyncFileCache {
+	parentId := ""
+	if len(resp.Paths) > 0 {
+		parentId = resp.Paths[len(resp.Paths)-1].FileId
+	}
 	// 生成 SyncFileCache
 	fileItem := &SyncFileCache{
 		FileId:     resp.FileId,
@@ -293,7 +351,7 @@ func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*Syn
 		fileItem.IsVideo = d.s.IsValidVideoExt(fileItem.FileName)
 		fileItem.IsMeta = d.s.IsValidMetaExt(fileItem.FileName)
 	}
-	return fileItem, nil
+	return fileItem
 }
 
 // 删除目录下的某些文件

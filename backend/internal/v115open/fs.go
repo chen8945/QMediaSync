@@ -227,6 +227,9 @@ func (c *OpenClient) GetFsListWithOptions(
 		helpers.V115Log.Errorf("解析文件列表接口响应失败：%v", jsonErr)
 		return nil, jsonErr
 	}
+	if !respData.State || respData.Code != 0 || respData.Errno != 0 {
+		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 文件列表请求失败")
+	}
 	// 生成路径字符串
 	pathStr := make([]string, 0, len(respData.Path))
 	for _, item := range respData.Path {

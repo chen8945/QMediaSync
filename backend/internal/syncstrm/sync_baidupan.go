@@ -3,169 +3,187 @@ package syncstrm
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
+	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/v115open"
 )
 
-// 启动百度网盘同步
-// 如果有全量标识，走 StartOther（递归文件夹）。
-// 如果没有全量标识：有 LastSyncAt 时从 LastSyncAt 开始同步（递归接口），否则走 StartOther。
+// StartBaiduPanSync 优先完成当日本地自然日的全量核对，其余轮次按原水位增量扫描。
 func (s *SyncStrm) StartBaiduPanSync() {
 	if !s.TmpSyncPath {
-		// 如果是今天的第一次同步，则执行全量同步
-		// 根据 SyncPathId 查询今天是否有同步记录。
-		// 如果有，从 LastSyncAt 开始同步（走递归接口）。
-		// 如果没有，执行全量同步（走递归文件夹）
-		sync := models.GetTodayFirstSyncByPathId(s.SyncPathId)
-		if sync == nil {
+		previous, err := models.GetTodaySuccessfulFullSyncByPathID(s.Context, s.SyncPathId, s.Sync.ID, time.Now())
+		if err != nil {
+			s.PathErrChan <- fatalSyncError(err)
+			return
+		}
+		if previous == nil {
 			s.FullSync = true
 		}
 	}
 	s.Sync.Logger.Infof("最后同步时间：%s", helpers.FormatUnixLogTime(s.LastSyncAt))
 	if s.FullSync || s.LastSyncAt == 0 {
+		s.FullSync = true
 		s.Sync.Logger.Infof("执行百度网盘全量同步")
 		s.StartOther()
 		return
 	}
-	// 使用增量同步
-	if s.LastSyncAt != 0 {
-		s.Sync.Logger.Infof("从修改时间 %s 开始增量同步", helpers.FormatUnixLogTime(s.LastSyncAt))
-		err := s.StartBaiduPanSyncByMtime(s.LastSyncAt)
-		if err != nil {
-			s.Sync.Logger.Errorf("从修改时间 %s 开始同步失败：%v", helpers.FormatUnixLogTime(s.LastSyncAt), err)
+	s.Sync.Logger.Infof("从修改时间 %s 开始增量同步", helpers.FormatUnixLogTime(s.LastSyncAt))
+	if err := s.StartBaiduPanSyncByMtime(s.LastSyncAt); err != nil {
+		// 只有入口发送一次最终错误；普通扫描缺页按根范围记录，不取消已完成的独立文件。
+		if isFatalSyncError(err) {
 			s.PathErrChan <- err
-			return
+		} else {
+			s.recordScanFailure(s.SourcePath, err)
 		}
-		// 将数据库中的数据加入到缓存中，供后续使用
-		s.LoadSyncFileToCache()
-		return
 	}
-	s.Sync.Logger.Infof("执行百度网盘全量同步")
-	// 非全量且没有 LastSyncAt，执行全量同步。
-	s.StartOther()
 }
 
 func (s *SyncStrm) StartBaiduPanSyncByMtime(lastSyncAt int64) error {
-	// 从 lastSyncAt 开始同步
-	offset := 0
-	reqCount := 0
-mainloop:
+	s.skipMissingCleanup("增量扫描不能证明远端缺项，等待原定全量核对")
+	if err := s.updateSyncSubStatus(models.SyncSubStatusProcessNetFileList); err != nil {
+		return fatalSyncError(err)
+	}
+	// 原始远端事实先登记，包含被当前规则排除的条目，防止旧路径/旧名称回灌。
+	observed := make(map[string]struct{})
+	observedDirs := make(map[string]string)
+	offset, reqCount := 0, 0
 	for {
 		if reqCount > 8 {
-			// 每 8 次，休息 1 分钟
-			time.Sleep(60 * time.Second)
-			reqCount = 0
-		}
-		select {
-		case <-s.Context.Done():
-			return s.Context.Err()
-		default:
-			fileListResp, err := s.SyncDriver.GetFilesByPathMtime(s.Context, s.SourcePath, offset, 1000, lastSyncAt)
-			reqCount++
-			if err != nil {
-				s.Sync.Logger.Errorf("同步修改时间 %s 之后的文件失败，offset=%d，错误：%v", helpers.FormatUnixLogTime(lastSyncAt), offset, err)
-				s.PathErrChan <- err
+			if err := waitForScanRetry(s.Context, 60*time.Second); err != nil {
 				return err
 			}
-			for _, file := range fileListResp.List {
-				atomic.AddInt64(&s.TotalFile, 1)
-				s.PublishProgress(false)
-				if s.IsExcludePath(file.Path) {
-					s.Sync.Logger.Warnf("文件路径 %s 中有排除项，被排除", file.Path)
-					continue
-				}
-				parentPath := filepath.ToSlash(filepath.Dir(file.Path))
-				syncFile := SyncFileCache{
-					ParentId:   parentPath,
-					FileId:     file.Path,
-					PickCode:   fmt.Sprintf("%d", file.FsId),
-					Path:       parentPath,
-					FileName:   filepath.Base(file.Path),
-					FileType:   v115open.TypeFile,
-					FileSize:   int64(file.Size),
-					MTime:      int64(file.ServerMtime),
-					Sha1:       file.Md5,
-					SourceType: models.SourceTypeBaiduPan,
-				}
-				// s.Sync.Logger.Infof("文件 %s => %s 路径 %s", syncFile.FileId, syncFile.FileName, syncFile.LocalFilePath)
+			reqCount = 0
+		}
+		if err := s.Context.Err(); err != nil {
+			return err
+		}
+		response, err := s.SyncDriver.GetFilesByPathMtime(s.Context, s.SourcePath, offset, 1000, lastSyncAt)
+		reqCount++
+		if err != nil {
+			return fmt.Errorf("同步修改时间 %s 之后的文件失败，offset=%d：%w", helpers.FormatUnixLogTime(lastSyncAt), offset, err)
+		}
+		if response == nil || response.HasMore > 1 {
+			return fmt.Errorf("百度网盘增量列表响应无效，offset=%d", offset)
+		}
+		if response.HasMore == 1 && (len(response.List) == 0 || int(response.Cursor) <= offset) {
+			return fmt.Errorf("百度网盘增量列表不完整，offset=%d，cursor=%d，条目数=%d", offset, response.Cursor, len(response.List))
+		}
+		for _, file := range response.List {
+			if err := s.Context.Err(); err != nil {
+				return err
+			}
+			if file == nil || file.Path == "" || !pathWithin(s.SourcePath, file.Path) {
+				return fmt.Errorf("百度网盘增量列表包含无路径或范围外条目，offset=%d", offset)
+			}
+			pickCode := strconv.FormatUint(file.FsId, 10)
+			_, seenPath := observed["path:"+file.Path]
+			_, seenID := observed["id:"+pickCode]
+			if seenPath || (file.FsId != 0 && seenID) {
+				return fmt.Errorf("百度网盘增量列表身份重复，文件=%s，offset=%d", file.Path, offset)
+			}
+			observed["path:"+file.Path] = struct{}{}
+			if file.FsId != 0 {
+				observed["id:"+pickCode] = struct{}{}
 				if file.IsDir == 1 {
-					syncFile.FileType = v115open.TypeDir
-					syncFile.IsVideo = false
-					syncFile.IsMeta = false
-					syncFile.GetLocalFilePath(s.TargetPath, s.SourcePath) // 生成本地路径缓存
-				} else {
-					if !s.ValidFile(&syncFile) {
-						continue
-					}
-					syncFile.GetLocalFilePath(s.TargetPath, s.SourcePath) // 生成本地路径缓存
+					observedDirs[pickCode] = file.Path
 				}
-				// 放入同步缓存
-				err := s.memSyncCache.Insert(&syncFile)
-				if err != nil {
-					s.Sync.Logger.Errorf("文件 %s => %s 插入同步缓存失败：%v", syncFile.FileId, syncFile.FileName, err)
+			}
+			atomic.AddInt64(&s.TotalFile, 1)
+			_ = s.PublishProgress(false)
+			parentPath := filepath.ToSlash(filepath.Dir(file.Path))
+			syncFile := &SyncFileCache{
+				ParentId: parentPath, FileId: file.Path, PickCode: pickCode,
+				Path: parentPath, FileName: filepath.Base(file.Path), FileType: v115open.TypeFile,
+				FileSize: int64(file.Size), MTime: int64(file.ServerMtime), Sha1: file.Md5,
+				SourceType: models.SourceTypeBaiduPan,
+			}
+			if file.IsDir == 1 {
+				syncFile.FileType = v115open.TypeDir
+			}
+			if (syncFile.FileType == v115open.TypeDir && s.IsExcludePath(file.Path)) ||
+				(syncFile.FileType != v115open.TypeDir && !s.ValidFile(syncFile)) {
+				s.recordFileSkipped(syncFile)
+				continue
+			}
+			syncFile.GetLocalFilePath(s.TargetPath, s.SourcePath)
+			if err := s.memSyncCache.Insert(syncFile); err != nil {
+				return err
+			}
+			if syncFile.FileType == v115open.TypeDir {
+				continue
+			}
+			if err := s.processNetFile(syncFile); err != nil {
+				if isFatalSyncError(err) {
 					return err
 				}
-				// s.Sync.Logger.Infof("文件 %s => %s 插入同步缓存成功，路径 %s", syncFile.FileId, syncFile.FileName, syncFile.LocalFilePath)
-				// 如果路径完整，直接处理文件
-				if syncFile.LocalFilePath != "" {
-					s.processNetFile(&syncFile)
-				}
+				s.recordFileFailure(syncFile, err)
+				continue
 			}
-			offset = int(fileListResp.Cursor)
-			if fileListResp.HasMore == 0 || len(fileListResp.List) < 1000 {
-				break mainloop
-			}
+			s.recordFileSuccess(syncFile)
 		}
-	}
-	return nil
-}
-
-func (s *SyncStrm) LoadSyncFileToCache() {
-	s.Sync.Logger.Infof("从数据库中查询上次同步的文件")
-	offset := 0
-	limit := 1000
-	for {
-		syncFiles, err := models.GetFilesBySyncPathId(s.SyncPathId, offset, limit)
-		if err != nil {
-			s.Sync.Logger.Errorf("从数据库中查询上次同步的文件失败，offset=%d，错误：%v", offset, err)
-			return
-		}
-		if len(syncFiles) == 0 {
-			s.Sync.Logger.Infof("从数据库中查询上次同步的文件，offset=%d 没有更多数据", offset)
+		if response.HasMore == 0 {
 			break
 		}
+		// has_more 是递归接口的分页依据；短页仍可能存在后续结果。
+		offset = int(response.Cursor)
+	}
+	return s.LoadSyncFileToCache(observed, observedDirs)
+}
+
+// LoadSyncFileToCache 仅补入本轮未观察到的旧记录，并按当前规则重新检查。
+func (s *SyncStrm) LoadSyncFileToCache(observed map[string]struct{}, observedDirs map[string]string) error {
+	s.Sync.Logger.Infof("从数据库中查询上次同步的文件")
+	const limit = 1000
+	for offset := 0; ; offset += limit {
+		var syncFiles []*models.SyncFile
+		if err := db.Db.WithContext(s.Context).Where("sync_path_id = ?", s.SyncPathId).
+			Order("id").Offset(offset).Limit(limit).Find(&syncFiles).Error; err != nil {
+			return fatalSyncError(fmt.Errorf("从数据库中查询上次同步的文件失败，offset=%d：%w", offset, err))
+		}
 		for _, item := range syncFiles {
-			syncFileCache := SyncFileCache{
-				ParentId:      item.ParentId,
-				FileId:        item.FileId,
-				PickCode:      item.PickCode,
-				Path:          item.Path,
-				FileName:      item.FileName,
-				FileType:      item.FileType,
-				FileSize:      item.FileSize,
-				MTime:         item.MTime,
-				Sha1:          item.Sha1,
-				SourceType:    item.SourceType,
-				LocalFilePath: item.LocalFilePath,
-				IsVideo:       item.IsVideo,
-				IsMeta:        item.IsMeta,
+			if err := s.Context.Err(); err != nil {
+				return err
 			}
-			err := s.memSyncCache.Insert(&syncFileCache)
-			if err != nil {
-				s.Sync.Logger.Errorf("文件 %s => %s 插入同步缓存失败：%v", syncFileCache.FileId, syncFileCache.FileName, err)
-				return
-			} else {
-				// s.Sync.Logger.Infof("文件 %s => %s 插入同步缓存成功，路径 %s", syncFileCache.FileId, syncFileCache.FileName, syncFileCache.LocalFilePath)
+			if newPath, seen := observedDirs[item.PickCode]; seen && item.FileType == v115open.TypeDir &&
+				normalizedScanPath(item.FileId) != normalizedScanPath(newPath) {
+				// 目录的新路径不能证明未返回后代的新路径；保留旧后代，等待原定全量。
+				err := fmt.Errorf("百度网盘目录已移动：%s => %s，增量列表不能确认全部后代", item.FileId, newPath)
+				s.recordScanFailure(item.FileId, err)
+				s.recordScanFailure(newPath, err)
+			}
+			_, seenPath := observed["path:"+item.FileId]
+			_, seenID := observed["id:"+item.PickCode]
+			if seenPath || (item.PickCode != "" && item.PickCode != "0" && seenID) {
+				continue
+			}
+			if _, err := s.memSyncCache.GetByFileId(item.FileId); err == nil {
+				continue
+			}
+			syncFile := &SyncFileCache{
+				ParentId: item.ParentId, FileId: item.FileId, PickCode: item.PickCode,
+				Path: item.Path, FileName: item.FileName, FileType: item.FileType,
+				FileSize: item.FileSize, MTime: item.MTime, Sha1: item.Sha1,
+				SourceType: item.SourceType,
+			}
+			// 普通文件由 ValidFile 检查；旧记录的名称带路径时仍检查完整路径。
+			if ((syncFile.FileType == v115open.TypeDir || filepath.Base(syncFile.FileName) != syncFile.FileName) &&
+				s.IsExcludePath(syncFile.GetFullRemotePath())) ||
+				(syncFile.FileType != v115open.TypeDir && !s.ValidFile(syncFile)) {
+				s.recordFileSkipped(syncFile)
+				continue
+			}
+			syncFile.GetLocalFilePath(s.TargetPath, s.SourcePath)
+			if err := s.memSyncCache.Insert(syncFile); err != nil {
+				return err
 			}
 		}
 		if len(syncFiles) < limit {
-			s.Sync.Logger.Infof("从数据库中查询上次同步的文件，offset=%d 没有更多数据", offset)
-			break
+			return nil
 		}
-		offset += limit
 	}
 }

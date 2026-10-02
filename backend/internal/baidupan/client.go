@@ -360,8 +360,8 @@ func (c *Client) GetAllFiles(ctx context.Context, parentPath string, start int, 
 	}
 	resp, r, err := req.Execute()
 	// 统一处理错误
-	if c.handleError(err, r, resp) != nil {
-		return nil, err
+	if handleErr := c.handleError(err, r, resp); handleErr != nil {
+		return nil, handleErr
 	}
 	// 记录日志
 	// 解码 resp

@@ -48,12 +48,15 @@ func (s *SyncStrm) MakeFullLocalPath(file *models.SyncFile) string {
 
 func (s *SyncStrm) RemoveFileAndCheckDirEmtry(filePath string) error {
 	// 删除文件
+	if s.cleanupProtected(filePath, false) {
+		return nil
+	}
 	if err := os.Remove(filePath); err != nil {
 		return fmt.Errorf("删除文件失败：%w", err)
 	} else {
 		s.Sync.Logger.Infof("删除文件成功：%s", filePath)
 	}
-	if !s.Config.DelEmptyLocalDir {
+	if !s.Config.DelEmptyLocalDir || s.cleanupProtected(filepath.Dir(filePath), true) {
 		return nil
 	}
 	// 检查目录是否为空
@@ -65,8 +68,8 @@ func (s *SyncStrm) RemoveFileAndCheckDirEmtry(filePath string) error {
 			s.Sync.Logger.Infof("删除空目录成功：%s", dir)
 			// 删除网盘目录
 			file, err := s.memSyncCache.GetByLocalPath(dir)
-			if err != nil {
-				s.Sync.Logger.Warnf("查询空目录对应的网盘记录失败：%s，%s", filePath, err.Error())
+			if err != nil || file == nil {
+				s.Sync.Logger.Warnf("查询空目录对应的网盘记录失败：%s，%s", filePath, err)
 				return nil
 			}
 			// 从同步缓存中删除

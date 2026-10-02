@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/logstream"
@@ -19,6 +21,7 @@ import (
 	"qmediasync/internal/realtime"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func TestBuildSyncTaskSnapshotMessageIncludesCursorAndVersion(t *testing.T) {
@@ -114,34 +117,43 @@ func TestSyncTaskStreamReturnsHTTPErrorWhenTaskQueryFails(t *testing.T) {
 }
 
 func TestSyncTaskStreamTerminalSnapshotDoesNotRepeatComplete(t *testing.T) {
-	testDB := setupControllerTestDB(t, &models.Sync{})
-	setupSyncTaskStreamRuntime(t)
+	for _, status := range []models.SyncStatus{models.SyncStatusCompleted, models.SyncStatusFailed, models.SyncStatusPartial, models.SyncStatusIncomplete, models.SyncStatusCancelled} {
+		t.Run(strconv.Itoa(int(status)), func(t *testing.T) {
+			testDB := setupControllerTestDB(t, &models.Sync{})
+			setupSyncTaskStreamRuntime(t)
 
-	task := &models.Sync{Status: models.SyncStatusCompleted}
-	if err := testDB.Create(task).Error; err != nil {
-		t.Fatalf("创建终态同步任务失败: %v", err)
-	}
+			task := &models.Sync{Status: status, ScanResult: &realtime.SyncScanResult{FailedFiles: 1, Failures: []realtime.SyncScanFailure{{Kind: "file", Path: "/movie.mkv", Reason: "write failed"}}, CleanupStatus: "partial"}}
+			if err := testDB.Create(task).Error; err != nil {
+				t.Fatalf("创建终态同步任务失败: %v", err)
+			}
 
-	router := gin.New()
-	router.GET("/sync/tasks/:id/stream", SyncTaskStream)
-	server := httptest.NewServer(router)
-	defer server.Close()
+			router := gin.New()
+			router.GET("/sync/tasks/:id/stream", SyncTaskStream)
+			server := httptest.NewServer(router)
+			defer server.Close()
 
-	response, err := server.Client().Get(server.URL + "/sync/tasks/" + strconv.FormatUint(uint64(task.ID), 10) + "/stream")
-	if err != nil {
-		t.Fatalf("请求终态同步任务 stream 失败: %v", err)
-	}
-	defer response.Body.Close()
+			response, err := server.Client().Get(server.URL + "/sync/tasks/" + strconv.FormatUint(uint64(task.ID), 10) + "/stream")
+			if err != nil {
+				t.Fatalf("请求终态同步任务 stream 失败: %v", err)
+			}
+			defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("读取终态同步任务 stream 失败: %v", err)
-	}
-	if !strings.Contains(string(body), "event:snapshot") {
-		t.Fatalf("终态任务应返回 snapshot，body = %q", body)
-	}
-	if strings.Contains(string(body), "event:complete") {
-		t.Fatalf("终态 snapshot 后不应重复发送 complete，body = %q", body)
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("读取终态同步任务 stream 失败: %v", err)
+			}
+			if !strings.Contains(string(body), "event:snapshot") {
+				t.Fatalf("终态任务应返回 snapshot，body = %q", body)
+			}
+			if strings.Contains(string(body), "event:complete") {
+				t.Fatalf("终态 snapshot 后不应重复发送 complete，body = %q", body)
+			}
+
+			if !strings.Contains(string(body), `"failed_files":1`) {
+				t.Fatalf("snapshot 缺少扫描结果: %s", body)
+			}
+
+		})
 	}
 }
 
@@ -327,4 +339,113 @@ func setupSyncTaskStreamRuntime(t *testing.T) {
 		logstream.GlobalManager = oldLogManager
 		helpers.ConfigDir = oldConfigDir
 	})
+}
+
+func TestSyncTaskStreamReconnectUsesTerminalSnapshotAfterSubscription(t *testing.T) {
+	for _, status := range []models.SyncStatus{models.SyncStatusCompleted, models.SyncStatusFailed, models.SyncStatusPartial, models.SyncStatusIncomplete, models.SyncStatusCancelled} {
+		t.Run(strconv.Itoa(int(status)), func(t *testing.T) {
+			testDB := setupControllerTestDB(t, &models.Sync{})
+			setupSyncTaskStreamRuntime(t)
+			task := &models.Sync{Status: models.SyncStatusInProgress}
+			if err := testDB.Create(task).Error; err != nil {
+				t.Fatal(err)
+			}
+			first := realtime.GlobalSyncTaskHub.PublishSyncTaskEvent(realtime.EventSyncTaskUpdated, realtime.SyncTaskEventPayload{SyncID: task.ID, Status: int(models.SyncStatusInProgress)})
+			realtime.GlobalSyncTaskHub.PublishSyncTaskEvent(realtime.EventSyncTaskUpdated, realtime.SyncTaskEventPayload{SyncID: task.ID, Status: int(models.SyncStatusInProgress), Total: 1})
+
+			// 回放已在第二次查询之前订阅；模拟终态已落库、对应事件尚未发布的交错。
+			var queries atomic.Int64
+			const callback = "a2:finish-after-stream-subscribe"
+			if err := testDB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table != "syncs" || queries.Add(1) != 2 {
+					return
+				}
+				finished := &models.Sync{Status: status, FinishAt: 100, ScanResult: &realtime.SyncScanResult{SucceededFiles: 1, Failures: []realtime.SyncScanFailure{}, CleanupStatus: "completed"}}
+				err := testDB.Model(&models.Sync{}).Where("id = ?", task.ID).Select("status", "finish_at", "scan_result").Updates(finished).Error
+				if err != nil {
+					tx.AddError(err)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { testDB.Callback().Query().Remove(callback) })
+
+			router := gin.New()
+			router.GET("/sync/tasks/:id/stream", SyncTaskStream)
+			server := httptest.NewServer(router)
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/sync/tasks/"+strconv.FormatUint(uint64(task.ID), 10)+"/stream", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Last-Event-ID", realtime.GlobalSyncTaskHub.EventID(first.Sequence))
+			response, err := server.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream := string(body)
+			if response.StatusCode != http.StatusOK || queries.Load() != 2 || strings.Count(stream, "event:snapshot") != 1 || strings.Contains(stream, "event:task_patch") || strings.Contains(stream, "event:complete") {
+				t.Fatalf("terminal reconnect did not converge: status=%d queries=%d body=%s", response.StatusCode, queries.Load(), stream)
+			}
+			if !strings.Contains(stream, `"status":`+strconv.Itoa(int(status))) || !strings.Contains(stream, `"succeeded_files":1`) {
+				t.Fatalf("terminal snapshot lost actual result: %s", stream)
+			}
+		})
+	}
+}
+
+func TestSyncTaskStreamWaitsForLedgerAfterGeneration(t *testing.T) {
+	testDB := setupControllerTestDB(t, &models.Sync{})
+	setupSyncTaskStreamRuntime(t)
+	pending := realtime.SyncLedgerPending
+	task := &models.Sync{Status: models.SyncStatusCompleted, FinishAt: 120, LedgerStatus: &pending}
+	if err := testDB.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.GET("/sync/tasks/:id/stream", SyncTaskStream)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/sync/tasks/"+strconv.FormatUint(uint64(task.ID), 10)+"/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	readSSEFrame(t, reader)
+	snapshot := readSSEFrame(t, reader)
+	if !strings.Contains(snapshot, `"ledger_status":"pending"`) || !strings.Contains(snapshot, `"finish_at":120`) {
+		t.Fatalf("缺少生成结束后台快照: %s", snapshot)
+	}
+	if err := task.UpdateLedger(t.Context(), realtime.SyncLedgerRunning, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	patch := readSSEFrame(t, reader)
+	if !strings.Contains(patch, "event:task_patch") || !strings.Contains(patch, `"ledger_status":"running"`) {
+		t.Fatalf("生成结束过早停止了详情流: %s", patch)
+	}
+	exit := int64(128)
+	if err := task.UpdateLedger(t.Context(), realtime.SyncLedgerFailed, &exit, "ledger unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(body), "event:complete") != 1 || !strings.Contains(string(body), `"ledger_finished_at":128`) || !strings.Contains(string(body), `"ledger_error":"ledger unavailable"`) || !strings.Contains(string(body), `"finish_at":120`) {
+		t.Fatalf("后台退出未唯一收敛: %s", body)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 
 	"qmediasync/internal/baidupan"
@@ -31,6 +32,7 @@ func (d *BaiduPanDriver) GetNetFileFiles(ctx context.Context, parentPath, parent
 	page := 1
 	pageSize := 50 // 每次取 50 条
 	var fileItems []*SyncFileCache = make([]*SyncFileCache, 0)
+	var previousPage []*baidupan.FileInfo
 mainloop:
 	for {
 		select {
@@ -47,9 +49,18 @@ mainloop:
 				// 取完了
 				break mainloop
 			}
+			// ponytail: 只保留上一完整页；非连续重复需扩展扫描完整性校验。
+			if len(resp) == pageSize && slices.EqualFunc(resp, previousPage, func(file, previous *baidupan.FileInfo) bool {
+				return file != nil && previous != nil && file.FsId == previous.FsId && file.Path == previous.Path
+			}) {
+				return nil, fmt.Errorf("百度网盘目录 %s 的第 %d 页重复，文件列表不完整", parentPath, page)
+			}
 			for _, file := range resp {
+				if file == nil || file.Path == "" {
+					return nil, fmt.Errorf("百度网盘目录 %s 的第 %d 页包含无路径条目", parentPath, page)
+				}
 				atomic.AddInt64(&d.s.TotalFile, 1)
-				d.s.PublishProgress(false)
+				_ = d.s.PublishProgress(false)
 				fileItem := SyncFileCache{
 					ParentId:   parentPathId,
 					FileId:     file.Path,
@@ -69,9 +80,10 @@ mainloop:
 				}
 				fileItems = append(fileItems, &fileItem)
 			}
-			if len(resp) <= pageSize {
+			if len(resp) < pageSize {
 				break mainloop
 			}
+			previousPage = resp
 		}
 		page += 1
 	}
@@ -84,7 +96,7 @@ func (d *BaiduPanDriver) CreateDirRecursively(ctx context.Context, path string) 
 	relPath := filepath.ToSlash(filepath.Clean(path))
 	err = d.client.Mkdir(ctx, relPath)
 	if err != nil {
-		return "", "", fmt.Errorf("创建目录 %s 失败：%v", relPath, err)
+		return "", "", fmt.Errorf("创建目录 %s 失败：%w", relPath, err)
 	}
 	return relPath, relPath, nil
 }

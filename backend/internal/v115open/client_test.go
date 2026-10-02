@@ -343,7 +343,8 @@ func TestOpenClientRequestsConcurrentWithCredentialUpdates(t *testing.T) {
 							nil,
 						)
 						if err != nil {
-							expectedEmpty := tt.allowEmpty && err.Error() == "115 账号授权失效，请在网盘账号管理中重新授权"
+							apiErr, ok := errors.AsType[*OpenAPIError](err)
+							expectedEmpty := tt.allowEmpty && ok && apiErr.Code == ACCESS_AUTH_INVALID
 							if !expectedEmpty {
 								t.Errorf("并发请求失败：%v", err)
 								return
@@ -487,5 +488,55 @@ func TestDoAuthRequestCancellationStopsRetryWait(t *testing.T) {
 		&RequestConfig{BypassRateLimit: true, Timeout: time.Second}, nil)
 	if !errors.Is(err, context.Canceled) || transport.requests.Load() != 1 {
 		t.Fatal("已取消请求不能再次进入队列")
+	}
+}
+
+func TestDoAuthRequestPreservesAuthenticationErrors(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, tt := range []struct {
+		name         string
+		code, status int
+		emptyToken   bool
+	}{
+		{name: "missing_credentials", code: ACCESS_AUTH_INVALID, emptyToken: true},
+		{name: "expired", code: ACCESS_TOKEN_EXPIRY_CODE},
+		{name: "invalid_access", code: ACCESS_AUTH_INVALID},
+		{name: "auth_failed", code: ACCESS_TOKEN_AUTH_FAIL},
+		{name: "invalid_refresh", code: REFRESH_TOKEN_INVALID},
+		{name: "http_unauthorized", status: http.StatusUnauthorized},
+		{name: "directory_unavailable", code: 430004},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int64
+			transport := playbackTransportFunc(func(req *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				status := tt.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				body := fmt.Sprintf(`{"state":false,"code":%d,"message":"fixture failure"}`, tt.code)
+				if tt.status == http.StatusUnauthorized {
+					body = "unauthorized"
+				}
+				return playbackTestResponse(req, status, body), nil
+			})
+			client := newRefreshTestClient(transport)
+			if tt.emptyToken {
+				client.SetAuthToken("", "")
+			}
+			_, _, err := client.doAuthRequest(t.Context(), OPEN_BASE_URL+"/open/ufile/files", client.client.R().SetMethod("GET"),
+				&RequestConfig{BypassRateLimit: true, Timeout: time.Second}, nil)
+			apiErr, ok := errors.AsType[*OpenAPIError](err)
+			if !ok || apiErr.Code != tt.code || apiErr.HTTPStatus != tt.status {
+				t.Fatalf("error=%+v; want code=%d status=%d", err, tt.code, tt.status)
+			}
+			want := int64(1)
+			if tt.emptyToken {
+				want = 0
+			}
+			if calls.Load() != want {
+				t.Fatalf("requests=%d, want=%d", calls.Load(), want)
+			}
+		})
 	}
 }

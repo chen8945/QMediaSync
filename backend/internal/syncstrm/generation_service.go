@@ -15,6 +15,7 @@ import (
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/syncscope"
 	"qmediasync/internal/v115open"
 
 	"gorm.io/gorm"
@@ -44,6 +45,7 @@ type StrmGenerationInput struct {
 
 // StrmGenerationResult 描述单文件 STRM 生成结果。
 type StrmGenerationResult struct {
+	SkipReason     string
 	SyncFile       *models.SyncFile
 	Changed        bool
 	NewMeta        int
@@ -52,7 +54,7 @@ type StrmGenerationResult struct {
 
 // StrmGenerationService 复用现有 SyncStrm 能力完成单文件 STRM 后处理。
 type StrmGenerationService struct {
-	buildSyncer                  func(*models.SyncPath, *models.Account) (*SyncStrm, error)
+	buildSyncer                  func(*models.SyncPath, *models.Account, *SyncStrmConfig) (*SyncStrm, error)
 	compareStrm                  func(*SyncStrm, *SyncFileCache) int
 	processStrmFile              func(*SyncStrm, *SyncFileCache) error
 	requestEmbyRefreshBySyncFile func(*models.SyncFile) error
@@ -60,14 +62,19 @@ type StrmGenerationService struct {
 	requestEmbyRefreshTargets    func(uint, []models.EmbyRefreshTarget) error
 	acquireRefreshSubmission     func(context.Context) (func(), error)
 	detailByFileID               func(context.Context, *SyncStrm, string) (*SyncFileCache, error)
-	resolveStrmOwner             func(context.Context, *SyncStrm, *SyncFileCache) (bool, error)
+	resolveStrmOwner             func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error)
 }
 
 // NewStrmGenerationService 创建 STRM 生成服务。
 func NewStrmGenerationService() *StrmGenerationService {
 	service := &StrmGenerationService{}
-	service.buildSyncer = func(syncPath *models.SyncPath, account *models.Account) (*SyncStrm, error) {
-		syncer := NewSyncStrmForStrmGeneration(syncPath, account)
+	service.buildSyncer = func(syncPath *models.SyncPath, account *models.Account, config *SyncStrmConfig) (*SyncStrm, error) {
+		var syncer *SyncStrm
+		if config == nil {
+			syncer = NewSyncStrmForStrmGeneration(syncPath, account)
+		} else {
+			syncer = newSyncStrmWithConfig(syncPath, account, cloneGenerationConfig(*config), false)
+		}
 		if syncer == nil {
 			return nil, errors.New("初始化 STRM 同步器失败")
 		}
@@ -89,12 +96,16 @@ func NewStrmGenerationService() *StrmGenerationService {
 		}
 		return syncer.SyncDriver.DetailByFileId(ctx, fileID)
 	}
-	service.resolveStrmOwner = resolveLatest115StrmOwner
+	service.resolveStrmOwner = resolveLatest115StrmOwnerWithDirectory
 	return service
 }
 
 // Generate 为单个远端文件生成或确认 STRM。
 func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGenerationInput) (*StrmGenerationResult, error) {
+	return service.generate(ctx, input, nil, nil, nil)
+}
+
+func (service *StrmGenerationService) generate(ctx context.Context, input StrmGenerationInput, configs generationConfigs, blockers []*models.StrmGenerationTask, directories *generationDirectories) (*StrmGenerationResult, error) {
 	if service == nil {
 		service = NewStrmGenerationService()
 	}
@@ -109,46 +120,57 @@ func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGe
 		return nil, fmt.Errorf("暂不支持的 STRM 生成任务类型：%s", task.TaskType)
 	}
 
-	syncPath := models.GetSyncPathById(task.SyncPathId)
-	if syncPath == nil {
-		return nil, fmt.Errorf("同步目录不存在：%d", task.SyncPathId)
-	}
-	account, err := loadStrmGenerationAccount(syncPath, task.AccountId)
-	if err != nil {
-		return nil, err
-	}
-	syncer, err := service.buildSyncer(syncPath, account)
-	if err != nil {
-		return nil, err
-	}
-	if syncer == nil {
-		return nil, errors.New("STRM 同步器为空")
-	}
-	if syncer.Cancel != nil {
-		defer syncer.Cancel()
+	if configs == nil {
+		var err error
+		configs, err = prepareGenerationConfigs(ctx, []*models.StrmGenerationTask{task})
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	file, err := service.buildFileCache(ctx, syncer, syncPath, account, task)
+	syncPath, syncer, file, release, err := service.prepareGenerationFile(ctx, task, configs)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	if file.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(file.GetFullRemotePath()) {
 		return nil, fmt.Errorf("115 多端播放临时目录不参与 STRM 生成：%s", file.GetFullRemotePath())
 	}
-	if file.IsVideo {
-		unlock := lockStrmTarget(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
-		defer unlock()
+	if err := validateGeneratedFileScope(syncer, syncPath, file); err != nil {
+		return nil, err
 	}
-	isStrmOwner, err := service.resolveStrmOwner(ctx, syncer, file)
+	if err := checkGenerationDependencies(ctx, task, file, blockers); err != nil {
+		return nil, err
+	}
+	if directories != nil {
+		directories.observe(syncer, file)
+	}
+	if reason := syncer.generationSkipReason(file); reason != "" {
+		return &StrmGenerationResult{SkipReason: reason}, nil
+	}
+	var unlockTarget func()
+	if file.IsVideo {
+		unlockTarget = lockStrmTarget(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
+		defer func() {
+			if unlockTarget != nil {
+				unlockTarget()
+			}
+		}()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	directory := &generationDirectory{batch: directories}
+	isStrmOwner, err := service.resolveStrmOwner(ctx, syncer, file, directory)
 	if err != nil {
 		return nil, err
 	}
-	existing, err := findExistingGeneratedSyncFile(task.SyncPathId, file.GetFileId(), file.PickCode)
+	existing, err := findExistingGeneratedSyncFile(ctx, task.SyncPathId, file.GetFileId(), file.PickCode)
 	if err != nil {
 		return nil, err
 	}
 
-	syncFile := file.GetSyncFile(syncer, account.BaseUrl)
+	syncFile := file.GetSyncFile(syncer, syncer.Account.BaseUrl)
 	if existing != nil {
 		syncFile.BaseModel = existing.BaseModel
 	}
@@ -168,7 +190,7 @@ func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGe
 		return nil, fmt.Errorf("复制目录监控元数据失败：%w", err)
 	}
 
-	if err := db.Db.Save(syncFile).Error; err != nil {
+	if err := models.SaveSyncFilePosition(db.Db.WithContext(ctx), syncFile); err != nil {
 		return nil, fmt.Errorf("保存 SyncFile 失败：%w", err)
 	}
 	if changed {
@@ -176,10 +198,15 @@ func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGe
 			helpers.AppLogger.Warnf("清理旧 STRM 文件失败：%v", err)
 		}
 	}
+	// STRM、账本和旧路径已处理完；后续工作仍由外层范围保护。
+	if unlockTarget != nil {
+		unlockTarget()
+		unlockTarget = nil
+	}
 	isWebhookFile := task.Source == models.StrmGenerationSourceWebhook && task.TaskType == models.StrmGenerationTaskTypeFile
 	newMeta := 0
 	if isWebhookFile && task.DownloadMeta && file.IsVideo {
-		newMeta, err = service.downloadMatchedMetadata(ctx, syncer, file)
+		newMeta, err = service.downloadMatchedMetadata(ctx, syncer, syncPath, file, directory)
 		if err != nil {
 			return nil, err
 		}
@@ -206,14 +233,64 @@ func (service *StrmGenerationService) Generate(ctx context.Context, input StrmGe
 	return result, nil
 }
 
-func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Context, syncer *SyncStrm, video *SyncFileCache) (int, error) {
+// prepareGenerationFile 先等待相关文件保存完毕，再核对当前目录、账号和远端详情。
+func (service *StrmGenerationService) prepareGenerationFile(ctx context.Context, task *models.StrmGenerationTask, configs generationConfigs) (*models.SyncPath, *SyncStrm, *SyncFileCache, func(), error) {
+	fileID, pickCode := task.FileId, task.PickCode
+	for {
+		syncPath, release, err := models.AcquireSyncFileScope(ctx, task.SyncPathId, fileID, pickCode)
+		if err != nil {
+			return nil, nil, nil, nil, generationScopeError(ctx, task.SyncPathId, err)
+		}
+		account, err := loadStrmGenerationAccount(ctx, syncPath, task.AccountId)
+		if err != nil {
+			release()
+			return nil, nil, nil, nil, err
+		}
+		syncer, err := service.buildGenerationSyncer(syncPath, account, configs)
+		if err != nil || syncer == nil {
+			release()
+			if err == nil {
+				err = errors.New("STRM 同步器为空")
+			}
+			return nil, nil, nil, nil, err
+		}
+		closeSyncer := func() {
+			if syncer.Cancel != nil {
+				syncer.Cancel()
+			}
+			release()
+		}
+		file, err := service.buildFileCache(ctx, syncer, syncPath, account, task)
+		if err != nil {
+			closeSyncer()
+			return nil, nil, nil, nil, err
+		}
+		if file.GetFileId() == fileID && file.PickCode == pickCode {
+			return syncPath, syncer, file, closeSyncer, nil
+		}
+		covered, err := models.SyncFileScopeCovered(ctx, syncPath, file.GetFileId(), file.PickCode)
+		if err != nil {
+			closeSyncer()
+			return nil, nil, nil, nil, err
+		}
+		if covered {
+			// 身份补全没有扩大范围，原许可仍保护当前详情，不必重新请求。
+			return syncPath, syncer, file, closeSyncer, nil
+		}
+		// 新身份带来未保护的旧位置，重新申请后刷新详情，避免使用等待前的信息。
+		fileID, pickCode = file.GetFileId(), file.PickCode
+		closeSyncer()
+	}
+}
+
+func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Context, syncer *SyncStrm, syncPath *models.SyncPath, video *SyncFileCache, directory *generationDirectory) (int, error) {
 	if syncer == nil || syncer.SyncDriver == nil || video == nil || !video.IsVideo {
 		return 0, nil
 	}
 	if video.ParentId == "" || video.Path == "" {
 		return 0, nil
 	}
-	files, err := syncer.SyncDriver.GetNetFileFiles(ctx, video.Path, video.ParentId)
+	files, err := directory.list(ctx, syncer, video)
 	if err != nil {
 		return 0, fmt.Errorf("获取同目录元数据列表失败：%w", err)
 	}
@@ -238,6 +315,12 @@ func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Contex
 		}
 		item.IsVideo = false
 		item.IsMeta = true
+		if err := validateGeneratedFileScope(syncer, syncPath, item); err != nil {
+			return created, err
+		}
+		if syncer.generationSkipReason(item) != "" {
+			continue
+		}
 
 		baseURL := ""
 		if syncer.Account != nil {
@@ -247,7 +330,7 @@ func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Contex
 		if helpers.PathExists(syncFile.LocalFilePath) {
 			continue
 		}
-		if err := db.Db.Save(syncFile).Error; err != nil {
+		if err := models.SaveSyncFilePosition(db.Db.WithContext(ctx), syncFile); err != nil {
 			return created, fmt.Errorf("保存元数据 SyncFile 失败：%w", err)
 		}
 		if err := models.AddDownloadTaskFromSyncFile(syncFile); err != nil {
@@ -295,6 +378,35 @@ func copyDirectoryUploadMetadata(syncer *SyncStrm, task *models.StrmGenerationTa
 	if sourcePath == "" {
 		return errors.New("目录监控元数据缺少本地源文件路径")
 	}
+	sourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return err
+	}
+	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		return fmt.Errorf("解析目录监控元数据源文件失败：%w", err)
+	}
+	// 只有链接源需要重新读取监控规则；普通文件保留历史任务的处理方式。
+	validateLinkedSource := func() error {
+		if sourcePath == resolvedSource {
+			return nil
+		}
+		current, err := directoryupload.ResolveMetadataSource(&uploadTask)
+		if err != nil {
+			return err
+		}
+		current, err = filepath.Abs(current)
+		if err != nil {
+			return err
+		}
+		if current != resolvedSource {
+			return fmt.Errorf("目录监控元数据源文件指向已变化：%s", sourcePath)
+		}
+		return nil
+	}
+	if err := validateLinkedSource(); err != nil {
+		return err
+	}
 	targetPath := file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath)
 	if targetPath == "" {
 		return errors.New("目录监控元数据缺少 STRM 本地路径")
@@ -314,21 +426,35 @@ func copyDirectoryUploadMetadata(syncer *SyncStrm, task *models.StrmGenerationTa
 		return err
 	}
 
-	content, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return fmt.Errorf("读取目录监控元数据源文件失败：%w", err)
+	baseline, err := helpers.MetadataFingerprint(targetPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	if err := helpers.WriteFileWithPerm(targetPath, content, 0777); err != nil {
-		return fmt.Errorf("写入目录监控元数据到 STRM 路径失败：%w", err)
-	}
-
 	mtime := uploadTask.LocalMtime
 	if mtime == 0 {
 		mtime = info.ModTime().Unix()
 	}
-	t := time.Unix(mtime, 0)
-	if err := os.Chtimes(targetPath, t, t); err != nil {
-		return fmt.Errorf("修改目录监控元数据 STRM 路径时间失败：%w", err)
+	if err := helpers.CopyMetadataFile(sourcePath, targetPath, baseline, info.Size(), mtime, func(string) error {
+		currentPath, err := filepath.EvalSymlinks(sourcePath)
+		if err != nil {
+			return err
+		}
+		if currentPath != resolvedSource {
+			return fmt.Errorf("目录监控元数据源文件指向已变化：%s", sourcePath)
+		}
+		if err := validateLinkedSource(); err != nil {
+			return err
+		}
+		current, err := os.Stat(sourcePath)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(info, current) || current.Size() != info.Size() || !current.ModTime().Equal(info.ModTime()) {
+			return fmt.Errorf("目录监控元数据源文件已变化：%s", sourcePath)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("复制目录监控元数据失败：%w", err)
 	}
 	return nil
 }
@@ -336,6 +462,9 @@ func copyDirectoryUploadMetadata(syncer *SyncStrm, task *models.StrmGenerationTa
 func validateDirectoryUploadMetadataSource(task *models.DbUploadTask, info os.FileInfo) error {
 	if task == nil || info == nil {
 		return errors.New("目录监控元数据源文件校验参数为空")
+	}
+	if task.SourceFingerprint != "" && models.BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano()) != task.SourceFingerprint {
+		return errors.New("目录监控元数据源文件与上传时不一致")
 	}
 	if task.FileSize > 0 && info.Size() != task.FileSize {
 		return fmt.Errorf("目录监控元数据源文件已变化，大小不匹配 task=%d current=%d", task.FileSize, info.Size())
@@ -390,8 +519,7 @@ func (service *StrmGenerationService) buildFileCache(ctx context.Context, syncer
 		return nil, errors.New("STRM 生成任务缺少文件名")
 	}
 	if file.SourceType == models.SourceTypeBaiduPan && file.Path != "" {
-		// 百度普通扫描以完整路径作为 SyncFile.file_id；fs_id 保留在 PickCode，
-		// 避免 STRM 后处理产生无法被后续扫描协调的 ID 形式。
+		// 和百度普通扫描保持一致：SyncFile.file_id 存完整路径，PickCode 存 fs_id。
 		file.FileId = pathpkg.Join(file.Path, file.FileName)
 	}
 	if file.GetFileId() == "" && file.PickCode == "" {
@@ -402,6 +530,10 @@ func (service *StrmGenerationService) buildFileCache(ctx context.Context, syncer
 
 // ExpandDirectoryScan 将目录扫描父任务展开为待处理的单文件 STRM 任务。
 func (service *StrmGenerationService) ExpandDirectoryScan(ctx context.Context, task *models.StrmGenerationTask) (int, error) {
+	return service.expandDirectoryScan(ctx, task, nil, nil)
+}
+
+func (service *StrmGenerationService) expandDirectoryScan(ctx context.Context, task *models.StrmGenerationTask, configs generationConfigs, blockers []*models.StrmGenerationTask) (int, error) {
 	if service == nil {
 		service = NewStrmGenerationService()
 	}
@@ -415,15 +547,28 @@ func (service *StrmGenerationService) ExpandDirectoryScan(ctx context.Context, t
 		return 0, fmt.Errorf("非目录扫描 STRM 任务：%s", task.TaskType)
 	}
 
-	syncPath := models.GetSyncPathById(task.SyncPathId)
-	if syncPath == nil {
-		return 0, fmt.Errorf("同步目录不存在：%d", task.SyncPathId)
+	if configs == nil {
+		var err error
+		configs, err = prepareGenerationConfigs(ctx, []*models.StrmGenerationTask{task})
+		if err != nil {
+			return 0, err
+		}
 	}
-	account, err := loadStrmGenerationAccount(syncPath, task.AccountId)
+
+	syncPath, release, err := models.AcquireSyncFileScope(ctx, task.SyncPathId, "", "")
+	if err != nil {
+		return 0, generationScopeError(ctx, task.SyncPathId, err)
+	}
+	// 展开结束即释放，不能占着范围等待子任务，否则子任务无法开始。
+	defer release()
+	if err := checkGenerationDependencies(ctx, task, nil, blockers); err != nil {
+		return 0, err
+	}
+	account, err := loadStrmGenerationAccount(ctx, syncPath, task.AccountId)
 	if err != nil {
 		return 0, err
 	}
-	syncer, err := service.buildSyncer(syncPath, account)
+	syncer, err := service.buildGenerationSyncer(syncPath, account, configs)
 	if err != nil {
 		return 0, err
 	}
@@ -440,6 +585,10 @@ func (service *StrmGenerationService) ExpandDirectoryScan(ctx context.Context, t
 	directoryPath, directoryID, err := resolveDirectoryScanRoot(ctx, syncer, syncPath, task)
 	if err != nil {
 		return 0, err
+	}
+	if syncer.IsExcludePath(directoryPath) {
+		task.SkipReason = "目录名称被排除"
+		return 0, nil
 	}
 	totalItems, err := service.expandDirectoryScanChildren(ctx, task, syncer, syncPath, directoryPath, directoryID)
 	if err != nil {
@@ -470,6 +619,9 @@ func resolveDirectoryScanRoot(ctx context.Context, syncer *SyncStrm, syncPath *m
 		}
 		if detail.SourceType == "" {
 			detail.SourceType = syncPath.SourceType
+		}
+		if detail.SourceType != syncPath.SourceType {
+			return "", "", errors.New("远端目录来源与同步目录不一致")
 		}
 		if detail.FileId != "" {
 			directoryID = detail.FileId
@@ -527,6 +679,10 @@ func (service *StrmGenerationService) expandDirectoryScanChildren(ctx context.Co
 		if file.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(file.GetFullRemotePath()) {
 			continue
 		}
+		file.IsVideo = file.FileType != v115open.TypeDir && syncer.IsValidVideoExt(file.FileName)
+		if err := validateGeneratedFileScope(syncer, syncPath, file); err != nil {
+			return totalItems, err
+		}
 		if file.FileType == v115open.TypeDir {
 			childPath := normalizeStrmRemotePath(file.GetFullRemotePath())
 			childID := file.GetFileId()
@@ -543,16 +699,21 @@ func (service *StrmGenerationService) expandDirectoryScanChildren(ctx context.Co
 		if !syncer.IsValidVideoExt(file.FileName) {
 			continue
 		}
-		file.IsVideo = true
 		file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath)
 		videoFiles = append(videoFiles, file)
 	}
 
-	owners := selectLatest115StrmOwners(videoFiles)
+	eligible := make([]*SyncFileCache, 0, len(videoFiles))
+	for _, file := range videoFiles {
+		if syncer.generationSkipReason(file) == "" {
+			eligible = append(eligible, file)
+		}
+	}
+	owners := selectLatest115StrmOwners(eligible)
 	for _, file := range videoFiles {
 		if file.SourceType == models.SourceType115 {
 			targetPath := filepath.ToSlash(filepath.Clean(file.LocalFilePath))
-			if owners[targetPath] != file {
+			if syncer.generationSkipReason(file) == "" && owners[targetPath] != file {
 				continue
 			}
 		}
@@ -622,7 +783,8 @@ func legacyDirectoryScanChildRequestHash(parent *models.StrmGenerationTask, sync
 }
 
 func normalizeStrmRemotePath(value string) string {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	// 首尾空格可能属于真实目录名，不能在范围校验或目录身份比较时移除。
+	value = strings.ReplaceAll(value, "\\", "/")
 	if value == "" {
 		return ""
 	}
@@ -733,27 +895,53 @@ func mergeFileCache(target *SyncFileCache, detail *SyncFileCache) {
 	}
 }
 
-func loadStrmGenerationAccount(syncPath *models.SyncPath, taskAccountID uint) (*models.Account, error) {
+func validateGeneratedFileScope(syncer *SyncStrm, syncPath *models.SyncPath, file *SyncFileCache) error {
+	if file.SourceType != syncPath.SourceType {
+		return errors.New("远端文件来源与同步目录不一致")
+	}
+	basePath := syncPath.RemotePath
+	if basePath == "" {
+		basePath = "/"
+	}
+	if !strmRemotePathWithin(file.GetFullRemotePath(), basePath) {
+		return fmt.Errorf("远端文件 %s 不在同步远端目录 %s 下", file.GetFullRemotePath(), basePath)
+	}
+	if syncPath.ScopeLocalRoot != "" {
+		return ensureGeneratedStrmPathWithinResolvedRoot(syncPath.ScopeLocalRoot, file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
+	}
+	return ensureGeneratedStrmPathWithinRoot(syncPath.GetFullLocalPath(), file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
+}
+
+func loadStrmGenerationAccount(ctx context.Context, syncPath *models.SyncPath, taskAccountID uint) (*models.Account, error) {
+	if taskAccountID != 0 && taskAccountID != syncPath.AccountId {
+		return nil, errors.New("STRM 任务账号与当前同步目录不一致，请重新创建任务")
+	}
 	accountID := taskAccountID
 	if accountID == 0 && syncPath != nil {
 		accountID = syncPath.AccountId
 	}
 	if accountID == 0 {
+		if syncPath.SourceType != models.SourceTypeLocal {
+			return nil, errors.New("STRM 同步目录缺少网盘账号")
+		}
 		return &models.Account{SourceType: models.SourceTypeLocal}, nil
 	}
-	account, err := models.GetAccountById(accountID)
-	if err != nil {
+	account := &models.Account{}
+	if err := db.Db.WithContext(ctx).First(account, accountID).Error; err != nil {
 		return nil, fmt.Errorf("获取网盘账号失败：%w", err)
+	}
+	if account.SourceType != syncPath.SourceType {
+		return nil, errors.New("网盘账号来源与同步目录不一致")
 	}
 	return account, nil
 }
 
-func findExistingGeneratedSyncFile(syncPathID uint, fileID string, pickCode string) (*models.SyncFile, error) {
+func findExistingGeneratedSyncFile(ctx context.Context, syncPathID uint, fileID string, pickCode string) (*models.SyncFile, error) {
 	if fileID == "" && pickCode == "" {
 		return nil, nil
 	}
 	var existing models.SyncFile
-	query := db.Db.Where("sync_path_id = ?", syncPathID)
+	query := db.Db.WithContext(ctx).Where("sync_path_id = ?", syncPathID)
 	switch {
 	case fileID != "" && pickCode != "":
 		query = query.Where("(file_id = ? OR pick_code = ?)", fileID, pickCode)
@@ -796,14 +984,29 @@ func cleanupOldGeneratedStrm(targetRoot string, oldLocalPath string, newLocalPat
 
 func ensureGeneratedStrmPathWithinRoot(rootPath string, targetPath string) error {
 	if rootPath == "" || targetPath == "" {
-		return errors.New("STRM 目标根路径或待清理路径为空")
+		return errors.New("STRM 目标根路径或文件路径为空")
+	}
+	rootPath, err := syncscope.ResolveLocalPath(rootPath)
+	if err != nil {
+		return fmt.Errorf("无法确定 STRM 根目录：%w", err)
+	}
+	return ensureGeneratedStrmPathWithinResolvedRoot(rootPath, targetPath)
+}
+
+func ensureGeneratedStrmPathWithinResolvedRoot(rootPath, targetPath string) error {
+	if rootPath == "" || targetPath == "" {
+		return errors.New("STRM 目标根路径或文件路径为空")
+	}
+	targetPath, err := syncscope.ResolveLocalPath(targetPath)
+	if err != nil {
+		return fmt.Errorf("无法确定 STRM 文件路径：%w", err)
 	}
 	rel, err := filepath.Rel(rootPath, targetPath)
 	if err != nil {
-		return fmt.Errorf("计算 STRM 清理路径边界失败：%w", err)
+		return fmt.Errorf("检查 STRM 文件路径失败：%w", err)
 	}
 	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("旧 STRM 路径越界：%s", targetPath)
+		return fmt.Errorf("文件路径超出 STRM 目录：%s", targetPath)
 	}
 	return nil
 }
@@ -876,8 +1079,16 @@ func runStrmGenerationWorker(ctx context.Context, service *StrmGenerationService
 	ticker := time.NewTicker(strmGenerationWorkerInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := ProcessPendingStrmGenerationTasks(ctx, service, strmGenerationWorkerBatch); err != nil && !errors.Is(err, context.Canceled) {
+		if ctx.Err() != nil {
+			return
+		}
+		processed, err := ProcessPendingStrmGenerationTasks(ctx, service, strmGenerationWorkerBatch)
+		if err != nil && !errors.Is(err, context.Canceled) {
 			helpers.AppLogger.Errorf("处理 STRM 生成队列失败：%v", err)
+		}
+		// 满批且没有待重试错误时，立即处理下一批。
+		if err == nil && processed == strmGenerationWorkerBatch {
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -892,9 +1103,38 @@ func ProcessPendingStrmGenerationTasks(ctx context.Context, service *StrmGenerat
 	if service == nil {
 		service = NewStrmGenerationService()
 	}
-	tasks, err := models.GetPendingStrmGenerationTasks(limit)
+	var blockers, tasks []*models.StrmGenerationTask
+	for {
+		var err error
+		blockers, err = models.GetStrmGenerationFinalizingRetries()
+		if err != nil {
+			return 0, err
+		}
+		tasks, err = selectGenerationTasks(ctx, limit, blockers)
+		if err == nil {
+			break
+		}
+		missing, ok := errors.AsType[*generationSyncPathMissingError](err)
+		if !ok {
+			return 0, err
+		}
+		if _, retireErr := models.RetireStrmGenerationTasksForMissingSyncPath(ctx, missing.syncPathID); retireErr != nil {
+			return 0, retireErr
+		}
+		// 筛选途中删除目录时重新退休、从第一页开始；不能在变化的集合上继续 offset。
+	}
+	configs, err := prepareGenerationConfigs(ctx, tasks)
 	if err != nil {
 		return 0, err
+	}
+	directories := &generationDirectories{now: time.Now}
+	finish := func(task *models.StrmGenerationTask) (bool, error) {
+		err := completeStrmGenerationTaskAfterSideEffects(ctx, service, task)
+		if missing, ok := errors.AsType[*generationSyncPathMissingError](err); ok {
+			_, retireErr := models.RetireStrmGenerationTasksForMissingSyncPath(ctx, missing.syncPathID)
+			return true, retireErr
+		}
+		return err != nil, err
 	}
 	processed := 0
 	for _, task := range tasks {
@@ -905,17 +1145,40 @@ func ProcessPendingStrmGenerationTasks(ctx context.Context, service *StrmGenerat
 		}
 		if task.Status == models.StrmGenerationStatusFinalizing {
 			processed++
-			if err := completeStrmGenerationTaskAfterSideEffects(ctx, service, task); err != nil {
+			if stop, err := finish(task); stop {
 				return processed, err
 			}
 			continue
 		}
 		if err := task.MarkRunning(); err != nil {
-			continue
+			return processed, err
 		}
 		processed++
-		result, err := processStrmGenerationTask(ctx, service, task)
+		result, err := processStrmGenerationTask(ctx, service, task, configs, blockers, directories)
 		if err != nil {
+			if missing, ok := errors.AsType[*generationSyncPathMissingError](err); ok {
+				if _, retireErr := models.RetireStrmGenerationTasksForMissingSyncPath(ctx, missing.syncPathID); retireErr != nil {
+					return processed, retireErr
+				}
+				if task.SyncPathId != missing.syncPathID {
+					if saveErr := task.ReturnPending(); saveErr != nil {
+						return processed, saveErr
+					}
+					processed--
+				}
+				// 同批任务和阻塞项可能同属已退休目录，下一轮重新读取。
+				return processed, nil
+			}
+			if errors.Is(err, errGenerationDependencyWait) || errors.Is(err, errGenerationDependencyCheck) {
+				if saveErr := task.ReturnPending(); saveErr != nil {
+					return processed, errors.Join(err, saveErr)
+				}
+				processed--
+				if errors.Is(err, errGenerationDependencyCheck) {
+					return processed, err
+				}
+				continue
+			}
 			if ctx.Err() != nil {
 				return processed, ctx.Err()
 			}
@@ -935,6 +1198,15 @@ func ProcessPendingStrmGenerationTasks(ctx context.Context, service *StrmGenerat
 			}
 			continue
 		}
+		if result != nil && result.SkipReason != "" {
+			if _, err := task.MarkSkipping(result.SkipReason); err != nil {
+				return processed, err
+			}
+			if stop, err := finish(task); stop {
+				return processed, err
+			}
+			continue
+		}
 		if task.TaskType == models.StrmGenerationTaskTypeDirectoryScan {
 			if err := task.MarkDirectoryScanExpanded(task.TotalItems); err != nil {
 				return processed, err
@@ -942,27 +1214,27 @@ func ProcessPendingStrmGenerationTasks(ctx context.Context, service *StrmGenerat
 			continue
 		}
 		if task.ParentTaskId > 0 {
-			parent, progressErr := markStrmGenerationChildFinalizing(task, result)
+			_, progressErr := markStrmGenerationChildFinalizing(task, result)
 			if progressErr != nil {
 				return processed, progressErr
 			}
-			if submitErr := submitStrmGenerationParentRefreshIfReady(ctx, service, parent); submitErr != nil {
-				return processed, submitErr
-			}
 		}
-		if err := completeStrmGenerationTaskAfterSideEffects(ctx, service, task); err != nil {
+		if stop, err := finish(task); stop {
 			return processed, err
 		}
 	}
 	return processed, nil
 }
 
-func processStrmGenerationTask(ctx context.Context, service *StrmGenerationService, task *models.StrmGenerationTask) (*StrmGenerationResult, error) {
+func processStrmGenerationTask(ctx context.Context, service *StrmGenerationService, task *models.StrmGenerationTask, configs generationConfigs, blockers []*models.StrmGenerationTask, directories *generationDirectories) (*StrmGenerationResult, error) {
 	if task.TaskType == models.StrmGenerationTaskTypeDirectoryScan {
-		_, err := service.ExpandDirectoryScan(ctx, task)
+		_, err := service.expandDirectoryScan(ctx, task, configs, blockers)
+		if err == nil && task.SkipReason != "" {
+			return &StrmGenerationResult{SkipReason: task.SkipReason}, nil
+		}
 		return nil, err
 	}
-	return service.Generate(ctx, StrmGenerationInput{Task: task})
+	return service.generate(ctx, StrmGenerationInput{Task: task}, configs, blockers, directories)
 }
 
 func completeStrmGenerationChild(parentTaskID uint, result *StrmGenerationResult, failed bool) (*models.StrmGenerationTask, error) {
@@ -996,10 +1268,37 @@ func strmGenerationParentProgress(result *StrmGenerationResult, failed bool) mod
 	return progress
 }
 
-func completeStrmGenerationTaskAfterSideEffects(ctx context.Context, service *StrmGenerationService, task *models.StrmGenerationTask) error {
+func completeStrmGenerationTaskAfterSideEffects(ctx context.Context, service *StrmGenerationService, task *models.StrmGenerationTask) (err error) {
 	if task == nil {
 		return nil
 	}
+	// 按进入收尾时的状态处理错误；MarkCompleted 保存失败前也会先修改内存状态。
+	finalizing := task.Status == models.StrmGenerationStatusFinalizing
+	runningFile := task.Status == models.StrmGenerationStatusRunning && task.ParentTaskId == 0 &&
+		(task.TaskType == models.StrmGenerationTaskTypeFile || task.TaskType == "")
+	defer func() {
+		if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if _, missing := errors.AsType[*generationSyncPathMissingError](err); missing {
+			return
+		}
+		var saveErr error
+		if finalizing {
+			saveErr = task.MarkFinalizingRetry(err.Error())
+		} else if runningFile {
+			saveErr = task.MarkRunningFinalizationFailed(ctx, err.Error())
+		}
+		if saveErr != nil {
+			err = errors.Join(err, saveErr)
+		}
+	}()
+	// 生成释放范围后目录可能被删除。收尾再次持有范围，直到刷新、完成状态与源清理结束。
+	_, release, scopeErr := models.AcquireSyncFileScope(ctx, task.SyncPathId, task.FileId, task.PickCode)
+	if scopeErr != nil {
+		return generationScopeError(ctx, task.SyncPathId, scopeErr)
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1024,7 +1323,9 @@ func completeStrmGenerationTaskAfterSideEffects(ctx context.Context, service *St
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cleanupDirectoryUploadSourcesAfterStrmSuccess(task)
+	if task.Status != models.StrmGenerationStatusSkipped {
+		cleanupDirectoryUploadSourcesAfterStrmSuccess(task)
+	}
 	return nil
 }
 
