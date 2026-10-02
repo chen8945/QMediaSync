@@ -11,31 +11,75 @@ import (
 
 const syncTaskReplayLimit = 64
 
+// SyncLedgerStatus 表示生成结束后的账本更新结果；NULL 保留历史未知语义。
+type SyncLedgerStatus string
+
+const (
+	SyncLedgerNotRequired SyncLedgerStatus = "not_required"
+	SyncLedgerPending     SyncLedgerStatus = "pending"
+	SyncLedgerRunning     SyncLedgerStatus = "running"
+	SyncLedgerCompleted   SyncLedgerStatus = "completed"
+	SyncLedgerFailed      SyncLedgerStatus = "failed"
+	SyncLedgerInterrupted SyncLedgerStatus = "interrupted"
+)
+
+// IsActive 判断账本是否仍可能产生后台结果。
+func (status SyncLedgerStatus) IsActive() bool {
+	return status == SyncLedgerPending || status == SyncLedgerRunning
+}
+
+// SyncScanFailure 描述可定位的文件失败或扫描不完整目录。
+type SyncScanFailure struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	FileID string `json:"file_id,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// SyncScanResult 保存本次实际处理数量及清理依据；历史记录没有该结果。
+type SyncScanResult struct {
+	SucceededFiles int               `json:"succeeded_files"`
+	FailedFiles    int               `json:"failed_files"`
+	SkippedFiles   int               `json:"skipped_files"`
+	Failures       []SyncScanFailure `json:"failures"`
+	CleanupStatus  string            `json:"cleanup_status"`
+	CleanupReason  string            `json:"cleanup_reason"`
+}
+
 // SyncTaskEventPayload 是同步任务结构化事件数据。
 type SyncTaskEventPayload struct {
-	SyncID            uint   `json:"sync_id"`
-	SyncPathID        uint   `json:"sync_path_id"`
-	Status            int    `json:"status"`
-	SubStatus         int    `json:"sub_status"`
-	Total             int    `json:"total"`
-	NewStrm           int    `json:"new_strm"`
-	NewMeta           int    `json:"new_meta"`
-	NewUpload         int    `json:"new_upload"`
-	FinishAt          int64  `json:"finish_at"`
-	NetFileStartAt    int64  `json:"net_file_start_at"`
-	NetFileFinishAt   int64  `json:"net_file_finish_at"`
-	LocalFileStartAt  int64  `json:"local_file_start_at"`
-	LocalFileFinishAt int64  `json:"local_file_finish_at"`
-	LogPath           string `json:"log_path"`
-	Sequence          uint64 `json:"sequence"`
-	EventTime         int64  `json:"event_time"`
-	CreatedAt         int64  `json:"created_at,omitempty"`
-	UpdatedAt         int64  `json:"updated_at,omitempty"`
-	LocalPath         string `json:"local_path,omitempty"`
-	RemotePath        string `json:"remote_path,omitempty"`
-	FailReason        string `json:"fail_reason,omitempty"`
-	Deleted           bool   `json:"deleted,omitempty"`
-	ResyncReason      string `json:"resync_reason,omitempty"`
+	LedgerStatus      *SyncLedgerStatus `json:"ledger_status"`
+	LedgerFinishedAt  *int64            `json:"ledger_finished_at"`
+	LedgerError       string            `json:"ledger_error"`
+	ScanResult        *SyncScanResult   `json:"scan_result"`
+	SyncID            uint              `json:"sync_id"`
+	SyncPathID        uint              `json:"sync_path_id"`
+	Status            int               `json:"status"`
+	SubStatus         int               `json:"sub_status"`
+	Total             int               `json:"total"`
+	NewStrm           int               `json:"new_strm"`
+	NewMeta           int               `json:"new_meta"`
+	NewUpload         int               `json:"new_upload"`
+	FinishAt          int64             `json:"finish_at"`
+	NetFileStartAt    int64             `json:"net_file_start_at"`
+	NetFileFinishAt   int64             `json:"net_file_finish_at"`
+	LocalFileStartAt  int64             `json:"local_file_start_at"`
+	LocalFileFinishAt int64             `json:"local_file_finish_at"`
+	LogPath           string            `json:"log_path"`
+	Sequence          uint64            `json:"sequence"`
+	EventTime         int64             `json:"event_time"`
+	CreatedAt         int64             `json:"created_at,omitempty"`
+	UpdatedAt         int64             `json:"updated_at,omitempty"`
+	LocalPath         string            `json:"local_path,omitempty"`
+	RemotePath        string            `json:"remote_path,omitempty"`
+	FailReason        string            `json:"fail_reason,omitempty"`
+	Deleted           bool              `json:"deleted,omitempty"`
+	ResyncReason      string            `json:"resync_reason,omitempty"`
+}
+
+// IsTerminal 等待生成和后台均结束；历史未记录后台字段仍按原终态结束订阅。
+func (p SyncTaskEventPayload) IsTerminal() bool {
+	return p.Deleted || (p.Status >= 2 && p.Status <= 6 && (p.LedgerStatus == nil || !p.LedgerStatus.IsActive()))
 }
 
 // TaskStreamEvent 是同步任务详情流使用的内部事件。
@@ -185,7 +229,7 @@ func (h *SyncTaskHub) PublishSyncTaskEvent(eventType string, payload SyncTaskEve
 	h.publishLocked(TaskStreamEvent{
 		EventType: eventType,
 		Payload:   payload,
-		Terminal:  payload.Deleted || payload.Status >= 2,
+		Terminal:  payload.IsTerminal(),
 	})
 	h.mu.Unlock()
 

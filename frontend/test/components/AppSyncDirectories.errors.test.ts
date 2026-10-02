@@ -345,6 +345,56 @@ describe('同步目录列表请求行为', () => {
     await flushPromises()
     expect(wrapper.get('.directory-card').classes()).not.toContain('is-running')
   })
+
+  it.each(['running', 'completed', 'failed', 'interrupted'])(
+    '旧任务后台 %s 不覆盖 HTTP 读到的新任务运行态或抬高事件水位',
+    async (ledgerStatus) => {
+      const { wrapper } = await mountDirectories(2)
+      const update = events.get('sync_task_updated')!.update
+      update({
+        sync_path_id: 12,
+        sync_id: 1,
+        sequence: 20,
+        status: 2,
+        ledger_status: ledgerStatus,
+        event_time: 100,
+      })
+      await flushPromises()
+      expect(wrapper.get('.directory-card').classes()).toContain('is-running')
+      update({
+        sync_path_id: 12,
+        sync_id: 2,
+        sequence: 2,
+        status: 2,
+        ledger_status: 'pending',
+        event_time: 99,
+      })
+      await flushPromises()
+      expect(wrapper.get('.directory-card').classes()).not.toContain('is-running')
+    },
+  )
+
+  it('删除旧记录通过当前目录状态收敛，不清除新任务运行展示', async () => {
+    const { wrapper, getReply } = await mountDirectories(2)
+    getReply.mockResolvedValueOnce(relationSuccess({ list: [{ id: 12, is_running: 2 }], total: 1 }))
+    events.get('sync_task_deleted')!.update({
+      sync_path_id: 12,
+      sync_id: 1,
+      sequence: 1,
+      deleted: true,
+      ledger_status: 'completed',
+    })
+    await flushPromises()
+    expect(wrapper.get('.directory-card').classes()).toContain('is-running')
+  })
+
+  it.each([4, 5, 6])('新终态 %s 恢复目录的可启动状态', async (status) => {
+    const { wrapper } = await mountDirectories(2)
+    events.get('sync_task_updated')!.update({ sync_path_id: 12, sync_id: 1, sequence: 1, status })
+    await flushPromises()
+    expect(wrapper.get('.directory-card').classes()).not.toContain('is-running')
+    expect(wrapper.find('button[aria-label="停止同步"]').exists()).toBe(false)
+  })
 })
 
 describe('同步目录关联窗口请求归属', () => {

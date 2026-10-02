@@ -112,3 +112,26 @@ func TestSyncTaskHubPublishesSequenceAndTerminalCleanupAtomically(t *testing.T) 
 		t.Fatalf("终态事件后 snapshot waterline = %d，期望 0", snapshotSequence)
 	}
 }
+
+func TestSyncTaskHubKeepsGenerationReplayUntilLedgerEnds(t *testing.T) {
+	hub := NewSyncTaskHub()
+	pending, running, completed := SyncLedgerPending, SyncLedgerRunning, SyncLedgerCompleted
+	first := hub.PublishSyncTaskEvent(EventSyncTaskUpdated, SyncTaskEventPayload{SyncID: 9, Status: 1})
+	generation := hub.PublishSyncTaskEvent(EventSyncTaskUpdated, SyncTaskEventPayload{SyncID: 9, Status: 2, LedgerStatus: &pending, FinishAt: 120})
+	background := hub.PublishSyncTaskEvent(EventSyncTaskUpdated, SyncTaskEventPayload{SyncID: 9, Status: 2, LedgerStatus: &running, FinishAt: 120})
+	_, replay, _, replayed, unsubscribe := hub.SubscribeFrom(9, hub.EventID(first.Sequence), 8)
+	defer unsubscribe()
+	if !replayed || len(replay) != 2 || replay[0].Terminal || replay[1].Terminal || generation.Sequence != 2 || background.Sequence != 3 {
+		t.Fatalf("生成结束过早清理回放: %+v", replay)
+	}
+	exit := int64(128)
+	terminal := hub.PublishSyncTaskEvent(EventSyncTaskUpdated, SyncTaskEventPayload{SyncID: 9, Status: 2, LedgerStatus: &completed, LedgerFinishedAt: &exit, FinishAt: 120})
+	if terminal.Sequence != 4 || !terminal.IsTerminal() {
+		t.Fatalf("后台终点序号或终态错误: %+v", terminal)
+	}
+	_, replay, waterline, replayed, unsubscribeFinal := hub.SubscribeFrom(9, hub.EventID(background.Sequence), 8)
+	defer unsubscribeFinal()
+	if replayed || len(replay) != 0 || waterline != 0 {
+		t.Fatal("后台终态未清理回放")
+	}
+}

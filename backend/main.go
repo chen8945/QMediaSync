@@ -127,6 +127,12 @@ func (app *App) Stop() {
 	app.shutdownHTTPServers()
 	// 关闭同步任务执行队列
 	synccron.PauseAllNewSyncQueues()
+	// 已交接账本使用独立生命周期；在日志关闭前有界取消和保存已知退出结果。
+	ledgerCtx, cancelLedger := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := syncstrm.StopSyncBackgroundService(ledgerCtx); err != nil {
+		helpers.AppLogger.Warnf("等待 STRM 同步文件记录更新结束失败：%v", err)
+	}
+	cancelLedger()
 	// 关闭上传下载队列
 	models.GlobalDownloadQueue.Stop()
 	models.GlobalUploadQueue.Stop()
@@ -485,6 +491,11 @@ func initOthers() {
 	helpers.SubscribeSync(helpers.V115TokenInValidEvent, models.HandleV115TokenInvalid)
 	helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, models.HandleOpenListTokenSaveSync)
 	models.FailAllRunningSyncTasks() // 将所有运行中的同步任务设置为失败状态
+	ledgerCtx, cancelLedger := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := syncstrm.InitSyncBackgroundService(ledgerCtx); err != nil {
+		helpers.AppLogger.Errorf("标记上次未结束的 STRM 同步文件记录更新任务失败：%v", err)
+	}
+	cancelLedger()
 
 	// 设置 115 请求队列的非阻塞统计写入回调。
 	requestStatWriter = models.NewRequestStatWriter()
@@ -578,6 +589,7 @@ func setRouter(r *gin.Engine) {
 	// 需要 JWT 验证的 API 路由
 	api := r.Group("/api")
 	api.Use(controllers.JWTAuthMiddleware())
+	api.GET("/strm/tasks", controllers.ListStrmResults)
 	{
 		api.GET("/scrape/tmp-image", controllers.ScrapeTmpImage)           // 获取临时图片
 		api.GET("/scrape/records/export", controllers.ExportScrapeRecords) // 导出刮削记录

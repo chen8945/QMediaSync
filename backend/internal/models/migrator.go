@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 64
+var MaxVersionCode = 65
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -49,6 +49,8 @@ func (*Migrator) TableName() string {
 // 如果没有数据则创建
 // 如果已有数据库则从数据库中获取版本，根据版本执行变更
 func Migrate() {
+	finishPosition := BeginSyncPositionMutation()
+	defer finishPosition()
 	// sqliteDb := db.InitSqlite3(dbFile)
 	// 先初始化所有表和基础数据
 	if !InitDB() {
@@ -754,6 +756,48 @@ func Migrate() {
 		helpers.AppLogger.Info("已添加同时上传任务数和 115 多端播放设置")
 		migrator.UpdateVersionCode(db.Db)
 	}
+	if migrator.VersionCode == 64 {
+		if db.Db.Migrator().HasTable(&StrmGenerationTask{}) {
+			for _, field := range []string{"SkipReason", "SkippedItems"} {
+				if !db.Db.Migrator().HasColumn(&StrmGenerationTask{}, field) {
+					if err := db.Db.Migrator().AddColumn(&StrmGenerationTask{}, field); err != nil {
+						helpers.AppLogger.Errorf("添加 STRM 跳过结果字段失败：%v", err)
+						return
+					}
+				}
+			}
+		}
+
+		if db.Db.Migrator().HasTable(&DbDownloadTask{}) {
+			for _, field := range []string{"ReplaceBaseline", "PublishedSHA256"} {
+				if !db.Db.Migrator().HasColumn(&DbDownloadTask{}, field) {
+					if err := db.Db.Migrator().AddColumn(&DbDownloadTask{}, field); err != nil {
+						helpers.AppLogger.Errorf("添加元数据下载字段失败：%v", err)
+						return
+					}
+				}
+			}
+		}
+		if db.Db.Migrator().HasTable(&Sync{}) {
+			for _, field := range []string{"ScanResult", "LedgerStatus", "LedgerFinishedAt", "LedgerError"} {
+				if !db.Db.Migrator().HasColumn(&Sync{}, field) {
+					if err := db.Db.Migrator().AddColumn(&Sync{}, field); err != nil {
+						helpers.AppLogger.Errorf("补齐同步任务结果字段 %s 失败：%v", field, err)
+						return
+					}
+				}
+			}
+		}
+		if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+			helpers.AppLogger.Errorf("创建同步文件查询索引失败：%v", err)
+			return
+		}
+		if err := EnsureStrmGenerationQueueIndex(db.Db); err != nil {
+			helpers.AppLogger.Errorf("创建 STRM 队列排序索引失败：%v", err)
+			return
+		}
+		migrator.UpdateVersionCode(db.Db)
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -1321,7 +1365,13 @@ func BatchCreateTable() error {
 	if lastErr != nil {
 		return lastErr
 	}
-	return ensureActiveTransferTaskUniqueIndexes(db.Db)
+	if err := ensureActiveTransferTaskUniqueIndexes(db.Db); err != nil {
+		return err
+	}
+	if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+		return err
+	}
+	return EnsureStrmGenerationQueueIndex(db.Db)
 }
 
 func InitMigrationTable(version int) {
@@ -1826,6 +1876,8 @@ func fillSyncPathIdInEmbyMediaSyncFile(dbConn *gorm.DB) {
 }
 
 func BatchDropTable() error {
+	finishPosition := BeginSyncPositionMutation()
+	defer finishPosition()
 	var err, lastErr error
 	// 删除所有表
 	for _, table := range AllTables {

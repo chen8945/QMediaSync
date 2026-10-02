@@ -2,6 +2,8 @@ package helpers
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -450,6 +452,40 @@ func TestCloseLoggerIncludesBaiduPanLog(t *testing.T) {
 	BaiduPanLog = NewLogger("logs/baidu.log", false, true)
 
 	CloseLogger()
+}
+
+func TestLoggerClosePreventsReopeningDeletedFile(t *testing.T) {
+	oldDir := ConfigDir
+	ConfigDir = t.TempDir()
+	t.Cleanup(func() { ConfigDir = oldDir })
+	for _, rotate := range []bool{false, true} {
+		t.Run(fmt.Sprint(rotate), func(t *testing.T) {
+			name := fmt.Sprintf("closed-%t.log", rotate)
+			logger := NewLogger(name, false, rotate)
+			logger.Infof("before close")
+			logger.Close()
+			if !rotate {
+				if _, err := logger.file.Stat(); !errors.Is(err, os.ErrClosed) {
+					t.Fatalf("nonrotating task log descriptor not closed: %v", err)
+				}
+			}
+			path := filepath.Join(ConfigDir, name)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			var writers sync.WaitGroup
+			for range 4 {
+				writers.Go(func() {
+					logger.Infof("late background callback")
+					logger.Close()
+				})
+			}
+			writers.Wait()
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("closed logger recreated deleted file: %v", err)
+			}
+		})
+	}
 }
 
 func TestApplyGlobalLogRotationConfigConcurrentWritesRaceFree(t *testing.T) {

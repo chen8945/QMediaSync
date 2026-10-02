@@ -88,6 +88,178 @@ const snapshot = {
 }
 
 describe('useSyncTaskStream', () => {
+  const scanResult = {
+    succeeded_files: 2,
+    failed_files: 1,
+    skipped_files: 3,
+    failures: [{ kind: 'directory', path: '/cloud/locked', reason: '读取失败' }],
+    cleanup_status: 'partial',
+    cleanup_reason: '保留无法完整读取的目录',
+  }
+
+  it.each([4, 5, 6])('新终态 %s 的结果在事件和刷新快照中一致', async (status) => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    const source = MockEventSource.instances[0]
+    source.emit('snapshot', { type: 'snapshot', data: snapshot })
+    source.emit('complete', {
+      type: 'complete',
+      data: { sync_id: 8, status, finish_at: 100, scan_result: scanResult },
+    })
+    expect(stream.task.value?.scan_result).toEqual(scanResult)
+    expect(stream.task.value?.status).toBe(status)
+    expect(stream.terminal.value).toBe(true)
+    expect(source.closed).toBe(true)
+
+    const refreshed = withSetup(() => useSyncTaskStream(8))
+    const refreshedSource = MockEventSource.instances[1]
+    refreshedSource.emit('snapshot', {
+      type: 'snapshot',
+      data: {
+        ...snapshot,
+        task: { ...snapshot.task, status, finish_at: 100, scan_result: scanResult },
+      },
+    })
+    expect(refreshed.task.value).toEqual(stream.task.value)
+    expect(refreshedSource.closed).toBe(true)
+  })
+
+  it.each([4, 5, 6])('HTTP 降级收到终态 %s 后停止轮询并保留结果', async (status) => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        code: 200,
+        data: { ...snapshot.task, status, finish_at: 100, scan_result: scanResult },
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(stream.terminal.value).toBe(true)
+    expect(stream.task.value?.scan_result).toEqual(scanResult)
+  })
+
+  it.each(['pending', 'running'])(
+    '生成终态快照的后台 %s 保持连接，最终日志后由 complete 关闭',
+    (ledgerStatus) => {
+      vi.stubGlobal('EventSource', MockEventSource)
+      const stream = withSetup(() => useSyncTaskStream(8))
+      const source = MockEventSource.instances[0]
+      source.emit('snapshot', {
+        type: 'snapshot',
+        data: {
+          ...snapshot,
+          task: { ...snapshot.task, status: 2, finish_at: 100, ledger_status: ledgerStatus },
+        },
+      })
+      expect(source.closed).toBe(false)
+      expect(stream.terminal.value).toBe(false)
+      source.emit('task_patch', {
+        type: 'task_patch',
+        data: {
+          sync_id: 8,
+          status: 1,
+          total: 0,
+          new_strm: 0,
+          finish_at: 0,
+          ledger_status: 'failed',
+          ledger_finished_at: 108,
+          ledger_error: '写入失败',
+        },
+      })
+      expect(stream.task.value).toMatchObject({
+        status: 2,
+        total: 2,
+        new_strm: 1,
+        finish_at: 100,
+        ledger_status: 'failed',
+        ledger_finished_at: 108,
+        ledger_error: '写入失败',
+      })
+      expect(source.closed).toBe(false)
+      source.emit('log_append', {
+        type: 'log_append',
+        data: { entry: { level: 'error', message: '后台退出', timestamp: 't3' } },
+      })
+      source.emit('complete', { type: 'complete', data: { sync_id: 8, ledger_status: 'failed' } })
+      expect(stream.logs.value[0].message).toBe('后台退出')
+      expect(stream.terminal.value).toBe(true)
+      expect(source.closed).toBe(true)
+    },
+  )
+
+  it.each(['completed', 'failed', 'interrupted', 'not_required', null])(
+    '后台 %s 的重连快照结束订阅并保留生成计数',
+    (ledgerStatus) => {
+      vi.stubGlobal('EventSource', MockEventSource)
+      const stream = withSetup(() => useSyncTaskStream(8))
+      const source = MockEventSource.instances[0]
+      source.emit('snapshot', { type: 'snapshot', data: snapshot })
+      source.onerror?.(new Event('error'))
+      source.emit('snapshot', {
+        type: 'snapshot',
+        data: {
+          ...snapshot,
+          task: {
+            ...snapshot.task,
+            status: 2,
+            finish_at: 100,
+            ledger_status: ledgerStatus,
+            ledger_finished_at: null,
+          },
+        },
+      })
+      expect(stream.task.value?.new_strm).toBe(1)
+      expect(stream.task.value?.ledger_status).toBe(ledgerStatus)
+      expect(stream.terminal.value).toBe(true)
+      expect(source.closed).toBe(true)
+    },
+  )
+
+  it('HTTP 降级在生成完成后持续读取后台，失败保留快照，后台结束停止', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', undefined)
+    const generated = { ...snapshot.task, status: 2, finish_at: 100 }
+    const reply = (data: unknown) => new Response(JSON.stringify({ code: 200, data }))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(reply({ ...generated, ledger_status: 'pending' }))
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(reply({ ...generated, ledger_status: 'running' }))
+      .mockResolvedValueOnce(
+        reply({
+          ...generated,
+          ledger_status: 'failed',
+          ledger_finished_at: 108,
+          ledger_error: '写入失败',
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const stream = withSetup(() => useSyncTaskStream(8))
+    await flushPromises()
+    expect(stream.terminal.value).toBe(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(stream.task.value?.ledger_status).toBe('pending')
+    expect(stream.errorMessage.value).not.toBe('')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(stream.task.value?.ledger_status).toBe('running')
+    expect(stream.errorMessage.value).toBe('')
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(stream.task.value).toMatchObject({
+      ...generated,
+      ledger_status: 'failed',
+      ledger_finished_at: 108,
+      ledger_error: '写入失败',
+    })
+    expect(stream.terminal.value).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   afterEach(() => {
     mountedApps.splice(0).forEach((app) => app.unmount())
     vi.unstubAllGlobals()

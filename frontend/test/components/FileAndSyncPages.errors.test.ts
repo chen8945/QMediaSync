@@ -8,6 +8,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AppFileManager from '@/components/AppFileManager.vue'
 import AppSyncRecords from '@/components/AppSyncRecords.vue'
+import { useRealtimeEvent } from '@/composables/useRealtimeEvents'
 import DirectorySelector from '@/components/DirectorySelector.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
@@ -21,11 +22,13 @@ const DialogStub = defineComponent({
     '<section v-if="modelValue" role="dialog" :aria-label="title"><slot /><slot name="footer" /></section>',
 })
 const recordTableStub = defineComponent({
-  props: ['rows', 'showSelection'],
+  props: ['rows', 'showSelection', 'columns'],
   emits: ['action', 'selectionChange'],
   template: `<div>
     <div v-for="row in rows" :key="row.id" class="record-row">
       <span>{{ row.remote_path }}</span>
+      <slot name="cell-status" :row="row" />
+      <span v-for="column in columns" :key="column.key" :data-field="column.key">{{ column.detailField?.value(row) }}</span>
       <button @click="$emit('action', { actionKey: 'delete', row })">删除记录</button>
     </div>
     <button v-if="showSelection" @click="$emit('selectionChange', rows)">选择全部记录</button>
@@ -416,6 +419,244 @@ describe('sync records HTTP feedback', () => {
     await flushPromises()
     await nextTick()
     expect(wrapper.text()).toContain('新页面')
+    expect(ElMessage.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('同步记录后台状态', () => {
+  it('HTTP 刷新、后台事件和重连保留生成结果并更新总耗时', async () => {
+    vi.mocked(useRealtimeEvent).mockClear()
+    const { wrapper, readReply } = await mountPage('records')
+    const field = (key: string) => wrapper.get(`[data-field="${key}"]`).text()
+    expect(field('generation_duration')).toBe('1 秒')
+    expect(field('ledger_status')).toBe('未记录')
+    expect(field('total_duration')).toBe('未记录')
+    const handlers = vi.mocked(useRealtimeEvent).mock.calls
+    const reconnect = handlers.find(([name]) => name === 'sync_task_created')![2]!
+    const update = handlers.find(([name]) => name === 'sync_task_updated')![1]
+    const pending = { ...record, ledger_status: 'pending' }
+    readReply.mockResolvedValueOnce(envelope({ records: [pending], total: 1 }))
+    reconnect()
+    await flushPromises()
+    expect(wrapper.text()).toContain('等待后台更新记录')
+    expect(field('total_duration')).toBe('统计中')
+    update({
+      sync_id: 1,
+      sequence: 1,
+      status: 1,
+      total: 0,
+      new_strm: 0,
+      finish_at: 0,
+      ledger_status: 'failed',
+      ledger_finished_at: 10,
+      ledger_error: '写入失败',
+    })
+    await flushPromises()
+    expect(field('status')).toBe('已完成')
+    expect(field('stats')).toContain('STRM 2')
+    expect(field('generation_duration')).toBe('1 秒')
+    expect(field('total_duration')).toBe('9 秒')
+    expect(field('ledger_error')).toBe('写入失败')
+    const failed = {
+      ...record,
+      ledger_status: 'failed',
+      ledger_finished_at: 10,
+      ledger_error: '写入失败',
+    }
+    readReply.mockResolvedValueOnce(envelope({ records: [failed], total: 1 }))
+    reconnect()
+    await flushPromises()
+    expect(field('generation_duration')).toBe('1 秒')
+    expect(field('total_duration')).toBe('9 秒')
+    expect(wrapper.text()).toContain('记录更新失败')
+  })
+})
+
+describe('同步记录 HTTP 快照与实时事件交错', () => {
+  const snapshot = (ledger_status: string, ledger_finished_at?: number) =>
+    envelope({ records: [{ ...record, ledger_status, ledger_finished_at }], total: 30 })
+  const mountRecords = async () => {
+    vi.mocked(useRealtimeEvent).mockClear()
+    const page = await mountPage('records')
+    const handlers = vi.mocked(useRealtimeEvent).mock.calls
+    const refresh = handlers.find(([name]) => name === 'strm_sync_task_start')![1]
+    const update = handlers.find(([name]) => name === 'sync_task_updated')![1]
+    const patch = (ledger_status: string, sequence: number) =>
+      update({
+        ...record,
+        sync_id: record.id,
+        sync_path_id: 2,
+        sequence,
+        ledger_status,
+        ledger_finished_at: ledger_status === 'running' ? null : 10,
+        ledger_error: ledger_status === 'failed' ? '事务写入失败' : '',
+      })
+    return {
+      ...page,
+      refresh: () => refresh({}),
+      patch,
+      field: (key: string) => page.wrapper.get(`[data-field="${key}"]`).text(),
+    }
+  }
+
+  it.each([
+    ['completed', '记录更新完成'],
+    ['failed', '记录更新失败'],
+  ])('旧快照合并 %s 事件并保留终态，不补读', async (status, label) => {
+    const { readReply, refresh, patch, field } = await mountRecords()
+    const old = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(old.promise)
+    refresh()
+    patch(status, 1)
+    await flushPromises()
+    expect(field('ledger_status')).toBe(label)
+    expect(field('generation_duration')).toBe('1 秒')
+    expect(field('total_duration')).toBe('9 秒')
+    expect(readReply).toHaveBeenCalledTimes(2)
+
+    old.resolve(snapshot('running'))
+    await flushPromises()
+    expect(field('ledger_status')).toBe(label)
+    expect(field('total_duration')).toBe('9 秒')
+    if (status === 'failed') expect(field('ledger_error')).toBe('事务写入失败')
+    expect(readReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('在途请求收到多个有效事件后合并快照，不补读', async () => {
+    const { readReply, refresh, patch, field } = await mountRecords()
+    const old = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot('completed', 10))
+    refresh()
+    patch('running', 1)
+    patch('running', 2)
+    patch('completed', 3)
+    await flushPromises()
+    expect(readReply).toHaveBeenCalledTimes(2)
+    expect(field('ledger_status')).toBe('记录更新完成')
+
+    old.resolve(snapshot('running'))
+    await flushPromises()
+    expect(field('ledger_status')).toBe('记录更新完成')
+    expect(readReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('普通生成进度连续到达时只合并状态，旧 HTTP 响应不回退生成终态', async () => {
+    const { readReply, refresh, field } = await mountRecords()
+    const update = vi
+      .mocked(useRealtimeEvent)
+      .mock.calls.find(([name]) => name === 'sync_task_updated')![1]
+    readReply.mockResolvedValueOnce(envelope({ records: [{ ...record, status: 1 }], total: 1 }))
+    refresh()
+    await flushPromises()
+    const old = createDeferred<unknown>()
+    readReply.mockClear().mockReturnValueOnce(old.promise)
+    refresh()
+    for (let sequence = 1; sequence <= 6; sequence++) {
+      update({
+        sync_id: 1,
+        sequence,
+        status: sequence === 6 ? 2 : 1,
+        sub_status: 0,
+        total: sequence,
+        new_strm: sequence,
+        finish_at: sequence === 6 ? 10 : 0,
+        created_at: 1,
+      })
+      await flushPromises()
+    }
+    old.resolve(envelope({ records: [{ ...record, status: 1, new_strm: 0 }], total: 1 }))
+    await flushPromises()
+    expect(field('status')).toBe('已完成')
+    expect(field('stats')).toContain('STRM 6')
+    expect(readReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('在途请求的多个结构变化合并一次必要补读', async () => {
+    const { readReply, refresh, field } = await mountRecords()
+    const deleted = vi
+      .mocked(useRealtimeEvent)
+      .mock.calls.find(([name]) => name === 'sync_task_deleted')![1]
+    const old = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot('completed', 10))
+    refresh()
+    deleted({ sync_id: 50, deleted: true })
+    deleted({ sync_id: 51, deleted: true })
+    old.resolve(snapshot('running'))
+    await flushPromises()
+    expect(readReply).toHaveBeenCalledTimes(3)
+    expect(field('ledger_status')).toBe('记录更新完成')
+  })
+
+  it('重复或旧序号事件不覆盖终态，也不使当前快照失效或补读', async () => {
+    const { readReply, refresh, patch, field } = await mountRecords()
+    patch('completed', 3)
+    const current = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(current.promise)
+    refresh()
+    patch('failed', 3)
+    patch('running', 2)
+    await flushPromises()
+    expect(field('ledger_status')).toBe('记录更新完成')
+
+    current.resolve(snapshot('completed', 11))
+    await flushPromises()
+    expect(field('total_duration')).toBe('10 秒')
+    expect(readReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('没有在途请求时直接应用普通事件，不额外读取列表', async () => {
+    const { readReply, patch, field } = await mountRecords()
+    patch('running', 1)
+    await flushPromises()
+    expect(field('ledger_status')).toBe('后台更新记录中')
+    patch('completed', 2)
+    await flushPromises()
+    expect(field('ledger_status')).toBe('记录更新完成')
+    expect(readReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('读取失败只提示一次并保留请求期间的事件结果，不补读', async () => {
+    const { readReply, refresh, patch, field } = await mountRecords()
+    const old = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(old.promise)
+    refresh()
+    patch('completed', 1)
+    old.resolve(envelope(null, 500, '数据库繁忙'))
+    await flushPromises()
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('加载同步记录失败：数据库繁忙')
+    expect(field('ledger_status')).toBe('记录更新完成')
+    expect(readReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('查询切换的补读使用新页码，不恢复旧页记录', async () => {
+    const { wrapper, readReply, refresh, patch } = await mountRecords()
+    const old = createDeferred<unknown>()
+    readReply
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(
+        envelope({ records: [{ ...record, id: 2, remote_path: '第二页记录' }], total: 30 }),
+      )
+    refresh()
+    patch('completed', 1)
+    await click(wrapper, '第二页')
+    old.resolve(snapshot('running'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('第二页记录')
+    expect(wrapper.text()).not.toContain('原记录')
+    expect(readReply).toHaveBeenCalledTimes(3)
+    expect(readReply.mock.lastCall?.[1]).toEqual({ page: 2, page_size: 20 })
+  })
+
+  it('卸载后不补读，也不显示旧请求错误', async () => {
+    const { wrapper, readReply, refresh, patch } = await mountRecords()
+    const old = createDeferred<unknown>()
+    readReply.mockReturnValueOnce(old.promise)
+    refresh()
+    patch('completed', 1)
+    wrapper.unmount()
+    old.resolve(envelope(null, 500, '旧快照失败'))
+    await flushPromises()
+    expect(readReply).toHaveBeenCalledTimes(2)
     expect(ElMessage.error).not.toHaveBeenCalled()
   })
 })

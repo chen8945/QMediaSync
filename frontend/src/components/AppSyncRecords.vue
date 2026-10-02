@@ -98,6 +98,7 @@ import type { RecordAction, RecordActionPayload, RecordColumn } from '@/types/re
 import {
   applySyncRecordEventPatch,
   type SyncRecordEventType,
+  type SyncRecordRow as SyncRecord,
   type SyncTaskRecordEventPayload,
 } from '@/utils/syncRecordEvents'
 import {
@@ -110,6 +111,12 @@ import {
   getSyncTaskStatusTagType,
   getSyncTaskStatusText,
   getSyncTaskSubStatusText,
+  getSyncScanSummary,
+  getSyncCleanupText,
+  getSyncLedgerStatusText,
+  getSyncGenerationDuration,
+  getSyncTotalDuration,
+  isSyncTaskTerminal,
 } from '@/utils/syncTaskStatusUtils'
 import { formatDateTime } from '@/utils/timeUtils'
 import { Delete, View } from '@element-plus/icons-vue'
@@ -125,21 +132,6 @@ import {
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
-
-interface SyncRecord {
-  id: number
-  start_time: number
-  end_time: number | null
-  status: 0 | 1 | 2 | 3 // 0-待开始，1-运行中，2-完成，3-失败
-  sub_status: 0 | 1 | 2 | 3 | 4 // 0-待开始，1-正在处理网盘文件，2-正在处理本地文件
-  processed_files: number
-  created_strm: number
-  downloaded_meta: number
-  uploaded_meta: number
-  local_path: string
-  remote_path: string
-  fail_reason: string
-}
 
 interface SyncRecordDeleteContextSnapshot {
   contextVersion: number
@@ -188,6 +180,7 @@ const pendingSyncRecordsRefresh = ref(false)
 let isPageActive = false
 const syncRecordsRequestGate = createActiveRequestGate(() => isPageActive)
 const lastSyncRecordEventSequence = new Map<number, number>()
+let inFlightSyncRecordEvents: SyncTaskRecordEventPayload[] | null = null
 
 const patchSyncRecordFromEvent = (raw: Record<string, unknown>, eventType: SyncRecordEventType) => {
   const payload = raw as unknown as SyncTaskRecordEventPayload
@@ -216,7 +209,16 @@ const patchSyncRecordFromEvent = (raw: Record<string, unknown>, eventType: SyncR
   })
   syncRecords.value = result.records
   total.value = result.total
-  if (result.refreshNeeded) void loadSyncRecords()
+  if (eventType === 'sync_task_updated' && !payload.deleted) {
+    inFlightSyncRecordEvents?.push(payload)
+  }
+  // 结构变化仍需补读；普通状态事件在当前请求返回后合并，不触发额外请求。
+  if (
+    result.refreshNeeded ||
+    (isRefreshing.value && (eventType !== 'sync_task_updated' || payload.deleted))
+  ) {
+    void loadSyncRecords()
+  }
 }
 
 const onLegacySyncEvent = () => {
@@ -309,6 +311,74 @@ const syncRecordColumns: RecordColumn<SyncRecord>[] = [
       value: (row) =>
         `总文件 ${row.processed_files}，STRM ${row.created_strm}，元数据：下载 ${row.downloaded_meta} / 上传 ${row.uploaded_meta}，媒体库：${getEmbyRefreshDecision({ createdStrm: row.created_strm, downloadedMeta: row.downloaded_meta, status: row.status }).label}`,
       span: 3,
+    },
+  },
+  {
+    key: 'scan_result',
+    label: '处理结果',
+    priority: 'detail',
+    detailField: {
+      key: 'scan_result',
+      label: '处理结果',
+      value: (row) => getSyncScanSummary(row.scan_result),
+      span: 3,
+    },
+  },
+  {
+    key: 'ledger_status',
+    label: '文件记录更新',
+    priority: 'detail',
+    detailField: {
+      key: 'ledger_status',
+      label: '文件记录更新',
+      value: (row) => getSyncLedgerStatusText(row.ledger_status),
+    },
+  },
+  {
+    key: 'generation_duration',
+    label: '生成耗时',
+    priority: 'detail',
+    detailField: {
+      key: 'generation_duration',
+      label: '生成耗时',
+      value: (row) => getSyncGenerationDuration(row.start_time, row.end_time),
+    },
+  },
+  {
+    key: 'total_duration',
+    label: '总耗时',
+    priority: 'detail',
+    detailField: {
+      key: 'total_duration',
+      label: '总耗时',
+      value: (row) => getSyncTotalDuration(row.start_time, row.end_time, row),
+    },
+  },
+  {
+    key: 'ledger_error',
+    label: '文件记录更新原因',
+    priority: 'detail',
+    detailField: {
+      key: 'ledger_error',
+      label: '文件记录更新原因',
+      value: (row) => row.ledger_error || '-',
+      span: 3,
+      isLongText: true,
+    },
+  },
+  {
+    key: 'cleanup',
+    label: '缺项清理',
+    priority: 'detail',
+    detailField: {
+      key: 'cleanup',
+      label: '缺项清理',
+      value: (row) =>
+        [getSyncCleanupText(row.scan_result?.cleanup_status), row.scan_result?.cleanup_reason]
+          .filter(Boolean)
+          .join('：'),
+      span: 3,
+      isLongText: true,
     },
   },
   {
@@ -412,6 +482,8 @@ const loadSyncRecords = async () => {
     return
   }
 
+  const requestEvents: SyncTaskRecordEventPayload[] = []
+  inFlightSyncRecordEvents = requestEvents
   try {
     await runRefresh(async () => {
       try {
@@ -424,11 +496,11 @@ const loadSyncRecords = async () => {
           return
         }
 
-        const rows = (data.records || []).map((item) => ({
+        let rows: SyncRecord[] = (data.records || []).map((item) => ({
           id: item.id,
           start_time: item.created_at,
           end_time: item.finish_at,
-          status: item.status as 0 | 1 | 2 | 3,
+          status: item.status as SyncRecord['status'],
           sub_status: item.sub_status as 0 | 1 | 2 | 3 | 4,
           processed_files: item.total,
           created_strm: item.new_strm,
@@ -437,8 +509,22 @@ const loadSyncRecords = async () => {
           local_path: item.local_path || '',
           remote_path: item.remote_path || '',
           fail_reason: item.fail_reason || '',
+          scan_result: item.scan_result,
+          ledger_status: item.ledger_status,
+          ledger_finished_at: item.ledger_finished_at,
+          ledger_error: item.ledger_error,
         }))
 
+        for (const payload of requestEvents) {
+          rows = applySyncRecordEventPatch({
+            records: rows,
+            total: data.total || 0,
+            currentPage: currentPage.value,
+            pageSize: pageSize.value,
+            eventType: 'sync_task_updated',
+            payload,
+          }).records
+        }
         syncRecords.value = mergeStableList(syncRecords.value, rows, (row) => row.id)
         pageStateStore.setExpandedRowKeys(
           'sync-records',
@@ -453,6 +539,7 @@ const loadSyncRecords = async () => {
       }
     })
   } finally {
+    inFlightSyncRecordEvents = null
     if (pendingSyncRecordsRefresh.value && isPageActive) {
       pendingSyncRecordsRefresh.value = false
       await loadSyncRecords()
@@ -524,8 +611,8 @@ onUnmounted(() => {
   invalidateDeleteOperationContext()
 })
 
-// 判断记录是否可删除（完成或失败）
-const isDeletableRecord = (row: SyncRecord) => row.status === 2 || row.status === 3
+// 只有已经终结的生成任务允许删除。
+const isDeletableRecord = (row: SyncRecord) => isSyncTaskTerminal(row.status)
 
 const syncRecordActions: RecordAction<SyncRecord>[] = [
   { key: 'detail', label: '详情', type: 'primary', icon: View },

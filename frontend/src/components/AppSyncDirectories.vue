@@ -401,6 +401,7 @@ import {
   shouldApplySyncTaskEvent,
 } from '@/utils/syncTaskEventSequence'
 import { formatTime } from '@/utils/timeUtils'
+import { isSyncTaskTerminal } from '@/utils/syncTaskStatusUtils'
 import {
   formatDirectoryUploadPathSummary,
   formatDirectoryUploadStatus,
@@ -408,6 +409,7 @@ import {
   groupDirectoryUploadRulesBySyncPath,
 } from '@/utils/directoryUploadRules'
 import type { DirectoryUploadRule } from '@/typing'
+import type { SyncLedgerState } from '@/types/syncTaskStream'
 
 interface SyncDirectory extends SyncPath {
   deleting?: boolean
@@ -429,7 +431,7 @@ interface SyncDirectoryAction {
   onClick: () => void
 }
 
-interface SyncTaskEventPayload {
+interface SyncTaskEventPayload extends SyncLedgerState {
   sync_id?: number
   sync_path_id: number
   status?: number
@@ -762,6 +764,22 @@ const patchSyncPathStatus = (raw: Record<string, unknown>) => {
     return
   }
 
+  if (payload.deleted) {
+    lastSyncPathEventSequence.delete(payload.sync_id || payload.sync_path_id)
+    void updatePathesStatus()
+    return
+  }
+
+  // 旧任务的后台更新不代表当前目录的生成状态，也不能抬高目录事件水位。
+  if (
+    payload.ledger_status === 'running' ||
+    payload.ledger_status === 'completed' ||
+    payload.ledger_status === 'failed' ||
+    payload.ledger_status === 'interrupted'
+  ) {
+    return
+  }
+
   const lastEventTime = lastSyncPathEventTime.get(payload.sync_path_id) || 0
   if (payload.event_time && payload.event_time < lastEventTime) {
     return
@@ -771,14 +789,7 @@ const patchSyncPathStatus = (raw: Record<string, unknown>) => {
   }
 
   const sequenceKey = payload.sync_id || payload.sync_path_id
-  if (
-    !shouldApplySyncTaskEvent(
-      lastSyncPathEventSequence,
-      sequenceKey,
-      payload.sequence,
-      payload.deleted === true,
-    )
-  ) {
+  if (!shouldApplySyncTaskEvent(lastSyncPathEventSequence, sequenceKey, payload.sequence, false)) {
     return
   }
 
@@ -793,7 +804,7 @@ const patchSyncPathStatus = (raw: Record<string, unknown>) => {
     return
   }
 
-  if (payload.deleted || payload.status === 2 || payload.status === 3) {
+  if (isSyncTaskTerminal(payload.status)) {
     path.is_running = 0
     return
   }

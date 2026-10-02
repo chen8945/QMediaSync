@@ -2,8 +2,9 @@ import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
+import type { SyncLedgerState, SyncScanResult } from '@/types/syncTaskStream'
 
-export interface ApiSyncRecord {
+export interface ApiSyncRecord extends SyncLedgerState {
   id: number
   created_at: number
   finish_at: number | null
@@ -16,6 +17,7 @@ export interface ApiSyncRecord {
   local_path: string
   remote_path: string
   fail_reason: string
+  scan_result?: SyncScanResult | null
 }
 
 export interface SyncRecordsQuery {

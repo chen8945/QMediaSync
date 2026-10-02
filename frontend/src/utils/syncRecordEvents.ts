@@ -1,10 +1,13 @@
+import { isSyncTaskTerminal } from '@/utils/syncTaskStatusUtils'
+import type { SyncLedgerState, SyncScanResult, SyncTaskStatus } from '@/types/syncTaskStream'
+
 export type SyncRecordEventType = 'sync_task_created' | 'sync_task_updated' | 'sync_task_deleted'
 
-export interface SyncRecordRow {
+export interface SyncRecordRow extends SyncLedgerState {
   id: number
   start_time: number
   end_time: number | null
-  status: 0 | 1 | 2 | 3
+  status: SyncTaskStatus
   sub_status: 0 | 1 | 2 | 3 | 4
   processed_files: number
   created_strm: number
@@ -13,9 +16,10 @@ export interface SyncRecordRow {
   local_path: string
   remote_path: string
   fail_reason: string
+  scan_result?: SyncScanResult | null
 }
 
-export interface SyncTaskRecordEventPayload {
+export interface SyncTaskRecordEventPayload extends SyncLedgerState {
   sync_id: number
   sync_path_id: number
   status: number
@@ -31,6 +35,7 @@ export interface SyncTaskRecordEventPayload {
   local_path?: string
   remote_path?: string
   fail_reason?: string
+  scan_result?: SyncScanResult | null
   deleted?: boolean
 }
 
@@ -57,7 +62,7 @@ export const mapSyncTaskPayloadToRecord = (
   id: payload.sync_id,
   start_time: payload.created_at || now,
   end_time: payload.finish_at || null,
-  status: payload.status as 0 | 1 | 2 | 3,
+  status: payload.status as SyncTaskStatus,
   sub_status: payload.sub_status as 0 | 1 | 2 | 3 | 4,
   processed_files: payload.total,
   created_strm: payload.new_strm,
@@ -66,6 +71,10 @@ export const mapSyncTaskPayloadToRecord = (
   local_path: payload.local_path || '',
   remote_path: payload.remote_path || '',
   fail_reason: payload.fail_reason || '',
+  scan_result: payload.scan_result,
+  ledger_status: payload.ledger_status,
+  ledger_finished_at: payload.ledger_finished_at,
+  ledger_error: payload.ledger_error,
 })
 
 export function applySyncRecordEventPatch(
@@ -87,7 +96,17 @@ export function applySyncRecordEventPatch(
 
   if (index >= 0) {
     const nextRecords = [...records]
-    nextRecords[index] = mapSyncTaskPayloadToRecord(payload, now)
+    const current = records[index]
+    nextRecords[index] = isSyncTaskTerminal(current.status)
+      ? {
+          ...current,
+          ...(payload.ledger_status !== undefined ? { ledger_status: payload.ledger_status } : {}),
+          ...(payload.ledger_finished_at !== undefined
+            ? { ledger_finished_at: payload.ledger_finished_at }
+            : {}),
+          ...(payload.ledger_error !== undefined ? { ledger_error: payload.ledger_error } : {}),
+        }
+      : mapSyncTaskPayloadToRecord(payload, now)
     return { records: nextRecords, total, refreshNeeded: false }
   }
 

@@ -50,6 +50,8 @@ type QLogger struct {
 	console   bool
 	lumLogger *lumberjack.Logger
 	rotation  *rotationWriter
+	file      *os.File
+	closeOnce sync.Once
 }
 
 type rotationWriter struct {
@@ -121,13 +123,20 @@ func (q *QLogger) Close() {
 	if q == nil {
 		return
 	}
-	if q.rotation != nil {
-		_ = q.rotation.close()
-		return
-	}
-	if q.lumLogger != nil {
-		_ = q.lumLogger.Close()
-	}
+	q.closeOnce.Do(func() {
+		// 先等待 Logger 的在途写入结束并禁用后续输出，避免轮转器关闭后重新打开文件。
+		if q.Logger != nil {
+			q.Logger.SetOutput(io.Discard)
+		}
+		if q.rotation != nil {
+			_ = q.rotation.close()
+		} else if q.lumLogger != nil {
+			_ = q.lumLogger.Close()
+		}
+		if q.file != nil {
+			_ = q.file.Close()
+		}
+	})
 }
 
 // RedactSensitiveLog 脱敏常见凭据字段；已知密钥也可用于清理路径或上游原文中的回显。
@@ -371,6 +380,7 @@ func NewLogger(logFileName string, isConsole bool, rotate bool) *QLogger {
 	logFile := filepath.Join(ConfigDir, logFileName)
 	var lumLogger *lumberjack.Logger
 	var rotation *rotationWriter
+	var file *os.File
 	// 创建多写入器
 	var writers []io.Writer
 
@@ -398,6 +408,7 @@ func NewLogger(logFileName string, isConsole bool, rotate bool) *QLogger {
 			log.Printf("Failed to open log file: %v", err)
 			writers = append(writers, os.Stdout)
 		} else {
+			file = fd
 			if isConsole {
 				// 同时写入文件和控制台
 				writers = append(writers, fd, os.Stdout)
@@ -419,6 +430,7 @@ func NewLogger(logFileName string, isConsole bool, rotate bool) *QLogger {
 		console:   isConsole,
 		lumLogger: lumLogger,
 		rotation:  rotation,
+		file:      file,
 	}
 	return qLogger
 }

@@ -1,6 +1,7 @@
 import { registerRealtimeSource } from '@/composables/realtimeSources'
 import { fetchSyncTask } from '@/api/syncTasks'
 import { parseHttpError } from '@/http/errors'
+import { isSyncTaskStreamTerminal, isSyncTaskTerminal } from '@/utils/syncTaskStatusUtils'
 import type {
   SyncTask,
   SyncTaskEventPayload,
@@ -89,7 +90,7 @@ export function useSyncTaskStream(
     logCursor.value = snapshot.log_cursor
     logPath.value = snapshot.log_path
     loading.value = false
-    terminal.value = snapshot.task.status === 2 || snapshot.task.status === 3
+    terminal.value = isSyncTaskStreamTerminal(snapshot.task)
   }
 
   const applyTaskPatch = (payload: SyncTaskEventPayload) => {
@@ -101,24 +102,32 @@ export function useSyncTaskStream(
     if (!task.value) return
 
     const next = { ...task.value }
-    if (typeof payload.status === 'number') next.status = payload.status as SyncTask['status']
-    if (typeof payload.sub_status === 'number')
-      next.sub_status = payload.sub_status as SyncTask['sub_status']
-    if (typeof payload.total === 'number') next.total = payload.total
-    if (typeof payload.new_strm === 'number') next.new_strm = payload.new_strm
-    if (typeof payload.new_meta === 'number') next.new_meta = payload.new_meta
-    if (typeof payload.new_upload === 'number') next.new_upload = payload.new_upload
-    if (typeof payload.finish_at === 'number') next.finish_at = payload.finish_at
-    if (typeof payload.net_file_start_at === 'number')
-      next.net_file_start_at = payload.net_file_start_at
-    if (typeof payload.net_file_finish_at === 'number')
-      next.net_file_finish_at = payload.net_file_finish_at
-    if (typeof payload.local_file_start_at === 'number')
-      next.local_file_start_at = payload.local_file_start_at
-    if (typeof payload.local_file_finish_at === 'number')
-      next.local_file_finish_at = payload.local_file_finish_at
+    // 生成结果一旦终结，后续后台事件只更新自身状态。
+    if (!isSyncTaskTerminal(next.status)) {
+      if (typeof payload.status === 'number') next.status = payload.status as SyncTask['status']
+      if (typeof payload.sub_status === 'number')
+        next.sub_status = payload.sub_status as SyncTask['sub_status']
+      if (typeof payload.total === 'number') next.total = payload.total
+      if (typeof payload.new_strm === 'number') next.new_strm = payload.new_strm
+      if (typeof payload.new_meta === 'number') next.new_meta = payload.new_meta
+      if (typeof payload.new_upload === 'number') next.new_upload = payload.new_upload
+      if (typeof payload.finish_at === 'number') next.finish_at = payload.finish_at
+      if (typeof payload.net_file_start_at === 'number')
+        next.net_file_start_at = payload.net_file_start_at
+      if (typeof payload.net_file_finish_at === 'number')
+        next.net_file_finish_at = payload.net_file_finish_at
+      if (typeof payload.local_file_start_at === 'number')
+        next.local_file_start_at = payload.local_file_start_at
+      if (typeof payload.local_file_finish_at === 'number')
+        next.local_file_finish_at = payload.local_file_finish_at
+      if (typeof payload.fail_reason === 'string') next.fail_reason = payload.fail_reason
+      if (payload.scan_result !== undefined) next.scan_result = payload.scan_result
+    }
     if (typeof payload.updated_at === 'number') next.updated_at = payload.updated_at
-    if (typeof payload.fail_reason === 'string') next.fail_reason = payload.fail_reason
+    if (payload.ledger_status !== undefined) next.ledger_status = payload.ledger_status
+    if (payload.ledger_finished_at !== undefined)
+      next.ledger_finished_at = payload.ledger_finished_at
+    if (payload.ledger_error !== undefined) next.ledger_error = payload.ledger_error
     task.value = next
   }
 
@@ -165,7 +174,7 @@ export function useSyncTaskStream(
       if (!isCurrent()) return
       task.value = nextTask
       errorMessage.value = ''
-      terminal.value = nextTask.status === 2 || nextTask.status === 3
+      terminal.value = isSyncTaskStreamTerminal(nextTask)
       loading.value = false
       if (terminal.value) clearPolling()
     } catch (error) {
@@ -194,7 +203,7 @@ export function useSyncTaskStream(
       if (
         generation === fallbackGeneration &&
         !terminal.value &&
-        isRunning.value &&
+        task.value &&
         Number(toValue(syncId)) === currentID
       ) {
         pollTimer = setInterval(() => void loadFallbackTask(currentID, generation), 5000)
