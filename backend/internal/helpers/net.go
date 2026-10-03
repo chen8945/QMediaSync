@@ -175,7 +175,32 @@ func ReadFromUrl(targetUrl string, userAgent string) (content []byte, err error)
 	return content, nil
 }
 
-func DownloadFile(targetUrl string, filePath string, userAgent string) (err error) {
+func DownloadFile(targetUrl string, filePath string, userAgent string) error {
+	return downloadFileResponse(targetUrl, userAgent, func(reader io.Reader) error {
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			AppLogger.Errorf("[下载] 读取 %s 的 HTTP 响应失败：%v", targetUrl, err)
+			return fmt.Errorf("读取 %s 的 HTTP 响应失败：%v", targetUrl, err)
+		}
+		if err := WriteFileWithPerm(filePath, content, 0777); err != nil {
+			AppLogger.Errorf("[下载] 写入 %s 失败：%v", filePath, err)
+			return fmt.Errorf("写入 %s 失败：%v", filePath, err)
+		}
+		os.Chmod(filepath.Dir(filePath), 0777)
+		os.Chmod(filePath, 0777)
+		AppLogger.Infof("[下载] %s => %s 成功", targetUrl, filePath)
+		return nil
+	})
+}
+
+// DownloadMetadataFile 保留下载请求规则，仅在内容完整时发布到目标。
+func DownloadMetadataFile(targetURL, filePath, userAgent, baseline string, size int64, sha1, md5 string, mtime int64, beforePublish func(string) error) error {
+	return downloadFileResponse(targetURL, userAgent, func(reader io.Reader) error {
+		return WriteMetadataFile(filePath, baseline, size, sha1, md5, mtime, func(w io.Writer) error { _, err := io.Copy(w, reader); return err }, beforePublish)
+	})
+}
+
+func downloadFileResponse(targetUrl, userAgent string, consume func(io.Reader) error) error {
 	// 创建请求并设置 User-Agent
 	req, err := http.NewRequest("GET", targetUrl, nil)
 	if err != nil {
@@ -267,24 +292,7 @@ func DownloadFile(targetUrl string, filePath string, userAgent string) (err erro
 	}
 	defer resp.Body.Close()
 
-	// 读取响应内容
-	content, err := io.ReadAll(resp.Body)
-	if err != nil {
-		AppLogger.Errorf("[下载] 读取 %s 的 HTTP 响应失败：%v", targetUrl, err)
-		return fmt.Errorf("读取 %s 的 HTTP 响应失败：%v", targetUrl, err)
-	}
-	// folder := filepath.Dir(filePath)
-	// os.MkdirAll(folder, 0777)
-	err = WriteFileWithPerm(filePath, content, 0777)
-	if err != nil {
-		AppLogger.Errorf("[下载] 写入 %s 失败：%v", filePath, err)
-		return fmt.Errorf("写入 %s 失败：%v", filePath, err)
-	}
-	// 检查目标文件是否存在
-	os.Chmod(filepath.Dir(filePath), 0777)
-	os.Chmod(filePath, 0777)
-	AppLogger.Infof("[下载] %s => %s 成功", targetUrl, filePath)
-	return nil
+	return consume(resp.Body)
 }
 
 // 给一个 URL 发 POST 请求，不处理返回值

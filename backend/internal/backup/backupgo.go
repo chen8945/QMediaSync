@@ -175,6 +175,9 @@ func backupToJsonFile(backupDir string, modelName string, totalTable int, count 
 
 		for i := 0; i < recordsValue.Len(); i++ {
 			record := recordsValue.Index(i).Interface()
+			if task, ok := record.(models.DbDownloadTask); ok {
+				record = downloadBackup(task)
+			}
 			if err := encoder.Encode(record); err != nil {
 				return fmt.Errorf("写入 %s 备份文件失败：%w", modelName, err)
 			}

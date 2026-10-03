@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -54,13 +53,15 @@ type DbDownloadTask struct {
 	RemoteFullPath    string         `json:"remote_full_path"`                       // 创建任务时确定的远端完整路径，包含文件名
 	RemotePickCode    string         `json:"remote_pick_code"`                       // 115 PickCode
 	RemoteSha1        string         `json:"remote_sha1"`                            // 远端明确返回的 SHA1
-	RemoteMd5         string         `json:"remote_md5"`                             // 远端明确返回的 MD5
+	RemoteMd5         string         `json:"remote_md5"`                             // 远端 MD5 字段；百度为云端哈希，不用于内容校验
 	RemoteDownloadUrl string         `json:"-"`                                      // 下载执行使用的直链或提取地址，不暴露给前端
 	EmbyItemId        string         `json:"-"`                                      // Emby 媒体提取执行定位，不暴露给前端
 	LocalSourcePath   string         `json:"-"`                                      // 本地复制任务源路径，不暴露给前端
 	DedupScopeHash    string         `json:"-"`                                      // 活跃任务去重范围摘要，不暴露给前端
 	DedupLocatorHash  string         `json:"-"`                                      // 活跃任务去重定位摘要，不暴露给前端
-	LocalFullPath     string         `json:"local_full_path"`                        // 本地文件路径，下载到这个位置，如果已存在不覆盖，下载前先检查
+	ReplaceBaseline   string         `json:"-"`                                      // 允许替换的旧文件内容、大小和修改时间
+	PublishedSHA256   string         `json:"-"`                                      // 已校验内容的摘要，用于发布后恢复
+	LocalFullPath     string         `json:"local_full_path"`                        // 本地文件路径，下载到这个位置，仅补缺或按 ReplaceBaseline 替换
 	Source            DownloadSource `json:"source" gorm:"index:idx_source"`         // 下载来源存储值，展示文案由前端映射
 	Status            DownloadStatus `json:"status" gorm:"index:idx_status"`         // 下载状态
 	Size              int64          `json:"size"`                                   // 文件大小
@@ -214,11 +215,12 @@ func publishDownloadTaskStatusChanged(task *DbDownloadTask) {
 
 // 执行下载
 func (task *DbDownloadTask) Download() {
-	if helpers.PathExists(task.LocalFullPath) {
+	if task.finishPublishedMetadata() {
+		return
+	}
+	if task.ReplaceBaseline == "" && helpers.PathExists(task.LocalFullPath) {
 		task.Complete()
 		helpers.AppLogger.Infof("文件已存在，无需下载：%s", task.LocalFullPath)
-		// 设置文件修改时间
-		// task.SetMTime()
 		return
 	}
 	switch task.Source {
@@ -244,26 +246,15 @@ func (task *DbDownloadTask) Download() {
 		// 复制本地文件到指定位置。
 		// 标记为下载中
 		task.Downloading()
-		err := helpers.CopyFile(task.LocalSourcePath, task.LocalFullPath)
+		err := helpers.CopyMetadataFile(task.LocalSourcePath, task.LocalFullPath, task.ReplaceBaseline, task.Size, task.MTime, task.savePublishedMetadata)
 		if err != nil {
 			helpers.AppLogger.Warnf("[下载] 复制文件失败：%s", err.Error())
 			task.Fail(err)
 			return
 		}
-		// 设置文件修改时间
-		task.SetMTime()
 		task.Complete()
 	}
 
-}
-
-func (task *DbDownloadTask) SetMTime() {
-	if task.MTime > 0 {
-		err := os.Chtimes(task.LocalFullPath, time.Unix(task.MTime, 0), time.Unix(task.MTime, 0))
-		if err != nil {
-			helpers.AppLogger.Warnf("[下载] 修改文件时间失败：%s", err.Error())
-		}
-	}
 }
 
 func (task *DbDownloadTask) Download115File() {
@@ -283,7 +274,7 @@ func (task *DbDownloadTask) Download115File() {
 	// 	return
 	// }
 	// 再次检查文件是否已存在
-	if helpers.PathExists(task.LocalFullPath) {
+	if task.ReplaceBaseline == "" && helpers.PathExists(task.LocalFullPath) {
 		helpers.AppLogger.Infof("[下载] 文件已存在，无需下载：%s", task.LocalFullPath)
 		task.Complete()
 		return
@@ -305,6 +296,10 @@ func (task *DbDownloadTask) Download115File() {
 		updates["remote_pick_code"] = task.RemotePickCode
 	}
 	if result.Sha1 != "" {
+		if task.RemoteSha1 != "" && !strings.EqualFold(task.RemoteSha1, result.Sha1) {
+			task.Fail(errors.New("115 文件内容在排队后发生变化"))
+			return
+		}
 		task.RemoteSha1 = result.Sha1
 		updates["remote_sha1"] = task.RemoteSha1
 	}
@@ -314,14 +309,12 @@ func (task *DbDownloadTask) Download115File() {
 		}
 	}
 	// 下载文件到指定位置
-	downloadErr := helpers.DownloadFile(result.URL, task.LocalFullPath, v115open.DEFAULTUA)
+	downloadErr := task.downloadMetadata(result.URL, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
 		return
 	}
-	// 设置文件修改时间
-	task.SetMTime()
 	// 下载完成
 	task.Complete()
 }
@@ -358,14 +351,12 @@ func (task *DbDownloadTask) DownloadOpenListFile() {
 		task.Fail(errors.New("OpenList 下载地址为空"))
 		return
 	}
-	downloadErr := helpers.DownloadFile(task.RemoteDownloadUrl, task.LocalFullPath, v115open.DEFAULTUA)
+	downloadErr := task.downloadMetadata(task.RemoteDownloadUrl, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
 		return
 	}
-	// 设置文件修改时间
-	task.SetMTime()
 	// 下载完成
 	task.Complete()
 }
@@ -394,14 +385,12 @@ func (task *DbDownloadTask) DownloadBaiduPanFile() {
 	url := fmt.Sprintf("%s&access_token=%s", fileDetail.Dlink, account.Token)
 	helpers.AppLogger.Infof("[下载] 百度网盘文件下载链接：%s", url)
 	// 下载文件到指定位置
-	downloadErr := helpers.DownloadFile(url, task.LocalFullPath, "pan.baidu.com")
+	downloadErr := task.downloadMetadata(url, "pan.baidu.com")
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
 		return
 	}
-	// 设置文件修改时间
-	task.SetMTime()
 	// 下载完成
 	task.Complete()
 }
@@ -569,7 +558,7 @@ func createDownloadTaskWithDB(tx *gorm.DB, task *DbDownloadTask) error {
 }
 
 // 添加任务
-func AddDownloadTaskFromSyncFile(file *SyncFile) error {
+func AddDownloadTaskFromSyncFile(file *SyncFile, replaceBaseline ...string) error {
 	source := DownloadSourceStrm
 	switch file.SourceType {
 	case SourceTypeLocal:
@@ -618,6 +607,9 @@ func AddDownloadTaskFromSyncFile(file *SyncFile) error {
 		Size:           file.FileSize,
 		SourceType:     file.SourceType,
 		MTime:          file.MTime,
+	}
+	if len(replaceBaseline) > 0 {
+		task.ReplaceBaseline = replaceBaseline[0]
 	}
 	if file.SourceType == SourceType115 {
 		task.RemotePickCode = file.PickCode

@@ -75,6 +75,8 @@ func restore(filePath string) (err error) {
 
 // 从 JSON 文件还原到数据库
 func restoreFromJsonFile(backupDir string, modelName string, totalTable int, count *int, model any) error {
+	finishPosition := models.BeginSyncPositionMutation()
+	defer finishPosition()
 	backupFilePath := filepath.Join(backupDir, modelName+".json")
 	// 检查文件是否存在
 	if _, err := os.Stat(backupFilePath); os.IsNotExist(err) {
@@ -119,6 +121,18 @@ func restoreFromJsonFile(backupDir string, modelName string, totalTable int, cou
 	} else {
 		helpers.AppLogger.Infof("表 %s 已创建", modelName)
 	}
+	switch model.(type) {
+	case models.StrmGenerationTask, *models.StrmGenerationTask:
+		if err := models.EnsureStrmGenerationQueueIndex(db.Db); err != nil {
+			rememberError(fmt.Errorf("创建 %s 队列索引失败：%w", modelName, err))
+			helpers.AppLogger.Warnf("创建 %s 队列索引失败，继续导入数据：%v", modelName, err)
+		}
+	case models.SyncFile, *models.SyncFile:
+		if err := models.EnsureSyncFileLookupIndexes(db.Db); err != nil {
+			rememberError(fmt.Errorf("创建 %s 查询索引失败：%w", modelName, err))
+			helpers.AppLogger.Warnf("创建 %s 查询索引失败，继续导入数据：%v", modelName, err)
+		}
+	}
 	// 读取文件内容
 	scanner := bufio.NewScanner(file)
 	// 单条记录可能含长文本；超过上限或读取故障必须作为恢复失败返回。
@@ -138,6 +152,15 @@ func restoreFromJsonFile(backupDir string, modelName string, totalTable int, cou
 			rememberError(fmt.Errorf("%s 解析 JSON 失败：%w", modelName, err))
 			continue
 		} else {
+			// 下载任务的内部执行字段只从备份读取。
+			if task, ok := item.(*models.DbDownloadTask); ok {
+				var row downloadTaskBackup
+				if err := json.Unmarshal([]byte(line), &row); err != nil {
+					rememberError(err)
+					continue
+				}
+				*task = row.restore()
+			}
 			// 插入数据库
 			if err := db.Db.Create(item).Error; err != nil {
 				rememberError(fmt.Errorf("%s 插入数据库失败：%w", modelName, err))
