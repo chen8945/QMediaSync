@@ -113,14 +113,6 @@ func CleanupCompletedStrmDependencies(batchSize int) (int, error) {
 		for i := range tasks {
 			task := &tasks[i]
 			lastID = task.ID
-			completed, err := hasCompletedStrmTask(task.ID)
-			if err != nil {
-				resultErr = errors.Join(resultErr, err)
-				continue
-			}
-			if !completed {
-				continue
-			}
 			cleanedSource, err := cleanupSourceAfterStrmSuccess(task.ID)
 			if err != nil {
 				resultErr = errors.Join(resultErr, err)
@@ -145,13 +137,7 @@ func findCompletedStrmDependencyUploadTasks(lastID uint, batchSize int) ([]model
 		models.UploadSourceDirectoryMonitor,
 		models.UploadStatusCompleted,
 		models.UploadSourceCleanupStatusPending,
-	).Where(`
-		EXISTS (
-			SELECT 1
-			FROM strm_generation_tasks AS strm
-			WHERE strm.upload_task_id = db_upload_tasks.id
-				AND strm.status = ?
-		)`,
+	).Where(completedStrmDependencyCondition, models.StrmGenerationTaskTypeFile,
 		models.StrmGenerationStatusCompleted,
 	).Order("id ASC").Limit(batchSize).Find(&tasks).Error
 	return tasks, err
@@ -247,10 +233,29 @@ func validateCurrentSourceFileForCleanup(task *models.DbUploadTask) error {
 	return nil
 }
 
+// 清理只认最近一次文件生成结果；旧任务还在处理时也继续保留源文件。
+const completedStrmDependencyCondition = `
+	EXISTS (
+		SELECT 1 FROM strm_generation_tasks AS strm
+		WHERE strm.upload_task_id = db_upload_tasks.id
+			AND strm.task_type = ? AND strm.status = ?
+			AND NOT EXISTS (
+				SELECT 1 FROM strm_generation_tasks AS newer
+				WHERE newer.upload_task_id = strm.upload_task_id AND newer.id > strm.id
+			)
+	)
+	AND NOT EXISTS (
+		SELECT 1 FROM strm_generation_tasks AS active
+		WHERE active.upload_task_id = db_upload_tasks.id
+			AND active.status IN ('pending', 'running', 'finalizing', 'waiting_children')
+	)`
+
 func hasCompletedStrmTask(uploadTaskID uint) (bool, error) {
 	var total int64
-	err := db.Db.Model(&models.StrmGenerationTask{}).
-		Where("upload_task_id = ? AND status = ?", uploadTaskID, models.StrmGenerationStatusCompleted).
+	err := db.Db.Model(&models.DbUploadTask{}).
+		Where("id = ?", uploadTaskID).
+		Where(completedStrmDependencyCondition, models.StrmGenerationTaskTypeFile,
+			models.StrmGenerationStatusCompleted).
 		Count(&total).Error
 	return total > 0, err
 }

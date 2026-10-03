@@ -49,6 +49,26 @@
             <el-descriptions-item label="总文件数">
               {{ taskInfo?.processed_files || 0 }}
             </el-descriptions-item>
+            <el-descriptions-item label="处理结果">
+              {{ getSyncScanSummary(task?.scan_result) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="缺项清理">
+              {{ getSyncCleanupText(task?.scan_result?.cleanup_status) }}
+              <span v-if="task?.scan_result?.cleanup_reason">
+                ：{{ task.scan_result.cleanup_reason }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="task?.fail_reason" label="失败原因">
+              {{ task.fail_reason }}
+            </el-descriptions-item>
+            <el-descriptions-item v-if="task?.scan_result?.failures.length" label="失败范围">
+              <ul class="scan-failures">
+                <li v-for="(failure, index) in task.scan_result.failures" :key="index">
+                  {{ failure.kind === 'directory' ? '目录' : '文件' }} {{ failure.path }}：
+                  {{ failure.reason }}
+                </li>
+              </ul>
+            </el-descriptions-item>
             <el-descriptions-item label="生成 STRM">
               {{ taskInfo?.created_strm || 0 }}
             </el-descriptions-item>
@@ -67,8 +87,17 @@
                 {{ embyRefreshDecision.reason }}
               </span>
             </el-descriptions-item>
-            <el-descriptions-item label="执行时长">
-              {{ getExecutionDuration() }}
+            <el-descriptions-item label="生成耗时">
+              {{ task ? getSyncGenerationDuration(task.created_at, task.finish_at) : '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="文件记录更新">
+              {{ getSyncLedgerStatusText(task?.ledger_status) }}
+            </el-descriptions-item>
+            <el-descriptions-item v-if="task?.ledger_error" label="文件记录更新原因">
+              <span class="ledger-error">{{ task.ledger_error }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="总耗时">
+              {{ task ? getSyncTotalDuration(task.created_at, task.finish_at, task) : '-' }}
             </el-descriptions-item>
           </el-descriptions>
         </div>
@@ -164,19 +193,25 @@ import { useLogFileActions } from '@/composables/useLogFileActions'
 import { useSyncTaskStream } from '@/composables/useSyncTaskStream'
 import { navigateBackOrReplace } from '@/utils/navigation'
 import { getEmbyRefreshDecision } from '@/utils/syncRefreshDecision'
+import type { SyncTaskStatus } from '@/types/syncTaskStream'
 import {
   getSyncTaskStatusTagType,
   getSyncTaskStatusText,
   getSyncTaskSubStatusText,
+  getSyncScanSummary,
+  getSyncCleanupText,
+  getSyncLedgerStatusText,
+  getSyncGenerationDuration,
+  getSyncTotalDuration,
 } from '@/utils/syncTaskStatusUtils'
-import { formatDateTime } from '@/utils/timeUtils'
+import { formatDateTime, formatDuration } from '@/utils/timeUtils'
 
 // 任务详情数据结构
 interface TaskInfo {
   id: number
   start_time: number
   end_time: number | null
-  status: 0 | 1 | 2 | 3 // 0-待开始，1-运行中，2-完成，3-失败
+  status: SyncTaskStatus
   sub_status: 0 | 1 | 2 // 0-待开始，1-正在处理网盘文件列表，2-正在处理本地文件列表
   processed_files: number
   created_strm: number
@@ -250,37 +285,6 @@ const embyRefreshDecision = computed(() =>
 // 返回上一页
 const goBack = () => {
   void navigateBackOrReplace(router, { name: 'sync-records' })
-}
-
-// 计算执行时长
-const getExecutionDuration = () => {
-  if (!taskInfo.value?.start_time) return '-'
-
-  // 如果任务未完成，使用当前时间计算
-  if (!taskInfo.value.end_time) {
-    const currentTime = Math.floor(Date.now() / 1000)
-    const duration = currentTime - taskInfo.value.start_time
-    return formatDuration(duration)
-  }
-
-  // 已完成任务使用 finish_at - created_at 计算
-  const duration = taskInfo.value.end_time - taskInfo.value.start_time
-  return formatDuration(duration)
-}
-
-// 格式化时长
-const formatDuration = (duration: number) => {
-  if (duration < 60) {
-    return `${duration} 秒`
-  } else if (duration < 3600) {
-    const minutes = Math.floor(duration / 60)
-    const seconds = duration % 60
-    return `${minutes} 分 ${seconds} 秒`
-  } else {
-    const hours = Math.floor(duration / 3600)
-    const minutes = Math.floor((duration % 3600) / 60)
-    return `${hours} 小时 ${minutes} 分`
-  }
 }
 
 // 获取时间线项目
@@ -359,10 +363,10 @@ const getTimelineItems = () => {
     current: localFileCurrent,
   })
 
-  // 阶段 4：结束
+  // 阶段 4：生成结束
   const endTime = taskInfo.value.end_time
   items.push({
-    title: '完成任务',
+    title: endTime ? `任务状态：${getSyncTaskStatusText(taskInfo.value.status)}` : '生成结束',
     time: endTime ? formatDateTime(endTime) : '未完成',
     icon: SuccessFilled,
     duration: null, // 不计算时长
@@ -375,6 +379,16 @@ const getTimelineItems = () => {
 </script>
 
 <style scoped>
+.ledger-error {
+  overflow-wrap: anywhere;
+}
+
+.scan-failures {
+  margin: 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
 .sync-task-detail-container {
   width: 100%;
   max-width: none;

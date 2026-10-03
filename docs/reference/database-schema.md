@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `64`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `65`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -95,8 +95,9 @@
 | 61 | 62 | 为 `account.name` 和 `account.user_id` 创建非空条件唯一索引；迁移前检查已有重复值，发现重复时保留数据、停留在旧版本并记录诊断信息，不静默改写账号关联。 |
 | 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
 | 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`，以及全局 `multi_playback_enabled`，默认 `0`；迁移重试保留已有值，仅补齐缺列和默认值。 |
+| 64 | 65 | `syncs` 新增可空 `scan_result` 文本 JSON、可空 `ledger_status`、可空 `ledger_finished_at` 和 `ledger_error`，保存扫描结果与后台账本结果；`db_download_tasks` 新增 `replace_baseline` 和 `published_sha256`，保存元数据替换与重试所需信息；`strm_generation_tasks` 新增 `skip_reason` 和默认 `0` 的 `skipped_items`；`sync_files` 新增同目录查询索引，SQLite 另增同步目录与文件 ID 的查询索引；`strm_generation_tasks` 的等待与收尾任务新增匹配领取顺序的部分表达式索引。迁移失败后可重试，保留已有字段值，历史结果和终点不推算。 |
 
-当前数据库版本是 `64`。
+当前数据库版本是 `65`。
 
 ## 不变量
 
@@ -122,7 +123,7 @@
 | `scrape_type` | `only_scrape`、`scrape_and_rename`、`only_rename` |
 | `rename_type` | `hard_symlink`、`soft_symlink`、`move`、`copy`、`same` |
 | `enable_ai` | `off`、`assist`、`enforce` |
-| `sync.status` | `0` 待处理、`1` 进行中、`2` 已完成、`3` 失败 |
+| `sync.status` | `0` 待处理、`1` 进行中、`2` 已完成、`3` 失败、`4` 部分完成、`5` 扫描不完整、`6` 已取消 |
 | `sync.sub_status` | `0` 无、`1` 正在处理网盘文件、`2` 正在处理本地文件列表 |
 | `scrape_media.status` | `unscanned`、`scanned`、`scraping`、`scraped`、`renaming`、`renamed`、`rename_failed`、`ignore`、`scrape_failed`、`rollbacking` |
 | `download.status` | `0` 待下载、`1` 下载中、`2` 已完成、`3` 失败、`4` 已取消 |
@@ -135,7 +136,7 @@
 | `directory_upload_processed.result` | `queued`、`pending_replace`、`uploaded_pending_strm`、`remote_exists_pending_strm`、`strm_enqueue_failed`、`uploaded`、`remote_exists`、`skipped_existing`、`failed` |
 | `strm_generation.source` | `upload_completed`、`webhook`、`remote_exists` |
 | `strm_generation.task_type` | `file`、`directory_scan`、`batch_files` |
-| `strm_generation.status` | `pending`、`running`、`finalizing`、`waiting_children`、`completed`、`failed`、`cancelled` |
+| `strm_generation.status` | `pending`、`running`、`finalizing`、`waiting_children`、`completed`、`failed`、`cancelled`、`skipped` |
 | `emby_refresh.target_type` | `library`、`item` |
 | `backup.status` | `pending`、`running`、`completed`、`failed`、`cancelled`、`timeout` |
 | `backup.type` | `manual`、`auto` |
@@ -170,7 +171,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `64`。
+- `version_code`：当前数据库版本号，当前值为 `65`。
 
 ### `users`
 
@@ -347,7 +348,7 @@ STRM 相关字段：
 - `sub_status`：任务子状态。
 - `file_offset`：文件偏移量，用于断点续跑。
 - `total`：总文件数。
-- `finish_at`：完成时间戳。
+- `finish_at`：生成结束时间戳；确定后不被后台账本更新覆盖。
 - `new_strm`：新增 STRM 数量。
 - `new_meta`：新增元数据数量。
 - `new_upload`：新增上传数量。
@@ -357,13 +358,21 @@ STRM 相关字段：
 - `remote_path`：远程同步路径。
 - `base_cid`：根目录 ID。
 - `fail_reason`：失败原因。
+- `scan_result`：可空文本 JSON；HTTP / SSE 输出为对象。包含 `succeeded_files`、`failed_files`、`skipped_files`、`failures`（`kind=file/directory`、`path`、可选 `file_id`、`reason`），以及 `cleanup_status=completed/partial/skipped` 和 `cleanup_reason`。数量只记录实际已知文件，不推算失败目录中的未知文件；旧记录为 NULL。
+- `ledger_status`：可空字符串，`not_required` 无需后台、`pending` 待执行、`running` 执行中、`completed` 成功、`failed` 失败、`interrupted` 中断；历史 NULL 表示未记录。
+- `ledger_finished_at`：可空 Unix 秒，实际观察到的后台退出终点；服务重启识别遗留后台时保持 NULL，不使用重启时间补值。
+- `ledger_error`：后台错误摘要，保存前脱敏；不覆盖生成的 `fail_reason`。
 - `is_full_sync`：是否全量同步。
+
+生成结果与成功水位在同一短事务提交，并初始化后台状态。后台使用条件更新，只修改上述后台字段和 `updated_at`，不修改生成计数、结果、`finish_at` 或成功水位；晚到更新不能复活已删记录或将后台终态改回运行中。
+
+总耗时不单独存储：无需后台时取 `finish_at - created_at`；其他已知终点取 `max(finish_at, ledger_finished_at) - created_at`。后台在途时尚未最终确定；历史未记录或中断终点缺失时不能推算完整总耗时。
 
 删除规则：
 
 - 同步记录作为历史审计数据保留；删除同步目录不会级联删除 `syncs` 历史记录。
 - 删除同步目录会在同一事务内删除对应的 `directory_upload_rules`，并由接口层重载目录监控上传服务，停止对应 watcher。
-- 用户手动删除同步记录时，仅允许删除已完成或失败的记录，同时删除对应同步日志文件。
+- 用户手动删除同步记录时，仅允许删除已终结（状态 2–6）的记录，同时删除对应同步日志文件。
 - 定时任务每天 0 点清理创建时间早于 7 天的同步记录和对应同步日志。
 
 运行时字段：
@@ -385,7 +394,7 @@ STRM 相关字段：
 - `file_type`：115 文件类型。
 - `pick_code`：115 PickCode。
 - `sha1`：文件 SHA1。
-- `mtime`：来源文件时间戳；115 同步链路保存上传时间 `Ptime`，用于同目标 STRM 的最新文件选择。
+- `mtime`：来源文件的修改时间，单位为 Unix 秒。115 优先使用官方修改时间，缺失时回退上传时间；同目标 STRM 也用它选择最新文件。
 - `local_file_path`：本地完整文件路径。
 - `path`：绝对路径，不含文件名。
 - `is_video`：是否视频文件。
@@ -401,7 +410,17 @@ STRM 相关字段：
 
 - `sync_path`、`sync`、`account`：关联对象，不入库。
 
-115 同一目录下的不同扩展名视频可能映射到相同的 `local_file_path`。`sync_files` 会保留各远端文件记录，运行时按上传时间 `Ptime` 选择唯一 STRM owner；时间相同时使用 FileID 固定排序。non-owner 不参与 STRM 比较、写入或 Emby 刷新，owner 删除后由剩余候选中的最新文件接管。
+115 同一目录下的不同扩展名视频可能映射到相同的 `local_file_path`。`sync_files` 保留各远端文件记录，按 `mtime` 选择唯一负责写入的文件（STRM owner）；时间相同时使用 FileID 固定排序。其他候选不参与 STRM 比较、写入或 Emby 刷新，owner 删除后由剩余候选中的最新文件接管。多个操作读写这些记录时遵循[同步操作排队规则](../architecture/sync-orchestration.md#相互影响的操作如何排队)。
+
+Emby 查找同目录记录时，使用非唯一索引缩小查询范围：SQLite 索引包含 `sync_path_id` 和 `path`，PostgreSQL 使用 `path` 的 HASH 索引。HASH 索引支持长路径，查询仍核对完整路径和同步目录，并按 ID 倒序最多读取 50 条。
+
+SQLite 另有 `sync_path_id` 与 `file_id` 的非唯一索引，查找单个文件时可直接按两个条件定位，避免先遍查整个同步目录。上述索引在新库初始化、64→65 升级、数据库修复和恢复该表时建立，不修改文件记录。
+
+完整同步在后台按 ID 读取旧记录，每页最多 256 条，并在一个短事务内保存该页差异。变化记录的每条 SQL 最多处理 SQLite 32 条、PostgreSQL 256 条；新增记录两库均为 32 条，每个事务最多新增 256 条。无变化的记录仍更新 `updated_at`，其他列不重写。
+
+已有记录只更新文件名、PickCode、大小、修改时间、远端与本地路径、缩略图、OpenList 签名及对象 ID、摘要和父目录 ID；身份、归属、`uploaded`、`processed` 等其他字段保持原值。空字符串、零值及旧数据中的空列按原同步字段语义写入。新增记录继续使用来源各自的身份规则，不能用全行覆盖代替已有记录更新。
+
+某页失败时回滚该页，此前已经提交的页保留，后续页停止。后台报错与下次扫描恢复的规则见[生成结果与后台账本](../architecture/sync-orchestration.md#生成结果与后台账本)。
 
 ### `scrape_settings`
 
@@ -775,12 +794,14 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `remote_path`：远端目录路径，不含文件名。
 - `remote_full_path`：创建任务时确定的远端完整文件路径，包含文件名；后续远端改名或移动不会回写历史任务。
 - `remote_pick_code`：115 PickCode；仅 115 使用。
-- `remote_sha1` / `remote_md5`：远端响应明确声明算法的 SHA1 / MD5，不使用本地计算值或算法未知的哈希兜底；当前仅 115 与 OpenList 可写入 SHA1，百度可写入 MD5，其他未确认支持的来源保持空。
+- `remote_sha1` / `remote_md5`：115 与 OpenList 保存远端明确提供的内容 SHA1 / MD5，不使用本地计算值或 OpenList 私有哈希兜底。百度下载沿用 `remote_md5` 保存列表 `md5` 字段的云端哈希，它不保证等于文件内容 MD5，即使形式为 32 位十六进制也不能用于内容校验。已有任务、重试和备份恢复保留该值；下载校验规则见[同步调度](../architecture/sync-orchestration.md#sync-记录与执行状态)。
 - `remote_download_url`：OpenList 签名直链或 Emby 媒体提取地址，仅下载 worker 使用，序列化时排除，HTTP / SSE 和前端均不可见。
 - `emby_item_id`：Emby 媒体提取运行定位，仅 worker 使用，序列化时排除。
 - `local_source_path`：本地复制任务的源路径，仅 worker 使用，序列化时排除。
 - `dedup_scope_hash`、`dedup_locator_hash`：活跃下载任务去重范围和来源定位值的 SHA-256 摘要，仅数据库约束、创建竞争处理和失败重试使用，序列化时排除；不重复索引 OpenList 或 Emby 的签名直链。
 - `local_full_path`：本地落盘路径。
+- `replace_baseline`：允许替换的旧文件大小、纳秒修改时间及完整 SHA256；为空时只补缺失文件。
+- `published_sha256`：临时文件校验通过后保存的内容 SHA256，用于发布成功但完成状态未保存时恢复。两个字段仅供任务执行和备份恢复使用，不在队列 API 中展示。
 - `source`：下载来源，`strm_sync`、`local_file` 或 `emby_media`。
 - `status`：下载状态。
 - `size`：文件大小。
@@ -880,7 +901,7 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 
 ### 版本 61、62 迁移与回退
 
-版本 `60 → 61` 先增加新列，再仅使用已有任务和关联 `sync_files` 回填可靠数据：115 下载可回填文件 ID、PickCode、SHA1 和完整路径；百度的 `sync_files.pick_code` 为可证明的 `fs_id`，回填到 `remote_file_id`，其历史 `sync_files.sha1` 语义为 MD5，只回填到 `remote_md5`；OpenList、Emby 和 local 的旧执行定位分别迁入隐藏的直链、Emby 条目 ID 和本地源路径。无法证明的路径、对象 ID、PickCode 或 SHA1 保持空，不发起远端补查。
+版本 `60 → 61` 先增加新列，再仅使用已有任务和关联 `sync_files` 回填可靠数据：115 下载可回填文件 ID、PickCode、SHA1 和完整路径；百度的 `sync_files.pick_code` 为可证明的 `fs_id`，回填到 `remote_file_id`，其历史 `sync_files.sha1` 保存百度列表的云端哈希，只回填到 `remote_md5`，不作为内容摘要；OpenList、Emby 和 local 的旧执行定位分别迁入隐藏的直链、Emby 条目 ID 和本地源路径。无法证明的路径、对象 ID、PickCode 或 SHA1 保持空，不发起远端补查。
 
 上传任务由旧完成字段回填新完成身份；旧 `remote_file_id` 只有可证明为完整目标路径时才迁入 `remote_full_path`，只有可证明为 STRM 覆盖且新旧完成 ID 不同时才迁入 `replaced_remote_file_id`。迁移会删除 `completed_remote_file_id` 和 `completed_pick_code`，但不删除 `upload_sessions` 内部 checkpoint。若迁移在任一字段回填或两列删除之间中断，重试会跳过已清空 / 删除的旧列，并保留已经迁入的 PickCode、隐藏执行定位及完成身份字段。
 
@@ -945,27 +966,32 @@ STRM 生成任务表，上传完成、远端已存在跳过和 [STRM Webhook](st
 - `sync_path_id`、`account_id`：同步目录和账号 ID。
 - `download_meta`、`refresh_emby`：Webhook STRM 生成选项，默认关闭；`download_meta` 只对 `source=webhook` 且 `task_type=file` 的任务生效。
 - `file_id`、`parent_id`、`pick_code`、`path`、`file_name`、`file_size`、`sha1`、`mtime`：文件级 STRM 生成所需远端信息。
-- `directory_id`、`directory_path`、`total_items`、`accepted_items`、`failed_items`：目录级扫描或批量父任务信息和统计。
+- `directory_id`、`directory_path`：目录级扫描或批量父任务信息。
+- `total_items`、`accepted_items`、`failed_items`、`skipped_items`：总项、已完成、失败和跳过数量。`accepted_items` 是处理完成数量，不是 Webhook 的入队数量。
+- `skip_reason`：规则导致跳过的原因；历史记录不推算跳过结果。
 - `changed_items`、`new_meta_items`：父任务统计中发生 STRM 变更和新增元数据下载任务的子任务数量。
 - `refresh_targets_str`、`refresh_submitted`：父任务收集到的 Emby 刷新目标和是否已提交刷新。
-- `status`：任务状态。
+- `status`：`pending`、`running`、`finalizing`、`waiting_children`、`completed`、`failed`、`cancelled` 或 `skipped`。
 - `request_hash`：幂等请求哈希，非空时唯一；Webhook 和目录扫描子任务使用 `*:v2:<sha256>` 短摘要格式，不保存明文长路径。并发创建相同哈希时，入队逻辑会使用数据库唯一键冲突忽略并复查已有任务，调用方应看到复用已有活跃任务而不是唯一键错误。
 - `retry_count`、`last_retry_time`、`last_error`：重试和失败信息。
 
 说明：
 
-- 程序启动时会把上次异常退出遗留的 `running` 任务恢复为 `pending`，然后由后台 worker 按 ID 顺序领取待处理任务。
-- `batch_files` 父任务不由 worker 执行；创建后处于 `waiting_children`，表示子任务尚未全部进入终态。子任务累计达到 `total_items` 后，父任务无失败时转为 `completed`，存在失败时转为 `failed`。
+- 独立文件的普通收尾失败只按任务 ID、无父任务、文件类型及数据库中的 `running` 状态条件更新为 `failed`，不覆盖其他状态或重建已删除记录；成功路径不增加中间状态写入。失败保存与取消的行为见[后处理规则](../architecture/upload-and-strm-processing.md#后处理配置何时生效)。
+- 程序启动时会把上次异常退出遗留的 `running` 任务恢复为 `pending`。单个后台 worker 每批最多领取 5 项，按首次创建时间或收尾最近重试时间、再按 ID 排序；依赖筛选翻页使用相同排序键游标，避免重复偏移扫描，保留重试公平性。
+- `idx_strm_generation_tasks_queue` 是 `pending` / `finalizing` 状态的部分表达式索引，顺序为 `CASE WHEN status = 'finalizing' AND last_retry_time > 0 THEN last_retry_time ELSE created_at END`、`id`。SQLite 和 PostgreSQL 共用该查询契约；新库初始化、64→65、修复及该表恢复均补齐索引，失败不推进迁移版本。
+- `batch_files` 父任务不由 worker 执行；创建后处于 `waiting_children`，表示子任务尚未全部进入终态。子任务累计达到 `total_items` 后，父任务全跳过时转为 `skipped`，成功与跳过混合时转为 `completed`，存在失败时转为 `failed`。
 - 同一个 `batch_files` 请求在父任务仍为活跃状态时会复用父任务，并按每个合法 item 的原始 `items[]` index 匹配或补建缺失子任务；同批次重复文件项不会互相复用子任务。首次创建父任务与合法子任务在同一事务内完成，任一子任务创建失败会回滚父任务，重试时重新创建完整集合。
-- `directory_scan` 父任务由 worker 异步展开远端目录，只为视频文件创建 `file` 子任务；115 目录枚举会按 `file_list_page_size` 分页累加所有文件列表结果，不会只处理最后一页。展开完成后 `total_items` 表示子任务总数，子任务后续完成或失败时累计 `accepted_items` / `failed_items`，不会把 `total_items` 降为当前已处理数。
-- `request_hash` 只对 `pending` / `running` / `finalizing` / `waiting_children` 任务做幂等去重；如果历史任务已经 `failed`、`completed` 或 `cancelled`，再次提交同一请求会归档旧哈希并创建新任务。并发归档或创建时会在小范围内重试；批量 Webhook 还会在 SQLite 锁冲突时回滚并重试整个父子任务事务，避免锁错误泄漏给调用方。升级后新请求会写入短格式哈希；旧格式活跃任务仍可被相同请求复用。
-- worker 自动领取 `pending` 和 `finalizing` 任务；执行失败会把任务标记为 `failed`，递增 `retry_count` 并写入 `last_error`，不会删除已成功写出的新 STRM。成功生成的批量 / 目录扫描子任务会先累计父任务进度并进入 `finalizing`，待父任务刷新提交成功或确认无需提交后才转为 `completed`，避免父刷新失败后子任务不可重试或重复累计父进度。
+- `directory_scan` 父任务由 worker 异步展开远端目录，只为视频文件创建 `file` 子任务；115 目录枚举会按 `file_list_page_size` 分页累加所有文件列表结果，不会只处理最后一页。展开完成后 `total_items` 表示子任务总数，子任务后续完成、失败或跳过时分别累计 `accepted_items` / `failed_items` / `skipped_items`，不会把 `total_items` 降为当前已处理数。
+- `request_hash` 只对 `pending` / `running` / `finalizing` / `waiting_children` 任务做幂等去重；如果历史任务已经 `failed`、`completed`、`skipped` 或 `cancelled`，再次提交同一请求会归档旧哈希并创建新任务。并发归档或创建时会在小范围内重试；批量 Webhook 还会在 SQLite 锁冲突时回滚并重试整个父子任务事务，避免锁错误泄漏给调用方。升级后新请求会写入短格式哈希；旧格式活跃任务仍可被相同请求复用。
+- worker 自动领取 `pending` 和 `finalizing` 任务；执行失败会把任务标记为 `failed`，递增 `retry_count` 并写入 `last_error`，不会删除已成功写出的新 STRM。成功或跳过的批量 / 目录扫描子任务会先累计相应父任务进度并进入 `finalizing`，待父任务刷新提交成功或确认无需提交后才转为 `completed` 或 `skipped`，避免父刷新失败后子任务不可重试或重复累计父进度。 收尾错误使用现有 `retry_count`、`last_retry_time` 和 `last_error` 保存重试信息；按 Unix 秒记录，并以 5 秒间隔退避后重新领取，进程重启不清空等待时间。重试成功不重复生成或累计父进度。
+- 同步目录删除后，遗留活动任务及相关父任务以事务保存失败结果。已经累计到父任务的 `finalizing` 子项不会再次增加成功或失败数量；父任务状态也可表达收尾失败，不能仅凭生成成功数推算父任务成功。失效引用处理与上传历史清理边界见[后处理配置何时生效](../architecture/upload-and-strm-processing.md#后处理配置何时生效)。
 - 文件级任务会通过 `sync_path_id` 加载同步目录和账号。任务只提供 `file_id` 且缺少路径、文件名或 PickCode 时，会先补查远端详情再生成 STRM。
-- 115 文件级任务生成前会检查同一 `sync_path_id + local_file_path` 是否已有其他视频记录；没有冲突时不新增远端请求，存在候选时列出一次父目录并按 `Ptime`、FileID 顺序确认 owner。目录扫描已经持有父目录列表，会在创建子任务前直接过滤 non-owner。
-- Webhook 文件任务只有 `refresh_emby=true` 且 STRM 变更或新增元数据下载任务时才解析 Emby 目标；批量和目录扫描子任务会把目标累计到父任务，只有父任务全部子任务成功完成且存在 STRM / 元数据变化时才统一提交一次，任一子任务失败则父任务失败且不提交刷新。
+- 115 文件级任务生成前会检查同一 `sync_path_id + local_file_path` 是否已有其他视频记录；没有冲突时不新增远端请求，存在候选时列出一次父目录并按 `MTime`、FileID 顺序确认 owner。目录扫描已经持有父目录列表，会在创建子任务前直接过滤 non-owner。
+- Webhook 文件任务只有 `refresh_emby=true` 且 STRM 变更或新增元数据下载任务时才解析 Emby 目标；批量和目录扫描子任务会把目标累计到父任务，只有父任务所有子任务均已完成或跳过且存在 STRM / 元数据变化时才统一提交一次，任一子任务失败则父任务失败且不提交刷新。
 - 上传完成、远端已存在等非 Webhook 文件任务保持原有行为：STRM 新增或更新后，优先提交 Emby item 级定向刷新，定位不到可靠 item 时回退同步目录关联媒体库刷新。
 - 同一远端文件移动目录或重命名后，系统会以 `file_id` / `pick_code` 查找旧 `SyncFile`，新 STRM 写入成功后只删除旧记录里的 `local_file_path`，不做文件名模糊匹配。
-- 目录监控上传任务关联的 STRM 生成任务完成后，会按 `strm_generation_tasks.upload_task_id` 反查对应上传任务并尝试清理本地源文件。清理结果回写到 `db_upload_tasks.source_cleanup_status`、`source_cleanup_error` 和 `source_deleted_at`。
+- 目录监控上传任务关联的 STRM 生成任务完成后，会按 `strm_generation_tasks.upload_task_id` 反查对应上传任务并尝试清理本地源文件。同一上传 ID 的最新依赖必须是已完成文件任务，且无活跃依赖；旧成功记录不能越过新的跳过结果。清理结果回写到 `db_upload_tasks.source_cleanup_status`、`source_cleanup_error` 和 `source_deleted_at`。
 
 ### `backup_config`
 

@@ -130,6 +130,10 @@ API Key 在 Web 页面「系统设置 - API Key」中创建。完整密钥只会
 
 不会下载同目录下其他海报、fanart、season 图、全局 NFO 等文件。Webhook 元数据下载也不会删除本地多余元数据，不会上传本地元数据。
 
+Webhook 任务按实际处理批次使用配置，修改从下一小批生效；批量请求跨批执行时不固定整条请求的配置，见 [后处理配置何时生效](../architecture/upload-and-strm-processing.md#后处理配置何时生效)。
+
+元数据匹配可复用当前小批内仍有效的完整父目录列表；同名文件冲突检查仍读取新列表，具体范围见 [STRM 后处理](../architecture/upload-and-strm-processing.md#strm-后处理和源文件删除)。
+
 元数据扩展名沿用当前同步目录的 STRM 配置：同步目录自定义配置优先，未自定义时回退全局配置。只有本地缺失的匹配元数据会创建下载任务，下载仍走现有下载队列。后台 STRM worker 也会校验任务来源，只有 Webhook file 任务会响应该开关，上传完成、远端已存在等非 Webhook STRM 任务即使意外写入该字段也不会触发这套同名元数据下载规则。
 
 ## Emby 刷新
@@ -137,8 +141,8 @@ API Key 在 Web 页面「系统设置 - API Key」中创建。完整密钥只会
 `refresh_emby=true` 时，文件任务只有在 STRM 发生变更或新增元数据下载任务后才解析并向 Emby 刷新协调器提交刷新目标。
 
 - `file`：单文件任务完成后提交目标，但仍进入现有 Emby 刷新协调器防抖。
-- `batch_files`：所有子任务成功完成且存在 STRM / 元数据变化后，由批量父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
-- `directory_scan`：目录展开出的所有子任务成功完成且存在 STRM / 元数据变化后，由目录扫描父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
+- `batch_files`：所有子任务完成或跳过且存在 STRM / 元数据变化后，由批量父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
+- `directory_scan`：目录展开出的所有子任务完成或跳过且存在 STRM / 元数据变化后，由目录扫描父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
 
 刷新目标优先保持 item 精度。每个发生变化的文件会先解析为 Movie、Episode、Season、Series 等 item；解析不到可靠 item 时回退同步目录关联媒体库。目标集合会去重，同一媒体库内如果出现 library fallback，该媒体库内其他 item 目标会被覆盖，不再单独提交；不同媒体库互不影响。
 
@@ -194,10 +198,36 @@ Webhook 入队会为请求生成短格式 `request_hash`，形如 `webhook:file:
 - 两个相同请求并发到达时，数据库唯一键冲突会被入队逻辑吸收并复查已有活跃任务；调用方应拿到同一个任务 ID，而不是偶发唯一键错误。
 - 升级后再次提交相同请求时，会优先生成短格式哈希；如果数据库中仍有旧格式活跃任务，会复用旧任务，不重复创建。
 - 历史任务如果已经 `failed`、`completed` 或 `cancelled`，再次提交相同请求会归档旧请求哈希并创建新的待处理任务。
-- worker 自动领取 `pending` 和 `finalizing` 任务。文件生成阶段失败会标记为 `failed`、递增 `retry_count` 并写入 `last_error`；父任务刷新提交等 `finalizing` 阶段副作用失败会保留在 `finalizing`，由后续 worker 再次处理。
+- worker 自动领取 `pending` 和 `finalizing` 任务。文件生成阶段失败会标记为 `failed`、递增 `retry_count` 并写入 `last_error`；独立文件在保存完成状态前发生普通收尾错误，也会将仍在 `running` 的任务标记为 `failed`，需重新提交才会再执行。父任务刷新提交等 `finalizing` 阶段副作用失败会保留在 `finalizing`，由后续 worker 再次处理。取消、状态保存失败及目录失效的边界见[后处理配置何时生效](../architecture/upload-and-strm-processing.md#后处理配置何时生效)。
 - `batch_files` 父任务不由 worker 执行；创建后状态为 `waiting_children`。所有子任务的生成阶段完成后，父任务转为 `completed` 或 `failed`；最后一个成功子任务可能短暂处于 `finalizing`，随后完成副作用并收敛到终态。相同批量请求重试时会按合法 item 的原始 `items[]` index 匹配子任务，已存在的子任务复用，缺失的子任务补建，非法项仍按原始 index 返回失败结果。
 - `batch_files` 父任务和合法子任务在同一个数据库事务内创建；SQLite 遇到并发写入锁冲突时会回滚并有限重试整个父子任务事务，确保相同请求最终复用同一组任务；任一非幂等冲突类子任务写入失败时整个请求返回错误并回滚父任务，后续相同请求会重新创建完整父子任务集合。
-- `directory_scan` 父任务展开完成后记录 `total_items`；子任务后续完成或失败时累计 `accepted_items`、`failed_items`、`changed_items` 和 `new_meta_items`。
+- `directory_scan` 父任务展开完成后记录 `total_items`；子任务后续完成、失败或跳过时累计相应的 `accepted_items`、`failed_items`、`skipped_items`，变化另计入 `changed_items` 和 `new_meta_items`。
+
+## 查询处理结果
+
+```http
+GET /api/strm/tasks?id=123
+X-API-Key: qms_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+此查询复用常规 API 鉴权，接受 API Key 或登录会话。Webhook 创建接口仍只接受 API Key。查询只读取后处理任务，不创建同步记录。
+
+| 参数 | 说明 |
+| --- | --- |
+| `page` | 页码，默认 1，范围 1–1000000 |
+| `page_size` | 每页数量，默认 20，范围 1–100 |
+| `id` | 精确查询返回的任务 ID |
+| `parent_task_id` | 查询某个父任务的子项 |
+| `upload_task_id` | 限定上传任务 |
+| `sync_path_id` | 限定同步目录 |
+
+多个筛选条件同时提供时取交集。未提供任务 ID、父任务 ID 或上传任务 ID 时，只列顶层任务。结果按任务 ID 从新到旧排列，响应沿用 `APIResponse`：`data.items` 是当前页，`data.total` 是符合条件的总数；没有匹配项返回空数组。无效分页返回 HTTP 400，数据库读取失败返回 HTTP 500。
+
+每项包含任务/父任务/上传/同步目录 ID、来源、类型、文件名或目录路径、`status`、`skip_reason`、`total_items`、`accepted_items`、`failed_items`、`skipped_items` 和 `updated_at`。不返回 PickCode、幂等哈希或原始错误详情。历史没有记录的数量可为 `null`，表示未记录，不能当作 0。
+
+`status=skipped` 表示已跳过，`skip_reason` 说明命中的规则。父任务分别展示已完成、失败和跳过数量；全跳过为 `skipped`，完成与跳过混合为 `completed`，有真实失败为 `failed`。`accepted_items` 是已处理完成的子项数量，不能与创建接口的 `accepted_count` 入队数量混用。生成过滤和源文件保留规则见[过滤与跳过结果](../architecture/upload-and-strm-processing.md#过滤与跳过结果)。
+
+上传详情和同步目录卡片中的 STRM 结果入口已隐藏；结果查询 API 继续可用，外部程序可按任务 ID 再次查询终态，或按父任务 ID 查询子项。
 
 ## 示例
 
@@ -279,7 +309,7 @@ curl -X POST 'http://127.0.0.1:12333/api/strm/webhook' \
 - Webhook 只负责鉴权、校验和入队；STRM 写入、`SyncFile` 更新、元数据下载和 Emby 刷新由后台 worker 执行。
 - 鉴权只接受 API Key，不使用浏览器 Cookie 会话或 CSRF。
 - 相同活动请求必须复用任务；并发唯一键冲突对调用方表现为复用，而不是数据库错误。
-- `batch_files` 与 `directory_scan` 的父任务只在所有子任务成功且存在变化时提交 Emby 刷新；任何子任务失败时父任务失败且不提交。
+- `batch_files` 与 `directory_scan` 的父任务只在所有子任务完成或跳过且存在变化时提交 Emby 刷新；任何子任务失败时父任务失败且不提交。
 - 远端路径只用于 115 远端定位，本地 STRM 路径必须由同步目录计算，不能接受调用方的 `local_path`。
 
 ## 验证方式

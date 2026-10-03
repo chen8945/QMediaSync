@@ -65,6 +65,7 @@ func TestSelectLatest115StrmOwners(t *testing.T) {
 }
 
 func TestProcess115CollectedFilesWritesOnlyLatestCollisionOwner(t *testing.T) {
+	setupStrmExclusionTestDB(t)
 	targetPath := t.TempDir()
 	syncer := &SyncStrm{
 		Account:       &models.Account{SourceType: models.SourceType115, UserId: "user-115"},
@@ -144,7 +145,7 @@ func TestProcess115CollectedFilesWritesOnlyLatestCollisionOwner(t *testing.T) {
 func TestStrmGenerationServiceSkipsNonOwnerWithoutComparingOrWriting(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
-	service.resolveStrmOwner = func(context.Context, *SyncStrm, *SyncFileCache) (bool, error) {
+	service.resolveStrmOwner = func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error) {
 		return false, nil
 	}
 	service.compareStrm = func(*SyncStrm, *SyncFileCache) int {
@@ -187,7 +188,9 @@ func TestResolveLatest115StrmOwner(t *testing.T) {
 		currentMTime      int64
 		wantOwner         bool
 		wantListCalls     int
+		excludeName       string
 	}{
+		{name: "较新候选被排除时选择旧文件", existingCollision: true, currentMTime: 100, wantOwner: true, wantListCalls: 1, excludeName: "episode.mp4"},
 		{
 			name:          "数据库没有冲突时不请求远端目录",
 			currentMTime:  100,
@@ -280,7 +283,8 @@ func TestResolveLatest115StrmOwner(t *testing.T) {
 				Sync:       &models.Sync{Logger: &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}},
 				SyncDriver: driver,
 				Config: SyncStrmConfig{
-					VideoExt: []string{".mkv", ".mp4", ".avi"},
+					VideoExt:     []string{".mkv", ".mp4", ".avi"},
+					ExcludeNames: []string{tt.excludeName},
 				},
 			}
 

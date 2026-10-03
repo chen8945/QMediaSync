@@ -136,7 +136,7 @@ func (s *SyncStrm) IsValidMetaExt(filename string) bool {
 }
 
 func (s *SyncStrm) IsExcludeName(filename string) bool {
-	if slices.Contains(s.Config.ExcludeNames, strings.ToLower(filename)) {
+	if len(s.Config.ExcludeNames) > 0 && slices.Contains(s.Config.ExcludeNames, strings.ToLower(filename)) {
 		return true
 	}
 	for _, expression := range s.Config.excludeNameRegexes {
@@ -151,6 +151,9 @@ func (s *SyncStrm) IsExcludePath(path string) bool {
 	if s.Account != nil && s.Account.SourceType == models.SourceType115 && helpers.IsV115PlaybackPath(path) {
 		return true
 	}
+	if len(s.Config.ExcludeNames) == 0 && len(s.Config.excludeNameRegexes) == 0 {
+		return false
+	}
 	// 分隔路径
 	pathParts := strings.SplitSeq(filepath.ToSlash(path), "/")
 	for part := range pathParts {
@@ -163,4 +166,15 @@ func (s *SyncStrm) IsExcludePath(path string) bool {
 		}
 	}
 	return false
+}
+
+// generationSkipReason 复用名称和大小规则；元数据仍由各入口决定是否处理。
+func (s *SyncStrm) generationSkipReason(file *SyncFileCache) string {
+	if s.IsExcludeName(file.FileName) || s.IsExcludePath(file.GetPath()) {
+		return "文件名称或父目录被排除"
+	}
+	if file.IsVideo && file.FileSize < s.GetMinVideoSize() {
+		return "视频文件小于最小大小要求"
+	}
+	return ""
 }
