@@ -46,6 +46,8 @@ Emby 相关任务分为两条独立链路，不能混用。
 
 上传完成、远端已存在等非 Webhook STRM 任务由 `strm_generation_tasks` worker 处理。只有 STRM 内容实际变化时才提交刷新；STRM 内容不变时只确认或更新 `sync_files`，不创建新的刷新任务。
 
+完整同步在 STRM 写入成功并释放目标锁后收集刷新目标，解析失败仍记录告警并回退媒体库目标。单文件后处理由服务按任务来源处理刷新，不在底层写文件时重复解析；解析或提交失败仍返回任务重试。两条入口都等待自己负责的刷新处理结束，提交成功不代表 Emby 已扫库完成。
+
 STRM Webhook 的具体规则：
 
 - `refresh_emby` 默认关闭，调用方必须显式设置为 `true`。
@@ -99,7 +101,7 @@ STRM Webhook 的具体规则：
 
 1. 根据 `sync_file_id` 或 PickCode 查询本地 `emby_media_sync_files` 和 `emby_media_items` 关联。
 2. 已有关联的 Movie、Video、Episode 刷新对应 item。
-3. 同季新增剧集没有自身 Episode 关联时，查找同目录 sibling Episode：优先刷新 Season，缺少 Season 时刷新 Series。Season、Series 和 Folder 使用递归刷新。
+3. 同季新增剧集没有自身 Episode 关联时，按同步目录和路径查找同目录 sibling Episode，只检查最新的 50 条记录并排除自身。优先刷新 Season，缺少 Season 时刷新 Series。Season、Series 和 Folder 使用递归刷新。
 4. 本地索引无法定位 item 时，按 STRM 本地路径请求 Emby `/Items?Path=...` 做一次兜底查询。
 5. 路径查询命中后，优先采用本地 item 或 sibling Episode 的媒体库证据；必要时通过 Emby Ancestors 消歧，最后才使用同步路径唯一关联的媒体库。
 6. 仍无法定位可靠 item 时，回退同步目录关联媒体库刷新。
@@ -394,6 +396,8 @@ Webhook 删除事件只删除本地索引和关联：
 - Series：按 `series_id` 删除本地 item 和关联。
 - 如果启用联动删除网盘文件，会先执行原有网盘删除逻辑，然后清理本地索引。
 - 删除事件不触发全量同步，也不调用刷新媒体库接口。
+
+联动删除会根据 `SyncFile` 记录查找远端文件。由于现有目录查询可能涉及多个账号，删除前会等待当前所有受协调的 STRM 操作结束，删除期间也会阻止新的相关操作开始。Season 内部删除 Episode 时共用这一次保护，不重复排队；普通 Emby 查询和索引刷新不受此等待影响。请求 context 可以取消排队，取消时保留本地索引和关联，供后续重试定位文件；部分既有网盘删除调用仍需等待自身返回。
 
 ## 同步运行状态
 

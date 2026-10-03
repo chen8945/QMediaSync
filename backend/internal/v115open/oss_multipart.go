@@ -36,6 +36,8 @@ type OSSMultipartUploader struct {
 
 // OSSMultipartUploadInput 是 multipart 上传输入。
 type OSSMultipartUploadInput struct {
+	AccountID     uint
+	ParentID      string
 	Bucket        string
 	Object        string
 	Callback      string
@@ -132,6 +134,7 @@ func (u *OSSMultipartUploader) UploadFile(ctx context.Context, input OSSMultipar
 
 // UploadFileWithResult 上传文件并返回 multipart checkpoint 结果。
 func (u *OSSMultipartUploader) UploadFileWithResult(ctx context.Context, input OSSMultipartUploadInput) (OSSMultipartUploadResult, error) {
+	defer beginDirectoryWrite(input.AccountID, input.ParentID)()
 	if input.PartRetryMax <= 0 {
 		input.PartRetryMax = 3
 	}

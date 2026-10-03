@@ -131,6 +131,7 @@ type UploadResult[T any] struct {
 
 // UploadMultipartInput 是 OpenClient 发起 OSS multipart 上传的输入。
 type UploadMultipartInput struct {
+	ParentID    string
 	Bucket      string
 	Object      string
 	Callback    string
@@ -307,6 +308,8 @@ func (c *OpenClient) Upload(ctx context.Context, filePath string, parentFileId s
 		helpers.V115Log.Infof("准备 OSS multipart 上传：bucket=%s，object_id=%s，endpoint=%s，AccessKeyId=%s", bucket, objectId, uploadToken.Endpoint, uploadToken.AccessKeyId)
 		uploader := NewOSSMultipartUploader(uploadToken.Endpoint, uploadToken.AccessKeyId, uploadToken.AccessKeySecret, uploadToken.SecurityToken)
 		callbackResult, ossErr := uploader.UploadFile(ctx, OSSMultipartUploadInput{
+			AccountID:   c.AccountId,
+			ParentID:    parentFileId,
 			Bucket:      bucket,
 			Object:      objectId,
 			Callback:    callback,
@@ -366,6 +369,8 @@ func (c *OpenClient) UploadMultipartWithResult(ctx context.Context, input Upload
 		uploadToken.SecurityToken,
 	)
 	return uploader.UploadFileWithResult(ctx, OSSMultipartUploadInput{
+		AccountID:   c.AccountId,
+		ParentID:    input.ParentID,
 		Bucket:      input.Bucket,
 		Object:      input.Object,
 		Callback:    input.Callback,

@@ -168,6 +168,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 		respChan := make(chan *RequestResponse, 1)
 
 		queuedReq := &QueuedRequest{
+			AccountID:       c.AccountId,
 			URL:             url,
 			Method:          req.Method,
 			Request:         req,
@@ -253,6 +254,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 
 // doAuthRequest 带重试的认证请求方法（使用全局队列）
 func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.Request, options *RequestConfig, respData any) (*resty.Response, []byte, error) {
+	defer beginRequestDirectoryWrite(c.AccountId, url, req)()
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -262,7 +264,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 	credentials := c.credentialSnapshot()
 	if credentials.accessToken == "" {
 		// 没有 Token，直接报错
-		return nil, nil, fmt.Errorf("115 账号授权失效，请在网盘账号管理中重新授权")
+		return nil, nil, NewOpenAPIError(ACCESS_AUTH_INVALID, "115 账号授权失效，请在网盘账号管理中重新授权")
 	}
 	req.SetTimeout(options.Timeout)
 	// 设置默认头
@@ -282,6 +284,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		respChan := make(chan *RequestResponse, 1)
 
 		queuedReq := &QueuedRequest{
+			AccountID:       c.AccountId,
 			URL:             url,
 			Method:          req.Method,
 			Request:         req,
@@ -326,9 +329,9 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			switch queueResp.RespData.Code {
 			case ACCESS_TOKEN_AUTH_FAIL, ACCESS_AUTH_INVALID, ACCESS_TOKEN_EXPIRY_CODE:
 				helpers.V115Log.Errorf("访问凭证过期，等待自动刷新后下次重试")
-				lastErr = fmt.Errorf("访问凭证（Token）过期")
+				lastErr = NewOpenAPIError(queueResp.RespData.Code, "访问凭证（Token）过期")
 			case REFRESH_TOKEN_INVALID:
-				lastErr = fmt.Errorf("访问凭证（Token）无效，请重新登录")
+				lastErr = NewOpenAPIError(queueResp.RespData.Code, "访问凭证（Token）无效，请重新登录")
 				return queueResp.Response, queueResp.RespBytes, lastErr
 			}
 		}

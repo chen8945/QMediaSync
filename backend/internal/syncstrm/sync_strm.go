@@ -26,15 +26,22 @@ type StrmData struct {
 // 生成 STRM 文件
 // st 只能是来源路径，所以需要生成 STRM 文件的路径
 func (s *SyncStrm) ProcessStrmFile(sf *SyncFileCache) error {
-	unlock := lockStrmTarget(sf.GetLocalFilePath(s.TargetPath, s.SourcePath))
-	defer unlock()
-
-	rs := s.CompareStrm(sf)
-	if rs == 1 {
-		// s.Sync.Logger.Infof("文件 %s 已存在且无需更新 STRM 文件，跳过", filepath.Join(sf.Path, sf.FileName))
-		return nil
+	changed, err := func() (bool, error) {
+		unlock := lockStrmTarget(sf.GetLocalFilePath(s.TargetPath, s.SourcePath))
+		defer unlock()
+		if s.CompareStrm(sf) == 1 {
+			return false, nil
+		}
+		err := s.writeStrmFile(sf)
+		return err == nil, err
+	}()
+	if err != nil || !changed {
+		return err
 	}
-	return s.writeStrmFile(sf)
+	s.recordEmbyRefreshTarget(sf.GetSyncFile(s, s.Account.BaseUrl))
+	atomic.AddInt64(&s.NewStrm, 1)
+	s.PublishProgress(false)
+	return nil
 }
 
 func (s *SyncStrm) writeStrmFile(sf *SyncFileCache) error {
@@ -61,9 +68,6 @@ func (s *SyncStrm) writeStrmFile(sf *SyncFileCache) error {
 		}
 	}
 	s.Sync.Logger.Infof("[生成 STRM] %s => %s", strmFullPath, strmContent)
-	s.recordEmbyRefreshTarget(sf.GetSyncFile(s, s.Account.BaseUrl))
-	atomic.AddInt64(&s.NewStrm, 1)
-	s.PublishProgress(false)
 	return nil
 }
 
@@ -121,11 +125,9 @@ func (s *SyncStrm) CompareStrm(st *SyncFileCache) int {
 		}
 		// 比较主机名称是否相同
 		// 如果 StrmBaseUrl 以 / 结尾，则删除末尾的 /。
-		if before, ok := strings.CutSuffix(s.Config.StrmBaseUrl, "/"); ok {
-			s.Config.StrmBaseUrl = before
-		}
-		if strmData.BaseUrl != s.Config.StrmBaseUrl {
-			s.Sync.Logger.Warnf("文件 %s 的 STRM 内容主机名与本地不一致，本地：%s，远程：%s", filepath.Join(st.Path, st.FileName), s.Config.StrmBaseUrl, strmData.BaseUrl)
+		baseURL := strings.TrimSuffix(s.Config.StrmBaseUrl, "/")
+		if strmData.BaseUrl != baseURL {
+			s.Sync.Logger.Warnf("文件 %s 的 STRM 内容主机名与本地不一致，本地：%s，远程：%s", filepath.Join(st.Path, st.FileName), baseURL, strmData.BaseUrl)
 			return 0
 		}
 		// 如果没有 PickCode，则更新以补全。

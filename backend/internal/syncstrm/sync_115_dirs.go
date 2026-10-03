@@ -5,6 +5,7 @@ import (
 	"qmediasync/internal/v115open"
 
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -16,13 +17,13 @@ import (
 func (s *SyncStrm) Start115PathDispathcer() error {
 	// 使用 errgroup 管理并发
 	eg, ctx := errgroup.WithContext(s.Context)
-	eg.SetLimit(int(s.PathWorkerMax))
+	eg.SetLimit(max(1, int(s.PathWorkerMax)))
 	// 先找到所有路径为空的目录 ID，去重
 	parentIds := make(map[string]bool)
 	c := s.memSyncCache.Count()
 	if c == 0 {
 		s.Sync.Logger.Infof("同步缓存中没有文件记录需要处理")
-		return nil
+		return s.apply115Paths()
 	}
 	fileItems := s.memSyncCache.GetAllFile()
 	for _, item := range fileItems {
@@ -31,147 +32,308 @@ func (s *SyncStrm) Start115PathDispathcer() error {
 		}
 		parentIds[item.ParentId] = true
 	}
+	historicalParents := make(map[string]bool)
+	reusable := 0
+	s.sync115.pathMu.Lock()
+	for id := range parentIds {
+		_, historicalParents[id] = s.sync115.historicalPaths[id]
+		if _, current := s.sync115.paths[id]; current || historicalParents[id] {
+			reusable++
+		}
+	}
+	s.sync115.pathMu.Unlock()
 	// 将路径 ID 加入任务队列
-	s.Sync.Logger.Infof("开始路径补全任务，共有 %d 个需要补全路径的目录", len(parentIds))
+	s.Sync.Logger.Infof("开始路径补全任务，文件父目录 %d 个，可复用 %d 个，待查询 %d 个", len(parentIds), reusable, len(parentIds)-reusable)
 	for pathId := range parentIds {
-		currentPathId := pathId // 捕获循环变量
-		s.Sync.Logger.Infof("加入目录 ID %s 到路径补全队列", currentPathId)
+		if ctx.Err() != nil {
+			break
+		}
+		currentPathId := pathId
 		eg.Go(func() error {
-			return s.process115Path(ctx, currentPathId)
+			if err := s.process115Path(ctx, currentPathId); err != nil {
+				// 目录 ID 不能证明它位于哪个子树，旧缓存也不作为本轮路径证据。
+				s.recordScanFailure(s.SourcePath, fmt.Errorf("115 目录 %s 路径未决：%w", currentPathId, err))
+				if isFatalSyncError(err) {
+					return err
+				}
+			}
+			return nil
 		})
 	}
 	if err := eg.Wait(); err != nil {
 		return err
 	}
-	parentIds = nil // 释放内存
+	// 初次跳过的历史路径可能被其他详情中的移动信息失效。
+	for {
+		resolved := false
+		for id, historical := range historicalParents {
+			if !historical {
+				continue
+			}
+			_, current := s.sync115.paths[id]
+			_, retained := s.sync115.historicalPaths[id]
+			if current || retained {
+				continue
+			}
+			delete(historicalParents, id)
+			resolved = true
+			if err := s.process115Path(s.Context, id); err != nil {
+				s.recordScanFailure(s.SourcePath, fmt.Errorf("115 目录 %s 路径未决：%w", id, err))
+				if isFatalSyncError(err) {
+					return err
+				}
+			}
+		}
+		if !resolved {
+			break
+		}
+	}
+	if err := s.Context.Err(); err != nil {
+		return err
+	}
+	if err := s.apply115Paths(); err != nil {
+		return err
+	}
 	s.Sync.Logger.Infof("结束路径补全任务")
 	return nil
 }
 
 func (s *SyncStrm) process115Path(ctx context.Context, pathId string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.sync115.pathMu.Lock()
+	_, historical := s.sync115.historicalPaths[pathId]
+	conflict := s.sync115.pathConflict
+	s.sync115.pathMu.Unlock()
+	if historical && !conflict {
+		return nil
+	}
+	return s.confirm115Path(ctx, pathId, "")
+}
+
+func (s *SyncStrm) confirm115Path(ctx context.Context, pathId, expectedPath string) error {
 	select {
 	case <-ctx.Done():
 		// 上下文取消，退出循环
 		return ctx.Err()
 	default:
 	}
-	var pathStr string
-	var pathName string
-	var detail *SyncFileCache
-	var fsErr error
-	// 处理路径 ID
-	s.Sync.Logger.Infof("处理路径 ID %s", pathId)
-	detail, fsErr = s.SyncDriver.DetailByFileId(ctx, pathId)
-	if fsErr != nil {
-		s.Sync.Logger.Errorf("获取路径 %s 详情失败：%v", pathId, fsErr)
-		// 如果失败，则中断所有任务
-		return fsErr
+	// 获得 worker 执行位置后重查，其他详情可能已经给出了这个目录。
+	s.sync115.pathMu.Lock()
+	knownPath, known := s.sync115.paths[pathId]
+	conflict := s.sync115.pathConflict
+	s.sync115.pathMu.Unlock()
+	if conflict {
+		return fmt.Errorf("115 本轮目录位置存在冲突")
 	}
-	if strings.Contains(detail.FileName, "**") {
-		s.Sync.Logger.Infof("目录 ID %s 名称：%s 包含 *** 号，跳过", pathId, detail.FileName)
+	if known {
+		if expectedPath != "" && normalizeStrmRemotePath(knownPath.path) != normalizeStrmRemotePath(expectedPath) {
+			return fmt.Errorf("115 目录身份与待确认路径不匹配：path_id=%s", pathId)
+		}
 		return nil
 	}
-	// 把当前目录加入路径数组
-	detail.Paths = append(detail.Paths, v115open.FileDetailPath{
+	detail, fsErr := s.SyncDriver.DetailByFileId(ctx, pathId)
+	if fsErr != nil {
+		return fsErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.confirm115PathDetail(ctx, pathId, expectedPath, detail)
+}
+
+func (s *SyncStrm) confirm115PathDetail(ctx context.Context, pathId, expectedPath string, detail *SyncFileCache) error {
+	if detail == nil || detail.FileId != pathId || detail.FileType != v115open.TypeDir {
+		return fmt.Errorf("115 目录详情身份或类型不匹配：path_id=%s", pathId)
+	}
+	paths := append(append([]v115open.FileDetailPath(nil), detail.Paths...), v115open.FileDetailPath{
 		FileId: detail.FileId,
 		Name:   detail.FileName,
 	})
-	pathStr = ""
-	foundBase := false
-	lastRemotePathPart := filepath.Base(s.SourcePath)
-	isExclude := false
-	lastPathId := ""
-pathloop:
-	for _, p := range detail.Paths {
-		if p.FileId == "" || p.FileId == "0" {
+	foundRoot := s.SourcePathId == "0"
+	seen := make(map[string]struct{})
+	for _, part := range paths {
+		if part.FileId == "0" {
 			continue
 		}
-		if pathStr == "" {
-			pathStr = p.Name
-		} else {
-			pathStr = filepath.Join(pathStr, p.Name)
-			pathStr = filepath.ToSlash(pathStr)
+		if part.FileId == "" || part.Name == "" || part.Name == "." || part.Name == ".." ||
+			strings.ContainsAny(part.Name, "/\\") || strings.Contains(part.Name, "**") {
+			return fmt.Errorf("115 目录祖先身份或名称不完整：path_id=%s", pathId)
 		}
-		if s.IsExcludePath(pathStr) {
-			s.Sync.Logger.Infof("路径 %s 名称：%s 被排除", p.FileId, p.Name)
-			isExclude = true
-			break
+		if _, duplicate := seen[part.FileId]; duplicate {
+			return fmt.Errorf("115 目录祖先身份重复：path_id=%s", pathId)
 		}
-		if p.FileId == s.SourcePathId {
-			foundBase = true
-			continue
-		}
-		if !foundBase || p.Name == lastRemotePathPart {
-			continue
-		}
-		// 检查是否已经存在
-		if _, ok := s.sync115.existsPathes.Load(p.FileId); ok {
-			lastPathId = p.FileId
-			continue pathloop
-		}
-		// 入库，如果入库成功则加入缓存（因为有唯一索引，如果入库报重复代表已经入库了，则跳过）
-		insertPath := filepath.ToSlash(filepath.Dir(pathStr))
-		pathSyncFile := &SyncFileCache{
-			FileId:     p.FileId,
-			FileName:   p.Name,
-			FileType:   v115open.TypeDir,
-			ParentId:   lastPathId,
-			Path:       insertPath,
-			SourceType: models.SourceType115,
-			IsVideo:    false,
-			IsMeta:     false,
-		}
-		lastPathId = p.FileId
-		pathSyncFile.GetLocalFilePath(s.TargetPath, s.SourcePath)
-		s.Sync.Logger.Infof("目录 ID %s 名称：%s 路径：%s 本地路径：%s", pathId, detail.FileName, pathSyncFile.Path, pathSyncFile.LocalFilePath)
-		// 判断缓存中是否存在
-		if _, ok := s.sync115.existsPathes.Load(p.FileId); !ok {
-			s.memSyncCache.Insert(pathSyncFile)
-			s.sync115.existsPathes.Store(p.FileId, insertPath)
-			s.Sync.Logger.Infof("目录 ID %s 名称：%s 路径：%s 放入同步缓存成功", p.FileId, p.Name, insertPath)
-		}
+		seen[part.FileId] = struct{}{}
+		foundRoot = foundRoot || part.FileId == s.SourcePathId
 	}
-	// 检查是否被排除，如果排除需要从临时表删除所有该目录下的文件
-	if isExclude {
-		s.sync115.excludePathId.Store(pathId, true)
-		// 从临时表中删除所有该目录下的文件
-		s.Sync.Logger.Infof("目录 ID %s 名称：%s 被排除，从同步缓存中删除所有该目录下的文件", pathId, detail.FileName)
+	if !foundRoot {
+		return fmt.Errorf("115 目录不在本轮同步根内：path_id=%s", pathId)
+	}
+	facts := make(map[string]verified115Path, len(paths))
+	fullPath, parentID := "", "0"
+	within := s.SourcePathId == "0"
+	for _, part := range paths {
+		if part.FileId == "0" {
+			continue
+		}
+		fullPath = filepath.ToSlash(filepath.Join(fullPath, part.Name))
+		isRoot := part.FileId == s.SourcePathId
+		within = within || isRoot
+		facts[part.FileId] = verified115Path{path: fullPath, parentID: parentID, within: within, root: isRoot}
+		parentID = part.FileId
+	}
+	if pathId == "0" {
+		facts["0"] = verified115Path{path: "/", within: true, root: true}
+	}
+	if expectedPath != "" && normalizeStrmRemotePath(facts[pathId].path) != normalizeStrmRemotePath(expectedPath) {
+		return fmt.Errorf("115 目录详情与待确认路径不匹配：path_id=%s", pathId)
+	}
+	return s.publish115Paths(ctx, facts)
+}
 
-		if err := s.memSyncCache.DeleteByParentId(pathId); err != nil {
-			s.Sync.Logger.Errorf("删除同步缓存中的记录失败：parent_id=%s，%v", pathId, err)
+// 每个目录只保留完整路径和直接父 ID，不复制整条祖先切片。
+// ponytail: 很深的目录会重复保存路径前缀；实测内存不足时再改为按父 ID 拼接。
+type verified115Path struct {
+	path     string
+	parentID string
+	within   bool
+	root     bool
+	mtime    int64
+}
+
+func (s *SyncStrm) publish115Paths(ctx context.Context, facts map[string]verified115Path) error {
+	s.sync115.pathMu.Lock()
+	defer s.sync115.pathMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.sync115.pathConflict {
+		return fmt.Errorf("115 本轮目录位置存在冲突")
+	}
+	for id, fact := range facts {
+		if oldID, ok := s.sync115.pathIDs[normalizeStrmRemotePath(fact.path)]; ok && oldID != id {
+			s.sync115.pathConflict = true
+			return fmt.Errorf("115 目录路径 %s 在本轮返回了不同身份", fact.path)
 		}
-		return nil
+		if old, ok := s.sync115.paths[id]; ok && (old.path != fact.path || old.parentID != "" && fact.parentID != "" && old.parentID != fact.parentID) {
+			s.sync115.pathConflict = true
+			return fmt.Errorf("115 目录 %s 在本轮返回了不同位置", id)
+		}
 	}
-	pathName = detail.FileName
-	// 将完整路径更新到所有文件记录中
-	if err := s.memSyncCache.UpdatePathByParentId(pathId, pathStr, s.TargetPath, s.SourcePath); err != nil {
-		s.Sync.Logger.Errorf("更新同步缓存路径失败：parent_id=%s，path=%s，%v", pathId, pathStr, err)
-	} else {
-		s.Sync.Logger.Infof("目录 ID %s 名称：%s 路径：%s 更新所有该目录下的文件路径成功", pathId, pathName, pathStr)
+	if s.sync115.paths == nil {
+		s.sync115.paths = make(map[string]verified115Path)
 	}
-	// 处理路径下所有文件
-	if updateErr := s.handelTempFileByPathId(pathId); updateErr != nil {
-		return updateErr
+	if s.sync115.pathIDs == nil {
+		s.sync115.pathIDs = make(map[string]string)
+	}
+	// 新事实覆盖历史身份；已知移动或路径换主使旧后代失效，后续按需重新补全。
+	invalidRoots := make([]string, 0)
+	for id, fact := range facts {
+		if old, ok := s.sync115.historicalPaths[id]; ok &&
+			(old.path != fact.path || old.parentID != "" && fact.parentID != "" && old.parentID != fact.parentID) {
+			invalidRoots = append(invalidRoots, old.path)
+		}
+		for historyID, history := range s.sync115.historicalPaths {
+			if historyID != id && normalizeStrmRemotePath(history.path) == normalizeStrmRemotePath(fact.path) {
+				invalidRoots = append(invalidRoots, history.path)
+			}
+		}
+	}
+	for id, history := range s.sync115.historicalPaths {
+		if _, current := facts[id]; current {
+			delete(s.sync115.historicalPaths, id)
+			continue
+		}
+		for _, root := range invalidRoots {
+			if strmRemotePathWithin(history.path, root) {
+				delete(s.sync115.historicalPaths, id)
+				break
+			}
+		}
+	}
+	for id, fact := range facts {
+		if old, ok := s.sync115.paths[id]; ok {
+			if fact.parentID == "" {
+				fact.parentID = old.parentID
+			}
+			if fact.mtime == 0 {
+				fact.mtime = old.mtime
+			}
+		}
+		s.sync115.paths[id] = fact
+		s.sync115.pathIDs[normalizeStrmRemotePath(fact.path)] = id
+	}
+	if s.sync115.pathsApplied && len(invalidRoots) > 0 {
+		err := fmt.Errorf("115 已应用文件路径后发现历史目录位置变化，本轮保留同步根并等待后续核对")
+		s.recordScanFailure(s.SourcePath, err)
+		return err
 	}
 	return nil
 }
 
-// 更新并处理路径下的所有文件
-func (s *SyncStrm) handelTempFileByPathId(pathId string) error {
-	// 加锁
-	files, err := s.memSyncCache.GetByParentId(pathId)
-	if err != nil {
-		s.Sync.Logger.Errorf("查询同步缓存文件失败：parent_id=%s，%v", pathId, err.Error())
-		return err
-	}
-	s.Sync.Logger.Infof("开始处理路径 ID %s 下的所有文件，共 %d 个", pathId, len(files))
-	if len(files) == 0 {
-		// 如果没有更多文件，退出
+// 所有路径请求结束后才补路径或移除排除文件，避免在途响应出现冲突后无法恢复。
+func (s *SyncStrm) apply115Paths() error {
+	if s.sync115.pathConflict {
+		s.recordScanFailure(s.SourcePath, fmt.Errorf("115 目录位置冲突，本轮不使用已取得的路径"))
 		return nil
 	}
-	for _, file := range files {
-		// 更新文件路径
-		file.GetLocalFilePath(s.TargetPath, s.SourcePath)
+	// 只保留本轮文件引用的历史目录及祖先，供下一轮关联已知移动；无关空目录仍需确认。
+	effective := make(map[string]verified115Path, len(s.sync115.paths))
+	for _, file := range s.memSyncCache.GetAllFile() {
+		if file.FileType == v115open.TypeDir {
+			continue
+		}
+		for id := file.ParentId; id != ""; {
+			if _, exists := effective[id]; exists {
+				break
+			}
+			fact, ok := s.sync115.historicalPaths[id]
+			if !ok {
+				break
+			}
+			effective[id] = fact
+			id = fact.parentID
+		}
 	}
+	for id, fact := range s.sync115.paths {
+		effective[id] = fact
+	}
+	for id, fact := range effective {
+		if err := s.Context.Err(); err != nil {
+			return err
+		}
+		if !fact.within {
+			continue
+		}
+		if s.IsExcludePath(fact.path) {
+			files, _ := s.memSyncCache.GetByParentId(id)
+			for _, file := range files {
+				s.recordFileSkipped(file)
+			}
+			if err := s.memSyncCache.DeleteByParentId(id); err != nil {
+				return err
+			}
+			continue
+		}
+		if !fact.root {
+			if err := s.cache115Directory(id, fact); err != nil {
+				return err
+			}
+		}
+		if err := s.memSyncCache.UpdatePathByParentId(id, fact.path, s.TargetPath, s.SourcePath); err != nil {
+			return err
+		}
+	}
+	s.sync115.pathMu.Lock()
+	s.sync115.pathsApplied = true
+	s.sync115.pathMu.Unlock()
 	return nil
+}
+
+func (s *SyncStrm) cache115Directory(id string, fact verified115Path) error {
+	item := &SyncFileCache{FileId: id, FileName: filepath.Base(fact.path), FileType: v115open.TypeDir,
+		ParentId: fact.parentID, MTime: fact.mtime, Path: filepath.ToSlash(filepath.Dir(fact.path)), SourceType: models.SourceType115}
+	item.GetLocalFilePath(s.TargetPath, s.SourcePath)
+	return s.memSyncCache.Insert(item)
 }

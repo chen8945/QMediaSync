@@ -8,19 +8,21 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"qmediasync/internal/models"
 	"qmediasync/internal/v115open"
 
 	"golang.org/x/sync/errgroup"
 )
 
-// 预取两层 115 目录并入库（写入 SyncFile 表），同时写入 s.sync115.existsPathes 缓存。
+// 预取两层 115 目录并保存到本轮缓存，同时记录已有目录。
 func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 	// 查询第一个文件的详情，拿到路径
 	firstFile, detailErr := s.SyncDriver.DetailByFileId(s.Context, firstFileId)
 	if detailErr != nil {
 		s.Sync.Logger.Errorf("查询第一个文件详情失败：file_id=%s，%v", firstFileId, detailErr)
 		return detailErr
+	}
+	if firstFile == nil {
+		return fmt.Errorf("115 首文件详情响应为空")
 	}
 
 	depth := s.GetDepth(firstFile.Paths)
@@ -101,8 +103,11 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 		if err != nil {
 			reason := "查询路径下的子目录失败"
 			s.Sync.Logger.Warnf("%s：%v", reason, err)
-			s.Sync.Failed(fmt.Sprintf("%s：%v", reason, err))
-			return err
+			s.recordScanFailure(item.Path, err)
+			if isFatalSyncError(err) {
+				return err
+			}
+			return nil
 		}
 
 		if len(pathItems) == 0 {
@@ -111,29 +116,39 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 		}
 
 		for _, pathItem := range pathItems {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			s.Sync.Logger.Infof("查询路径下的子目录：%s", pathItem.Path)
-			// 检查是否被排除
-			if s.IsExcludePath(pathItem.Path) {
-				s.Sync.Logger.Infof("路径 %s 名称被排除，跳过", pathItem.Path)
-				s.sync115.excludePathId.Store(pathItem.PathId, true)
+			cleanPath := filepath.ToSlash(filepath.Clean(pathItem.Path))
+			parentPath := filepath.ToSlash(filepath.Clean(item.Path))
+			if pathItem.PathId == "" || pathItem.PathId == "0" || pathItem.PathId == item.PathId ||
+				pathItem.Path == "" || strings.ContainsAny(pathItem.Path, "\\") || strings.Contains(pathItem.Path, "**") ||
+				cleanPath != pathItem.Path ||
+				!strmRemotePathWithin(cleanPath, parentPath) ||
+				normalizeStrmRemotePath(filepath.ToSlash(filepath.Dir(cleanPath))) != normalizeStrmRemotePath(parentPath) {
+				s.recordScanFailure(item.Path, fmt.Errorf("115 预取目录身份或路径不完整"))
 				continue
 			}
-			fileItem := &SyncFileCache{
-				FileId:     pathItem.PathId,
-				FileName:   filepath.Base(pathItem.Path),
-				FileType:   v115open.TypeDir,
-				SourceType: models.SourceType115,
-				Path:       filepath.ToSlash(filepath.Dir(pathItem.Path)),
-				ParentId:   item.PathId,
-				MTime:      pathItem.Mtime,
-				IsVideo:    false,
-				IsMeta:     false,
+			// 完整列表成功后才共享位置；排除文件留到所有路径请求结束后处理。
+			fact := verified115Path{path: strings.TrimPrefix(cleanPath, "/"), parentID: item.PathId, within: true, mtime: pathItem.Mtime}
+			facts := map[string]verified115Path{pathItem.PathId: fact}
+			if item.PathId == s.SourcePathId {
+				rootPath := strings.TrimPrefix(parentPath, "/")
+				if rootPath == "" {
+					rootPath = "/"
+				}
+				facts[item.PathId] = verified115Path{path: rootPath, within: true, root: true}
 			}
-			fileItem.GetLocalFilePath(s.TargetPath, s.SourcePath) // 生成本地路径缓存
-			s.memSyncCache.Insert(fileItem)
-			// 更新缓存
-			if _, ok := s.sync115.existsPathes.Load(pathItem.PathId); !ok {
-				s.sync115.existsPathes.Store(pathItem.PathId, pathItem.Path)
+			if err := s.publish115Paths(ctx, facts); err != nil {
+				s.recordScanFailure(s.SourcePath, err)
+				if isFatalSyncError(err) {
+					return err
+				}
+				continue
+			}
+			if s.IsExcludePath(fact.path) {
+				continue
 			}
 
 			// 递归处理子目录，errgroup 自动管理并发
@@ -185,7 +200,10 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 	})
 
 	// 统一等待所有任务并处理错误
-	return eg.Wait()
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+	return s.Context.Err()
 }
 
 func (s *SyncStrm) GetDepth(pathes []v115open.FileDetailPath) uint {

@@ -59,8 +59,8 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 			t.Cleanup(syncer.Cancel)
 			syncer.sync115 = &Sync115{}
 			if mode == "读取已有目录" {
-				if count := syncer.GetExistsPath(); count != 6 {
-					t.Fatalf("加载目录数 = %d，期望 6", count)
+				if count, err := syncer.GetExistsPath(); err != nil || count != int64(len(directories)-2) {
+					t.Fatalf("加载目录数 = %d，错误 = %v，期望同步根内的目录计数", count, err)
 				}
 			} else {
 				syncer.SyncDriver = &fakeDirectoryScanDriver{
@@ -77,12 +77,21 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 				}
 			}
 			for _, directory := range directories {
-				_, exists := syncer.sync115.existsPathes.Load(directory.id)
-				_, excluded := syncer.sync115.excludePathId.Load(directory.id)
+				fact, exists := syncer.sync115.paths[directory.id]
 				cached, _ := syncer.memSyncCache.GetByFileId(directory.id)
-				if exists == directory.excluded || excluded != directory.excluded || (cached == nil) != directory.excluded {
-					t.Errorf("目录 %s：已加载=%v，已排除=%v，缓存=%+v，期望排除=%v",
-						directory.id, exists, excluded, cached, directory.excluded)
+				if cached != nil {
+					t.Fatalf("路径确认完成前不应插入目录：%+v", cached)
+				}
+				if mode == "读取已有目录" {
+					if exists {
+						t.Fatal("旧账本被当成本轮事实")
+					}
+				} else {
+					// 只有真实直属子目录才能从当前预取列表确认。
+					want := directory.path == "Media"
+					if exists != want || exists && syncer.IsExcludePath(fact.path) != directory.excluded {
+						t.Errorf("目录 %s：已确认=%v，事实=%+v", directory.id, exists, fact)
+					}
 				}
 			}
 		})
@@ -160,7 +169,7 @@ func Test115PathCompletionExcludesPlaybackDirectory(t *testing.T) {
 			}
 			syncer.SyncDriver = &fakeDirectoryScanDriver{detailsByID: map[string]*SyncFileCache{
 				"directory": {
-					FileId: "directory", FileName: tt.directory,
+					FileId: "directory", FileName: tt.directory, FileType: v115open.TypeDir,
 					Paths: append([]v115open.FileDetailPath{{FileId: "0"}}, tt.parents...),
 				},
 			}}
@@ -207,7 +216,7 @@ func Test115PathCompletionHonorsAncestorsAboveSelectedRoot(t *testing.T) {
 			})
 			syncer.SyncDriver = &fakeDirectoryScanDriver{detailsByID: map[string]*SyncFileCache{
 				"season": {
-					FileId: "season", FileName: "Season 1",
+					FileId: "season", FileName: "Season 1", FileType: v115open.TypeDir,
 					Paths: []v115open.FileDetailPath{
 						{FileId: "library", Name: "Library"},
 						{FileId: "ancestor", Name: tt.ancestor},

@@ -344,6 +344,8 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 
 // executeRequest 执行 HTTP 请求
 func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *RespBaseBool[json.RawMessage], []byte, error) {
+	// 调用方取消等待后，实际请求可能仍在执行；直到 HTTP 结束才恢复复用。
+	defer beginRequestDirectoryWrite(req.AccountID, req.URL, req.Request)()
 	req.Request.SetResponseForceContentType("application/json")
 
 	var response *resty.Response
@@ -365,6 +367,10 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 
 	// 解析响应
 	defer response.Body.Close()
+	if !req.Playback && response.StatusCode() == http.StatusUnauthorized {
+		return response, nil, nil, &OpenAPIError{HTTPStatus: http.StatusUnauthorized, Message: "115 账号授权失败"}
+	}
+
 	resBytes, ioErr := io.ReadAll(response.Body)
 	if ioErr != nil {
 		// 响应体损坏不能抹掉已收到的明确 HTTP 拒绝状态。
@@ -410,10 +416,10 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	switch resp.Code {
 	case ACCESS_TOKEN_AUTH_FAIL, ACCESS_AUTH_INVALID, ACCESS_TOKEN_EXPIRY_CODE:
 		helpers.V115Log.Warn("访问凭证已过期")
-		return response, resp, resBytes, fmt.Errorf("token expired")
+		return response, resp, resBytes, NewOpenAPIError(resp.Code, "访问凭证（Token）过期")
 	case REFRESH_TOKEN_INVALID:
 		helpers.V115Log.Error("访问凭证无效，请重新登录")
-		return response, resp, resBytes, fmt.Errorf("token expired")
+		return response, resp, resBytes, NewOpenAPIError(resp.Code, "访问凭证（Token）过期")
 	case REQUEST_MAX_LIMIT_CODE:
 		helpers.V115Log.Warn("检测到限流响应")
 		return response, resp, resBytes, fmt.Errorf("访问频率过高")
