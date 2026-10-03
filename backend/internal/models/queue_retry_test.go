@@ -313,6 +313,9 @@ func TestUploadMultipartRetriesInvalidOSSCheckpointWithNewMultipart(t *testing.T
 	originalUpload115MultipartWithResult := upload115MultipartWithResult
 	calls := 0
 	upload115MultipartWithResult = func(_ context.Context, _ *v115open.OpenClient, input v115open.UploadMultipartInput) (v115open.OSSMultipartUploadResult, error) {
+		if input.ParentID != "100" {
+			t.Fatalf("multipart 目标目录 = %q，期望 100", input.ParentID)
+		}
 		calls++
 		switch calls {
 		case 1:

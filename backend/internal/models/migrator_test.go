@@ -2,8 +2,11 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
+	"math/rand/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,6 +57,7 @@ func TestBatchCreateTableCreatesMigratorTable(t *testing.T) {
 	if !db.Db.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
 		t.Fatal("批量建表应创建活跃上传任务唯一索引")
 	}
+	assertSyncFileLookupIndexes(t)
 }
 
 func TestBatchCreateTableCreatesEmbyLibraryRefreshTasksTable(t *testing.T) {
@@ -119,6 +123,7 @@ func TestInitDBDoesNotCreateDefaultAdmin(t *testing.T) {
 	}
 
 	InitDB()
+	assertSyncFileLookupIndexes(t)
 
 	var count int64
 	if err := db.Db.Model(&User{}).Count(&count).Error; err != nil {
@@ -139,6 +144,18 @@ func TestInitDBDoesNotCreateDefaultAdmin(t *testing.T) {
 	}
 	if db.Db.Migrator().HasColumn(&SyncPath{}, "multi_playback_enabled") {
 		t.Fatal("多端播放应只存在于全局设置，不能扩散到同步目录")
+	}
+	for range 2 {
+		var version Migrator
+		if err := db.Db.First(&version).Error; err != nil || version.VersionCode != MaxVersionCode {
+			t.Fatalf("新库应直接初始化为版本 65：%+v %v", version, err)
+		}
+		for _, field := range []string{"ScanResult", "LedgerStatus", "LedgerFinishedAt", "LedgerError"} {
+			if !db.Db.Migrator().HasColumn(&Sync{}, field) {
+				t.Fatalf("新库缺少同步结果字段：%s", field)
+			}
+		}
+		Migrate()
 	}
 }
 
@@ -1837,5 +1854,356 @@ func assertUploadTaskSource(t *testing.T, localFullPath string, wantSource strin
 	}
 	if string(task.Source) != wantSource {
 		t.Fatalf("上传任务 %s source = %s，期望 %s", localFullPath, task.Source, wantSource)
+	}
+}
+
+func TestMigrateVersion64KeepsHistoricalScanResultUnknown(t *testing.T) {
+	previousDB, previousLogger := db.Db, helpers.AppLogger
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := testDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close(); db.Db, helpers.AppLogger = previousDB, previousLogger })
+	db.Db = testDB
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	createMigratorTestTable(t)
+	if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Exec("CREATE TABLE syncs (id integer primary key, status integer, finish_at integer)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Exec("INSERT INTO syncs (id,status,finish_at) VALUES (1,2,123)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Db.Exec("CREATE TABLE strm_generation_tasks (id integer primary key, status text, created_at integer, last_retry_time integer)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Exec("INSERT INTO strm_generation_tasks (id,status) VALUES (1,'completed')").Error; err != nil {
+		t.Fatal(err)
+	}
+	Migrate()
+	var generation StrmGenerationTask
+	if err := db.Db.First(&generation, 1).Error; err != nil || generation.Status != StrmGenerationStatusCompleted || generation.SkipReason != "" || generation.SkippedItems != 0 {
+		t.Fatalf("历史生成结果变化: %+v %v", generation, err)
+	}
+
+	var record Sync
+	if err := db.Db.First(&record, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != SyncStatusCompleted || record.FinishAt != 123 || record.ScanResult != nil ||
+		record.LedgerStatus != nil || record.LedgerFinishedAt != nil || record.LedgerError != "" {
+		t.Fatalf("历史结果被推断或改写: %+v", record)
+	}
+	for _, field := range []string{"ScanResult", "LedgerStatus", "LedgerFinishedAt", "LedgerError"} {
+		if !db.Db.Migrator().HasColumn(&Sync{}, field) {
+			t.Fatalf("64 → 65 缺少字段: %s", field)
+		}
+	}
+	var version Migrator
+	if err := db.Db.First(&version).Error; err != nil {
+		t.Fatal(err)
+	}
+	if version.VersionCode != MaxVersionCode {
+		t.Fatalf("迁移版本: %d", version.VersionCode)
+	}
+	Migrate()
+	if err := db.Db.First(&record, 1).Error; err != nil || record.ScanResult != nil || record.LedgerStatus != nil || record.LedgerFinishedAt != nil {
+		t.Fatalf("重试后历史结果变化: %+v %v", record, err)
+	}
+}
+
+func TestMigrateVersion64PreservesPartialSyncResultMigration(t *testing.T) {
+	for _, fixture := range []struct {
+		name    string
+		columns string
+	}{
+		{name: "scan_only"},
+		{name: "partial_ledger", columns: ", ledger_status text"},
+		{name: "complete_ledger", columns: ", ledger_status text, ledger_finished_at integer, ledger_error text"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			setupSyncLedgerTestDB(t)
+			createMigratorTestTable(t)
+			if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Migrator().DropTable(&Sync{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Exec("CREATE TABLE syncs (id integer primary key, status integer, finish_at integer, scan_result text" + fixture.columns + ")").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Exec("INSERT INTO syncs (id,status,finish_at,scan_result) VALUES (1,2,123,NULL),(2,4,124,?)", `{"succeeded_files":7,"failed_files":2}`).Error; err != nil {
+				t.Fatal(err)
+			}
+			if fixture.columns != "" {
+				if err := db.Db.Exec("UPDATE syncs SET ledger_status = 'pending' WHERE id = 2").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if fixture.name == "complete_ledger" {
+				if err := db.Db.Exec("UPDATE syncs SET ledger_status = 'failed', ledger_finished_at = 128, ledger_error = 'kept error' WHERE id = 2").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				Migrate()
+				var records []Sync
+				if err := db.Db.Order("id").Find(&records).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 2 || records[0].Status != SyncStatusCompleted || records[0].FinishAt != 123 ||
+					records[0].ScanResult != nil || records[0].LedgerStatus != nil || records[0].LedgerFinishedAt != nil || records[0].LedgerError != "" {
+					t.Fatalf("迁移编造或覆盖历史结果: %+v", records)
+				}
+				current := records[1]
+				if current.Status != SyncStatusPartial || current.FinishAt != 124 || current.ScanResult == nil || current.ScanResult.SucceededFiles != 7 || current.ScanResult.FailedFiles != 2 {
+					t.Fatalf("迁移改写已保存扫描结果: %+v", current)
+				}
+				switch fixture.name {
+				case "scan_only":
+					if current.LedgerStatus != nil || current.LedgerFinishedAt != nil || current.LedgerError != "" {
+						t.Fatalf("迁移推算未记录后台: %+v", current)
+					}
+				case "partial_ledger":
+					if current.LedgerStatus == nil || *current.LedgerStatus != "pending" || current.LedgerFinishedAt != nil || current.LedgerError != "" {
+						t.Fatalf("迁移覆盖部分后台状态: %+v", current)
+					}
+				case "complete_ledger":
+					if current.LedgerStatus == nil || *current.LedgerStatus != "failed" || current.LedgerFinishedAt == nil || *current.LedgerFinishedAt != 128 || current.LedgerError != "kept error" {
+						t.Fatalf("迁移覆盖已记录后台结果: %+v", current)
+					}
+				}
+				for _, field := range []string{"ScanResult", "LedgerStatus", "LedgerFinishedAt", "LedgerError"} {
+					if !db.Db.Migrator().HasColumn(&Sync{}, field) {
+						t.Fatalf("缺少字段: %s", field)
+					}
+				}
+				if db.Db.Migrator().HasColumn(&Sync{}, "FileOffset") {
+					t.Fatal("补列不应扩展或重建无关旧字段")
+				}
+				var version Migrator
+				if err := db.Db.First(&version).Error; err != nil || version.VersionCode != MaxVersionCode {
+					t.Fatalf("迁移及重复启动后应保持版本 65: %+v %v", version, err)
+				}
+			}
+		})
+	}
+}
+
+func TestMigrateVersion64AddsSyncFileSiblingPathIndex(t *testing.T) {
+	for _, scenario := range []string{"existing_rows", "index_failure", "identity_index_failure", "missing_table"} {
+		t.Run(scenario, func(t *testing.T) {
+			setupSyncLedgerTestDB(t)
+			if scenario == "identity_index_failure" && db.Db.Dialector.Name() != "sqlite" {
+				t.Skip("文件身份索引仅用于 SQLite")
+			}
+			if err := db.Db.AutoMigrate(&Migrator{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var want []SyncFile
+			if scenario != "missing_table" {
+				if err := db.Db.AutoMigrate(&SyncFile{}); err != nil {
+					t.Fatal(err)
+				}
+				// 路径单独保存长文本，其他已有索引列保持短值。
+				path := []byte("/媒体/")
+				random := rand.New(rand.NewPCG(1, 2))
+				for range 16 * 1024 {
+					path = append(path, "abcdefghijklmnopqrstuvwxyz0123456789"[random.IntN(36)])
+				}
+				want = []SyncFile{
+					{BaseModel: BaseModel{ID: 1, CreatedAt: 11, UpdatedAt: 12}, SyncPathId: 10, Path: string(path), FileId: "old", Uploaded: true, Processed: true, MTime: 9},
+					{BaseModel: BaseModel{ID: 2, CreatedAt: 13, UpdatedAt: 14}, SyncPathId: 10, Path: string(path), FileId: "old"},
+				}
+				if err := db.Db.Create(&want).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Db.Exec("INSERT INTO sync_files (id, sync_path_id, path) VALUES (3, 10, NULL)").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			failedIndexName := syncFileSiblingPathIndexName
+			if scenario == "identity_index_failure" {
+				failedIndexName = syncFileIdentityIndexName
+			}
+			failIndex := scenario == "index_failure" || scenario == "identity_index_failure"
+			indexErr := errors.New("index creation failed")
+			if err := db.Db.Callback().Raw().Before("gorm:raw").Register("test:fail_sibling_index", func(tx *gorm.DB) {
+				if failIndex && strings.Contains(tx.Statement.SQL.String(), "CREATE INDEX IF NOT EXISTS "+failedIndexName) {
+					tx.AddError(indexErr)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			checkRows := func() {
+				t.Helper()
+				if scenario == "missing_table" {
+					if db.Db.Migrator().HasTable(&SyncFile{}) {
+						t.Fatal("索引补丁不能创建原本缺失的表")
+					}
+					return
+				}
+				var got []SyncFile
+				if err := db.Db.Where("id IN ?", []uint{1, 2}).Order("id").Find(&got).Error; err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatal("创建索引不能改写已有行")
+				}
+				var nullRows int64
+				if err := db.Db.Model(&SyncFile{}).Where("id = 3 AND path IS NULL").Count(&nullRows).Error; err != nil || nullRows != 1 {
+					t.Fatalf("NULL 路径变化：%d %v", nullRows, err)
+				}
+			}
+			Migrate()
+			checkRows()
+			var version Migrator
+			if err := db.Db.First(&version).Error; err != nil {
+				t.Fatal(err)
+			}
+			if failIndex {
+				if version.VersionCode != 64 || db.Db.Migrator().HasIndex(&SyncFile{}, failedIndexName) {
+					t.Fatalf("索引失败不能升级：%+v", version)
+				}
+				if scenario == "identity_index_failure" && !db.Db.Migrator().HasIndex(&SyncFile{}, syncFileSiblingPathIndexName) {
+					t.Fatal("第二个索引失败不应删除第一个索引")
+				}
+				failIndex = false
+				Migrate()
+			}
+			if err := db.Db.First(&version).Error; err != nil || version.VersionCode != MaxVersionCode {
+				t.Fatalf("正常迁移或重试应到版本 65：%+v %v", version, err)
+			}
+			if scenario != "missing_table" {
+				assertSyncFileLookupIndexes(t)
+				added := SyncFile{BaseModel: BaseModel{ID: 4}, SyncPathId: 10, FileId: "new", Path: want[0].Path + "/新增"}
+				if err := db.Db.Create(&added).Error; err != nil {
+					t.Fatalf("索引不能阻止写入新长路径：%v", err)
+				}
+				var got SyncFile
+				if err := db.Db.First(&got, added.ID).Error; err != nil || got.Path != added.Path {
+					t.Fatalf("新长路径没有原样保存：%v", err)
+				}
+			}
+			Migrate()
+			checkRows()
+		})
+	}
+}
+
+func TestBatchCreateTableRepairsSyncFileSiblingPathIndex(t *testing.T) {
+	setupSyncLedgerTestDB(t)
+	if err := BatchCreateTable(); err != nil {
+		t.Fatal(err)
+	}
+	want := SyncFile{SyncPathId: 1, FileId: "kept", Path: "/媒体/旧目录", Uploaded: true}
+	if err := db.Db.Create(&want).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Migrator().DropIndex(&SyncFile{}, syncFileSiblingPathIndexName); err != nil {
+		t.Fatal(err)
+	}
+	failedIndexName := syncFileSiblingPathIndexName
+	if db.Db.Dialector.Name() == "sqlite" {
+		failedIndexName = syncFileIdentityIndexName
+		if err := db.Db.Migrator().DropIndex(&SyncFile{}, syncFileIdentityIndexName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexErr := errors.New("index repair failed")
+	failIndex := true
+	if err := db.Db.Callback().Raw().Before("gorm:raw").Register("test:fail_sibling_index", func(tx *gorm.DB) {
+		if failIndex && strings.Contains(tx.Statement.SQL.String(), "CREATE INDEX IF NOT EXISTS "+failedIndexName) {
+			tx.AddError(indexErr)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := BatchCreateTable(); !errors.Is(err, indexErr) {
+		t.Fatalf("修复应返回索引失败：%v", err)
+	}
+	failIndex = false
+	for range 2 {
+		if err := BatchCreateTable(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertSyncFileLookupIndexes(t)
+	var got SyncFile
+	if err := db.Db.First(&got, want.ID).Error; err != nil || got != want {
+		t.Fatalf("修复不能改写原记录：%+v %v", got, err)
+	}
+}
+
+func assertSyncFileLookupIndexes(t *testing.T) {
+	t.Helper()
+	if !db.Db.Migrator().HasIndex(&SyncFile{}, syncFileSiblingPathIndexName) {
+		t.Fatal("缺少同目录查询索引")
+	}
+	if db.Db.Migrator().HasIndex(&SyncFile{}, syncFileIdentityIndexName) != (db.Db.Dialector.Name() == "sqlite") {
+		t.Fatal("文件身份索引应只在 SQLite 创建")
+	}
+}
+
+func TestSyncFileIdentityIndexKeepsLookupResults(t *testing.T) {
+	setupSyncLedgerTestDB(t)
+	if err := db.Db.AutoMigrate(&SyncFile{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+		t.Fatal(err)
+	}
+	assertSyncFileLookupIndexes(t)
+	rows := []SyncFile{
+		{BaseModel: BaseModel{ID: 1}, SyncPathId: 20, FileId: "same"},
+		{BaseModel: BaseModel{ID: 2}, SyncPathId: 10, FileId: "same"},
+		{BaseModel: BaseModel{ID: 3}, SyncPathId: 10, FileId: "same"},
+	}
+	if err := db.Db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		syncPathID uint
+		fileID     string
+		wantID     uint
+	}{
+		{"earliest_duplicate", 10, "same", 2},
+		{"other_sync_path", 20, "same", 1},
+		{"missing", 10, "missing", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got SyncFile
+			err := db.Db.Where("file_id = ? AND sync_path_id = ?", tc.fileID, tc.syncPathID).First(&got).Error
+			if tc.wantID == 0 {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					t.Fatalf("缺失文件不能匹配其他身份：%+v %v", got, err)
+				}
+			} else if err != nil || got.ID != tc.wantID {
+				t.Fatalf("文件查询结果变化：%+v %v", got, err)
+			}
+			if db.Db.Dialector.Name() == "sqlite" {
+				var plan []struct{ Detail string }
+				if err := db.Db.Raw("EXPLAIN QUERY PLAN SELECT * FROM sync_files WHERE file_id = ? AND sync_path_id = ? ORDER BY id LIMIT 1", tc.fileID, tc.syncPathID).Scan(&plan).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(plan) != 1 || !strings.Contains(plan[0].Detail, syncFileIdentityIndexName) || !strings.Contains(plan[0].Detail, "file_id=?") {
+					t.Fatalf("文件查询应同时按同步目录和文件 ID 定位：%+v", plan)
+				}
+				t.Logf("plan=%s", plan[0].Detail)
+			}
+		})
 	}
 }

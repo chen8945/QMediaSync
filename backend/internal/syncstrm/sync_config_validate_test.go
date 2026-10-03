@@ -145,3 +145,26 @@ func TestSyncStrmConfigStringOmitsCompiledRegexCache(t *testing.T) {
 		t.Fatalf("配置日志不应包含编译缓存字段: %q", got)
 	}
 }
+
+func BenchmarkExclusionMatching(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		patterns []string
+	}{
+		{name: "empty"},
+		{name: "regex", patterns: []string{`^Extras$`}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			s := &SyncStrm{Config: SyncStrmConfig{ExcludeNameRegexes: tc.patterns}}
+			if err := s.Config.compileExcludeNameRegexes(); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if s.IsExcludeName("Movie.S01E01.mkv") || s.IsExcludePath("/Media/Series/Season 1") {
+					b.Fatal("unexpected exclusion")
+				}
+			}
+		})
+	}
+}

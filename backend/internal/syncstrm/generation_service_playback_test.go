@@ -26,6 +26,7 @@ func TestStrmGenerationServiceRejectsPlaybackFiles(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			account, syncPath := setupStrmExclusionTestDB(t)
 			account.SourceType, syncPath.SourceType = tt.source, tt.source
+			syncPath.RemotePath = "/"
 			if err := db.Db.Save(account).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -108,8 +109,8 @@ func TestStrmGenerationDirectoryScanExcludesPlaybackSubtree(t *testing.T) {
 			}
 			service := newTestGenerationService(t, syncPath, account)
 			buildSyncer := service.buildSyncer
-			service.buildSyncer = func(path *models.SyncPath, account *models.Account) (*SyncStrm, error) {
-				syncer, err := buildSyncer(path, account)
+			service.buildSyncer = func(path *models.SyncPath, account *models.Account, config *SyncStrmConfig) (*SyncStrm, error) {
+				syncer, err := buildSyncer(path, account, config)
 				if err == nil {
 					syncer.SyncDriver = driver
 				}

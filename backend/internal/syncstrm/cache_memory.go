@@ -355,6 +355,13 @@ func (c *MemorySyncCache) DeleteByFileId(fileId string) error {
 	return nil
 }
 
+// releaseLedgerParentIndex 仅在后台独占缓存、所有父目录查询结束后调用。
+func (c *MemorySyncCache) releaseLedgerParentIndex() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.parentIndex = nil
+}
+
 // DeleteByParentId 根据 parent_id 删除所有子项
 func (c *MemorySyncCache) DeleteByParentId(parentId string) error {
 	c.mu.Lock()

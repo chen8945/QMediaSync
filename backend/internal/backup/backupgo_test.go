@@ -301,6 +301,87 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 	}
 }
 
+func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
+	for _, scenario := range []string{"rows", "empty", "index_failure", "identity_index_failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			testDB := setupBackupTest(t)
+			if scenario == "identity_index_failure" && testDB.Dialector.Name() != "sqlite" {
+				t.Skip("文件身份索引仅用于 SQLite")
+			}
+			models.AllTables = []any{models.SyncFile{}, &backupOtherTestItem{}}
+			if scenario == "empty" {
+				models.AllTables[0] = &models.SyncFile{}
+			}
+			if err := os.MkdirAll(filepath.Join(helpers.ConfigDir, "backups"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := testDB.AutoMigrate(&models.SyncFile{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := models.EnsureSyncFileLookupIndexes(testDB); err != nil {
+				t.Fatal(err)
+			}
+			if err := testDB.Create(&models.SyncFile{FileId: "old"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := models.SyncFile{SyncPathId: 10, FileId: "restored", Path: "/媒体/目录", Uploaded: true, Processed: true}
+			record, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]string{
+				"SyncFile.json":            string(record) + "\n",
+				"backupOtherTestItem.json": "{\"ID\":2,\"Name\":\"other\"}\n",
+			}
+			if scenario == "empty" {
+				files["SyncFile.json"] = ""
+			}
+			failedIndexName := "idx_sync_files_sibling_path"
+			if scenario == "identity_index_failure" {
+				failedIndexName = "idx_sync_files_identity"
+			}
+			failIndex := scenario == "index_failure" || scenario == "identity_index_failure"
+			indexErr := errors.New("sync file index creation failed")
+			if err := testDB.Callback().Raw().Before("gorm:raw").Register("test:fail_sibling_index", func(tx *gorm.DB) {
+				if failIndex && strings.Contains(tx.Statement.SQL.String(), "CREATE INDEX IF NOT EXISTS "+failedIndexName) {
+					tx.AddError(indexErr)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err = Restore(writeBackupArchive(t, files, zip.Deflate))
+			if failIndex {
+				if !errors.Is(err, indexErr) || GetRunningResult().Status != models.BackupStatusFailed {
+					t.Fatalf("索引失败必须让恢复报告失败：%v %+v", err, GetRunningResult())
+				}
+			} else if err != nil || GetRunningResult().Status != models.BackupStatusCompleted {
+				t.Fatalf("恢复失败：%v %+v", err, GetRunningResult())
+			}
+			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_sibling_path") != (scenario != "index_failure") {
+				t.Fatal("重建后的索引状态不正确")
+			}
+			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_identity") != (testDB.Dialector.Name() == "sqlite" && !failIndex) {
+				t.Fatal("文件身份索引应仅在 SQLite 成功恢复后存在")
+			}
+			var rows []models.SyncFile
+			if err := testDB.Find(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "empty" {
+				if len(rows) != 0 {
+					t.Fatalf("空备份应恢复为空表：%d", len(rows))
+				}
+			} else if len(rows) != 1 || rows[0].FileId != want.FileId || rows[0].Path != want.Path || !rows[0].Uploaded || !rows[0].Processed {
+				t.Fatalf("索引失败时仍应导入可用记录：%+v", rows)
+			}
+			var other backupOtherTestItem
+			if err := testDB.First(&other).Error; err != nil || other.Name != "other" {
+				t.Fatalf("必须继续恢复其他表：%+v %v", other, err)
+			}
+		})
+	}
+}
+
 func TestStartBackupReservesTaskBeforeReturning(t *testing.T) {
 	setupBackupTest(t)
 	paused, release := make(chan struct{}), make(chan struct{})
@@ -433,5 +514,44 @@ func TestRestoreMalformedRowIsReturned(t *testing.T) {
 	count := 0
 	if err := restoreFromJsonFile(dir, "item", 1, &count, &backupTestItem{}); err == nil {
 		t.Fatal("损坏记录必须让恢复失败")
+	}
+}
+
+func TestBackupMetadataDownloadRoundTrip(t *testing.T) {
+	testDB := setupBackupTest(t)
+	models.AllTables = []any{models.DbDownloadTask{}}
+	if err := testDB.AutoMigrate(&models.DbDownloadTask{}); err != nil {
+		t.Fatal(err)
+	}
+	want := models.DbDownloadTask{ReplaceBaseline: "3:100:oldhash", PublishedSHA256: "newhash", LocalFullPath: "/tmp/metadata.nfo", LocalSourcePath: "/tmp/source.nfo", RemoteDownloadUrl: "https://example.invalid/file", DedupScopeHash: "scope", DedupLocatorHash: "locator", Status: models.DownloadStatusDownloading}
+	if err := testDB.Create(&want).Error; err != nil {
+		t.Fatal(err)
+	}
+	api, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(api), "oldhash") || strings.Contains(string(api), "newhash") {
+		t.Fatal("private fields exposed")
+	}
+	if err := Backup(models.BackupTypeManual, "metadata recovery"); err != nil {
+		t.Fatal(err)
+	}
+	var record models.BackupRecord
+	if err := testDB.First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.Delete(&want).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(record.FilePath); err != nil {
+		t.Fatal(err)
+	}
+	var got models.DbDownloadTask
+	if err := testDB.First(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.ReplaceBaseline != want.ReplaceBaseline || got.PublishedSHA256 != want.PublishedSHA256 || got.LocalSourcePath != want.LocalSourcePath || got.RemoteDownloadUrl != want.RemoteDownloadUrl || got.DedupScopeHash != want.DedupScopeHash || got.DedupLocatorHash != want.DedupLocatorHash {
+		t.Fatalf("lost recovery fields: %+v", got)
 	}
 }

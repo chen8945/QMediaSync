@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -190,6 +191,66 @@ func TestResolveEmbyRefreshTargetUsesSeasonThenSeriesForNewEpisode(t *testing.T)
 	}
 	if target.ItemID != "401" || target.ItemType != "Series" || !target.Recursive {
 		t.Fatalf("刷新目标 = %+v，期望回退刷新 Series 401", target)
+	}
+}
+
+func TestResolveEmbyRefreshTargetSiblingPathIndexKeepsCandidateBounds(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+		t.Fatal(err)
+	}
+	const directory = "/remote/show/Season 01"
+	siblings := make([]*SyncFile, 52)
+	for i := range siblings {
+		siblings[i] = createEmbyRefreshSyncFile(t, 10, directory, fmt.Sprintf("episode%d.mkv", i), fmt.Sprintf("ep%d", i))
+	}
+	self := createEmbyRefreshSyncFile(t, 10, directory, "self.mkv", "self")
+	otherSyncPath := createEmbyRefreshSyncFile(t, 20, directory, "other.mkv", "other")
+	otherDirectory := createEmbyRefreshSyncFile(t, 10, "/remote/other", "other.mkv", "other-dir")
+	bindEpisode := func(file *SyncFile, itemID int64) {
+		t.Helper()
+		createEmbyRefreshItem(t, fmt.Sprint(itemID), "Episode", fmt.Sprint(itemID+100), "series")
+		if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: file.SyncPathId, SyncFileId: file.ID, EmbyItemId: uint(itemID), PickCode: file.PickCode}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindEpisode(self, 1000)
+	bindEpisode(otherSyncPath, 2000)
+	bindEpisode(otherDirectory, 3000)
+	bindEpisode(siblings[1], 4000) // 最新 50 条之外。
+	if target, found, err := resolveSiblingSeasonOrSeries(self); err != nil || found {
+		t.Fatalf("不能使用自己、其他目录或第 51 条记录：%+v %v", target, err)
+	}
+	bindEpisode(siblings[2], 5000)
+	if target, found, err := resolveSiblingSeasonOrSeries(self); err != nil || !found || target.ItemID != "5100" {
+		t.Fatalf("应包含第 50 条记录：%+v %v", target, err)
+	}
+	bindEpisode(siblings[51], 6000)
+	if target, found, err := resolveSiblingSeasonOrSeries(self); err != nil || !found || target.ItemID != "6100" {
+		t.Fatalf("应优先使用最新记录：%+v %v", target, err)
+	}
+	if target, err := ResolveEmbyRefreshTarget(self); err != nil || target.ItemID != "1000" {
+		t.Fatalf("自身 item 仍应优先于同目录 Season：%+v %v", target, err)
+	}
+	if target, found, err := resolveSiblingSeasonOrSeries(&SyncFile{SyncPathId: 10, Path: "/remote/missing"}); err != nil || found {
+		t.Fatalf("不存在的目录不应返回候选：%+v %v", target, err)
+	}
+	if db.Db.Dialector.Name() == "sqlite" {
+		var columns []struct{ Name string }
+		if err := db.Db.Raw("PRAGMA index_info(" + syncFileSiblingPathIndexName + ")").Scan(&columns).Error; err != nil ||
+			len(columns) != 2 || columns[0].Name != "sync_path_id" || columns[1].Name != "path" {
+			t.Fatalf("目录索引列不正确：%+v %v", columns, err)
+		}
+		for _, path := range []string{directory, "/remote/missing"} {
+			var plan []struct{ Detail string }
+			if err := db.Db.Raw("EXPLAIN QUERY PLAN SELECT * FROM sync_files WHERE sync_path_id = ? AND path = ? AND id <> ? ORDER BY id DESC LIMIT 50", 10, path, self.ID).Scan(&plan).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(plan) != 1 || !strings.Contains(plan[0].Detail, syncFileSiblingPathIndexName) {
+				t.Fatalf("目录查询应直接使用路径索引，无需另行排序：%+v", plan)
+			}
+			t.Logf("path=%s plan=%s", path, plan[0].Detail)
+		}
 	}
 }
 

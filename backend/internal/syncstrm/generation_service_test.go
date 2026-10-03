@@ -87,7 +87,7 @@ func setupStrmGenerationServiceTestDB(t *testing.T) (*models.Account, *models.Sy
 func newTestGenerationService(t *testing.T, syncPath *models.SyncPath, account *models.Account) *StrmGenerationService {
 	t.Helper()
 	service := NewStrmGenerationService()
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -236,7 +236,9 @@ func TestStrmGenerationServiceGenerateUsesFullPathLocatorForPathBasedSources(t *
 			}
 
 			service := newTestGenerationService(t, syncPath, account)
+			detailCalls := 0
 			service.detailByFileID = func(_ context.Context, _ *SyncStrm, locator string) (*SyncFileCache, error) {
+				detailCalls++
 				if locator != "/remote/show/movie.mkv" {
 					t.Fatalf("路径型来源详情定位 = %q，期望完整路径", locator)
 				}
@@ -272,6 +274,10 @@ func TestStrmGenerationServiceGenerateUsesFullPathLocatorForPathBasedSources(t *
 				},
 			}); err != nil {
 				t.Fatalf("生成 STRM 失败: %v", err)
+			}
+
+			if detailCalls != 1 {
+				t.Fatalf("稳定身份补全应只查询一次详情，得到 %d", detailCalls)
 			}
 
 			var syncFile models.SyncFile
@@ -408,9 +414,9 @@ func TestStrmGenerationServiceGenerateUsesFullPathWhenOpenListObjectIDIsAbsent(t
 	}
 
 	service := newTestGenerationService(t, syncPath, account)
-	detailCalled := false
+	detailCalls := 0
 	service.detailByFileID = func(_ context.Context, _ *SyncStrm, locator string) (*SyncFileCache, error) {
-		detailCalled = true
+		detailCalls++
 		if locator != "/remote/show/movie.mkv" {
 			t.Fatalf("OpenList 无对象 ID 时详情定位 = %q，期望完整路径", locator)
 		}
@@ -443,8 +449,8 @@ func TestStrmGenerationServiceGenerateUsesFullPathWhenOpenListObjectIDIsAbsent(t
 	}); err != nil {
 		t.Fatalf("OpenList 无对象 ID 时生成 STRM 失败: %v", err)
 	}
-	if !detailCalled {
-		t.Fatal("OpenList 无对象 ID 时仍应使用完整路径补齐远端详情")
+	if detailCalls != 1 {
+		t.Fatalf("OpenList 无对象 ID 时应只查询一次完整路径详情，得到 %d", detailCalls)
 	}
 }
 
@@ -559,7 +565,7 @@ func TestStrmGenerationServiceDownloadsMatchedMetadata(t *testing.T) {
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -646,7 +652,7 @@ func TestStrmGenerationServiceIgnoresDownloadMetaForNonWebhookTask(t *testing.T)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -1356,6 +1362,9 @@ func TestProcessPendingStrmGenerationTasksKeepsChildRetryableWhenParentRefreshFa
 		t.Fatalf("父刷新失败后父任务 = %+v，期望 completed 且进度只累计一次、未标记已刷新", gotParent)
 	}
 
+	if err := db.Db.Model(&gotChild).Update("last_retry_time", time.Now().Unix()-5).Error; err != nil {
+		t.Fatal(err)
+	}
 	processed, err = ProcessPendingStrmGenerationTasks(context.Background(), service, 1)
 	if err != nil {
 		t.Fatalf("重试父刷新失败任务失败: %v", err)
@@ -1380,7 +1389,7 @@ func TestProcessPendingStrmGenerationTasksKeepsChildRetryableWhenParentRefreshFa
 func TestProcessPendingStrmGenerationTasksExpandsDirectoryScan(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -1498,7 +1507,7 @@ func TestProcessPendingStrmGenerationTasksExpandsDirectoryScan(t *testing.T) {
 func TestProcessPendingStrmGenerationTasksExpandsDirectoryScanByDirectoryID(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -1581,7 +1590,7 @@ func TestProcessPendingStrmGenerationTasksExpandsDirectoryScanByDirectoryID(t *t
 func TestProcessPendingStrmGenerationTasksDirectoryScanParentFailsWhenChildFails(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -1661,7 +1670,7 @@ func TestProcessPendingStrmGenerationTasksDirectoryScanParentFailsWhenChildFails
 func TestProcessPendingStrmGenerationTasksDirectoryScanRetryReusesWaitingParent(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	service := newTestGenerationService(t, syncPath, account)
-	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account) (*SyncStrm, error) {
+	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
 			SyncPathId:   syncPath.ID,
@@ -2052,6 +2061,16 @@ func TestStrmRemotePathWithinRoot(t *testing.T) {
 		{name: "同级前缀不误判", remotePath: "/remote2/show", basePath: "/remote", want: false},
 		{name: "同步目录包含自身", remotePath: "/remote", basePath: "/remote", want: true},
 		{name: "同步目录包含子路径", remotePath: "/remote/show", basePath: "/remote", want: true},
+		{name: "空远端路径无范围", remotePath: "", basePath: "/", want: false},
+		{name: "空同步路径无范围", remotePath: "/remote", basePath: "", want: false},
+		{name: "根目录包含自身", remotePath: "/", basePath: "/", want: true},
+		{name: "保留前导空格", remotePath: "/ remote/show", basePath: " remote", want: true},
+		{name: "保留尾随空格", remotePath: "/remote /show", basePath: "remote ", want: true},
+		{name: "仅空格目录", remotePath: "/ /show", basePath: " ", want: true},
+		{name: "前导空格目录不同", remotePath: "/remote/show", basePath: " remote", want: false},
+		{name: "尾随空格目录不同", remotePath: "/remote/show", basePath: "remote ", want: false},
+		{name: "统一分隔符和层级", remotePath: `remote\show\..\movie`, basePath: "/remote/", want: true},
+		{name: "路径清理不能越界", remotePath: "/remote/../other", basePath: "/remote", want: false},
 	}
 
 	for _, tt := range tests {

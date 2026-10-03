@@ -215,6 +215,18 @@ func TestPauseResume(t *testing.T) {
 }
 
 func TestNewSyncQueueManager(t *testing.T) {
+	previousManager := GlobalNewSyncQueueManager
+	previousPause := models.PauseSyncQueuesFunc
+	previousResume := models.ResumeSyncQueuesFunc
+	previousIsActive := models.IsStrmSyncTaskActiveFunc
+	GlobalNewSyncQueueManager = nil
+	t.Cleanup(func() {
+		GlobalNewSyncQueueManager = previousManager
+		models.PauseSyncQueuesFunc = previousPause
+		models.ResumeSyncQueuesFunc = previousResume
+		models.IsStrmSyncTaskActiveFunc = previousIsActive
+	})
+
 	manager := InitNewSyncQueueManager()
 	if manager == nil {
 		t.Fatal("Failed to create manager")
@@ -226,6 +238,9 @@ func TestNewSyncQueueManager(t *testing.T) {
 	}
 
 	queue := manager.getQueue(models.SourceType115)
+	t.Cleanup(queue.Stop)
+	// 此处只验证入队状态，暂停领取以免后台协程抢先执行任务。
+	queue.Pause()
 	err := queue.AddTask(task)
 	if err != nil {
 		t.Fatalf("Failed to add task: %v", err)

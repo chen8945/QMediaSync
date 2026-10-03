@@ -428,7 +428,8 @@ const saveStrmConfig = async () => {
     strmStatus.value = {
       title: 'STRM 配置已保存',
       type: 'success',
-      description: '配置已保存；同步设置用于下次同步，播放设置用于后续播放请求',
+      description:
+        '配置已保存；STRM 后处理从下一小批任务起使用新配置，完整同步在本轮结束前继续使用原配置；播放设置用于后续播放请求。',
     }
   } catch (error) {
     const parsed = parseHttpError(error, {
