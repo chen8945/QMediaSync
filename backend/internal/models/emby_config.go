@@ -90,7 +90,7 @@ func StartEmbySyncRun(mode string, startedAt int64) (bool, error) {
 		mode = EmbySyncModeFull
 	}
 
-	config, err := GetEmbyConfigFromDB()
+	config, err := ReadEmbyConfigSnapshot()
 	if err != nil {
 		return false, err
 	}
@@ -113,7 +113,7 @@ func StartEmbySyncRun(mode string, startedAt int64) (bool, error) {
 		return false, nil
 	}
 
-	_, err = GetEmbyConfigFromDB()
+	_, err = ReadEmbyConfigSnapshot()
 	return err == nil, err
 }
 
@@ -151,7 +151,7 @@ func FinishEmbySyncRun(mode string, processedCount int64, finishedAt int64, runE
 	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Updates(updates).Error; err != nil {
 		return err
 	}
-	_, err := GetEmbyConfigFromDB()
+	_, err := ReadEmbyConfigSnapshot()
 	return err
 }
 
@@ -166,7 +166,7 @@ func FinishEmbyIncrementalSyncRun(processedCount int64, finishedAt int64, cursor
 	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("last_saved_cursor_at", cursorAt).Error; err != nil {
 		return err
 	}
-	_, err := GetEmbyConfigFromDB()
+	_, err := ReadEmbyConfigSnapshot()
 	return err
 }
 
@@ -200,7 +200,7 @@ func IsEmbySyncRunningInDB() bool {
 	if db.Db == nil {
 		return false
 	}
-	config, err := GetEmbyConfigFromDB()
+	config, err := ReadEmbyConfigSnapshot()
 	return err == nil && config.IsRunning
 }
 

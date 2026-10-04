@@ -227,7 +227,7 @@ func testStrmGenerationQueueMigration(t *testing.T, dialect string) {
 			if err := db.Db.First(&version).Error; err != nil {
 				t.Fatal(err)
 			}
-			if version.VersionCode != 65 || !db.Db.Migrator().HasIndex(&StrmGenerationTask{}, strmGenerationQueueIndexName) {
+			if version.VersionCode != MaxVersionCode || !db.Db.Migrator().HasIndex(&StrmGenerationTask{}, strmGenerationQueueIndexName) {
 				t.Fatalf("queue index migration incomplete: version %d", version.VersionCode)
 			}
 			var got StrmGenerationTask

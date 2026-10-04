@@ -46,6 +46,7 @@ func TestPerformEmbyIncrementalSync使用MinDateLastSaved并推进游标(t *test
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -56,6 +57,8 @@ func TestPerformEmbyIncrementalSync使用MinDateLastSaved并推进游标(t *test
 	var capturedSortOrder string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/emby/System/Info/Public":
+			fmt.Fprint(w, `{ "Id": "server-a" }`)
 		case "/emby/Library/MediaFolders":
 			fmt.Fprint(w, `{"Items":[{"Id":"lib-a","Name":"电影"}]}`)
 		case "/emby/Items":

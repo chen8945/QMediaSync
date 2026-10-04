@@ -44,6 +44,11 @@ type EmbyMediaItem struct {
 	IsFolder          bool   `json:"is_folder"`
 	LastSeenSyncRun   string `json:"last_seen_sync_run" gorm:"index;type:varchar(64)"`
 	LastSeenAt        int64  `json:"last_seen_at" gorm:"index"`
+	PartCount         int    `json:"part_count"`
+	PartOfItemID      string `json:"part_of_item_id" gorm:"index"`
+	VersionOfItemID   string `json:"version_of_item_id" gorm:"index"`
+	SnapshotID        uint   `json:"snapshot_id" gorm:"index"`
+	Generation        int64  `json:"generation"`
 }
 
 func (*EmbyMediaItem) TableName() string {
@@ -57,6 +62,8 @@ type EmbyMediaSyncFile struct {
 	EmbyItemId uint   `json:"emby_item_id" gorm:"index:idx_emby_media_item_id"`
 	SyncFileId uint   `json:"sync_file_id" gorm:"index:idx_emby_sync_file_id"`
 	PickCode   string `json:"pick_code" gorm:"index:idx_emby_sf_pick_code"`
+	SnapshotID uint   `json:"snapshot_id" gorm:"index"`
+	SourceID   string `json:"source_id"`
 }
 
 func (*EmbyMediaSyncFile) TableName() string {
@@ -129,13 +136,7 @@ func CleanupDeletedEmbyLibraries(activeLibraryIds []string) error {
 
 // CreateOrUpdateEmbyMediaItem upsert by ItemId
 func CreateOrUpdateEmbyMediaItem(item *EmbyMediaItem) error {
-	existing := &EmbyMediaItem{}
-	err := db.Db.Where("item_id = ?", item.ItemId).First(existing).Error
-	if err != nil {
-		return db.Db.Save(item).Error
-	}
-	item.ID = existing.ID
-	return db.Db.Model(existing).Updates(item).Error
+	return upsertEmbyMediaItem(db.Db, item)
 }
 
 func GetEmbyMediaItemsCount() (int64, error) {

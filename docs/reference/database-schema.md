@@ -49,7 +49,7 @@
 当 `migrator` 表不存在时，`InitDB()` 会直接执行：
 
 1. `BatchCreateTable()`：对 `AllTables` 逐表执行 `AutoMigrate`。
-2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `65`。
+2. `InitMigrationTable(MaxVersionCode)`：写入当前版本号，当前值是 `66`。
 3. `InitSettings()`：创建默认 `settings` 记录。
 4. `InitScrapeSetting()`：创建默认刮削配置和默认分类。
 5. `InitEmbyConfig()`：创建默认 `emby_config` 记录。
@@ -96,8 +96,9 @@
 | 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
 | 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`，以及全局 `multi_playback_enabled`，默认 `0`；迁移重试保留已有值，仅补齐缺列和默认值。 |
 | 64 | 65 | `syncs` 新增可空 `scan_result` 文本 JSON、可空 `ledger_status`、可空 `ledger_finished_at` 和 `ledger_error`，保存扫描结果与后台账本结果；`db_download_tasks` 新增 `replace_baseline` 和 `published_sha256`，保存元数据替换与重试所需信息；`strm_generation_tasks` 新增 `skip_reason` 和默认 `0` 的 `skipped_items`；`sync_files` 新增同目录查询索引，SQLite 另增同步目录与文件 ID 的查询索引；`strm_generation_tasks` 的等待与收尾任务新增匹配领取顺序的部分表达式索引。迁移失败后可重试，保留已有字段值，历史结果和终点不推算。 |
+| 65 | 66 | Emby 媒体项新增分段／版本成员、快照 ID 和代际，关联新增来源 ID 与快照 ID；新增单实例索引版本、条目状态及不可变证据表。迁移事务失败可重试，不修改历史媒体字段，不把空 Server ID 的旧关联认定为可靠删除证据。 |
 
-当前数据库版本是 `65`。
+当前数据库版本是 `66`。
 
 ## 不变量
 
@@ -171,7 +172,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `65`。
+- `version_code`：当前数据库版本号，当前值为 `66`。
 
 ### `users`
 
@@ -703,16 +704,16 @@ Emby 总配置表。
 
 - `item_id`：Emby 媒体项 ID，唯一。
 - `item_id_int`：数值化 ID，便于索引和排序。
-- `server_id`：Emby Server ID。
+- `server_id`：从 `/System/Info/Public` 核验的 Emby 实例 ID；旧空值保留到成功同步，不能作为已核验的删除身份。
 - `name`：名称。
 - `type`：类型，电影 / 集 / 文件夹等。
 - `parent_id`：父节点 ID。
 - `series_id`、`series_name`：剧集 ID 和名称。
 - `season_id`、`season_name`：季 ID 和名称。
 - `library_id`：所属媒体库 ID。
-- `path`：媒体路径。
+- `path`：Emby `Item.Path` 的物理 STRM／视频路径。
 - `pick_code`：关联的 PickCode。
-- `media_source_path`：媒体源路径。
+- `media_source_path`：媒体源播放路径，与物理 `path` 分开。
 - `index_number`、`parent_index_number`：集号 / 季号。
 - `production_year`：年份。
 - `premiere_date`：首播日期。
@@ -722,14 +723,34 @@ Emby 总配置表。
 - `last_seen_sync_run`：全量同步批次标记，用于按媒体库清理旧条目。
 - `last_seen_at`：最近一次被全量、增量或 Webhook 同步看到的时间戳。
 
+- `part_count`：主项已确认分段数量。
+- `part_of_item_id`：AdditionalParts 确认的主项远端 ID；独立 Video 查询不清除已确认关系，主项完整响应可解除消失成员关系。
+- `version_of_item_id`：带明确 MediaSource.ItemId 的已确认版本组根；同组按最小数值条目 ID 取稳定根，不因查询入口改变方向，也不按标题聚合。
+- `snapshot_id`、`generation`：当前不可变证据与物理代际，普通更新时间不是代际。
+
 ### `emby_media_sync_files`
 
 Emby 媒体项与同步文件的关联表。
 
 - `sync_path_id`：同步目录 ID。
-- `emby_item_id`：Emby 媒体项 ID。
+- `emby_item_id`：数值化的远端 Emby 媒体项 ID，不是 `emby_media_items.id`。
 - `sync_file_id`：同步文件 ID。
 - `pick_code`：PickCode。
+
+- `snapshot_id`：本次关联所属不可变快照。
+- `source_id`：Emby MediaSource.Id，独立于远端条目 ID。
+
+### `emby_index_states`、`emby_item_states`、`emby_item_evidences`
+
+三表均沿用 BaseModel 的 Unix 秒时间。当前配置只连接一个 Emby 服务，媒体项仍以 `item_id` 全局唯一。
+
+- `emby_index_states`：固定行 ID=1，保存核验的 `server_id`、同步范围摘要 `config_key`、服务连接摘要 `server_config_key` 和单调递增 `revision`。条目读取前取版本，提交／清旧与删除登记持有同一 SQL 写锁；实例或有效配置范围变化使旧版本失效并清除旧成功水位；不因全库模式下无效的选库字符串变化重置。
+- `emby_item_states`：`server_id + item_id` 唯一，保存 `generation`、`snapshot_id`、`identity_key`、`deleted` 和屏障 `revision`。删除屏障只允许经独立核验的调用方释放，释放仍递增全局版本。
+- `emby_item_evidences`：按 `server_id + item_id` 索引，保存同步范围／独立服务连接摘要、代际、内容摘要及 `item_json`、`sources_json`、`files_json` 文本。媒体快照保留来源 ID／ItemId，文件证据冻结 SyncFile、来源、账号主体、根目录、物理 file_id、大小／哈希／mtime 及候选不完整原因。
+- `config_key` 只约束同步提交与水位；删除身份使用 `server_id + server_config_key`，同步选库变化不会使同一服务的历史删除证据失效，也不构成删除白名单。
+- 新增历史证据去除播放 URL 中 userinfo、签名等查询凭据；已有播放字段继续使用原兼容语义。OpenList 可用对象 ID、SHA1、MD5 单独保存，不能将路径型 FileId 当作文件代际。
+- 完整全量只清当前媒体项／关联，不删除状态与历史证据。当前无自动历史清理；不得删除仍供未完成删除任务引用的证据。
+- 旧索引不做推断回填，成功同步后建立真实证据。账号／根／物理路径或独立文件代际不完整时保留 `reason`，不能将候选直接用于网盘删除。
 
 ### `emby_libraries`
 

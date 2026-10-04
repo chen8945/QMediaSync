@@ -255,9 +255,19 @@ POST /emby/Items/{libraryId}/Refresh
 
 - 每页 `Limit` 默认取 `100`。
 - 每取到一页就逐条处理 item，不把所有媒体项聚合成一个大切片。
-- 每个 item 处理时完成 PickCode 提取、`emby_media_items` upsert 和 `emby_media_sync_files` 关联维护。
-- worker pool 可以保留，但需要限制并发，避免对 Emby 和数据库造成突发压力。
+- 每个物理 item 保存 Item.Path 与媒体源播放路径，保留来源 Id／ItemId；成功快照与当前关联替换在同一事务完成。所有来源都参与核验，不能确定物理归属的多来源响应返回错误。
+- 当前逐条处理并向调用方传播依赖请求、关联查询和数据库保存错误；不在数据库事务中请求远端。
 - 不再对每个 item 固定 sleep；如需限速，应限制分页请求频率或使用可配置限速。
+
+### 物理快照与身份版本
+
+同步显式请求 Path、MediaSources、PartCount 及季／剧上下文字段。Movie 和 Episode 的 PartCount>1 时请求 `/Videos/{id}/AdditionalParts`，保留隐藏 Video 与主项关系；已有完整字段直接保存，主项、版本和分段缺 Path／MediaSources 时才按 ID 补详情；补查后仍缺字段则保留旧快照。分段读取失败时主项和分段均不替换，当前关系保留。
+
+物理 `/Items` 枚举不会按名称或 TMDB ID 合并版本。额外来源明确指向其他 ItemId 时查询其物理详情，再独立建立关联；无 ItemId 的多个不同来源不会盲绑到外层条目。没有云端来源的完整响应仍保存媒体项并清除旧关联。快照更新允许空字符串、0 和 false，保留 CreatedAt；增量与单条同步不清全量批次标记。
+
+每轮远端条目读取前核验 `/System/Info/Public` 返回的实例 ID，获取持久版本。四个索引入口（全量、增量、单条及旧单条兼容函数）都使用同一事务提交，并核对配置范围和版本。数据库删除屏障登记、提交和成功游标／时间水位使用同一 SQL 锁；空扫描也核对版本。旧查询在屏障释放后仍会被拒绝，普通 UpdatedAt 不能替代代际。独立配置快照不改写旧全局缓存；设置页读取最新配置，保存只更新配置字段，不回写同步期间变化的游标／运行状态。服务地址、授权或有效选库范围改变时清除旧成功水位，重新建立范围内索引；仅通知选项变化不清游标。实际服务 ID 在原地址更换时也执行同样保护。
+
+索引全量清旧只移除当前媒体项／关联，保留不可变物理证据。冻结证据包括已有 SyncFile 的来源、账号主体、同步根、file_id 与独立哈希／mtime；缺字段和路径冲突保留原因，不能升级为删除授权。旧 ServerId 为空的历史行需要成功同步补全，不能自动认定属于当前服务器。主项完整响应解除旧成员关系时沿用旧文件证据，不重新绑定当前账本的同路径新文件。同步范围摘要仅用于索引提交，删除必须核对独立服务连接身份；选库变化不构成删除白名单。结构与保留约束见 [数据库 schema](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences)。
 
 ### 手动全量同步
 
@@ -269,7 +279,7 @@ POST /emby/Items/{libraryId}/Refresh
 2. 按媒体库分页拉取 Emby item。
 3. 每个 item upsert 时写入 `last_seen_sync_run` 和 `last_seen_at`。
 4. 某个媒体库完整同步成功后，只清理该媒体库内 `last_seen_sync_run != 当前批次` 的旧条目。
-5. 如果某个媒体库拉取失败，该媒体库不执行旧数据清理，避免误删。
+5. 某个媒体库分页、分段补查、关联或保存失败，该库不清旧；成功库可独立完成，但本轮不会推进全量成功时间。非末页空响应、变化的总数、重复 ID 或条目数矛盾均算失败。
 
 全量同步不再维护巨大的有效 item ID 列表，也不再对每个 item 固定 sleep。
 
@@ -292,7 +302,7 @@ GET /emby/Items
 ?ParentId=<libraryId>
 &Recursive=true
 &IncludeItemTypes=Movie,Video,Episode
-&Fields=DateCreated,DateModified,ParentId,PremiereDate,MediaStreams,Path,MediaSources,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber
+&Fields=DateCreated,DateModified,ParentId,PremiereDate,Path,MediaSources,PartCount,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber
 &MinDateLastSaved=<cursor_minus_overlap_rfc3339>
 &SortBy=DateLastSaved
 &SortOrder=Descending
@@ -346,7 +356,7 @@ GET /emby/Items
 Webhook 新增或修改事件只按 item ID 查询单条并 upsert：
 
 ```http
-GET /emby/Items?Ids=<itemId>&Fields=DateCreated,DateModified,Path,MediaSources,ParentId,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber
+GET /emby/Items?Ids=<itemId>&Fields=DateCreated,DateModified,Path,MediaSources,PartCount,ParentId,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber
 ```
 
 响应示例：
@@ -382,12 +392,13 @@ GET /emby/Users/{UserId}/Items/{itemId}?Fields=DateCreated,DateModified,Path,Med
 
 规则：
 
-- 返回单条 Movie、Video 或 Episode 时写入本地 `emby_media_items`。
+- 返回单条 Movie、Video 或 Episode 时，连同已确认的版本／分段物理快照写入本地 `emby_media_items`；其他类型不会补物理详情或入库。
 - 写入前会通过 `/Items/{itemId}/Ancestors` 和 `/Library/VirtualFolders` 解析真实所属媒体库，不能把 Episode 的 `ParentId` 当作媒体库 ID。
 - 当 `sync_all_libraries=0` 时，解析出的媒体库 ID 不在 `selected_libraries` 中会跳过本次单条同步。
 - 解析到 PickCode 时建立 `emby_media_sync_files` 关联。
 - 空结果或不支持的类型只记录日志，不触发全量同步。
 - Webhook 单条同步不推进 `last_saved_cursor_at`。
+- 同步忙时返回可识别的 `ErrEmbySyncBusy`；该结果与远端不存在不同，不声称条目已处理。
 
 Webhook 删除事件只删除本地索引和关联：
 
@@ -444,7 +455,7 @@ Web 设置页的配置、媒体库、提取和同步请求由 `api/emby.ts` 封�
 - `emby_media_items.last_seen_sync_run`
 - `emby_media_items.last_seen_at`
 
-升级后如果 `last_saved_cursor_at=0`，建议先手动执行一次全量同步，用于建立本地索引和全量批次标记。默认启用每日首次定时全量同步，之后 Cron 会在每天首次成功全量后按增量同步兜底变更。
+版本 66 新增物理快照、成员和身份状态，保留旧记录但不推断删除身份。升级后建议先手动执行一次全量同步，用于建立本地索引和全量批次标记。默认启用每日首次定时全量同步，之后 Cron 会在每天首次成功全量后按增量同步兜底变更。
 
 ## 验证命令
 

@@ -83,6 +83,7 @@ type BaseItemDtoV2 struct {
 	DateCreated       string            `json:"DateCreated,omitempty"`
 	DateModified      string            `json:"DateModified,omitempty"`
 	IsFolder          bool              `json:"IsFolder,omitempty"`
+	PartCount         int               `json:"PartCount,omitempty"`
 	MediaSources      []MediaSource     `json:"MediaSources,omitempty"`
 	CommunityRating   float64           `json:"CommunityRating,omitempty"`
 	Genres            []string          `json:"Genres,omitempty"`
@@ -92,8 +93,10 @@ type BaseItemDtoV2 struct {
 }
 
 type MediaSource struct {
-	Path string `json:"Path,omitempty"`
-	Name string `json:"Name,omitempty"`
+	ID     string `json:"Id,omitempty"`
+	ItemID string `json:"ItemId,omitempty"`
+	Path   string `json:"Path,omitempty"`
+	Name   string `json:"Name,omitempty"`
 }
 
 type MediaStreamV2 struct {
@@ -108,6 +111,9 @@ type QueryResultBaseItemDto struct {
 }
 
 const embyRefreshLookupItemTypes = "Movie,Video,Episode,Folder,Series"
+
+// EmbySnapshotFields 是物理索引快照必须显式请求的字段。
+const EmbySnapshotFields = "DateCreated,DateModified,ParentId,PremiereDate,Path,MediaSources,PartCount,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber"
 
 // EmbyItemsQuery 表示查询 Emby 媒体条目的分页参数。
 type EmbyItemsQuery struct {
@@ -209,6 +215,68 @@ func (c *Client) GetMediaItemsByLibraryID(libraryID string, lastDateCreatedTime 
 	return allItems, err
 }
 
+// GetServerID 查询当前 Emby 实例身份，不用 URL 或版本号替代服务器 ID。
+func (c *Client) GetServerID(ctx context.Context) (string, error) {
+	var info struct {
+		ID string `json:"Id"`
+	}
+	if err := c.getSnapshotJSON(ctx, "/System/Info/Public", nil, &info); err != nil {
+		return "", err
+	}
+	if info.ID == "" {
+		return "", errors.New("Emby 未返回服务器 ID")
+	}
+	return info.ID, nil
+}
+
+// GetAdditionalParts 获取隐藏分段并直接请求物理快照字段。
+func (c *Client) GetAdditionalParts(ctx context.Context, itemID string) ([]BaseItemDtoV2, error) {
+	var result QueryResultBaseItemDto
+	params := url.Values{"Fields": {EmbySnapshotFields}}
+	if err := c.getSnapshotJSON(ctx, "/Videos/"+url.PathEscape(itemID)+"/AdditionalParts", params, &result); err != nil {
+		return nil, err
+	}
+	if int(result.TotalRecordCount) != len(result.Items) {
+		return nil, errors.New("Emby AdditionalParts 响应不完整")
+	}
+	return result.Items, nil
+}
+
+// GetSnapshotItems 按 ID 补查缺少字段的物理条目，不依赖用户态聚合接口。
+func (c *Client) GetSnapshotItems(ctx context.Context, ids string) ([]BaseItemDtoV2, error) {
+	var result []BaseItemDtoV2
+	err := c.FetchMediaItemsByLibraryID(ctx, EmbyItemsQuery{IDs: ids, Fields: EmbySnapshotFields}, func(item BaseItemDtoV2) error {
+		result = append(result, item)
+		return nil
+	})
+	return result, err
+}
+
+func (c *Client) getSnapshotJSON(ctx context.Context, path string, params url.Values, result any) error {
+	if params == nil {
+		params = url.Values{}
+	}
+	params.Set("api_key", c.apiKey)
+	u := c.embyURL + "/emby" + path + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return errors.New("创建 Emby 快照请求失败")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return errors.New("Emby 快照请求失败")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Emby 快照请求状态码：%d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		return fmt.Errorf("解析 Emby 快照响应失败：%w", err)
+	}
+	return nil
+}
+
 // FetchMediaItemsByLibraryID 从指定媒体库分页拉取媒体条目，并逐条回调处理。
 func (c *Client) FetchMediaItemsByLibraryID(
 	ctx context.Context,
@@ -231,12 +299,32 @@ func (c *Client) FetchMediaItemsByLibraryID(
 		limit = 100
 	}
 
+	expectedTotal := -1
+	seen := make(map[string]struct{})
 	for {
 		response, err := c.fetchMediaItemsPage(ctx, query, startIndex, limit)
 		if err != nil {
 			return err
 		}
+		if expectedTotal < 0 {
+			expectedTotal = int(response.TotalRecordCount)
+		} else if expectedTotal != int(response.TotalRecordCount) {
+			return errors.New("Emby 分页过程中总条目数发生变化")
+		}
+		if len(response.Items) == 0 && startIndex < expectedTotal {
+			return fmt.Errorf("Emby 分页提前返回空页：%d/%d", startIndex, expectedTotal)
+		}
+		if startIndex+len(response.Items) > expectedTotal {
+			return errors.New("Emby 分页条目数超出 TotalRecordCount")
+		}
 		for _, item := range response.Items {
+			if item.Id == "" {
+				return errors.New("Emby 分页返回空条目 ID")
+			}
+			if _, exists := seen[item.Id]; exists {
+				return fmt.Errorf("Emby 分页返回重复条目 %s", item.Id)
+			}
+			seen[item.Id] = struct{}{}
 			if query.LastDateCreatedAt > 0 && item.DateCreated != "" {
 				if t, err := time.Parse(time.RFC3339, item.DateCreated); err == nil && t.Unix() == query.LastDateCreatedAt {
 					return nil
@@ -289,7 +377,7 @@ func (c *Client) fetchMediaItemsPage(
 	if query.Fields != "" {
 		params.Add("Fields", query.Fields)
 	} else {
-		params.Add("Fields", "DateCreated,DateModified,ParentId,PremiereDate,MediaStreams")
+		params.Add("Fields", EmbySnapshotFields)
 	}
 	if query.SortBy != "" {
 		params.Add("SortBy", query.SortBy)

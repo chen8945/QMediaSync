@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 65
+var MaxVersionCode = 66
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -37,6 +37,7 @@ var AllTables = []any{
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
 	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
+	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{},
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
 }
@@ -794,6 +795,13 @@ func Migrate() {
 		}
 		if err := EnsureStrmGenerationQueueIndex(db.Db); err != nil {
 			helpers.AppLogger.Errorf("创建 STRM 队列排序索引失败：%v", err)
+			return
+		}
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == 65 {
+		if err := MigrateEmbySnapshots(db.Db); err != nil {
+			helpers.AppLogger.Errorf("迁移 Emby 物理快照和身份版本失败：%v", err)
 			return
 		}
 		migrator.UpdateVersionCode(db.Db)

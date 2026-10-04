@@ -50,7 +50,7 @@ func TestFetchMediaItemsByLibraryID分页流式处理(t *testing.T) {
 	}
 }
 
-func TestFetchMediaItemsByLibraryID空页停止(t *testing.T) {
+func TestFetchMediaItemsByLibraryID提前空页返回不完整错误(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -73,8 +73,8 @@ func TestFetchMediaItemsByLibraryID空页停止(t *testing.T) {
 			return nil
 		},
 	)
-	if err != nil {
-		t.Fatalf("FetchMediaItemsByLibraryID() error = %v", err)
+	if err == nil {
+		t.Fatal("提前空页必须返回错误")
 	}
 	if handled != 1 || requests != 2 {
 		t.Fatalf("handled=%d requests=%d, want handled=1 requests=2", handled, requests)

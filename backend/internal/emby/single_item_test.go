@@ -25,6 +25,7 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -36,9 +37,11 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 	requestedIDs := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/emby/System/Info/Public":
+			fmt.Fprint(w, `{ "Id": "server-a" }`)
 		case "/emby/Items":
 			requestedIDs = append(requestedIDs, r.URL.Query().Get("Ids"))
-			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"122145","Name":"阿雅与魔女","Type":"Movie","ParentId":"lib-a","DateCreated":"2026-06-29T00:00:00Z","DateModified":"2026-06-29T00:10:00Z","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-1"}]}]}`)
+			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"122145","Name":"阿雅与魔女","Type":"Movie","Path":"/media/movie/fixture.strm","ParentId":"lib-a","DateCreated":"2026-06-29T00:00:00Z","DateModified":"2026-06-29T00:10:00Z","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-1"}]}]}`)
 		case "/emby/Items/122145/Ancestors":
 			fmt.Fprint(w, `[{"Id":"root","Path":"/media"},{"Id":"lib-a-folder","Path":"/media/movie"},{"Id":"122145","Path":"/media/movie/阿雅与魔女.mkv"}]`)
 		case "/emby/Library/VirtualFolders":
@@ -91,6 +94,7 @@ func TestSyncEmbyItemByID使用Ancestors解析Episode真实媒体库ID(t *testin
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -101,8 +105,10 @@ func TestSyncEmbyItemByID使用Ancestors解析Episode真实媒体库ID(t *testin
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/emby/System/Info/Public":
+			fmt.Fprint(w, `{ "Id": "server-a" }`)
 		case "/emby/Items":
-			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"20001","Name":"第 1 集","Type":"Episode","ParentId":"season-1","SeriesId":"series-1","SeasonId":"season-1","DateCreated":"2026-06-29T00:00:00Z","DateModified":"2026-06-29T00:10:00Z","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-episode"}]}]}`)
+			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"20001","Name":"第 1 集","Type":"Episode","Path":"/media/tv/fixture.strm","ParentId":"season-1","SeriesId":"series-1","SeasonId":"season-1","DateCreated":"2026-06-29T00:00:00Z","DateModified":"2026-06-29T00:10:00Z","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-episode"}]}]}`)
 		case "/emby/Items/20001/Ancestors":
 			fmt.Fprint(w, `[{"Id":"root","Path":"/media"},{"Id":"lib-tv-folder","Path":"/media/tv"},{"Id":"series-1","Path":"/media/tv/剧集"},{"Id":"season-1","Path":"/media/tv/剧集/Season 1"}]`)
 		case "/emby/Library/VirtualFolders":
@@ -162,6 +168,7 @@ func TestSyncEmbyItemByID多媒体库候选不取第一个写入LibraryID(t *tes
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -172,8 +179,10 @@ func TestSyncEmbyItemByID多媒体库候选不取第一个写入LibraryID(t *tes
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/emby/System/Info/Public":
+			fmt.Fprint(w, `{ "Id": "server-a" }`)
 		case "/emby/Items":
-			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"40001","Name":"多库电影","Type":"Movie","ParentId":"folder","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-ambiguous"}]}]}`)
+			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"40001","Name":"多库电影","Type":"Movie","Path":"/media/movie/fixture.strm","ParentId":"folder","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-ambiguous"}]}]}`)
 		case "/emby/Items/40001/Ancestors":
 			fmt.Fprint(w, `[{"Id":"root","Path":"/media"},{"Id":"shared","Path":"/media/shared"}]`)
 		case "/emby/Library/VirtualFolders":
@@ -221,6 +230,7 @@ func TestSyncEmbyItemByID跳过未选择媒体库(t *testing.T) {
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
@@ -231,8 +241,10 @@ func TestSyncEmbyItemByID跳过未选择媒体库(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/emby/System/Info/Public":
+			fmt.Fprint(w, `{ "Id": "server-a" }`)
 		case "/emby/Items":
-			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"30001","Name":"未选中电影","Type":"Movie","ParentId":"lib-other","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-skip"}]}]}`)
+			fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"30001","Name":"未选中电影","Type":"Movie","Path":"/media/movie/fixture.strm","ParentId":"lib-other","MediaSources":[{"Path":"http://qms.local/stream?pickcode=pc-skip"}]}]}`)
 		case "/emby/Items/30001/Ancestors":
 			fmt.Fprint(w, `[{"Id":"root","Path":"/media"},{"Id":"lib-other-folder","Path":"/media/other"},{"Id":"30001","Path":"/media/other/movie.mkv"}]`)
 		case "/emby/Library/VirtualFolders":
@@ -282,11 +294,16 @@ func TestSyncEmbyItemByID空结果不触发全量同步(t *testing.T) {
 	db.Db = testDb
 	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
+	setupSnapshotTestTables(t)
 
 	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyMediaItem{}); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/emby/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a"}`)
+			return
+		}
 		fmt.Fprint(w, `{"TotalRecordCount":0,"Items":[]}`)
 	}))
 	defer server.Close()

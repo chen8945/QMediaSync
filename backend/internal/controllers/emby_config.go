@@ -24,7 +24,7 @@ import (
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func GetEmbyConfig(c *gin.Context) {
-	config, err := models.GetEmbyConfig()
+	config, err := models.ReadEmbyConfigSnapshot()
 	if err == gorm.ErrRecordNotFound {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    Success,
@@ -76,7 +76,7 @@ func UpdateEmbyConfig(c *gin.Context) {
 		return
 	}
 
-	config, err := models.GetEmbyConfig()
+	config, err := models.ReadEmbyConfigSnapshot()
 	if err != nil && err != gorm.ErrRecordNotFound {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询 Emby 配置失败：" + err.Error()})
 		return
@@ -94,6 +94,7 @@ func UpdateEmbyConfig(c *gin.Context) {
 	if req.SyncCron == "" {
 		req.SyncCron = "0 * * * *"
 	}
+	oldIdentity := models.EmbyConfigIdentity(config)
 	config.EmbyUrl = req.EmbyURL
 	config.EmbyApiKey = req.EmbyAPIKey
 	config.EnableDeleteNetdisk = req.EnableDeleteNetdisk
@@ -121,7 +122,24 @@ func UpdateEmbyConfig(c *gin.Context) {
 		// config.DeleteNetdiskLibrary = ""
 	}
 
-	if err := db.Db.Save(config).Error; err != nil {
+	// 设置保存只拥有配置字段，不能回写读取期间变化的同步游标和运行状态。
+	var saveErr error
+	if isNew {
+		saveErr = db.Db.Create(config).Error
+	} else {
+		fields := []string{
+			"emby_url", "emby_api_key", "enable_delete_netdisk", "enable_refresh_library",
+			"enable_media_notification", "enable_extract_media_info", "enable_auth", "sync_enabled", "sync_cron",
+			"selected_libraries", "sync_all_libraries", "enable_daily_first_full_sync", "enable_playback_overview", "enable_playback_progress",
+		}
+		if oldIdentity != models.EmbyConfigIdentity(config) {
+			config.LastSavedCursorAt, config.LastFullSyncAt, config.LastIncrementalSyncAt, config.LastSyncTime = 0, 0, 0, 0
+			config.LastSuccessSyncMode = ""
+			fields = append(fields, "last_saved_cursor_at", "last_full_sync_at", "last_incremental_sync_at", "last_sync_time", "last_success_sync_mode")
+		}
+		saveErr = db.Db.Model(config).Select(fields).Updates(config).Error
+	}
+	if err := saveErr; err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存 Emby 配置失败：" + err.Error()})
 		return
 	}
