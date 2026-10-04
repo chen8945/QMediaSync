@@ -165,16 +165,33 @@ func (c *Client) FileListWithRefresh(ctx context.Context, path string, page int,
 	result := &Resp[FileListResp]{}
 	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	req.SetContext(ctx)
-	_, err := c.doRequest("/api/fs/list", req, nil)
+	response, err := c.doRequest("/api/fs/list", req, nil)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 获取文件列表失败：%s", err.Error())
 		return nil, err
+	}
+	var envelope struct {
+		Data struct {
+			Total   *int64          `json:"total"`
+			Content json.RawMessage `json:"content"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Bytes(), &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Data.Total == nil || *envelope.Data.Total < 0 || len(envelope.Data.Content) == 0 || (result.Data.Content == nil && *envelope.Data.Total != 0) {
+		return nil, fmt.Errorf("OpenList 目录响应缺少完整 content 或 total")
 	}
 	return &result.Data, nil
 }
 
 // 文件详情
 func (c *Client) FileDetail(path string) (*FileDetail, error) {
+	return c.FileDetailContext(context.Background(), path)
+}
+
+// FileDetailContext 查询文件详情并响应调用方取消。
+func (c *Client) FileDetailContext(ctx context.Context, path string) (*FileDetail, error) {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -186,7 +203,7 @@ func (c *Client) FileDetail(path string) (*FileDetail, error) {
 		Path: path,
 	}
 	result := &Resp[FileDetail]{}
-	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
+	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/get", req, nil)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 获取文件详情失败：%s", err.Error())
@@ -490,6 +507,17 @@ func (c *Client) Rename(path, oldName, newName string) error {
 }
 
 func (c *Client) Del(path string, names []string) error {
+	return c.deleteFiles(context.Background(), path, names, nil)
+}
+
+// DelContext 单次删除明确文件；失败由上层核验身份后决定是否重试。
+func (c *Client) DelContext(ctx context.Context, path string, names []string) error {
+	options := MakeRequestConfig(0, 0, 0)
+	options.skipAuthRetry = true
+	return c.deleteFiles(ctx, path, names, options)
+}
+
+func (c *Client) deleteFiles(ctx context.Context, path string, names []string, options *RequestConfig) error {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -503,8 +531,8 @@ func (c *Client) Del(path string, names []string) error {
 		Names: names,
 	}
 	result := &Resp[any]{}
-	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
-	_, err := c.doRequest("/api/fs/remove", req, nil)
+	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
+	_, err := c.doRequest("/api/fs/remove", req, options)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 删除目录失败：%s", err.Error())
 		return err

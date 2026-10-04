@@ -191,7 +191,7 @@ func Webhook(ctx *gin.Context) {
 				sendDeletedMovieNotification(event.Item.ID, event.Item.Name)
 			}
 		}()
-		if event.Item.Type == "Movie" || event.Item.Type == "Episode" || event.Item.Type == "Season" || event.Item.Type == "Series" {
+		if event.Item.Type == "Movie" || event.Item.Type == "Video" || event.Item.Type == "Episode" || event.Item.Type == "Season" || event.Item.Type == "Series" {
 			// 触发联动删除
 			if models.GlobalEmbyConfig != nil && models.GlobalEmbyConfig.EnableDeleteNetdisk == 1 {
 				// 检查是否允许删除媒体库
@@ -202,29 +202,25 @@ func Webhook(ctx *gin.Context) {
 				var deleteErr error
 				switch event.Item.Type {
 				case "Movie":
-					// 电影：在网盘中将视频文件的父目录一起删除
-					// 查找 Item.ID 对应的 SyncFileID。
 					deleteErr = models.DeleteNetdiskMovieByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
+				case "Video":
+					deleteErr = models.DeleteNetdiskVideoByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Episode":
 					// 集：删除视频文件和元数据（NFO、封面）。
 					// 查找 Item.ID 对应的 SyncFileID。
 					deleteErr = models.DeleteNetdiskEpisodeByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Season":
-					// 季：先检查视频文件的父目录。如果父目录是季文件夹，则删除该文件夹；如果父目录有 tvshow.nfo，则只删除该季所有集对应的视频文件和元数据（NFO、封面）。
-					// 查找 EmbyMediaItem.SeasonID = Item.ID 的记录，取其中一条记录的 SyncFile.Path 作为季目录来处理。
 					deleteErr = models.DeleteNetdiskSeasonByItemIdContext(ctx.Request.Context(), event.Item.ID)
 				case "Series":
-					// 剧：在网盘中删除 tvshow.nfo 的父目录。
-					// 查找 EmbyMediaItem.SeriesID = Item.ID 的记录，取其中一条记录的 SyncFile.Path 作为剧目录来处理。
 					deleteErr = models.DeleteNetdiskTvshowByItemIdContext(ctx.Request.Context(), event.Item.ID)
 				default:
 				}
-				if errors.Is(deleteErr, context.Canceled) || errors.Is(deleteErr, context.DeadlineExceeded) {
-					// 排队取消后保留关联，重试时仍能找到需要删除的网盘文件。
-					helpers.AppLogger.Warnf("Webhook 联动删除已取消，保留本地索引，Item ID=%s：%v", event.Item.ID, deleteErr)
-					ctx.JSON(http.StatusOK, gin.H{"message": "webhook"})
-					return
+				if deleteErr != nil {
+					helpers.AppLogger.Warnf("Webhook 联动删除未完成，保留本地索引，Item ID=%s：%v", event.Item.ID, deleteErr)
 				}
+				// 冻结计划只清理已完成的原快照关联，不能在此按 item/season 再次扩大清理。
+				ctx.JSON(http.StatusOK, gin.H{"message": "webhook"})
+				return
 			}
 			if err := deleteLocalEmbyItemForWebhook(event.Item.Type, event.Item.ID); err != nil {
 				helpers.AppLogger.Warnf("Webhook 删除本地 Emby 条目索引失败，Item ID=%s，类型=%s，错误=%v", event.Item.ID, event.Item.Type, err)

@@ -11,9 +11,10 @@ type Resp[T any] struct {
 
 // RequestConfig 请求配置
 type RequestConfig struct {
-	MaxRetries int           `json:"max_retries"`
-	RetryDelay time.Duration `json:"retry_delay"`
-	Timeout    time.Duration `json:"timeout"`
+	skipAuthRetry bool          // 删除必须返回授权错误，由调用方重新核验后再执行。
+	MaxRetries    int           `json:"max_retries"`
+	RetryDelay    time.Duration `json:"retry_delay"`
+	Timeout       time.Duration `json:"timeout"`
 }
 
 // DefaultRequestConfig 默认请求配置

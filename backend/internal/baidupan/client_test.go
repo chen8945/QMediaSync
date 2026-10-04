@@ -261,3 +261,63 @@ func TestUploadReadsTokenForEachRequest(t *testing.T) {
 		t.Fatalf("上传请求次数 = %d，期望 3", requests.Load())
 	}
 }
+
+func TestGetFileListRejectsMissingList(t *testing.T) {
+	ensureBaiduPanTestLoggers()
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+	}{
+		{name: "empty array", body: `{"errno":0,"list":[]}`},
+		{name: "missing list", body: `{"errno":0}`, wantErr: true},
+		{name: "null list", body: `{"errno":0,"list":null}`, wantErr: true},
+		{name: "null body", body: `null`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			config := openapiclient.NewConfiguration()
+			config.OperationServers["FileinfoApiService.Xpanfilelist"][0].URL = server.URL
+			c := &Client{client: openapiclient.NewAPIClient(config)}
+			c.SetAuthToken("test")
+			_, err := c.GetFileList(t.Context(), "/media", 0, 1, 0, 1000)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestGetFileDetailDistinguishesAbsentFromInvalid(t *testing.T) {
+	ensureBaiduPanTestLoggers()
+	for _, tc := range []struct {
+		name, body string
+		absent     bool
+	}{
+		{name: "confirmed empty", body: `{"errno":0,"list":[]}`, absent: true},
+		{name: "missing list", body: `{"errno":0}`},
+		{name: "null list", body: `{"errno":0,"list":null}`},
+		{name: "missing status", body: `{"list":[]}`},
+		{name: "null entry", body: `{"errno":0,"list":[null]}`},
+		{name: "business failure", body: `{"errno":-9,"list":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			config := openapiclient.NewConfiguration()
+			config.OperationServers["MultimediafileApiService.Xpanmultimediafilemetas"][0].URL = server.URL
+			c := &Client{client: openapiclient.NewAPIClient(config)}
+			c.SetAuthToken("test")
+			_, err := c.GetFileDetail(t.Context(), "10", 0)
+			if err == nil || errors.Is(err, ErrFileAbsent) != tc.absent {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}

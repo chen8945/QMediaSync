@@ -372,3 +372,63 @@ func TestDirListPropagatesCancellation(t *testing.T) {
 		t.Fatal("目录请求没有随context取消")
 	}
 }
+
+func TestFileListRejectsIncompleteResponse(t *testing.T) {
+	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+	}{
+		{name: "empty", body: `{"code":200,"data":{"total":0,"content":[]}}`},
+		{name: "explicit empty null", body: `{"code":200,"data":{"total":0,"content":null}}`},
+		{name: "missing total", body: `{"code":200,"data":{"content":[]}}`, wantErr: true},
+		{name: "missing content", body: `{"code":200,"data":{"total":0}}`, wantErr: true},
+		{name: "null nonempty", body: `{"code":200,"data":{"total":1,"content":null}}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			c := NewTemporaryClient(server.URL, "", "", "test")
+			defer c.Close()
+			_, err := c.FileList(t.Context(), "/media", 1, 1000)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestDelContextDoesNotAuthenticateAndReplay(t *testing.T) {
+	helpers.OpenListLog = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	removes, logins := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/fs/remove" {
+			removes++
+			_, _ = io.WriteString(w, `{"code":401,"message":"expired"}`)
+		} else {
+			logins++
+			_, _ = io.WriteString(w, `{"code":200,"data":{"token":"new"}}`)
+		}
+	}))
+	defer server.Close()
+	c := NewTemporaryClient(server.URL, "user", "password", "old")
+	defer c.Close()
+	if err := c.DelContext(t.Context(), "/media", []string{"movie.mkv"}); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("err=%v", err)
+	}
+	if removes != 1 || logins != 0 {
+		t.Fatalf("removes=%d logins=%d", removes, logins)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := c.DelContext(ctx, "/media", []string{"movie.mkv"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if removes != 1 {
+		t.Fatal("cancelled deletion sent")
+	}
+}

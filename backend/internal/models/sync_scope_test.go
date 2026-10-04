@@ -488,8 +488,8 @@ func TestEmbySeasonDeleteDoesNotAcquireAgainForEpisodes(t *testing.T) {
 	go func() { done <- DeleteNetdiskSeasonByItemIdContext(ctx, "season") }()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrEmbyDeleteUnverified) {
+			t.Fatalf("只有 item ID 的旧入口不能绕过身份核验: %v", err)
 		}
 	case <-ctx.Done():
 		t.Fatal("季内逐集处理不能再次等待已持有的范围")

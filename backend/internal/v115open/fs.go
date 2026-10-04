@@ -230,6 +230,16 @@ func (c *OpenClient) GetFsListWithOptions(
 	if !respData.State || respData.Code != 0 || respData.Errno != 0 {
 		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 文件列表请求失败")
 	}
+	var envelope struct {
+		Count *int            `json:"count"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(respBytes, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Count == nil || *envelope.Count < 0 || len(envelope.Data) == 0 || (respData.Data == nil && *envelope.Count != 0) {
+		return nil, fmt.Errorf("115 目录响应缺少完整 data 或 count")
+	}
 	// 生成路径字符串
 	pathStr := make([]string, 0, len(respData.Path))
 	for _, item := range respData.Path {
@@ -317,9 +327,9 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 		helpers.V115Log.Errorf("解析文件详情接口响应失败：%s => %v", string(bodyBytes), bodyErr)
 		return respData, bodyErr
 	}
-	if resp.Code != 0 {
+	if !resp.State || resp.Code != 0 || resp.Errno != 0 {
 		// helpers.V115Log.Errorf("文件 %s 不存在：%v", fileId, err)
-		return nil, fmt.Errorf("错误码=%d，消息=%s", resp.Code, resp.Message)
+		return nil, NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
 	}
 	if respData.FileId == "" {
 		return nil, fmt.Errorf("115 返回空数据")
@@ -480,6 +490,17 @@ func (c *OpenClient) copyFiles(ctx context.Context, fileIDs []string, targetID s
 // POST 域名 + /open/ufile/delete
 // 多个文件用半角逗号分隔
 func (c *OpenClient) Del(ctx context.Context, fileIds []string, parentFileId string) (bool, error) {
+	return c.deleteFiles(ctx, fileIds, parentFileId, MakeRequestConfig(0, 0, 0))
+}
+
+// DelOnce 只发送一次删除；未知结果必须由调用方核验原身份后重试。
+func (c *OpenClient) DelOnce(ctx context.Context, fileIds []string, parentFileId string) (bool, error) {
+	options := DefaultRequestConfig()
+	options.MaxRetries = 0
+	return c.deleteFiles(ctx, fileIds, parentFileId, options)
+}
+
+func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFileId string, options *RequestConfig) (bool, error) {
 	data := make(map[string]string)
 	data["file_ids"] = strings.Join(fileIds, ",")
 	if parentFileId != "" {
@@ -488,17 +509,23 @@ func (c *OpenClient) Del(ctx context.Context, fileIds []string, parentFileId str
 	url := fmt.Sprintf("%s/open/ufile/delete", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
 	respData := RespBaseBool[any]{}
-	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
+	response, respBytes, err := c.doAuthRequest(ctx, url, req, options, nil)
 	if err != nil {
 		if !c.playback || !IsAlreadyDeleted(err) {
 			helpers.V115Log.Errorf("调用文件删除接口失败：%v", err)
 		}
 		return false, err
 	}
+	if response == nil || response.StatusCode() < 200 || response.StatusCode() >= 300 {
+		return false, fmt.Errorf("115 删除响应 HTTP 状态异常")
+	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
-	if jsonErr != nil || !respData.State {
-		helpers.V115Log.Errorf("删除文件失败：%+v => %s：%v", fileIds, parentFileId, jsonErr)
+	if jsonErr != nil {
 		return false, jsonErr
+	}
+	if !respData.State || respData.Code != 0 || respData.Errno != 0 {
+		helpers.V115Log.Errorf("删除文件失败：%+v => %s：%v", fileIds, parentFileId, jsonErr)
+		return false, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 未确认删除成功")
 	}
 	return respData.State, nil
 }

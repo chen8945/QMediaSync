@@ -157,6 +157,9 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 		}
 		lastErr = err
 		if errors.Is(err, ErrTokenExpired) {
+			if options.skipAuthRetry {
+				return resp, ErrTokenExpired
+			}
 			if path == "/api/auth/login" || state.username == "" || state.password == "" {
 				return nil, err
 			}
@@ -208,6 +211,7 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 	// req.SetResponseForceContentType("application/json")
 	var response *resty.Response
 	var err error
+	req.SetResponseBodyUnlimitedReads(true)
 	// URL 和凭据来自同一快照，锁不跨 HTTP 请求或同步事件回调。
 	url := strings.TrimRight(state.baseURL, "/") + path
 	if state.accessToken != "" {
@@ -229,31 +233,32 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 	if response.StatusCode() == http.StatusUnauthorized {
 		return response, ErrTokenExpired
 	}
-	result := response.Result()
-	data, err := json.Marshal(result)
-	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 请求 %s %s 序列化失败：%+v", req.Method, req.URL, err)
-		return response, err
+	if response.StatusCode() < http.StatusOK || response.StatusCode() >= http.StatusMultipleChoices {
+		return response, fmt.Errorf("OpenList HTTP 状态异常：%d", response.StatusCode())
 	}
-	var jsonResult map[string]any
-	err = json.Unmarshal(data, &jsonResult)
-	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 请求 %s %s 反序列化失败：%+v", req.Method, req.URL, err)
-		return response, err
+	data := response.Bytes()
+	var envelope struct {
+		Code    *int   `json:"code"`
+		Message string `json:"message"`
 	}
-	// helpers.OpenListLog.Infof("认证访问 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n", req.Method, req.URL, resp.State, resp.Code, resp.Message, string(resp.Data))
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return response, fmt.Errorf("OpenList 响应格式无效：%w", err)
+	}
 	if path != "/api/auth/login" {
 		helpers.OpenListLog.Infof("%s %s 请求数据：%+v 返回值：%s\n", req.Method, req.URL, req.Body, string(data))
 	}
-	if data != nil && jsonResult != nil {
-		switch jsonResult["code"].(float64) {
-		case http.StatusUnauthorized:
-			return response, ErrTokenExpired
-		}
-		if jsonResult["code"].(float64) != http.StatusOK {
-			helpers.OpenListLog.Errorf("OpenList 请求 %s %s 失败：%s", req.Method, req.URL, jsonResult["message"].(string))
-			return response, fmt.Errorf("%s", jsonResult["message"].(string))
-		}
+	if envelope.Code == nil {
+		return response, fmt.Errorf("OpenList 响应缺少业务状态")
 	}
+	if *envelope.Code == http.StatusUnauthorized {
+		return response, ErrTokenExpired
+	}
+	if *envelope.Code != http.StatusOK {
+		if envelope.Message != "" {
+			return response, fmt.Errorf("%s", envelope.Message)
+		}
+		return response, fmt.Errorf("OpenList 业务状态异常：%d", *envelope.Code)
+	}
+
 	return response, nil
 }

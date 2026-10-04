@@ -402,6 +402,13 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 			Data:    respBase.Data,
 		}
 	}
+	if !req.Playback && (response.StatusCode() < http.StatusOK || response.StatusCode() >= http.StatusMultipleChoices) {
+		code := resp.Code
+		if code == 0 {
+			code = resp.Errno
+		}
+		return response, resp, resBytes, &OpenAPIError{Code: code, HTTPStatus: response.StatusCode(), Message: "115 HTTP 请求未成功"}
+	}
 	if req.Playback {
 		if response.StatusCode() >= http.StatusBadRequest || !resp.State || resp.Code != 0 || resp.Errno != 0 {
 			return response, resp, resBytes, playbackResponseError(response.StatusCode(), resp)

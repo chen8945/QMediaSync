@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -536,7 +537,7 @@ func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string) (Emby
 		return frozen, err
 	}
 	frozen.LocalRoot, frozen.RemoteRoot, frozen.RootFileID = root.GetFullLocalPath(), root.RemotePath, root.BaseCid
-	if root.AccountId != file.AccountId || root.SourceType != file.SourceType || !embyPathWithin(frozen.LocalRoot, file.LocalFilePath) || !embyPathWithin(root.RemotePath, file.Path) {
+	if root.AccountId != file.AccountId || root.SourceType != file.SourceType || !embyPathWithin(frozen.LocalRoot, file.LocalFilePath) || !embyRemotePathWithin(file.SourceType, root.RemotePath, file.Path) {
 		frozen.Reason = "sync_scope_mismatch"
 	}
 	if itemPath == "" || itemPath != file.LocalFilePath {
@@ -582,6 +583,40 @@ func embyPathWithin(root, path string) bool {
 	}
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// embyRemoteDirectory 只统一网盘根的表示，不清理含歧义的路径，也不改写持久身份。
+// 同步配置以根相对路径保存，网盘详情可能带前导 /；配置中的 . 表示网盘根。
+func embyRemoteDirectory(directory string) (string, bool) {
+	if directory == "" || strings.ContainsAny(directory, "\\\x00") || path.Clean(directory) != directory || directory == ".." || strings.HasPrefix(directory, "../") {
+		return "", false
+	}
+	if directory == "." || directory == "/" {
+		return "/", true
+	}
+	return "/" + strings.TrimPrefix(directory, "/"), true
+}
+
+func embyRemoteDirectoriesMatch(source SourceType, left, right string) bool {
+	switch source {
+	case SourceType115, SourceTypeBaiduPan, SourceTypeOpenList:
+		leftDirectory, leftValid := embyRemoteDirectory(left)
+		rightDirectory, rightValid := embyRemoteDirectory(right)
+		return leftValid && rightValid && leftDirectory == rightDirectory
+	default:
+		return left == right
+	}
+}
+
+func embyRemotePathWithin(source SourceType, root, remote string) bool {
+	switch source {
+	case SourceType115, SourceTypeBaiduPan, SourceTypeOpenList:
+		rootDirectory, rootValid := embyRemoteDirectory(root)
+		remoteDirectory, remoteValid := embyRemoteDirectory(remote)
+		return rootValid && remoteValid && (rootDirectory == "/" || remoteDirectory == rootDirectory || strings.HasPrefix(remoteDirectory, rootDirectory+"/"))
+	default:
+		return embyPathWithin(root, remote)
+	}
 }
 
 func upsertEmbyMediaItem(tx *gorm.DB, item *EmbyMediaItem) error {

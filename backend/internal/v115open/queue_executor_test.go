@@ -405,3 +405,28 @@ func TestQueueExecutorNonPlaybackReadFailurePreservesAuthorizationStatus(t *test
 		})
 	}
 }
+
+func TestQueueExecutorRejectsHTTPFailureDespiteSuccessBody(t *testing.T) {
+	ensureOpenAPITestLoggers()
+	for _, tc := range []struct{ name, body string }{
+		{name: "success body", body: `{"state":true,"code":0}`},
+		{name: "not found body", body: `{"state":false,"code":430004}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(500)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			c := resty.New()
+			defer c.Close()
+			request := c.R().SetContext(t.Context()).SetMethod(http.MethodPost).SetResponseDoNotParse(true)
+			_, _, _, err := (&QueueExecutor{}).executeRequest(&QueuedRequest{URL: server.URL, Request: request})
+			apiErr, ok := errors.AsType[*OpenAPIError](err)
+			if !ok || apiErr.HTTPStatus != 500 || IsAlreadyDeleted(err) {
+				t.Fatalf("HTTP failure misclassified: %v", err)
+			}
+		})
+	}
+}

@@ -24,6 +24,9 @@ type Client struct {
 	accessToken atomic.Value // 仅存 string；每次请求读取快照，不持锁执行网络请求。
 }
 
+// ErrFileAbsent 表示成功的文件详情响应明确返回空数组。
+var ErrFileAbsent = errors.New("百度网盘文件详情为空")
+
 type FileListOptions struct {
 	Order string
 	Desc  *int32
@@ -221,8 +224,14 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 	if err != nil {
 		return err
 	}
+	if resp == nil || resp.Body == nil {
+		return fmt.Errorf("百度网盘响应为空")
+	}
 	// 读取 body 并解码 JSON
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("百度网盘 HTTP 状态异常：%d", resp.StatusCode)
+	}
 	body, ioErr := io.ReadAll(resp.Body)
 	if ioErr != nil {
 		return ioErr
@@ -242,6 +251,28 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 	}
 	// 文件管理的顶层成功不代表每个条目成功；其他接口的 info 保持原有语义。
 	isFileManager := resp.Request.URL.Query().Get("method") == "filemanager"
+	if isFileManager {
+		var envelope struct {
+			Errno *int64          `json:"errno"`
+			Info  json.RawMessage `json:"info"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil || envelope.Errno == nil {
+			return fmt.Errorf("百度网盘文件管理响应缺少明确状态")
+		}
+		if *envelope.Errno == 0 && len(envelope.Info) > 0 {
+			var items []struct {
+				Errno *int64 `json:"errno"`
+			}
+			if err := json.Unmarshal(envelope.Info, &items); err != nil || items == nil {
+				return fmt.Errorf("百度网盘文件管理逐项响应无效")
+			}
+			for _, item := range items {
+				if item.Errno == nil {
+					return fmt.Errorf("百度网盘文件管理逐项状态缺失")
+				}
+			}
+		}
+	}
 	if isFileManager && respBody.Errno == 0 && len(respBody.Info) > 0 {
 		var items []ErrorResponse
 		if err := json.Unmarshal(respBody.Info, &items); err != nil {
@@ -334,10 +365,19 @@ func (c *Client) GetFileListWithOptions(ctx context.Context, parentPath string, 
 	}
 	// 记录日志
 	// 解码 resp
-	var fileList *FileListResponse
+	var listStatus struct {
+		Errno *int32 `json:"errno"`
+	}
+	if err := json.Unmarshal([]byte(resp), &listStatus); err != nil || listStatus.Errno == nil || *listStatus.Errno != 0 {
+		return nil, fmt.Errorf("百度网盘目录响应缺少明确成功状态")
+	}
+	var fileList FileListResponse
 	err = json.Unmarshal([]byte(resp), &fileList)
 	if err != nil {
 		return nil, err
+	}
+	if fileList.List == nil {
+		return nil, fmt.Errorf("百度网盘目录响应缺少完整 list 数组")
 	}
 	return fileList.List, nil
 }
@@ -394,13 +434,25 @@ func (c *Client) GetFileDetail(ctx context.Context, fileId string, dlink int32) 
 		return nil, err
 	}
 	// 解码 resp
+	var status struct {
+		Errno *int64 `json:"errno"`
+	}
+	if err := json.Unmarshal([]byte(resp), &status); err != nil || status.Errno == nil || *status.Errno != 0 {
+		return nil, fmt.Errorf("百度网盘详情响应缺少明确成功状态")
+	}
 	var fileDetail FileDetailResponse
 	err = json.Unmarshal([]byte(resp), &fileDetail)
 	if err != nil {
 		return nil, err
 	}
-	if len(fileDetail.List) == 0 || fileDetail.List[0] == nil {
-		return nil, fmt.Errorf("百度网盘文件详情为空")
+	if fileDetail.List == nil {
+		return nil, fmt.Errorf("百度网盘详情响应缺少 list 数组")
+	}
+	if len(fileDetail.List) == 0 {
+		return nil, ErrFileAbsent
+	}
+	if len(fileDetail.List) != 1 || fileDetail.List[0] == nil {
+		return nil, fmt.Errorf("百度网盘详情响应条目无效")
 	}
 	return fileDetail.List[0], nil
 }

@@ -163,7 +163,7 @@ func TestGetFsListWithOptionsEnablesExplicitOrdering(t *testing.T) {
 		{name: "仅排序方向", options: FileListOptions{Asc: "1"}, customOrder: "1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			transport := newCaptureOpenAPITransport(`{"state":true,"data":[]}`)
+			transport := newCaptureOpenAPITransport(`{"state":true,"data":[],"count":0}`)
 			client := newTestOpenClient(transport)
 			if _, err := client.GetFsListWithOptions(t.Context(), "123", true, false, true, 0, 20, tt.options); err != nil {
 				t.Fatal(err)
@@ -310,8 +310,8 @@ func TestOpenClientCopyKeepsLegacyDuplicateFlag(t *testing.T) {
 		response  string
 		wantFlag  string
 	}{
-		{name: "允许重复", overwrite: true, state: true, response: `{"state":true,"data":[]}`, wantFlag: "0"},
-		{name: "禁止重复", state: true, response: `{"state":true,"data":[]}`, wantFlag: "1"},
+		{name: "允许重复", overwrite: true, state: true, response: `{"state":true,"data":[],"count":0}`, wantFlag: "0"},
+		{name: "禁止重复", state: true, response: `{"state":true,"data":[],"count":0}`, wantFlag: "1"},
 		{name: "保留失败布尔值", response: `{"state":false,"data":[]}`, wantFlag: "1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -355,7 +355,7 @@ func TestFileListRejectsInvalidCustomOrdering(t *testing.T) {
 		{name: "负数", custom: -1}, {name: "未知模式", custom: 3}, {name: "跟随同时指定字段", custom: 0, order: "file_name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			transport := newCaptureOpenAPITransport(`{"state":true,"data":[]}`)
+			transport := newCaptureOpenAPITransport(`{"state":true,"data":[],"count":0}`)
 			client := newTestOpenClient(transport)
 			if _, err := client.GetFsListWithOptions(t.Context(), "0", true, false, true, 0, 1000, FileListOptions{Order: tc.order, CustomOrder: &tc.custom}); err == nil {
 				t.Fatal("非法排序参数应在发起请求前拒绝")
@@ -374,5 +374,69 @@ func TestGetFsListRejectsFailedResponseWithoutCode(t *testing.T) {
 				t.Fatalf("failed response accepted as empty view: files=%+v error=%v", files, err)
 			}
 		})
+	}
+}
+
+func TestDelOnceNeverReplaysUnknownResult(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, tc := range []struct {
+		name, body string
+		wantOK     bool
+	}{
+		{name: "success", body: `{"state":true,"code":0}`, wantOK: true},
+		{name: "false", body: `{"state":false,"code":123456,"message":"unknown"}`},
+		{name: "bad response", body: `not json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := newCaptureOpenAPITransport(tc.body)
+			client := newTestOpenClient(transport)
+			ok, err := client.DelOnce(t.Context(), []string{"9001"}, "7001")
+			if ok != tc.wantOK || (!ok && err == nil) {
+				t.Fatalf("ok=%v err=%v", ok, err)
+			}
+			req := receiveCapturedRequest(t, transport)
+			values, parseErr := url.ParseQuery(req.Body)
+			if parseErr != nil || values.Get("file_ids") != "9001" || values.Get("parent_id") != "7001" {
+				t.Fatalf("wrong params %s %v", req.Body, parseErr)
+			}
+			if len(transport.requests) != 0 {
+				t.Fatal("destructive request retried")
+			}
+		})
+	}
+}
+
+func TestGetFsListRejectsIncompleteResponse(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+	}{
+		{name: "empty", body: `{"state":true,"count":0,"data":[]}`},
+		{name: "explicit empty null", body: `{"state":true,"count":0,"data":null}`},
+		{name: "missing count", body: `{"state":true,"data":[]}`, wantErr: true},
+		{name: "missing data", body: `{"state":true,"count":0}`, wantErr: true},
+		{name: "null with nonzero count", body: `{"state":true,"count":1,"data":null}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newTestOpenClient(newCaptureOpenAPITransport(tc.body))
+			_, err := client.GetFsList(t.Context(), "7", true, true, true, 0, 1000)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestDelOnceTransportFailureDoesNotReplay(t *testing.T) {
+	withUnlimitedOpenAPIRequests(t)
+	client := NewClient(1, "test-app", "test-token", "test-refresh")
+	calls := 0
+	client.client.SetTransport(playbackTransportFunc(func(r *http.Request) (*http.Response, error) { calls++; return nil, io.ErrUnexpectedEOF }))
+	if ok, err := client.DelOnce(t.Context(), []string{"10"}, "7"); ok || err == nil {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if calls != 1 {
+		t.Fatalf("transport calls=%d", calls)
 	}
 }
