@@ -121,6 +121,32 @@
                 >去配置</a
               >
             </div>
+            <div class="form-help">
+              <el-icon><InfoFilled /></el-icon>
+              <span
+                >通知内容选择
+                JSON（application/json），关闭分组（GroupItems）；按需要选择通知的媒体库，勾选“已添加新媒体”（library.new）和“媒体已移除”（library.deleted）。QMS
+                的同步选库不作为删除白名单</span
+              >
+            </div>
+            <div class="form-help">
+              <el-icon><InfoFilled /></el-icon>
+              <span
+                >如有独立的移动、重命名、扫描失效或移除媒体库事件，不勾选它们用于联动删除；普通“媒体已移除”也可能由重命名触发，仍需
+                QMS
+                核验。通知所属用户与“用户事件过滤”是不同设置，请确认实际操作用户能投递所选事件</span
+              >
+            </div>
+            <div class="form-help">
+              <el-icon><InfoFilled /></el-icon>
+              <span
+                >官方通知可独立使用。使用神医助手或 MediaInfoKeeper
+                时，推荐只开启插件的通知增强，并在 Emby
+                通知中勾选“媒体深度删除”（deep.delete），无需开启插件的物理深度删除。QMS
+                会自动处理受支持的通知，无需在 QMS
+                中另外配置插件；增强通知也受下方联动删除开关控制</span
+              >
+            </div>
             <div class="form-help" v-if="embyData.enable_auth">
               <el-icon><WarningFilled /></el-icon>
               <span class="warning-text"
@@ -464,15 +490,13 @@
               <el-alert type="warning" :closable="false" class="danger-alert">
                 <template #default>
                   <strong>⚠ 谨慎启用：</strong>
-                  启用后，在 Emby 中删除项目时，对应的网盘文件也会被删除<br />
+                  收到受支持的删除通知后，QMS
+                  先保存事件，再在后台核验确定的网盘文件；接收成功不代表删除完成，通知和处理都可能延迟。<br />
+                  STRM 重命名、内容变更或被实时监控发现消失时，也可能触发普通删除通知。条目或原 STRM
+                  仍存在、来源仍被其他条目使用、身份不明或查询失败时，QMS
+                  会保留文件，并在服务日志记录未完成原因。<br />
                   <strong
-                    >由于 Emby 的处理机制，STRM
-                    文件内容变更时可能会先触发删除再新增，因此可能出现：STRM 变更→Emby
-                    通知删除→QMediaSync 联动删除网盘→Emby 新增项目→播放失败</strong
-                  >，目前还没有可靠的规避方式<br />
-                  <strong
-                    >如果开启了 Emby 实时监控，在文件系统中删除 STRM
-                    文件或文件夹也会触发删除通知，并可能联动删除网盘文件。所有删除操作都要谨慎。</strong
+                    >关闭期间收到的通知，以后开启也不会追溯补删；执行和重试前仍会检查开关与文件身份。</strong
                   >
                 </template>
               </el-alert>
@@ -494,15 +518,35 @@
                 >
               </div>
               <ul class="delete-rules">
-                <li>在 Emby 中删除电影时，会在网盘中一并删除视频文件的父目录</li>
-                <li>在 Emby 中删除剧集条目时，会删除网盘中 tvshow.nfo 所在的父目录</li>
                 <li>
-                  在 Emby
-                  中删除季时，会先检查视频文件的父目录；如果父目录是季文件夹，则删除该文件夹；如果父目录是包含
-                  tvshow.nfo 的目录，则只删除该季下所有集对应的视频文件和元数据（NFO、封面）
+                  电影（Movie）：只处理主项和已确认属于它的分段（parts），保留独立的其他版本。
                 </li>
-                <li>在 Emby 中删除单集时，会删除对应的视频文件和元数据（NFO、封面）</li>
+                <li>
+                  单集（Episode）：只处理主段 part1 及其明确专属元数据，保留 part2
+                  等其他分段；保留分段后续可能重新入库。
+                </li>
+                <li>独立视频或分段（Video）：只处理该物理条目自身。</li>
+                <li>
+                  季／整剧（Season／Series）：按已确认的真实成员处理文件，保护其他季；不根据目录名或
+                  tvshow.nfo 推断删除范围。
+                </li>
+                <li>
+                  仅在对应视频确认删除后，才处理身份和归属明确的专属
+                  NFO、字幕和图片；其他版本的旁车、共享文件及通用 poster.jpg、tvshow.nfo 等会保留。
+                </li>
+                <li>
+                  只删除明确文件，不递归删除目录，保护同步根；空目录和归属不明的元数据可能保留。
+                </li>
               </ul>
+              <p class="feature-note">
+                升级后请先完成一次全量 Emby
+                条目同步，补齐版本、分段和文件身份。历史身份缺失或通知从未收到时，无法保证恢复删除依据；增强通知也不代表原
+                STRM 已删除成功。
+              </p>
+              <p class="feature-note">
+                网盘删除后的本地 STRM 和文件记录，由后续符合条件的完整 STRM
+                同步对账清理，不会即时清理。
+              </p>
             </div>
           </div>
         </el-card>
