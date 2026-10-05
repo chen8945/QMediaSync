@@ -238,7 +238,9 @@ func (app *App) StartDatabase() error {
 		sqliteFile := filepath.Join(helpers.ConfigDir, helpers.GlobalConfig.Db.SqliteFile)
 		helpers.AppLogger.Infof("SQLite 数据库文件路径：%s", sqliteFile)
 		db.Db = db.InitSqlite3(sqliteFile)
-		models.Migrate()
+		if err := models.Migrate(); err != nil {
+			return err
+		}
 		if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
 			return err
 		}
@@ -262,7 +264,9 @@ func (app *App) StartDatabase() error {
 	if err := db.ConnectPostgres(dbConfig); err != nil {
 		return err
 	}
-	models.Migrate()
+	if err := models.Migrate(); err != nil {
+		return err
+	}
 	if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
 		return err
 	}

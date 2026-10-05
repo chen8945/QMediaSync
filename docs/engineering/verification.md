@@ -133,6 +133,10 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
 
 回归须覆盖默认 PostgreSQL、两种引擎配置保存后回读、旧 SQLite 配置中无效的 `postgresType` 不影响连接，以及内嵌或未知模式在写配置、开库前被拒绝。正常启动和管理员恢复遇到 `backups/migrate.zip` 必须拒绝且保留文件；缺少主配置但存在 `config/postgres` 时不得启动空实例向导。
 
+空库初始化改动须分别验证 SQLite 单连接和隔离 PostgreSQL：完整建表与默认数据、后段 DDL／必要索引／默认数据／最终版本写入失败、事务回滚、关闭重开连接后重试，以及重复启动保留已配置值。失败时不得留下本次创建的版本表、业务表和默认记录，也不得记录初始化成功；启动入口须返回初始化错误并停止后续步骤。保留无默认管理员、默认分类顺序和既有数据库修复行为；已有库的历史迁移保证按对应版本测试验收。
+
+定向回归可运行 `cd backend && go test -tags=integration ./internal/models . -run 'TestMigrateFresh|TestStartDatabaseRejectsInitializationFailure'`；PostgreSQL 用例要求 `QMS_TEST_POSTGRES_DSN` 指向可丢弃测试库，缺少 DSN 的跳过不算通过。
+
 镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。飞牛两架构分别验证 SQLite 和 PostgreSQL 配置生成；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
 
 systemd 在线更新中“进程退出后由 systemd 用新版本拉起”只能在真实 systemd 环境验证。步骤：

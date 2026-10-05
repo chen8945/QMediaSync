@@ -46,19 +46,22 @@ func (*Migrator) TableName() string {
 	return "migrator"
 }
 
-// 数据库迁移
-// 如果没有数据则创建
-// 如果已有数据库则从数据库中获取版本，根据版本执行变更
-func Migrate() {
+// Migrate 初始化空库或执行已有库迁移；返回值仅传播本轮初始化错误。
+// 历史版本迁移仍保留原有日志和失败处理，不在此统一其错误契约。
+func Migrate() error {
 	finishPosition := BeginSyncPositionMutation()
 	defer finishPosition()
-	// sqliteDb := db.InitSqlite3(dbFile)
-	// 先初始化所有表和基础数据
-	if !InitDB() {
-		// 初始化数据库版本表
-		helpers.AppLogger.Info("已完成数据库初始化")
-		return
+	existing, err := InitDB()
+	if err != nil {
+		return err
 	}
+	if existing {
+		migrateExistingDB()
+	}
+	return nil
+}
+
+func migrateExistingDB() {
 	var migrator Migrator = Migrator{}
 	err := db.Db.Model(&migrator).First(&migrator).Error
 	if err != nil {
@@ -1379,51 +1382,79 @@ func migrateEmbyLibraryRefreshTaskKeys(dbConn *gorm.DB) error {
 
 // 补齐缺失的表、字段和索引
 func BatchCreateTable() error {
-	db.Db.Statement.PrepareStmt = true
+	return batchCreateTable(db.Db, false)
+}
+
+// 空库事务遇错立即返回；公开修复入口仍尝试其余表并返回最后一项错误。
+func batchCreateTable(conn *gorm.DB, stopOnError bool) error {
+	conn.Statement.PrepareStmt = true
 
 	var err error
 	var lastErr error
 	for _, table := range AllTables {
-		err = db.Db.AutoMigrate(table)
+		err = conn.AutoMigrate(table)
 		if err != nil {
+			if stopOnError {
+				return err
+			}
 			lastErr = err
 		}
 	}
 	if lastErr != nil {
 		return lastErr
 	}
-	if err := ensureActiveTransferTaskUniqueIndexes(db.Db); err != nil {
+	if err := ensureActiveTransferTaskUniqueIndexes(conn); err != nil {
 		return err
 	}
-	if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+	if err := EnsureSyncFileLookupIndexes(conn); err != nil {
 		return err
 	}
-	return EnsureStrmGenerationQueueIndex(db.Db)
+	return EnsureStrmGenerationQueueIndex(conn)
 }
 
 func InitMigrationTable(version int) {
-	var migrator Migrator = Migrator{}
-	migrator = Migrator{ID: 1, VersionCode: version} // 初始版本为 version
-	db.Db.Save(&migrator)
+	if err := initMigrationTable(db.Db, version); err != nil {
+		helpers.AppLogger.Errorf("初始化数据库版本表失败：%v", err)
+		return
+	}
 	helpers.AppLogger.Infof("初始化数据库版本表，当前版本为 %d", version)
 }
 
-func InitDB() bool {
-	// 初始化
+func initMigrationTable(conn *gorm.DB, version int) error {
+	var migrator Migrator = Migrator{}
+	migrator = Migrator{ID: 1, VersionCode: version} // 初始版本为 version
+	return conn.Save(&migrator).Error
+}
+
+// InitDB 将空库结构、默认数据及版本放入同一事务；existing 表示已存在版本表。
+func InitDB() (existing bool, err error) {
 	if db.Db.Migrator().HasTable(Migrator{}) {
 		helpers.AppLogger.Info("数据库版本表已存在，跳过初始化数据库过程")
-		return true
+		return true, nil
 	}
-	BatchCreateTable()
-	InitMigrationTable(MaxVersionCode)
-	// 初始化默认配置
-	InitSettings()
-	// 初始化刮削配置
-	InitScrapeSetting()
-	// 初始化 Emby 配置
-	InitEmbyConfig()
+	err = db.Db.Transaction(func(tx *gorm.DB) error {
+		if err := batchCreateTable(tx, true); err != nil {
+			return fmt.Errorf("初始化数据库结构失败：%w", err)
+		}
+		if _, err := initSettings(tx); err != nil {
+			return fmt.Errorf("初始化默认配置失败：%w", err)
+		}
+		if err := initScrapeSetting(tx, true); err != nil {
+			return fmt.Errorf("初始化刮削配置和分类失败：%w", err)
+		}
+		if err := initEmbyConfig(tx); err != nil {
+			return fmt.Errorf("初始化 Emby 配置失败：%w", err)
+		}
+		if err := initMigrationTable(tx, MaxVersionCode); err != nil {
+			return fmt.Errorf("初始化数据库版本表失败：%w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
 	helpers.AppLogger.Info("已完成数据库初始化")
-	return false
+	return false, nil
 }
 
 func (m *Migrator) UpdateVersionCode(txOrDb *gorm.DB) {
@@ -1503,10 +1534,24 @@ func backfillDirectoryUploadEnabled(dbConn *gorm.DB) error {
 }
 
 func InitSettings() {
-	defaultSettings := Settings{}
-	serr := db.Db.Model(&Settings{}).First(&defaultSettings).Error
-	if !errors.Is(serr, gorm.ErrRecordNotFound) {
+	created, err := initSettings(db.Db)
+	if err != nil {
+		helpers.AppLogger.Errorf("初始化默认配置失败：%v", err)
 		return
+	}
+	if created {
+		helpers.AppLogger.Info("已默认添加配置")
+	}
+}
+
+func initSettings(conn *gorm.DB) (bool, error) {
+	defaultSettings := Settings{}
+	serr := conn.Model(&Settings{}).First(&defaultSettings).Error
+	if serr == nil {
+		return false, nil
+	}
+	if !errors.Is(serr, gorm.ErrRecordNotFound) {
+		return false, serr
 	}
 	// 插入默认值
 	metaExtStr, _ := json.Marshal(helpers.GlobalConfig.Strm.MetaExt)
@@ -1540,17 +1585,30 @@ func InitSettings() {
 		URLValidityCheckEnabled:        DefaultURLValidityCheckEnabled,
 		URLValidityCheckTimeoutSeconds: DefaultURLValidityCheckTimeoutSeconds,
 	}
-	db.Db.Save(&defaultSettings)
-	helpers.AppLogger.Info("已默认添加配置")
+	if err := conn.Save(&defaultSettings).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func InitScrapeSetting() {
+	// 旧调用方保留分类保存失败后继续尝试其余分类的行为。
+	if err := initScrapeSetting(db.Db, false); err != nil {
+		helpers.AppLogger.Errorf("初始化刮削设置失败：%v", err)
+	}
+}
+
+func initScrapeSetting(conn *gorm.DB, stopOnError bool) error {
 	// 先检查是否已存在记录
 	var count int64
-	db.Db.Model(&ScrapeSettings{}).Count(&count)
+	if err := conn.Model(&ScrapeSettings{}).Count(&count).Error; err != nil && stopOnError {
+		return err
+	}
 	if count > 0 {
-		helpers.AppLogger.Info("刮削设置已存在，跳过初始化")
-		return
+		if !stopOnError {
+			helpers.AppLogger.Info("刮削设置已存在，跳过初始化")
+		}
+		return nil
 	}
 
 	// 添加默认值
@@ -1563,17 +1621,24 @@ func InitScrapeSetting() {
 		TmdbEnableProxy: true,
 		EnableAi:        AiActionAssist,
 	}
-	db.Db.Save(&scrapeSettings)
-	helpers.AppLogger.Info("已默认添加刮削设置")
+	if err := conn.Save(&scrapeSettings).Error; err != nil && stopOnError {
+		return err
+	}
+	if !stopOnError {
+		helpers.AppLogger.Info("已默认添加刮削设置")
+	}
 	// 外语电影分类（ID 为 1，不可删除）
 	waiyuDianying := MovieCategory{
 		Name:     "外语电影",
 		GenreIds: "[]",
 		Language: "[]",
 	}
-	if err := db.Db.Save(&waiyuDianying).Error; err != nil {
+	if err := conn.Save(&waiyuDianying).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加外语电影分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加外语电影分类")
 	}
 	// 华语电影
@@ -1582,9 +1647,12 @@ func InitScrapeSetting() {
 		GenreIds: "[]",
 		Language: "[\"zh\", \"cn\", \"bo\",\"za\"]",
 	}
-	if err := db.Db.Save(&huayuiDianying).Error; err != nil {
+	if err := conn.Save(&huayuiDianying).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加华语电影分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加华语电影分类")
 	}
 	// 动画电影
@@ -1593,9 +1661,12 @@ func InitScrapeSetting() {
 		GenreIds: "[16]",
 		Language: "",
 	}
-	if err := db.Db.Save(&donghuaDianying).Error; err != nil {
+	if err := conn.Save(&donghuaDianying).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加动画电影分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加动画电影分类")
 	}
 	// 其他剧（ID 为 1，不可删除）
@@ -1604,9 +1675,12 @@ func InitScrapeSetting() {
 		GenreIds:  "",
 		Countries: "",
 	}
-	if err := db.Db.Save(&qitaJu).Error; err != nil {
+	if err := conn.Save(&qitaJu).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加其他剧分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加其他剧分类")
 	}
 	// 国产剧
@@ -1615,9 +1689,12 @@ func InitScrapeSetting() {
 		GenreIds:  "",
 		Countries: "[\"CN\",\"TW\", \"HK\", \"MO\"]",
 	}
-	if err := db.Db.Save(&guochanJU).Error; err != nil {
+	if err := conn.Save(&guochanJU).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加国产剧分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加国产剧分类")
 	}
 	// 欧美剧
@@ -1626,9 +1703,12 @@ func InitScrapeSetting() {
 		GenreIds:  "",
 		Countries: "[\"US\",\"GB\", \"DE\", \"FR\", \"ES\", \"IT\", \"PT\", \"RU\", \"UA\"]",
 	}
-	if err := db.Db.Save(&oumeiJu).Error; err != nil {
+	if err := conn.Save(&oumeiJu).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加欧美剧分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加欧美剧分类")
 	}
 	// 日韩剧
@@ -1637,9 +1717,12 @@ func InitScrapeSetting() {
 		GenreIds:  "",
 		Countries: "[\"JP\",\"KR\", \"KP\", \"TH\", \"IN\", \"SG\"]",
 	}
-	if err := db.Db.Save(&rihanJU).Error; err != nil {
+	if err := conn.Save(&rihanJU).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加日韩泰剧分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加日韩泰剧分类")
 	}
 	// 国漫
@@ -1648,9 +1731,12 @@ func InitScrapeSetting() {
 		GenreIds:  "[16]",
 		Countries: "[\"CN\",\"TW\", \"HK\",\"MO\"]",
 	}
-	if err := db.Db.Save(&guoman).Error; err != nil {
+	if err := conn.Save(&guoman).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加国漫分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加国漫分类")
 	}
 	// 日番
@@ -1659,9 +1745,12 @@ func InitScrapeSetting() {
 		GenreIds:  "[16]",
 		Countries: "[\"JP\"]",
 	}
-	if err := db.Db.Save(&rifan).Error; err != nil {
+	if err := conn.Save(&rifan).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加日番分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加日番分类")
 	}
 	// 综艺
@@ -1670,9 +1759,12 @@ func InitScrapeSetting() {
 		GenreIds:  "[10764, 10767]",
 		Countries: "",
 	}
-	if err := db.Db.Save(&zongyi).Error; err != nil {
+	if err := conn.Save(&zongyi).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加综艺分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加综艺分类")
 	}
 	// 纪录片
@@ -1681,14 +1773,26 @@ func InitScrapeSetting() {
 		GenreIds:  "[99]",
 		Countries: "",
 	}
-	if err := db.Db.Save(&jilu).Error; err != nil {
+	if err := conn.Save(&jilu).Error; err != nil {
+		if stopOnError {
+			return err
+		}
 		helpers.AppLogger.Errorf("添加纪录片分类失败：%v", err)
-	} else {
+	} else if !stopOnError {
 		helpers.AppLogger.Info("已默认添加纪录片分类")
 	}
+	return nil
 }
 
 func InitEmbyConfig() {
+	if err := initEmbyConfig(db.Db); err != nil {
+		helpers.AppLogger.Errorf("初始化 Emby 配置失败：%v", err)
+		return
+	}
+	helpers.AppLogger.Info("已默认添加 Emby 配置")
+}
+
+func initEmbyConfig(conn *gorm.DB) error {
 	embyConfig := &EmbyConfig{
 		EmbyUrl:                  "",
 		EmbyApiKey:               "",
@@ -1703,9 +1807,7 @@ func InitEmbyConfig() {
 		LastSyncTime:             0,
 		SyncMode:                 EmbySyncModeIdle,
 	}
-	db.Db.Save(embyConfig)
-	helpers.AppLogger.Info("已默认添加 Emby 配置")
-
+	return conn.Save(embyConfig).Error
 }
 
 func migrateEmbyConfig(dbConn *gorm.DB) {
