@@ -38,6 +38,8 @@ OSS `CompleteMultipartUpload` 完成后，必须带回 115 init 返回的 `callb
 
 ## 115 STRM 直链解析
 
+115 单 pickcode 下载信息请求若返回多个文件，普通客户端和播放客户端均拒绝响应，不随机选取文件身份或链接。
+
 内置 Emby 302 在 PlaybackInfo 和流地址处理时统一识别 Linux 绝对路径、Windows 盘符、UNC / 双正斜杠共享路径、大小写不敏感的 `smb://` 以及配置的本地根前缀。此类媒体保留 Emby 的播放和转码能力，流请求沿既有 `/original` 回源，不把共享路径作为 HTTP 直链交给播放器。HTTP(S) STRM 仍走下述解析流程；NFS STRM 保留原有读取内容后解析的行为，`/original` 自身继续直接回源。
 
 内置 Emby 302 入口按 HTTP(S) URL 的实际路径识别 QMS 的 `/115/newurl` 和 `/115/url/*filename` 取链接口，不用查询参数中的子串判断，也不要求 STRM 内网地址与播放器访问的域名相同。该分支将 `force` 设为唯一的 `1`，携带当前客户端 UA 单次请求接口，检查跳转状态和绝对 HTTP(S) `Location` 后关闭响应体，直接向播放器返回现有 `307` 跳转。签名直链原样传递，服务端不再跟随它额外 GET 视频。

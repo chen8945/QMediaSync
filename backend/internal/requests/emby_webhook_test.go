@@ -67,13 +67,16 @@ func TestEmbyWebhookPreservesValidUnicodeAndLegacyPlayback(t *testing.T) {
 
 func TestEmbyWebhookEnvelopeKeepsPhysicalPathAndTopology(t *testing.T) {
 	t.Parallel()
-	request, err := ParseEmbyWebhook([]byte(`{"Event":"library.modified","Date":"2026-10-04T15:31:39.3464217Z","Server":{"Id":"server"},"Item":{"Id":"1","ServerId":"server","Type":"Episode","ParentId":"2","SeriesId":"3","SeasonId":"2","IndexNumber":0,"Path":"/media/中文, [版本]\n第二行.strm"}}`))
+	request, err := ParseEmbyWebhook([]byte(`{"Event":"library.modified","Date":"2026-10-04T15:31:39.3464217Z","Server":{"Id":"server"},"Item":{"Id":"1","ServerId":"server","Type":"Episode","ParentId":"2","SeriesId":"3","SeasonId":"2","IndexNumber":0,"Name":"第 0 集","SeriesName":"中文剧","SeasonName":"第一季","Path":"/media/中文, [版本]\n第二行.strm"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	input := request.ToEnvelope()
 	if !request.Managed() || input.Blocked || input.ItemPath != "/media/中文, [版本]\n第二行.strm" || input.SeriesID != "3" || input.SeasonID != "2" || input.ParentID != "2" {
 		t.Fatalf("physical input was rewritten: %+v", input)
+	}
+	if input.ItemName != "第 0 集" || input.SeriesName != "中文剧" || input.SeasonName != "第一季" || input.DisplayLabel() != "中文剧 E00" {
+		t.Fatalf("名称字段或日志标签丢失: %+v label=%q", input, input.DisplayLabel())
 	}
 	if input.IndexNumber == nil || *input.IndexNumber != 0 || input.ParentIndexNumber != nil {
 		t.Fatal("Specials index zero and absent parent index must remain distinct")
@@ -115,7 +118,7 @@ func TestEmbyDeepDescriptionConservativeCandidates(t *testing.T) {
 		{"duplicate_pickcode", "Item Name:\nname\n\nItem Path:\n/media/movie\n\nMount Paths:\nhttps://media.invalid/a?pickcode=one&pickcode=two", "deep-description-v1", "conflicting_pickcode_candidates", "", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body, err := json.Marshal(map[string]any{"Event": "deep.delete", "Description": test.description, "Server": map[string]string{"Id": "server"}, "Item": map[string]string{"Id": "1", "Type": "Movie", "Path": "/media/movie/file.strm"}})
+			body, err := json.Marshal(map[string]any{"Event": "deep.delete", "Description": test.description, "Server": map[string]string{"Id": "server"}, "Item": map[string]string{"Id": "1", "Type": "Movie", "Name": "JSON 名称", "Path": "/media/movie/file.strm"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,6 +129,9 @@ func TestEmbyDeepDescriptionConservativeCandidates(t *testing.T) {
 			input := request.ToEnvelope()
 			if input.Source != test.source || input.Blocked || input.ItemPath != "/media/movie/file.strm" {
 				t.Fatalf("unexpected input: %+v", input)
+			}
+			if input.ItemName != "JSON 名称" {
+				t.Fatalf("deep 正文名称不得成为条目名称来源: %+v", input)
 			}
 			if test.issue != "" && !slices.Contains(input.Issues, test.issue) {
 				t.Fatalf("missing issue %s: %+v", test.issue, input)

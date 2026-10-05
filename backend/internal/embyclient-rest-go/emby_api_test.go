@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
+
+	"qmediasync/internal/helpers"
 )
 
 func TestFetchMediaItemsByLibraryID分页流式处理(t *testing.T) {
@@ -47,6 +55,35 @@ func TestFetchMediaItemsByLibraryID分页流式处理(t *testing.T) {
 	}
 	if got := fmt.Sprint(requestedStartIndexes); got != "[0 2 4]" {
 		t.Fatalf("requested StartIndex = %s, want [0 2 4]", got)
+	}
+}
+
+func TestFetchMediaItemsByLibraryIDFields(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		fields     string
+		wantFields string
+	}{
+		{name: "default snapshot fields", wantFields: EmbySnapshotFields},
+		{name: "explicit fields", fields: "Path,MediaStreams", wantFields: "Path,MediaStreams"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("Fields"); got != tt.wantFields {
+					t.Errorf("Fields = %q, want %q", got, tt.wantFields)
+				}
+				fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"item-1"}]}`)
+			}))
+			t.Cleanup(server.Close)
+
+			client := NewClient(server.URL, "test-key")
+			if err := client.FetchMediaItemsByLibraryID(t.Context(), EmbyItemsQuery{Fields: tt.fields}, func(BaseItemDtoV2) error {
+				return nil
+			}); err != nil {
+				t.Fatalf("FetchMediaItemsByLibraryID() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -295,5 +332,68 @@ func TestFindItemByIDUsesIdsQuery(t *testing.T) {
 	}
 	if item == nil || item.Id != "item-1" || item.Type != "Movie" {
 		t.Fatalf("item = %+v，期望命中的 Movie", item)
+	}
+}
+
+func TestProcessLibrariesMediaStreamExtraction(t *testing.T) {
+	oldLogger := helpers.AppLogger
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { helpers.AppLogger = oldLogger })
+
+	for _, tt := range []struct {
+		name          string
+		streams       string
+		wantTaskCount int
+	}{
+		{name: "complete video", streams: `[{"Type":"Video"},{"Type":"Audio"}]`},
+		{name: "complete video with subtitles", streams: `[{"Type":"Video"},{"Type":"Audio"},{"Type":"Subtitle"}]`},
+		{name: "missing streams", wantTaskCount: 1},
+		{name: "single video stream", streams: `[{"Type":"Video"}]`, wantTaskCount: 1},
+		{name: "subtitles do not replace audio", streams: `[{"Type":"Video"},{"Type":"Subtitle"}]`, wantTaskCount: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var itemRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/emby/Library/MediaFolders":
+					fmt.Fprint(w, `{"Items":[{"Id":"lib-1","Name":"Movies"}]}`)
+				case "/emby/Users":
+					fmt.Fprint(w, `[{"Id":"user-1","Policy":{"EnableAllFolders":true}}]`)
+				case "/emby/Items":
+					itemRequests.Add(1)
+					if got := r.URL.Query().Get("ParentId"); got != "lib-1" {
+						t.Errorf("ParentId = %q, want lib-1", got)
+					}
+					streams := ""
+					if tt.streams != "" && slices.Contains(strings.Split(r.URL.Query().Get("Fields"), ","), "MediaStreams") {
+						streams = `,"MediaStreams":` + tt.streams
+					}
+					fmt.Fprintf(w, `{"TotalRecordCount":1,"Items":[{"Id":"movie-1","Name":"Test movie","Type":"Movie"%s}]}`, streams)
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			tasks := ProcessLibraries(server.URL, "test-key", nil)
+			if got := itemRequests.Load(); got != 1 {
+				t.Fatalf("item requests = %d, want 1", got)
+			}
+			if len(tasks) != tt.wantTaskCount {
+				t.Fatalf("tasks = %v, want %d extraction tasks", tasks, tt.wantTaskCount)
+			}
+			if tt.wantTaskCount == 0 {
+				return
+			}
+			wantTask := map[string]string{
+				"url":       server.URL + "/emby/Items/movie-1/PlaybackInfo?api_key=test-key",
+				"item_id":   "movie-1",
+				"item_name": "Test movie",
+			}
+			if !maps.Equal(tasks[0], wantTask) {
+				t.Fatalf("task = %v, want %v", tasks[0], wantTask)
+			}
+		})
 	}
 }

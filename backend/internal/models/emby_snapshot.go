@@ -104,6 +104,8 @@ type EmbyItemSnapshot struct {
 	LibraryName            string
 	MembersComplete        bool
 	VersionMembershipKnown bool
+	DirectoryScopes        []EmbyDirectoryScope
+	cleanupFiles           []EmbyFrozenFile
 }
 
 type EmbyIndexToken struct {
@@ -341,6 +343,9 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 	if err := tx.First(&evidence, member.SnapshotID).Error; err != nil {
 		return err
 	}
+	if _, err := DecodeEmbyMetadata(evidence.SidecarsJSON); err != nil {
+		return err
+	}
 	var frozenItem EmbyMediaItem
 	if err := json.Unmarshal([]byte(evidence.ItemJSON), &frozenItem); err != nil {
 		return err
@@ -362,7 +367,11 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 	if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ? AND snapshot_id = ?", member.ItemIdInt, member.SnapshotID).Update("snapshot_id", evidence.ID).Error; err != nil {
 		return err
 	}
-	return tx.Model(&state).Updates(map[string]any{"snapshot_id": evidence.ID, "revision": token.Revision}).Error
+	if err := tx.Model(&state).Updates(map[string]any{"snapshot_id": evidence.ID, "revision": token.Revision}).Error; err != nil {
+		return err
+	}
+	state.SnapshotID = evidence.ID
+	return saveEmbyItemMembershipTx(tx, state, evidence)
 }
 
 func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot) error {
@@ -426,7 +435,10 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 		}
 	}
 	state.IdentityKey, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.ID, token.Revision
-	return tx.Save(&state).Error
+	if err := tx.Save(&state).Error; err != nil {
+		return err
+	}
+	return saveEmbyItemMembershipTx(tx, state, evidence)
 }
 
 func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot, state *EmbyItemState) (EmbyItemEvidence, []EmbyFrozenFile, error) {
@@ -483,7 +495,20 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	if err != nil {
 		return EmbyItemEvidence{}, nil, err
 	}
-	evidence.SidecarsJSON = embyJSON(sidecars)
+	metadata := EmbyMetadataEnvelope{Version: 2, ExclusiveFiles: sidecars, ScopedFiles: []EmbyScopedFile{}, DirectoryScopes: []EmbyDirectoryScope{}}
+	// 目录观察在 SQL 事务外完成；账本身份变化不能把旧读取绑定到新文件。
+	if slices.Equal(files, snapshot.cleanupFiles) {
+		for _, scope := range snapshot.DirectoryScopes {
+			if validEmbyDirectoryScope(scope) {
+				metadata.DirectoryScopes = append(metadata.DirectoryScopes, scope)
+			}
+		}
+	}
+	metadata.ScopedFiles, err = freezeEmbyScopedMetadata(tx, *snapshot, metadata.DirectoryScopes)
+	if err != nil {
+		return EmbyItemEvidence{}, nil, err
+	}
+	evidence.SidecarsJSON = embyJSON(metadata)
 	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON, evidence.SidecarsJSON})
 	if err := checkEmbyWebhookSize(evidence); err != nil {
 		return EmbyItemEvidence{}, nil, err

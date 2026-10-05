@@ -29,6 +29,8 @@ type QueuedRequest struct {
 	CreatedAt time.Time
 	// 上下文
 	Ctx context.Context
+	// 排队结束后、发送 HTTP 前核验；不能在回调中等待同一队列请求。
+	BeforeSend func() error
 }
 
 // RequestResponse 请求响应

@@ -375,20 +375,25 @@ func TestPlaybackClientDoesNotLogSignedURL(t *testing.T) {
 	}
 }
 
-func TestPlaybackDownloadResultRejectsAmbiguousIdentity(t *testing.T) {
+func TestDownloadResultRejectsAmbiguousIdentity(t *testing.T) {
 	withUnlimitedOpenAPIRequests(t)
 	for _, tt := range []struct {
 		name      string
 		data      string
 		retryable bool
+		normal    bool
 	}{
 		{name: "URL 未就绪", data: `{"1":{"pick_code":"pick"}}`, retryable: true},
 		{name: "返回其他文件", data: `{"1":{"pick_code":"another","url":{"url":"https://example.test/video"}}}`},
 		{name: "多个身份不随机选择", data: `{"1":{"url":{"url":"https://example.test/one"}},"2":{"url":{"url":"https://example.test/two"}}}`},
+		{name: "普通客户端拒绝同码多个文件", data: `{"1":{"pick_code":"pick","url":{"url":"https://example.test/one"}},"2":{"pick_code":"pick","url":{"url":"https://example.test/two"}}}`, normal: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			transport := newCaptureOpenAPITransport(`{"state":true,"data":` + tt.data + `}`)
 			client := NewPlaybackClient(1, "app", "token", "refresh")
+			if tt.normal {
+				client = NewClient(1, "app", "token", "refresh")
+			}
 			setPlaybackTestTransport(t, client, transport)
 			result, err := client.GetDownloadURLWithError(t.Context(), "pick", "agent", true)
 			if result != nil || err == nil || IsPlaybackRetryable(err) != tt.retryable {

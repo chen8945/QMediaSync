@@ -213,6 +213,8 @@ type FileListResponse struct {
 // list[0] ["orientation”]	string	图片旋转方向信息
 // list[0] ["media_info”]	object	视频信息。
 type FileDetail struct {
+	FsID        uint64 `json:"fs_id"`
+	Path        string `json:"path"`
 	Category    uint32 `json:"category"`
 	Dlink       string `json:"dlink"`
 	FileName    string `json:"filename"`

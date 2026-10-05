@@ -7,11 +7,278 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
 )
+
+func TestEmbyObservedEvidenceUsesNewestSuccessfulRead(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		latestObservedAt int64
+	}{
+		{name: "equal observation timestamps", latestObservedAt: 200},
+		{name: "observation clock moved backwards", latestObservedAt: 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, token, file := setupEmbyWebhookModelTest(t)
+			olderReceipt := saveEmbyObservationReceipt(t, file)
+			now := time.Now().Unix()
+			if err := MarkEmbyWebhookObserved(t.Context(), olderReceipt); err != nil {
+				t.Fatal(err)
+			}
+			if err := FinishEmbyWebhook(t.Context(), olderReceipt, EmbyWebhookRetry, "temporary GET failure", now+3600, true); err != nil {
+				t.Fatal(err)
+			}
+			newerReceipt := saveEmbyObservationReceipt(t, file)
+			if err := SaveEmbyObservedEvidence(t.Context(), newerReceipt, token, []EmbyItemSnapshot{snapshotForFile(file)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := FinishEmbyWebhook(t.Context(), newerReceipt, EmbyWebhookRetry, "index busy", now+7200, false); err != nil {
+				t.Fatal(err)
+			}
+			file.FileId, file.PickCode, file.Sha1 = "f2", "p2", "sha2"
+			if err := db.Db.Save(&file).Error; err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := ClaimEmbyWebhook(t.Context(), now+3601)
+			if err != nil || recovered == nil || recovered.ID != olderReceipt.ID {
+				t.Fatalf("wrong recovered receipt: %+v err=%v", recovered, err)
+			}
+			fresh, err := BeginEmbyIndexRead("server-a", config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := SaveEmbyObservedEvidence(t.Context(), *recovered, fresh, []EmbyItemSnapshot{snapshotForFile(file)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := FinishEmbyWebhook(t.Context(), *recovered, EmbyWebhookRetry, "index busy", now+7200, false); err != nil {
+				t.Fatal(err)
+			}
+			for id, timestamp := range map[uint]int64{olderReceipt.ID: tc.latestObservedAt, newerReceipt.ID: 200} {
+				if err := db.Db.Model(&EmbyWebhookRecord{}).Where("id = ?", id).Update("observed_at", timestamp).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var before []EmbyItemEvidence
+			if err := db.Db.Order("id").Find(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			deleted, err := SaveEmbyWebhook(t.Context(), webhookModelEnvelope("library.deleted", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := webhookModelInput(t, deleted)
+			if len(input.Owners) != 1 || len(input.Owners[0].Files) != 1 {
+				t.Fatalf("owner count=%d, expected one frozen file", len(input.Owners))
+			}
+			if got := input.Owners[0].Files[0].FileID; got != "f2" {
+				t.Fatalf("adopted file=%q want latest observation=f2", got)
+			}
+			var after []EmbyItemEvidence
+			if err := db.Db.Order("id").Find(&after).Error; err != nil || !slices.Equal(before, after) {
+				t.Fatalf("adoption rewrote immutable evidence: before=%d rows after=%d rows err=%v", len(before), len(after), err)
+			}
+			assertWebhookCount(t, &EmbyMediaItem{}, 0)
+			assertWebhookCount(t, &EmbyMediaSyncFile{}, 0)
+		})
+	}
+}
+
+func saveEmbyObservationReceipt(t *testing.T, file SyncFile) EmbyWebhookRecord {
+	t.Helper()
+	if _, err := SaveEmbyWebhook(t.Context(), webhookModelEnvelope("library.modified", file)); err != nil {
+		t.Fatal(err)
+	}
+	return webhookModelClaim(t)
+}
+
+func TestEmbyObservedEvidenceAdoptionRebindsExistingIndex(t *testing.T) {
+	for _, failReceipt := range []bool{false, true} {
+		name := "new physical identity"
+		if failReceipt {
+			name = "receipt rollback"
+		}
+		t.Run(name, func(t *testing.T) {
+			config, token, originalFile := setupEmbyWebhookModelTest(t)
+			snapshot := snapshotForFile(originalFile)
+			snapshot.Item.LastSeenSyncRun, snapshot.Item.LastSeenAt = "full-1", 123
+			if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
+				t.Fatal(err)
+			}
+			var before EmbyMediaItem
+			if err := db.Db.First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			file := originalFile
+			file.BaseModel = BaseModel{}
+			file.FileId, file.PickCode, file.Sha1 = "f2", "p2", "sha2"
+			if err := db.Db.Create(&file).Error; err != nil {
+				t.Fatal(err)
+			}
+			token, err := BeginEmbyIndexRead("server-a", config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := snapshotForFile(file)
+			observed.Sources[0].ID = "new-source"
+			if err := SaveEmbyObservedEvidence(t.Context(), saveEmbyObservationReceipt(t, file), token, []EmbyItemSnapshot{observed}); err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("receipt failed after adoption")
+			if failReceipt {
+				if err := db.Db.Callback().Create().Before("gorm:create").Register("test:observation_receipt_fail", func(tx *gorm.DB) {
+					if tx.Statement.Table == "emby_webhook_records" {
+						tx.AddError(injected)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { db.Db.Callback().Create().Remove("test:observation_receipt_fail") })
+			}
+			deleted, err := SaveEmbyWebhook(t.Context(), webhookModelEnvelope("library.deleted", file))
+			if failReceipt && !errors.Is(err, injected) || !failReceipt && err != nil {
+				t.Fatal(err)
+			}
+			var current EmbyMediaItem
+			var state EmbyItemState
+			var links []EmbyMediaSyncFile
+			for _, model := range []any{&current, &state, &links} {
+				if err := db.Db.Find(model).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if current.LastSeenSyncRun != before.LastSeenSyncRun || current.LastSeenAt != before.LastSeenAt {
+				t.Fatal("adoption changed ordinary sync markers")
+			}
+			if failReceipt {
+				if current != before || state.Deleted || state.SnapshotID != before.SnapshotID || len(links) != 1 || links[0].SyncFileId != originalFile.ID || links[0].SnapshotID != before.SnapshotID {
+					t.Fatalf("receipt failure left partial adoption: item=%+v state=%+v links=%+v", current, state, links)
+				}
+				return
+			}
+			input := webhookModelInput(t, deleted)
+			if len(input.Owners) != 1 || len(input.Owners[0].Links) != 1 {
+				t.Fatalf("adopted owner did not capture its existing link: %+v", input.Owners)
+			}
+			owner := input.Owners[0]
+			if current.SnapshotID != owner.Evidence.ID || current.Generation != before.Generation+1 || current.Generation != state.Generation {
+				t.Fatalf("index identity differs from adopted evidence: item=%+v evidence=%+v", current, owner.Evidence)
+			}
+			if len(links) != 1 || links[0].SnapshotID != current.SnapshotID || links[0].SyncFileId != file.ID || links[0].PickCode != file.PickCode || links[0].SourceID != "new-source" {
+				t.Fatalf("old file association survived adoption: %+v", links)
+			}
+			plan := webhookModelPlan(t, deleted)
+			if len(plan.Targets) != 1 {
+				t.Fatalf("unexpected targets: %+v", plan.Targets)
+			}
+			if err := validateEmbyDeletionTarget(t.Context(), plan, plan.Targets[0]); err != nil {
+				t.Fatalf("adopted item blocks its own deletion: %v", err)
+			}
+		})
+	}
+}
+
+func TestEmbyObservedEvidenceInvalidCandidateDoesNotHideValidRead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*embyObservedRef)
+	}{
+		{name: "state row", mutate: func(ref *embyObservedRef) { ref.StateID++ }},
+		{name: "state revision", mutate: func(ref *embyObservedRef) { ref.StateRevision++ }},
+		{name: "snapshot", mutate: func(ref *embyObservedRef) { ref.SnapshotID++ }},
+		{name: "generation", mutate: func(ref *embyObservedRef) { ref.Generation++ }},
+		{name: "identity", mutate: func(ref *embyObservedRef) { ref.IdentityKey = "different-identity" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, token, file := setupEmbyWebhookModelTest(t)
+			if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshotForFile(file)}); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := BeginEmbyIndexRead("server-a", config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			valid := snapshotForFile(file)
+			valid.Item.Name = "valid observation"
+			if err := SaveEmbyObservedEvidence(t.Context(), saveEmbyObservationReceipt(t, file), fresh, []EmbyItemSnapshot{valid}); err != nil {
+				t.Fatal(err)
+			}
+			invalid := snapshotForFile(file)
+			invalid.Item.Name = "invalid observation"
+			record := saveEmbyObservationReceipt(t, file)
+			if err := SaveEmbyObservedEvidence(t.Context(), record, fresh, []EmbyItemSnapshot{invalid}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.First(&record, record.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			var refs []embyObservedRef
+			if err := json.Unmarshal([]byte(record.ObservationJSON), &refs); err != nil || len(refs) != 1 {
+				t.Fatalf("invalid fixture refs=%+v err=%v", refs, err)
+			}
+			tc.mutate(&refs[0])
+			if err := db.Db.Model(&record).Update("observation_json", embyJSON(refs)).Error; err != nil {
+				t.Fatal(err)
+			}
+			deleted, err := SaveEmbyWebhook(t.Context(), webhookModelEnvelope("library.deleted", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := webhookModelInput(t, deleted)
+			if len(input.Owners) != 1 {
+				t.Fatalf("owner count=%d want=1", len(input.Owners))
+			}
+			if got := input.Owners[0].Item.Name; got != valid.Item.Name {
+				t.Fatalf("invalid candidate hid the valid observation: got=%q want=%q", got, valid.Item.Name)
+			}
+		})
+	}
+}
+
+func TestEmbyObservedEvidenceNewestMembershipPreventsOlderAdoption(t *testing.T) {
+	for _, itemType := range []string{"Movie", "Season", "Series"} {
+		t.Run(itemType, func(t *testing.T) {
+			_, token, file := setupEmbyWebhookModelTest(t)
+			olderReceipt := saveEmbyObservationReceipt(t, file)
+			newerReceipt := saveEmbyObservationReceipt(t, file)
+			old := snapshotForFile(file)
+			old.Item.Type = "Episode"
+			switch itemType {
+			case "Movie":
+				old.Item.Type, old.Item.PartOfItemID = "Video", "201"
+			case "Season":
+				old.Item.SeasonId = "201"
+			case "Series":
+				old.Item.SeriesId = "201"
+			}
+			if err := SaveEmbyObservedEvidence(t.Context(), newerReceipt, token, []EmbyItemSnapshot{old}); err != nil {
+				t.Fatal(err)
+			}
+			latest := old
+			latest.Item.PartOfItemID, latest.Item.SeasonId, latest.Item.SeriesId = "202", "202", "202"
+			if err := SaveEmbyObservedEvidence(t.Context(), olderReceipt, token, []EmbyItemSnapshot{latest}); err != nil {
+				t.Fatal(err)
+			}
+			deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{
+				Event: "library.deleted", ServerID: "server-a", ItemID: "201", ItemType: itemType, Source: "official",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := webhookModelInput(t, deleted)
+			if len(input.Owners) != 0 {
+				t.Fatalf("latest observation moved out of scope but old membership was adopted: item=%s", input.Owners[0].Item.ItemId)
+			}
+			var count int64
+			if err := db.Db.Model(&EmbyItemState{}).Where("item_id = ?", "101").Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("out-of-scope observation changed item state: count=%d err=%v", count, err)
+			}
+		})
+	}
+}
 
 func prepareEmbyObservedSurvivor(t *testing.T, event string) (*EmbyConfig, SyncFile, EmbyWebhookRecord, EmbyWebhookRecord, EmbyIndexToken) {
 	t.Helper()
@@ -364,7 +631,7 @@ func TestEmbyCompleteParentDetachesOnlyCurrentDeletedMemberEdge(t *testing.T) {
 	verified := 0
 	for _, target := range plan.Targets {
 		if len(target.Owners) == 1 && target.Owners[0].ItemID == "102" {
-			result := ExecuteEmbyDeletionTarget(t.Context(), plan, target, &embyDeleteTestProvider{}, func(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error {
+			result := executeEmbyDeletionTestTarget(t.Context(), plan, target, &embyDeleteTestProvider{}, func(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error {
 				verified++
 				return ErrEmbyDeleteUnverified
 			})

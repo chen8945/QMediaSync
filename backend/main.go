@@ -87,10 +87,6 @@ type App struct {
 }
 
 func (app *App) Start() {
-	if err := emby.StartWebhookWorker(); err != nil {
-		helpers.AppLogger.Errorf("启动 Emby 通知后台处理失败：%v", err)
-		return
-	}
 	// 启动外网 302 服务
 	startEmby302()
 	if helpers.IsRelease {
@@ -909,6 +905,12 @@ func initEnv() bool {
 
 	db.InitCache() // 初始化内存缓存
 	initOthers()
+	// 托盘和 HTTP 启动前完成恢复，失败时清理已启动的队列并交给主流程退出。
+	if err := emby.StartWebhookWorker(); err != nil {
+		helpers.AppLogger.Errorf("启动 Emby 通知后台处理失败：%v", err)
+		QMSApp.Stop()
+		return false
+	}
 	return true
 }
 

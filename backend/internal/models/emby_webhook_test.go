@@ -174,7 +174,7 @@ func TestEmbyWebhookClaimRetryRecoveryAndImmutablePlan(t *testing.T) {
 	}
 	first := webhookModelClaim(t)
 	plan := webhookModelPlan(t, first)
-	if err := SaveEmbyWebhookResult(t.Context(), first, EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionDeleted}); err == nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), first, "", []EmbyDeletionResult{{Key: plan.Targets[0].Key, Outcome: EmbyDeletionDeleted}}); err == nil {
 		t.Fatal("result without plan accepted")
 	}
 	if err := SaveEmbyWebhookPlan(t.Context(), first, plan); err != nil {
@@ -185,8 +185,12 @@ func TestEmbyWebhookClaimRetryRecoveryAndImmutablePlan(t *testing.T) {
 	if err := SaveEmbyWebhookPlan(t.Context(), first, forged); err == nil {
 		t.Fatal("immutable input replaced")
 	}
+	attempt, err := BeginEmbyWebhookAttempt(t.Context(), first, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result := EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: "request outcome unknown"}
-	if err := SaveEmbyWebhookResult(t.Context(), first, result); err != nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), first, attempt, []EmbyDeletionResult{result}); err != nil {
 		t.Fatal(err)
 	}
 	if err := RecoverEmbyWebhookWork(t.Context()); err != nil {
@@ -204,15 +208,25 @@ func TestEmbyWebhookClaimRetryRecoveryAndImmutablePlan(t *testing.T) {
 		t.Fatalf("results lost %+v %v", targets, err)
 	}
 	result.Outcome = EmbyDeletionDeleted
-	if err := SaveEmbyWebhookResult(t.Context(), recovered, result); err != nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), first, attempt, []EmbyDeletionResult{result}); !errors.Is(err, ErrEmbyWebhookClaimLost) {
+		t.Fatal("stale claimant saved a batch result", err)
+	}
+	if _, err := BeginEmbyWebhookAttempt(t.Context(), first, plan.Targets); !errors.Is(err, ErrEmbyWebhookClaimLost) {
+		t.Fatal("stale claimant registered another send", err)
+	}
+	attempt, err = BeginEmbyWebhookAttempt(t.Context(), recovered, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveEmbyWebhookBatchResults(t.Context(), recovered, attempt, []EmbyDeletionResult{result}); err != nil {
 		t.Fatal(err)
 	}
 	result.Outcome = EmbyDeletionFailed
-	if err := SaveEmbyWebhookResult(t.Context(), recovered, result); err != nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), recovered, attempt, []EmbyDeletionResult{result}); err != nil {
 		t.Fatal(err)
 	}
 	targets, _ = LoadEmbyWebhookTargets(t.Context(), recovered.ID)
-	if targets[0].Outcome != EmbyDeletionDeleted || targets[0].Attempts != 1 {
+	if targets[0].Outcome != EmbyDeletionDeleted || targets[0].Attempts != 2 {
 		t.Fatal("success overwritten")
 	}
 	if err := FinishEmbyWebhook(t.Context(), recovered, EmbyWebhookRetry, "busy", 0, false); err != nil {
@@ -231,6 +245,46 @@ func TestEmbyWebhookClaimRetryRecoveryAndImmutablePlan(t *testing.T) {
 	changed.Key = EmbyDeletionFileKey(changed.File)
 	if result, err := FindEmbyWebhookSuccess(t.Context(), next, changed); err != nil || result != nil {
 		t.Fatal("new physical generation reused", err)
+	}
+}
+
+func TestEmbyWebhookPlanRejectsUnsupportedFrozenInput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*EmbyDeletionInput)
+	}{
+		{name: "missing_policy", mutate: func(input *EmbyDeletionInput) { input.CleanupPolicy = EmbyCleanupPolicy{} }},
+		{name: "old_policy", mutate: func(input *EmbyDeletionInput) { input.CleanupPolicy.Version = 1 }},
+		{name: "unknown_policy", mutate: func(input *EmbyDeletionInput) { input.CleanupPolicy.Version = 3 }},
+		{name: "old_metadata_array", mutate: func(input *EmbyDeletionInput) { input.Owners[0].Evidence.SidecarsJSON = "[]" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, token, file := setupEmbyWebhookModelTest(t)
+			if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshotForFile(file)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := SaveEmbyWebhook(t.Context(), webhookModelEnvelope("library.deleted", file)); err != nil {
+				t.Fatal(err)
+			}
+			record := webhookModelClaim(t)
+			plan := webhookModelPlan(t, record)
+			tc.mutate(&plan.Input)
+			record.InputJSON = embyJSON(plan.Input)
+			if err := db.Db.Model(&record).Update("input_json", record.InputJSON).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := SaveEmbyWebhookPlan(t.Context(), record, plan); err == nil {
+				t.Fatal("unsupported frozen input was saved as a runnable plan")
+			}
+			var saved EmbyWebhookRecord
+			if err := db.Db.First(&saved, record.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.PlanJSON != "" || saved.InputJSON != record.InputJSON {
+				t.Fatal("rejection rewrote frozen data or saved a partial plan")
+			}
+			assertWebhookCount(t, &EmbyWebhookTarget{}, 0)
+		})
 	}
 }
 
@@ -356,7 +410,10 @@ func TestEmbyWebhookRejectsMalformedSidecarEvidence(t *testing.T) {
 		{name: "empty"},
 		{name: "whitespace", sidecars: " \n\t"},
 		{name: "invalid_json", sidecars: "{"},
-		{name: "object_instead_of_array", sidecars: `{"file_id":"not-an-array"}`},
+		{name: "legacy_empty_array", sidecars: `[]`},
+		{name: "legacy_file_array", sidecars: `[{"file_id":"sidecar-1"}]`},
+		{name: "unversioned_object", sidecars: `{"file_id":"not-an-envelope"}`},
+		{name: "unsupported_version", sidecars: `{"version":1,"exclusive_files":[],"scoped_files":[],"directory_scopes":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, token, file := setupEmbyWebhookModelTest(t)
@@ -492,7 +549,11 @@ func TestEmbyWebhookPayloadAndResultRedactCredentials(t *testing.T) {
 	if err := SaveEmbyWebhookPlan(t.Context(), record, plan); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveEmbyWebhookResult(t.Context(), record, EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: "GET " + secret}); err != nil {
+	attempt, err := BeginEmbyWebhookAttempt(t.Context(), record, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveEmbyWebhookBatchResults(t.Context(), record, attempt, []EmbyDeletionResult{{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: "GET " + secret}}); err != nil {
 		t.Fatal(err)
 	}
 	targets, err := LoadEmbyWebhookTargets(t.Context(), record.ID)
@@ -501,6 +562,53 @@ func TestEmbyWebhookPayloadAndResultRedactCredentials(t *testing.T) {
 	}
 	if strings.Contains(targets[0].Reason, "password") || strings.Contains(targets[0].Reason, "secret-token") {
 		t.Fatal("error leaked credentials")
+	}
+}
+
+func TestEmbyWebhookNameSanitizationAndDisplayLabel(t *testing.T) {
+	_, token, file := setupEmbyWebhookModelTest(t)
+	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshotForFile(file)}); err != nil {
+		t.Fatal(err)
+	}
+	envelope := webhookModelEnvelope("deep.delete", file)
+	envelope.ItemName = "Movie\nhttps://user:password@example.test/x" + strings.Repeat("长", 260)
+	envelope.SeriesName = "Show\ttitle"
+	season, episode := 2, 5
+	envelope.ParentIndexNumber, envelope.IndexNumber = &season, &episode
+	record, err := SaveEmbyWebhook(t.Context(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"password", `\n`, `\t`} {
+		if strings.Contains(record.PayloadJSON, value) {
+			t.Fatalf("名称未脱敏：%q 仍包含 %q", record.PayloadJSON, value)
+		}
+	}
+	var stored EmbyWebhookEnvelope
+	if err := json.Unmarshal([]byte(record.PayloadJSON), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if utf8.RuneCountInString(stored.ItemName) != 200 || !strings.HasPrefix(stored.ItemName, "Moviehttps://example.test/x") {
+		t.Fatalf("条目名称未按控制字符剔除并截断：%q", stored.ItemName)
+	}
+	if stored.SeriesName != "Showtitle" {
+		t.Fatalf("剧名控制字符未剔除：%q", stored.SeriesName)
+	}
+	if label := stored.DisplayLabel(); label != "Showtitle S02E05" {
+		t.Fatalf("日志标签错误：%q", label)
+	}
+	for _, tc := range []struct {
+		envelope EmbyWebhookEnvelope
+		want     string
+	}{
+		{EmbyWebhookEnvelope{SeriesName: "Show", IndexNumber: &episode}, "Show E05"},
+		{EmbyWebhookEnvelope{SeriesName: "Show", ParentIndexNumber: &season}, "Show S02"},
+		{EmbyWebhookEnvelope{ItemName: "Movie"}, "Movie"},
+		{EmbyWebhookEnvelope{}, ""},
+	} {
+		if got := tc.envelope.DisplayLabel(); got != tc.want {
+			t.Fatalf("DisplayLabel(%+v)=%q want %q", tc.envelope, got, tc.want)
+		}
 	}
 }
 
@@ -679,7 +787,11 @@ func TestEmbyWebhookOversizeDiagnosticsRemainBackupSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	reason := strings.Repeat("错误\n", 2<<20)
-	if err := SaveEmbyWebhookResult(t.Context(), record, EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: reason}); err != nil {
+	attempt, err := BeginEmbyWebhookAttempt(t.Context(), record, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveEmbyWebhookBatchResults(t.Context(), record, attempt, []EmbyDeletionResult{{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: reason}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := FinishEmbyWebhook(t.Context(), record, EmbyWebhookUnresolved, reason, 0, true); err != nil {
@@ -770,8 +882,12 @@ func TestEmbyWebhookSavedSuccessCannotFinalizeReadmittedOrRestoredIdentity(t *te
 			if err := SaveEmbyWebhookPlan(t.Context(), record, plan); err != nil {
 				t.Fatal(err)
 			}
+			attempt, err := BeginEmbyWebhookAttempt(t.Context(), record, plan.Targets)
+			if err != nil {
+				t.Fatal(err)
+			}
 			result := EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionDeleted}
-			if err := SaveEmbyWebhookResult(t.Context(), record, result); err != nil {
+			if err := SaveEmbyWebhookBatchResults(t.Context(), record, attempt, []EmbyDeletionResult{result}); err != nil {
 				t.Fatal(err)
 			}
 			tc.mutate(t, record)

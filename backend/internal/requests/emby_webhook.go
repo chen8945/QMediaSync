@@ -273,12 +273,14 @@ func validEmbyWebhookID(id string) bool {
 	return err == nil && value > 0 && strconv.FormatInt(value, 10) == id
 }
 
-// ToEnvelope 仅输出不含自由文本和 URL 凭据的最小证据；候选不授予删除权限。
+// ToEnvelope 仅输出不含原始正文和 URL 凭据的最小证据；名称字段经脱敏截断后仅用于诊断展示，候选不授予删除权限。
 func (request EmbyWebhookRequest) ToEnvelope() models.EmbyWebhookEnvelope {
 	envelope := models.EmbyWebhookEnvelope{
 		Event: request.Event, ServerID: request.Server.ID, ItemServerID: request.Item.ServerID,
-		ItemID: request.Item.ID, ItemType: request.Item.Type, ItemPath: safeEmbyWebhookPath(request.Item.Path),
-		Date: request.Date, Source: "official", ParentID: request.Item.ParentID,
+		ItemID: request.Item.ID, ItemType: request.Item.Type,
+		ItemName: request.Item.Name, SeriesName: request.Item.SeriesName, SeasonName: request.Item.SeasonName,
+		ItemPath: safeEmbyWebhookPath(request.Item.Path),
+		Date:     request.Date, Source: "official", ParentID: request.Item.ParentID,
 		SeriesID: request.Item.SeriesId, SeasonID: request.Item.SeasonId, ExtraType: request.Item.ExtraType, IsFolder: request.Item.IsFolder,
 	}
 	if request.hasIndexNumber {

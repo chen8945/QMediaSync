@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -57,14 +59,62 @@ func restore(filePath string) (err error) {
 	// 开始还原
 	SetRunningResult("restore", "开始还原数据库", totalTable, count, "")
 	var restoreErr error
+	rebuildEmbyObservations := false
+	rebuildEmbyMembership := false
 	for _, table := range models.AllTables {
+		switch table.(type) {
+		case models.EmbyObservedEvidenceIndex, *models.EmbyObservedEvidenceIndex:
+			rebuildEmbyObservations = true
+		case models.EmbyItemMembership, *models.EmbyItemMembership:
+			rebuildEmbyMembership = true
+		}
+	}
+	if rebuildEmbyObservations {
+		// 旧包可能没有派生表；先失效旧索引，避免部分恢复或回填失败继续采用旧引用。
+		if err := db.Db.Migrator().DropTable(&models.EmbyObservedEvidenceIndex{}); err != nil {
+			return fmt.Errorf("失效 Emby 观察索引失败：%w", err)
+		}
+	}
+	if rebuildEmbyMembership {
+		if err := db.Db.Migrator().DropTable(&models.EmbyItemMembership{}); err != nil {
+			return fmt.Errorf("失效 Emby 成员索引失败：%w", err)
+		}
+	}
+	for _, table := range models.AllTables {
+		switch table.(type) {
+		case models.EmbyObservedEvidenceIndex, *models.EmbyObservedEvidenceIndex, models.EmbyItemMembership, *models.EmbyItemMembership:
+			// 备份中的派生内容不作为权威数据导入；全部原表处理完后统一重建。
+			continue
+		}
 		if err := restoreFromJsonFile(tempDir, helpers.GetStructName(table), totalTable, &count, table); err != nil {
 			restoreErr = errors.Join(restoreErr, err)
 			continue
 		}
 	}
 	if restoreErr != nil {
+		// 部分导入可能丢失最新的移出观察；此时不能发布仅含旧观察的索引。
 		return restoreErr
+	}
+	if err := db.Db.Transaction(func(tx *gorm.DB) error {
+		if rebuildEmbyObservations {
+			if err := models.RebuildEmbyObservedEvidenceIndex(tx); err != nil {
+				return fmt.Errorf("重建 Emby 观察索引失败：%w", err)
+			}
+		}
+		if rebuildEmbyMembership {
+			if err := models.RebuildEmbyItemMembership(tx); err != nil {
+				return fmt.Errorf("重建 Emby 成员索引失败：%w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if count > 0 && rebuildEmbyObservations {
+		count++
+	}
+	if count > 0 && rebuildEmbyMembership {
+		count++
 	}
 	if count == 0 {
 		return fmt.Errorf("备份中没有可恢复的模型文件")

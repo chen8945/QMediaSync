@@ -131,13 +131,14 @@ type EmbyItemsQuery struct {
 }
 
 type AncestorDto struct {
-	ID       string `json:"Id,omitempty"`
-	Name     string `json:"Name,omitempty"`
-	Path     string `json:"Path,omitempty"`
-	FileName string `json:"FileName,omitempty"`
-	IsFolder bool   `json:"IsFolder,omitempty"`
-	ParentId string `json:"ParentId,omitempty"`
-	Type     string `json:"Type,omitempty"`
+	ID          string `json:"Id,omitempty"`
+	Name        string `json:"Name,omitempty"`
+	Path        string `json:"Path,omitempty"`
+	FileName    string `json:"FileName,omitempty"`
+	IsFolder    bool   `json:"IsFolder,omitempty"`
+	ParentId    string `json:"ParentId,omitempty"`
+	Type        string `json:"Type,omitempty"`
+	IndexNumber *int   `json:"IndexNumber,omitempty"`
 }
 
 type VirtualFolderDto struct {
@@ -198,7 +199,7 @@ func (c *Client) GetAllMediaLibraries() ([]EmbyLibrary, error) {
 }
 
 // GetMediaItemsByLibraryID 从指定的媒体库中检索所有媒体项目。
-// 兼容旧调用方：内部使用流式分页接口，再聚合为切片返回。
+// 兼容旧调用方：保留媒体信息提取依赖的顶层 MediaStreams，并聚合流式分页结果。
 func (c *Client) GetMediaItemsByLibraryID(libraryID string, lastDateCreatedTime int64) ([]BaseItemDtoV2, error) {
 	var allItems []BaseItemDtoV2
 	err := c.FetchMediaItemsByLibraryID(
@@ -206,6 +207,7 @@ func (c *Client) GetMediaItemsByLibraryID(libraryID string, lastDateCreatedTime 
 		EmbyItemsQuery{
 			LibraryID:         libraryID,
 			LastDateCreatedAt: lastDateCreatedTime,
+			Fields:            EmbySnapshotFields + ",MediaStreams",
 		},
 		func(item BaseItemDtoV2) error {
 			allItems = append(allItems, item)

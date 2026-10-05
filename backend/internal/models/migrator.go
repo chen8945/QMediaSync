@@ -37,7 +37,7 @@ var AllTables = []any{
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
 	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
-	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{}, EmbyWebhookRecord{}, EmbyWebhookTarget{},
+	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{}, EmbyWebhookRecord{}, EmbyWebhookTarget{}, EmbyObservedEvidenceIndex{}, EmbyItemMembership{},
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
 }
@@ -840,6 +840,8 @@ func MigrateEmbyDeletionSchema(tx *gorm.DB) error {
 		&EmbyItemEvidence{},
 		&EmbyWebhookRecord{},
 		&EmbyWebhookTarget{},
+		&EmbyObservedEvidenceIndex{},
+		&EmbyItemMembership{},
 	)
 }
 
@@ -1392,6 +1394,11 @@ func batchCreateTable(conn *gorm.DB, stopOnError bool) error {
 	var err error
 	var lastErr error
 	for _, table := range AllTables {
+		switch table.(type) {
+		case EmbyObservedEvidenceIndex, *EmbyObservedEvidenceIndex, EmbyItemMembership, *EmbyItemMembership:
+			// 派生表须与回填原子发布，修复缺表时不能先暴露空索引。
+			continue
+		}
 		err = conn.AutoMigrate(table)
 		if err != nil {
 			if stopOnError {
@@ -1409,7 +1416,24 @@ func batchCreateTable(conn *gorm.DB, stopOnError bool) error {
 	if err := EnsureSyncFileLookupIndexes(conn); err != nil {
 		return err
 	}
-	return EnsureStrmGenerationQueueIndex(conn)
+	if err := EnsureStrmGenerationQueueIndex(conn); err != nil {
+		return err
+	}
+	return conn.Transaction(func(tx *gorm.DB) error {
+		for _, table := range AllTables {
+			switch table.(type) {
+			case EmbyObservedEvidenceIndex, *EmbyObservedEvidenceIndex:
+				if err := RebuildEmbyObservedEvidenceIndex(tx); err != nil {
+					return err
+				}
+			case EmbyItemMembership, *EmbyItemMembership:
+				if err := RebuildEmbyItemMembership(tx); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func InitMigrationTable(version int) {

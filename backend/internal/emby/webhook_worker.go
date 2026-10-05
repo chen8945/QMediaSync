@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -173,7 +172,7 @@ func (worker *webhookWorker) run(ctx context.Context) {
 			continue
 		}
 		if err != nil && ctx.Err() == nil && helpers.AppLogger != nil {
-			helpers.AppLogger.Warnf("读取 Emby 通知待办失败，将稍后重试")
+			helpers.AppLogger.Warnf("读取待处理的 Emby 通知失败，稍后自动重试：%v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -208,7 +207,7 @@ func (worker *webhookWorker) process(ctx context.Context, record models.EmbyWebh
 		}
 	}
 	if finishErr := finishEmbyWebhook(ctx, record, status, err.Error(), nextAt, consume); finishErr != nil && helpers.AppLogger != nil {
-		helpers.AppLogger.Warnf("保存 Emby 通知待办状态失败，工作保留供重启恢复")
+		helpers.AppLogger.Warnf("保存 Emby 通知处理进度失败，通知会保留并在重启后自动恢复：%v", finishErr)
 	}
 }
 
@@ -304,6 +303,9 @@ func observeEmbyWebhook(ctx context.Context, record models.EmbyWebhookRecord) er
 		// 条件释放屏障会推进版本；丢弃此次读取，下一轮重新取 token 和完整快照。
 		return models.ErrEmbySnapshotStale
 	}
+	if err := enrichEmbyCleanupEvidence(ctx, client, snapshots); err != nil {
+		return err
+	}
 	return models.SaveEmbyObservedEvidence(ctx, record, token, snapshots)
 }
 
@@ -325,6 +327,9 @@ func (worker *webhookWorker) processDeletion(ctx context.Context, record models.
 		}
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "no_confirmed_historical_identity", 0, false)
 	}
+	if err := models.ValidateEmbyDeletionInputMetadata(input); err != nil {
+		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "invalid_metadata_evidence", 0, false)
+	}
 	config, err := models.ReadEmbyConfigSnapshot()
 	if err != nil {
 		return err
@@ -338,142 +343,17 @@ func (worker *webhookWorker) processDeletion(ctx context.Context, record models.
 	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "deletion_disabled", 0, false)
 	}
-	var plan models.EmbyDeletionPlan
-	if record.PlanJSON != "" {
-		if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
-			return err
-		}
-	} else {
-		plan, err = models.BuildEmbyDeletionPlan(ctx, input, worker.provider)
-		if err != nil {
-			return err
-		}
-		for _, issue := range plan.Issues {
-			if strings.HasPrefix(issue, "sidecar_inventory_unavailable:") {
-				return errors.New("旁车目录清单暂时无法核验，保留冻结输入稍后重试")
-			}
-		}
-		if err := models.SaveEmbyWebhookPlan(ctx, record, plan); err != nil {
-			return err
-		}
+	if !input.CleanupPolicy.AllowsJointBatch() {
+		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "unsupported_cleanup_policy", 0, false)
 	}
-	saved, err := models.LoadEmbyWebhookTargets(ctx, record.ID)
-	if err != nil {
-		return err
-	}
-	results := make([]models.EmbyDeletionResult, 0, len(saved))
-	var survivors, protected []string
-	retry := false
-	unresolved := len(plan.Targets) == 0 || len(plan.Issues) > 0
-	for _, target := range plan.Targets {
-		var completed *models.EmbyWebhookTarget
-		for i := range saved {
-			if saved[i].TargetKey == target.Key {
-				completed = &saved[i]
-				break
-			}
-		}
-		if completed == nil {
-			return errors.New("Emby 删除目标尚未持久保存")
-		}
-		if completed.Outcome == models.EmbyDeletionDeleted || completed.Outcome == models.EmbyDeletionAlreadyAbsent || completed.Attempts >= webhookMaxAttempts {
-			results = append(results, models.EmbyDeletionResult{Key: completed.TargetKey, Outcome: completed.Outcome, Reason: completed.Reason})
-			if completed.Attempts >= webhookMaxAttempts && completed.Outcome != models.EmbyDeletionDeleted && completed.Outcome != models.EmbyDeletionAlreadyAbsent {
-				unresolved = true
-			}
-			continue
-		}
-		provider, err := worker.provider(target.File)
-		if err != nil {
-			return err
-		}
-		previous, err := models.FindEmbyWebhookSuccess(ctx, record, target)
-		if err != nil {
-			return err
-		}
-		if previous != nil {
-			provider = embyCompletedProvider{provider}
-		}
-		var verificationErr error
-		observeProtection := func(err error) {
-			if alive, ok := errors.AsType[*embySurvivingItemsError](err); ok {
-				survivors = append(survivors, alive.IDs...)
-			}
-			if shared, ok := errors.AsType[*embyProtectedOwnersError](err); ok {
-				protected = append(protected, shared.IDs...)
-			}
-		}
-		result := models.ExecuteEmbyDeletionTarget(ctx, plan, target, provider, func(ctx context.Context, input models.EmbyDeletionInput, target models.EmbyDeletionTarget) error {
-			verificationErr = worker.verify(ctx, input, target)
-			observeProtection(verificationErr)
-			return verificationErr
-		})
-		if result.Outcome == models.EmbyDeletionUnresolved && verificationErr == nil && ctx.Err() == nil {
-			// 本地已有新引用时 S2 可能在实时 verifier 之前停止；只补核验旧索引收尾，不再执行网盘操作。
-			var ids []string
-			for _, owner := range target.Owners {
-				ids = append(ids, owner.ItemID)
-			}
-			verificationErr = verifyEmbyLocalDeletion(ctx, input, ids)
-			if verificationErr == nil && target.Reason == "" {
-				verificationErr = worker.verify(ctx, input, target)
-			}
-			observeProtection(verificationErr)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err := persistWebhook(ctx, func() error { return models.SaveEmbyWebhookResult(ctx, record, result) }); err != nil {
-			return err
-		}
-		if helpers.AppLogger != nil {
-			helpers.AppLogger.Infof("Emby 删除文件结果：记录=%d，条目=%s，文件=%q，结果=%s，原因=%q", record.ID, record.ItemID,
-				webhookLogURL.ReplaceAllString(target.File.FileName, "[URL]"), result.Outcome, webhookLogURL.ReplaceAllString(result.Reason, "[URL]"))
-		}
-		results = append(results, result)
-		if result.Outcome == models.EmbyDeletionFailed {
-			retry = true
-		}
-		if result.Outcome == models.EmbyDeletionUnresolved {
-			unresolved = true
-			_, originalAlive := errors.AsType[*embySurvivingItemsError](verificationErr)
-			_, sharedSource := errors.AsType[*embyProtectedOwnersError](verificationErr)
-			if verificationErr != nil && !originalAlive && !sharedSource && target.Reason == "" {
-				retry = true
-			}
-		}
-	}
-	if len(survivors) > 0 {
-		if err := models.AdmitEmbyWebhookSurvivors(ctx, record, survivors); err != nil {
-			return err
-		}
-	}
-	if len(protected) > 0 {
-		if err := verifyEmbyLocalDeletion(ctx, input, protected); err != nil {
-			return err
-		}
-		if err := models.FinalizeEmbyWebhookLocal(ctx, record, protected); err != nil {
-			return err
-		}
-	}
-	if err := models.FinalizeEmbyDeletionPlan(ctx, plan, results); err != nil {
-		return err
-	}
-	if retry {
-		return errors.New("部分 Emby 删除目标未完成，保留身份并重新核验")
-	}
-	status, reason := models.EmbyWebhookDone, ""
-	if unresolved {
-		status, reason = models.EmbyWebhookUnresolved, "部分目标或旁车证据不完整，已保留原因"
-	}
-	return finishEmbyWebhook(ctx, record, status, reason, 0, false)
+	return worker.processCleanupDeletion(ctx, record, input)
 }
 
 // embyCompletedProvider 对跨通知已完成的物理代际仍允许重新 Stat，绝不重复发送删除。
 type embyCompletedProvider struct{ models.EmbyDeleteProvider }
 
 func (embyCompletedProvider) Delete(context.Context, models.EmbyFrozenFile, func() error) (bool, error) {
-	return false, errors.New("同一物理代际已有成功结果，现路径重新出现，保留核验")
+	return false, models.ErrEmbyDeletionReappeared
 }
 
 func (worker *webhookWorker) processLocalDeletion(ctx context.Context, record models.EmbyWebhookRecord, input models.EmbyDeletionInput) error {
@@ -488,7 +368,7 @@ func (worker *webhookWorker) processLocalDeletion(ctx context.Context, record mo
 			}
 			return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, alive.Error(), 0, false)
 		}
-		return fmt.Errorf("仅清理本地索引仍需核验原身份: %w", err)
+		return fmt.Errorf("只清理了本地索引，还需确认网盘文件身份: %w", err)
 	}
 	if err := models.FinalizeEmbyWebhookLocal(ctx, record, ids); err != nil {
 		return err
@@ -500,7 +380,7 @@ func (worker *webhookWorker) processLocalDeletion(ctx context.Context, record mo
 func persistWebhook(ctx context.Context, save func() error) error {
 	for {
 		err := save()
-		if err == nil || errors.Is(err, models.ErrEmbyWebhookClaimLost) {
+		if err == nil || errors.Is(err, models.ErrEmbyWebhookClaimLost) || errors.Is(err, models.ErrEmbyIdentityAmbiguous) || errors.Is(err, models.ErrEmbySnapshotStale) || errors.Is(err, models.ErrEmbyWebhookTooLarge) {
 			return err
 		}
 		timer := time.NewTimer(time.Second)
@@ -516,9 +396,25 @@ func persistWebhook(ctx context.Context, save func() error) error {
 func finishEmbyWebhook(ctx context.Context, record models.EmbyWebhookRecord, status, reason string, nextAt int64, consume bool) error {
 	err := persistWebhook(ctx, func() error { return models.FinishEmbyWebhook(ctx, record, status, reason, nextAt, consume) })
 	if err == nil && helpers.AppLogger != nil {
-		helpers.AppLogger.Infof("Emby 通知处理：记录=%d，事件=%s，条目=%s，状态=%s，原因=%q", record.ID, record.Event, record.ItemID, status, webhookLogURL.ReplaceAllString(reason, "[URL]"))
+		reasonLabel := embyWebhookReasonLabel(webhookLogURL.ReplaceAllString(reason, "[URL]"))
+		if reasonLabel != "" {
+			reasonLabel = "，原因：" + reasonLabel
+		}
+		helpers.AppLogger.Infof("Emby 通知处理：通知 #%d，事件 %s，ItemId %s，结果：%s%s", record.ID, record.Event, embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record)), embyWebhookStatusLabel(status), reasonLabel)
 	}
 	return err
+}
+
+// embyWebhookRecordLabel 容错解析已保存信封并返回日志用条目标签；解析失败不影响处理。
+func embyWebhookRecordLabel(record models.EmbyWebhookRecord) string {
+	if record.PayloadJSON == "" {
+		return ""
+	}
+	var envelope models.EmbyWebhookEnvelope
+	if err := json.Unmarshal([]byte(record.PayloadJSON), &envelope); err != nil {
+		return ""
+	}
+	return envelope.DisplayLabel()
 }
 
 var webhookLogURL = regexp.MustCompile(`(?i)https?://[^\s"<>]+`)

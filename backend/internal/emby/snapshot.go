@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,7 @@ func prepareEmbyIndex(ctx context.Context, client *embyclientrestgo.Client, conf
 	return models.BeginEmbyIndexRead(serverID, config)
 }
 
-// prepareEmbyIndexForSync 在普通同步开始前恢复真实存活项的暂定删除屏障。
+// prepareEmbyIndexForSync 在全量或增量同步开始前恢复真实存活项的暂定删除屏障。
 // 所有恢复读取共用旧 token；整组释放后丢弃响应，从新 token 重新开始正常读取。
 func prepareEmbyIndexForSync(ctx context.Context, client *embyclientrestgo.Client, config *models.EmbyConfig) (models.EmbyIndexToken, bool, error) {
 	token, err := prepareEmbyIndex(ctx, client, config)
@@ -96,6 +97,95 @@ func prepareEmbyIndexForSync(ctx context.Context, client *embyclientrestgo.Clien
 }
 
 func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, item embyclientrestgo.BaseItemDtoV2, libraryID, libraryName, runID string, seenAt int64) ([]models.EmbyItemSnapshot, error) {
+	return collectEmbySnapshotsWithReader(ctx, client, item, libraryID, libraryName, runID, seenAt, client.GetSnapshotItems, false)
+}
+
+// prepareEmbyItemSnapshots 只恢复单条通知实际读到的物理组，不枚举无关删除历史。
+// 未解除屏障时复用本轮快照；解除后最多重读一次，后续竞争由提交检查交回现有重试。
+func prepareEmbyItemSnapshots(ctx context.Context, client *embyclientrestgo.Client, config *models.EmbyConfig, itemID string) (models.EmbyIndexToken, string, []models.EmbyItemSnapshot, error) {
+	token, err := prepareEmbyIndex(ctx, client, config)
+	if err != nil {
+		return token, "", nil, err
+	}
+	rootID, snapshots, err := readEmbyItemSnapshots(ctx, client, token, itemID)
+	if err != nil || len(snapshots) == 0 {
+		return token, rootID, snapshots, err
+	}
+	ids := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		ids = append(ids, snapshot.Item.ItemId)
+	}
+	admitted, err := models.AdmitEmbyVerifiedSurvivors(ctx, token, ids)
+	if err != nil || !admitted {
+		return token, rootID, snapshots, err
+	}
+	// 连父项提示也在新 token 下重取；不能把旧组响应移到新版本后提交。
+	token, err = prepareEmbyIndex(ctx, client, config)
+	if err != nil {
+		return token, "", nil, err
+	}
+	rootID, snapshots, err = readEmbyItemSnapshots(ctx, client, token, itemID)
+	return token, rootID, snapshots, err
+}
+
+func readEmbyItemSnapshots(ctx context.Context, client *embyclientrestgo.Client, token models.EmbyIndexToken, itemID string) (string, []models.EmbyItemSnapshot, error) {
+	items, err := readEmbyRequestedSnapshotItems(ctx, client, itemID)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(items) > 1 || len(items) == 1 && items[0].Id != itemID {
+		return "", nil, errors.New("Emby 单条同步返回未请求的条目")
+	}
+	readDetails := func(ctx context.Context, ids string) ([]embyclientrestgo.BaseItemDtoV2, error) {
+		return readEmbyRequestedSnapshotItems(ctx, client, ids)
+	}
+	if len(items) != 0 {
+		snapshots, err := collectEmbySnapshotsWithReader(ctx, client, items[0], "", "", "", 0, readDetails, true)
+		return items[0].Id, snapshots, err
+	}
+	parents, err := models.LoadEmbyItemRecoveryReadIDs(ctx, token, itemID)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, parentID := range parents {
+		items, err := readEmbyRequestedSnapshotItems(ctx, client, parentID)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(items) == 0 {
+			continue
+		}
+		snapshots, err := collectEmbySnapshotsWithReader(ctx, client, items[0], "", "", "", 0, readDetails, true)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, snapshot := range snapshots {
+			if snapshot.Item.ItemId == itemID {
+				return parentID, snapshots, nil
+			}
+		}
+	}
+	return "", nil, nil
+}
+
+func readEmbyRequestedSnapshotItems(ctx context.Context, client *embyclientrestgo.Client, ids string) ([]embyclientrestgo.BaseItemDtoV2, error) {
+	requested := strings.Split(ids, ",")
+	if slices.Contains(requested, "") {
+		return nil, errors.New("Emby 单条同步缺少物理条目 ID")
+	}
+	items, err := client.GetDeletionVerificationItems(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if !slices.Contains(requested, item.Id) {
+			return nil, errors.New("Emby 单条同步返回未请求的条目")
+		}
+	}
+	return items, nil
+}
+
+func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestgo.Client, item embyclientrestgo.BaseItemDtoV2, libraryID, libraryName, runID string, seenAt int64, readItems func(context.Context, string) ([]embyclientrestgo.BaseItemDtoV2, error), strict bool) ([]models.EmbyItemSnapshot, error) {
 	type member struct {
 		item              embyclientrestgo.BaseItemDtoV2
 		partOf, versionOf string
@@ -109,6 +199,9 @@ func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, 
 		pending = pending[1:]
 		value := current.item
 		if value.Type != "Movie" && value.Type != "Episode" && value.Type != "Video" {
+			if strict && (value.Id != item.Id || len(snapshots) > 0) {
+				return nil, errors.New("Emby 物理成员类型缺失或不支持")
+			}
 			continue
 		}
 		if seen[value.Id] {
@@ -119,7 +212,7 @@ func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, 
 		}
 		seen[value.Id] = true
 		if value.Path == "" || value.MediaSources == nil {
-			details, err := client.GetSnapshotItems(ctx, value.Id)
+			details, err := readItems(ctx, value.Id)
 			if err != nil {
 				return nil, err
 			}
@@ -127,6 +220,9 @@ func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, 
 				return nil, fmt.Errorf("Emby 条目 %s 缺少物理 Path 或 MediaSources", value.Id)
 			}
 			value = details[0]
+			if strict && value.Type != "Movie" && value.Type != "Episode" && value.Type != "Video" {
+				return nil, errors.New("Emby 物理详情类型缺失或不支持")
+			}
 		}
 		ownSources := []models.EmbySnapshotSource{}
 		foreignIDs := []string{}
@@ -166,7 +262,7 @@ func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, 
 			}
 		}
 		if len(foreignIDs) > 0 {
-			details, err := client.GetSnapshotItems(ctx, strings.Join(foreignIDs, ","))
+			details, err := readItems(ctx, strings.Join(foreignIDs, ","))
 			if err != nil {
 				return nil, err
 			}
@@ -210,7 +306,7 @@ func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, 
 				}
 			}
 			if len(missing) > 0 {
-				details, err := client.GetSnapshotItems(ctx, strings.Join(missing, ","))
+				details, err := readItems(ctx, strings.Join(missing, ","))
 				if err != nil {
 					return nil, err
 				}

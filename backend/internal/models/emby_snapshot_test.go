@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -281,16 +282,37 @@ func TestEmbySnapshotFinishChecksTokenEvenWithoutItems(t *testing.T) {
 }
 
 func TestEmbySnapshotDetachKeepsOldFileGeneration(t *testing.T) {
+	for _, relation := range []string{"part", "version"} {
+		t.Run(relation, func(t *testing.T) {
+			testEmbySnapshotDetachKeepsOldFileGeneration(t, relation)
+		})
+	}
+}
+
+func testEmbySnapshotDetachKeepsOldFileGeneration(t *testing.T, relation string) {
+	t.Helper()
 	_, token, file := setupEmbySnapshotModelTest(t)
 	parent := snapshotForFile(file)
 	parent.Item.PartCount = 2
 	child := snapshotForFile(file)
 	child.Item.ItemId = "102"
 	child.Item.Type = "Video"
-	child.Item.PartOfItemID = "101"
+	if relation == "part" {
+		child.Item.PartOfItemID = "101"
+	} else {
+		child.Item.VersionOfItemID = "101"
+	}
 	child.Sources[0].ItemID = "102"
 	child.MembersComplete = false
 	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{parent, child}); err != nil {
+		t.Fatal(err)
+	}
+	var beforeState EmbyItemState
+	if err := db.Db.Where("item_id = ?", "102").First(&beforeState).Error; err != nil {
+		t.Fatal(err)
+	}
+	var beforeEvidence EmbyItemEvidence
+	if err := db.Db.First(&beforeEvidence, beforeState.SnapshotID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Db.Model(&file).Updates(map[string]any{"file_id": "new-file", "sha1": "new-sha"}).Error; err != nil {
@@ -301,15 +323,88 @@ func TestEmbySnapshotDetachKeepsOldFileGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var current EmbyMediaItem
-	db.Db.Where("item_id = ?", "102").First(&current)
+	if err := db.Db.Where("item_id = ?", "102").First(&current).Error; err != nil {
+		t.Fatal(err)
+	}
+	if current.PartOfItemID != "" || current.VersionOfItemID != "" || current.Generation != beforeState.Generation || current.SnapshotID == beforeState.SnapshotID {
+		t.Fatalf("membership changed physical generation: %+v", current)
+	}
 	var evidence EmbyItemEvidence
-	db.Db.First(&evidence, current.SnapshotID)
+	if err := db.Db.First(&evidence, current.SnapshotID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if evidence.FilesJSON != beforeEvidence.FilesJSON || evidence.SourcesJSON != beforeEvidence.SourcesJSON || evidence.SidecarsJSON != beforeEvidence.SidecarsJSON || evidence.Generation != beforeEvidence.Generation || evidence.CreatedAt != beforeEvidence.CreatedAt {
+		t.Fatal("detaching replaced the original observation")
+	}
+	var original EmbyItemEvidence
+	if err := db.Db.First(&original, beforeEvidence.ID).Error; err != nil || original != beforeEvidence {
+		t.Fatalf("detaching rewrote immutable evidence: %v", err)
+	}
 	var frozen []EmbyFrozenFile
 	if err := json.Unmarshal([]byte(evidence.FilesJSON), &frozen); err != nil {
 		t.Fatal(err)
 	}
 	if len(frozen) != 1 || frozen[0].FileID != "f1" || frozen[0].SHA1 != "sha1" {
 		t.Fatalf("detaching reobserved current file: %+v", frozen)
+	}
+}
+
+func TestEmbySnapshotDetachRejectsUnsupportedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "legacy_empty_array", raw: `[]`},
+		{name: "legacy_file_array", raw: `[{"file_id":"sidecar-1"}]`},
+		{name: "malformed", raw: `{`},
+		{name: "unsupported_version", raw: `{"version":1,"exclusive_files":[],"scoped_files":[],"directory_scopes":[]}`},
+	} {
+		for _, relation := range []string{"part", "version"} {
+			t.Run(tc.name+"/"+relation, func(t *testing.T) {
+				_, token, file := setupEmbySnapshotModelTest(t)
+				parent := snapshotForFile(file)
+				parent.Item.PartCount = 2
+				child := snapshotForFile(file)
+				child.Item.ItemId, child.Item.Type = "102", "Video"
+				child.Sources[0].ItemID = "102"
+				child.MembersComplete = false
+				if relation == "part" {
+					child.Item.PartOfItemID = "101"
+				} else {
+					child.Item.VersionOfItemID = "101"
+				}
+				if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{parent, child}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Db.Model(&EmbyItemEvidence{}).Where("item_id = ?", "102").Update("sidecars_json", tc.raw).Error; err != nil {
+					t.Fatal(err)
+				}
+				type snapshotState struct {
+					Items    []EmbyMediaItem
+					States   []EmbyItemState
+					Evidence []EmbyItemEvidence
+					Links    []EmbyMediaSyncFile
+				}
+				load := func() snapshotState {
+					t.Helper()
+					var saved snapshotState
+					for _, rows := range []any{&saved.Items, &saved.States, &saved.Evidence, &saved.Links} {
+						if err := db.Db.Order("id").Find(rows).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					return saved
+				}
+				before := load()
+				parent.Item.PartCount = 1
+				if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{parent}); err == nil {
+					t.Fatal("detaching copied unsupported metadata into a new snapshot")
+				}
+				if after := load(); !reflect.DeepEqual(before, after) {
+					t.Fatal("rejected membership change did not roll back index, links, state and immutable evidence")
+				}
+			})
+		}
 	}
 }
 

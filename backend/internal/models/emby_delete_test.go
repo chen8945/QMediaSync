@@ -91,6 +91,11 @@ func setupEmbyDeleteTest(t *testing.T) (EmbyDeletionPlan, *embyDeleteTestProvide
 
 func allowEmbyDeleteTest(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error { return nil }
 
+// 单成员回归仍通过共同批次执行器，复用相同的范围、身份和结果确认边界。
+func executeEmbyDeletionTestTarget(ctx context.Context, plan EmbyDeletionPlan, target EmbyDeletionTarget, provider EmbyDeleteProvider, verify EmbyDeletionVerifier) EmbyDeletionResult {
+	return ExecuteEmbyDeletionBatch(ctx, plan, []EmbyDeletionTarget{target}, provider, verify, func([]EmbyDeletionTarget) error { return nil })[0]
+}
+
 func TestEmbyDeletionAuthorizationAndResultBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -116,6 +121,7 @@ func TestEmbyDeletionAuthorizationAndResultBoundaries(t *testing.T) {
 			return p
 		}, want: EmbyDeletionFailed, calls: 1},
 		{name: "stat error is not absence", verify: allowEmbyDeleteTest, change: func(p EmbyDeletionPlan, r *embyDeleteTestProvider) EmbyDeletionPlan {
+			clear(r.files)
 			r.statErr = errors.New("network error")
 			return p
 		}, want: EmbyDeletionFailed},
@@ -126,7 +132,7 @@ func TestEmbyDeletionAuthorizationAndResultBoundaries(t *testing.T) {
 			if tc.change != nil {
 				plan = tc.change(plan, provider)
 			}
-			result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, tc.verify)
+			result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, tc.verify)
 			if result.Outcome != tc.want || provider.calls != tc.calls {
 				t.Fatalf("result=%+v calls=%d", result, provider.calls)
 			}
@@ -174,7 +180,7 @@ func TestEmbyDeletionRejectsReassignedOrReplacedIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			plan, provider := setupEmbyDeleteTest(t)
 			tc.change(t, plan)
-			result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
+			result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
 			if result.Outcome != EmbyDeletionUnresolved || provider.calls != 0 {
 				t.Fatalf("%+v calls=%d", result, provider.calls)
 			}
@@ -193,7 +199,7 @@ func TestEmbyDeletionCannotReplaceFrozenFilesInsideOriginalEvidence(t *testing.T
 	plan.Input.Owners[0].Files[0] = file
 	plan.Targets[0].File = file
 	plan.Targets[0].Key = EmbyDeletionFileKey(file)
-	result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
+	result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
 	if result.Outcome != EmbyDeletionUnresolved || provider.calls != 0 {
 		t.Fatalf("tampered history was trusted: %+v", result)
 	}
@@ -222,7 +228,7 @@ func TestEmbyDeletionRecoversEvidenceAfterCurrentIndexCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := ExecuteEmbyDeletionTarget(t.Context(), rebuilt, rebuilt.Targets[0], provider, allowEmbyDeleteTest)
+	result := executeEmbyDeletionTestTarget(t.Context(), rebuilt, rebuilt.Targets[0], provider, allowEmbyDeleteTest)
 	if result.Outcome != EmbyDeletionDeleted {
 		t.Fatalf("historical file cannot be processed: %+v", result)
 	}
@@ -230,7 +236,7 @@ func TestEmbyDeletionRecoversEvidenceAfterCurrentIndexCleanup(t *testing.T) {
 
 func TestEmbyDeletionFinalizeRollsBackAndPreservesNewSnapshot(t *testing.T) {
 	plan, provider := setupEmbyDeleteTest(t)
-	result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
+	result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
 	if result.Outcome != EmbyDeletionDeleted {
 		t.Fatalf("delete: %+v", result)
 	}

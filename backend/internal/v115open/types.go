@@ -26,10 +26,12 @@ type RespBaseBool[T any] struct {
 
 // RequestConfig 请求配置
 type RequestConfig struct {
-	MaxRetries      int           `json:"max_retries"`
-	RetryDelay      time.Duration `json:"retry_delay"`
-	Timeout         time.Duration `json:"timeout"`
-	BypassRateLimit bool          `json:"bypass_rate_limit"` // 是否绕过速率限制（播放请求等）
+	MaxRetries      int              `json:"max_retries"`
+	RetryDelay      time.Duration    `json:"retry_delay"`
+	Timeout         time.Duration    `json:"timeout"`
+	BypassRateLimit bool             `json:"bypass_rate_limit"` // 是否绕过速率限制（播放请求等）
+	RetryIf         func(error) bool `json:"-"`                 // nil 保持原重试策略，false 原样返回本次错误。
+	BeforeSend      func() error     `json:"-"`                 // 排队结束、发送 HTTP 前执行，失败时不发送。
 }
 
 // DefaultRequestConfig 默认请求配置

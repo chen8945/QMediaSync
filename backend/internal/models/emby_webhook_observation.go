@@ -1,6 +1,7 @@
 package models
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -193,6 +194,7 @@ func SaveEmbyObservedEvidence(ctx context.Context, record EmbyWebhookRecord, tok
 			return err
 		}
 		var refs []embyObservedRef
+		var indexed []EmbyObservedEvidenceIndex
 		for i := range snapshots {
 			snapshot := snapshots[i]
 			id, err := parseEmbyItemID(snapshot.Item.ItemId)
@@ -221,74 +223,99 @@ func SaveEmbyObservedEvidence(ctx context.Context, record EmbyWebhookRecord, tok
 			}
 			ref.EvidenceID = evidence.ID
 			refs = append(refs, ref)
+			row, err := makeEmbyObservedIndex(*current, i, evidence)
+			if err != nil {
+				return err
+			}
+			indexed = append(indexed, row)
 		}
 		current.ObservationJSON = embyJSON(refs)
 		if err := checkEmbyWebhookSize(current); err != nil {
 			return err
 		}
+		if err := tx.Where("record_id = ?", current.ID).Delete(&EmbyObservedEvidenceIndex{}).Error; err != nil {
+			return err
+		}
+		if len(indexed) > 0 {
+			if err := tx.CreateInBatches(&indexed, 50).Error; err != nil {
+				return err
+			}
+		}
 		return tx.Model(current).Updates(map[string]any{"observation_json": current.ObservationJSON, "observed_at": time.Now().Unix()}).Error
 	})
 }
 
-func adoptEmbyObservedEvidenceTx(tx *gorm.DB, index *EmbyIndexState, record EmbyWebhookRecord) error {
-	var records []EmbyWebhookRecord
-	if err := tx.Where("server_id = ? AND server_config_key = ? AND observed_at > 0 AND observation_json <> ''", record.ServerID, record.ServerConfigKey).Order("id DESC").Find(&records).Error; err != nil {
-		return err
+func adoptEmbyObservedEvidenceTx(tx *gorm.DB, index *EmbyIndexState, record EmbyWebhookRecord) (map[string]bool, error) {
+	batch, err := loadEmbyObservedBatchTx(tx, record)
+	if err != nil {
+		return nil, err
 	}
+	// 重试可颠倒收件与成功观察的顺序；证据 ID 单调递增且不受秒级时钟影响。
+	slices.SortFunc(batch.refs, func(a, b embyObservedRef) int { return cmp.Compare(b.EvidenceID, a.EvidenceID) })
 	seen := map[string]bool{}
-	for _, observed := range records {
-		var refs []embyObservedRef
-		if err := json.Unmarshal([]byte(observed.ObservationJSON), &refs); err != nil {
-			return err
+	excluded := map[string]bool{}
+	for _, ref := range batch.refs {
+		evidence := batch.evidence[ref.EvidenceID]
+		if seen[evidence.ItemID] {
+			continue
 		}
-		for _, ref := range refs {
-			var evidence EmbyItemEvidence
-			if err := tx.First(&evidence, ref.EvidenceID).Error; err != nil {
-				return err
+		item, err := embyObservedEvidenceItem(evidence, record.ServerID, record.ServerConfigKey)
+		if err != nil {
+			return nil, err
+		}
+		state := batch.states[evidence.ItemID]
+		// 保存时已经检查全局读取 token；采用时只拒绝此条目发生过的变化。
+		// 无关条目的删除不能丢掉本条目观察，而删除后再释放屏障仍会改变 Revision。
+		if state.Deleted || state.ID != ref.StateID || state.Revision != ref.StateRevision || state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation || state.IdentityKey != ref.IdentityKey {
+			continue
+		}
+		// 先选最新有效观察，再判断范围；最新成员已移出时不能回退到旧关系。
+		seen[evidence.ItemID] = true
+		// 只采用与本次主项、季剧或电影分段明确有关的历史观察。
+		scopeID := embyObservationScopeID(item, record.ItemType)
+		if item.ItemId != record.ItemID && scopeID != record.ItemID {
+			// 明确的新归属只排除本次候选，不改当前状态。空归属可能是独立 Video 读取，仍保留历史关系。
+			if scopeID != "" {
+				excluded[evidence.ItemID] = true
 			}
-			if evidence.ServerID != record.ServerID || evidence.ServerConfigKey != record.ServerConfigKey {
-				return ErrEmbyIdentityAmbiguous
+			continue
+		}
+		// 收件只协调已有索引的身份，不改播放字段或普通同步水位。
+		result := tx.Model(&EmbyMediaItem{}).
+			Where("server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", record.ServerID, evidence.ItemID, state.SnapshotID, state.Generation).
+			Updates(map[string]any{"snapshot_id": evidence.ID, "generation": evidence.Generation})
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected > 0 {
+			// 观察可能已换文件；从冻结证据重建关联，不能把旧关联直接改挂新快照。
+			if err := tx.Select("files_json").First(&evidence, evidence.ID).Error; err != nil {
+				return nil, err
 			}
-			if seen[evidence.ItemID] {
-				continue
+			var files []EmbyFrozenFile
+			if err := json.Unmarshal([]byte(evidence.FilesJSON), &files); err != nil {
+				return nil, err
 			}
-			seen[evidence.ItemID] = true
-			var item EmbyMediaItem
-			if err := json.Unmarshal([]byte(evidence.ItemJSON), &item); err != nil {
-				return err
+			if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", item.ItemIdInt, state.SnapshotID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				return nil, err
 			}
-			// 只采用与本次主项、季剧或电影分段明确有关的历史观察。
-			relevant := item.ItemId == record.ItemID
-			if record.ItemType == "Movie" {
-				relevant = relevant || item.PartOfItemID == record.ItemID
+			for _, file := range files {
+				link := EmbyMediaSyncFile{EmbyItemId: uint(item.ItemIdInt), SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: file.PickCode, SnapshotID: evidence.ID, SourceID: file.SourceID}
+				if err := tx.Create(&link).Error; err != nil {
+					return nil, err
+				}
 			}
-			if record.ItemType == "Season" {
-				relevant = relevant || item.SeasonId == record.ItemID
-			}
-			if record.ItemType == "Series" {
-				relevant = relevant || item.SeriesId == record.ItemID
-			}
-			if !relevant {
-				continue
-			}
-			var state EmbyItemState
-			err := tx.Where("server_id = ? AND item_id = ?", record.ServerID, evidence.ItemID).First(&state).Error
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return err
-			}
-			// 保存时已经检查全局读取 token；采用时只拒绝此条目发生过的变化。
-			// 无关条目的删除不能丢掉本条目观察，而删除后再释放屏障仍会改变 Revision。
-			if state.Deleted || state.ID != ref.StateID || state.Revision != ref.StateRevision || state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation || state.IdentityKey != ref.IdentityKey {
-				continue
-			}
-			state.ServerID, state.ItemID = record.ServerID, evidence.ItemID
-			state.IdentityKey, state.Generation, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.Generation, evidence.ID, index.Revision
-			if err := tx.Save(&state).Error; err != nil {
-				return err
-			}
+		}
+		state.ServerID, state.ItemID = record.ServerID, evidence.ItemID
+		state.IdentityKey, state.Generation, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.Generation, evidence.ID, index.Revision
+		if err := tx.Save(&state).Error; err != nil {
+			return nil, err
+		}
+		if err := saveEmbyItemMembershipTx(tx, state, evidence); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return excluded, nil
 }
 
 // freezeEmbySnapshotSidecars 在读取 Emby 物理身份时冻结已有旁车，不在删除收件时补造历史。

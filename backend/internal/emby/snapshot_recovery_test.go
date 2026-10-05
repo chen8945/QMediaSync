@@ -35,6 +35,8 @@ type snapshotRecoveryFixture struct {
 	freshQueries  atomic.Int32
 	partsAbsent   atomic.Bool
 	hook          func(bool)
+	requestHook   func(http.ResponseWriter, *http.Request) bool
+	itemQueries   []string
 }
 
 func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRecoveryFixture {
@@ -82,6 +84,9 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		snapshots = append(snapshots, saved)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.requestHook != nil && f.requestHook(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/emby/System/Info/Public":
 			fmt.Fprint(w, `{"Id":"server-a"}`)
@@ -94,6 +99,7 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		case "/emby/Items/101/Ancestors":
 			fmt.Fprintf(w, `[{"Id":"99","Type":"Folder","Path":%q}]`, root.GetFullLocalPath())
 		case "/emby/Items":
+			f.itemQueries = append(f.itemQueries, r.URL.Query().Get("Ids"))
 			strict := r.URL.Query().Get("SortBy") == "Id"
 			if strict {
 				f.strictQueries.Add(1)
@@ -117,7 +123,7 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 				if f.partsAbsent.Load() {
 					item.PartCount = 1
 				}
-				if strict {
+				if strict && f.strictQueries.Load() == 1 {
 					item.Name = "must-discard-recovery-read"
 				} else {
 					item.Name = "fresh-after-admission"
@@ -212,15 +218,23 @@ func TestSnapshotRecoveryOrdinarySyncRestoresExhaustedDeleteSurvivors(t *testing
 				t.Fatalf("states=%d", len(states))
 			}
 			for _, state := range states {
-				if state.Deleted {
-					t.Fatalf("survivor remained blocked: %s", state.ItemID)
+				wantBlocked := mode == "single" && (state.ItemID == "201" || state.ItemID == "202")
+				if state.Deleted != wantBlocked {
+					t.Fatalf("survivor scope changed: %s deleted=%t want=%t", state.ItemID, state.Deleted, wantBlocked)
 				}
 			}
 			var item models.EmbyMediaItem
 			if err := db.Db.Where("item_id = ?", "101").First(&item).Error; err != nil {
 				t.Fatal(err)
 			}
-			if item.Name != "fresh-after-admission" || f.strictQueries.Load() != 1 || f.freshQueries.Load() != 1 {
+			wantStrict, wantFresh := int32(1), int32(1)
+			if mode == "single" {
+				wantStrict, wantFresh = 2, 0
+				if !slices.Equal(f.itemQueries, []string{"101", "101"}) {
+					t.Fatalf("single sync queried unrelated items: %v", f.itemQueries)
+				}
+			}
+			if item.Name != "fresh-after-admission" || f.strictQueries.Load() != wantStrict || f.freshQueries.Load() != wantFresh {
 				t.Fatalf("old response reused or unnecessary rescans: item=%s strict=%d fresh=%d", item.Name, f.strictQueries.Load(), f.freshQueries.Load())
 			}
 			if err := models.ApplyEmbySnapshots(f.oldToken, nil); !errors.Is(err, models.ErrEmbySnapshotStale) {

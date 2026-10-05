@@ -82,6 +82,7 @@ func (c *OpenClient) doPlaybackRequest(
 		ResponseChan:    respChan,
 		CreatedAt:       time.Now(),
 		Ctx:             ctx,
+		BeforeSend:      options.BeforeSend,
 	})
 	select {
 	case <-ctx.Done():

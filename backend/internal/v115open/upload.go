@@ -188,7 +188,7 @@ func (c *OpenClient) GetDownloadURLWithError(ctx context.Context, pickCode, user
 		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 下载地址获取失败")
 	}
 	data := respData.Data
-	if c.playback && len(data) > 1 {
+	if len(data) > 1 {
 		return nil, fmt.Errorf("115 下载地址返回了多个文件")
 	}
 	var first DownloadUrlData

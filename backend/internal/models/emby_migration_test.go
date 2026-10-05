@@ -16,7 +16,7 @@ import (
 )
 
 func TestEmbyDeletionMigrationSQLite(t *testing.T) {
-	for _, scenario := range []string{"fresh", "upgrade", "table_failure", "version_failure"} {
+	for _, scenario := range []string{"fresh", "upgrade", "table_failure", "index_failure", "membership_table_failure", "version_failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			conn, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 			if err != nil {
@@ -57,15 +57,21 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 		return
 	}
 	items, links := seedEmbyMigrationVersion65(t, conn)
-	if scenario == "table_failure" || scenario == "version_failure" {
+	if scenario == "table_failure" || scenario == "index_failure" || scenario == "membership_table_failure" || scenario == "version_failure" {
 		var migrationLog strings.Builder
 		previousLogger := helpers.AppLogger
 		helpers.AppLogger = &helpers.QLogger{Logger: log.New(&migrationLog, "", 0)}
 		t.Cleanup(func() { helpers.AppLogger = previousLogger })
 		var removeFailure func()
 		failureMessage := "injected emby version failure"
-		if scenario == "table_failure" {
-			removeFailure = failEmbyMigrationTableCreation(t, conn)
+		if scenario != "version_failure" {
+			tableName := "emby_webhook_targets"
+			if scenario == "index_failure" {
+				tableName = "emby_observed_evidence_indices"
+			} else if scenario == "membership_table_failure" {
+				tableName = "emby_item_memberships"
+			}
+			removeFailure = failEmbyMigrationTableCreation(t, conn, tableName)
 			failureMessage = "FAIL_EMBY_TABLE_CREATE"
 		} else {
 			removeFailure = failEmbyMigrationVersionUpdate(t, conn)
@@ -155,12 +161,12 @@ func seedEmbyMigrationVersion65(t *testing.T, conn *gorm.DB) ([]EmbyMediaItem, [
 }
 
 // 在最后一张工作表的 CREATE TABLE 中注入无效语法，让真实数据库拒绝后段 DDL。
-func failEmbyMigrationTableCreation(t *testing.T, conn *gorm.DB) func() {
+func failEmbyMigrationTableCreation(t *testing.T, conn *gorm.DB, tableName string) func() {
 	t.Helper()
 	const callback = "test:emby_migration_table_failure"
 	if err := conn.Callback().Raw().Before("gorm:raw").Register(callback, func(tx *gorm.DB) {
 		query := tx.Statement.SQL.String()
-		if strings.HasPrefix(query, "CREATE TABLE") && strings.Contains(query, "emby_webhook_targets") {
+		if strings.HasPrefix(query, "CREATE TABLE") && strings.Contains(query, tableName) {
 			tx.Statement.SQL.WriteString(" FAIL_EMBY_TABLE_CREATE")
 		}
 	}); err != nil {
@@ -216,7 +222,7 @@ func failEmbyMigrationVersionUpdate(t *testing.T, conn *gorm.DB) func() {
 }
 
 func embyMigrationNewTables() []any {
-	return []any{&EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &EmbyWebhookRecord{}, &EmbyWebhookTarget{}}
+	return []any{&EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &EmbyWebhookRecord{}, &EmbyWebhookTarget{}, &EmbyObservedEvidenceIndex{}, &EmbyItemMembership{}}
 }
 
 func embyMigrationAddedColumns() []struct {
@@ -344,6 +350,14 @@ func assertEmbyMigrationRetainsCurrentRows(t *testing.T, conn *gorm.DB) {
 			ServerID: "server-current", ServerConfigKey: "connection-key", TargetJSON: `{"key":"sidecar-1","kind":"sidecar"}`,
 			Outcome: EmbyDeletionFailed, Reason: "provider_timeout", Attempts: 2,
 		},
+		&EmbyObservedEvidenceIndex{
+			BaseModel: base, RecordID: 1, RefIndex: 0, EvidenceID: 1,
+			ServerID: "server-current", ServerConfigKey: "connection-key", ItemID: "9201",
+		},
+		&EmbyItemMembership{
+			BaseModel: base, ServerID: "server-current", ServerConfigKey: "connection-key",
+			ItemID: "9201", SnapshotID: 1, ItemType: "Movie",
+		},
 	}
 	for _, row := range rows {
 		if err := conn.Create(row).Error; err != nil {
@@ -410,6 +424,15 @@ func assertEmbyDeletionSchema(t *testing.T, conn *gorm.DB) {
 		{&EmbyWebhookRecord{}, "idx_emby_webhook_queue"},
 		{&EmbyWebhookTarget{}, "idx_emby_webhook_target"},
 		{&EmbyWebhookTarget{}, "idx_emby_webhook_success"},
+		{&EmbyObservedEvidenceIndex{}, "idx_emby_observed_ref"},
+		{&EmbyObservedEvidenceIndex{}, "idx_emby_observed_item"},
+		{&EmbyObservedEvidenceIndex{}, "idx_emby_observed_part"},
+		{&EmbyObservedEvidenceIndex{}, "idx_emby_observed_season"},
+		{&EmbyObservedEvidenceIndex{}, "idx_emby_observed_series"},
+		{&EmbyItemMembership{}, "idx_emby_membership_item"},
+		{&EmbyItemMembership{}, "idx_emby_membership_part"},
+		{&EmbyItemMembership{}, "idx_emby_membership_season"},
+		{&EmbyItemMembership{}, "idx_emby_membership_series"},
 	}...)
 	for _, index := range indexes {
 		if !conn.Migrator().HasIndex(index.model, index.name) {

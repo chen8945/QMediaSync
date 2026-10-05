@@ -19,23 +19,22 @@ import (
 	"qmediasync/internal/v115open"
 )
 
-// 通过真实 provider 的 List/Stat/Delete 组合，保留 115 详情与账本的路径表示差异。
+// 通过真实 provider 的清单、共同删除与原 ID 确认，保留 115 和账本的路径表示差异。
 type embyDeletion115PathClient struct {
 	files      map[string]EmbyRemoteFile
 	directory  string
 	deleted    []string
+	batches    [][]string
 	statCalls  map[string]int
-	beforeStat func(string, int, *EmbyRemoteFile)
+	listCalls  int
+	beforeList func(int)
 }
 
-func (c *embyDeletion115PathClient) GetFsDetailByCid(_ context.Context, id string) (*v115open.FileDetail, error) {
+func (c *embyDeletion115PathClient) GetFsDetailByCidForDeletion(_ context.Context, id string) (*v115open.FileDetail, error) {
 	c.statCalls[id]++
 	file, exists := c.files[id]
 	if !exists {
 		return nil, v115open.NewOpenAPIError(430004, "gone")
-	}
-	if c.beforeStat != nil {
-		c.beforeStat(id, c.statCalls[id], &file)
 	}
 	return &v115open.FileDetail{
 		FileId: file.FileID, FileName: file.FileName, FileCategory: v115open.TypeFile,
@@ -45,6 +44,10 @@ func (c *embyDeletion115PathClient) GetFsDetailByCid(_ context.Context, id strin
 }
 
 func (c *embyDeletion115PathClient) GetFsListWithOptions(_ context.Context, parent string, cur, dirs, show bool, offset, limit int, options v115open.FileListOptions) (*v115open.FileListResp, error) {
+	c.listCalls++
+	if c.beforeList != nil {
+		c.beforeList(c.listCalls)
+	}
 	if parent != "7" || !cur || !dirs || !show || offset != 0 || limit != embyDeleteListPageSize || options.Order != "file_name" {
 		return nil, fmt.Errorf("unexpected list arguments: parent=%s offset=%d", parent, offset)
 	}
@@ -60,15 +63,23 @@ func (c *embyDeletion115PathClient) GetFsListWithOptions(_ context.Context, pare
 	return response, nil
 }
 
-func (c *embyDeletion115PathClient) DelOnce(_ context.Context, ids []string, parent string) (bool, error) {
-	if len(ids) != 1 || parent != "7" {
+func (c *embyDeletion115PathClient) DelOnceGuarded(_ context.Context, ids []string, parent string, guard func() error) (bool, error) {
+	if err := guard(); err != nil {
+		return false, err
+	}
+	if len(ids) == 0 || parent != "7" {
 		return false, fmt.Errorf("unexpected delete arguments: ids=%v parent=%s", ids, parent)
 	}
-	if _, exists := c.files[ids[0]]; !exists {
-		return false, fmt.Errorf("duplicate delete: %s", ids[0])
+	for _, id := range ids {
+		if _, exists := c.files[id]; !exists {
+			return false, fmt.Errorf("duplicate delete: %s", id)
+		}
 	}
-	c.deleted = append(c.deleted, ids[0])
-	delete(c.files, ids[0])
+	c.batches = append(c.batches, slices.Clone(ids))
+	c.deleted = append(c.deleted, ids...)
+	for _, id := range ids {
+		delete(c.files, id)
+	}
 	return true, nil
 }
 
@@ -130,16 +141,19 @@ func TestEmbyDeletion115PathRepresentations(t *testing.T) {
 					t.Fatalf("expected video and exclusive sidecar: %+v", plan)
 				}
 				original := embyJSON(plan)
-				for _, target := range plan.Targets {
-					result := ExecuteEmbyDeletionTarget(t.Context(), plan, target, provider, allowEmbyDeleteTest)
+				results := ExecuteEmbyDeletionBatch(t.Context(), plan, plan.Targets, provider, allowEmbyDeleteTest, func([]EmbyDeletionTarget) error { return nil })
+				for _, result := range results {
 					if result.Outcome != EmbyDeletionDeleted {
-						t.Fatalf("%s was not deleted: %+v; provider calls=%v", target.Kind, result, client.deleted)
+						t.Fatalf("target was not deleted: %+v; provider calls=%v", result, client.deleted)
 					}
 				}
-				for _, target := range plan.Targets {
-					result := ExecuteEmbyDeletionTarget(t.Context(), plan, target, provider, allowEmbyDeleteTest)
+				if len(results) != 2 || len(client.batches) != 1 || !slices.Equal(client.batches[0], []string{"10", "20"}) {
+					t.Fatalf("video and sidecar were not submitted together: results=%+v batches=%v", results, client.batches)
+				}
+				results = ExecuteEmbyDeletionBatch(t.Context(), plan, plan.Targets, provider, allowEmbyDeleteTest, func([]EmbyDeletionTarget) error { return nil })
+				for _, result := range results {
 					if result.Outcome != EmbyDeletionAlreadyAbsent {
-						t.Fatalf("repeat target=%s result=%+v", target.Kind, result)
+						t.Fatalf("repeat result=%+v", result)
 					}
 				}
 				if !slices.Equal(client.deleted, []string{"10", "20"}) || len(client.files) != 3 {
@@ -178,16 +192,20 @@ func TestEmbyDeletion115PathIdentityBoundaries(t *testing.T) {
 		{"NUL", func(f *EmbyRemoteFile) { f.Path = "media\x00" }},
 	} {
 		for _, at := range []int{1, 2} {
-			t.Run(fmt.Sprintf("%s/stat%d", tc.name, at), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/list%d", tc.name, at), func(t *testing.T) {
 				plan, provider, client := setupEmbyDeletion115Paths(t, "media", "Movie")
-				client.beforeStat = func(id string, count int, file *EmbyRemoteFile) {
-					if id == "10" && count == at {
-						tc.change(file)
+				client.listCalls = 0
+				client.beforeList = func(count int) {
+					if count == at {
+						file := client.files["10"]
+						tc.change(&file)
+						client.files["10"] = file
+						client.directory = file.Path
 					}
 				}
-				result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
-				if result.Outcome == EmbyDeletionDeleted || result.Outcome == EmbyDeletionAlreadyAbsent || result.Reason == "" || len(client.deleted) != 0 || client.statCalls["10"] != at {
-					t.Fatalf("identity change accepted: %+v; deletes=%v stats=%v", result, client.deleted, client.statCalls)
+				result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
+				if result.Outcome == EmbyDeletionDeleted || result.Outcome == EmbyDeletionAlreadyAbsent || result.Reason == "" || len(client.deleted) != 0 || client.listCalls != at {
+					t.Fatalf("identity change accepted: %+v; deletes=%v lists=%d stats=%v", result, client.deleted, client.listCalls, client.statCalls)
 				}
 			})
 		}
@@ -239,7 +257,7 @@ func TestEmbyDeletion115PathRootAndSharedProtection(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				result := ExecuteEmbyDeletionTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
+				result := executeEmbyDeletionTestTarget(t.Context(), plan, plan.Targets[0], provider, allowEmbyDeleteTest)
 				if result.Outcome != EmbyDeletionUnresolved || len(client.deleted) != 0 || len(client.statCalls) != 0 {
 					t.Fatalf("protection bypassed: %+v; deletes=%v stats=%v", result, client.deleted, client.statCalls)
 				}

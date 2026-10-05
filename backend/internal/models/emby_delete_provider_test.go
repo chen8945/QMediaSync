@@ -28,7 +28,7 @@ type embyDelete115Stub struct {
 	delete func([]string, string) (bool, error)
 }
 
-func (s *embyDelete115Stub) GetFsDetailByCid(context.Context, string) (*v115open.FileDetail, error) {
+func (s *embyDelete115Stub) GetFsDetailByCidForDeletion(context.Context, string) (*v115open.FileDetail, error) {
 	return s.detail, s.err
 }
 func (s *embyDelete115Stub) GetFsListWithOptions(_ context.Context, _ string, cur, dirs, show bool, offset, limit int, options v115open.FileListOptions) (*v115open.FileListResp, error) {
@@ -37,7 +37,10 @@ func (s *embyDelete115Stub) GetFsListWithOptions(_ context.Context, _ string, cu
 	}
 	return s.list(offset)
 }
-func (s *embyDelete115Stub) DelOnce(_ context.Context, ids []string, parent string) (bool, error) {
+func (s *embyDelete115Stub) DelOnceGuarded(_ context.Context, ids []string, parent string, guard func() error) (bool, error) {
+	if err := guard(); err != nil {
+		return false, err
+	}
 	return s.delete(ids, parent)
 }
 
@@ -46,6 +49,7 @@ func embyProviderTestFile(source SourceType) EmbyFrozenFile {
 	if source == SourceTypeOpenList {
 		file.FileID, file.ParentID = file.Path+"/"+file.FileName, file.Path
 		file.SHA1, file.OpenlistObjectID, file.OpenlistSHA1 = "", "object-A", "hash"
+		file.PickCode = sanitizeEmbyEvidencePath(helpers.MakeOpenListUrl("https://openlist.example", "test-sign", file.FileID))
 	}
 	return file
 }

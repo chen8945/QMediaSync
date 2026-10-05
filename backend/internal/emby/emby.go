@@ -141,6 +141,7 @@ func PerformEmbySync() (result int, err error) {
 	syncRunID := fmt.Sprintf("full-%d", time.Now().UnixNano())
 	lastSeenAt := helpers.NowUnix()
 	handled := make(map[string]bool)
+	var cleanupEvidence embyCleanupEvidenceCollector
 	var runErrors []error
 	for _, lib := range libs {
 		gerr := client.FetchMediaItemsByLibraryID(context.Background(), embyclientrestgo.EmbyItemsQuery{LibraryID: lib.ID, Fields: embyIncrementalFields}, func(item embyclientrestgo.BaseItemDtoV2) error {
@@ -149,6 +150,9 @@ func PerformEmbySync() (result int, err error) {
 			}
 			snapshots, err := collectEmbySnapshots(context.Background(), client, item, lib.ID, lib.Name, syncRunID, lastSeenAt)
 			if err != nil {
+				return err
+			}
+			if err := cleanupEvidence.enrich(context.Background(), client, snapshots); err != nil {
 				return err
 			}
 			if err := models.ApplyEmbySnapshots(token, snapshots); err != nil {
@@ -188,6 +192,7 @@ func buildMinDateLastSaved(cursor int64, overlapSeconds int64) string {
 
 // PerformEmbyIncrementalSync 增量同步 Emby 条目到本地数据库。
 func PerformEmbyIncrementalSync() (result int, err error) {
+	var cleanupEvidence embyCleanupEvidenceCollector
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return 0, nil
@@ -287,6 +292,9 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 				if err != nil {
 					return err
 				}
+				if err := cleanupEvidence.enrich(context.Background(), client, snapshots); err != nil {
+					return err
+				}
 				if err := models.ApplyEmbySnapshots(token, snapshots); err != nil {
 					return err
 				}
@@ -357,39 +365,17 @@ func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, 
 	}()
 
 	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
-	token, _, err = prepareEmbyIndexForSync(ctx, client, config)
+	var snapshots []models.EmbyItemSnapshot
+	var rootID string
+	token, rootID, snapshots, err = prepareEmbyItemSnapshots(ctx, client, config, itemID)
 	if err != nil {
 		return false, err
 	}
-	var found *embyclientrestgo.BaseItemDtoV2
-	err = client.FetchMediaItemsByLibraryID(
-		ctx,
-		embyclientrestgo.EmbyItemsQuery{
-			IDs:              itemID,
-			Limit:            1,
-			IncludeItemTypes: "Movie,Video,Episode",
-			Fields:           embyIncrementalFields,
-		},
-		func(item embyclientrestgo.BaseItemDtoV2) error {
-			if item.Id == itemID {
-				itemCopy := item
-				found = &itemCopy
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return false, err
-	}
-	if found == nil {
+	if len(snapshots) == 0 {
 		helpers.AppLogger.Warnf("Webhook 单条同步未找到 Emby 条目：%s", itemID)
 		return false, nil
 	}
-	if found.Type != "Movie" && found.Type != "Video" && found.Type != "Episode" {
-		helpers.AppLogger.Warnf("Webhook 单条同步跳过不支持的 Emby 条目类型：%s %s", itemID, found.Type)
-		return false, nil
-	}
-	libraryID, libraryName, err := resolveEmbyItemLibraryContext(ctx, client, found.Id)
+	libraryID, libraryName, err := resolveEmbyItemLibraryContext(ctx, client, rootID)
 	if err != nil {
 		return false, err
 	}
@@ -398,11 +384,20 @@ func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, 
 		return false, nil
 	}
 
-	snapshots, err := collectEmbySnapshots(ctx, client, *found, libraryID, libraryName, "", helpers.NowUnix())
-	if err != nil {
+	seenAt := helpers.NowUnix()
+	for i := range snapshots {
+		snapshots[i].Item.LibraryId = libraryID
+		snapshots[i].LibraryName = libraryName
+		snapshots[i].Item.LastSeenAt = seenAt
+	}
+	if err := enrichEmbyCleanupEvidence(ctx, client, snapshots); err != nil {
 		return false, err
 	}
 	if err := models.ApplyEmbySnapshots(token, snapshots); err != nil {
+		if errors.Is(err, models.ErrEmbyItemDeleted) {
+			// 重读时物理组可能新增仍受保护的成员，交回现有读冲突重试，不继续准入。
+			return false, fmt.Errorf("%w: %v", models.ErrEmbySnapshotStale, err)
+		}
 		return false, err
 	}
 	processed = int64(len(snapshots))

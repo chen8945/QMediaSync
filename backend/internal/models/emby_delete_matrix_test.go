@@ -55,7 +55,7 @@ func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMa
 		db.Db, GlobalEmbyConfig, helpers.AppLogger = previousDB, previousConfig, previousLogger
 		_ = sqlDB.Close()
 	})
-	if err := conn.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}, &EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
+	if err := conn.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}, &EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &EmbyItemMembership{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
 		t.Fatal(err)
 	}
 	matrix := &deletionMatrix{
@@ -300,7 +300,7 @@ func TestEmbyDeletionMatrixPhysicalMembership(t *testing.T) {
 			if len(matrix.called) != 0 {
 				t.Fatal("planning performed a destructive provider call")
 			}
-			results := matrix.execute(plan)
+			results := matrix.execute(t, plan)
 			assertDeletionMatrixIDs(t, matrix.called, tc.want)
 			for _, result := range results {
 				if result.Outcome != EmbyDeletionDeleted {
@@ -380,13 +380,103 @@ func TestEmbyDeletionMatrixSidecarOwners(t *testing.T) {
 			for key, file := range matrix.remote {
 				names[key] = file.FileName
 			}
-			matrix.execute(plan)
+			matrix.execute(t, plan)
 			var deletedNames []string
 			for _, key := range matrix.called {
 				deletedNames = append(deletedNames, names[key])
 			}
 			assertDeletionMatrixIDs(t, deletedNames, tc.wantNames)
 		})
+	}
+}
+
+func TestEmbyDeletionMatrixSubtitleOwnershipUsesLongestStem(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		main, retained string
+		metadata       []string
+		wantNames      []string
+	}{
+		{
+			name:      "labelled and empty label subtitles follow the only video",
+			metadata:  []string{"Movie.zh-CN.简体中文.Default.ass", "Movie..ass", "Movie - Extended.ass"},
+			wantNames: []string{"Movie.mkv", "Movie.zh-CN.简体中文.Default.ass"},
+		},
+		{
+			name: "deleting the extended version takes its labelled subtitle", main: "Movie.Extended.mkv", retained: "Movie.mkv",
+			metadata:  []string{"Movie.Extended.zh.ass", "Movie.zh.ass"},
+			wantNames: []string{"Movie.Extended.mkv", "Movie.Extended.zh.ass"},
+		},
+		{
+			name: "deleting the plain version keeps the extended subtitle", main: "Movie.mkv", retained: "Movie.Extended.mkv",
+			metadata:  []string{"Movie.Extended.zh.ass", "Movie.zh.ass"},
+			wantNames: []string{"Movie.mkv", "Movie.zh.ass"},
+		},
+		{
+			name: "exact name owns the subtitle over a shorter prefix", main: "Movie.mkv", retained: "Movie.en.mkv",
+			metadata:  []string{"Movie.en.srt"},
+			wantNames: []string{"Movie.mkv"},
+		},
+		{
+			name: "deleting the exact name owner takes the shared-stem subtitle", main: "Movie.en.mkv", retained: "Movie.mkv",
+			metadata:  []string{"Movie.en.srt"},
+			wantNames: []string{"Movie.en.mkv", "Movie.en.srt"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main := tc.main
+			if main == "" {
+				main = "Movie.mkv"
+			}
+			videos := []deletionMatrixVideo{{id: "101", name: main}}
+			if tc.retained != "" {
+				videos = append(videos, deletionMatrixVideo{id: "102", name: tc.retained})
+			}
+			matrix := setupDeletionMatrix(t, videos)
+			for i, name := range tc.metadata {
+				matrix.addFile(t, 1, fmt.Sprintf("meta-%d", i), "/movies", name, false, true, false)
+			}
+			matrix.observeSidecars(t)
+			plan := matrix.plan(t, "101", "Movie")
+			var got []string
+			for _, target := range plan.Targets {
+				if target.Reason == "" {
+					got = append(got, target.File.FileName)
+				}
+			}
+			assertDeletionMatrixIDs(t, got, tc.wantNames)
+			names := map[string]string{}
+			for key, file := range matrix.remote {
+				names[key] = file.FileName
+			}
+			matrix.execute(t, plan)
+			var deletedNames []string
+			for _, key := range matrix.called {
+				deletedNames = append(deletedNames, names[key])
+			}
+			assertDeletionMatrixIDs(t, deletedNames, tc.wantNames)
+		})
+	}
+}
+
+func TestEmbyDeletionMatrixFreezesLabelledSubtitleEvidence(t *testing.T) {
+	matrix := setupDeletionMatrix(t, []deletionMatrixVideo{{id: "101", name: "Movie.mkv"}})
+	matrix.addFile(t, 1, "meta-labelled", "/movies", "Movie.zh-CN.简体中文.Default.ass", false, true, false)
+	matrix.observeSidecars(t)
+	var state EmbyItemState
+	if err := db.Db.Where("server_id = ? AND item_id = ?", matrix.token.ServerID, "101").First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	var evidence EmbyItemEvidence
+	if err := db.Db.First(&evidence, state.SnapshotID).Error; err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := DecodeEmbyMetadata(evidence.SidecarsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(metadata.ExclusiveFiles, func(file EmbyFrozenFile) bool { return file.FileName == "Movie.zh-CN.简体中文.Default.ass" }) {
+		t.Fatalf("冻结证据缺少中文标签字幕：%#v", metadata.ExclusiveFiles)
 	}
 }
 
@@ -421,7 +511,7 @@ func TestEmbyDeletionMatrixProtectsEverySavedRoot(t *testing.T) {
 				}
 			}
 			plan := matrix.plan(t, "101", "Movie")
-			results := matrix.execute(plan)
+			results := matrix.execute(t, plan)
 			assertDeletionMatrixIDs(t, matrix.called, tc.want)
 			if tc.registerRoot && (len(results) != 1 || results[0].Outcome != EmbyDeletionUnresolved) {
 				t.Fatalf("protected root must remain unresolved: %+v", results)
@@ -435,10 +525,23 @@ func TestEmbyDeletionMatrixProtectsEverySavedRoot(t *testing.T) {
 	}
 }
 
-func (matrix *deletionMatrix) execute(plan EmbyDeletionPlan) []EmbyDeletionResult {
-	return ExecuteEmbyDeletionPlan(context.Background(), plan,
-		func(EmbyFrozenFile) (EmbyDeleteProvider, error) { return matrix, nil },
-		func(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error { return nil })
+func (matrix *deletionMatrix) execute(t *testing.T, plan EmbyDeletionPlan) []EmbyDeletionResult {
+	t.Helper()
+	provider := &embyJointTestProvider{deletionMatrix: matrix}
+	groups, err := GroupEmbyDeletionTargets(plan.Targets, func(EmbyFrozenFile) (EmbyDeleteProvider, error) { return provider, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, release, err := BeginEmbyDeletionExecution(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	var results []EmbyDeletionResult
+	for _, group := range groups {
+		results = append(results, ExecuteEmbyDeletionBatch(ctx, plan, group, provider, allowEmbyDeleteTest, func([]EmbyDeletionTarget) error { return nil })...)
+	}
+	return results
 }
 
 func TestEmbyDeletionMatrixSharedSourceDoesNotDelete(t *testing.T) {
@@ -447,7 +550,7 @@ func TestEmbyDeletionMatrixSharedSourceDoesNotDelete(t *testing.T) {
 		{id: "302", name: "Shared.mkv", sharedWith: "301"},
 	})
 	plan := matrix.plan(t, "301", "Movie")
-	results := matrix.execute(plan)
+	results := matrix.execute(t, plan)
 	if len(results) != 1 || results[0].Outcome != EmbyDeletionUnresolved || results[0].Reason == "" {
 		t.Fatalf("shared target must retain a reason: %+v", results)
 	}
@@ -487,7 +590,7 @@ func TestEmbyDeletionMatrixEpisodePart2CanReindex(t *testing.T) {
 	matrix.addFile(t, 1, "meta-part2", "/movies", "Show - part2.nfo", false, true, false)
 	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "201", "Episode")
-	results := matrix.execute(plan)
+	results := matrix.execute(t, plan)
 	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-201", "1:meta-part1"})
 	for _, result := range results {
 		if result.Outcome != EmbyDeletionDeleted {
@@ -525,7 +628,7 @@ func TestEmbyDeletionMatrixEpisodePart2CanReindex(t *testing.T) {
 	}
 }
 
-func TestEmbyDeletionMatrixPartialFailureRetainsEvidenceAndSidecars(t *testing.T) {
+func TestEmbyDeletionMatrixPartialBatchRetainsEvidenceAndConfirmsSidecars(t *testing.T) {
 	matrix := setupDeletionMatrix(t, []deletionMatrixVideo{
 		{id: "101", name: "Movie - part1.mkv"},
 		{id: "102", kind: "Video", name: "Movie - part2.mkv", parent: "101"},
@@ -537,8 +640,8 @@ func TestEmbyDeletionMatrixPartialFailureRetainsEvidenceAndSidecars(t *testing.T
 	matrix.fail["1:file-102"] = true
 	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "101", "Movie")
-	results := matrix.execute(plan)
-	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-101", "1:file-102", "1:meta-part1"})
+	results := matrix.execute(t, plan)
+	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-101", "1:file-102", "1:meta-part1", "1:meta-part2"})
 	outcomes := map[string]EmbyDeletionOutcome{}
 	for _, target := range plan.Targets {
 		for _, result := range results {
@@ -547,7 +650,7 @@ func TestEmbyDeletionMatrixPartialFailureRetainsEvidenceAndSidecars(t *testing.T
 			}
 		}
 	}
-	if outcomes["file-101"] != EmbyDeletionDeleted || outcomes["file-102"] != EmbyDeletionFailed || outcomes["meta-part2"] != EmbyDeletionUnresolved {
+	if outcomes["file-101"] != EmbyDeletionDeleted || outcomes["file-102"] != EmbyDeletionFailed || outcomes["meta-part1"] != EmbyDeletionDeleted || outcomes["meta-part2"] != EmbyDeletionDeleted {
 		t.Fatalf("partial result lost target outcomes: %v", outcomes)
 	}
 	if err := FinalizeEmbyDeletionPlan(context.Background(), plan, results); err != nil {
@@ -556,7 +659,7 @@ func TestEmbyDeletionMatrixPartialFailureRetainsEvidenceAndSidecars(t *testing.T
 	assertDeletionMatrixOwner(t, "101", false)
 	assertDeletionMatrixOwner(t, "102", true)
 	assertDeletionMatrixOwner(t, "103", true)
-	for _, key := range []string{"1:file-102", "1:meta-part2", "1:file-103", "1:meta-version"} {
+	for _, key := range []string{"1:file-102", "1:file-103", "1:meta-version"} {
 		if _, exists := matrix.remote[key]; !exists {
 			t.Fatalf("unfinished or retained physical target %s lost", key)
 		}
@@ -587,7 +690,7 @@ func TestEmbyDeletionMatrixSharedSidecarAllOwnersSelected(t *testing.T) {
 	plan := matrix.plan(t, "900", "Season")
 	want := []string{"1:file-101", "1:file-102", "1:shared-metadata"}
 	assertDeletionMatrixIDs(t, deletionMatrixActiveIDs(plan), want)
-	results := matrix.execute(plan)
+	results := matrix.execute(t, plan)
 	assertDeletionMatrixIDs(t, matrix.called, want)
 	for _, result := range results {
 		if result.Outcome != EmbyDeletionDeleted {
@@ -612,7 +715,7 @@ func TestEmbyDeletionMatrixNewVideoProtectsPlannedSubtitle(t *testing.T) {
 		FileID: "new-video", ParentID: "parent-/movies", FileName: "Movie.zh.mkv", Path: "/movies",
 		PickCode: "new-pick", SHA1: "new-sha1", FileSize: 100, MTime: 5678,
 	}
-	results := matrix.execute(plan)
+	results := matrix.execute(t, plan)
 	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-101"})
 	for _, target := range plan.Targets {
 		if target.File.FileID != "subtitle" {
@@ -640,4 +743,64 @@ func TestEmbyDeletionMatrixNewVideoProtectsPlannedSubtitle(t *testing.T) {
 			t.Fatalf("new user or shared subtitle %s was removed", key)
 		}
 	}
+}
+
+// 重见拒绝是确定性终态：共同批次与目录执行器都必须返回 unresolved 并保留原因，不能落 failed 触发重试。
+type embyReappearedDeleteProvider struct{ *deletionMatrix }
+
+func (embyReappearedDeleteProvider) Delete(context.Context, EmbyFrozenFile, func() error) (bool, error) {
+	return false, fmt.Errorf("%w，保留核验", ErrEmbyDeletionReappeared)
+}
+
+type embyReappearedDirectoryProvider struct {
+	*embyDirectoryTestProvider
+	calls int
+}
+
+func (p *embyReappearedDirectoryProvider) DeleteDirectory(context.Context, EmbyDirectoryScope, func() error) (bool, error) {
+	p.calls++
+	return false, fmt.Errorf("%w，保留重新出现的对象", ErrEmbyDeletionReappeared)
+}
+
+func assertEmbyReappearedUnresolved(t *testing.T, results []EmbyDeletionResult) {
+	t.Helper()
+	if len(results) != 1 {
+		t.Fatalf("results=%+v", results)
+	}
+	if results[0].Outcome != EmbyDeletionUnresolved || !strings.Contains(results[0].Reason, ErrEmbyDeletionReappeared.Error()) {
+		t.Fatalf("重见拒绝未落 unresolved 终态并保留原因: %+v", results[0])
+	}
+}
+
+func TestEmbyDeletionReappearedRefusalIsUnresolvedInEveryExecutor(t *testing.T) {
+	t.Run("joint batch", func(t *testing.T) {
+		matrix := setupDeletionMatrix(t, []deletionMatrixVideo{{id: "101", name: "Movie.mkv"}})
+		plan := matrix.plan(t, "101", "Movie")
+		results := ExecuteEmbyDeletionBatch(context.Background(), plan, plan.Targets, embyReappearedDeleteProvider{matrix}, allowEmbyDeleteTest, func([]EmbyDeletionTarget) error { return nil })
+		assertEmbyReappearedUnresolved(t, results)
+		if len(matrix.called) != 0 {
+			t.Fatalf("重见拒绝仍触发原始删除: %v", matrix.called)
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		input, provider := setupEmbyDirectoryTest(t, "Movie")
+		plan := embyDirectoryPlan(t, input, provider, allowEmbyDeleteTest)
+		targets := embyDirectoryTargetsOnly(plan)
+		if len(targets) != 1 {
+			t.Fatalf("directory targets=%+v", targets)
+		}
+		ctx, release, err := BeginEmbyDeletionExecution(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		providerWrapper := &embyReappearedDirectoryProvider{embyDirectoryTestProvider: provider}
+		result := ExecuteEmbyDeletionDirectory(ctx, plan, targets[0], providerWrapper, allowEmbyDeleteTest, func() error { return nil })
+		if result.Outcome != EmbyDeletionUnresolved || !strings.Contains(result.Reason, ErrEmbyDeletionReappeared.Error()) {
+			t.Fatalf("目录执行器未按重见拒绝保留 unresolved: %+v", result)
+		}
+		if providerWrapper.calls != 1 || provider.rootWrites != 0 {
+			t.Fatalf("重见拒绝的目录发送次数或写入异常: calls=%d writes=%d", providerWrapper.calls, provider.rootWrites)
+		}
+	})
 }

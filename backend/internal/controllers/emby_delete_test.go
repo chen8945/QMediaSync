@@ -21,7 +21,7 @@ import (
 func setupEmbyReceiptController(t *testing.T, enabled bool) (*gorm.DB, *gin.Engine) {
 	t.Helper()
 	conn := setupControllerTestDB(t, &models.EmbyConfig{}, &models.EmbyIndexState{}, &models.EmbyItemState{},
-		&models.EmbyItemEvidence{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyWebhookRecord{},
+		&models.EmbyItemEvidence{}, &models.EmbyItemMembership{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyWebhookRecord{},
 		&models.EmbyWebhookTarget{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{})
 	previousConfig, previousLogger := models.GlobalEmbyConfig, helpers.AppLogger
 	t.Cleanup(func() { models.GlobalEmbyConfig, helpers.AppLogger = previousConfig, previousLogger })

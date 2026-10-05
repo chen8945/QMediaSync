@@ -23,7 +23,8 @@
 | Go helper、模型或请求 DTO | 对应包的 `go test`；需要时指定 `-run` | 请求校验、数据库 schema |
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
-| Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；空字符串或损坏的旁车 JSON 必须拒绝。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
+| Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
+| Emby 目录清理与共同批删 | `models`、`emby`、`embyclient-rest-go`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
 | STRM 分页、账本批删与进度并发 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/synccron ./internal/realtime`；相关并发回归加 `-race` | [同步调度与任务记录](../architecture/sync-orchestration.md)、[实时事件](../architecture/realtime-events.md) |
 | STRM 扫描完整性与失败范围 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/openlist ./internal/v115open ./internal/synccron ./internal/realtime`；详情流另跑控制器流测试，并对相关并发运行 `-race`；模型事务与迁移同时验证 SQLite / PostgreSQL | [同步编排](../architecture/sync-orchestration.md)、[数据库 schema](../reference/database-schema.md) |
 | 百度保存目录路径兼容 | `syncstrm` 的 `TestBaiduSavedPathIncrementalScope` 和 `TestMovedUnreadableDirectoryKeepsOldSubtree`，运行普通/race；经真实目录保存与构造验证前导斜杠、空根、空格、越界拒绝、旧子树保留与独立兄弟清理 | [同步编排](../architecture/sync-orchestration.md) |
@@ -77,6 +78,24 @@
 前端随 Vitest 验证能力控件、账号／场景／用户隔离、偏好损坏与存储失败、跟随意图、排序失败回滚、旧请求失效、新建后按序刷新以及本地未知时间；文件图标测试必须通过真实动态组件渲染出 SVG。排序展示替代旧的整体禁用契约；生产构建后运行 `check:build`。浏览器检查覆盖桌面和窄屏控件换行、长文件名下图标不收缩，以及路径选择底部按钮可达。上游替身和离线响应验证不代替真实百度／OpenList 账号联调；115 同值跨页稳定性及并发目录变更仍由上游决定。
 
 ## 后端命令
+
+Emby 删除修复回归包含：未知存活来源的跨目录引用、百度历史 fsid 缺失／替换及独立真实父目录、收件重试造成的观察顺序倒置（含同时间戳、无效状态候选及 PostgreSQL）、首次父目录缺失与临时列表／详情故障、移动或替换对象保护、初始缺失结果原子保存和重启恢复。`TestWebhookCleanupSourceVerificationCountsBaiduHTTP` 使用真实 provider／SDK 和本地 HTTP 替身，分别断言列表、详情、删除及 Emby 请求数；单页夹具的计数不代表线上固定成本。提取回归验证完整音视频流不重复入队，字幕不计入流数量。`TestAppWebhookStartup` 通过子进程验证恢复失败时非零退出、队列停止与资源释放，以及成功恢复；Windows 构建验证不能替代真实桌面的托盘验收。
+
+来源反查另覆盖 115／百度真实客户端 HTTP：账本命中不反查、未知存活来源查明在目录外后整删、目录内来源和异常查询回退、缺失或冲突账号／URL、同来源跨核验阶段去重，以及陌生 TXT／图片不逐项查归属。115 使用独立账号客户端并在首次请求前设置测试传输；不得改运行中共享实例。缓存回归覆盖读开始时间、失败复用、取消、过期、账号／地址配置改变和长读取后拒绝。已移出成员的回归通过真实收件事务验证最新有效观察可排除旧 state 归属，排除项无 owner、目标及删除屏障；无效观察、未知归属、直接删除和其他真实成员保持原行为，并在 SQLite／隔离 PostgreSQL 验证。
+
+一层目录保护覆盖账本旧位置在外、真实存活来源被移入直接子项的 115／百度场景，包括只有实时 Emby 来源而缺少本地关联的情况。分别计数列表页、详情与删除请求，验证同轮复用、多个待删目录、陌生元数据不逐项读取及普通子目录不递归；保留子目录外部移入风险这一明确边界。OpenList 单文件／共同批删夹具使用真实生成并脱敏的下载 URL 作为冻结 PickCode，验证视频及专属旁车可匹配，同时继续拒绝对象、哈希、大小、时间和位置变化。
+
+发送上限恢复覆盖第四次已删除但未保存结果、已填写 FinishedAt 但远端结果仍不明、确认读取失败后有限重试，以及目录缺失而已知成员移出的情况；断言没有第五次删除、确认不增加发送次数、失效 claim 不能保存，目录缺失不直接完成成员。目录自身未耗尽但覆盖成员已耗尽时也不能发送；同 claim 的第四次 guard 可复用登记，成员确认缺失后其余目录操作可继续。
+
+文件批次重试覆盖临时 Emby 核验失败后恢复：同批视频与专属旁车共同完成、通知正常结束、关联按原身份收尾。通过缩小模拟请求预算触发真实分组的回填，覆盖附件早于依赖视频进入批次的情况；后续视频成功后，暂缓附件应汇总分批处理，不能逐文件发送或遗留为终态。继续验证本轮身份或共享冲突、跨批保留、发送失败、发送次数耗尽及历史成功后原对象重现时的附件保护；同一 owner 的不同视频目标不得相互豁免。合批及分包预算由 provider 替身断言，不冒充真实网盘 HTTP 请求计数，也不据缩小预算的实验推断线上发生频率。
+
+观察范围索引在 SQLite／隔离 PostgreSQL 验证新库、65→66 建表、修复与新旧备份恢复、故障回滚和重建失败。查询回归用无关已完成历史和 500／501 个相关候选验证：无关历史不增加逐条查询，相关读取按批次增长；保留重复证据引用的不同预期状态、无效新观察后的有效旧观察、移出排除及直接删除语义。只报告实际 SQL 数和数据规模，不把批量查询描述为任意规模下固定次数或固定耗时。
+
+历史成员索引回归另外构造 0／10,000 条无关状态及其真实证据，通过完整删除收件验证候选定位和冻结读取范围；不能仅增加没有对应状态的观察历史。保留原 0／500 条观察规模测试和 500／501 的分批边界。覆盖当前媒体索引清空、成员移出、带屏障的历史分段关系、仅有父项关系的分段、投影随快照原子更新，以及迁移、修复和备份恢复后的重建。检查读取的证据行数及查询计划，避免少量 SQL 掩盖单次全库查询。
+
+单条同步回归保留 10,000 条无关删除屏障，断言核验请求仅涉及目标及实际关联成员，无关历史不增加 HTTP 或逐条 SQL。全量／增量仍验证全范围恢复；单条另覆盖隐藏分段、完整版本组、缺失或未请求响应、暂时失败、准入后整组重新读取及并发版本变化。核验计数来自本地 Emby HTTP 替身，不代表真实服务耗时或网盘联调。
+
+115 反查取消必须由实际 HTTP transport 观察请求 context 结束，不能仅断言上层方法提前返回；取链和文件详情均需覆盖。单 pickcode 返回多个文件时，普通客户端和播放客户端都必须拒绝。整目录删除的最终发送检查验证过期、缺失或仍在读取的缓存只导致拒绝，不能增加全库扫描／网盘反查请求或发出删除。URL 回归按真实 STRM 生成器覆盖基础地址含路径／查询参数时生成的根路由；带凭据 URL 的取消错误须归一为安全错误后再缓存。
 
 Go 工具链或直接依赖升级须运行全部后端测试、`go vet ./...`、`go mod verify`，并按发布参数交叉构建 Linux / Windows 的 amd64、arm64。约 2 GiB 内存、4 个逻辑 CPU 的环境使用 `GOMAXPROCS=4 GOFLAGS=-p=1 GOMEMLIMIT=1GiB GOGC=100`，测试加 `-parallel=4`；允许单个进程使用 4 个 CPU，包级编译和独立验证命令仍串行执行。`GOMEMLIMIT` 是每进程的 Go 内存软限制，不是所有进程的内存总额上限；保留 `-p=1`，避免多个编译进程同时占用接近 1 GiB。`GOMAXPROCS` 不限制创建的 goroutine 总数，仍须观察 RSS；Linux 可额外用 `taskset` 限定 CPU。不要并行运行基准与其他编译任务。
 
@@ -212,6 +231,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 ## 稳定回归验证
 
 - 长期回归风险优先由相关 Go 包内测试保护；新增或修改测试时遵循 table-driven 模式。
+- Emby 附件跨批重试运行 `(cd backend && go test ./internal/emby -run '^TestWebhookCleanupDeferred' -count=1)`，并加 `-race` 检查。用例须实际形成附件先于依赖视频的分包，覆盖暂缓后的临时核验／删除失败及恢复、共享和身份冲突、发送次数耗尽，以及视频结果已保存但附件补处理前中断后的恢复；断言冻结计划不变、附件保护、成功视频不重发、通知与关联正确收尾。使用隔离 SQLite、本地 Emby HTTP 和内存网盘替身，不代表真实网盘或断电持久化验收。
 - 分类保存回归在 `models` 包中使用隔离 SQLite，确认电影／电视剧分类写入失败时 `Save` 返回数据库错误而非固定成功。运行 `(cd backend && go test ./internal/models -run TestCategorySaveReturnsDBError)`。
 - 上传后的 STRM 收尾与 OpenList 上传队列回归须覆盖生产 SQLite 单连接配置；信息准备、事务回滚和幂等边界见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList 凭据变更须验证内存与数据库两处的过时结果保护，并覆盖临时验证失败、条件保存冲突与正常刷新；认证重试变更还须验证一次独立认证恢复、完整 multipart 重发及普通网络重试次数不变。契约和回归范围见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。

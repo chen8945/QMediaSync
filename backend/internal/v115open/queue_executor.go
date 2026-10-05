@@ -281,6 +281,17 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 		return
 	}
 
+	if req.BeforeSend != nil {
+		if err := req.BeforeSend(); err != nil {
+			replyRequestError(req, err)
+			return
+		}
+		if err := req.Ctx.Err(); err != nil {
+			replyRequestError(req, err)
+			return
+		}
+	}
+
 	// 发送请求
 	if req.Playback && qe.throttleManager.IsThrottled() {
 		replyRequestError(req, NewOpenAPIError(REQUEST_MAX_LIMIT_CODE, "115 接口正在限流"))

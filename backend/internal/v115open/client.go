@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,6 +81,12 @@ func NewClient(accountId uint, appId string, token string, refreshToken string) 
 		refreshToken: refreshToken,
 	})
 	return openClient
+}
+
+// SetTransport 在首次请求前配置当前实例的 HTTP 传输层。
+// 缓存客户端由同账号调用方共享，开始请求后不得替换。
+func (c *OpenClient) SetTransport(transport http.RoundTripper) {
+	c.client.SetTransport(transport)
 }
 
 // GetClient 获取按账号 ID 缓存的 HTTP 客户端。
@@ -272,6 +279,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		req.Header.Set("User-Agent", DEFAULTUA)
 	}
 	req.SetAuthToken(credentials.accessToken).SetResponseDoNotParse(true)
+	req.SetContext(ctx)
 
 	var lastErr error
 	var lastRespBytes []byte
@@ -292,6 +300,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			ResponseChan:    respChan,
 			CreatedAt:       time.Now(),
 			Ctx:             ctx,
+			BeforeSend:      options.BeforeSend,
 		}
 
 		// 将请求加入队列
@@ -334,6 +343,10 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 				lastErr = NewOpenAPIError(queueResp.RespData.Code, "访问凭证（Token）无效，请重新登录")
 				return queueResp.Response, queueResp.RespBytes, lastErr
 			}
+		}
+
+		if options.RetryIf != nil && lastErr != nil && !options.RetryIf(lastErr) {
+			return queueResp.Response, queueResp.RespBytes, lastErr
 		}
 
 		// 如果是限流错误，不重试

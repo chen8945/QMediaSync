@@ -19,9 +19,9 @@ import (
 const embyDeleteListPageSize = 1000
 
 type embyDelete115Client interface {
-	GetFsDetailByCid(context.Context, string) (*v115open.FileDetail, error)
+	GetFsDetailByCidForDeletion(context.Context, string) (*v115open.FileDetail, error)
 	GetFsListWithOptions(context.Context, string, bool, bool, bool, int, int, v115open.FileListOptions) (*v115open.FileListResp, error)
-	DelOnce(context.Context, []string, string) (bool, error)
+	DelOnceGuarded(context.Context, []string, string, func() error) (bool, error)
 }
 
 type embyDeleteBaiduClient interface {
@@ -80,8 +80,7 @@ func (p *embyDeleteProvider) validate(ctx context.Context, file EmbyFrozenFile) 
 		return ErrEmbyDeleteUnverified
 	}
 	if p.source == SourceTypeBaiduPan {
-		id, err := strconv.ParseInt(file.FileID, 10, 64)
-		if err != nil || id <= 0 {
+		if embyFrozenPhysicalID(file) == "" {
 			return ErrEmbyDeleteUnverified
 		}
 	}
@@ -108,7 +107,7 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 	}
 	switch p.source {
 	case SourceType115:
-		detail, err := p.v115.GetFsDetailByCid(ctx, file.FileID)
+		detail, err := p.v115.GetFsDetailByCidForDeletion(ctx, file.FileID)
 		if v115open.IsAlreadyDeleted(err) {
 			return EmbyRemoteFile{}, ErrEmbyRemoteFileAbsent
 		}
@@ -127,11 +126,22 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 		// 无结构化 not-found 的客户端用完整新鲜目录证明缺失，不能解析错误文案。
 		files, err := p.List(ctx, file)
 		if err != nil {
+			if p.source == SourceTypeBaiduPan {
+				// 原父目录可能已随目录操作消失；单独查原 fsid，不能把列表错误当缺失。
+				_, identityErr := p.baidu.GetFileDetail(ctx, embyFrozenPhysicalID(file), 0)
+				if errors.Is(identityErr, baidupan.ErrFileAbsent) {
+					return EmbyRemoteFile{}, ErrEmbyRemoteFileAbsent
+				}
+				if identityErr != nil {
+					return EmbyRemoteFile{}, embyDeleteProviderError("百度网盘原文件详情", identityErr)
+				}
+				return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+			}
 			return EmbyRemoteFile{}, err
 		}
 		for _, current := range files {
 			if current.FileName != file.FileName {
-				if current.FileID == file.FileID || (file.OpenlistObjectID != "" && current.OpenlistObjectID == file.OpenlistObjectID) {
+				if current.FileID == embyFrozenPhysicalID(file) || (file.OpenlistObjectID != "" && current.OpenlistObjectID == file.OpenlistObjectID) {
 					return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
 				}
 				continue
@@ -153,7 +163,7 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 			return current, nil
 		}
 		if p.source == SourceTypeBaiduPan {
-			_, err := p.baidu.GetFileDetail(ctx, file.FileID, 0)
+			_, err := p.baidu.GetFileDetail(ctx, embyFrozenPhysicalID(file), 0)
 			if errors.Is(err, baidupan.ErrFileAbsent) {
 				return EmbyRemoteFile{}, ErrEmbyRemoteFileAbsent
 			}
@@ -169,9 +179,25 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 	}
 }
 
-func (p *embyDeleteProvider) List(ctx context.Context, file EmbyFrozenFile) ([]EmbyRemoteFile, error) {
+func (p *embyDeleteProvider) listFresh(ctx context.Context, file EmbyFrozenFile) ([]EmbyRemoteFile, error) {
 	if err := p.validate(ctx, file); err != nil {
 		return nil, err
+	}
+	version, idle := uint64(0), true
+	if p.source == SourceType115 {
+		version, idle = v115open.DirectoryReadVersion(p.accountID, file.ParentID)
+		if !idle {
+			return nil, ErrEmbyDeleteUnverified
+		}
+	}
+	checkVersion := func() error {
+		if p.source == SourceType115 {
+			current, idle := v115open.DirectoryReadVersion(p.accountID, file.ParentID)
+			if !idle || current != version {
+				return ErrEmbyDeleteUnverified
+			}
+		}
+		return nil
 	}
 	var files []EmbyRemoteFile
 	seenNames, seenIDs := map[string]bool{}, map[string]bool{}
@@ -258,9 +284,15 @@ func (p *embyDeleteProvider) List(ctx context.Context, file EmbyFrozenFile) ([]E
 				return nil, ErrEmbyDeleteUnverified
 			}
 			if int64(len(files)) == total {
+				if err := checkVersion(); err != nil {
+					return nil, err
+				}
 				return files, nil
 			}
 		} else if len(page) < embyDeleteListPageSize {
+			if err := checkVersion(); err != nil {
+				return nil, err
+			}
 			return files, nil
 		}
 		if len(page) != embyDeleteListPageSize {
@@ -287,32 +319,30 @@ func embyRemoteOpenList(directory string, f openlist.FileListItemInfo) (EmbyRemo
 }
 
 func (p *embyDeleteProvider) Delete(ctx context.Context, file EmbyFrozenFile, beforeDelete func() error) (bool, error) {
+	defer embyInvalidateDeletionListings(ctx, file, false)
 	if beforeDelete == nil {
 		return false, ErrEmbyDeleteUnverified
 	}
+	deadline := time.Now().Add(embyDeletePreflightValidity)
 	current, err := p.Stat(ctx, file)
 	if err != nil {
 		return false, err
 	}
+	beforeDelete = embyDeleteFreshGuard(ctx, embyDeletionListingDeadline(ctx, file, deadline), beforeDelete)
 	if !embyProviderFileMatches(file, current) {
 		return false, ErrEmbyDeleteUnverified
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if err := beforeDelete(); err != nil {
-		return false, err
+	if p.source != SourceType115 {
+		if err := beforeDelete(); err != nil {
+			return false, err
+		}
 	}
 	switch p.source {
 	case SourceType115:
-		ok, err := p.v115.DelOnce(ctx, []string{current.FileID}, current.ParentID)
-		if err != nil {
-			return false, embyDeleteProviderError("115 文件删除", err)
-		}
-		if !ok {
-			return false, errors.New("115 未确认文件删除成功")
-		}
-		return true, nil
+		return p.delete115(ctx, []string{current.FileID}, current.ParentID, beforeDelete)
 	case SourceTypeBaiduPan:
 		err = p.baidu.Del(ctx, []string{path.Join(current.Path, current.FileName)})
 	case SourceTypeOpenList:
@@ -327,7 +357,7 @@ func (p *embyDeleteProvider) Delete(ctx context.Context, file EmbyFrozenFile, be
 }
 
 func embyProviderFileMatches(file EmbyFrozenFile, current EmbyRemoteFile) bool {
-	if current.IsDir || file.FileID != current.FileID || file.FileName != current.FileName || !embyRemoteDirectoriesMatch(file.SourceType, file.Path, current.Path) || file.FileSize != current.FileSize {
+	if current.IsDir || embyFrozenPhysicalID(file) == "" || embyFrozenPhysicalID(file) != current.FileID || file.FileName != current.FileName || !embyRemoteDirectoriesMatch(file.SourceType, file.Path, current.Path) || file.FileSize != current.FileSize {
 		return false
 	}
 	if file.ParentID != "" && file.ParentID != current.ParentID {
@@ -339,7 +369,7 @@ func embyProviderFileMatches(file EmbyFrozenFile, current EmbyRemoteFile) bool {
 	if file.SHA1 == "" && file.OpenlistSHA1 == "" && file.OpenlistMD5 == "" && file.MTime == 0 {
 		return false
 	}
-	if file.PickCode != "" && file.PickCode != current.PickCode {
+	if file.SourceType != SourceTypeBaiduPan && file.SourceType != SourceTypeOpenList && file.PickCode != "" && file.PickCode != current.PickCode {
 		return false
 	}
 	if file.OpenlistObjectID != "" && file.OpenlistObjectID != current.OpenlistObjectID {

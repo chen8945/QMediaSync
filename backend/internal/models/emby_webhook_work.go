@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
@@ -42,6 +45,9 @@ type EmbyWebhookEnvelope struct {
 	ItemServerID      string                 `json:"item_server_id,omitempty"`
 	ItemID            string                 `json:"item_id"`
 	ItemType          string                 `json:"item_type"`
+	ItemName          string                 `json:"item_name,omitempty"`
+	SeriesName        string                 `json:"series_name,omitempty"`
+	SeasonName        string                 `json:"season_name,omitempty"`
 	ItemPath          string                 `json:"item_path,omitempty"`
 	ParentID          string                 `json:"parent_id,omitempty"`
 	SeriesID          string                 `json:"series_id,omitempty"`
@@ -120,10 +126,11 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 			} else if !slices.Contains([]string{"Movie", "Episode", "Video", "Season", "Series"}, record.ItemType) {
 				input.Issues = []string{"unsupported_item_type"}
 			} else {
-				if err := adoptEmbyObservedEvidenceTx(tx, state, record); err != nil {
+				excluded, err := adoptEmbyObservedEvidenceTx(tx, state, record)
+				if err != nil {
 					return err
 				}
-				input, err = CaptureEmbyDeletionTx(tx, record.ServerID, record.ItemID, record.ItemType)
+				input, err = captureEmbyDeletionTx(tx, record.ServerID, record.ItemID, record.ItemType, excluded)
 				if err != nil {
 					return err
 				}
@@ -166,6 +173,9 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 }
 
 func sanitizeEmbyWebhookEnvelope(envelope EmbyWebhookEnvelope) EmbyWebhookEnvelope {
+	envelope.ItemName = sanitizeEmbyWebhookName(envelope.ItemName)
+	envelope.SeriesName = sanitizeEmbyWebhookName(envelope.SeriesName)
+	envelope.SeasonName = sanitizeEmbyWebhookName(envelope.SeasonName)
 	envelope.ItemPath = sanitizeEmbyEvidencePath(envelope.ItemPath)
 	envelope.DeepItemPath = redactEmbySnapshotError(envelope.DeepItemPath)
 	envelope.DeepMountPaths = redactEmbySnapshotError(envelope.DeepMountPaths)
@@ -179,6 +189,39 @@ func sanitizeEmbyWebhookEnvelope(envelope EmbyWebhookEnvelope) EmbyWebhookEnvelo
 		envelope.Issues[i] = redactEmbySnapshotError(envelope.Issues[i])
 	}
 	return envelope
+}
+
+// sanitizeEmbyWebhookName 把条目名称按不可信文本处理：URL 凭据脱敏、剔除控制字符并限长。
+func sanitizeEmbyWebhookName(value string) string {
+	value = redactEmbySnapshotError(value)
+	value = strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) {
+			return -1
+		}
+		return char
+	}, value)
+	const limit = 200
+	if utf8.RuneCountInString(value) > limit {
+		value = string([]rune(value)[:limit])
+	}
+	return strings.TrimSpace(value)
+}
+
+// DisplayLabel 返回日志用条目标签；名称缺失时为空串，仅用于诊断展示。
+func (envelope EmbyWebhookEnvelope) DisplayLabel() string {
+	series := strings.TrimSpace(envelope.SeriesName)
+	switch {
+	case series != "" && envelope.ParentIndexNumber != nil && envelope.IndexNumber != nil:
+		return fmt.Sprintf("%s S%02dE%02d", series, *envelope.ParentIndexNumber, *envelope.IndexNumber)
+	case series != "" && envelope.IndexNumber != nil:
+		return fmt.Sprintf("%s E%02d", series, *envelope.IndexNumber)
+	case series != "" && envelope.ParentIndexNumber != nil:
+		return fmt.Sprintf("%s S%02d", series, *envelope.ParentIndexNumber)
+	case strings.TrimSpace(envelope.ItemName) != "":
+		return strings.TrimSpace(envelope.ItemName)
+	default:
+		return series
+	}
 }
 
 // ClaimEmbyWebhook 优先尚未观察的新事件，领取与同步提交共享 SQL 锁；不永久去重 item。
@@ -245,14 +288,28 @@ func MarkEmbyWebhookObserved(ctx context.Context, record EmbyWebhookRecord) erro
 }
 
 // SaveEmbyWebhookPlan 先保存不可变计划与全部目标，重复保存只能接受相同计划。
-func SaveEmbyWebhookPlan(ctx context.Context, record EmbyWebhookRecord, plan EmbyDeletionPlan) error {
+// 初次清单失败后的已知原 ID 缺失结果必须随计划原子保存，不能留下可执行的旁车候选。
+func SaveEmbyWebhookPlan(ctx context.Context, record EmbyWebhookRecord, plan EmbyDeletionPlan, absent ...EmbyDeletionResult) error {
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		current, err := lockEmbyWebhookClaim(tx, record)
 		if err != nil {
 			return err
 		}
-		if current.InputJSON == "" || embyJSON(plan.Input) != current.InputJSON {
+		if current.InputJSON == "" || embyJSON(plan.Input) != current.InputJSON || !plan.Input.CleanupPolicy.AllowsJointBatch() {
 			return ErrEmbyIdentityAmbiguous
+		}
+		if err := ValidateEmbyDeletionInputMetadata(plan.Input); err != nil {
+			return err
+		}
+		confirmed := make(map[string]bool, len(absent))
+		for _, result := range absent {
+			if result.Outcome != EmbyDeletionAlreadyAbsent || result.Reason != "" || confirmed[result.Key] ||
+				!slices.ContainsFunc(plan.Targets, func(target EmbyDeletionTarget) bool {
+					return target.Key == result.Key && slices.Contains([]string{"video", "sidecar", "scoped_metadata"}, target.Kind) && target.Reason == "" && target.File.Reason == ""
+				}) {
+				return ErrEmbyIdentityAmbiguous
+			}
+			confirmed[result.Key] = true
 		}
 		encoded := embyJSON(plan)
 		sized := *current
@@ -268,11 +325,14 @@ func SaveEmbyWebhookPlan(ctx context.Context, record EmbyWebhookRecord, plan Emb
 		}
 		seen := map[string]bool{}
 		for _, target := range plan.Targets {
-			if target.Key == "" || target.Key != EmbyDeletionFileKey(target.File) || seen[target.Key] {
+			if target.Key == "" || target.Key != EmbyDeletionTargetKey(target) || seen[target.Key] {
 				return ErrEmbyIdentityAmbiguous
 			}
 			seen[target.Key] = true
 			entry := EmbyWebhookTarget{RecordID: current.ID, TargetKey: target.Key, ServerID: current.ServerID, ServerConfigKey: current.ServerConfigKey, TargetJSON: embyJSON(target)}
+			if confirmed[target.Key] {
+				entry.Outcome = EmbyDeletionAlreadyAbsent
+			}
 			if err := checkEmbyWebhookSize(entry); err != nil {
 				return err
 			}
@@ -290,37 +350,9 @@ func LoadEmbyWebhookTargets(ctx context.Context, recordID uint) ([]EmbyWebhookTa
 	return targets, err
 }
 
-// SaveEmbyWebhookResult 成功终态不能回退；取消不调用此函数，未知远端结果以 failed 留待核验。
-func SaveEmbyWebhookResult(ctx context.Context, record EmbyWebhookRecord, result EmbyDeletionResult) error {
-	if !slices.Contains([]EmbyDeletionOutcome{EmbyDeletionDeleted, EmbyDeletionAlreadyAbsent, EmbyDeletionUnresolved, EmbyDeletionFailed}, result.Outcome) {
-		return ErrEmbyIdentityAmbiguous
-	}
-	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		current, err := lockEmbyWebhookClaim(tx, record)
-		if err != nil {
-			return err
-		}
-		if current.PlanJSON == "" {
-			return ErrEmbyIdentityAmbiguous
-		}
-		var target EmbyWebhookTarget
-		if err := tx.Where("record_id = ? AND target_key = ?", current.ID, result.Key).First(&target).Error; err != nil {
-			return err
-		}
-		if target.Outcome == EmbyDeletionDeleted || target.Outcome == EmbyDeletionAlreadyAbsent {
-			return nil
-		}
-		updates := map[string]any{"outcome": result.Outcome, "reason": embyWebhookReason(result.Reason)}
-		if result.Outcome == EmbyDeletionFailed {
-			updates["attempts"] = gorm.Expr("attempts + 1")
-		}
-		return tx.Model(&target).Updates(updates).Error
-	})
-}
-
 // FindEmbyWebhookSuccess 仅复用同服务连接、同物理代际的成功，不按外层 item ID 去重。
 func FindEmbyWebhookSuccess(ctx context.Context, record EmbyWebhookRecord, target EmbyDeletionTarget) (*EmbyDeletionResult, error) {
-	if !record.Authorized || target.Key != EmbyDeletionFileKey(target.File) {
+	if !record.Authorized || target.Key != EmbyDeletionTargetKey(target) {
 		return nil, nil
 	}
 	var prior EmbyWebhookTarget
@@ -452,13 +484,16 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 	})
 }
 
+// ErrEmbyWebhookTooLarge 表示冻结证据超出持久边界，重试相同内容无法恢复。
+var ErrEmbyWebhookTooLarge = errors.New("Emby 通知证据超过持久记录大小限制")
+
 func checkEmbyWebhookSize(value any) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	if len(encoded) > EmbyWebhookMaxStoredBytes {
-		return errors.New("Emby 通知证据超过持久记录大小限制")
+		return ErrEmbyWebhookTooLarge
 	}
 	return nil
 }

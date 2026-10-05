@@ -305,6 +305,15 @@ func (c *OpenClient) GetFsDetailByPath(ctx context.Context, path string) (*FileD
 // 根据 CID 查询详情
 // GET 域名 + /open/folder/get_info
 func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*FileDetail, error) {
+	return c.getFsDetailByCid(ctx, fileId, false)
+}
+
+// GetFsDetailByCidForDeletion 查询删除目标原 ID，明确不存在时直接返回缺失错误。
+func (c *OpenClient) GetFsDetailByCidForDeletion(ctx context.Context, fileID string) (*FileDetail, error) {
+	return c.getFsDetailByCid(ctx, fileID, true)
+}
+
+func (c *OpenClient) getFsDetailByCid(ctx context.Context, fileId string, forDeletion bool) (*FileDetail, error) {
 	if fileId == "" {
 		return nil, fmt.Errorf("文件 ID 不能为空")
 	}
@@ -313,23 +322,34 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 	url := fmt.Sprintf("%s/open/folder/get_info", OPEN_BASE_URL)
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
 	var respData *FileDetail = &FileDetail{}
-	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), respData)
+	options := MakeRequestConfig(3, 1, 60)
+	if forDeletion {
+		options.RetryIf = func(err error) bool { return !IsAlreadyDeleted(err) }
+	}
+	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, options, respData)
 	if err != nil {
-		if !c.playback || !IsAlreadyDeleted(err) {
+		if forDeletion {
+			err = deletionDetailAbsenceError(bodyBytes, err)
+		}
+		if (!c.playback && !forDeletion) || !IsAlreadyDeleted(err) {
 			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
 		}
 		return nil, err
 	}
 	resp := &RespBaseBool[json.RawMessage]{}
 	// helpers.V115Log.Debugf("调用文件详情接口，fileId：%s => %s", fileId, string(bodyBytes))
-	bodyErr := json.Unmarshal(bodyBytes, &resp)
+	bodyErr := json.Unmarshal(bodyBytes, resp)
 	if bodyErr != nil {
 		helpers.V115Log.Errorf("解析文件详情接口响应失败：%s => %v", string(bodyBytes), bodyErr)
 		return respData, bodyErr
 	}
 	if !resp.State || resp.Code != 0 || resp.Errno != 0 {
 		// helpers.V115Log.Errorf("文件 %s 不存在：%v", fileId, err)
-		return nil, NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
+		err := NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
+		if forDeletion {
+			err = deletionDetailAbsenceError(bodyBytes, err)
+		}
+		return nil, err
 	}
 	if respData.FileId == "" {
 		return nil, fmt.Errorf("115 返回空数据")
@@ -345,6 +365,27 @@ func (c *OpenClient) GetFsDetailByCid(ctx context.Context, fileId string) (*File
 	respData.Path = filepath.ToSlash(filepath.Join(pathStr...))
 	// helpers.AppLogger.Infof("文件 %s 详情中的文件名：%s", fileId, respData.FileName)
 	return respData, nil
+}
+
+// 删除缺失必须有明确失败标记，矛盾或不完整响应不能保留可匹配的 absent 错误链。
+func deletionDetailAbsenceError(body []byte, err error) error {
+	if !IsAlreadyDeleted(err) {
+		return err
+	}
+	var response struct {
+		State json.RawMessage `json:"state"`
+		Code  int             `json:"code"`
+		Errno int             `json:"errno"`
+	}
+	if jsonErr := json.Unmarshal(body, &response); jsonErr != nil {
+		return fmt.Errorf("115 删除详情响应无法确认缺失：%w", jsonErr)
+	}
+	state := strings.TrimSpace(string(response.State))
+	if (state != "false" && state != "0") ||
+		(response.Code != 0 && response.Errno != 0 && response.Code != response.Errno) {
+		return fmt.Errorf("115 删除详情响应缺少明确失败标记或错误码矛盾")
+	}
+	return err
 }
 
 // 重命名
@@ -498,6 +539,16 @@ func (c *OpenClient) DelOnce(ctx context.Context, fileIds []string, parentFileId
 	options := DefaultRequestConfig()
 	options.MaxRetries = 0
 	return c.deleteFiles(ctx, fileIds, parentFileId, options)
+}
+
+// DelOnceGuarded 在队列等待结束后重新核验再发送一次删除，核验失败时不发送。
+// beforeDelete 不得等待同一个 115 请求队列，避免占用 worker 后相互等待。
+func (c *OpenClient) DelOnceGuarded(ctx context.Context, fileIDs []string, parentID string, beforeDelete func() error) (bool, error) {
+	options := DefaultRequestConfig()
+	options.MaxRetries = 0
+	options.BeforeSend = beforeDelete
+	options.RetryIf = func(error) bool { return false }
+	return c.deleteFiles(ctx, fileIDs, parentID, options)
 }
 
 func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFileId string, options *RequestConfig) (bool, error) {

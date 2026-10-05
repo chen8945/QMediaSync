@@ -176,13 +176,21 @@ func TestEmbyWebhookPostgresReopenRetainsPlanResultsAndClaimGuards(t *testing.T)
 	if err := SaveEmbyWebhookPlan(t.Context(), oldClaim, plan); err != nil {
 		t.Fatal(err)
 	}
+	attempt, err := BeginEmbyWebhookAttempt(t.Context(), oldClaim, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
 	failed := EmbyDeletionResult{Key: plan.Targets[0].Key, Outcome: EmbyDeletionFailed, Reason: "unknown provider result"}
-	if err := SaveEmbyWebhookResult(t.Context(), oldClaim, failed); err != nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), oldClaim, attempt, []EmbyDeletionResult{failed}); err != nil {
 		t.Fatal(err)
 	}
 	var saved EmbyWebhookRecord
 	if err := conn.First(&saved, oldClaim.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	savedTargets, err := LoadEmbyWebhookTargets(t.Context(), oldClaim.ID)
+	if err != nil || len(savedTargets) != 1 {
+		t.Fatalf("saved targets=%+v err=%v", savedTargets, err)
 	}
 	conn = reopenEmbyWebhookPostgres(t, conn, schema)
 	if err := RecoverEmbyWebhookWork(t.Context()); err != nil {
@@ -193,10 +201,10 @@ func TestEmbyWebhookPostgresReopenRetainsPlanResultsAndClaimGuards(t *testing.T)
 		t.Fatalf("reopen changed frozen evidence or retained an old claim: %+v", current)
 	}
 	targets, err := LoadEmbyWebhookTargets(t.Context(), current.ID)
-	if err != nil || len(targets) != 1 || targets[0].Outcome != EmbyDeletionFailed || targets[0].Reason != failed.Reason || targets[0].Attempts != 1 || targets[0].TargetJSON != embyJSON(plan.Targets[0]) {
+	if err != nil || len(targets) != 1 || targets[0].Outcome != EmbyDeletionFailed || targets[0].Reason != failed.Reason || targets[0].Attempts != 1 || targets[0].TargetJSON != savedTargets[0].TargetJSON {
 		t.Fatalf("recovery lost unfinished target identity/result: %+v, %v", targets, err)
 	}
-	if err := SaveEmbyWebhookResult(t.Context(), oldClaim, EmbyDeletionResult{Key: failed.Key, Outcome: EmbyDeletionDeleted}); err == nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), oldClaim, attempt, []EmbyDeletionResult{{Key: failed.Key, Outcome: EmbyDeletionDeleted}}); err == nil {
 		t.Fatal("pre-restart worker overwrote the reclaimed target")
 	}
 	if err := FinishEmbyWebhook(t.Context(), oldClaim, EmbyWebhookDone, "", 0, false); err == nil {
@@ -207,8 +215,15 @@ func TestEmbyWebhookPostgresReopenRetainsPlanResultsAndClaimGuards(t *testing.T)
 	if err := SaveEmbyWebhookPlan(t.Context(), current, mutated); err == nil {
 		t.Fatal("retry replaced the frozen plan with different authorization")
 	}
+	if _, err := BeginEmbyWebhookAttempt(t.Context(), oldClaim, plan.Targets); !errors.Is(err, ErrEmbyWebhookClaimLost) {
+		t.Fatal("pre-restart worker registered another send", err)
+	}
+	attempt, err = BeginEmbyWebhookAttempt(t.Context(), current, plan.Targets)
+	if err != nil {
+		t.Fatal(err)
+	}
 	success := EmbyDeletionResult{Key: failed.Key, Outcome: EmbyDeletionDeleted}
-	if err := SaveEmbyWebhookResult(t.Context(), current, success); err != nil {
+	if err := SaveEmbyWebhookBatchResults(t.Context(), current, attempt, []EmbyDeletionResult{success}); err != nil {
 		t.Fatal(err)
 	}
 	if err := FinishEmbyWebhook(t.Context(), current, EmbyWebhookDone, "", 0, false); err != nil {

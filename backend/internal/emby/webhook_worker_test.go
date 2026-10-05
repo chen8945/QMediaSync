@@ -177,6 +177,29 @@ func claimWebhookTest(t *testing.T) models.EmbyWebhookRecord {
 	}
 	return *record
 }
+func TestEmbyWebhookRecordLabelIsTolerant(t *testing.T) {
+	season, episode := 2, 5
+	payload, err := json.Marshal(models.EmbyWebhookEnvelope{SeriesName: "Show", ParentIndexNumber: &season, IndexNumber: &episode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"series", string(payload), "Show S02E05"},
+		{"empty", "", ""},
+		{"broken", "{不是 JSON", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := embyWebhookRecordLabel(models.EmbyWebhookRecord{PayloadJSON: tc.payload}); got != tc.want {
+				t.Fatalf("label=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func readWebhookTest(t *testing.T, id uint) models.EmbyWebhookRecord {
 	t.Helper()
 	var record models.EmbyWebhookRecord
@@ -240,30 +263,81 @@ func TestWebhookWorkerOfficialAndDeepUseSameVerifiedPipeline(t *testing.T) {
 }
 
 func TestWebhookWorkerBusyStillSavesEarlyEvidenceAndDeletesBeforeIndex(t *testing.T) {
-	f := setupWebhookWorkerTest(t, false)
-	f.alive.Store(true)
-	newRecord, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.new"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	SetEmbySyncRunning(true)
-	f.worker.process(t.Context(), claimWebhookTest(t))
-	fresh := readWebhookTest(t, newRecord.ID)
-	if fresh.Status != models.EmbyWebhookRetry || fresh.ObservedAt == 0 || fresh.Attempts != 0 {
-		t.Fatalf("busy event lost: %+v", fresh)
-	}
-	countWebhookTest(t, &models.EmbyMediaItem{}, 0)
-	countWebhookTest(t, &models.EmbyItemEvidence{}, 1)
-	f.alive.Store(false)
-	deleted, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.deleted"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 将忙时待办留到未来，当前领取这条删除；不改变它的身份或结果。
-	db.Db.Model(&models.EmbyWebhookRecord{}).Where("id = ?", newRecord.ID).Update("next_attempt_at", time.Now().Add(2*time.Hour).Unix())
-	f.worker.process(t.Context(), claimWebhookTest(t))
-	if readWebhookTest(t, deleted.ID).Status != models.EmbyWebhookDone || f.provider.calls != 1 {
-		t.Fatal("pre-index frozen observation did not support deletion")
+	for _, tc := range []struct {
+		name    string
+		indexed bool
+		shared  bool
+	}{
+		{"new", false, false},
+		{"indexed_modified", true, false},
+		{"indexed_modified_shared", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupWebhookWorkerTest(t, tc.indexed)
+			event := "library.new"
+			var indexed int64
+			if tc.indexed {
+				event = "library.modified"
+				indexed++
+			}
+			if tc.shared {
+				snapshot := workerSnapshot(f.file)
+				snapshot.Item.ItemId = "202"
+				snapshot.Sources[0].ItemID, snapshot.Sources[0].ID = "202", "renamed-source"
+				if err := models.ApplyEmbySnapshots(f.token, []models.EmbyItemSnapshot{snapshot}); err != nil {
+					t.Fatal(err)
+				}
+				indexed++
+			}
+			f.alive.Store(true)
+			observed, err := models.SaveEmbyWebhook(t.Context(), f.envelope(event))
+			if err != nil {
+				t.Fatal(err)
+			}
+			SetEmbySyncRunning(true)
+			f.worker.process(t.Context(), claimWebhookTest(t))
+			fresh := readWebhookTest(t, observed.ID)
+			if fresh.Status != models.EmbyWebhookRetry || fresh.ObservedAt == 0 || fresh.Attempts != 0 {
+				t.Fatalf("busy event lost: %+v", fresh)
+			}
+			countWebhookTest(t, &models.EmbyMediaItem{}, indexed)
+			countWebhookTest(t, &models.EmbyItemEvidence{}, indexed+1)
+			f.alive.Store(false)
+			f.renamed.Store(tc.shared)
+			deleted, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.deleted"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 将忙时待办留到未来，当前领取这条删除；不改变它的身份或结果。
+			if err := db.Db.Model(&models.EmbyWebhookRecord{}).Where("id = ?", observed.ID).Update("next_attempt_at", time.Now().Add(2*time.Hour).Unix()).Error; err != nil {
+				t.Fatal(err)
+			}
+			f.worker.process(t.Context(), claimWebhookTest(t))
+			wantStatus, wantCalls := models.EmbyWebhookDone, 1
+			var remaining int64
+			if tc.shared {
+				wantStatus, wantCalls, remaining = models.EmbyWebhookUnresolved, 0, 1
+			}
+			fresh = readWebhookTest(t, deleted.ID)
+			if fresh.Status != wantStatus || f.provider.calls != wantCalls {
+				t.Fatalf("delete status=%s reason=%s calls=%d, want status=%s calls=%d", fresh.Status, fresh.Reason, f.provider.calls, wantStatus, wantCalls)
+			}
+			countWebhookTest(t, &models.EmbyMediaItem{}, remaining)
+			countWebhookTest(t, &models.EmbyMediaSyncFile{}, remaining)
+			if tc.shared {
+				var item models.EmbyMediaItem
+				if err := db.Db.First(&item).Error; err != nil || item.ItemId != "202" {
+					t.Fatalf("shared item lost: %+v err=%v", item, err)
+				}
+				var relation models.EmbyMediaSyncFile
+				if err := db.Db.First(&relation).Error; err != nil || relation.EmbyItemId != 202 || relation.SyncFileId != f.file.ID || relation.SnapshotID != item.SnapshotID {
+					t.Fatalf("shared relation lost: %+v err=%v", relation, err)
+				}
+				if _, ok := f.provider.files["f1"]; !ok {
+					t.Fatal("shared cloud file lost")
+				}
+			}
+		})
 	}
 }
 
@@ -276,7 +350,7 @@ func TestWebhookWorkerDuplicateEventsAndTransientResultSave(t *testing.T) {
 	}
 	var failed bool
 	if err := db.Db.Callback().Update().Before("gorm:update").Register("test:result-save", func(tx *gorm.DB) {
-		if tx.Statement.Table == "emby_webhook_targets" && !failed {
+		if tx.Statement.Table == "emby_webhook_targets" && f.provider.calls > 0 && !failed {
 			failed = true
 			tx.AddError(errors.New("transient database save failure"))
 		}
@@ -315,7 +389,7 @@ func TestWebhookWorkerCancellationAndRestartKeepTargets(t *testing.T) {
 		t.Fatalf("canceled work lost: status=%s reason=%s attempts=%d", fresh.Status, fresh.Reason, fresh.Attempts)
 	}
 	targets, err := models.LoadEmbyWebhookTargets(t.Context(), record.ID)
-	if err != nil || len(targets) != 1 || targets[0].Attempts != 0 {
+	if err != nil || len(targets) != 1 || targets[0].Attempts != 1 {
 		t.Fatalf("targets=%+v err=%v", targets, err)
 	}
 	if err := models.RecoverEmbyWebhookWork(t.Context()); err != nil {
