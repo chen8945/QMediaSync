@@ -1,0 +1,41 @@
+{
+  "Title": "已删除了 测试媒体库 中的 QMS Audit Seasons - 第 1 季",
+  "Date": "2026-10-04T15:26:22.6231655Z",
+  "Event": "library.deleted",
+  "Severity": "Info",
+  "Item": {
+    "Name": "第 1 季",
+    "ServerId": "fixture-server-1",
+    "Id": "1483",
+    "DateCreated": "2026-10-04T15:11:22.0000000Z",
+    "DateModified": "2026-10-04T15:11:22.9998376Z",
+    "SortName": "第 1 季",
+    "ExternalUrls": [],
+    "Path": "/fixtures/official/tv/QMS Audit Seasons/Season 01",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "Season 01",
+    "IndexNumber": 1,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": true,
+    "ParentId": "1478",
+    "Type": "Season",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "SeriesName": "QMS Audit Seasons",
+    "SeriesId": "1478",
+    "PrimaryImageAspectRatio": 0.6666666666666666,
+    "SeriesPrimaryImageTag": "d086b171974c01f55c142463583beddf_639267234829838376",
+    "ImageTags": {
+      "Primary": "0f2fe6577e437cf511a584fdf4de1481_639267234829838376"
+    },
+    "BackdropImageTags": []
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

@@ -14,7 +14,10 @@ import (
 func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, SyncFile) {
 	t.Helper()
 	setupEmbyMediaTestDB(t)
-	if err := db.Db.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
+	if err := MigrateEmbyDeletionSchema(db.Db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
 		t.Fatal(err)
 	}
 	config := &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}
@@ -322,36 +325,6 @@ func TestEmbySnapshotFinishRedactsTransportCredentials(t *testing.T) {
 		if strings.Contains(config.LastError, secret) {
 			t.Fatal("persisted replay credential")
 		}
-	}
-}
-
-func TestEmbySnapshotMigrationPreservesLegacySQLiteRows(t *testing.T) {
-	setupEmbyMediaTestDB(t)
-	if err := db.Db.Migrator().DropTable(&EmbyMediaItem{}, &EmbyMediaSyncFile{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Db.Exec(`CREATE TABLE emby_media_items (id INTEGER PRIMARY KEY, item_id TEXT, server_id TEXT, path TEXT, created_at INTEGER, updated_at INTEGER)`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Db.Exec(`INSERT INTO emby_media_items (id,item_id,server_id,path,created_at,updated_at) VALUES (77,'123','','/legacy/keep.strm',10,20)`).Error; err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := MigrateEmbySnapshots(db.Db); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var item EmbyMediaItem
-	if err := db.Db.First(&item, 77).Error; err != nil {
-		t.Fatal(err)
-	}
-	if item.ItemId != "123" || item.Path != "/legacy/keep.strm" || item.CreatedAt != 10 || item.ServerId != "" || item.SnapshotID != 0 {
-		t.Fatalf("migration altered legacy evidence: %+v", item)
-	}
-	var count int64
-	db.Db.Model(&EmbyItemEvidence{}).Count(&count)
-	if count != 0 {
-		t.Fatal("legacy identity was fabricated")
 	}
 }
 

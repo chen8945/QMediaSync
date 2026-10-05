@@ -22,41 +22,14 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
+	"qmediasync/internal/requests"
 
 	"github.com/gin-gonic/gin"
 )
 
 const embyTempImagePrefix = "qms_emby_"
 
-type EmbyEvent struct {
-	Title    string `json:"Title"`
-	Date     string `json:"Date"`
-	Event    string `json:"Event"`
-	Severity string `json:"Severity"`
-	Server   struct {
-		Name    string `json:"Name"`
-		ID      string `json:"Id"`
-		Version string `json:"Version"`
-	} `json:"Server"`
-	Item struct {
-		Name              string            `json:"Name"`
-		ID                string            `json:"Id"`
-		Type              string            `json:"Type"`
-		IsFolder          bool              `json:"IsFolder"`
-		FileName          string            `json:"FileName"`
-		Path              string            `json:"Path"`
-		Overview          string            `json:"Overview"`
-		SeriesName        string            `json:"SeriesName"`
-		SeasonName        string            `json:"SeasonName"`
-		SeriesId          string            `json:"SeriesId"`
-		SeasonId          string            `json:"SeasonId"`
-		IndexNumber       int               `json:"IndexNumber"`
-		ParentIndexNumber int               `json:"ParentIndexNumber"`
-		ProductionYear    int               `json:"ProductionYear"`
-		Genres            []string          `json:"Genres"`
-		ImageTags         map[string]string `json:"ImageTags"`
-	} `json:"Item"`
-}
+type EmbyEvent = requests.EmbyWebhookRequest
 
 type newSeries struct {
 	ID          string        // 剧的 ID
@@ -82,29 +55,24 @@ var newSeriesBufferTickerStartedMu = sync.Mutex{}
 
 // Webhook Emby 事件回调（公开接口）
 // @Summary Emby Webhook
-// @Description 接收 Emby 的事件回调（library.new）并触发通知或元数据提取
+// @Description 持久接收条目同步与删除事件；成功仅表示已保存，后台核验后执行
 // @Tags Emby 管理
 // @Accept json
 // @Produce json
 // @Success 200 {object} object
-// @Failure 200 {object} object
+// @Failure 400 {object} object
+// @Failure 401 {object} object
+// @Failure 413 {object} object
+// @Failure 503 {object} object
 // @Router /emby/webhook [post]
 func Webhook(ctx *gin.Context) {
-	// 将请求的 body 内容完整打印到日志
-	var body []byte
-	if ctx.Request.Body != nil {
-		body, _ = io.ReadAll(ctx.Request.Body)
-		helpers.AppLogger.Infof("Emby Webhook body：%s", string(body))
-	}
-	if body == nil || (models.GlobalEmbyConfig != nil && (models.GlobalEmbyConfig.EmbyUrl == "" || models.GlobalEmbyConfig.EmbyApiKey == "")) {
-		ctx.JSON(http.StatusOK, gin.H{
-			"message": "webhook",
-		})
+	config, err := models.ReadEmbyConfigSnapshot()
+	if err != nil {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"message": "Webhook 配置读取失败"})
 		return
 	}
-
 	// 检查是否启用鉴权
-	if models.GlobalEmbyConfig.EnableAuth == 1 {
+	if config.EnableAuth == 1 {
 		// 优先从 X-API-Key 请求头读取，保留 api_key 查询参数兼容 Emby Webhook 配置。
 		apiKey := apiKeyFromRequest(ctx)
 		if apiKey == "" {
@@ -125,16 +93,39 @@ func Webhook(ctx *gin.Context) {
 		}
 	}
 
-	// 处理 body 内容，解析成 JSON。
-	var event EmbyEvent
-	// 如果解析失败，记录错误日志并返回
-	err := json.Unmarshal(body, &event)
+	// 鉴权后读取有限 JSON，不打印可能带播放凭据的原始 body。
+	if ctx.Request.Body == nil {
+		ctx.Request.Body = http.NoBody
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(ctx.Writer, ctx.Request.Body, requests.EmbyWebhookMaxBytes))
 	if err != nil {
-		helpers.AppLogger.Errorf("Emby Webhook 解析 JSON 失败：%v", err)
-		ctx.JSON(http.StatusOK, gin.H{
-			"message": "webhook",
-		})
+		status := http.StatusBadRequest
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			status = http.StatusRequestEntityTooLarge
+		}
+		ctx.JSON(status, gin.H{"message": "Webhook 请求体读取失败"})
 		return
+	}
+	event, err := requests.ParseEmbyWebhook(body)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if config.EmbyUrl == "" || config.EmbyApiKey == "" {
+		if event.Managed() {
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{"message": "Webhook 配置不完整"})
+		} else {
+			ctx.JSON(http.StatusOK, gin.H{"message": "webhook"})
+		}
+		return
+	}
+	if event.Managed() {
+		if _, err := emby.ReceiveWebhook(ctx.Request.Context(), event.ToEnvelope()); err != nil {
+			helpers.AppLogger.Warnf("Emby Webhook 持久接收失败，未确认保存")
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{"message": "Webhook 保存失败"})
+			return
+		}
+		// 同步 Emby 条目到本地与联动删除均交给应用生命周期内的持久 worker。
 	}
 	if event.Event == "library.new" {
 		// 新入库通知
@@ -152,10 +143,10 @@ func Webhook(ctx *gin.Context) {
 		}()
 		if event.Item.Type == "Movie" || event.Item.Type == "Episode" {
 			// 触发媒体信息提取
-			if models.GlobalEmbyConfig != nil && models.GlobalEmbyConfig.EnableExtractMediaInfo == 1 {
+			if config.EnableExtractMediaInfo == 1 {
 				go func() {
 					// 获取 Emby 地址和 Emby API Key。
-					url := fmt.Sprintf("%s/emby/Items/%s/PlaybackInfo?api_key=%s", models.GlobalEmbyConfig.EmbyUrl, event.Item.ID, models.GlobalEmbyConfig.EmbyApiKey)
+					url := fmt.Sprintf("%s/emby/Items/%s/PlaybackInfo?api_key=%s", config.EmbyUrl, event.Item.ID, config.EmbyApiKey)
 					if err := models.AddDownloadTaskFromEmbyMedia(url, event.Item.ID, event.Item.Name); err != nil && !errors.Is(err, models.ErrActiveDownloadTaskExists) {
 						helpers.AppLogger.Errorf("触发 Emby 信息提取失败：%v", err)
 					}
@@ -165,21 +156,7 @@ func Webhook(ctx *gin.Context) {
 			}
 		}
 	}
-	if event.Event == "library.new" || event.Event == "library.modified" {
-		// 同步 Emby 条目到本地，用于更新 QMediaSync 本地索引。
-		go func() {
-			if changed, err := emby.SyncEmbyItemByID(event.Item.ID); err != nil {
-				helpers.AppLogger.Warnf("Webhook 单条同步 Emby 条目失败，Item ID=%s，错误=%v", event.Item.ID, err)
-			} else if changed {
-				helpers.AppLogger.Infof("Webhook 单条同步 Emby 条目完成，Item ID=%s", event.Item.ID)
-			}
-		}()
-	}
 	if event.Event == "library.deleted" {
-		// 删除媒体通知
-		if helpers.IsRelease {
-			helpers.AppLogger.Infof("Emby 媒体已删除 %+v", event.Item)
-		}
 		// 触发通知
 		// 删除消息也应该按照新入库消息一样对剧集进行分组
 		go func() {
@@ -191,42 +168,8 @@ func Webhook(ctx *gin.Context) {
 				sendDeletedMovieNotification(event.Item.ID, event.Item.Name)
 			}
 		}()
-		if event.Item.Type == "Movie" || event.Item.Type == "Video" || event.Item.Type == "Episode" || event.Item.Type == "Season" || event.Item.Type == "Series" {
-			// 触发联动删除
-			if models.GlobalEmbyConfig != nil && models.GlobalEmbyConfig.EnableDeleteNetdisk == 1 {
-				// 检查是否允许删除媒体库
-				// if !models.IsDeleteNetdiskLibraryEnabled(event.) {
-				// 	helpers.AppLogger.Infof("Emby 媒体库 %s 未配置允许删除，跳过删除", event.Item.LibraryId)
-				// 	return
-				// }
-				var deleteErr error
-				switch event.Item.Type {
-				case "Movie":
-					deleteErr = models.DeleteNetdiskMovieByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
-				case "Video":
-					deleteErr = models.DeleteNetdiskVideoByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
-				case "Episode":
-					// 集：删除视频文件和元数据（NFO、封面）。
-					// 查找 Item.ID 对应的 SyncFileID。
-					deleteErr = models.DeleteNetdiskEpisodeByEmbyItemIdContext(ctx.Request.Context(), event.Item.ID)
-				case "Season":
-					deleteErr = models.DeleteNetdiskSeasonByItemIdContext(ctx.Request.Context(), event.Item.ID)
-				case "Series":
-					deleteErr = models.DeleteNetdiskTvshowByItemIdContext(ctx.Request.Context(), event.Item.ID)
-				default:
-				}
-				if deleteErr != nil {
-					helpers.AppLogger.Warnf("Webhook 联动删除未完成，保留本地索引，Item ID=%s：%v", event.Item.ID, deleteErr)
-				}
-				// 冻结计划只清理已完成的原快照关联，不能在此按 item/season 再次扩大清理。
-				ctx.JSON(http.StatusOK, gin.H{"message": "webhook"})
-				return
-			}
-			if err := deleteLocalEmbyItemForWebhook(event.Item.Type, event.Item.ID); err != nil {
-				helpers.AppLogger.Warnf("Webhook 删除本地 Emby 条目索引失败，Item ID=%s，类型=%s，错误=%v", event.Item.ID, event.Item.Type, err)
-			}
-		}
 	}
+
 	// 处理播放事件（playback.start、playback.pause、playback.stop）
 	if event.Event == "playback.start" || event.Event == "playback.pause" || event.Event == "playback.stop" {
 		go handlePlaybackEvent(body, event)
@@ -235,19 +178,6 @@ func Webhook(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{
 		"message": "webhook",
 	})
-}
-
-func deleteLocalEmbyItemForWebhook(itemType string, itemID string) error {
-	switch itemType {
-	case "Movie", "Video", "Episode":
-		return models.DeleteLocalEmbyItemByID(itemID)
-	case "Season":
-		return models.DeleteLocalEmbyItemsBySeasonID(itemID)
-	case "Series":
-		return models.DeleteLocalEmbyItemsBySeriesID(itemID)
-	default:
-		return nil
-	}
 }
 
 func createEmbyTempImagePath(itemID string) (string, error) {

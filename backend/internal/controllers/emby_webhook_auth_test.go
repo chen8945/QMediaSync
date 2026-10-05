@@ -19,8 +19,10 @@ func setupWebhookAPIKeyTest(t *testing.T) (*gin.Engine, string) {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
+	previousConfig, previousLogger := models.GlobalEmbyConfig, helpers.AppLogger
+	t.Cleanup(func() { models.GlobalEmbyConfig, helpers.AppLogger = previousConfig, previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	setupControllerTestDB(t, &models.User{}, &models.ApiKey{})
+	setupControllerTestDB(t, &models.User{}, &models.ApiKey{}, &models.EmbyConfig{})
 	user := &models.User{Username: "admin", Password: "hashed"}
 	if err := db.Db.Create(user).Error; err != nil {
 		t.Fatalf("创建用户失败: %v", err)
@@ -33,6 +35,10 @@ func setupWebhookAPIKeyTest(t *testing.T) (*gin.Engine, string) {
 		EmbyUrl:    "http://emby.example",
 		EmbyApiKey: "emby-api-key",
 		EnableAuth: 1,
+	}
+
+	if err := db.Db.Create(models.GlobalEmbyConfig).Error; err != nil {
+		t.Fatal(err)
 	}
 
 	r := gin.New()
@@ -73,6 +79,30 @@ func TestWebhookAPIKey支持Header并保留Query(t *testing.T) {
 
 			if w.Code != http.StatusOK {
 				t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestWebhookAPIKeyRejectsBeforeReadingBody(t *testing.T) {
+	for _, name := range []string{"missing", "invalid", "header_precedes_query", "unconfigured"} {
+		t.Run(name, func(t *testing.T) {
+			router, rawKey := setupWebhookAPIKeyTest(t)
+			request := httptest.NewRequest(http.MethodPost, "/emby/webhook", bytes.NewBufferString("invalid JSON"))
+			if name == "unconfigured" {
+				if err := db.Db.Model(&models.EmbyConfig{}).Where("id > 0").Update("emby_url", "").Error; err != nil {
+					t.Fatal(err)
+				}
+			} else if name != "missing" {
+				request.Header.Set(apiKeyHeaderName, "invalid-key")
+			}
+			if name == "header_precedes_query" {
+				request.URL.RawQuery = "api_key=" + rawKey
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("authentication must precede body parsing: %d %s", response.Code, response.Body.String())
 			}
 		})
 	}

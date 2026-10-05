@@ -28,6 +28,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/db/database"
 	"qmediasync/internal/directoryupload"
+	"qmediasync/internal/emby"
 	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -86,6 +87,10 @@ type App struct {
 }
 
 func (app *App) Start() {
+	if err := emby.StartWebhookWorker(); err != nil {
+		helpers.AppLogger.Errorf("启动 Emby 通知后台处理失败：%v", err)
+		return
+	}
 	// 启动外网 302 服务
 	startEmby302()
 	if helpers.IsRelease {
@@ -125,6 +130,11 @@ func (app *App) Start() {
 func (app *App) Stop() {
 	realtime.GlobalLifecycle.Shutdown()
 	app.shutdownHTTPServers()
+	webhookCtx, cancelWebhook := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := emby.ShutdownWebhookWorker(webhookCtx); err != nil {
+		helpers.AppLogger.Warnf("等待 Emby 通知后台处理结束失败：%v", err)
+	}
+	cancelWebhook()
 	// 关闭同步任务执行队列
 	synccron.PauseAllNewSyncQueues()
 	// 已交接账本使用独立生命周期；在日志关闭前有界取消和保存已知退出结果。

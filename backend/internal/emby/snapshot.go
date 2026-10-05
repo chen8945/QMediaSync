@@ -21,6 +21,80 @@ func prepareEmbyIndex(ctx context.Context, client *embyclientrestgo.Client, conf
 	return models.BeginEmbyIndexRead(serverID, config)
 }
 
+// prepareEmbyIndexForSync 在普通同步开始前恢复真实存活项的暂定删除屏障。
+// 所有恢复读取共用旧 token；整组释放后丢弃响应，从新 token 重新开始正常读取。
+func prepareEmbyIndexForSync(ctx context.Context, client *embyclientrestgo.Client, config *models.EmbyConfig) (models.EmbyIndexToken, bool, error) {
+	token, err := prepareEmbyIndex(ctx, client, config)
+	if err != nil {
+		return token, false, err
+	}
+	const pageSize = 100
+	var afterID uint
+	survivors := []string{}
+	seen := map[string]bool{}
+	queried := map[string]bool{}
+	for {
+		barriers, err := models.LoadEmbyDeletionBarriers(ctx, token, afterID, pageSize)
+		if err != nil {
+			return token, false, err
+		}
+		if len(barriers) == 0 {
+			break
+		}
+		afterID = barriers[len(barriers)-1].ID
+		// 隐藏分段可能无法按自身 ID 枚举。旧成员关系只帮助找到要重新读取的父项，
+		// 不能直接把历史分段当作存活；仍须由实际 AdditionalParts 响应确认。
+		readIDs, err := models.LoadEmbyDeletionBarrierReadIDs(ctx, token, barriers)
+		if err != nil {
+			return token, false, err
+		}
+		ids := make([]string, 0, len(readIDs))
+		requested := make(map[string]bool, len(readIDs))
+		for _, id := range readIDs {
+			if !seen[id] && !queried[id] {
+				ids = append(ids, id)
+				requested[id] = true
+				queried[id] = true
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		items, err := client.GetDeletionVerificationItems(ctx, strings.Join(ids, ","))
+		if err != nil {
+			return token, false, err
+		}
+		for _, item := range items {
+			if !requested[item.Id] {
+				return token, false, errors.New("Emby 存活核验返回未请求的条目")
+			}
+			if seen[item.Id] {
+				continue
+			}
+			snapshots, err := collectEmbySnapshots(ctx, client, item, "", "", "", 0)
+			if err != nil {
+				return token, false, err
+			}
+			for _, snapshot := range snapshots {
+				if !seen[snapshot.Item.ItemId] {
+					seen[snapshot.Item.ItemId] = true
+					survivors = append(survivors, snapshot.Item.ItemId)
+				}
+			}
+		}
+	}
+	if len(survivors) == 0 {
+		return token, false, nil
+	}
+	admitted, err := models.AdmitEmbyVerifiedSurvivors(ctx, token, survivors)
+	if err != nil || !admitted {
+		return token, false, err
+	}
+	// 不把旧响应挪到新版本下提交。调用方必须重新拉取所有实际入库数据。
+	token, err = prepareEmbyIndex(ctx, client, config)
+	return token, true, err
+}
+
 func collectEmbySnapshots(ctx context.Context, client *embyclientrestgo.Client, item embyclientrestgo.BaseItemDtoV2, libraryID, libraryName, runID string, seenAt int64) ([]models.EmbyItemSnapshot, error) {
 	type member struct {
 		item              embyclientrestgo.BaseItemDtoV2

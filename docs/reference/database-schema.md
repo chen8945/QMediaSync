@@ -62,7 +62,7 @@
 
 ### 重点迁移历史（35+）
 
-下表的“起始版本”对应迁移执行前的 `migrator.version_code`。迁移成功后，`UpdateVersionCode()` 会把版本推进到“目标版本”。版本 `1` 到 `34` 的历史补丁仍会对足够旧的数据库顺序执行，但其中多数只服务早期结构演进；需要排查这部分兼容性时，以 `backend/internal/models/migrator.go` 的对应分支为准。
+下表的“起始版本”对应迁移执行前的 `migrator.version_code`。迁移成功后，版本推进到“目标版本”。版本 `1` 到 `34` 的历史补丁仍会对足够旧的数据库顺序执行，但其中多数只服务早期结构演进；需要排查这部分兼容性时，以 `backend/internal/models/migrator.go` 的对应分支为准。
 
 | 起始版本 | 目标版本 | 变更 |
 | --- | --- | --- |
@@ -96,9 +96,9 @@
 | 62 | 63 | `settings` 和 `sync_paths` 新增 `exclude_name_regex`，以 JSON 字符串保存正则排除列表；旧记录初始化为空列表，原有 `exclude_name` 保持不变。 |
 | 63 | 64 | `settings` 新增 `upload_threads`，默认 `1`，以及全局 `multi_playback_enabled`，默认 `0`；迁移重试保留已有值，仅补齐缺列和默认值。 |
 | 64 | 65 | `syncs` 新增可空 `scan_result` 文本 JSON、可空 `ledger_status`、可空 `ledger_finished_at` 和 `ledger_error`，保存扫描结果与后台账本结果；`db_download_tasks` 新增 `replace_baseline` 和 `published_sha256`，保存元数据替换与重试所需信息；`strm_generation_tasks` 新增 `skip_reason` 和默认 `0` 的 `skipped_items`；`sync_files` 新增同目录查询索引，SQLite 另增同步目录与文件 ID 的查询索引；`strm_generation_tasks` 的等待与收尾任务新增匹配领取顺序的部分表达式索引。迁移失败后可重试，保留已有字段值，历史结果和终点不推算。 |
-| 65 | 66 | Emby 媒体项新增分段／版本成员、快照 ID 和代际，关联新增来源 ID 与快照 ID；新增单实例索引版本、条目状态及不可变证据表。迁移事务失败可重试，不修改历史媒体字段，不把空 Server ID 的旧关联认定为可靠删除证据。 |
+| 65 | 66 | Emby 媒体项新增分段／版本成员、快照 ID 和代际，关联新增来源 ID 与快照 ID；新增单实例索引版本、条目状态、含 `sidecars_json` 的不可变证据、`emby_webhook_records` 持久收件和 `emby_webhook_targets` 逐文件结果表。全部表／字段变更和版本推进在同一事务内完成，任一步失败均回滚并保留版本 65，可修复原因后重试。保留原媒体和关联数据，不从旧索引或当前同名文件推断历史删除身份。 |
 
-当前数据库版本是 `66`。
+当前数据库版本是 `66`。版本 65 尚无 Emby 身份证据和持久删除工作表，升级时统一创建完整结构；成功后再次启动保留已有证据和工作记录。
 
 ## 不变量
 
@@ -138,6 +138,8 @@
 | `strm_generation.source` | `upload_completed`、`webhook`、`remote_exists` |
 | `strm_generation.task_type` | `file`、`directory_scan`、`batch_files` |
 | `strm_generation.status` | `pending`、`running`、`finalizing`、`waiting_children`、`completed`、`failed`、`cancelled`、`skipped` |
+| `emby_webhook.status` | `pending`、`running`、`retry`、`unresolved`、`done` |
+| `emby_webhook_target.outcome` | 空值待处理、`deleted`、`already_absent`、`unresolved`、`failed` |
 | `emby_refresh.target_type` | `library`、`item` |
 | `backup.status` | `pending`、`running`、`completed`、`failed`、`cancelled`、`timeout` |
 | `backup.type` | `manual`、`auto` |
@@ -160,6 +162,9 @@
 | `db_upload_tasks(source, source_type, account_id, remote_full_path)` | 部分唯一索引 `idx_db_upload_tasks_active_target` | `remote_full_path` 非空且状态为等待上传、上传中、等待完成处理或正在完成处理时，同一上传来源和存储范围只能有一个任务；终态记录不参与约束。 |
 | `sync_path_idempotency_records.key_hash` | 唯一；`sync_path_id`、`status` 索引 | 同步目录创建请求的幂等键不能重复。 |
 | `emby_library_sync_paths(library_id, sync_path_id)` | 联合唯一 | Emby 媒体库与同步目录的关联不能重复。 |
+| `emby_webhook_targets(record_id, target_key)` | 联合唯一 | 同一记录中每个冻结物理代际只保存一份目标结果。 |
+| `emby_webhook_records(status, next_attempt_at)` | 普通索引 | 领取到期工作，未观察的新事件优先。 |
+| `emby_webhook_targets(server_id, server_config_key, target_key)` | 普通索引 | 跨事件复用同服务器、连接和物理代际的确认成功。 |
 | 各 `*_channel_configs.channel_id` | 唯一 | 一条通知渠道基础记录至多关联一份同类型配置。 |
 
 目录监控规则的重复范围由应用层校验，并没有对应的数据库联合唯一键；`notification_rules(channel_id, event_type)` 也没有联合唯一约束。
@@ -746,11 +751,29 @@ Emby 媒体项与同步文件的关联表。
 
 - `emby_index_states`：固定行 ID=1，保存核验的 `server_id`、同步范围摘要 `config_key`、服务连接摘要 `server_config_key` 和单调递增 `revision`。条目读取前取版本，提交／清旧与删除登记持有同一 SQL 写锁；实例或有效配置范围变化使旧版本失效并清除旧成功水位；不因全库模式下无效的选库字符串变化重置。
 - `emby_item_states`：`server_id + item_id` 唯一，保存 `generation`、`snapshot_id`、`identity_key`、`deleted` 和屏障 `revision`。删除屏障只允许经独立核验的调用方释放，释放仍递增全局版本。
-- `emby_item_evidences`：按 `server_id + item_id` 索引，保存同步范围／独立服务连接摘要、代际、内容摘要及 `item_json`、`sources_json`、`files_json` 文本。媒体快照保留来源 ID／ItemId，文件证据冻结 SyncFile、来源、账号主体、根目录、物理 file_id、大小／哈希／mtime 及候选不完整原因。
+- `emby_item_evidences`：按 `server_id + item_id` 索引，保存同步范围／独立服务连接摘要、代际、内容摘要及 `item_json`、`sources_json`、`files_json` 和 `sidecars_json` 文本。媒体快照保留来源 ID／ItemId，文件证据冻结 SyncFile、来源、账号主体、根目录、物理 file_id、大小／哈希／mtime 及候选不完整原因。
+- `sidecars_json` 在同步或提前观察时保存旁车文件列表，无旁车时写入 `[]`。空字符串或损坏 JSON 会使删除证据读取失败，不能降级为可执行的旧格式；也不能用当前账本补造历史旁车身份。
 - `config_key` 只约束同步提交与水位；删除身份使用 `server_id + server_config_key`，同步选库变化不会使同一服务的历史删除证据失效，也不构成删除白名单。
 - 新增历史证据去除播放 URL 中 userinfo、签名等查询凭据；已有播放字段继续使用原兼容语义。OpenList 可用对象 ID、SHA1、MD5 单独保存，不能将路径型 FileId 当作文件代际。
-- 完整全量只清当前媒体项／关联，不删除状态与历史证据。当前无自动历史清理；不得删除仍供未完成删除任务引用的证据。
+- 完整全量只清当前媒体项／关联，不删除状态与历史证据。完整父项响应已不包含仍带删除屏障的旧成员时，仅按旧快照／代际条件清当前媒体项的成员边；不改变该成员的 `Deleted`、状态快照／代际、历史成员证据、关联或已保存删除工作，不能准入未实际读到的 part。当前成员视图因此可与待核验的历史成员证据不同。当前无自动历史清理；不得删除仍供未完成删除任务引用的证据。
 - 旧索引不做推断回填，成功同步后建立真实证据。账号／根／物理路径或独立文件代际不完整时保留 `reason`，不能将候选直接用于网盘删除。
+
+### `emby_webhook_records`、`emby_webhook_targets`
+
+两表均嵌入 BaseModel，时间为 Unix 秒，纳入 `AllTables` 的建表、修复、JSON Lines 备份和恢复。没有独立消息平台或前端任务模型。
+
+- `emby_webhook_records`：每次接收独立插入，`event`、`item_id`、`item_type`、`server_id` 和 `server_config_key` 固定输入范围；不将 item ID／事件日期当作永久去重键。`authorized` 固定接收时授权，关闭期间事件不能因后来启用而补删。
+- `payload_json` 只保存规范化、脱敏字段；`input_json` 保存收件时冻结的成员和文件身份；`plan_json` 在任何远端删除前保存完整计划。上述身份与授权不得在重试中替换。
+- 增强候选只在已有历史成员范围内核对，匹配结果保存为 `input_json.candidate_keys`；缺少映射记录原因，不扩大删除范围。明确路径或候选身份冲突的事件保持 `unresolved`，不对正确当前身份登记删除屏障。
+- `observation_json` 引用提前查询取得的不可变证据及预期条目状态行 ID、状态版本、旧快照和代际；保存早期观察不改当前媒体项、关联或同步水位。读取前的 token 同时记录不可变证据 ID 高水位，保存观察时拒绝对应条目在读取期间才提交的新快照；不因其他条目提交而拒绝。删除收件只在该条目的预期状态仍匹配且未删除时采用，再与删除屏障和事件一起原子保存；其他条目删除导致的全局版本变化不丢弃这份已保存的独立观察。此前删除因 API 故障留下屏障而实际条目仍存活时，普通全量／增量／单条同步在读取前版本下分页取得屏障候选，完整核验实际存活的物理项集合；`new/modified` 另核验领取且集合必须包含事件主 ID。共同 helper 先核对整个实际读取集合的服务器、版本、证据水位与当前屏障，再一次事务释放匹配屏障并使全局版本增加 1；任一冲突或写失败整组回滚。主项、确认分段与版本一并恢复，必须丢弃解除前的全部响应并重新取 token/GET，旧删除的状态与授权不改变。隐藏 part 无法直接枚举时，只把同服务器／连接且状态一致的历史 `PartOfItemID`／`VersionOfItemID` 补为只读父项查询入口；仍须由实际 GET／AdditionalParts 返回的完整物理身份决定是否准入，不能把历史父项关系本身当作成员存活证明。
+- `deletion_revision` 是本次登记屏障的版本；`claim_token` 只属于本次领取。领取后所有状态／计划／结果写入都核验记录 ID、领取令牌与 `running`，旧执行者不能覆盖恢复后的结果。
+- `status` 为 `pending`、`running`、`retry`、`unresolved` 或 `done`；`attempts`、`next_attempt_at`、`reason` 保存有界重试与未解决原因。`observed_at` 区分尚未取得早期观察机会的新通知。启动将遗留 `running` 恢复为 `retry`，保留计划、逐目标结果和重试次数；忙时／取消不消耗网络失败次数。
+- `emby_webhook_targets`：`record_id + target_key` 唯一，`target_json` 固定执行文件、成员和目录证据；`outcome` 区分确认删除、原身份已不存在、证据不足和失败。成功不回退为失败，`attempts` 只在保存失败结果时增加。跨事件成功按服务／连接和物理代际复用，其中百度 `PickCode` 承载的 `fs_id` 也参与目标键，不能把同路径、大小和 mtime 的替换文件当成旧成功；仍需执行层核验当前授权与身份。
+- `sidecars_json` 在普通同步或早期观察时冻结已有旁车的账号、根、文件 ID 和代际；历史空字段表示没有删除前身份，保留旁车，不在收到删除时用当前同名文件补造历史。精确归属和完整目录核验仍适用。
+
+本地收尾只处理明确指定且已独立确认原 ID 消失的冻结成员，复核当前服务器连接、领取令牌、删除版本、快照、代际与不可变证据；保留新 ID、`SyncFile` 和历史证据。复用成功结果进行收尾也核对证据与删除状态，不能清掉已重新准入的存活条目或备份恢复后碰巧同 ID 的不同对象。
+
+当前不自动清理事件、逐目标结果或不可变证据，完成记录仍保留以支持重放核验；正常运行不删除或重用证据 ID，备份恢复前停止观察者，是读取前证据水位成立的前提。每条新增身份快照／持久收件／目标记录的 JSON 编码限制为 8 MiB，后续诊断先脱敏并截断到 4 KiB；包含诊断更新的记录仍低于现有备份恢复 16 MiB 的单行上限。超限收件整体回滚，超限计划不执行。原始 Webhook 输入另有入口大小限制。恢复旧备份可能保留缺少模型文件的新表，因此后台不能仅凭行 ID 认定一致，仍须校验连接、证据、代际、账号和文件身份。运行生命周期及备份暂停规则见 [Emby 媒体库同步](../architecture/emby-library-sync.md)。
 
 ### `emby_libraries`
 

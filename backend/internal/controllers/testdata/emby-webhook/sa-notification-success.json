@@ -1,0 +1,40 @@
+{
+  "Title": "神医助手 - 媒体深度删除",
+  "Description": "Item Name:\nQMS SA NotificationOnly\n\nItem Path:\n/fixtures/sa/movies/QMS SA NotificationOnly\n\nMount Paths:\n/fixtures/sa/targets/NotificationOnly/QMS SA NotificationOnly.mp4",
+  "Date": "2026-10-04T18:51:54.3142051Z",
+  "Event": "deep.delete",
+  "Severity": "Info",
+  "User": {
+    "Id": "fixture-user-1",
+    "Name": "Fixture user"
+  },
+  "Item": {
+    "Name": "QMS SA NotificationOnly",
+    "ServerId": "fixture-server-1",
+    "Id": "1785",
+    "DateCreated": "2026-10-04T18:43:19.0000000Z",
+    "DateModified": "2026-10-04T18:43:19.0000000Z",
+    "SortName": "QMS SA NotificationOnly",
+    "ExternalUrls": [],
+    "Path": "/fixtures/sa/movies/QMS SA NotificationOnly/QMS SA NotificationOnly.strm",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS SA NotificationOnly.strm",
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1783",
+    "Type": "Movie",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "MediaType": "Video"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

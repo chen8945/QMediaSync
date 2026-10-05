@@ -27,13 +27,14 @@ type deletionMatrixVideo struct {
 }
 
 type deletionMatrix struct {
-	config *EmbyConfig
-	token  EmbyIndexToken
-	roots  map[uint]SyncPath
-	files  map[string]SyncFile
-	remote map[string]EmbyRemoteFile
-	fail   map[string]bool
-	called []string
+	snapshots []EmbyItemSnapshot
+	config    *EmbyConfig
+	token     EmbyIndexToken
+	roots     map[uint]SyncPath
+	files     map[string]SyncFile
+	remote    map[string]EmbyRemoteFile
+	fail      map[string]bool
+	called    []string
 }
 
 func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMatrix {
@@ -118,10 +119,19 @@ func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMa
 		item.MediaSourcePath = source.Path
 		snapshots = append(snapshots, EmbyItemSnapshot{Item: item, Sources: []EmbySnapshotSource{source}, MembersComplete: video.kind != "Video"})
 	}
+	matrix.snapshots = snapshots
 	if err := ApplyEmbySnapshots(matrix.token, snapshots); err != nil {
 		t.Fatal(err)
 	}
 	return matrix
+}
+
+// observeSidecars 明确模拟元数据已生成后的 Emby 观察；接收删除时不能回填历史。
+func (matrix *deletionMatrix) observeSidecars(t *testing.T) {
+	t.Helper()
+	if err := ApplyEmbySnapshots(matrix.token, matrix.snapshots); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (matrix *deletionMatrix) addFile(t *testing.T, account uint, id, directory, name string, video, meta, isDir bool) SyncFile {
@@ -357,6 +367,7 @@ func TestEmbyDeletionMatrixSidecarOwners(t *testing.T) {
 			// 列表完整也不授权删除未知内容或目录。
 			matrix.addFile(t, 1, "unknown-file", "/movies", "unrelated.txt", false, false, false)
 			matrix.addFile(t, 1, "unknown-folder", "/movies", "Extras", false, false, true)
+			matrix.observeSidecars(t)
 			plan := matrix.plan(t, "101", "Movie")
 			var got []string
 			for _, target := range plan.Targets {
@@ -386,6 +397,7 @@ func TestEmbyDeletionMatrixSameDirectoryAcrossAccounts(t *testing.T) {
 	})
 	matrix.addFile(t, 1, "metadata", "/movies", "Movie.nfo", false, true, false)
 	matrix.addFile(t, 2, "metadata", "/movies", "Movie.nfo", false, true, false)
+	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "101", "Movie")
 	assertDeletionMatrixIDs(t, deletionMatrixActiveIDs(plan), []string{"1:file-101", "1:metadata"})
 }
@@ -473,6 +485,7 @@ func TestEmbyDeletionMatrixEpisodePart2CanReindex(t *testing.T) {
 	})
 	matrix.addFile(t, 1, "meta-part1", "/movies", "Show - part1.nfo", false, true, false)
 	matrix.addFile(t, 1, "meta-part2", "/movies", "Show - part2.nfo", false, true, false)
+	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "201", "Episode")
 	results := matrix.execute(plan)
 	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-201", "1:meta-part1"})
@@ -522,6 +535,7 @@ func TestEmbyDeletionMatrixPartialFailureRetainsEvidenceAndSidecars(t *testing.T
 	matrix.addFile(t, 1, "meta-part2", "/movies", "Movie - part2.nfo", false, true, false)
 	matrix.addFile(t, 1, "meta-version", "/movies", "Movie - Extended.nfo", false, true, false)
 	matrix.fail["1:file-102"] = true
+	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "101", "Movie")
 	results := matrix.execute(plan)
 	assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-101", "1:file-102", "1:meta-part1"})
@@ -569,6 +583,7 @@ func TestEmbyDeletionMatrixSharedSidecarAllOwnersSelected(t *testing.T) {
 		{id: "102", kind: "Episode", name: "Movie.mp4", season: "900", series: "800"},
 	})
 	matrix.addFile(t, 1, "shared-metadata", "/movies", "Movie.nfo", false, true, false)
+	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "900", "Season")
 	want := []string{"1:file-101", "1:file-102", "1:shared-metadata"}
 	assertDeletionMatrixIDs(t, deletionMatrixActiveIDs(plan), want)
@@ -589,6 +604,7 @@ func TestEmbyDeletionMatrixSharedSidecarAllOwnersSelected(t *testing.T) {
 func TestEmbyDeletionMatrixNewVideoProtectsPlannedSubtitle(t *testing.T) {
 	matrix := setupDeletionMatrix(t, []deletionMatrixVideo{{id: "101", name: "Movie.mkv"}})
 	matrix.addFile(t, 1, "subtitle", "/movies", "Movie.zh.srt", false, true, false)
+	matrix.observeSidecars(t)
 	plan := matrix.plan(t, "101", "Movie")
 	assertDeletionMatrixIDs(t, deletionMatrixActiveIDs(plan), []string{"1:file-101", "1:subtitle"})
 	// 新使用者尚未进入 QMS 台账；执行时的新鲜远端清单仍必须保护其同 stem 字幕。

@@ -30,21 +30,15 @@ func TestEmby两条链路不互相调用(t *testing.T) {
 	}
 }
 
-func TestEmbyWebhook使用单条同步和本地删除(t *testing.T) {
+func TestEmbyWebhook使用持久接收且不同步执行删除(t *testing.T) {
 	source := readSourceForBoundaryTest(t, "emby.go")
-	if strings.Contains(source, "IncrementalSyncEmbyMediaItems") {
-		t.Fatal("Webhook 不应调用按库扫描的旧增量同步，应按 item ID 单条同步")
+	if !strings.Contains(source, "ReceiveWebhook") {
+		t.Fatal("Webhook 必须在回复之前持久保存")
 	}
-	if strings.Contains(source, "time.Sleep(1 * time.Minute)") {
-		t.Fatal("Webhook 不应延迟 1 分钟后再按库扫描")
-	}
-	if !strings.Contains(source, "SyncEmbyItemByID") {
-		t.Fatal("Webhook 新增或修改事件应调用 SyncEmbyItemByID")
-	}
-	if !strings.Contains(source, "DeleteLocalEmbyItemByID") ||
-		!strings.Contains(source, "DeleteLocalEmbyItemsBySeasonID") ||
-		!strings.Contains(source, "DeleteLocalEmbyItemsBySeriesID") {
-		t.Fatal("Webhook 删除事件应清理本地 Emby 条目索引和关联")
+	for _, forbidden := range []string{"SyncEmbyItemByID(", "DeleteNetdisk", "deleteLocalEmbyItemForWebhook(", "Emby Webhook body"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("请求不能执行后台动作或输出原始载荷: %s", forbidden)
+		}
 	}
 }
 

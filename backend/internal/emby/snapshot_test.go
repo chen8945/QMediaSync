@@ -21,7 +21,10 @@ import (
 
 func setupSnapshotTestTables(t *testing.T) {
 	t.Helper()
-	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyLibrarySyncPath{}, &models.EmbyIndexState{}, &models.EmbyItemState{}, &models.EmbyItemEvidence{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}); err != nil {
+	if err := models.MigrateEmbyDeletionSchema(db.Db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -37,7 +37,7 @@ var AllTables = []any{
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
 	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
-	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{},
+	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{}, EmbyWebhookRecord{}, EmbyWebhookTarget{},
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
 }
@@ -800,11 +800,16 @@ func Migrate() {
 		migrator.UpdateVersionCode(db.Db)
 	}
 	if migrator.VersionCode == 65 {
-		if err := MigrateEmbySnapshots(db.Db); err != nil {
-			helpers.AppLogger.Errorf("迁移 Emby 物理快照和身份版本失败：%v", err)
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if err := MigrateEmbyDeletionSchema(tx); err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 66).Error
+		}); err != nil {
+			helpers.AppLogger.Errorf("迁移 Emby 物理快照与持久删除工作失败：%v", err)
 			return
 		}
-		migrator.UpdateVersionCode(db.Db)
+		migrator.VersionCode = 66
 	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
@@ -819,6 +824,20 @@ func Migrate() {
 		}
 	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)
+}
+
+// MigrateEmbyDeletionSchema 补齐 Emby 索引、身份及持久删除结构，不从旧媒体行生成可信证据。
+// 已有库由调用方在同一事务内执行结构变更和版本推进。
+func MigrateEmbyDeletionSchema(tx *gorm.DB) error {
+	return tx.AutoMigrate(
+		&EmbyMediaItem{},
+		&EmbyMediaSyncFile{},
+		&EmbyIndexState{},
+		&EmbyItemState{},
+		&EmbyItemEvidence{},
+		&EmbyWebhookRecord{},
+		&EmbyWebhookTarget{},
+	)
 }
 
 func findDuplicateAccountValues(dbConn *gorm.DB, column string) ([]string, error) {

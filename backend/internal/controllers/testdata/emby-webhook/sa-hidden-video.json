@@ -1,0 +1,46 @@
+{
+  "Title": "神医助手 - 媒体深度删除",
+  "Description": "Item Name:\nQMS SA Part Child (2091)\n\nItem Path:\n/fixtures/sa/movies/QMS SA Part Child (2091)/QMS SA Part Child (2091) - part2.strm\n\nMount Paths:\nhttp://media.example.invalid/base.mp4?pickcode=fixture-pickcode-1",
+  "Date": "2026-10-04T18:32:01.4035067Z",
+  "Event": "deep.delete",
+  "Severity": "Info",
+  "User": {
+    "Id": "fixture-user-1",
+    "Name": "Fixture user"
+  },
+  "Item": {
+    "Name": "QMS SA Part Child (2091)",
+    "ServerId": "fixture-server-1",
+    "Id": "1700",
+    "DateCreated": "2026-10-04T18:17:59.0000000Z",
+    "DateModified": "2026-10-04T18:17:59.0000000Z",
+    "ExtraType": "AdditionalPart",
+    "SortName": "QMS SA Part Child (2091)",
+    "ExternalUrls": [],
+    "Path": "/fixtures/sa/movies/QMS SA Part Child (2091)/QMS SA Part Child (2091) - part2.strm",
+    "Overview": "Disposable QMS audit fixture",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS SA Part Child (2091) - part2.strm",
+    "ProductionYear": 2091,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1699",
+    "Type": "Video",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "PrimaryImageAspectRatio": 1,
+    "ImageTags": {
+      "Primary": "c85e7e5d61dcf7b2a09ace562ffa4d8b_639267234829798376"
+    },
+    "BackdropImageTags": [],
+    "MediaType": "Video"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

@@ -60,6 +60,7 @@ type EmbyItemEvidence struct {
 	ItemJSON        string `json:"item_json" gorm:"type:text"`
 	SourcesJSON     string `json:"sources_json" gorm:"type:text"`
 	FilesJSON       string `json:"files_json" gorm:"type:text"`
+	SidecarsJSON    string `json:"sidecars_json" gorm:"type:text"`
 }
 
 // EmbyFrozenFile 是不含凭据的物理文件证据。Reason 非空的证据不能直接用于删除。
@@ -110,6 +111,8 @@ type EmbyIndexToken struct {
 	ConfigKey       string
 	ServerConfigKey string
 	Revision        int64
+	// EvidenceHighWatermark 阻止早期观察采用远端读取开始后才提交的条目状态。
+	EvidenceHighWatermark uint
 }
 
 // EmbyServerConfigIdentity 独立标识服务连接，不含同步选库，不能把同步范围当作删除白名单。
@@ -179,7 +182,11 @@ func BeginEmbyIndexRead(serverID string, config *EmbyConfig) (token EmbyIndexTok
 				return err
 			}
 		}
-		token = EmbyIndexToken{ServerID: serverID, ConfigKey: key, ServerConfigKey: state.ServerConfigKey, Revision: state.Revision}
+		var evidenceID uint
+		if err := tx.Model(&EmbyItemEvidence{}).Select("COALESCE(MAX(id), 0)").Scan(&evidenceID).Error; err != nil {
+			return err
+		}
+		token = EmbyIndexToken{ServerID: serverID, ConfigKey: key, ServerConfigKey: state.ServerConfigKey, Revision: state.Revision, EvidenceHighWatermark: evidenceID}
 		return nil
 	})
 	if err == nil && resetCursor {
@@ -323,7 +330,12 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 		return err
 	}
 	if state.Deleted {
-		return ErrEmbyItemDeleted
+		// 父项的完整当前响应只更新搜索索引中的成员边。未完成删除仍引用旧证据，
+		// 不改其状态/快照/关联，也不把没有重新读取的成员当成存活对象准入。
+		if state.SnapshotID != member.SnapshotID || state.Generation != member.Generation {
+			return nil
+		}
+		return tx.Model(&EmbyMediaItem{}).Where("id = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", member.ID, token.ServerID, member.ItemId, member.SnapshotID, member.Generation).Update(field, "").Error
 	}
 	var evidence EmbyItemEvidence
 	if err := tx.First(&evidence, member.SnapshotID).Error; err != nil {
@@ -340,7 +352,7 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 	}
 	evidence.ID = 0 // 保留原观察时间与 FilesJSON；这次没有重新读取 Emby 或网盘身份。
 	evidence.ItemJSON = embyJSON(frozenItem)
-	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON})
+	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON, evidence.SidecarsJSON})
 	if err := tx.Create(&evidence).Error; err != nil {
 		return err
 	}
@@ -368,55 +380,10 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 	if state.Deleted {
 		return fmt.Errorf("%w: %s", ErrEmbyItemDeleted, item.ItemId)
 	}
-	files, err := resolveEmbySnapshotFiles(tx, *snapshot)
+	evidence, files, err := buildEmbySnapshotEvidence(tx, token, snapshot, &state)
 	if err != nil {
 		return err
 	}
-	identityKey := embyDigest([]any{item.ItemId, item.Path, item.DateCreated, files})
-	if state.ID != 0 && state.IdentityKey == identityKey {
-		var current EmbyMediaItem
-		err := tx.Where("item_id = ? AND server_id = ?", item.ItemId, token.ServerID).First(&current).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		if item.PartOfItemID == "" {
-			item.PartOfItemID = current.PartOfItemID
-		}
-		if item.VersionOfItemID == "" && !snapshot.VersionMembershipKnown {
-			item.VersionOfItemID = current.VersionOfItemID
-		}
-	}
-
-	if state.ID == 0 {
-		state = EmbyItemState{ServerID: token.ServerID, ItemID: item.ItemId}
-	}
-	if state.IdentityKey != identityKey {
-		state.Generation++
-	}
-	item.Generation = state.Generation
-	item.SnapshotID = 0
-	stableItem := *item
-	stableItem.BaseModel, stableItem.LastSeenSyncRun, stableItem.LastSeenAt = BaseModel{}, "", 0
-	stableItem.Path = sanitizeEmbyEvidencePath(stableItem.Path)
-	stableItem.MediaSourcePath = sanitizeEmbyEvidencePath(stableItem.MediaSourcePath)
-	stableItem.PickCode = sanitizeEmbyEvidencePath(stableItem.PickCode)
-	safeSources := append([]EmbySnapshotSource(nil), snapshot.Sources...)
-	for i := range safeSources {
-		safeSources[i].Path = sanitizeEmbyEvidencePath(safeSources[i].Path)
-		safeSources[i].PickCode = sanitizeEmbyEvidencePath(safeSources[i].PickCode)
-	}
-	evidence := EmbyItemEvidence{
-		ServerID:        token.ServerID,
-		ConfigKey:       token.ConfigKey,
-		ServerConfigKey: token.ServerConfigKey,
-		ItemID:          item.ItemId,
-		Generation:      state.Generation,
-		IdentityKey:     identityKey,
-		ItemJSON:        embyJSON(stableItem),
-		SourcesJSON:     embyJSON(safeSources),
-		FilesJSON:       embyJSON(files),
-	}
-	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON})
 	var previous EmbyItemEvidence
 	if state.SnapshotID != 0 {
 		if err := tx.First(&previous, state.SnapshotID).Error; err != nil {
@@ -458,8 +425,70 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 			}
 		}
 	}
-	state.IdentityKey, state.SnapshotID, state.Revision = identityKey, evidence.ID, token.Revision
+	state.IdentityKey, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.ID, token.Revision
 	return tx.Save(&state).Error
+}
+
+func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot, state *EmbyItemState) (EmbyItemEvidence, []EmbyFrozenFile, error) {
+	item := &snapshot.Item
+	files, err := resolveEmbySnapshotFiles(tx, *snapshot)
+	if err != nil {
+		return EmbyItemEvidence{}, nil, err
+	}
+	identityKey := embyDigest([]any{item.ItemId, item.Path, item.DateCreated, files})
+	if state.ID != 0 && state.IdentityKey == identityKey {
+		var current EmbyMediaItem
+		err := tx.Where("item_id = ? AND server_id = ?", item.ItemId, token.ServerID).First(&current).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return EmbyItemEvidence{}, nil, err
+		}
+		if item.PartOfItemID == "" {
+			item.PartOfItemID = current.PartOfItemID
+		}
+		if item.VersionOfItemID == "" && !snapshot.VersionMembershipKnown {
+			item.VersionOfItemID = current.VersionOfItemID
+		}
+	}
+
+	if state.ID == 0 {
+		*state = EmbyItemState{ServerID: token.ServerID, ItemID: item.ItemId}
+	}
+	if state.IdentityKey != identityKey {
+		state.Generation++
+	}
+	item.Generation = state.Generation
+	item.SnapshotID = 0
+	stableItem := *item
+	stableItem.BaseModel, stableItem.LastSeenSyncRun, stableItem.LastSeenAt = BaseModel{}, "", 0
+	stableItem.Path = sanitizeEmbyEvidencePath(stableItem.Path)
+	stableItem.MediaSourcePath = sanitizeEmbyEvidencePath(stableItem.MediaSourcePath)
+	stableItem.PickCode = sanitizeEmbyEvidencePath(stableItem.PickCode)
+	safeSources := append([]EmbySnapshotSource(nil), snapshot.Sources...)
+	for i := range safeSources {
+		safeSources[i].Path = sanitizeEmbyEvidencePath(safeSources[i].Path)
+		safeSources[i].PickCode = sanitizeEmbyEvidencePath(safeSources[i].PickCode)
+	}
+	evidence := EmbyItemEvidence{
+		ServerID:        token.ServerID,
+		ConfigKey:       token.ConfigKey,
+		ServerConfigKey: token.ServerConfigKey,
+		ItemID:          item.ItemId,
+		Generation:      state.Generation,
+		IdentityKey:     identityKey,
+		ItemJSON:        embyJSON(stableItem),
+		SourcesJSON:     embyJSON(safeSources),
+		FilesJSON:       embyJSON(files),
+	}
+	sidecars, err := freezeEmbySnapshotSidecars(tx, files)
+	if err != nil {
+		return EmbyItemEvidence{}, nil, err
+	}
+	evidence.SidecarsJSON = embyJSON(sidecars)
+	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON, evidence.SidecarsJSON})
+	if err := checkEmbyWebhookSize(evidence); err != nil {
+		return EmbyItemEvidence{}, nil, err
+	}
+	return evidence, files, nil
 }
 
 func resolveEmbySnapshotFiles(tx *gorm.DB, snapshot EmbyItemSnapshot) ([]EmbyFrozenFile, error) {
@@ -700,13 +729,6 @@ func embyJSON(value any) string { data, _ := json.Marshal(value); return string(
 func embyDigest(value any) string {
 	sum := sha256.Sum256([]byte(embyJSON(value)))
 	return hex.EncodeToString(sum[:])
-}
-
-// MigrateEmbySnapshots 增加身份字段和证据表，不将旧空服务器索引升级为可信删除证据。
-func MigrateEmbySnapshots(conn *gorm.DB) error {
-	return conn.Transaction(func(tx *gorm.DB) error {
-		return tx.AutoMigrate(&EmbyMediaItem{}, &EmbyMediaSyncFile{}, &EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{})
-	})
 }
 
 // sanitizeEmbyEvidencePath 去除新增历史证据中的 URL 凭据，现有播放字段仍保持兼容。

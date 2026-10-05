@@ -1,0 +1,39 @@
+{
+  "Title": "已删除了 测试媒体库 中的 QMS Audit Series",
+  "Date": "2026-10-04T15:25:41.5394776Z",
+  "Event": "library.deleted",
+  "Severity": "Info",
+  "Item": {
+    "Name": "QMS Audit Series",
+    "ServerId": "fixture-server-1",
+    "Id": "1479",
+    "DateCreated": "2026-10-04T15:11:22.9958376Z",
+    "DateModified": "2026-10-04T15:11:22.9958376Z",
+    "SortName": "QMS Audit Series",
+    "ExternalUrls": [],
+    "Path": "/fixtures/official/tv/QMS Audit Series",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS Audit Series",
+    "ProductionYear": 2091,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": true,
+    "ParentId": "1467",
+    "Type": "Series",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "AirDays": [],
+    "PrimaryImageAspectRatio": 0.6666666666666666,
+    "ImageTags": {
+      "Primary": "1e39d4d70620db7521112dd0e6f2da33_639267234829838376"
+    },
+    "BackdropImageTags": []
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

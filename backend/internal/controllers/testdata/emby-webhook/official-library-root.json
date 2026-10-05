@@ -1,0 +1,34 @@
+{
+  "Title": "已删除了 测试媒体库 中的 tv",
+  "Date": "2026-10-04T15:49:53.5134906Z",
+  "Event": "library.deleted",
+  "Severity": "Info",
+  "Item": {
+    "Name": "tv",
+    "ServerId": "fixture-server-1",
+    "Id": "1467",
+    "DateCreated": "2026-10-04T15:11:22.9918376Z",
+    "DateModified": "2026-10-04T15:11:22.9918376Z",
+    "SortName": "tv",
+    "ExternalUrls": [],
+    "Path": "/fixtures/official/tv",
+    "Taglines": [],
+    "FileName": "tv",
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": true,
+    "ParentId": "1",
+    "Type": "Folder",
+    "TagItems": [],
+    "PrimaryImageAspectRatio": 1,
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "PrimaryImageItemId": "1478",
+    "PrimaryImageTag": "d086b171974c01f55c142463583beddf_639267234829838376"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

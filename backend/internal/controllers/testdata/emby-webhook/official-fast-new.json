@@ -1,0 +1,41 @@
+{
+  "Title": "测试媒体库 上新建 QMS Audit Fast - S1, Ep1 - Fast Episode",
+  "Date": "2026-10-04T15:31:39.3464217Z",
+  "Event": "library.new",
+  "Severity": "Info",
+  "Item": {
+    "Name": "Fast Episode",
+    "ServerId": "fixture-server-1",
+    "Id": "1514",
+    "DateCreated": "2026-10-04T15:30:02.0000000Z",
+    "DateModified": "2026-10-04T15:30:02.5838307Z",
+    "SortName": "Fast Episode",
+    "ExternalUrls": [],
+    "Path": "/fixtures/official/tv/QMS Audit Fast/Season 01/QMS Audit Fast - S01E01.strm",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS Audit Fast - S01E01.strm",
+    "IndexNumber": 1,
+    "ParentIndexNumber": 1,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1513",
+    "Type": "Episode",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "SeriesName": "QMS Audit Fast",
+    "SeriesId": "1512",
+    "SeasonId": "1513",
+    "SeasonName": "第 1 季",
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "MediaType": "Video"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

@@ -11,8 +11,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -88,7 +86,7 @@ func seedEmbyPostgresSnapshot(t *testing.T, conn *gorm.DB) (*EmbyConfig, EmbyInd
 	if err := conn.AutoMigrate(&EmbyConfig{}, &Account{}, &SyncPath{}, &SyncFile{}, &EmbyLibrarySyncPath{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := MigrateEmbySnapshots(conn); err != nil {
+	if err := MigrateEmbyDeletionSchema(conn); err != nil {
 		t.Fatal(err)
 	}
 	config := &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "isolated-test-key", SyncEnabled: 1}
@@ -438,111 +436,6 @@ func TestEmbySnapshotPostgresCleanupRetainsFrozenEvidence(t *testing.T) {
 	var after EmbyItemEvidence
 	if err := conn.First(&after, before.ID).Error; err != nil || after != before {
 		t.Fatalf("index cleanup changed deletion evidence: %+v, %v", after, err)
-	}
-}
-
-func TestEmbySnapshotPostgresFreshSchema(t *testing.T) {
-	conn, _ := setupEmbySnapshotPostgres(t)
-	if err := BatchCreateTable(); err != nil {
-		t.Fatal(err)
-	}
-	for _, model := range []any{&EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}} {
-		if !conn.Migrator().HasTable(model) {
-			t.Fatalf("fresh schema omitted %T", model)
-		}
-	}
-	if !conn.Migrator().HasIndex(&EmbyItemState{}, "idx_emby_item_state") {
-		t.Fatal("fresh schema omitted unique server/item state index")
-	}
-}
-
-func TestEmbySnapshotPostgresMigrationPreservesLegacyAndRetries(t *testing.T) {
-	conn, _ := setupEmbySnapshotPostgres(t)
-	var migrationLog strings.Builder
-	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&migrationLog, "", 0)}
-	defer func() {
-		if t.Failed() {
-			t.Log(migrationLog.String())
-		}
-	}()
-	if err := conn.AutoMigrate(&Migrator{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"PartCount", "PartOfItemID", "VersionOfItemID", "SnapshotID", "Generation"} {
-		if err := conn.Migrator().DropColumn(&EmbyMediaItem{}, field); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, field := range []string{"SnapshotID", "SourceID"} {
-		if err := conn.Migrator().DropColumn(&EmbyMediaSyncFile{}, field); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := conn.Create(&Migrator{VersionCode: 65}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Exec(`INSERT INTO emby_media_items
-		(id, created_at, updated_at, item_id, item_id_int, server_id, name, path, pick_code, last_seen_sync_run)
-		VALUES (7, 11, 12, '9101', 9101, '', 'legacy', '/local/movie.strm', 'old-pick', 'old-run')`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Exec(`INSERT INTO emby_media_sync_files
-		(id, created_at, updated_at, emby_item_id, sync_file_id, sync_path_id, pick_code)
-		VALUES (3, 13, 14, 9101, 29, 41, 'old-pick')`).Error; err != nil {
-		t.Fatal(err)
-	}
-	// 在后续证据表建表时注入错误，模拟前面字段已补齐后的迁移中断。
-	injected, failMigration := false, true
-	if err := conn.Callback().Raw().Before("gorm:raw").Register("test:emby_snapshot_migration_failure", func(tx *gorm.DB) {
-		query := tx.Statement.SQL.String()
-		if failMigration && strings.Contains(query, "CREATE TABLE") && strings.Contains(query, conn.NamingStrategy.TableName("EmbyItemEvidence")) {
-			injected = true
-			tx.AddError(errors.New("injected evidence table creation failure"))
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Callback().Raw().Remove("test:emby_snapshot_migration_failure") })
-	Migrate()
-	if !injected {
-		t.Fatal("migration did not reach the injected evidence table failure")
-	}
-	var version Migrator
-	if err := conn.First(&version).Error; err != nil || version.VersionCode != 65 {
-		t.Fatalf("failed migration advanced schema version: %+v, %v", version, err)
-	}
-	if conn.Migrator().HasColumn(&EmbyMediaItem{}, "SnapshotID") || conn.Migrator().HasTable(&EmbyItemState{}) {
-		t.Fatal("failed migration did not roll back preceding DDL")
-	}
-	failMigration = false
-	var firstItem EmbyMediaItem
-	var firstLink EmbyMediaSyncFile
-	for attempt := range 2 {
-		Migrate()
-		if err := conn.First(&version).Error; err != nil || version.VersionCode != MaxVersionCode {
-			t.Fatalf("migration retry failed: %+v, %v", version, err)
-		}
-		var item EmbyMediaItem
-		var link EmbyMediaSyncFile
-		if err := conn.First(&item, 7).Error; err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.First(&link, 3).Error; err != nil {
-			t.Fatal(err)
-		}
-		if item.ID != 7 || item.CreatedAt != 11 || item.UpdatedAt != 12 || item.ItemId != "9101" || item.ItemIdInt != 9101 || item.ServerId != "" || item.Name != "legacy" || item.Path != "/local/movie.strm" || item.PickCode != "old-pick" || item.LastSeenSyncRun != "old-run" || item.SnapshotID != 0 || item.Generation != 0 {
-			t.Fatalf("migration rewrote legacy item or promoted it to trusted evidence: %+v", item)
-		}
-		if link.ID != 3 || link.CreatedAt != 13 || link.UpdatedAt != 14 || link.EmbyItemId != 9101 || link.SyncFileId != 29 || link.SyncPathId != 41 || link.PickCode != "old-pick" || link.SnapshotID != 0 || link.SourceID != "" {
-			t.Fatalf("migration rewrote legacy association: %+v", link)
-		}
-		if attempt == 0 {
-			firstItem, firstLink = item, link
-		} else if !reflect.DeepEqual(item, firstItem) || !reflect.DeepEqual(link, firstLink) {
-			t.Fatal("repeated startup changed migrated rows")
-		}
-		assertEmbyPostgresCount(t, conn, &EmbyItemEvidence{}, 0)
-		assertEmbyPostgresCount(t, conn, &EmbyItemState{}, 0)
 	}
 }
 

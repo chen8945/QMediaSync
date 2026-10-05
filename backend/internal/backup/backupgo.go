@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +20,17 @@ import (
 var pauseTasks = stopAllTasks
 var resumeTasks = startAllTasks
 var zipDir = helpers.ZipDir
+var stopWebhookWorker = emby.StopWebhookWorker
+var startWebhookWorker = emby.StartWebhookWorker
 
 // 备份之前先停止所有同步任务、上传下载任务、定时任务
 func stopAllTasks() error {
+	// Webhook 收件和后台执行独立于同步 busy 标记；必须等待退出后才能导出或替换表。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := stopWebhookWorker(ctx); err != nil {
+		return fmt.Errorf("停止 Emby Webhook 后台处理失败：%w", err)
+	}
 	synccron.PauseAllNewSyncQueues()
 	if synccron.SyncCron != nil {
 		synccron.SyncCron.Stop()
@@ -54,6 +63,9 @@ func startAllTasks() error {
 		models.GlobalUploadQueue.Start()
 	}
 	emby.SetEmbySyncRunning(false)
+	if err := startWebhookWorker(); err != nil {
+		return fmt.Errorf("恢复 Emby Webhook 后台处理失败：%w", err)
+	}
 	return nil
 }
 

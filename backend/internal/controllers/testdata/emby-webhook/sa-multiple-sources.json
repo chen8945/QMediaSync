@@ -1,0 +1,41 @@
+{
+  "Title": "神医助手 - 媒体深度删除",
+  "Description": "Item Name:\nQMS SA Local Scope\n\nItem Path:\n/fixtures/sa/movies/QMS SA LocalMovieVersions (2095)\n\nMount Paths:\n/fixtures/sa/targets/LocalMovieVersions/LocalVersions - 1080p.mp4\n/fixtures/sa/targets/LocalMovieVersions/LocalVersions - 2160p.mp4",
+  "Date": "2026-10-04T18:37:44.3241596Z",
+  "Event": "deep.delete",
+  "Severity": "Info",
+  "User": {
+    "Id": "fixture-user-1",
+    "Name": "Fixture user"
+  },
+  "Item": {
+    "Name": "QMS SA Local Scope",
+    "ServerId": "fixture-server-1",
+    "Id": "1746",
+    "DateCreated": "2026-10-04T18:37:17.0000000Z",
+    "DateModified": "2026-10-04T18:37:17.0000000Z",
+    "SortName": "QMS SA Local Scope",
+    "ExternalUrls": [],
+    "Path": "/fixtures/sa/movies/QMS SA LocalMovieVersions (2095)/QMS SA LocalMovieVersions (2095) - 1080p.strm",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS SA LocalMovieVersions (2095) - 1080p.strm",
+    "ProductionYear": 2095,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1739",
+    "Type": "Movie",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "MediaType": "Video"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

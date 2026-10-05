@@ -1,0 +1,86 @@
+[
+  {
+    "fixture": "official-fast-new.json",
+    "capture": "official-webhook/events/2026-10-04T15-31-39.401291+00-00-ff4da095.json",
+    "capture_sha256": "a28140474feeda9d314e0ddede0788c3f5a466780b1930be7259c530c51b8e9b",
+    "original_body_sha256": null,
+    "fixture_sha256": "1b02306e7f5792f61dd0bf54525745e8d4a27dd1f6e0eb615b3d58b0adfe0834"
+  },
+  {
+    "fixture": "official-fast-deleted.json",
+    "capture": "official-webhook/events/2026-10-04T15-31-39.512503+00-00-3fed72c6.json",
+    "capture_sha256": "782291268f030fd61b864c56b23de5fbbc6a7a8ff7525b6aafc773bbe078959f",
+    "original_body_sha256": null,
+    "fixture_sha256": "e0bb5fb03a5bc6282b72d9e3ad6164bf9e91c3b066bb9d9034c700524124e903"
+  },
+  {
+    "fixture": "official-season.json",
+    "capture": "official-webhook/events/2026-10-04T15-26-22.683048+00-00-44099179.json",
+    "capture_sha256": "2c0450c861f11d8754ec302f3a124146239141088449a573953e8412d1b28a1f",
+    "original_body_sha256": null,
+    "fixture_sha256": "d1c7930260a616da8f86f8b650b042abee5d88cc5daa0e439b02f3879b2a332f"
+  },
+  {
+    "fixture": "official-series.json",
+    "capture": "official-webhook/events/2026-10-04T15-25-41.612755+00-00-1e29ef7a.json",
+    "capture_sha256": "c06168705e8b8153730a856a73f49b415f6f9f31e0f35871927da6231e9b18aa",
+    "original_body_sha256": null,
+    "fixture_sha256": "1372561d60a535e68db271d420ba7c5da272c970aa2a67c0b57c469a72b5e973"
+  },
+  {
+    "fixture": "official-library-root.json",
+    "capture": "official-webhook/events/2026-10-04T15-49-53.567388+00-00-3a8a79b3.json",
+    "capture_sha256": "c9ec5d92fe326f00435dec2d76ef908352e894849f26e743fbea97cf4f3f2f7b",
+    "original_body_sha256": null,
+    "fixture_sha256": "81eb42b0d888a65f2d2848e1f5b0a5148ce355cfbe5052cfb5550d53965f269b"
+  },
+  {
+    "fixture": "mik-notification-success.json",
+    "capture": "mediainfokeeper-webhook/events/2026-10-04T17-51-31.623142+00-00-e3170621.json",
+    "capture_sha256": "0ee4223093698183c073c392de910d70b0d99750201e25ecff64cadbcac4066e",
+    "original_body_sha256": "6bb6012a2a30c2a0a97cb7dd510a61cbb402a0e492a6d071bf2f5138f3a1b22c",
+    "fixture_sha256": "60fc9f27c7457fb06caa644ebbfae9edc0314d6b8296868bd5c41e3c289017ee"
+  },
+  {
+    "fixture": "sa-notification-success.json",
+    "capture": "strmassistant-webhook/events/2026-10-04T18-51-54.424594+00-00-34ffa857.json",
+    "capture_sha256": "5432137596236238a9854636f83dd054f1bf825d955f2cbf2cf69ada30e5ece5",
+    "original_body_sha256": "b94f9a700b99ef007708ef7392a9079be3ba5646d8424a1ebd7a975204fe3ca1",
+    "fixture_sha256": "5c42d5979e3800c2da273b16d9aeb3318cb7974085f2105da1fe7586ef4b17c2"
+  },
+  {
+    "fixture": "sa-notification-failure.json",
+    "capture": "strmassistant-webhook/events/2026-10-04T18-51-54.788510+00-00-2c15eb4a.json",
+    "capture_sha256": "1214617bc0b95965b3e885b8cf0be19845cf43da2b13875e27b9cbfd862d4279",
+    "original_body_sha256": "54d962a8eebe48b897c6e723a4db03e77dd65435cf58a58c1d4b9c3b15ae0709",
+    "fixture_sha256": "7b490572cc6ffd7592a86ef03cb6bfa1f03be98858005fdaf76e586ba75ed0a4"
+  },
+  {
+    "fixture": "sa-multiple-sources.json",
+    "capture": "strmassistant-webhook/events/2026-10-04T18-37-44.429045+00-00-a5d8379d.json",
+    "capture_sha256": "fbf0ece28df8986fc9d409556ccf17ddf8af5162efe70b97425e1073e1f330ad",
+    "original_body_sha256": "8481eca02339a673a31863f5d8ce52e775c5396dbaa2e1a847b88b14d8507e5e",
+    "fixture_sha256": "92002a335761110d00527c445fdd6b7492eaffc204fba78169816b7d13c90b5d"
+  },
+  {
+    "fixture": "sa-newline-comma.json",
+    "capture": "strmassistant-webhook/events/2026-10-04T18-44-15.555143+00-00-3bf34789.json",
+    "capture_sha256": "111448e999c1093c5505eb9e736a237455699ccf8cfe790a12e81443657e79b9",
+    "original_body_sha256": "6a4f2ead527e62af2094b6f41fe3bb075652d3f3585f2f29238d0c9a03b92ec6",
+    "fixture_sha256": "7d1ff425343aec4d0f889aa891887d68634bcc4eebcb15b79e670d57e264a694"
+  },
+  {
+    "fixture": "sa-hidden-video.json",
+    "capture": "strmassistant-webhook/events/2026-10-04T18-32-01.455881+00-00-1f7289f6.json",
+    "capture_sha256": "69ba3c04df61b753f25f482ed28559989df97f5e40b28a3f4615e25ed6086686",
+    "original_body_sha256": "a5ec158cf9aed15891c3e372ae14415c3f0827bbffedd888aebd78779fdc14d5",
+    "fixture_sha256": "cea99058533ac448a1caf4f54eebcfe3350e4dd3141cd03e11101203d7c142c9"
+  },
+  {
+    "fixture": "sa-official-mirror.json",
+    "capture": "strmassistant-webhook/mirror/events/2026-10-04T18-51-54.368387+00-00-63c7adc9.json",
+    "capture_sha256": "91635c3359473171e0db42d0c4765bf7167c3f4b9fb01701d907ef4a9f03b56f",
+    "original_body_sha256": "b9fa7d58ae5ee1e4a329ed2afd471de1602ab045421e5f81ec315f03b9c8f388",
+    "fixture_sha256": "54e6141b4d75f67f92939142dd27967ef43b57b2618dd79ce49b4499d756c644"
+  }
+]

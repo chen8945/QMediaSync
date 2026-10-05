@@ -271,8 +271,13 @@ func (c *Client) getSnapshotJSON(ctx context.Context, path string, params url.Va
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Emby 快照请求状态码：%d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(result); err != nil {
 		return fmt.Errorf("解析 Emby 快照响应失败：%w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("Emby 快照响应含有多余内容")
 	}
 	return nil
 }
@@ -663,7 +668,13 @@ func (c *Client) GetItemDetailByUser(itemId string, userID string) (*BaseItemDto
 // 通过 item ID 查询所属的媒体库 ID，返回数组。
 // 先查询 item 的 Ancestors，再用 ancestor 路径精确匹配 /Library/VirtualFolders 的 Locations。
 func (c *Client) GetItemLibraryId(itemId string) ([]VirtualFolderDto, error) {
-	ancestors, err := c.GetItemAncestors(itemId)
+	return c.GetItemLibraryIDContext(context.Background(), itemId)
+}
+
+// GetItemLibraryIDContext 支持后台生命周期取消的所属媒体库查询。
+func (c *Client) GetItemLibraryIDContext(ctx context.Context, itemId string) ([]VirtualFolderDto, error) {
+	var ancestors []AncestorDto
+	err := c.getSnapshotJSON(ctx, "/Items/"+url.PathEscape(itemId)+"/Ancestors", nil, &ancestors)
 	if err != nil {
 		return nil, err
 	}
@@ -671,7 +682,8 @@ func (c *Client) GetItemLibraryId(itemId string) ([]VirtualFolderDto, error) {
 		return nil, fmt.Errorf("Emby 条目 %s ancestors 为空，无法解析所属媒体库", itemId)
 	}
 	// 查询顶层文件夹路径对应的媒体库 ID
-	virtualFolders, err := c.GetLibraryVirtualFolders()
+	var virtualFolders []VirtualFolderDto
+	err = c.getSnapshotJSON(ctx, "/Library/VirtualFolders", nil, &virtualFolders)
 	if err != nil {
 		return nil, err
 	}

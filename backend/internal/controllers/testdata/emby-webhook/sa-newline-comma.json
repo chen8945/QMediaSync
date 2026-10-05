@@ -1,0 +1,48 @@
+{
+  "Title": "神医助手 - 媒体深度删除",
+  "Description": "Item Name:\nQMS SA Unicode\n\nItem Path:\n/fixtures/sa/movies/QMS SA OddFilename\n\nMount Paths:\n/fixtures/sa/targets/OddFilename/目标, [版本]\n第二行.mp4",
+  "Date": "2026-10-04T18:44:15.4449845Z",
+  "Event": "deep.delete",
+  "Severity": "Info",
+  "User": {
+    "Id": "fixture-user-1",
+    "Name": "Fixture user"
+  },
+  "Item": {
+    "Name": "QMS SA Unicode",
+    "ServerId": "fixture-server-1",
+    "Id": "1788",
+    "DateCreated": "2026-10-04T18:44:14.0000000Z",
+    "DateModified": "2026-10-04T18:44:14.0000000Z",
+    "Container": "mp4",
+    "SortName": "QMS SA Unicode",
+    "ExternalUrls": [],
+    "Path": "/fixtures/sa/movies/QMS SA OddFilename/QMS SA 中文, [版本]\n第二行 (2097).mp4",
+    "Taglines": [],
+    "Genres": [],
+    "RunTimeTicks": 10000000,
+    "Size": 1977,
+    "FileName": "QMS SA 中文, [版本]\n第二行 (2097).mp4",
+    "Bitrate": 15816,
+    "ProductionYear": 2097,
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1787",
+    "Type": "Movie",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "MediaType": "Video",
+    "MimeType": "video/mp4",
+    "Width": 320,
+    "Height": 180
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "Title": "已删除了 测试媒体库 中的 QMS SA NotificationOnly",
+  "Date": "2026-10-04T18:51:54.3135510Z",
+  "Event": "library.deleted",
+  "Severity": "Info",
+  "Item": {
+    "Name": "QMS SA NotificationOnly",
+    "ServerId": "fixture-server-1",
+    "Id": "1785",
+    "DateCreated": "2026-10-04T18:43:19.0000000Z",
+    "DateModified": "2026-10-04T18:43:19.0000000Z",
+    "SortName": "QMS SA NotificationOnly",
+    "ExternalUrls": [],
+    "Path": "/fixtures/sa/movies/QMS SA NotificationOnly/QMS SA NotificationOnly.strm",
+    "Taglines": [],
+    "Genres": [],
+    "FileName": "QMS SA NotificationOnly.strm",
+    "RemoteTrailers": [],
+    "ProviderIds": {},
+    "IsFolder": false,
+    "ParentId": "1783",
+    "Type": "Movie",
+    "Studios": [],
+    "GenreItems": [],
+    "TagItems": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "MediaType": "Video"
+  },
+  "Server": {
+    "Name": "Fixture Emby",
+    "Id": "fixture-server-1",
+    "Version": "4.10.1.0"
+  }
+}

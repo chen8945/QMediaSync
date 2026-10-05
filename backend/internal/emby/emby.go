@@ -129,7 +129,7 @@ func PerformEmbySync() (result int, err error) {
 		}
 	}
 
-	token, err = prepareEmbyIndex(context.Background(), client, config)
+	token, _, err = prepareEmbyIndexForSync(context.Background(), client, config)
 	if err != nil {
 		return 0, err
 	}
@@ -255,11 +255,16 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 		}
 	}
 
-	token, err = prepareEmbyIndex(context.Background(), client, config)
+	var recoveredSurvivors bool
+	token, recoveredSurvivors, err = prepareEmbyIndexForSync(context.Background(), client, config)
 	if err != nil {
 		return 0, err
 	}
 	minDateLastSaved := buildMinDateLastSaved(config.LastSavedCursorAt, embyIncrementalCursorOverlapSeconds)
+	if recoveredSurvivors {
+		// 失败删除后的存活项可能没有新的 DateLastSaved；本轮从头读取，但仍不清旧。
+		minDateLastSaved = buildMinDateLastSaved(0, embyIncrementalCursorOverlapSeconds)
+	}
 	handledItemIDs := make(map[string]struct{})
 	for _, lib := range libs {
 		gerr := client.FetchMediaItemsByLibraryID(
@@ -302,6 +307,14 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 
 // SyncEmbyItemByID 按 item ID 从 Emby 查询并同步单个条目。
 func SyncEmbyItemByID(itemID string) (changed bool, err error) {
+	return SyncEmbyItemByIDContext(context.Background(), itemID)
+}
+
+// SyncEmbyItemByIDContext 允许后台服务停止时取消远端单条同步。
+func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if strings.TrimSpace(itemID) == "" {
 		return false, nil
 	}
@@ -344,13 +357,13 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 	}()
 
 	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
-	token, err = prepareEmbyIndex(context.Background(), client, config)
+	token, _, err = prepareEmbyIndexForSync(ctx, client, config)
 	if err != nil {
 		return false, err
 	}
 	var found *embyclientrestgo.BaseItemDtoV2
 	err = client.FetchMediaItemsByLibraryID(
-		context.Background(),
+		ctx,
 		embyclientrestgo.EmbyItemsQuery{
 			IDs:              itemID,
 			Limit:            1,
@@ -376,7 +389,7 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 		helpers.AppLogger.Warnf("Webhook 单条同步跳过不支持的 Emby 条目类型：%s %s", itemID, found.Type)
 		return false, nil
 	}
-	libraryID, libraryName, err := resolveEmbyItemLibrary(client, found.Id)
+	libraryID, libraryName, err := resolveEmbyItemLibraryContext(ctx, client, found.Id)
 	if err != nil {
 		return false, err
 	}
@@ -385,7 +398,7 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 		return false, nil
 	}
 
-	snapshots, err := collectEmbySnapshots(context.Background(), client, *found, libraryID, libraryName, "", helpers.NowUnix())
+	snapshots, err := collectEmbySnapshots(ctx, client, *found, libraryID, libraryName, "", helpers.NowUnix())
 	if err != nil {
 		return false, err
 	}
@@ -397,7 +410,11 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 }
 
 func resolveEmbyItemLibrary(client *embyclientrestgo.Client, itemID string) (libraryID string, libraryName string, err error) {
-	libraries, err := client.GetItemLibraryId(itemID)
+	return resolveEmbyItemLibraryContext(context.Background(), client, itemID)
+}
+
+func resolveEmbyItemLibraryContext(ctx context.Context, client *embyclientrestgo.Client, itemID string) (libraryID string, libraryName string, err error) {
+	libraries, err := client.GetItemLibraryIDContext(ctx, itemID)
 	if err != nil {
 		return "", "", err
 	}
