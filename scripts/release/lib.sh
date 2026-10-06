@@ -1,7 +1,28 @@
 # shellcheck shell=bash
 
+# 终端着色：仅在标准输出为交互终端且未设置 NO_COLOR 时启用；
+# 非交互场景（管道、CI、测试）保持纯文本，输出内容不变
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'
+  C_TITLE=$'\033[1;36m'   # 阶段标题与输入提示：粗体青
+  C_OK=$'\033[32m'        # 成功结果：绿
+  C_WARN=$'\033[33m'      # 警示与回滚提示：黄
+  C_ERR=$'\033[1;31m'     # 错误与失败：粗体红
+else
+  C_RESET=""
+  C_TITLE=""
+  C_OK=""
+  C_WARN=""
+  C_ERR=""
+fi
+
+say_title() { printf '%s%s%s\n' "$C_TITLE" "$*" "$C_RESET"; }
+say_ok()    { printf '%s%s%s\n' "$C_OK" "$*" "$C_RESET"; }
+say_warn()  { printf '%s%s%s\n' "$C_WARN" "$*" "$C_RESET"; }
+say_err()   { printf '%s%s%s\n' "$C_ERR" "$*" "$C_RESET"; }
+
 die() {
-  echo "错误: $*" >&2
+  printf '%s错误: %s%s\n' "$C_ERR" "$*" "$C_RESET" >&2
   exit 1
 }
 
@@ -16,14 +37,28 @@ escape_regex() {
   printf '%s' "$1" | sed 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
-validate_release_tag() {
+is_valid_release_tag() {
+  # 校验 tag 格式并把版本号写入 TARGET_MAJOR/MINOR/PATCH；失败时返回非 0 而不终止脚本，
+  # 供交互菜单在无效输入后重试。失败时不清空 TARGET_*：推导模式下这些值仍与当前 TAG 对应，
+  # 成功路径会连同 TAG 一起重新赋值。
   local tag="$1"
   if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    return 1
+  fi
+  # shellcheck disable=SC2034  # TARGET_* 由本目录其他脚本 source 后读取
+  TARGET_MAJOR="${BASH_REMATCH[1]}"
+  # shellcheck disable=SC2034
+  TARGET_MINOR="${BASH_REMATCH[2]}"
+  # shellcheck disable=SC2034
+  TARGET_PATCH="${BASH_REMATCH[3]}"
+  return 0
+}
+
+validate_release_tag() {
+  local tag="$1"
+  if ! is_valid_release_tag "$tag"; then
     die "tag 格式必须是 v<major>.<minor>.<patch>，例如 v0.15.3；大版本请使用 v16.0.0"
   fi
-  TARGET_MAJOR="${BASH_REMATCH[1]}"
-  TARGET_MINOR="${BASH_REMATCH[2]}"
-  TARGET_PATCH="${BASH_REMATCH[3]}"
 }
 
 validate_release_input() {

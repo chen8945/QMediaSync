@@ -67,26 +67,41 @@ scripts/release/release.sh minor
 scripts/release/release.sh major
 ```
 
-使用 `patch`、`minor`、`major` 时，脚本会先显示推导出的发布版本，并提供确认输入框。直接回车会使用推导版本；也可以输入 `v<major>.<minor>.<patch>` 手动覆盖，手动输入的版本会走同一套格式和递增关系校验。
+使用 `patch`、`minor`、`major` 时，脚本会先显示推导出的发布版本并进入确认菜单：直接回车使用推导版本，也可以输入 `v<major>.<minor>.<patch>` 覆盖，覆盖输入走同一套格式和递增关系校验。
+
+首次使用或调整脚本后，可先只读预览或在沙箱中完整演练：
+
+```bash
+# 只执行检查并预览发布说明，不修改任何文件、分支或远端；显式 tag 时无需交互
+scripts/release/release.sh --dry-run v0.xx.xx
+
+# 在临时沙箱克隆中完整走一遍发布流程（含提交、打 tag 和推送到沙箱远端），真实仓库与远端不受影响
+scripts/release/release.sh --simulate patch
+```
+
+`--simulate` 会把仓库镜像克隆到临时目录并在其中原样运行同一段流程，结束时询问是否删除沙箱：回车默认删除，输入 `k` 保留，便于检查沙箱内生成的 `CHANGELOG.md` 与 `.changes/`。模拟基于本地引用，不校验与真实远端的竞争状态，也不会触发 GitHub workflow。
 
 ## 发布脚本行为
 
 `scripts/release/release.sh` 和 `scripts/release/gen-changelog.sh` 共享 `scripts/release/lib.sh` 中的 tag、版本号和重复发布校验逻辑。
 
+交互遵循统一约定：所有确认步骤回车即为安全默认；无效输入（如格式错误的覆盖版本）提示后重试，不会终止脚本；`q` 随时中止；仅在最后执行提交、打 tag、推送等外部动作前需要输入完整 `yes`。major/minor 发布不再单独输入 `minor yes` / `major yes`，改为在版本确认和最终确认中展示醒目警示。
+
+输出使用轻量配色：阶段标题与输入提示为粗体青色，成功结果为绿色，警示与回滚提示为黄色，错误为红色。在非交互终端（管道、CI）或设置了 `NO_COLOR` 时自动禁用，输出保持纯文本。
+
 该脚本会：
 
-- 校验 tag 格式必须为 `v<major>.<minor>.<patch>`，例如 `v0.15.3`。
-- 使用 `patch`、`minor`、`major` 推导版本时，提示确认推导版本；直接回车继续，也可输入合法 tag 覆盖。
-- 校验 tag 必须大于当前最新版本；如果 minor 或 major 版本增加，还会分别要求输入 `minor yes` 或 `major yes` 额外确认。
+- 前置执行全部零成本检查：命令存在性、工作区干净、本地与远端分支存在、本地 `dev` 包含 `origin/dev`、远端无同名 tag。
+- 校验 tag 格式必须为 `v<major>.<minor>.<patch>`，例如 `v0.15.3`，且必须大于当前最新版本。
 - 同步 `main`，并把本地 `dev` 快进合入 `main`。
-- 读取上一个 `v*` 标签至今的提交，按类型分组生成 `.changes/v0.xx.xx.md`，作为 GitHub Release 正文。
-- 把本版本段落插入 `CHANGELOG.md` 顶部，保留历史内容。
+- 读取上一个 `v*` 标签至今的提交，按类型分组生成 `.changes/v0.xx.xx.md`，作为 GitHub Release 正文；把本版本段落插入 `CHANGELOG.md` 顶部，保留历史内容。
 - 拒绝重复版本：如果本地已存在同名 git tag、`.changes/<tag>.md`，或 `CHANGELOG.md` 已包含该版本段落，命令会直接失败。
-- 展示 `CHANGELOG.md` 和 `.changes/<tag>.md` 的 diff，等待输入 `yes` 确认。
-- 在 `main` 上提交 `chore: release <tag>`。
-- 创建 annotated tag：`git tag -a <tag> -m "Release <tag>"`。
-- 推送 `main` 和 tag 触发 release workflow。
-- 将 release commit 快进同步回 `dev` 并推送 `dev`。
+- 展示 `CHANGELOG.md` 与 `.changes/<tag>.md` 的 diff 进入审查菜单：输入 `e` 编辑发布说明（优先 `VISUAL` / `EDITOR`，缺省回退 `GIT_EDITOR` / `core.editor`，最后探测 vi / nano / vim）并自动同步回 `CHANGELOG.md`；推导模式下输入 `v` 可返回重新选择版本；最终确认输入 `b` 可返回审查。
+- 在 `main` 上提交 `chore: release <tag>`，创建 annotated tag：`git tag -a <tag> -m "Release <tag>"`，推送 `main` 和 tag 触发 release workflow，最后将 release commit 快进同步回 `dev` 并推送 `dev`。
+- 中止发布（`q` 或输入流关闭）会还原 `CHANGELOG.md`、删除自动生成的发布说明并切回原分支；手动编辑过的发布说明保留在 `.changes/<tag>.md`。
+- 提交之后的步骤失败时，打印当前分支、`main` / tag / `dev` 的推送状态和对应的恢复或回退命令。
+
+`--dry-run` 执行上述全部检查，并临时检出 `dev` 让 git-cliff 预览发布说明（显示后切回），不写入 `.changes/`、不修改 `CHANGELOG.md`、不创建或推送任何分支、提交或 tag；`main` 无法快进合并 `dev` 时会直接报错。
 
 ## GitHub Actions 发布
 

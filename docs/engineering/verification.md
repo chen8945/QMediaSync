@@ -220,6 +220,12 @@ Vitest 5 通过 `vite.config.ts` 中的 `environments.client.resolve.noExternal:
 docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 ```
 
+发布脚本的交互、回滚、dry-run 和沙箱模拟验证（临时仓库 + git-cliff 替身，不触碰真实仓库与远端；修改 `scripts/release/` 时必须运行）：
+
+```bash
+python3 scripts/tests/test_release.py
+```
+
 跨平台构建、GitHub Actions 和 FPK 打包以 [发布流程](../operations/release.md) 为准。
 
 ## CI 覆盖边界
