@@ -30,7 +30,7 @@ const (
 // EmbyWebhookMaxStoredBytes 低于备份 JSON Lines 的 16 MiB 单行限制，覆盖 JSON 转义开销。
 const EmbyWebhookMaxStoredBytes = 8 << 20
 
-var ErrEmbyWebhookClaimLost = errors.New("Emby 通知工作领取已失效")
+var ErrEmbyWebhookClaimLost = errors.New("Emby 通知已由其他任务处理，跳过本次")
 
 // EmbyWebhookCandidate 仅保存脱敏候选，不能替代独立历史身份。
 type EmbyWebhookCandidate struct {

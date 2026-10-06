@@ -378,12 +378,12 @@ func deletionDetailAbsenceError(body []byte, err error) error {
 		Errno int             `json:"errno"`
 	}
 	if jsonErr := json.Unmarshal(body, &response); jsonErr != nil {
-		return fmt.Errorf("115 删除详情响应无法确认缺失：%w", jsonErr)
+		return fmt.Errorf("115 网盘未能确认文件是否已删除：%w", jsonErr)
 	}
 	state := strings.TrimSpace(string(response.State))
 	if (state != "false" && state != "0") ||
 		(response.Code != 0 && response.Errno != 0 && response.Code != response.Errno) {
-		return fmt.Errorf("115 删除详情响应缺少明确失败标记或错误码矛盾")
+		return fmt.Errorf("115 网盘返回的删除结果不明确，需要重新确认")
 	}
 	return err
 }

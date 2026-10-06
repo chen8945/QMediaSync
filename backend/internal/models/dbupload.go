@@ -458,7 +458,7 @@ func (task *DbUploadTask) Upload() {
 	}
 	claimed, err := task.claimPendingUpload()
 	if err != nil {
-		helpers.AppLogger.Warnf("[上传] 领取待上传任务失败：task_id=%d err=%v", task.ID, err)
+		helpers.AppLogger.Warnf("[上传] 获取待上传任务失败：task_id=%d err=%v", task.ID, err)
 		return
 	}
 	if !claimed {

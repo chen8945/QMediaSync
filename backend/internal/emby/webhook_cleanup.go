@@ -89,8 +89,10 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		return state.Outcome == models.EmbyDeletionDeleted || state.Outcome == models.EmbyDeletionAlreadyAbsent
 	}
 	names := make(map[string]string, len(plan.Targets))
+	kinds := make(map[string]string, len(plan.Targets))
 	for _, target := range plan.Targets {
 		names[target.Key] = target.File.FileName
+		kinds[target.Key] = target.Kind
 	}
 	persist := func(attempt string, results []models.EmbyDeletionResult) error {
 		if ctx.Err() != nil {
@@ -107,10 +109,14 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			states[row.TargetKey] = row
 		}
 		if helpers.AppLogger != nil {
-			label := embyWebhookRecordLabel(record)
+			item := embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record))
 			for _, result := range results {
-				helpers.AppLogger.Infof("Emby 删除文件结果：记录=%d，条目=%s，名称=%q，文件=%q，结果=%s，原因=%q", record.ID, record.ItemID, label,
-					webhookLogURL.ReplaceAllString(names[result.Key], "[URL]"), result.Outcome, webhookLogURL.ReplaceAllString(result.Reason, "[URL]"))
+				reasonLabel := embyWebhookReasonLabel(webhookLogURL.ReplaceAllString(result.Reason, "[URL]"))
+				if reasonLabel != "" {
+					reasonLabel = "，原因：" + reasonLabel
+				}
+				helpers.AppLogger.Infof("Emby 删除文件结果：通知 #%d，ItemId %s，%s %q，结果：%s%s", record.ID, item, embyDeletionTargetNoun(kinds[result.Key]),
+					webhookLogURL.ReplaceAllString(names[result.Key], "[URL]"), embyDeletionOutcomeLabel(result.Outcome), reasonLabel)
 			}
 		}
 		return nil

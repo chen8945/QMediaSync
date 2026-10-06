@@ -121,7 +121,7 @@ func Webhook(ctx *gin.Context) {
 	}
 	if event.Managed() {
 		if _, err := emby.ReceiveWebhook(ctx.Request.Context(), event.ToEnvelope()); err != nil {
-			helpers.AppLogger.Warnf("Emby Webhook 持久接收失败，未确认保存")
+			helpers.AppLogger.Warnf("收到 Emby 通知但保存失败，本次通知不会被处理：%v", err)
 			ctx.JSON(http.StatusServiceUnavailable, gin.H{"message": "Webhook 保存失败"})
 			return
 		}

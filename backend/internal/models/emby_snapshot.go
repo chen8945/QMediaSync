@@ -746,7 +746,7 @@ func CleanupEmbyLibrarySnapshot(token EmbyIndexToken, libraryID, syncRunID strin
 func parseEmbyItemID(id string) (int64, error) {
 	value, err := strconv.ParseInt(id, 10, 64)
 	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("无效 Emby 条目 ID：%q", id)
+		return 0, fmt.Errorf("无效 Emby ItemId：%q", id)
 	}
 	return value, nil
 }

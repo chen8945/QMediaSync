@@ -809,7 +809,7 @@ func migrateExistingDB() {
 			}
 			return tx.Model(&migrator).Update("version_code", 66).Error
 		}); err != nil {
-			helpers.AppLogger.Errorf("迁移 Emby 物理快照与持久删除工作失败：%v", err)
+			helpers.AppLogger.Errorf("迁移 Emby 删除记录的数据结构失败：%v", err)
 			return
 		}
 		migrator.VersionCode = 66

@@ -31,17 +31,17 @@ func (c *Client) GetDeletionVerificationItems(ctx context.Context, ids string) (
 			return nil, err
 		}
 		if page.Items == nil || page.Total == nil || *page.Total < 0 {
-			return nil, errors.New("Emby 删除核验清单缺少完整分页字段")
+			return nil, errors.New("Emby 删除前的文件清单缺少完整分页字段")
 		}
 		if total == -1 {
 			total = *page.Total
 		}
 		if total != *page.Total || start+len(*page.Items) > total || len(*page.Items) == 0 && start < total {
-			return nil, errors.New("Emby 删除核验清单分页不完整或发生变化")
+			return nil, errors.New("Emby 删除前的文件清单分页不完整或已变化")
 		}
 		for _, item := range *page.Items {
 			if item.Id == "" || item.Type == "" || seen[item.Id] {
-				return nil, errors.New("Emby 删除核验清单身份缺失或重复")
+				return nil, errors.New("Emby 删除前的文件清单存在身份缺失或重复")
 			}
 			seen[item.Id] = true
 			items = append(items, item)

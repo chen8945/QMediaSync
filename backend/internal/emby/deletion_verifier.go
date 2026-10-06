@@ -466,7 +466,7 @@ func verifyEmbyDirectoryLiveItems(ctx context.Context, scope models.EmbyDirector
 					return errors.New("Emby 存活来源仍使用待删除目录中的文件")
 				}
 				if file.Path == "" || file.FileName == "" {
-					return errors.New("Emby 存活来源的账本位置不完整")
+					return errors.New("Emby 存活来源的记录位置不完整")
 				}
 				if embyVerificationPathWithin(remoteRoot, path.Join("/", file.Path, file.FileName)) {
 					return errors.New("Emby 存活来源仍使用待删除目录中的文件")

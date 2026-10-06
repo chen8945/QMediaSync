@@ -568,7 +568,7 @@ func (c *Client) RefreshItem(itemId string, itemName string, recursive bool) err
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("刷新 Emby 条目失败，状态码：%d", resp.StatusCode)
 	}
-	helpers.AppLogger.Infof("已触发 Emby 条目 %s => %s 刷新，recursive=%v", itemId, itemName, recursive)
+	helpers.AppLogger.Infof("已触发 Emby 条目刷新，ItemId %s => %s，recursive=%v", itemId, itemName, recursive)
 	return nil
 }
 
@@ -681,7 +681,7 @@ func (c *Client) GetItemLibraryIDContext(ctx context.Context, itemId string) ([]
 		return nil, err
 	}
 	if len(ancestors) == 0 {
-		return nil, fmt.Errorf("Emby 条目 %s ancestors 为空，无法解析所属媒体库", itemId)
+		return nil, fmt.Errorf("Emby 条目 %s 的祖先目录信息为空，无法解析所属媒体库", itemId)
 	}
 	// 查询顶层文件夹路径对应的媒体库 ID
 	var virtualFolders []VirtualFolderDto

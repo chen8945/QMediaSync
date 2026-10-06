@@ -21,7 +21,7 @@ var (
 	ErrEmbyDeleteUnverified   = errors.New("Emby 删除等待身份或原条目核验")
 	ErrEmbyDeleteUnsupported  = errors.New("该来源不支持 Emby 联动删除")
 	ErrEmbyDeleteDisabled     = errors.New("Emby 联动删除未获授权")
-	ErrEmbyDeletionReappeared = errors.New("同一物理代际已有成功结果，现路径重新出现")
+	ErrEmbyDeletionReappeared = errors.New("该文件此前已确认删除，同一位置又出现同名文件；为防误删已保留，等待再次核验")
 )
 
 // EmbyRemoteFile 是完整目录清单中的文件；Path 是目录，不能包含 FileName。
@@ -163,7 +163,7 @@ func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, exclu
 		}
 		owner := EmbyDeletionOwner{Evidence: entry}
 		if err := json.Unmarshal([]byte(entry.ItemJSON), &owner.Item); err != nil {
-			return input, fmt.Errorf("解析 Emby 历史条目 %s: %w", entry.ItemID, err)
+			return input, fmt.Errorf("解析 Emby 历史条目失败，ItemId %s: %w", entry.ItemID, err)
 		}
 		if err := json.Unmarshal([]byte(entry.FilesJSON), &owner.Files); err != nil {
 			return input, fmt.Errorf("解析 Emby 历史文件 %s: %w", entry.ItemID, err)
@@ -466,7 +466,7 @@ func ConfirmEmbyDeletionPlanInventory(ctx context.Context, plan EmbyDeletionPlan
 				if !embyRemoteMatches(target.File, remote) {
 					return plan, nil, fmt.Errorf("%w: 原目录不可列举且已知文件身份或位置变化", ErrEmbyDeleteUnverified)
 				}
-				return plan, nil, fmt.Errorf("%w: 旁车目录清单暂时无法核验且原文件仍存在", ErrEmbyDeleteUnverified)
+				return plan, nil, fmt.Errorf("%w: NFO/字幕/图片等配套文件的清单暂时无法确认，且原文件仍存在", ErrEmbyDeleteUnverified)
 			}
 			results = append(results, EmbyDeletionResult{Key: target.Key, Outcome: EmbyDeletionAlreadyAbsent})
 		}
@@ -767,7 +767,7 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 		return err
 	}
 	if frozen != file || frozen.Reason != "" {
-		return fmt.Errorf("%w: 当前账本、账号或同步根已变化", ErrEmbyDeleteUnverified)
+		return fmt.Errorf("%w: 当前记录、账号或同步目录已变化", ErrEmbyDeleteUnverified)
 	}
 	directory, validDirectory := embyRemoteDirectory(file.Path)
 	if !embySafeName(file.FileName) || !validDirectory || !filepath.IsAbs(file.LocalFilePath) || !embyRemotePathWithin(file.SourceType, file.RemoteRoot, path.Join(directory, file.FileName)) || !embyPathWithin(file.LocalRoot, file.LocalFilePath) {
@@ -787,7 +787,7 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 			return ErrEmbyIdentityAmbiguous
 		}
 		if embyRemotePathWithin(file.SourceType, full, remoteRoot) || embyPathWithin(file.LocalFilePath, root.GetFullLocalPath()) || file.FileID == root.BaseCid {
-			return fmt.Errorf("%w: 目标是同步根或其祖先，禁止删除", ErrEmbyDeleteUnverified)
+			return fmt.Errorf("%w: 目标是同步目录的根目录或其上级目录，禁止删除", ErrEmbyDeleteUnverified)
 		}
 	}
 	// 从物理文件查所有当前使用者，覆盖重叠同步目录、其他版本/季和共享目标。

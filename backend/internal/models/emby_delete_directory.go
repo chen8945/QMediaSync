@@ -218,7 +218,7 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 			return ErrEmbyIdentityAmbiguous
 		}
 		if scope.Root.FileID == protected.BaseCid || embyRemotePathWithin(scope.Root.SourceType, embyDirectoryFullPath(scope), remote) || embyPathWithin(scope.LocalPath, protected.GetFullLocalPath()) {
-			return errors.New("媒体目录包含同步根，禁止整目录删除")
+			return errors.New("媒体目录包含同步目录的根目录，禁止整目录删除")
 		}
 	}
 	confirmed := false
@@ -637,7 +637,7 @@ func embyVerifyDirectoryRootLocations(ctx context.Context, scope EmbyDirectorySc
 			return ErrEmbyIdentityAmbiguous
 		}
 		if embyRemotePathWithin(scope.Root.SourceType, embyDirectoryFullPath(scope), full) {
-			return errors.New("其他同步根的原目录已进入媒体目录，禁止整目录删除")
+			return errors.New("其他同步目录的根目录位于该媒体目录内，禁止整目录删除")
 		}
 		seen[root.BaseCid] = true
 	}

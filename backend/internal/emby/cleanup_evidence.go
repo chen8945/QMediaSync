@@ -42,7 +42,7 @@ func (c *embyCleanupEvidenceCollector) enrich(ctx context.Context, client *embyc
 					if ctx.Err() != nil {
 						return ctx.Err()
 					}
-					helpers.AppLogger.Debugf("Emby 条目 %s 缺少媒体目录祖先证据，保留文件能力", snapshot.Item.ItemId)
+					helpers.AppLogger.Debugf("Emby 条目 %s 读取媒体目录归属失败，本轮不做目录级清理", snapshot.Item.ItemId)
 					c.ancestors[key] = embyAncestorObservation{At: time.Now(), Failed: true}
 					failed = true
 				} else {
@@ -62,7 +62,7 @@ func (c *embyCleanupEvidenceCollector) enrich(ctx context.Context, client *embyc
 				return ctx.Err()
 			}
 			// 视频索引不依赖可选的目录能力；不能用失败查询制造空目录授权。
-			helpers.AppLogger.Debugf("Emby 条目 %s 目录身份采集不完整，保留文件能力", snapshot.Item.ItemId)
+			helpers.AppLogger.Debugf("Emby 条目 %s 目录归属信息不完整，仅删除已确认归属的文件", snapshot.Item.ItemId)
 		}
 	}
 	return nil

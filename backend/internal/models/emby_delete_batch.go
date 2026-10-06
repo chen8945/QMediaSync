@@ -218,7 +218,7 @@ func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, target
 		var eligible []EmbyDeletionTarget
 		for _, target := range members {
 			if target.Kind != "video" && slices.ContainsFunc(target.Owners, func(ref EmbyDeletionOwnerRef) bool { return blockedOwners[ref] }) {
-				reject(target, EmbyDeletionUnresolved, errors.New("旁车的原视频仍需保留或无法核验"))
+				reject(target, EmbyDeletionUnresolved, errors.New("配套文件的原视频仍需保留或无法确认"))
 				continue
 			}
 			eligible = append(eligible, target)
@@ -330,7 +330,7 @@ func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, target
 		videos := embyMergeVideos(target.DirectoryVideos, embyDirectoryVideos(listing))
 		refs, exclusive := embySidecarOwners(target.File.FileName, videos, embyDirectoryTargets(plan, target.File))
 		if !exclusive || len(refs) != len(target.Owners) {
-			reject(target, EmbyDeletionUnresolved, errors.New("旁车存在保留或未知视频使用者"))
+			reject(target, EmbyDeletionUnresolved, errors.New("配套文件存在需保留或来源不明的视频"))
 			continue
 		}
 		if slices.ContainsFunc(refs, func(ref EmbyDeletionOwnerRef) bool { return !slices.Contains(target.Owners, ref) }) {
@@ -354,7 +354,7 @@ func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, target
 				continue
 			}
 			if !embyRemoteMatches(target.File, remote) {
-				reject(target, EmbyDeletionUnresolved, errors.New("远端文件身份或代际已变化"))
+				reject(target, EmbyDeletionUnresolved, errors.New("远端文件身份或内容已变化"))
 				continue
 			}
 		}

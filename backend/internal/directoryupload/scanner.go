@@ -395,11 +395,11 @@ func (service *Service) cleanupProcessedOnce() {
 
 	deleted, err := models.CleanupDirectoryUploadProcessedFiles(now, service.processedMissingSourceTTL())
 	if err != nil {
-		helpers.AppLogger.Warnf("[目录上传] 清理 processed 账本失败：%v", err)
+		helpers.AppLogger.Warnf("[目录上传] 清理已处理记录失败：%v", err)
 		return
 	}
 	if deleted > 0 {
-		helpers.AppLogger.Infof("[目录上传] 清理 processed 账本记录 %d 条", deleted)
+		helpers.AppLogger.Infof("[目录上传] 清理已处理记录 %d 条", deleted)
 	}
 }
 
