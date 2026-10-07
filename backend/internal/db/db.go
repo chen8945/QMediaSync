@@ -20,6 +20,19 @@ import (
 
 var Db *gorm.DB
 
+// newDatabaseLogger 统一数据库日志，忽略正常缺失并保留慢查询和真实错误。
+func newDatabaseLogger() logger.Interface {
+	return logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond, // 慢 SQL 阈值
+			LogLevel:                  logger.Warn,            // 日志级别
+			IgnoreRecordNotFoundError: true,                   // 忽略 ErrRecordNotFound（记录未找到）错误
+			Colorful:                  true,                   // 保持现有彩色输出
+		},
+	)
+}
+
 // 获取一个数据库连接
 func InitSqlite3(dbFile string) *gorm.DB {
 	// if !helpers.PathExists(dbFile) {
@@ -31,6 +44,7 @@ func InitSqlite3(dbFile string) *gorm.DB {
 	}
 	sqliteDb, err := gorm.Open(sqlite.Dialector{Conn: pool}, &gorm.Config{
 		SkipDefaultTransaction: true,
+		Logger:                 newDatabaseLogger(),
 	})
 	if err != nil {
 		panic(fmt.Sprintf("failed to connect database: %v", err))
@@ -77,16 +91,6 @@ func InitSqlite3(dbFile string) *gorm.DB {
 
 // 连接 PostgreSQL 数据库
 func ConnectPostgres(dbConfig *database.Config) error {
-	// 配置 Logger
-	newLogger := logger.New(
-		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
-		logger.Config{
-			SlowThreshold:             200 * time.Millisecond, // 慢 SQL 阈值
-			LogLevel:                  logger.Warn,            // 日志级别
-			IgnoreRecordNotFoundError: true,                   // 忽略 ErrRecordNotFound（记录未找到）错误
-			Colorful:                  true,                   // 禁用彩色打印
-		},
-	)
 	var connStr string = ""
 	var sqlDB *sql.DB
 	var err error
@@ -100,7 +104,7 @@ func ConnectPostgres(dbConfig *database.Config) error {
 			return fmt.Errorf("创建 PostgreSQL 连接失败：%w", err)
 		}
 		pg := postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB})
-		Db, err = gorm.Open(pg, &gorm.Config{})
+		Db, err = gorm.Open(pg, &gorm.Config{Logger: newDatabaseLogger()})
 		if err != nil {
 			helpers.AppLogger.Errorf("连接数据库失败：%v", err)
 			if strings.Contains(err.Error(), "does not exist") {
@@ -126,9 +130,6 @@ func ConnectPostgres(dbConfig *database.Config) error {
 	sqlDB.SetMaxIdleConns(dbConfig.MaxIdleConns) // 最多 5 个空闲连接
 	sqlDB.SetConnMaxLifetime(60 * time.Minute)   // 连接最多使用 60 分钟
 	sqlDB.SetConnMaxIdleTime(1 * time.Minute)    // 空闲超过 1 分钟则关闭
-
-	// 设置全局 Logger
-	Db.Logger = newLogger
 
 	go keepGormAlive()
 	helpers.AppLogger.Info("成功初始化数据库组件")

@@ -1,7 +1,10 @@
 package db
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -131,5 +134,48 @@ func TestInitSqlite3单连接下先读后写事务不会自我死锁(t *testing.
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("先读后写事务在单连接下超时，可能出现自我死锁")
+	}
+}
+
+// TestSQLiteQueryLogging 验证正常缺失不刷日志，真实 SQL 错误仍可见。
+func TestSQLiteQueryLogging(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "sql-log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = output
+	t.Cleanup(func() { os.Stdout = previous; _ = output.Close() })
+	conn := InitSqlite3(filepath.Join(t.TempDir(), "logging.db"))
+	pool, err := conn.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := conn.Exec("CREATE TABLE logging_probe (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	var row struct{ ID int }
+	for range 3 {
+		if err := conn.Table("logging_probe").First(&row).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("缺失返回值改变：%v", err)
+		}
+	}
+	data, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "record not found") {
+		t.Fatalf("正常缺失仍输出日志：%s", data)
+	}
+	if err := conn.Exec("SELECT * FROM missing_logging_probe").Error; err == nil {
+		t.Fatal("缺失表未返回错误")
+	}
+	data, err = os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "no such table: missing_logging_probe") {
+		t.Fatalf("真实 SQL 错误未记录：%s", data)
 	}
 }
