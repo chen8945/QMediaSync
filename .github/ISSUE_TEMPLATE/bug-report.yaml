@@ -1,0 +1,65 @@
+name: 问题反馈
+description: 功能异常、报错或行为与预期不符
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索现有 issue，确认问题没有被报告过。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 issue，没有发现相同问题
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: QMediaSync 版本
+      description: Web UI 界面首页显示的版本号
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - Docker
+        - 发布二进制
+        - 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy
+    attributes:
+      label: 是否通过反向代理访问
+      description: 选"是"时，请在下方「问题描述」中补充代理软件类型和关键配置片段，并脱敏域名、证书等敏感信息。
+      options:
+        - 是
+        - 否
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 期望的行为和实际的行为；使用反向代理时请在此附上关键配置，也可以顺便贴截图。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 稳定触发问题的操作步骤；无法稳定复现时写明触发的大致条件。
+    validations:
+      required: true
+  - type: upload
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 可上传后端日志或浏览器控制台报错文件，也支持打包为 zip；上传前请脱敏 token、密钥等敏感信息。
+    validations:
+      required: false
+      accept: ".log,.txt,.json,.csv,.zip,.gz"

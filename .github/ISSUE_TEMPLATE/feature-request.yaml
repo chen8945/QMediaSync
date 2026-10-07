@@ -1,0 +1,28 @@
+name: 功能建议
+description: 希望新增或改进的功能
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索现有 issue，确认没有类似建议。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 当前要完成什么，哪一步不方便或缺失。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      description: 你理想中的交互或行为；有参考的产品或实现也可以列出。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+      description: 不做这个功能时，目前有哪些替代办法。

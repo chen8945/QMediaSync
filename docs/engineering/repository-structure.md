@@ -24,7 +24,7 @@ docs/                面向维护者和 AI 的正式文档，索引为 docs/READ
 scripts/release/     GitHub Actions 发布打包辅助脚本、changelog 生成脚本和发布脚本共享函数
 scripts/install/     Linux 裸机安装辅助脚本
 scripts/tests/       shell 脚本的 Python 替身测试（不依赖真实部署）
-.github/workflows/   CI、分支镜像和正式发布工作流
+.github/             CI、分支镜像、正式发布工作流和 issue 表单模板
 .changes/            每个版本的 GitHub Release 正文
 cliff.toml           git-cliff 配置（从提交记录生成 changelog）
 ```
