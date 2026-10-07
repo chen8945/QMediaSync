@@ -93,6 +93,42 @@ afterEach(() => {
 })
 
 describe('备份页面失败反馈', () => {
+  it.each([
+    { component: AppBackupRestore, upload: true, label: '开始恢复' },
+    { component: AppBackupRecords, upload: false, label: '恢复' },
+  ])(
+    '$label 成功后携带恢复凭证查询，并说明回滚与重启要求',
+    async ({ component, upload, label }) => {
+      const { wrapper, reply, poll } = await setup(component)
+      if (upload) await selectFile(wrapper)
+      reply.mockResolvedValueOnce({
+        code: 200,
+        message: '',
+        data: { restore_receipt: 'test-restore-receipt' },
+      })
+      await click(wrapper, label)
+      expect(poll).toHaveBeenCalledWith(
+        'restore',
+        undefined,
+        expect.anything(),
+        'test-restore-receipt',
+      )
+      expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+        expect.stringContaining('导入失败会回滚'),
+        expect.any(String),
+        expect.any(Object),
+      )
+      const notice = vi.mocked(ElMessageBox.confirm).mock.lastCall?.[0]
+      expect(notice).toContain('config/')
+      expect(notice).toContain('encryption.key')
+      expect(notice).toContain('重启应用服务')
+      expect(notice).toContain('重新登录')
+      expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
+        'test-restore-receipt',
+      )
+    },
+  )
+
   it('保存业务失败保留设置输入，不显示成功或查询新的 Cron', async () => {
     const { wrapper, reply, read } = await setup(AppBackupSettings)
     const retention = wrapper
@@ -118,13 +154,24 @@ describe('备份页面失败反馈', () => {
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('Cron 表达式无效')
   })
 
-  it.each(['business', 'timeout', 'csrf', 'cancel', 'handled'])(
+  it.each(['business', 'limit', 'timeout', 'csrf', 'cancel', 'handled'])(
     '上传恢复 %s 保留文件且不启动轮询',
     async (kind) => {
       const { wrapper, reply, poll, adapter } = await setup(AppBackupRestore)
       await selectFile(wrapper)
       if (kind === 'business')
         reply.mockResolvedValueOnce({ code: 500, message: '恢复包格式不正确', data: null })
+      else if (kind === 'limit')
+        reply.mockRejectedValueOnce(
+          new HttpResponseError({
+            status: 413,
+            data: {
+              code: 413,
+              error_code: 'BACKUP_ARCHIVE_LIMIT',
+              message: '备份文件大小不能超过 1 GiB',
+            },
+          }),
+        )
       else if (kind === 'timeout')
         reply.mockRejectedValueOnce(
           new AxiosError('secret', 'ETIMEDOUT', {
@@ -159,6 +206,8 @@ describe('备份页面失败反馈', () => {
           expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('操作结果尚未确认'))
         if (kind === 'csrf')
           expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('请求安全校验失败'))
+        if (kind === 'limit')
+          expect(ElMessage.error).toHaveBeenCalledWith('备份文件大小不能超过 1 GiB')
       }
     },
   )

@@ -202,7 +202,7 @@ const backupRecordActions: RecordAction<BackupRecordListItem>[] = [
     label: '恢复',
     type: 'warning',
     visible: (row) => row.status === 'completed',
-    disabled: () => restoringBackup.value,
+    disabled: () => restoringBackup.value || backupStore.isRunning || backupStore.restartRequired,
   },
   { key: 'delete', label: '删除', type: 'danger' },
 ]
@@ -312,8 +312,9 @@ const handleRestoreBackup = async (record: BackupRecordListItem) => {
         <p><strong>备份时间：</strong>${formatTimestamp(record.created_at)}</p>
         <p><strong>备份类型：</strong>${record.backup_type === 'manual' ? '手动备份' : '自动备份'}</p>
         ${record.created_reason ? `<p><strong>备份原因：</strong>${record.created_reason}</p>` : ''}
-        <p style="color: var(--el-color-warning); font-weight: bold; margin-top: 12px;">⚠️ 警告：此操作不可逆！</p>
-        <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">⚠️ 注意：恢复成功后请重启服务让所有数据和配置生效！</p>
+        <p>此操作将整体替换当前数据库，导入失败会回滚；如果提交结果异常，请查看日志核验数据。</p>
+        <p>迁移时请一并保留原 config/，尤其是 encryption.key。</p>
+        <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">恢复期间服务暂停；进入维护后，无论恢复成功或失败，都需重启应用服务后重新登录。支持的运行方式可在结果弹窗中点击“重启服务”。</p>
       </div>`,
       '确认恢复备份',
       {
@@ -336,9 +337,9 @@ const restoreBackup = async (recordId: number) => {
     restoringBackup.value = true
     ElMessage.info('正在启动恢复任务…')
 
-    await backupAPI.restoreBackup(http, recordId)
+    const result = await backupAPI.restoreBackup(http, recordId)
     ElMessage.success('恢复任务已启动')
-    backupStore.startProgressPolling('restore', undefined, http)
+    backupStore.startProgressPolling('restore', undefined, http, result?.restore_receipt)
   } catch (error) {
     reportError(error, '恢复备份失败')
   } finally {

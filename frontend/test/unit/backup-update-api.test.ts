@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as backup from '@/api/backup'
 import * as update from '@/api/update'
 import { HttpResponseError, markAuthInvalidationHandled, parseHttpError } from '@/http/errors'
+import { installAuthResponseInterceptor } from '@/http/authInterceptor'
 
 const settings: backup.BackupConfigInput = {
   backup_enabled: 1,
@@ -26,9 +27,105 @@ const operations = (http: AxiosInstance) => [
   () => update.startUpdate(http, 'v1.2.3', 'github'),
   () => update.cancelUpdate(http),
   () => update.fetchIsFnOS(http),
+  () => backup.restartAfterRestore(http, 'test-restore-receipt'),
 ]
 
 describe('备份和更新 API', () => {
+  it('上传超限保留安全原因，不清理当前登录状态', async () => {
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 413,
+        statusText: '',
+        headers: {},
+        data: {
+          code: 413,
+          error_code: 'BACKUP_ARCHIVE_LIMIT',
+          message: '备份文件大小不能超过 1 GiB',
+        },
+      }),
+    })
+    const clearAuth = vi.fn()
+    const onAuthenticationInvalidated = vi.fn()
+    installAuthResponseInterceptor(http, {
+      getAuthStore: () => ({
+        isAuthenticated: true,
+        isLoggingOut: false,
+        sessionVersion: 1,
+        clearAuth,
+      }),
+      onAuthenticationInvalidated,
+    })
+    const error = await backup.uploadAndRestoreBackup(http, file).catch((error: unknown) => error)
+    expect(parseHttpError(error)).toMatchObject({
+      kind: 'application',
+      message: '备份文件大小不能超过 1 GiB',
+      diagnostics: { status: 413, errorCode: 'BACKUP_ARCHIVE_LIMIT' },
+    })
+    expect(clearAuth).not.toHaveBeenCalled()
+    expect(onAuthenticationInvalidated).not.toHaveBeenCalled()
+  })
+
+  it('恢复入口返回查询凭证，凭证查询不因旧登录会话失效而跳转', async () => {
+    const receipt = 'test-restore-receipt'
+    let status = 200
+    const adapter = vi.fn(async (config) => ({
+      config,
+      status,
+      statusText: '',
+      headers: {},
+      data: { code: status, data: { restore_receipt: receipt } },
+    }))
+    const http = axios.create({ adapter })
+    const clearAuth = vi.fn()
+    const onAuthenticationInvalidated = vi.fn()
+    installAuthResponseInterceptor(http, {
+      getAuthStore: () => ({
+        isAuthenticated: true,
+        isLoggingOut: false,
+        sessionVersion: 1,
+        clearAuth,
+      }),
+      onAuthenticationInvalidated,
+    })
+
+    await expect(backup.restoreBackup(http, 7)).resolves.toEqual({ restore_receipt: receipt })
+    await expect(backup.uploadAndRestoreBackup(http, file)).resolves.toEqual({
+      restore_receipt: receipt,
+    })
+    await backup.fetchBackupStatus(http, receipt)
+    expect(adapter.mock.lastCall?.[0]).toMatchObject({
+      url: '/api/backup/status',
+      skipAuthInvalidation: true,
+    })
+    expect(adapter.mock.lastCall?.[0].headers.get('X-Restore-Receipt')).toBe(receipt)
+    expect(adapter.mock.lastCall?.[0].params).toBeUndefined()
+    expect(http.getUri(adapter.mock.lastCall?.[0])).toBe('/api/backup/status')
+    await backup.restartAfterRestore(http, receipt)
+    expect(adapter.mock.lastCall?.[0]).toMatchObject({
+      url: '/api/backup/restart',
+      method: 'post',
+      skipAuthInvalidation: true,
+    })
+    expect(adapter.mock.lastCall?.[0].headers.get('X-Restore-Receipt')).toBe(receipt)
+    expect(adapter.mock.lastCall?.[0].params).toBeUndefined()
+    expect(adapter.mock.lastCall?.[0].data).toBeNull()
+
+    status = 401
+    const error = await backup.fetchBackupStatus(http, receipt).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(HttpResponseError)
+    expect(clearAuth).not.toHaveBeenCalled()
+    expect(onAuthenticationInvalidated).not.toHaveBeenCalled()
+    expect(JSON.stringify(parseHttpError(error).diagnostics)).not.toContain(receipt)
+    await expect(backup.restartAfterRestore(http, receipt)).rejects.toBeInstanceOf(
+      HttpResponseError,
+    )
+    expect(clearAuth).not.toHaveBeenCalled()
+    expect(onAuthenticationInvalidated).not.toHaveBeenCalled()
+    await expect(backup.fetchBackupStatus(http)).rejects.toBeInstanceOf(HttpResponseError)
+    expect(onAuthenticationInvalidated).toHaveBeenCalledOnce()
+  })
+
   it('保留接口、方法、参数、上传体与专用超时，成功 null / false 不被误判', async () => {
     const adapter = vi.fn(async (config) => ({
       config,
@@ -54,6 +151,7 @@ describe('备份和更新 API', () => {
       ['post', '/api/update/to-version'],
       ['post', '/api/update/cancel'],
       ['get', '/api/path/is-fn-os'],
+      ['post', '/api/backup/restart'],
     ])
     expect(JSON.parse(calls[1].data)).toEqual(settings)
     expect(calls[2].params).toEqual({ page: 2, page_size: 50, type: 'all' })

@@ -70,7 +70,7 @@ func loadEmbyObservedEvidenceTx(tx *gorm.DB, ids []uint) (map[uint]EmbyItemEvide
 }
 
 // RebuildEmbyObservedEvidenceIndex 在维护事务内由原收件和证据重建派生索引，不补造删除证据。
-// 恢复备份应先使旧派生表失效，再在所有原表导入后调用；失败不能留下可用的旧索引。
+// 恢复备份须在同一事务中替换原表并重建派生表；失败时原表和旧索引一并回滚。
 func RebuildEmbyObservedEvidenceIndex(conn *gorm.DB) error {
 	return conn.Transaction(func(tx *gorm.DB) error {
 		// 与正常观察保存共用索引版本写锁；空库不创建虚构的服务器状态。

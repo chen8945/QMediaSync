@@ -43,6 +43,12 @@ func TestRestoreStrmGenerationQueueIndex(t *testing.T) {
 			if conn.Migrator().HasIndex(&models.StrmGenerationTask{}, "idx_strm_generation_tasks_queue") == failIndex {
 				t.Fatal("unexpected index state")
 			}
+			if failIndex {
+				if conn.Migrator().HasTable(&models.StrmGenerationTask{}) {
+					t.Fatal("index failure must roll back table creation")
+				}
+				return
+			}
 			var task models.StrmGenerationTask
 			if err := conn.First(&task, 1).Error; err != nil || task.Status != models.StrmGenerationStatusPending {
 				t.Fatalf("restored task lost: %+v %v", task, err)

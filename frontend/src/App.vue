@@ -148,7 +148,7 @@
   <!-- 全局备份/恢复进度弹窗 -->
   <el-dialog
     v-model="backupStore.showProgressDialog"
-    :title="backupStore.taskType === 'backup' ? '备份进行中' : '数据库恢复中'"
+    :title="backupDialogTitle"
     :width="isMobile ? '90%' : '600px'"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
@@ -165,7 +165,7 @@
 
       <!-- 当前步骤 -->
       <div v-if="backupStore.progress?.current_step" class="progress-step">
-        <el-icon class="is-loading">
+        <el-icon v-if="backupStore.isRunning" class="is-loading">
           <Loading />
         </el-icon>
         <span>{{ backupStore.progress.current_step }}</span>
@@ -197,13 +197,64 @@
 
       <!-- 错误重试提示 -->
       <el-alert
-        v-if="backupStore.errorRetryCount > 0"
-        :title="`查询进度失败，正在重试 (${backupStore.errorRetryCount}/${3})…`"
+        v-if="backupStore.errorRetryCount > 0 || backupStore.progressQueryError"
+        :title="
+          backupStore.progressQueryError ||
+          `查询进度失败，正在重试 (${backupStore.errorRetryCount}/${3})…`
+        "
         type="warning"
         :closable="false"
         style="margin-top: 16px"
       />
+      <el-alert
+        v-if="restartStatusMessage"
+        :title="restartStatusMessage"
+        :type="backupStore.restartError ? 'warning' : 'info'"
+        :closable="false"
+        show-icon
+        style="margin-top: 16px"
+      />
     </div>
+    <template v-if="backupStore.taskType === 'restore' && !backupStore.isRunning" #footer>
+      <el-button
+        v-if="backupStore.progress?.status === 'unknown'"
+        :loading="backupStore.isPolling"
+        @click="backupStore.retryProgressPolling"
+      >
+        重新查询
+      </el-button>
+      <el-button
+        v-else-if="backupStore.restartPhase === 'ready'"
+        type="primary"
+        @click="loginAfterRestore"
+      >
+        重新登录
+      </el-button>
+      <template v-else-if="backupStore.restartRequired">
+        <el-button
+          v-if="backupStore.canRestart || restartingService"
+          type="primary"
+          :loading="restartingService"
+          :disabled="!backupStore.canRestart"
+          @click="backupStore.requestRestart"
+        >
+          {{ restartingService ? '正在重启服务' : '重启服务' }}
+        </el-button>
+        <el-button
+          v-if="backupStore.restartPhase === 'unknown'"
+          type="primary"
+          @click="backupStore.checkRestartStatus"
+        >
+          重新检查服务
+        </el-button>
+        <el-button v-if="!restartingService" @click="reloadAfterRestore">
+          重启后刷新页面
+        </el-button>
+      </template>
+      <el-button v-else-if="backupStore.progress" @click="backupStore.closeProgressDialog">
+        关闭
+      </el-button>
+    </template>
   </el-dialog>
 </template>
 
@@ -441,6 +492,43 @@ watch(activeParentMenuIndex, (index) => {
 })
 
 // 获取进度状态样式
+const backupDialogTitle = computed(() => {
+  const action = backupStore.taskType === 'backup' ? '备份' : '数据库恢复'
+  switch (backupStore.progress?.status) {
+    case 'completed':
+      return `${action}已完成`
+    case 'failed':
+      return `${action}失败`
+    case 'unknown':
+      return `${action}结果待确认`
+    default:
+      return `${action}进行中`
+  }
+})
+
+const reloadAfterRestore = () => window.location.reload()
+
+const restartingService = computed(() =>
+  ['requesting', 'waiting'].includes(backupStore.restartPhase),
+)
+
+const restartStatusMessage = computed(() => {
+  if (backupStore.restartError) return backupStore.restartError
+  if (backupStore.restartPhase === 'requesting') return '正在请求重启服务…'
+  if (backupStore.restartPhase === 'waiting') return '正在等待服务重新上线，请勿关闭或刷新本页。'
+  if (backupStore.restartPhase === 'ready') return '服务已重新上线，请重新登录。恢复结果见上方。'
+  if (backupStore.restartRequired && !backupStore.restartSupported)
+    return '当前运行方式不支持页面重启，请手动重启应用服务后刷新页面。'
+  return ''
+})
+
+const loginAfterRestore = async () => {
+  authStore.clearAuth()
+  await router.replace('/login')
+  backupStore.showProgressDialog = false
+  backupStore.resetState()
+}
+
 const getProgressStatus = () => {
   if (!backupStore.progress?.status) return undefined
   switch (backupStore.progress.status) {

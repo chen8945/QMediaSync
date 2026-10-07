@@ -5,6 +5,8 @@ echo "=== 启动 QMS (Docker 模式) ==="
 
 # 设置环境变量
 export DOCKER=1
+# 只由支持纯重启的实际运行入口声明，旧入口即使在线更新二进制也不会误报能力。
+export QMS_DOCKER_RESTART=1
 
 if [ -n "$GPID" ]; then
     echo "使用GPID: $GPID"
@@ -149,6 +151,8 @@ apply_update() (
 
 # 主循环，确保可以多次更新
 while true; do
+    # 上一轮或容器上次运行留下的信号不能导致无意重启。
+    rm -f /app/config/.restart-request || exit 1
     # 启动主进程，支持GPID和GUID环境变量
     if [ -n "$GUID" ] && [ "$GUID" != "0" ]; then
         echo "使用GUID=$GUID 启动主程序"
@@ -184,6 +188,9 @@ while true; do
             echo "更新失败，已尝试恢复旧版本，准备重启主进程..." >&2
         fi
         # 继续循环，重启主进程
+    elif [ -f /app/config/.restart-request ] && [ "$(cat /app/config/.restart-request)" = "$MAIN_PID" ]; then
+        rm -f /app/config/.restart-request || exit 1
+        echo "收到重启请求，准备重新启动主进程..."
     else
         echo "主进程退出，未检测到更新文件，退出容器..."
         exit 0

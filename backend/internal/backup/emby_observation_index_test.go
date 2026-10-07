@@ -158,14 +158,15 @@ func testRestoreEmbyObservationIndexRebuildsFromOriginals(t *testing.T, setup fu
 	}
 }
 
-func TestRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t *testing.T) {
-	testRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t, setupEmbyObservationBackup)
+func TestRestoreEmbyObservationIndexFailureRollsBack(t *testing.T) {
+	testRestoreEmbyObservationIndexFailureRollsBack(t, setupEmbyObservationBackup)
 }
 
-func testRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
+func testRestoreEmbyObservationIndexFailureRollsBack(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
 	for _, scenario := range []string{"damaged original", "index write failure", "missing state evidence", "state identity mismatch", "membership write failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			conn, record, _ := setup(t)
+			before := snapshotEmbyRestoreState(t, conn)
 			files := map[string]string{}
 			switch scenario {
 			case "damaged original":
@@ -200,7 +201,7 @@ func testRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t *testing.T, setu
 			if err := Restore(archive); err == nil {
 				t.Fatal("failed derived index rebuild reported success")
 			}
-			assertEmbyDerivedIndexesUnavailable(t, conn)
+			assertEmbyRestoreState(t, conn, before)
 			if result := GetRunningResult(); result.Status != models.BackupStatusFailed {
 				t.Fatalf("restore failure status=%+v", result)
 			}
@@ -208,14 +209,15 @@ func testRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t *testing.T, setu
 	}
 }
 
-func TestRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t *testing.T) {
-	testRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t, setupEmbyObservationBackup)
+func TestRestoreEmbyObservationPartialImportRollsBack(t *testing.T) {
+	testRestoreEmbyObservationPartialImportRollsBack(t, setupEmbyObservationBackup)
 }
 
-func testRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
+func testRestoreEmbyObservationPartialImportRollsBack(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
 	for _, scenario := range []string{"invalid json", "insert failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			conn, older, _ := setup(t)
+			before := snapshotEmbyRestoreState(t, conn)
 			older.ObservationJSON = `[{"evidence_id":11}]`
 			latest := older
 			latest.ID++
@@ -224,14 +226,8 @@ func testRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t *testing.T, 
 			if scenario == "invalid json" {
 				latestLine = `{`
 			} else {
-				if err := conn.Callback().Create().Before("gorm:create").Register("test:latest_observation_import", func(tx *gorm.DB) {
-					if row, ok := tx.Statement.Dest.(*models.EmbyWebhookRecord); ok && row.ID == latest.ID {
-						tx.AddError(errors.New("latest observation import failed"))
-					}
-				}); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { conn.Callback().Create().Remove("test:latest_observation_import") })
+				latest.ID = older.ID
+				latestLine = cleanupBackupJSON(t, latest)
 			}
 			archive := writeBackupArchive(t, map[string]string{
 				"EmbyWebhookRecord.json": cleanupBackupJSON(t, older) + "\n" + latestLine + "\n",
@@ -240,39 +236,27 @@ func testRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t *testing.T, 
 			if err := Restore(archive); err == nil {
 				t.Fatal("partial observation import reported success")
 			}
-			var restored models.EmbyWebhookRecord
-			if err := conn.First(&restored).Error; err != nil || restored.ObservationJSON != older.ObservationJSON {
-				t.Fatalf("older observation fixture was not imported: %+v %v", restored, err)
-			}
-			assertEmbyDerivedIndexesUnavailable(t, conn)
-			var other backupTestItem
-			if err := conn.First(&other).Error; err != nil || other.Name != "still imported" {
-				t.Fatalf("partial failure stopped remaining table import: %+v %v", other, err)
-			}
+			assertEmbyRestoreState(t, conn, before)
 		})
 	}
 }
 
-func TestRestoreEmbyMembershipPartialEvidenceKeepsIndexUnavailable(t *testing.T) {
-	testRestoreEmbyMembershipPartialEvidenceKeepsIndexUnavailable(t, setupEmbyObservationBackup)
+func TestRestoreEmbyMembershipPartialEvidenceRollsBack(t *testing.T) {
+	testRestoreEmbyMembershipPartialEvidenceRollsBack(t, setupEmbyObservationBackup)
 }
 
-func testRestoreEmbyMembershipPartialEvidenceKeepsIndexUnavailable(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
+func testRestoreEmbyMembershipPartialEvidenceRollsBack(t *testing.T, setup func(*testing.T) (*gorm.DB, models.EmbyWebhookRecord, []models.EmbyItemEvidence)) {
 	for _, scenario := range []string{"invalid json", "insert failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			conn, _, evidence := setup(t)
+			before := snapshotEmbyRestoreState(t, conn)
 			latestLine := cleanupBackupJSON(t, evidence[1])
 			if scenario == "invalid json" {
 				latestLine = `{`
 			} else {
-				if err := conn.Callback().Create().Before("gorm:create").Register("test:latest_evidence_import", func(tx *gorm.DB) {
-					if row, ok := tx.Statement.Dest.(*models.EmbyItemEvidence); ok && row.ID == evidence[1].ID {
-						tx.AddError(errors.New("latest evidence import failed"))
-					}
-				}); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { conn.Callback().Create().Remove("test:latest_evidence_import") })
+				duplicate := evidence[1]
+				duplicate.ID = evidence[0].ID
+				latestLine = cleanupBackupJSON(t, duplicate)
 			}
 			archive := writeBackupArchive(t, map[string]string{
 				"EmbyItemEvidence.json": cleanupBackupJSON(t, evidence[0]) + "\n" + latestLine + "\n",
@@ -281,24 +265,30 @@ func testRestoreEmbyMembershipPartialEvidenceKeepsIndexUnavailable(t *testing.T,
 			if err := Restore(archive); err == nil {
 				t.Fatal("partial state evidence import reported success")
 			}
-			var restored []models.EmbyItemEvidence
-			if err := conn.Find(&restored).Error; err != nil || len(restored) != 1 || restored[0].ID != evidence[0].ID {
-				t.Fatalf("partial evidence fixture=%+v err=%v", restored, err)
-			}
-			assertEmbyDerivedIndexesUnavailable(t, conn)
-			var other backupTestItem
-			if err := conn.First(&other).Error; err != nil || other.Name != "still imported" {
-				t.Fatalf("partial failure stopped remaining table import: %+v %v", other, err)
-			}
+			assertEmbyRestoreState(t, conn, before)
 		})
 	}
 }
 
-func assertEmbyDerivedIndexesUnavailable(t *testing.T, conn *gorm.DB) {
+func snapshotEmbyRestoreState(t *testing.T, conn *gorm.DB) map[string]string {
 	t.Helper()
-	for _, model := range []any{&models.EmbyObservedEvidenceIndex{}, &models.EmbyItemMembership{}} {
-		if conn.Migrator().HasTable(model) {
-			t.Fatalf("failed restore retained a usable stale or partial %T", model)
+	result := make(map[string]string)
+	for _, name := range []string{
+		"emby_observed_evidence_indices", "emby_item_memberships", "emby_webhook_records",
+		"emby_item_states", "emby_item_evidences", "emby_index_states", "backup_test_items",
+	} {
+		var rows []map[string]any
+		if err := conn.Table(name).Order("id").Find(&rows).Error; err != nil {
+			t.Fatal(err)
 		}
+		result[name] = cleanupBackupJSON(t, rows)
+	}
+	return result
+}
+
+func assertEmbyRestoreState(t *testing.T, conn *gorm.DB, before map[string]string) {
+	t.Helper()
+	if got := snapshotEmbyRestoreState(t, conn); !reflect.DeepEqual(got, before) {
+		t.Fatal("failed restore changed original rows or derived indexes")
 	}
 }

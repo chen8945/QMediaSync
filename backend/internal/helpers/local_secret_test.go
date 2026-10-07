@@ -89,3 +89,32 @@ func TestDecryptLocalSecretRejectsRelayCBCData(t *testing.T) {
 		}
 	})
 }
+
+func TestDecryptLocalSecretWithCurrentKeyNeverLoadsOrCreatesKey(t *testing.T) {
+	withTempLocalEncryptionKey(t, func() {
+		keyPath := filepath.Join(ConfigDir, "encryption.key")
+		if _, err := DecryptLocalSecretWithCurrentKey("gcm:invalid"); err == nil {
+			t.Fatal("missing process key must fail")
+		}
+		if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+			t.Fatalf("preflight created a key file: %v", err)
+		}
+		ciphertext, err := EncryptLocalSecret("totp-secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := localEncryptionKey
+		localEncryptionKey = ""
+		if _, err := DecryptLocalSecretWithCurrentKey(ciphertext); err == nil || localEncryptionKey != "" {
+			t.Fatal("preflight must not load an on-disk key")
+		}
+		localEncryptionKey = "a-different-instance-key"
+		if _, err := DecryptLocalSecretWithCurrentKey(ciphertext); err == nil {
+			t.Fatal("different instance key must fail")
+		}
+		localEncryptionKey = key
+		if plaintext, err := DecryptLocalSecretWithCurrentKey(ciphertext); err != nil || plaintext != "totp-secret" {
+			t.Fatal("original loaded key must decrypt")
+		}
+	})
+}

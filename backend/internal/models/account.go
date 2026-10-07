@@ -28,14 +28,14 @@ type Account struct {
 	AppIdName         string                  `json:"app_id_name"` // 自定义开放平台应用显示名，内置应用不使用该字段
 	AuthSourceType    v115auth.AuthSourceType `json:"auth_source_type" gorm:"type:string;size:64"`
 	AuthProvider      v115auth.AuthProvider   `json:"auth_provider" gorm:"type:string;size:64"`
-	Token             string                  `json:"token" gorm:"type:string;size:512"`
-	RefreshToken      string                  `json:"refresh_token" gorm:"type:string;size:512"`
+	Token             string                  `json:"token" gorm:"type:text"`
+	RefreshToken      string                  `json:"refresh_token" gorm:"type:text"`
 	TokenExpiriesTime int64                   `json:"token_expiries_time"`
 	UserId            string                  `json:"user_id" gorm:"uniqueIndex:idx_account_user_id,where:user_id <> ''"` // 账号对应的用户 ID，非空唯一
-	Username          string                  `json:"username" gorm:"type:string;size:32"`                                // 网盘对应的用户名或者 OpenList 登录用户名
-	Password          string                  `json:"password" gorm:"type:string;size:256"`                               // OpenList 的用户密码
-	BaseUrl           string                  `json:"base_url" gorm:"type:string;size:1024"`                              // OpenList 的访问地址 HTTP[s]://ip:port
-	TokenFailedReason string                  `json:"token_failed_reason" gorm:"type:string;size:256"`                    // 刷新 Token 失败的原因
+	Username          string                  `json:"username" gorm:"type:text"`                                          // 网盘对应的用户名或者 OpenList 登录用户名
+	Password          string                  `json:"password" gorm:"type:text"`                                          // OpenList 的用户密码
+	BaseUrl           string                  `json:"base_url" gorm:"type:text"`                                          // OpenList 的访问地址 HTTP[s]://ip:port
+	TokenFailedReason string                  `json:"token_failed_reason" gorm:"type:text"`                               // 刷新 Token 失败的原因
 }
 
 var (

@@ -44,13 +44,13 @@ func TestEmbyDeletionMigrationSQLite(t *testing.T) {
 // 两种数据库共享同一组旧 65 结构、数据与事务断言。
 func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 	t.Helper()
-	if MaxVersionCode != 66 {
-		t.Fatalf("latest schema = %d, want 66", MaxVersionCode)
+	if MaxVersionCode < 66 {
+		t.Fatalf("latest schema = %d, want at least 66", MaxVersionCode)
 	}
 	if scenario == "fresh" {
 		for range 2 {
 			Migrate()
-			assertEmbyMigrationVersion(t, conn, 66)
+			assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 			assertEmbyDeletionSchema(t, conn)
 		}
 		assertEmbyMigrationRetainsCurrentRows(t, conn)
@@ -96,7 +96,7 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 	}
 	for range 2 {
 		Migrate()
-		assertEmbyMigrationVersion(t, conn, 66)
+		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		assertEmbyDeletionSchema(t, conn)
 		assertEmbyMigrationLegacyRows(t, conn, items, links)
 		for _, model := range embyMigrationNewTables() {
@@ -366,7 +366,7 @@ func assertEmbyMigrationRetainsCurrentRows(t *testing.T, conn *gorm.DB) {
 	}
 	for range 2 {
 		Migrate()
-		assertEmbyMigrationVersion(t, conn, 66)
+		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		for _, before := range rows {
 			value := reflect.Indirect(reflect.ValueOf(before))
 			after := reflect.New(value.Type()).Interface()

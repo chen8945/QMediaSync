@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,12 +61,16 @@ func TestZipDirCompressesAndRestoresFiles(t *testing.T) {
 	}
 }
 
-func TestZipDirReportsFinalWriteFailure(t *testing.T) {
-	if _, err := os.Stat("/dev/full"); err != nil {
-		t.Skip("需要 /dev/full 注入 ZIP 关闭时的写入错误")
+func TestZipDirPreservesExistingDestination(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "backup.zip")
+	if err := os.WriteFile(dst, []byte("existing backup"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if err := ZipDir(t.TempDir(), "/dev/full"); err == nil {
-		t.Fatal("ZIP 中央目录写入失败必须返回错误")
+	if err := ZipDir(t.TempDir(), dst); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing destination must be rejected: %v", err)
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "existing backup" {
+		t.Fatalf("existing archive changed: %v", err)
 	}
 }
 

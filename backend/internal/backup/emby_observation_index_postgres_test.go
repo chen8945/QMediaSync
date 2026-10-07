@@ -3,6 +3,7 @@
 package backup
 
 import (
+	"database/sql"
 	"fmt"
 	"net/url"
 	"os"
@@ -28,15 +29,15 @@ func setupEmbyObservationBackupPostgres(t *testing.T) (*gorm.DB, models.EmbyWebh
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
 	setupBackupTest(t)
-	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	adminSQL, err := admin.DB()
+	adminSQL, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { adminSQL.Close() })
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: adminSQL}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	schema := fmt.Sprintf("qms_emby_backup_%d_%d", os.Getpid(), time.Now().UnixNano())
 	if err := admin.Exec("CREATE SCHEMA " + schema).Error; err != nil {
 		t.Fatal(err)
@@ -50,18 +51,21 @@ func setupEmbyObservationBackupPostgres(t *testing.T) (*gorm.DB, models.EmbyWebh
 	query.Set("search_path", schema)
 	query.Set("statement_timeout", "15000")
 	parsed.RawQuery = query.Encode()
-	conn, err := gorm.Open(postgres.Open(parsed.String()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	sqlDB, err := sql.Open("postgres", parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	sqlDB, err := conn.DB()
+	t.Cleanup(func() { sqlDB.Close() })
+	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sqlDB.SetMaxOpenConns(2)
-	t.Cleanup(func() { sqlDB.Close() })
 	db.Db = conn
-	if err := conn.AutoMigrate(&models.BackupConfig{}, &models.BackupRecord{}); err != nil {
+	if err := conn.AutoMigrate(&models.BackupConfig{}, &models.BackupRecord{}, &models.Migrator{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&models.Migrator{VersionCode: models.MaxVersionCode}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return seedEmbyObservationBackup(t, conn)
@@ -72,12 +76,27 @@ func TestRestoreEmbyObservationIndexPostgres(t *testing.T) {
 		testRestoreEmbyObservationIndexRebuildsFromOriginals(t, setupEmbyObservationBackupPostgres)
 	})
 	t.Run("rebuild failure", func(t *testing.T) {
-		testRestoreEmbyObservationIndexFailureLeavesNoStaleIndex(t, setupEmbyObservationBackupPostgres)
+		testRestoreEmbyObservationIndexFailureRollsBack(t, setupEmbyObservationBackupPostgres)
 	})
 	t.Run("partial import", func(t *testing.T) {
-		testRestoreEmbyObservationPartialImportKeepsIndexUnavailable(t, setupEmbyObservationBackupPostgres)
+		testRestoreEmbyObservationPartialImportRollsBack(t, setupEmbyObservationBackupPostgres)
 	})
 	t.Run("partial state evidence import", func(t *testing.T) {
-		testRestoreEmbyMembershipPartialEvidenceKeepsIndexUnavailable(t, setupEmbyObservationBackupPostgres)
+		testRestoreEmbyMembershipPartialEvidenceRollsBack(t, setupEmbyObservationBackupPostgres)
 	})
+}
+
+func TestRestoreAuthenticationAndSessionPolicyPostgres(t *testing.T) {
+	conn, _, _ := setupEmbyObservationBackupPostgres(t)
+	testRestoreAuthenticationAndSessionPolicy(t, conn)
+}
+
+func TestRestoreLegacySchema66JSONSerializerPostgres(t *testing.T) {
+	conn, _, _ := setupEmbyObservationBackupPostgres(t)
+	testRestoreLegacySchema66JSONSerializer(t, conn)
+}
+
+func TestRestoreLegacySchema66DownloadHiddenFieldsPostgres(t *testing.T) {
+	conn, _, _ := setupEmbyObservationBackupPostgres(t)
+	testRestoreLegacySchema66DownloadHiddenFields(t, conn)
 }

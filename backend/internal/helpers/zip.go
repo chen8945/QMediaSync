@@ -334,7 +334,7 @@ func isSafePath(base, path string) bool {
 // 将 src 目录内的所有文件打包成 ZIP 文件 dst
 func ZipDir(src, dst string) (err error) {
 	// 创建目标 ZIP 文件
-	file, err := os.Create(dst)
+	file, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
@@ -364,7 +364,10 @@ func ZipDir(src, dst string) (err error) {
 		if relPath == "." {
 			return nil // 跳过根目录
 		}
-		header.Name = relPath
+		header.Name = filepath.ToSlash(relPath)
+		if info.IsDir() {
+			header.Name += "/"
+		}
 
 		// 普通文件使用 Deflate 压缩；目录等条目保留默认 Store。
 		if info.Mode().IsRegular() {

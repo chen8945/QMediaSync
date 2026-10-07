@@ -1,81 +1,19 @@
 package backup
 
 import (
-	"context"
-	"encoding/json"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"time"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/emby"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/synccron"
 )
 
-var pauseTasks = stopAllTasks
-var resumeTasks = startAllTasks
-var zipDir = helpers.ZipDir
-var stopWebhookWorker = emby.StopWebhookWorker
-var startWebhookWorker = emby.StartWebhookWorker
-
-// 备份之前先停止所有同步任务、上传下载任务、定时任务
-func stopAllTasks() error {
-	// Webhook 收件和后台执行独立于同步 busy 标记；必须等待退出后才能导出或替换表。
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := stopWebhookWorker(ctx); err != nil {
-		return fmt.Errorf("停止 Emby Webhook 后台处理失败：%w", err)
-	}
-	synccron.PauseAllNewSyncQueues()
-	if synccron.SyncCron != nil {
-		synccron.SyncCron.Stop()
-	}
-	if synccron.GlobalCron != nil {
-		synccron.GlobalCron.Stop()
-	}
-	if synccron.ScrapeCron != nil {
-		synccron.ScrapeCron.Stop()
-	}
-	if models.GlobalDownloadQueue != nil {
-		models.GlobalDownloadQueue.Stop()
-	}
-	if models.GlobalUploadQueue != nil {
-		models.GlobalUploadQueue.Stop()
-	}
-	emby.SetEmbySyncRunning(true)
-	return nil
-}
-
-func startAllTasks() error {
-	synccron.ResumeAllNewSyncQueues()
-	synccron.InitCron()
-	synccron.InitSyncCron()
-	synccron.InitScrapeCron()
-	if models.GlobalDownloadQueue != nil {
-		models.GlobalDownloadQueue.Start()
-	}
-	if models.GlobalUploadQueue != nil {
-		models.GlobalUploadQueue.Start()
-	}
-	emby.SetEmbySyncRunning(false)
-	if err := startWebhookWorker(); err != nil {
-		return fmt.Errorf("恢复 Emby Webhook 后台处理失败：%w", err)
-	}
-	return nil
-}
-
-// 每个表一个文件
-// 每个文件的文件名格式为：模型名.json
-// 文件中每一行都是一个 JSON 格式的字符串，代表一条数据
-// 首先生成一个备份记录
-// 然后将运行中状态设为 1
-
-// 遍历每一个模型，生成 JSON 格式的备份文件
+// Backup 使用一致性快照生成按持久化列编码的 JSON Lines 和版本清单。
 func Backup(backupType string, reason string) error {
 	if err := beginTask("backup"); err != nil {
 		return err
@@ -84,14 +22,12 @@ func Backup(backupType string, reason string) error {
 }
 
 func backup(backupType, reason string) (err error) {
-	totalTable := len(models.AllTables)
 	count := 0
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := helpers.EnsurePrivateDir(helpers.ConfigDir, "backups"); err != nil {
 		return fmt.Errorf("创建备份目录失败：%w", err)
 	}
-	SetRunningResult("backup", fmt.Sprintf("开始 %s 备份", backupType), totalTable, count, "")
-	models.GetBackupService().CleanupOldBackups()
+
 	record := &models.BackupRecord{
 		Status: models.BackupStatusRunning, BackupType: backupType, CreatedReason: reason,
 	}
@@ -102,7 +38,7 @@ func backup(backupType, reason string) (err error) {
 	// 每个退出分支（包括 panic）均落下历史终态，完成记录写入失败也不能报告成功。
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("备份任务异常：%v", recovered)
+			err = errors.New("备份任务异常")
 		}
 		record.Status = models.BackupStatusCompleted
 		record.CompletedAt = time.Now().Unix()
@@ -120,35 +56,54 @@ func backup(backupType, reason string) (err error) {
 				err = errors.Join(err, fmt.Errorf("保存备份失败状态失败：%w", updateErr))
 			}
 		}
+		if err == nil {
+			cleanupOldBackupsAfterSuccess()
+		}
 	}()
 	helpers.AppLogger.Infof("开始 %s 备份，备份记录 ID：%d", backupType, record.ID)
-	if err := pauseTasks(); err != nil {
+	tables, _, err := logicalTables(db.Db)
+	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, resumeTasks()) }()
-	SetRunningResult("backup", "已停止所有同步任务、上传下载任务、定时任务", totalTable, count, "")
+	totalTable := len(tables)
+	SetRunningResult("backup", "正在读取数据库一致性快照", totalTable, count, "")
 
-	backupRecordDir := filepath.Join(backupDir, fmt.Sprintf("%d", record.ID))
-	if err := os.MkdirAll(backupRecordDir, 0755); err != nil {
+	backupRecordDir, err := os.MkdirTemp(backupDir, "backup-export-")
+	if err != nil {
 		return fmt.Errorf("创建备份目录失败：%w", err)
 	}
 	defer os.RemoveAll(backupRecordDir)
-	for _, table := range models.AllTables {
-		if err := backupToJsonFile(backupRecordDir, helpers.GetStructName(table), totalTable, &count, table); err != nil {
-			return err
-		}
+	if err := writeLogicalBackup(db.Db, backupRecordDir, func(table logicalTable) {
+		count++
+		SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", table.ModelName, table.RowCount), totalTable, count, "")
+		helpers.AppLogger.Infof("表 [%s] 备份完成，共 %d 条数据", table.Name, table.RowCount)
+	}); err != nil {
+		return err
 	}
 
 	fileName := fmt.Sprintf("backup_%s_%s.zip", backupType, time.Now().Format("20060102_150405"))
 	filePath := filepath.Join(backupDir, fileName)
-	if err := zipDir(backupRecordDir, filePath); err != nil {
-		// 残缺归档尚未写入记录路径，历史清理和删除都找不到它，只能在此删除。
-		os.Remove(filePath)
+	tempPath := filepath.Join(backupDir, ".backup-publish-"+rand.Text()+".part")
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			os.Remove(tempPath)
+		}
+	}()
+	if err := zipDir(backupRecordDir, tempPath); err != nil {
+		// O_EXCL 失败时，不能删除其他写入方的文件。
+		removeTemp = !errors.Is(err, os.ErrExist)
 		return fmt.Errorf("打包备份目录失败：%w", err)
 	}
-	stat, err := os.Stat(filePath)
+	stat, err := os.Stat(tempPath)
 	if err != nil {
 		return fmt.Errorf("获取备份文件状态失败：%w", err)
+	}
+	if stat.Size() > MaxArchiveSize {
+		return fmt.Errorf("备份压缩文件超过大小限制：%w", ErrArchiveLimit)
+	}
+	if err := helpers.SyncAndPublishFileNoReplace(tempPath, filePath); err != nil {
+		return fmt.Errorf("发布备份文件失败：%w", err)
 	}
 	record.FilePath = filePath
 	record.FileSize = stat.Size()
@@ -157,51 +112,12 @@ func backup(backupType, reason string) (err error) {
 	return nil
 }
 
-// 备份账号信息
-func backupToJsonFile(backupDir string, modelName string, totalTable int, count *int, model any) (err error) {
-	// 打开一个文件用来写入
-	backupFilePath := filepath.Join(backupDir, modelName+".json")
-	backupFile, err := os.OpenFile(backupFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		helpers.AppLogger.Errorf("创建 %s 备份文件失败：%v", modelName, err)
-		return err
-	}
-	defer func() { err = errors.Join(err, backupFile.Close()) }()
-	encoder := json.NewEncoder(backupFile)
-	// 从数据库中分页查询所有数据，每页 100 条
-	pageSize := 100
-	page := 0
-	totalCount := 0
-	typ := reflect.TypeOf(model)
-	sliceType := reflect.SliceOf(typ)
-	for {
-		records := reflect.New(sliceType).Interface()
-		if err := db.Db.Model(model).Offset(page * pageSize).Limit(pageSize).Order("id").Find(records).Error; err != nil {
-			helpers.AppLogger.Errorf("查询 %s 失败：%v", modelName, err)
-			return err
+func cleanupOldBackupsAfterSuccess() {
+	// 清理只影响保留策略，不能让已完成的新备份变成失败。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			helpers.AppLogger.Warnf("清理旧备份异常，已保留新备份结果")
 		}
-		recordsValue := reflect.ValueOf(records).Elem()
-		if recordsValue.Len() == 0 {
-			break
-		}
-
-		for i := 0; i < recordsValue.Len(); i++ {
-			record := recordsValue.Index(i).Interface()
-			if task, ok := record.(models.DbDownloadTask); ok {
-				record = downloadBackup(task)
-			}
-			if err := encoder.Encode(record); err != nil {
-				return fmt.Errorf("写入 %s 备份文件失败：%w", modelName, err)
-			}
-			totalCount++
-			if totalCount%10 == 0 {
-				SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "")
-			}
-		}
-		page++
-	}
-	*count++
-	SetRunningResult("backup", fmt.Sprintf("已备份 %s %d 条", modelName, totalCount), totalTable, *count, "")
-	helpers.AppLogger.Infof("表 [%s] 备份完成，共 %d 条数据", modelName, totalCount)
-	return nil
+	}()
+	models.GetBackupService().CleanupOldBackups()
 }

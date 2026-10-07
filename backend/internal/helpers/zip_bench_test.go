@@ -24,6 +24,9 @@ func BenchmarkZipDir(b *testing.B) {
 			b.SetBytes(int64(data.Len()))
 			b.ReportAllocs()
 			for b.Loop() {
+				if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+					b.Fatal(err)
+				}
 				if err := ZipDir(src, dst); err != nil {
 					b.Fatal(err)
 				}

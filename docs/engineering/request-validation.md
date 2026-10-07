@@ -32,7 +32,7 @@
 
 同步目录聚合接口暂时保留 `data.error_code`、`data.field_errors` 和成功响应中的 `warnings`，精确语义见 [同步目录聚合 API](../reference/sync-path-api.md)。这属于存量响应兼容，不是另一套永久的错误码层级；客户端解析时顶层错误码优先，已知旧接口可回退到嵌套字段。不得将其所有错误都当作字段校验失败。
 
-异步备份和恢复的状态查询成功不等于任务成功，任务结果由 `data.status` 判定；字段和旧响应兼容见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
+异步备份和恢复的状态查询成功不等于任务成功，任务结果由 `data.status` 判定；任务内的 `data.error_code` 表示异步失败原因，`data.restore_outcome` 表示已确认的数据库结果，不能与查询接口的顶层错误码混淆。字段和旧响应兼容见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
 
 网盘文件操作同样需要区分调用成功与操作完成。`POST /api/path/move` 和 `POST /api/path/copy` 的成功响应返回 `data.status`（`completed` 或 `submitted`）和 `data.task_ids`（字符串数组）：同步完成时为 `completed` 和空数组；OpenList 返回后台任务时为 `submitted`，保留上游任务 ID。`submitted` 只表示已提交，最终成功或失败在 OpenList 任务列表查看，不能依据本次响应或紧随其后的文件列表刷新宣称完成。前端兼容旧版本的 `data=null`，沿用旧版同步成功语义。
 
@@ -259,7 +259,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 
 - 用户会话撤销使用 `session_id` 路径参数，当前直接从 `c.Param("session_id")` 读取。
 - 同步记录、同步任务详情 HTTP 查询、同步路径列表查询仍在 `controllers/sync.go` 使用控制器内局部 Request 结构；同步任务详情实时流在 `controllers/event_stream.go` 使用 `ParsePositiveIDRequest` 解析路径 `id`，不新增 DTO。
-- 备份上传恢复使用 multipart 文件流，文件读取、扩展名和临时文件处理仍保留在控制器中。
+- 备份上传恢复在解析 multipart 前限制请求体，并单独限制实际文件大小；超限返回 HTTP `413`、顶层 `error_code=BACKUP_ARCHIVE_LIMIT`，清理 multipart 和本轮上传临时文件。文件读取、扩展名和暂存处理保留在控制器中，具体限额见[数据库运维](../operations/database.md#恢复与风险边界)。
 - 首次数据库配置服务 `backend/main.go` 使用独立的启动期接口和私有请求结构，不纳入常规 API DTO 目录。
 - 部分只读或触发型接口没有外部参数，或只做运行状态检查，不需要 DTO。
 

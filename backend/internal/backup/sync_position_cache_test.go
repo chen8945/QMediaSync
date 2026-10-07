@@ -13,7 +13,7 @@ import (
 	"qmediasync/internal/syncscope"
 )
 
-func TestRestorePartialFailureInvalidatesSyncPositions(t *testing.T) {
+func TestRestoreSuccessInvalidatesSyncPositions(t *testing.T) {
 	conn := setupBackupTest(t)
 	if err := conn.AutoMigrate(&models.SyncPath{}, &models.SyncFile{}); err != nil {
 		t.Fatal(err)
@@ -27,18 +27,18 @@ func TestRestorePartialFailureInvalidatesSyncPositions(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	file := models.SyncFile{SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId, Path: "/restored", LocalFilePath: filepath.Join(t.TempDir(), "restored.strm")}
+	file := models.SyncFile{BaseModel: models.BaseModel{ID: 1}, SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId, Path: "/restored", LocalFilePath: filepath.Join(t.TempDir(), "restored.strm")}
 	data, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "SyncFile.json"), append(data, []byte("\ninvalid-json\n")...), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SyncFile.json"), append(data, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	count := 0
-	if err := restoreFromJsonFile(dir, "SyncFile", 1, &count, &models.SyncFile{}); err == nil {
-		t.Fatal("expected partial restore failure")
+	if err := restoreFromJsonFile(dir, "SyncFile", 1, &count, &models.SyncFile{}); err != nil {
+		t.Fatal(err)
 	}
 	busy, err := syncscope.Acquire(t.Context(), syncscope.Scope{SourceType: "115", AccountID: 1, RemotePath: "/restored"})
 	if err != nil {

@@ -3,12 +3,15 @@
 package helpers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +26,7 @@ var mainWindow *walk.MainWindow
 var ExitChan chan struct{} = make(chan struct{})
 
 var stopFunction func()
+var stopAppOnce sync.Once
 
 func StartApp(stopFunc func()) {
 	stopFunction = stopFunc
@@ -30,12 +34,18 @@ func StartApp(stopFunc func()) {
 }
 
 func StopApp() {
-	if mainWindow != nil {
-		ExitChan <- struct{}{} // 发送关闭信号
-		exitApp()
-		mainWindow.Dispose()
-		mainWindow = nil
-	}
+	stopAppOnce.Do(func() {
+		ExitChan <- struct{}{}
+		// App.Start 关闭此通道前会完成 App.Stop，避免托盘先退出导致清理被截断。
+		<-ExitChan
+		if mainWindow != nil {
+			mainWindow.Synchronize(func() {
+				exitApp()
+				mainWindow.Dispose()
+				mainWindow = nil
+			})
+		}
+	})
 }
 
 func startWindow() {
@@ -106,11 +116,7 @@ func setupFullFeaturedTray(parent walk.Form, stopFunc func()) error {
 	exitAction.SetText("退出程序")
 	exitAction.Triggered().Attach(func() {
 		stopFunc()
-		exitApp()
 	})
-
-	// 将退出动作加入右键菜单
-	exitAction.Triggered().Attach(func() { walk.App().Exit(0) })
 	if err := notifyIcon.ContextMenu().Actions().Add(exitAction); err != nil {
 		log.Fatal(err)
 	}
@@ -135,12 +141,23 @@ func OpenBrowser(url string) error {
 }
 
 func StartNewProcess(exePath, updateDir string) bool {
-	// 复制一个临时的 exe 文件，启动这个临时文件，更新完成后删除
-	var cmd *exec.Cmd
+	var args []string
 	if updateDir != "" {
-		cmd = exec.Command(exePath, "-update", updateDir)
-	} else {
-		cmd = exec.Command(exePath)
+		args = []string{"-update", updateDir}
+	}
+	if err := startDetachedAppProcess(exePath, args); err != nil {
+		AppLogger.Errorf("启动更新进程失败：%v", err)
+		return false
+	}
+	return true
+}
+
+func startDetachedAppProcess(exePath string, args []string) error {
+	cmd := exec.Command(exePath, args...)
+	var err error
+	cmd.Dir, err = os.Getwd()
+	if err != nil {
+		return err
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -150,10 +167,38 @@ func StartNewProcess(exePath, updateDir string) bool {
 	}
 
 	if err := cmd.Start(); err != nil {
-		AppLogger.Errorf("启动更新进程失败：%v", err)
-		return false
+		return err
 	}
-	return true
+	// 子进程独立存活；不保留父进程中不再使用的进程句柄。
+	return cmd.Process.Release()
+}
+
+func startRestartProcess() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取程序路径失败：%w", err)
+	}
+	args := append([]string{"--restart-parent", strconv.Itoa(os.Getpid()), "--"}, os.Args[1:]...)
+	if err := startDetachedAppProcess(exePath, args); err != nil {
+		return fmt.Errorf("启动重启进程失败：%w", err)
+	}
+	return nil
+}
+
+// RunAppRestart 等父进程退出后以原启动参数和工作目录重启，不替换程序文件。
+func RunAppRestart(parentPID int, args []string) error {
+	if parentPID <= 0 || parentPID != os.Getppid() {
+		return errors.New("重启父进程参数无效")
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// 父进程延迟 3 秒关闭，最迟再过 60 秒强制退出。
+	if err := WaitForProcessExit(parentPID, 70*time.Second); err != nil {
+		return fmt.Errorf("等待父进程退出失败：%w", err)
+	}
+	return startDetachedAppProcess(exePath, args)
 }
 
 // 检查进程是否存活 - Windows 专用

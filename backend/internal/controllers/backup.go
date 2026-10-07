@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,7 +115,7 @@ func DeleteBackup(c *gin.Context) {
 	}
 
 	service := models.GetBackupService()
-	if err := service.DeleteBackup(req.ID, true); err != nil {
+	if err := service.DeleteBackup(req.ID); err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
 			Message: fmt.Sprintf("删除备份失败：%v", err),
@@ -233,9 +234,7 @@ func UpdateBackupConfig(c *gin.Context) {
 		return
 	}
 
-	if config.BackupEnabled == 1 && config.BackupCron != "" {
-		synccron.InitCron()
-	}
+	synccron.InitCron()
 
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
@@ -283,7 +282,8 @@ func RestoreFromBackup(c *gin.Context) {
 		return
 	}
 
-	if err := backup.StartRestore(record.FilePath, false); err != nil {
+	receipt, err := backup.StartRestoreWithReceipt(record.FilePath, false)
+	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code: BadRequest, Message: "备份或恢复任务正在运行，请稍后再试", Data: nil,
 		})
@@ -293,13 +293,34 @@ func RestoreFromBackup(c *gin.Context) {
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
 		Message: "数据恢复任务已开始",
-		Data:    nil,
+		Data:    map[string]string{"restore_receipt": receipt},
 	})
 }
 
 func UploadAndRestore(c *gin.Context) {
+	uploadAndRestore(c, backup.MaxArchiveSize)
+}
+
+func uploadAndRestore(c *gin.Context, maxArchiveSize int64) {
+	// multipart 的边界和字段最多额外占 1 MiB；实际文件另行限制。
+	maxRequestSize := maxArchiveSize + 1<<20
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestSize)
+	defer func() {
+		if c.Request.MultipartForm != nil {
+			_ = c.Request.MultipartForm.RemoveAll()
+		}
+	}()
+	if c.Request.ContentLength > maxRequestSize {
+		backupUploadLimitResponse(c)
+		return
+	}
+
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
+		if _, exceeded := errors.AsType[*http.MaxBytesError](err); exceeded {
+			backupUploadLimitResponse(c)
+			return
+		}
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
 			Message: "请上传备份文件",
@@ -308,6 +329,10 @@ func UploadAndRestore(c *gin.Context) {
 		return
 	}
 	defer file.Close()
+	if header.Size > maxArchiveSize {
+		backupUploadLimitResponse(c)
+		return
+	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
 	if ext != ".zip" {
@@ -329,13 +354,13 @@ func UploadAndRestore(c *gin.Context) {
 	}
 
 	tempDir := filepath.Join(helpers.ConfigDir, "backups", "temp")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
+	if err := helpers.EnsurePrivateDir(helpers.ConfigDir, "backups", "temp"); err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存上传文件失败", Data: nil})
 		return
 	}
 	tempPath := filepath.Join(tempDir, fmt.Sprintf("upload_%d%s", time.Now().UnixNano(), ext))
 
-	dst, err := os.Create(tempPath)
+	dst, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
@@ -345,8 +370,13 @@ func UploadAndRestore(c *gin.Context) {
 		return
 	}
 
-	_, err = io.Copy(dst, file)
+	written, err := io.Copy(dst, io.LimitReader(file, maxArchiveSize+1))
 	closeErr := dst.Close()
+	if written > maxArchiveSize {
+		os.Remove(tempPath)
+		backupUploadLimitResponse(c)
+		return
+	}
 	if err != nil || closeErr != nil {
 		os.Remove(tempPath)
 		c.JSON(http.StatusOK, APIResponse[any]{
@@ -357,7 +387,8 @@ func UploadAndRestore(c *gin.Context) {
 		return
 	}
 
-	if err := backup.StartRestore(tempPath, true); err != nil {
+	receipt, err := backup.StartRestoreWithReceipt(tempPath, true)
+	if err != nil {
 		os.Remove(tempPath)
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code: BadRequest, Message: "备份或恢复任务正在运行，请稍后再试", Data: nil,
@@ -368,6 +399,12 @@ func UploadAndRestore(c *gin.Context) {
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,
 		Message: "数据恢复任务已开始",
-		Data:    nil,
+		Data:    map[string]string{"restore_receipt": receipt},
+	})
+}
+
+func backupUploadLimitResponse(c *gin.Context) {
+	c.JSON(http.StatusRequestEntityTooLarge, APIResponse[any]{
+		Code: BadRequest, Message: "备份文件或上传请求超过大小限制", ErrorCode: "BACKUP_ARCHIVE_LIMIT",
 	})
 }

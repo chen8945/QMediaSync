@@ -90,13 +90,13 @@ type EmbyLibraryRefreshTask struct {
 	// TaskKey 用于刷新任务的唯一去重，不承载媒体库 ID 语义。
 	TaskKey             string `json:"task_key" gorm:"uniqueIndex:idx_emby_library_refresh_tasks_task_key;type:varchar(160)"`
 	LibraryId           string `json:"library_id" gorm:"index:idx_emby_library_refresh_tasks_library_id;type:varchar(128)"`
-	LibraryName         string `json:"library_name" gorm:"type:varchar(255)"`
+	LibraryName         string `json:"library_name" gorm:"type:text"`
 	SyncPathIdsStr      string `json:"-" gorm:"type:text;default:'[]'"`
 	TargetType          string `json:"target_type" gorm:"type:varchar(32);index;default:library"`
 	ItemIdsStr          string `json:"-" gorm:"type:text;default:'[]'"`
 	ItemRecursive       bool   `json:"item_recursive" gorm:"default:false"`
 	FallbackLibraryId   string `json:"fallback_library_id" gorm:"type:varchar(128);index"`
-	FallbackLibraryName string `json:"fallback_library_name" gorm:"type:varchar(255)"`
+	FallbackLibraryName string `json:"fallback_library_name" gorm:"type:text"`
 	Status              string `json:"status" gorm:"index;type:varchar(32)"`
 	LastEventAt         int64  `json:"last_event_at" gorm:"index"`
 	RefreshAfterAt      int64  `json:"refresh_after_at" gorm:"index"`

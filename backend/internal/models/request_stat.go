@@ -11,7 +11,7 @@ import (
 type RequestStat struct {
 	BaseModel
 	RequestTime int64  `json:"request_time" gorm:"index"` // 请求时间戳（秒）
-	URL         string `json:"url" gorm:"type:varchar(512)"`
+	URL         string `json:"url" gorm:"type:text"`
 	Method      string `json:"method" gorm:"type:varchar(10)"`
 	Duration    int64  `json:"duration"`     // 响应时间（毫秒）
 	IsThrottled bool   `json:"is_throttled"` // 是否限流

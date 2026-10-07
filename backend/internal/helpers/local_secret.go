@@ -79,6 +79,14 @@ func DecryptLocalSecret(encrypted string) (string, error) {
 	if err := InitEncryptionKey(); err != nil {
 		return "", err
 	}
+	return DecryptLocalSecretWithCurrentKey(encrypted)
+}
+
+// DecryptLocalSecretWithCurrentKey 只使用进程已加载的密钥，校验恢复数据时不创建或加载密钥文件。
+func DecryptLocalSecretWithCurrentKey(encrypted string) (string, error) {
+	if localEncryptionKey == "" {
+		return "", errors.New("本机加密密钥尚未初始化")
+	}
 	if !strings.HasPrefix(encrypted, localSecretGCMPrefix) {
 		return "", errors.New("本机 secret 格式不支持")
 	}

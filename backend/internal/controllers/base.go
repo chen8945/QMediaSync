@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
@@ -247,7 +248,7 @@ func Cors() gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)                                    // 允许访问当前请求来源
 			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE,UPDATE") // 服务器支持的跨域请求方法，避免浏览器重复预检。
 			// Header 类型
-			c.Header("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Length, X-CSRF-Token, Token, session, X_Requested_With, Accept, Origin, Host, Connection, Accept-Encoding, Accept-Language, DNT, X-CustomHeader, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type, Pragma")
+			c.Header("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Length, X-CSRF-Token, X-Restore-Receipt, Token, session, X_Requested_With, Accept, Origin, Host, Connection, Accept-Encoding, Accept-Language, DNT, X-CustomHeader, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type, Pragma")
 			// 允许浏览器读取这些跨域响应头。
 			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers,Cache-Control,Content-Language,Content-Type,Expires,Last-Modified,Pragma,FooBar") // 跨域关键设置，让浏览器可以解析。
 			c.Header("Access-Control-Max-Age", "172800")                                                                                                                                                           // 缓存预检请求信息，单位为秒。
@@ -270,15 +271,10 @@ func IsFnOS(c *gin.Context) {
 
 func RepairDB(c *gin.Context) {
 	// 修复数据库，补齐缺失的表、字段和索引
-	err := models.BatchCreateTable()
+	err := models.RepairDatabase(db.Db.WithContext(c.Request.Context()))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "修复数据库失败：" + err.Error(), Data: nil})
-		return
-	}
-	// PostgreSQL 下修复数据库表的主键序列
-	err = models.BatchRepairTableSeq()
-	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "修复数据库表的主键序列失败：" + err.Error(), Data: nil})
+		helpers.AppLogger.Errorf("修复数据库失败：%v", err)
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "修复数据库失败，请查看服务日志", Data: nil})
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "已补齐数据库表结构，并完成主键序列检查", Data: nil})

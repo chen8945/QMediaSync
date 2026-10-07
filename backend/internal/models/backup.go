@@ -96,7 +96,7 @@ func InitBackupService() *BackupService {
 
 	config := GetOrCreateBackupConfig()
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := helpers.EnsurePrivateDir(helpers.ConfigDir, "backups"); err != nil {
 		helpers.AppLogger.Errorf("创建备份目录失败：%v", err)
 	}
 
@@ -151,7 +151,7 @@ func (s *BackupService) CleanupOldBackups() {
 
 	var records []BackupRecord
 	db.Db.Where("status = ?", BackupStatusCompleted).
-		Order("created_at DESC").
+		Order("created_at DESC, id DESC").
 		Find(&records)
 
 	now := time.Now().Unix()
@@ -172,7 +172,7 @@ func (s *BackupService) CleanupOldBackups() {
 		}
 
 		if shouldDelete {
-			if err := s.DeleteBackup(record.ID, false); err != nil {
+			if err := s.DeleteBackup(record.ID); err != nil {
 				helpers.AppLogger.Warnf("清理旧备份失败，ID=%d：%v，原因：%s", record.ID, err, reason)
 			} else {
 				helpers.AppLogger.Infof("已清理旧备份，ID=%d，原因：%s", record.ID, reason)
@@ -181,7 +181,7 @@ func (s *BackupService) CleanupOldBackups() {
 	}
 }
 
-func (s *BackupService) DeleteBackup(recordID uint, checkRunning bool) error {
+func (s *BackupService) DeleteBackup(recordID uint) error {
 	var record BackupRecord
 	if err := db.Db.First(&record, recordID).Error; err != nil {
 		return fmt.Errorf("备份记录不存在")

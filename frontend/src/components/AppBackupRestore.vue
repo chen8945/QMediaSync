@@ -10,7 +10,7 @@
     />
 
     <el-alert
-      title="提示：恢复成功后请重启服务，让所有数据和配置生效！"
+      title="提示：恢复结束后服务保持暂停，需重启应用服务后重新登录；支持的运行方式可在结果弹窗中点击“重启服务”。"
       type="warning"
       :closable="false"
       style="margin-bottom: 20px"
@@ -24,7 +24,7 @@
     />
 
     <el-alert
-      title="恢复说明：仅支持 .zip 格式的备份文件，文件大小不超过 1 GB"
+      title="恢复说明：仅支持不超过 1 GB 的 .zip 备份。迁移时请一并保留原 config/（尤其是 encryption.key），否则两步验证密钥将无法使用。"
       type="info"
       :closable="false"
       style="margin-bottom: 20px"
@@ -38,7 +38,7 @@
       accept=".zip"
       :on-change="handleFileChange"
       :on-exceed="handleExceed"
-      :disabled="backupStore.isRunning"
+      :disabled="restoreStarting || backupStore.isRunning || backupStore.restartRequired"
       drag
     >
       <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
@@ -54,14 +54,16 @@
         size="large"
         :icon="CircleCheck"
         :loading="restoreStarting"
-        :disabled="!selectedFile || backupStore.isRunning"
+        :disabled="!selectedFile || backupStore.isRunning || backupStore.restartRequired"
         @click="startRestore"
       >
         开始恢复
       </el-button>
       <el-button
         size="large"
-        :disabled="!selectedFile || restoreStarting || backupStore.isRunning"
+        :disabled="
+          !selectedFile || restoreStarting || backupStore.isRunning || backupStore.restartRequired
+        "
         @click="clearFile"
       >
         清除
@@ -152,8 +154,9 @@ const startRestore = async () => {
   try {
     await ElMessageBox.confirm(
       `<div style="line-height: 1.8;">
-        <p>此操作将覆盖当前数据库，数据库将暂时不可用，确认继续吗？</p>
-        <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">⚠️ 注意：恢复成功后请重启服务让所有数据和配置生效！</p>
+        <p>此操作将整体替换当前数据库，导入失败会回滚；如果提交结果异常，请查看日志核验数据。</p>
+        <p>迁移时请一并保留原 config/，尤其是 encryption.key。</p>
+        <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">恢复期间服务暂停；进入维护后，无论恢复成功或失败，都需重启应用服务后重新登录。支持的运行方式可在结果弹窗中点击“重启服务”。</p>
       </div>`,
       '危险操作确认',
       {
@@ -167,9 +170,9 @@ const startRestore = async () => {
 
     restoreStarting.value = true
 
-    await backupAPI.uploadAndRestoreBackup(http, selectedFile.value)
+    const result = await backupAPI.uploadAndRestoreBackup(http, selectedFile.value)
     ElMessage.success('恢复任务已启动')
-    backupStore.startProgressPolling('restore', undefined, http)
+    backupStore.startProgressPolling('restore', undefined, http, result?.restore_receipt)
     clearFile()
   } catch (error: unknown) {
     if (isMessageBoxCancelError(error)) return

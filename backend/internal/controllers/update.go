@@ -244,11 +244,7 @@ func runSystemdUpdate(archivePath string) {
 		info.Progress = 100
 	})
 	helpers.AppLogger.Infof("更新文件已替换，即将退出并由 systemd 启动新版本")
-	// 留出进度轮询读到完成状态的时间。
-	time.Sleep(3 * time.Second)
-	// 自行退出没有 systemd 停止超时兜底；关闭流程卡住时强制退出，Restart=always 同样会拉起新版本。
-	time.AfterFunc(60*time.Second, func() { os.Exit(1) })
-	helpers.StopApp()
+	helpers.StopAppForRestart()
 }
 
 func cleanupUpdatePath(path string) {
@@ -770,6 +766,6 @@ func triggerUpdate() error {
 		return errors.New("启动更新进程失败")
 	}
 
-	helpers.StopApp()
+	helpers.StopAppForRestart()
 	return nil
 }

@@ -3,6 +3,7 @@
 package helpers
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,6 +31,15 @@ func StartNewProcess(exePath, updateDir string) bool {
 
 func IsProcessAlive(pid int) (bool, error) {
 	return true, nil
+}
+
+func startRestartProcess() error {
+	return errors.New("当前平台不使用独立重启进程")
+}
+
+// RunAppRestart 仅用于 Windows 的独立重启进程。
+func RunAppRestart(parentPID int, args []string) error {
+	return errors.New("当前平台不使用独立重启进程")
 }
 
 func OpenBrowser(url string) error {

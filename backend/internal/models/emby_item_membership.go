@@ -54,7 +54,7 @@ func saveEmbyItemMembershipTx(tx *gorm.DB, state EmbyItemState, evidence EmbyIte
 }
 
 // RebuildEmbyItemMembership 在维护事务中从 state 指向的原证据重建成员索引。
-// 恢复备份必须先使旧派生表失效，再导入原表，不能采用备份中的派生内容。
+// 恢复备份在同一事务中导入原表并重建索引，不采用备份中的派生行；失败整体回滚。
 func RebuildEmbyItemMembership(conn *gorm.DB) error {
 	return conn.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&EmbyIndexState{}).Where("id = ?", 1).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {

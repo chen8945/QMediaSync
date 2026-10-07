@@ -208,6 +208,7 @@ Web 端代理请求由 `api/proxySettings.ts` 封装。保存成功后仍读取�
 - 115 开放平台 APP ID、TMDB API Key / Access Token、OpenAI 兼容 API Key 和 fanart.tv API Key 可以在 Web 设置中配置。
 - 默认密钥也可由 `backend/main.go` 的变量、ldflags 或环境变量 / `config/.env` 注入。`FANART_API_KEY`、`TMDB_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `SC_API_KEY` 的优先级是 Web UI > 环境变量 / `config/.env` > ldflags；`config/.env` 覆盖真实环境变量。
 - 两步验证等本机敏感数据使用首次启动自动生成的 `config/encryption.key`。`jwtSecret` 为空或仍为公开默认值时会生成 32 字节随机密钥并写回配置；修改它会使现有登录 Cookie 失效。
+- 数据库 ZIP 不包含配置文件或 `encryption.key`。迁移须保留整个原 `config/`，在启动前安装原密钥；备份恢复不重新加密 TOTP，缺失原密钥不能由数据库备份补回。迁移和重启步骤见[数据库运维](database.md#备份)。
 - OAuth 中转使用 `OAUTH_RELAY_ENCRYPTION_KEY`，可由 `main.OAuthRelayEncryptionKey` ldflags 或环境变量 / `config/.env` 注入，环境变量优先。
 
 浏览器 Cookie、CSRF、初始化管理员、API Key 和可信来源等安全契约见 [认证会话](../architecture/authentication-sessions.md)。

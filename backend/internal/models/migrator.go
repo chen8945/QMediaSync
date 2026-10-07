@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 66
+var MaxVersionCode = 67
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -46,7 +46,7 @@ func (*Migrator) TableName() string {
 	return "migrator"
 }
 
-// Migrate 初始化空库或执行已有库迁移；返回值仅传播本轮初始化错误。
+// Migrate 初始化空库或执行已有库迁移，传播初始化、版本元数据和备份文本迁移错误。
 // 历史版本迁移仍保留原有日志和失败处理，不在此统一其错误契约。
 func Migrate() error {
 	finishPosition := BeginSyncPositionMutation()
@@ -56,17 +56,16 @@ func Migrate() error {
 		return err
 	}
 	if existing {
-		migrateExistingDB()
+		migrator, err := readMigrationRecord(db.Db)
+		if err != nil {
+			return err
+		}
+		return migrateExistingDB(migrator)
 	}
 	return nil
 }
 
-func migrateExistingDB() {
-	var migrator Migrator = Migrator{}
-	err := db.Db.Model(&migrator).First(&migrator).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("获取数据库迁移表失败：%v", err)
-	}
+func migrateExistingDB(migrator Migrator) (migrationErr error) {
 	db.Db.Statement.PrepareStmt = true
 	if migrator.VersionCode == 1 {
 		// 数据库版本低于最大版本，需要升级
@@ -814,6 +813,17 @@ func migrateExistingDB() {
 		}
 		migrator.VersionCode = 66
 	}
+	if migrator.VersionCode == 66 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if err := MigrateBackupTextColumns(tx); err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 67).Error
+		}); err != nil {
+			return fmt.Errorf("迁移备份兼容文本字段失败：%w", err)
+		}
+		migrator.VersionCode = 67
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -827,6 +837,7 @@ func migrateExistingDB() {
 		}
 	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)
+	return nil
 }
 
 // MigrateEmbyDeletionSchema 补齐 Emby 索引、身份及持久删除结构，不从旧媒体行生成可信证据。
@@ -969,14 +980,7 @@ func ensureActiveDownloadTaskUniqueIndex(dbConn *gorm.DB) error {
 		if err := cancelDuplicateActiveDownloadTasks(tx); err != nil {
 			return err
 		}
-		if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_db_download_tasks_active_target
-			ON db_download_tasks (source, source_type, account_id, dedup_scope_hash, dedup_locator_hash)
-			WHERE dedup_scope_hash IS NOT NULL AND dedup_scope_hash <> ''
-				AND dedup_locator_hash IS NOT NULL AND dedup_locator_hash <> ''
-				AND status IN (0, 1)`).Error; err != nil {
-			return fmt.Errorf("创建活跃下载任务唯一索引失败：%w", err)
-		}
-		return nil
+		return createActiveDownloadTaskUniqueIndex(tx)
 	})
 }
 
@@ -1104,12 +1108,7 @@ func ensureActiveUploadTaskUniqueIndex(dbConn *gorm.DB) error {
 		if err := cancelDuplicateActiveUploadTasks(tx); err != nil {
 			return err
 		}
-		if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_db_upload_tasks_active_target
-			ON db_upload_tasks (source, source_type, account_id, remote_full_path)
-			WHERE remote_full_path IS NOT NULL AND remote_full_path <> '' AND status IN (0, 1, 5, 6)`).Error; err != nil {
-			return fmt.Errorf("创建活跃上传任务唯一索引失败：%w", err)
-		}
-		return nil
+		return createActiveUploadTaskUniqueIndex(tx)
 	})
 }
 
@@ -1453,8 +1452,16 @@ func initMigrationTable(conn *gorm.DB, version int) error {
 // InitDB 将空库结构、默认数据及版本放入同一事务；existing 表示已存在版本表。
 func InitDB() (existing bool, err error) {
 	if db.Db.Migrator().HasTable(Migrator{}) {
+		if _, err := readMigrationRecord(db.Db); err != nil {
+			return true, err
+		}
 		helpers.AppLogger.Info("数据库版本表已存在，跳过初始化数据库过程")
 		return true, nil
+	}
+	for _, table := range AllTables {
+		if db.Db.Migrator().HasTable(table) {
+			return false, fmt.Errorf("数据库版本表 migrator 缺失，但已存在业务表 %s，无法确定迁移起点", GetTableName(table))
+		}
 	}
 	err = db.Db.Transaction(func(tx *gorm.DB) error {
 		if err := batchCreateTable(tx, true); err != nil {
@@ -2049,7 +2056,7 @@ func BatchDropTable() error {
 // 批量更新表的主键序列
 // 只处理 PostgreSQL 的修复
 func BatchRepairTableSeq() error {
-	if helpers.GlobalConfig.Db.Engine != "postgres" {
+	if db.Db.Dialector.Name() != "postgres" {
 		return nil
 	}
 	var err, lastErr error
@@ -2069,16 +2076,7 @@ func BatchRepairTableSeq() error {
 }
 
 func ResetSequence(tableName string, columnName string) error {
-	var maxId int64
-	// 获取当前最大 ID，如果表为空则从 1 开始
-	if err := db.Db.Table(tableName).Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", columnName)).Scan(&maxId).Error; err != nil {
-		return err
-	}
-	if maxId == 0 {
-		// 如果没有值则不修复
-		return nil
-	}
-	// 重置序列
-	sequenceName := fmt.Sprintf("%s_%s_seq", tableName, columnName)
-	return db.Db.Exec(fmt.Sprintf("SELECT setval('%s', ?)", sequenceName), maxId).Error
+	return db.Db.Transaction(func(tx *gorm.DB) error {
+		return ResetSequenceTx(tx, tableName, columnName)
+	})
 }

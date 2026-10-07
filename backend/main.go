@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -104,7 +105,7 @@ func (app *App) Start() {
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 			<-quit
 			log.Println("收到 Ctrl+C 信号")
-			helpers.ExitChan <- struct{}{}
+			helpers.StopApp()
 		}()
 		<-helpers.ExitChan
 		log.Println("收到停止信号")
@@ -537,7 +538,7 @@ func initOthers() {
 	// 下载中的任务改为待下载
 	models.UpdateDownloadingToPending()
 	helpers.Subscribe(helpers.BackupCronEevent, func(event helpers.Event) {
-		backup.Backup("定时", "定时备份")
+		backup.Backup(models.BackupTypeAuto, "定时备份")
 	})
 	helpers.Subscribe(helpers.StrmSyncCompleteEvent, func(event helpers.Event) {
 		// 触发关联的刮削任务
@@ -570,6 +571,7 @@ func initOthers() {
 
 // 设置路由
 func setRouter(r *gin.Engine) {
+	r.Use(controllers.RestoreMaintenanceMiddleware())
 	webStatisPath := filepath.Join(helpers.RootDir, "web_statics")
 	// if helpers.IsFnOS {
 	// 	webStatisPath = filepath.Join(helpers.RootDir, "www")
@@ -866,6 +868,9 @@ func initEnv() bool {
 		log.Printf("数据库状态不支持：%v", err)
 		return false
 	}
+	if err := backup.CleanupTemporaryFiles(helpers.ConfigDir); err != nil {
+		log.Printf("清理备份临时文件失败，保留未清理项：%v", err)
+	}
 	ipv4, _ := helpers.GetLocalIP()
 	log.Printf("本机 IPv4 地址：%s\n", ipv4)
 	// 检查配置文件是否存在
@@ -944,6 +949,13 @@ func parseParams() {
 // @in query
 // @name api_key
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--restart-parent" {
+		if err := runRestartProcess(os.Args[2:]); err != nil {
+			log.Printf("重启失败：%v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, code := runAdminRecoveryCommand(os.Args[1:]); handled {
 		os.Exit(code)
 	}
@@ -987,7 +999,7 @@ func runUpdateProcess() error {
 	updateDir := os.Args[2]
 	parentPID := os.Getppid()
 	fmt.Printf("等待父进程退出（PID：%d）…\n", parentPID)
-	if err := waitForProcessExit(parentPID); err != nil {
+	if err := helpers.WaitForProcessExit(parentPID, 70*time.Second); err != nil {
 		return fmt.Errorf("等待父进程退出失败：%w", err)
 	}
 
@@ -1006,27 +1018,15 @@ func runUpdateProcess() error {
 	return nil
 }
 
-func waitForProcessExit(pid int) error {
-	maxWait := 30 * time.Second
-	deadline := time.Now().Add(maxWait)
-
-	for time.Now().Before(deadline) {
-
-		alive, err := helpers.IsProcessAlive(pid)
-		if err != nil {
-			return err
-		}
-		// 检查进程是否已经退出
-		if !alive {
-			fmt.Printf("父进程已退出，等待资源释放…\n")
-			time.Sleep(2 * time.Second)
-			return nil
-		}
-
-		time.Sleep(500 * time.Millisecond)
+func runRestartProcess(args []string) error {
+	if len(args) < 2 || args[1] != "--" {
+		return errors.New("重启参数不足")
 	}
-
-	return fmt.Errorf("进程 %d 在 %s 内未退出", pid, maxWait)
+	pid, err := strconv.Atoi(args[0])
+	if err != nil || pid <= 0 {
+		return errors.New("重启父进程参数无效")
+	}
+	return helpers.RunAppRestart(pid, args[2:])
 }
 
 func isInRestrictedDirectory() (bool, string) {

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -41,6 +42,8 @@ func setupBackupTest(t *testing.T) *gorm.DB {
 	originalDB, originalLogger, originalDir := db.Db, helpers.AppLogger, helpers.ConfigDir
 	originalTables, originalService := models.AllTables, models.GlobalBackupService
 	originalPause, originalResume, originalZip := pauseTasks, resumeTasks, zipDir
+	originalMaintenance, originalReceipt := beginRestoreMaintenance, restoreReceipt
+	beginRestoreMaintenance = func(context.Context) (*restoreMaintenance, error) { return &restoreMaintenance{database: db.Db}, nil }
 	originalResult := *GetRunningResult()
 	progressMu.Lock()
 	runningResult = BackupOrRestoreResult{Status: "idle"}
@@ -62,6 +65,7 @@ func setupBackupTest(t *testing.T) *gorm.DB {
 	helpers.ConfigDir = t.TempDir()
 	t.Cleanup(func() {
 		pauseTasks, resumeTasks, zipDir = originalPause, originalResume, originalZip
+		beginRestoreMaintenance, restoreReceipt = originalMaintenance, originalReceipt
 		models.AllTables, models.GlobalBackupService = originalTables, originalService
 		progressMu.Lock()
 		runningResult = originalResult
@@ -71,14 +75,17 @@ func setupBackupTest(t *testing.T) *gorm.DB {
 			t.Error(err)
 		}
 	})
-	if err := testDB.AutoMigrate(&backupTestItem{}, &backupOtherTestItem{}, &models.BackupRecord{}, &models.BackupConfig{}); err != nil {
+	if err := testDB.AutoMigrate(&backupTestItem{}, &backupOtherTestItem{}, &models.BackupRecord{}, &models.BackupConfig{}, &models.Migrator{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.Create(&models.Migrator{VersionCode: models.MaxVersionCode}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return testDB
 }
 
 func TestBackupTerminalStatusAndHistory(t *testing.T) {
-	for _, scenario := range []string{"success", "root_directory", "record_create", "record_directory", "query", "zip", "zip_partial", "record_finish", "panic", "resume"} {
+	for _, scenario := range []string{"success", "root_directory", "record_create", "record_directory", "query", "schema", "zip", "zip_partial", "record_finish", "panic"} {
 		t.Run(scenario, func(t *testing.T) {
 			testDB := setupBackupTest(t)
 			backupType := models.BackupTypeManual
@@ -92,16 +99,26 @@ func TestBackupTerminalStatusAndHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "record_directory":
-				if err := os.MkdirAll(filepath.Join(helpers.ConfigDir, "backups"), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(helpers.ConfigDir, "backups", "1"), []byte("blocked"), 0600); err != nil {
+				if err := testDB.Callback().Create().After("gorm:create").Register("test:block_backup_directory", func(tx *gorm.DB) {
+					if tx.Statement.Schema.Table != "backup_record" {
+						return
+					}
+					path := filepath.Join(helpers.ConfigDir, "backups")
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("blocked"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}); err != nil {
 					t.Fatal(err)
 				}
 			case "query":
 				if err := testDB.Migrator().DropTable(&backupTestItem{}); err != nil {
 					t.Fatal(err)
 				}
+			case "schema":
+				models.AllTables = []any{logicalUnsupportedRecord{}}
 			case "zip":
 				backupType = "missing/subdirectory"
 			case "zip_partial":
@@ -117,11 +134,12 @@ func TestBackupTerminalStatusAndHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "panic":
-				pauseTasks = func() error { panic("private-secret") }
-			case "resume":
-				resumeTasks = func() error { return errors.New("private-secret") }
+				zipDir = func(string, string) error { panic("private-secret") }
 			}
 			err := Backup(backupType, "test")
+			if err != nil && strings.Contains(err.Error(), "private-secret") {
+				t.Fatalf("异常错误链不应包含原始敏感值：%v", err)
+			}
 			want := models.BackupStatusFailed
 			if scenario == "success" {
 				want = models.BackupStatusCompleted
@@ -155,7 +173,7 @@ func TestBackupTerminalStatusAndHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer archive.Close()
-					if len(archive.File) != 1 {
+					if len(archive.File) != 3 {
 						t.Fatalf("备份文件数=%d", len(archive.File))
 					}
 				}
@@ -218,7 +236,7 @@ func writeBackupArchive(t *testing.T, files map[string]string, method uint16) st
 	return archivePath
 }
 
-func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
+func TestRestoreTerminalStatusAndAtomicFailure(t *testing.T) {
 	for _, scenario := range []string{"success", "old_store", "old_missing_table", "invalid_zip", "empty_zip", "invalid_json", "insert", "scanner", "temp_directory", "sequence"} {
 		t.Run(scenario, func(t *testing.T) {
 			testDB := setupBackupTest(t)
@@ -226,6 +244,9 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 				testDB.Dialector = postgresSequenceFailureDialect{testDB.Dialector}
 			}
 			models.AllTables = []any{&backupTestItem{}, &backupOtherTestItem{}}
+			if err := testDB.Create(&backupTestItem{ID: 9, Name: "before"}).Error; err != nil {
+				t.Fatal(err)
+			}
 			if err := os.MkdirAll(filepath.Join(helpers.ConfigDir, "backups"), 0755); err != nil {
 				t.Fatal(err)
 			}
@@ -278,7 +299,7 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 			if !wantSuccess && (result.Status != models.BackupStatusFailed || result.ErrorMsg == "") {
 				t.Fatalf("失败缺少安全说明：%+v", result)
 			}
-			if scenario == "invalid_json" || scenario == "insert" || scenario == "success" || scenario == "old_store" {
+			if scenario == "success" || scenario == "old_store" {
 				var item backupTestItem
 				var other backupOtherTestItem
 				if err := testDB.First(&item).Error; err != nil {
@@ -288,7 +309,17 @@ func TestRestoreTerminalStatusAndPartialFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 				if item.Name != "restored" || other.Name != "other" {
-					t.Fatalf("应继续恢复可用数据：%+v %+v", item, other)
+					t.Fatalf("应恢复全部数据：%+v %+v", item, other)
+				}
+			}
+			if !wantSuccess {
+				var item backupTestItem
+				if err := testDB.First(&item).Error; err != nil || item.Name != "before" || item.ID != 9 {
+					t.Fatalf("恢复失败必须保留原数据：%+v %v", item, err)
+				}
+				var count int64
+				if err := testDB.Model(&backupOtherTestItem{}).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("失败不得留下其他表导入的数据：%d %v", count, err)
 				}
 			}
 			if scenario == "old_missing_table" {
@@ -357,26 +388,37 @@ func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
 			} else if err != nil || GetRunningResult().Status != models.BackupStatusCompleted {
 				t.Fatalf("恢复失败：%v %+v", err, GetRunningResult())
 			}
-			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_sibling_path") != (scenario != "index_failure") {
+			if !testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_sibling_path") {
 				t.Fatal("重建后的索引状态不正确")
 			}
-			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_identity") != (testDB.Dialector.Name() == "sqlite" && !failIndex) {
-				t.Fatal("文件身份索引应仅在 SQLite 成功恢复后存在")
+			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_identity") != (testDB.Dialector.Name() == "sqlite") {
+				t.Fatal("文件身份索引应在 SQLite 成功恢复或回滚后存在")
 			}
 			var rows []models.SyncFile
 			if err := testDB.Find(&rows).Error; err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "empty" {
+			if failIndex {
+				if len(rows) != 1 || rows[0].FileId != "old" {
+					t.Fatalf("索引失败必须回滚原记录：%+v", rows)
+				}
+			} else if scenario == "empty" {
 				if len(rows) != 0 {
 					t.Fatalf("空备份应恢复为空表：%d", len(rows))
 				}
 			} else if len(rows) != 1 || rows[0].FileId != want.FileId || rows[0].Path != want.Path || !rows[0].Uploaded || !rows[0].Processed {
-				t.Fatalf("索引失败时仍应导入可用记录：%+v", rows)
+				t.Fatalf("恢复记录不完整：%+v", rows)
+			}
+			if failIndex {
+				var count int64
+				if err := testDB.Model(&backupOtherTestItem{}).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("索引失败必须回滚其他表：%d %v", count, err)
+				}
+				return
 			}
 			var other backupOtherTestItem
 			if err := testDB.First(&other).Error; err != nil || other.Name != "other" {
-				t.Fatalf("必须继续恢复其他表：%+v %v", other, err)
+				t.Fatalf("必须恢复其他表：%+v %v", other, err)
 			}
 		})
 	}
@@ -384,9 +426,14 @@ func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
 
 func TestStartBackupReservesTaskBeforeReturning(t *testing.T) {
 	setupBackupTest(t)
-	paused, release := make(chan struct{}), make(chan struct{})
+	archiving, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
-	pauseTasks = func() error { close(paused); <-release; return nil }
+	originalZip := zipDir
+	zipDir = func(source, destination string) error {
+		close(archiving)
+		<-release
+		return originalZip(source, destination)
+	}
 	if err := StartBackup(models.BackupTypeManual, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -401,9 +448,9 @@ func TestStartBackupReservesTaskBeforeReturning(t *testing.T) {
 		t.Fatalf("接受请求时必须已设置本轮状态：%+v", result)
 	}
 	select {
-	case <-paused:
+	case <-archiving:
 	case <-time.After(5 * time.Second):
-		t.Fatal("备份未到达暂停后台任务步骤")
+		t.Fatal("备份未到达打包步骤")
 	}
 	if err := StartRestore("unused.zip", false); !errors.Is(err, ErrTaskRunning) {
 		t.Fatalf("并发任务必须被拒绝：%v", err)

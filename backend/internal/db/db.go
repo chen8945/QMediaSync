@@ -25,7 +25,11 @@ func InitSqlite3(dbFile string) *gorm.DB {
 	// if !helpers.PathExists(dbFile) {
 	// 	return nil
 	// }
-	sqliteDb, err := gorm.Open(sqlite.Open(dbFile+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)"), &gorm.Config{
+	pool, err := OpenMaintenanceSQL(sqlite.DriverName, dbFile+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		panic(fmt.Errorf("创建 SQLite 连接失败：%w", err))
+	}
+	sqliteDb, err := gorm.Open(sqlite.Dialector{Conn: pool}, &gorm.Config{
 		SkipDefaultTransaction: true,
 	})
 	if err != nil {
@@ -91,8 +95,11 @@ func ConnectPostgres(dbConfig *database.Config) error {
 		connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.DBName, dbConfig.SSLMode)
 		helpers.AppLogger.Infof("连接数据库：%s", connStr)
-		sqlDB, _ = sql.Open("postgres", connStr)
-		pg := postgres.New(postgres.Config{Conn: sqlDB})
+		sqlDB, err = OpenMaintenanceSQL("postgres", connStr)
+		if err != nil {
+			return fmt.Errorf("创建 PostgreSQL 连接失败：%w", err)
+		}
+		pg := postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB})
 		Db, err = gorm.Open(pg, &gorm.Config{})
 		if err != nil {
 			helpers.AppLogger.Errorf("连接数据库失败：%v", err)
