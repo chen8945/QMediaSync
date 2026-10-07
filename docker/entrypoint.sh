@@ -172,7 +172,7 @@ while true; do
 
     # 等待主进程退出
     wait $MAIN_PID
-    echo "主进程退出，等待更新完成..."
+    echo "主进程已退出，检查更新包和重启请求..."
 
     # 如果主进程退出，检查是否有更新
     if [ -f "/app/qms.update.tar.gz" ]; then
@@ -192,7 +192,7 @@ while true; do
         rm -f /app/config/.restart-request || exit 1
         echo "收到重启请求，准备重新启动主进程..."
     else
-        echo "主进程退出，未检测到更新文件，退出容器..."
+        echo "未检测到更新包或有效的重启请求，退出容器..."
         exit 0
     fi
 done

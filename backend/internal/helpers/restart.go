@@ -30,14 +30,15 @@ func SupportsAppRestart() bool {
 
 // RestartApp 准备本轮重启后延迟退出；准备失败时保留当前进程供用户重试。
 func RestartApp() error {
-	if err := prepareAppRestart(); err != nil {
+	if err := PrepareAppRestart(); err != nil {
 		return err
 	}
 	go StopAppForRestart()
 	return nil
 }
 
-func prepareAppRestart() error {
+// PrepareAppRestart 交付重启请求但不退出，由调用方在响应完成后结束当前进程。
+func PrepareAppRestart() error {
 	if !SupportsAppRestart() {
 		return errors.New("当前运行方式不支持程序内重启")
 	}

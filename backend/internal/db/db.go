@@ -65,11 +65,11 @@ func InitSqlite3(dbFile string) *gorm.DB {
 	sqlDB.SetConnMaxIdleTime(0)
 	helpers.AppLogger.Infof("设置 SQLite 连接池成功：最大连接数 %d", 1)
 
-	// 2. 设置 busy_timeout (例如 5000 毫秒)
+	// 2. 设置 busy_timeout 为 10000 毫秒
 	if tx := sqliteDb.Exec("PRAGMA busy_timeout = 10000"); tx.Error != nil {
 		panic(fmt.Errorf("设置 busy_timeout 失败：%w", tx.Error))
 	} else {
-		helpers.AppLogger.Infof("设置 busy_timeout 成功：%d 毫秒", 5000)
+		helpers.AppLogger.Infof("设置 busy_timeout 成功：%d 毫秒", 10000)
 	}
 
 	// 3. 启用 WAL 模式

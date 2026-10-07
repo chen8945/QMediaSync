@@ -6,9 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"qmediasync/internal/helpers"
 )
 
 func TestRestartCommandRejectsInvalidArguments(t *testing.T) {
@@ -78,6 +81,44 @@ fi
 			}
 			if strings.Contains(string(output), "检测到新版本") {
 				t.Fatalf("pure restart entered update flow: %s", output)
+			}
+		})
+	}
+}
+
+func TestInitialConfigDockerRestart(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Docker 入口运行于 Linux")
+	}
+	oldDir, oldFnOS := helpers.ConfigDir, helpers.IsFnOS
+	t.Cleanup(func() { helpers.ConfigDir, helpers.IsFnOS = oldDir, oldFnOS })
+	helpers.IsFnOS = false
+	for _, tc := range []struct {
+		name, docker, support string
+		want                  bool
+	}{
+		{"supported Docker", "1", "1", true},
+		{"old Docker", "1", "", false},
+		{"non Docker", "", "1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			helpers.ConfigDir = t.TempDir()
+			t.Setenv("DOCKER", tc.docker)
+			t.Setenv("QMS_DOCKER_RESTART", tc.support)
+			got, err := prepareInitialConfigRestart()
+			if err != nil || got != tc.want {
+				t.Fatalf("restart=%v err=%v", got, err)
+			}
+			signal, readErr := os.ReadFile(filepath.Join(helpers.ConfigDir, ".restart-request"))
+			if tc.want {
+				if readErr != nil || string(signal) != strconv.Itoa(os.Getpid()) {
+					t.Fatalf("signal=%q err=%v", signal, readErr)
+				}
+				if got, err := prepareInitialConfigRestart(); got || err == nil {
+					t.Fatal("重启准备失败不应报告成功")
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatalf("不支持的入口不应创建信号：%v", readErr)
 			}
 		})
 	}

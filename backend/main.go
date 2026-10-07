@@ -1230,7 +1230,17 @@ func StartConfigWebServer() {
 			return
 		}
 
-		c.JSON(200, gin.H{"success": true, "message": "配置已保存，配置服务已退出。重启后请查看启动日志中的初始化码，并在 Web 页面创建首个管理员。"})
+		autoRestart, err := prepareInitialConfigRestart()
+		if err != nil {
+			log.Printf("配置已保存，但准备 Docker 重启失败：%v", err)
+			c.JSON(200, gin.H{"success": true, "message": "配置已保存，但自动重启准备失败，请手动重启容器。重启后请查看启动日志中的初始化码，并在 Web 页面创建首个管理员。"})
+			return
+		}
+		message := "配置已保存，配置服务即将退出。重启后请查看启动日志中的初始化码，并在 Web 页面创建首个管理员。"
+		if autoRestart {
+			message = "配置已保存，正在自动重启并进入正式服务。请查看启动日志中的初始化码，并在 Web 页面创建首个管理员。"
+		}
+		c.JSON(200, gin.H{"success": true, "message": message})
 		go func() {
 			time.Sleep(1 * time.Second)
 			os.Exit(0)
@@ -1246,4 +1256,15 @@ func StartConfigWebServer() {
 	if err := r.Run(":12333"); err != nil {
 		log.Fatalf("启动配置服务失败：%v", err)
 	}
+}
+
+// prepareInitialConfigRestart 仅为支持纯重启的 Docker 入口交付首次配置重启请求。
+func prepareInitialConfigRestart() (bool, error) {
+	if os.Getenv("DOCKER") != "1" || !helpers.SupportsAppRestart() {
+		return false, nil
+	}
+	if err := helpers.PrepareAppRestart(); err != nil {
+		return false, err
+	}
+	return true, nil
 }

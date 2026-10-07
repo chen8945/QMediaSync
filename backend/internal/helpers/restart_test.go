@@ -53,7 +53,7 @@ func TestPrepareDockerAppRestart(t *testing.T) {
 	t.Setenv("DOCKER", "1")
 	t.Setenv("QMS_DOCKER_RESTART", "1")
 	ConfigDir = t.TempDir()
-	if err := prepareAppRestart(); err != nil {
+	if err := PrepareAppRestart(); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(ConfigDir, ".restart-request")
@@ -65,7 +65,7 @@ func TestPrepareDockerAppRestart(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("restart signal permissions: %v, %v", info, err)
 	}
-	if err := prepareAppRestart(); err == nil {
+	if err := PrepareAppRestart(); err == nil {
 		t.Fatal("existing restart signal must not be overwritten")
 	}
 	if err := os.Remove(path); err != nil {
@@ -78,18 +78,18 @@ func TestPrepareDockerAppRestart(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareAppRestart(); err == nil {
+	if err := PrepareAppRestart(); err == nil {
 		t.Fatal("symlink restart signal must fail")
 	}
 	if data, err := os.ReadFile(target); err != nil || string(data) != "original" {
 		t.Fatalf("symlink target changed: %q, %v", data, err)
 	}
 	ConfigDir = path // 文件不能作为目录，准备必须失败且不得安排退出。
-	if err := prepareAppRestart(); err == nil {
+	if err := PrepareAppRestart(); err == nil {
 		t.Fatal("unwritable restart signal must fail")
 	}
 	ConfigDir = ""
-	if err := prepareAppRestart(); err == nil {
+	if err := PrepareAppRestart(); err == nil {
 		t.Fatal("uninitialized config directory must fail")
 	}
 }
