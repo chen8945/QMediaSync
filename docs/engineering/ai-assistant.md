@@ -22,6 +22,7 @@
 - 中文文案、注释、日志和展示性描述遵循中英文排版习惯；品牌名、产品名和协议名使用官方名称、大小写和空格。
 - 修改代码、配置、接口、命令或流程时必须同步更新权威文档；确认无需更新时，在最终回复中说明已检查且无需更新。
 - 正式文档以 [文档治理](documentation-governance.md) 为准。
+- 用户可见行为、安装、配置或恢复流程变化时，按 [Wiki 用户手册维护](wiki-maintenance.md) 的集中来源映射检查并同步主仓库 `wiki/` 源文件。用户需要的说明应在 Wiki 内完整提供，不缩成主仓库文档外链；新增或改名页面同时更新映射与 Wiki 导航。
 
 ## 前端测试
 
@@ -58,6 +59,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 | 任务来源、任务类型、展示映射或数据库机器值 | [任务来源](../reference/task-sources.md) |
 | 刮削命名模板、模板变量、NFO 解析或媒体类型为其他的信息来源 | [刮削命名模板与其他类型 NFO](../reference/scrape-rename-templates.md) |
 | 发布、CI、镜像标签或 FPK 打包 | [发布流程](../operations/release.md) |
+| 用户手册、Wiki 页面、导航或用户可见操作流程 | [Wiki 用户手册维护](wiki-maintenance.md) 和 [文档治理](documentation-governance.md)；同时阅读对应业务权威文档 |
 | 单个客户端或前端工具目录 | 对应代码目录内的 `README.md` |
 
 高风险跨模块改动还必须阅读文档中的“不变量”和“验证方式”；不存在对应契约时，按 [文档治理](documentation-governance.md) 补充。
@@ -94,7 +96,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 
 ## 配置、密钥和日志
 
-- 主配置为 `config/config.yaml`，兼容旧 `config.yml`；敏感变量文件为 `config/.env`，加载后会覆盖真实环境变量。
+- 主配置为 `config/config.yaml`，兼容旧 `config.yml`；敏感变量文件从程序根目录的 `config/.env` 加载并覆盖真实环境变量，不随飞牛共享配置目录改变，路径区别见 [配置](../operations/configuration.md#第三方密钥与本机敏感数据)。
 - 默认 API 密钥为 `FANART_API_KEY`、`TMDB_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `SC_API_KEY`，可由 ldflags 或运行环境设置。取值优先级为 UI 配置（DB）> 环境变量 / `config/.env` > ldflags。
 - 本机敏感数据密钥由 `helpers.InitEncryptionKey()` 每实例生成并保存到 `config/encryption.key`，不使用 `ENCRYPTION_KEY` 环境变量或 ldflags。
 - OAuth 中转共享密钥为 `OAUTH_RELAY_ENCRYPTION_KEY`；环境变量或 `config/.env` 优先于 `main.OAuthRelayEncryptionKey` ldflags。
@@ -109,7 +111,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 
 ## 文档与发布
 
-- 根 `README.md` 只保留项目介绍、快速入口和 [文档索引](../README.md) 入口；完整索引维护在 `docs/README.md`。
+- 根 `README.md` 保留项目介绍、Wiki / 下载 / 反馈入口、Docker 镜像和致谢；维护者文档索引只维护在 `docs/README.md`，不在项目首页展示。
 - 正式使用、开发、配置、运行和发布说明进入 `docs/` 的对应职责目录；代码局部约束进入相邻 `README.md`。
 - 发布、CI、镜像标签、FPK 和 changelog 的唯一流程说明见 [发布流程](../operations/release.md)。
 

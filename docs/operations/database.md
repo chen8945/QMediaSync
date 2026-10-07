@@ -30,7 +30,11 @@ SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_t
 
 当前版本不再启动内嵌 PostgreSQL，也不提供旧库迁移网页、迁移导出或 `backups/migrate.zip` 自动导入。普通备份恢复和数据库 schema 升级仍按本文及 schema 文档执行。
 
-如需从内置 PostgreSQL 迁移，可先使用原作者的 `v0.14.23` 或本项目的 `v0.15.17` 版本完成迁移。迁移后核对数据，再使用已准备好的 SQLite 或 PostgreSQL 配置启动当前版本。当前版本遇到以下状态会拒绝继续：
+如需从内置 PostgreSQL 迁移，可先使用原作者的 `v0.14.23` 或本项目的 `v0.15.17` 版本。两个过渡版本的迁移目标均为外部 PostgreSQL，不能在旧迁移向导中直接选择 SQLite。先保留停机后的整个配置目录、数据库数据目录、原镜像或程序版本，再由过渡版本导出迁移包、保存外部 PostgreSQL 配置，并由同一过渡版本重启完成自动导入；迁移包须另行保存副本，旧导入流程结束会删除工作副本。
+
+旧流程部分导出或导入错误只记日志后继续，页面显示完成或 `migrate.zip` 消失都不能代替数据核对。检查日志、账号、同步目录、任务记录等内容，并验证登录及凭据；旧 JSON 导出还可能遗漏 API Key 哈希和两步验证密钥，需要准备重新创建 API Key、重新设置两步验证。行为依据见 [本项目过渡版迁移服务](https://github.com/chen8945/QMediaSync/blob/8c6edf8af4a846cf210a12c6ef4e6d5522251add/backend/internal/migrate/server.go)和[恢复实现](https://github.com/chen8945/QMediaSync/blob/8c6edf8af4a846cf210a12c6ef4e6d5522251add/backend/internal/backup/restore.go)。
+
+核对外部 PostgreSQL 数据完整后，再用当前版本连接该数据库并执行正常 schema 升级。需要改用 SQLite 时，先在当前版本重新备份，再按本文的跨引擎恢复流程迁入 SQLite；不能把旧过渡版的迁移 ZIP 当作当前格式的备份直接上传。当前版本遇到以下状态会拒绝继续：
 
 - PostgreSQL 配置显式指定 `postgresType: embedded`，或使用未知引擎、未知 PostgreSQL 模式。
 - 配置目录下存在 `backups/migrate.zip`：正常启动和管理员恢复均拒绝操作，不导入或删除该文件。

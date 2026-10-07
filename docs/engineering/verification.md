@@ -269,13 +269,19 @@ python3 scripts/tests/test_release.py
 
 ## 文档验证
 
-文档改动完成后执行：
+文档改动完成后执行（需安装 Lychee 最新正式版）：
 
 ```bash
 git diff --check
+git ls-files --cached --others --exclude-standard --deduplicate '*.md' '*.markdown' > /tmp/qms-doc-files.txt
+lychee --offline --include-fragments --no-progress --files-from /tmp/qms-doc-files.txt
 ```
 
+`ci.yaml` 的 `docs` job 与 Wiki 发布前检查使用同样的 Git 文件列表和 Lychee 参数，工作流通过 `lycheeVersion: latest` 跟随最新正式版。扫描已跟踪及未被 Git 忽略的未跟踪 Markdown（包括隐藏目录中的发布说明），检查本地文件、图片和标题锚点，不访问外链。不要改用全仓库递归 glob，以免扫描依赖或本地忽略目录；检查报告写入 runner 临时目录和 job summary。
+
 检查所有相对 Markdown 链接均指向存在的文件或锚点。新增或移动正式文档后，确认仓库中的旧路径和旧名称已更新；修改 AI 入口时，确认两个兼容入口内容完全一致。
+
+涉及 Wiki 时，在主仓库检查 `wiki/` 源文件的普通 Markdown 链接、锚点和图片；发布转换由 Wiki Action 负责，发布后抽查线上链接。旧式 `[[页面名]]` 和 `[[显示名称|页面名]]` 不在本次 Lychee 检查契约内，源文件统一使用普通 Markdown 链接。确认所有内容页可从 `Home.md` 或 `_Sidebar.md` 到达，并被 [Wiki 来源映射](wiki-maintenance.md#页面与来源) 覆盖；必要操作说明不能依赖跳转主仓库 `docs/` 或 README。核对命令示例的语法与参数来源，不为验证文档而在真实实例执行安装、删除或恢复。
 
 同步任务扫描结果前端回归使用 `cd frontend && pnpm exec vitest run test/composables/useSyncTaskStream.test.ts test/components/AppSyncTaskDetail.scan-result.test.ts test/components/AppSyncDirectories.errors.test.ts test/components/FileAndSyncPages.errors.test.ts test/utils/syncRefreshDecision.test.ts`，验证部分完成／扫描不完整／取消、失败范围、历史缺字段、HTTP 降级停止和目录重新可启动；同时运行类型检查及对应文件 lint。这些验证不替代真实网盘分页一致性或 NAS 权限验收。
 

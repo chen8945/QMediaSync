@@ -6,13 +6,29 @@ on:
   pull_request:
   push:
     branches:
-      - "main"
       - "dev"
       - "feature/**"
     tags-ignore:
       - "*"
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: List documentation files
+        run: git ls-files --cached --others --exclude-standard --deduplicate '*.md' '*.markdown' > "$RUNNER_TEMP/doc-files.txt"
+
+      - name: Check internal documentation links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          lycheeVersion: latest
+          args: --offline --include-fragments --no-progress --files-from "${{ runner.temp }}/doc-files.txt"
+          output: ${{ runner.temp }}/lychee-report.md
+
   frontend:
     runs-on: ubuntu-latest
     permissions:

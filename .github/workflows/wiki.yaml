@@ -1,0 +1,57 @@
+name: wiki
+run-name: Sync Wiki from main
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki.yaml"
+
+concurrency:
+  group: wiki-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: List documentation files
+        run: git ls-files --cached --others --exclude-standard --deduplicate '*.md' '*.markdown' > "$RUNNER_TEMP/doc-files.txt"
+
+      - name: Check internal documentation links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          lycheeVersion: latest
+          args: --offline --include-fragments --no-progress --files-from "${{ runner.temp }}/doc-files.txt"
+          output: ${{ runner.temp }}/lychee-report.md
+
+      - name: Read source commit
+        id: source
+        run: |
+          echo "title=$(git log -1 --format=%s -- wiki/)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Wiki
+        uses: Andrew-Chen-Wang/github-wiki-action@1bbb4280446f9630e8e21a18012cbacf3b0f992e # v5.0.6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: wiki
+          strategy: clone
+          preprocess: true
+          disable-empty-commits: true
+          commit-message: |
+            ${{ steps.source.outputs.title }}
+
+            来源：${{ github.repository }}
+            提交：${{ steps.source.outputs.sha }}

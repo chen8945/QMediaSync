@@ -78,10 +78,11 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:local .
 
 发布包解压后，从包含 `QMediaSync` 和 `web_statics/` 的目录启动程序。Linux 与 Windows 都把运行配置保存在可执行文件同级的 `config/`；因此替换程序和静态资源时不得覆盖该目录。
 
-`scripts/install/linux-init.sh` 是 Linux 上的PostgreSQL 与 systemd 辅助脚本：它可安装或初始化 PostgreSQL、创建数据库和用户，并用 `-i` 创建 `qmediasync.service`。脚本要求在发布二进制所在目录运行，并要求 root 与 systemd；它不是 Docker 或飞牛的安装入口。
+`scripts/install/linux-init.sh` 是 Linux 上的 PostgreSQL 与 systemd 辅助脚本：它会先安装或初始化 PostgreSQL、创建数据库和用户，使用 `-i` 时还会创建 `qmediasync.service`。发布压缩包不包含此脚本，须从主仓库另行取得；运行时的工作目录必须是发布二进制所在目录，并要求 root 与 systemd。仅为 SQLite 实例配置开机启动时应自行创建服务，不能把此脚本当作通用 systemd 安装入口。
 
 ```bash
-sudo scripts/install/linux-init.sh -i
+# 在发布二进制所在目录运行；替换为已取得脚本的实际路径。
+sudo bash /实际脚本路径/linux-init.sh -i
 systemctl status qmediasync
 ```
 

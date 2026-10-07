@@ -18,7 +18,7 @@
 
 前端 CI、正式发布与两份源码 Dockerfile 统一使用 Node 26 和 pnpm 12，pnpm 只指定主版本。CI 与正式发布通过 `pnpm/action-setup` 安装 pnpm，两份 Dockerfile 使用 `npm install --global pnpm@12`。升级 pnpm 主版本时同步这些安装入口及本地开发命令；版本约束和发布时间要求见 [本地开发](../engineering/local-development.md#前端启动)。
 
-`ci.yaml` 在 pull request，以及 `main`、`dev`、`feature/**` 分支推送时执行。前端依次运行 `pnpm run test`、`pnpm run build`（包含类型检查）和 `pnpm run check:build`；后端依次运行 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。CI 不运行前端 ESLint 或 Prettier；完整验证范围见 [验证说明](../engineering/verification.md)。
+`ci.yaml` 在 pull request，以及 `dev`、`feature/**` 分支推送时执行。前端依次运行 `pnpm run test`、`pnpm run build`（包含类型检查）和 `pnpm run check:build`；后端依次运行 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。独立的 `docs` job 使用 Lychee 最新正式版（`lycheeVersion: latest`） 离线检查 Git 文件列表中的 Markdown 本地链接和锚点，跳过网络链接与未跟踪的忽略文件。CI 不运行前端 ESLint 或 Prettier；完整验证范围见 [验证说明](../engineering/verification.md)。
 
 前后端测试共用 STRM 正则兼容性样例，并覆盖标签输入交互、四类列表的合并导入和清空、真实表单保存回读、全局空扩展名默认值回退、原文落库、迁移重试与各同步入口的排除行为。Vitest 在测试模式下通过 Vite 环境配置内联处理 Element Plus，确保真实表单校验的 CommonJS 互操作与浏览器构建一致；配置方式见 [前端命令](../engineering/verification.md#前端命令)。这些回归沿用上述命令，不增加依赖或单独的校验服务；覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
@@ -52,7 +52,7 @@ STRM 生成结果与后台账本的独立状态、双耗时、详情 SSE／HTTP 
 
 发版步骤推荐使用脚本：
 
-1. 确认当前工作区干净，并确认 `dev` 是准备发布的内容。
+1. 按 [Wiki 用户手册维护](../engineering/wiki-maintenance.md) 核对本次用户可见变化对应的操作页、导航和适用版本；用户手册在主仓库 `wiki/` 维护；以下脚本不直接同步 Wiki，但推送 `main` 中的 Wiki 变更会触发 `wiki.yaml` 自动发布。确认当前工作区干净，并确认 `dev` 是准备发布的内容。
 2. 执行发布脚本（需先安装 git-cliff，见其 [安装文档](https://git-cliff.org/docs/installation/)）：
 
    ```bash
@@ -134,3 +134,9 @@ GHCR 镜像同时构建 `linux/amd64` 和 `linux/arm64`。Dockerfile 中的 `TAR
 未配置该 Secret 时，`fpk` job 和 `scripts/release/package-fnos.sh` 会自动跳过 FPK 打包，其余 Windows / Linux 发布包、Docker 镜像不受影响；若希望缺少工具时直接报错（而非静默跳过），可在脚本环境设置 `REQUIRE_FNPACK=1`。
 
 调整 changelog 的分组、过滤规则可编辑仓库根目录的 `cliff.toml`。
+
+## Wiki 发布
+
+`.github/workflows/wiki.yaml` 在 `main` 的 `wiki/**` 或自身工作流变更时运行，支持在 `main` 手动触发；`dev` 和其他分支不发布。任务串行执行并检出最新 `main`，先通过与 CI 相同的 Lychee 检查，再用现成 Wiki Action 转换链接并镜像同步。使用自带 `GITHUB_TOKEN` 的 `contents: write` 权限，无需新增 Secret。
+
+提交标题取实际检出版本历史中最近一次修改 `wiki/` 的提交标题，正文记录实际发布的主仓库 SHA；无差异不提交。源文件与线上编辑边界、Action 的强制推送行为及验收方式见 [Wiki 自动发布契约](../engineering/wiki-maintenance.md#自动发布契约)。

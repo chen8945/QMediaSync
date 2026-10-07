@@ -10,7 +10,7 @@
 
 ## 配置文件与默认端口
 
-- 主配置为 `config/config.yaml`，兼容旧 `config.yml`。首次启动缺少主配置时会启动配置向导，当前可选择 SQLite 或PostgreSQL，保存后生成 `config/config.yaml`。
+- 主配置为 `config/config.yaml`，兼容旧 `config.yml`。首次启动缺少主配置时会启动配置向导，当前可选择 SQLite 或 PostgreSQL，保存后生成 `config/config.yaml`。
 - Web 默认端口：HTTP `12333`、HTTPS `12332`；Emby 302 代理默认端口：HTTP `8095`、HTTPS `8094`。
 - 完整字段示例见 [config.yaml](../examples/config.yaml)。示例仅说明字段，运行时以 `config/config.yaml` 为准。
 - 默认数据库配置为 PostgreSQL。使用 PostgreSQL 时，应单独部署 PostgreSQL 15 及以上，并填写 `db.postgresConfig`；应用二进制和 Docker 镜像均不携带或启动 PostgreSQL 服务。
@@ -25,6 +25,8 @@
 管理员恢复使用二进制参数 `--reset-admin-password` 或 `--delete-admin --yes`，可通过 `--config-dir` 指定已有配置目录；这些参数不能写入长期运行的服务配置，不新增 YAML 字段。恢复只读取配置，不补写默认 JWT 密钥或本机加密密钥。操作命令和 Compose 自动识别规则见 [管理员恢复](deployment.md#管理员恢复)。
 
 ## STRM 列表与继承
+
+视频最小体积和全局定时同步表达式由网页「STRM 同步 → STRM 设置」保存到数据库；同步目录可另设自定义规则。主配置中的 `strm.minVideoSize`、`strm.cron` 是历史字段，加载时会无条件重置为 `100` 和 `30 * * * *`，不能通过修改这两个 YAML 值调整网页设置。扩展名列表的回退规则如下，不能把这两个字段的行为类推到所有 `strm` 配置。
 
 全局 STRM 设置和同步目录自定义设置管理视频扩展名、元数据扩展名、排除名称和正则排除名称四个列表。目录中每个列表独立决定是否继承：非空列表覆盖相应全局列表，空列表继承相应全局列表。
 
@@ -207,6 +209,8 @@ Web 端代理请求由 `api/proxySettings.ts` 封装。保存成功后仍读取�
 
 - 115 开放平台 APP ID、TMDB API Key / Access Token、OpenAI 兼容 API Key 和 fanart.tv API Key 可以在 Web 设置中配置。
 - 默认密钥也可由 `backend/main.go` 的变量、ldflags 或环境变量 / `config/.env` 注入。`FANART_API_KEY`、`TMDB_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `SC_API_KEY` 的优先级是 Web UI > 环境变量 / `config/.env` > ldflags；`config/.env` 覆盖真实环境变量。
+- `.env` 实际从 `helpers.RootDir/config/.env` 读取，不随 `helpers.ConfigDir` 改变。Docker 和普通发布包中两者通常对应同一配置位置；飞牛共享配置目录可能与程序根目录不同，不能假定共享目录中的 `.env` 会被加载。飞牛优先通过网页设置可配置的第三方密钥。
+- `SC_API_KEY` 用于 AI 识别默认密钥回退，不是 Server酱通知密钥；Server酱的 `SCKEY` 在通知渠道中配置。
 - 两步验证等本机敏感数据使用首次启动自动生成的 `config/encryption.key`。`jwtSecret` 为空或仍为公开默认值时会生成 32 字节随机密钥并写回配置；修改它会使现有登录 Cookie 失效。
 - 数据库 ZIP 不包含配置文件或 `encryption.key`。迁移须保留整个原 `config/`，在启动前安装原密钥；备份恢复不重新加密 TOTP，缺失原密钥不能由数据库备份补回。迁移和重启步骤见[数据库运维](database.md#备份)。
 - OAuth 中转使用 `OAUTH_RELAY_ENCRYPTION_KEY`，可由 `main.OAuthRelayEncryptionKey` ldflags 或环境变量 / `config/.env` 注入，环境变量优先。
