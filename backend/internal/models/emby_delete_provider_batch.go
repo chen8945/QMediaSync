@@ -226,6 +226,9 @@ func (p *embyDeleteProvider) delete115(ctx context.Context, ids []string, parent
 		return false, guardErr.cause
 	}
 	if err != nil {
+		if v115open.IsDeletionBusy(err) {
+			return false, errors.New("115 上一项删除尚未完成")
+		}
 		return false, embyDeleteProviderError("115 删除", err)
 	}
 	if !ok {

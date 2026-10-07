@@ -46,6 +46,9 @@ func TestDeletionDetailMissingStopsRetryAndFailureLog(t *testing.T) {
 			if parseErr != nil || request.Method != http.MethodGet || parsed.Path != "/open/folder/get_info" || parsed.Query().Get("file_id") != "9001" {
 				t.Fatalf("错误的原 ID 核验请求：%+v，解析错误=%v", request, parseErr)
 			}
+			if !strings.Contains(logs.String(), "确认目标已不存在") || strings.Contains(logs.String(), "state=false") {
+				t.Errorf("缺失核验日志不明确：%s", logs.String())
+			}
 			if strings.Contains(logs.String(), "重试") || strings.Contains(logs.String(), "[ERROR]") || strings.Contains(logs.String(), "调用文件详情接口失败") {
 				t.Errorf("明确缺失仍记录重试或失败：%s", logs.String())
 			}

@@ -11,6 +11,7 @@ import (
 
 // QueuedRequest 队列中的请求
 type QueuedRequest struct {
+	DeletionDetail bool // 删除核验详情请求。
 	// 请求的 URL
 	URL string
 	// HTTP 方法（GET/POST）

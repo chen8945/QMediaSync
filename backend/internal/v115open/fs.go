@@ -3,10 +3,13 @@ package v115open
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"qmediasync/internal/helpers"
 )
@@ -324,6 +327,7 @@ func (c *OpenClient) getFsDetailByCid(ctx context.Context, fileId string, forDel
 	var respData *FileDetail = &FileDetail{}
 	options := MakeRequestConfig(3, 1, 60)
 	if forDeletion {
+		options.DeletionDetail = true
 		options.RetryIf = func(err error) bool { return !IsAlreadyDeleted(err) }
 	}
 	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, options, respData)
@@ -551,7 +555,8 @@ func (c *OpenClient) DelOnceGuarded(ctx context.Context, fileIDs []string, paren
 	return c.deleteFiles(ctx, fileIDs, parentID, options)
 }
 
-func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFileId string, options *RequestConfig) (bool, error) {
+func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFileId string, options *RequestConfig) (ok bool, err error) {
+	started := time.Now()
 	data := make(map[string]string)
 	data["file_ids"] = strings.Join(fileIds, ",")
 	if parentFileId != "" {
@@ -561,10 +566,50 @@ func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFi
 	req := c.client.R().SetFormData(data).SetMethod("POST")
 	respData := RespBaseBool[any]{}
 	response, respBytes, err := c.doAuthRequest(ctx, url, req, options, nil)
-	if err != nil {
-		if !c.playback || !IsAlreadyDeleted(err) {
-			helpers.V115Log.Errorf("调用文件删除接口失败：%v", err)
+	// 只记录数值和固定类别，不把上游错误消息、URL 或响应正文带入诊断。
+	defer func() {
+		if err == nil || helpers.V115Log == nil || c.playback && IsAlreadyDeleted(err) {
+			return
 		}
+		var diagnostic RespBaseBool[json.RawMessage]
+		parsed := len(respBytes) > 0 && json.Unmarshal(respBytes, &diagnostic) == nil
+		status := 0
+		if response != nil {
+			status = response.StatusCode()
+		}
+		apiErr, isAPI := errors.AsType[*OpenAPIError](err)
+		if isAPI {
+			if status == 0 {
+				status = apiErr.HTTPStatus
+			}
+			if !parsed {
+				diagnostic.Code = apiErr.Code
+			}
+		}
+		networkErr, network := errors.AsType[net.Error](err)
+		category := "请求失败或发送前拒绝"
+		switch {
+		case errors.Is(err, context.Canceled):
+			category = "已取消"
+		case errors.Is(err, context.DeadlineExceeded) || network && networkErr.Timeout():
+			category = "超时"
+		case status == 429 || IsRateLimited(err):
+			category = "限流"
+		case status != 0 && (status < 200 || status >= 300):
+			category = "HTTP 错误"
+		case network:
+			category = "网络错误"
+		case len(respBytes) > 0 && !parsed:
+			category = "响应解析失败"
+		case IsDeletionBusy(err):
+			category = "上一项删除尚未完成"
+		case isAPI || parsed:
+			category = "业务拒绝"
+		}
+		helpers.V115Log.Errorf("115 删除诊断：调用文件删除接口失败，账号=%d，file_ids=%.512q，parent_id=%.128q，类别=%s，HTTP=%d，响应可解析=%t，state=%t，code=%d，errno=%d，耗时_ms=%d",
+			c.AccountId, strings.Join(fileIds, ","), parentFileId, category, status, parsed, diagnostic.State, diagnostic.Code, diagnostic.Errno, time.Since(started).Milliseconds())
+	}()
+	if err != nil {
 		return false, err
 	}
 	if response == nil || response.StatusCode() < 200 || response.StatusCode() >= 300 {
@@ -575,7 +620,6 @@ func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFi
 		return false, jsonErr
 	}
 	if !respData.State || respData.Code != 0 || respData.Errno != 0 {
-		helpers.V115Log.Errorf("删除文件失败：%+v => %s：%v", fileIds, parentFileId, jsonErr)
 		return false, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 未确认删除成功")
 	}
 	return respData.State, nil

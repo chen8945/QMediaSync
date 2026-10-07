@@ -147,3 +147,12 @@ func IsPlaybackRetryable(err error) bool {
 	_, ok := errors.AsType[net.Error](err)
 	return ok
 }
+
+// IsDeletionBusy 判断 115 是否仍在执行上一项删除操作。
+func IsDeletionBusy(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	apiErr, ok := errors.AsType[*OpenAPIError](err)
+	return ok && apiErr.Code == 990019 && (apiErr.HTTPStatus == 0 || (apiErr.HTTPStatus >= 200 && apiErr.HTTPStatus < 300))
+}

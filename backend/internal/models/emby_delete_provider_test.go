@@ -370,3 +370,24 @@ func TestEmbyDeleteProviderBaiduMissingPathNeedsOriginalIDCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbyDelete115BusyReason(t *testing.T) {
+	for _, tt := range []struct {
+		code, status int
+		want         string
+	}{
+		{990019, 200, "115 上一项删除尚未完成"},
+		{990019, 500, "115 删除失败，远端结果未确认"},
+		{12345, 200, "115 删除失败，远端结果未确认"},
+	} {
+		calls := 0
+		p := &embyDeleteProvider{v115: &embyDelete115Stub{delete: func([]string, string) (bool, error) {
+			calls++
+			return false, &v115open.OpenAPIError{Code: tt.code, HTTPStatus: tt.status, Message: "private upstream text"}
+		}}}
+		ok, err := p.delete115(t.Context(), []string{"10"}, "7", func() error { return nil })
+		if ok || err == nil || err.Error() != tt.want || calls != 1 {
+			t.Fatalf("ok=%v err=%v calls=%d", ok, err, calls)
+		}
+	}
+}

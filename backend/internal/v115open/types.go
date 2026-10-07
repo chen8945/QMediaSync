@@ -26,6 +26,7 @@ type RespBaseBool[T any] struct {
 
 // RequestConfig 请求配置
 type RequestConfig struct {
+	DeletionDetail  bool             `json:"-"` // 删除核验详情请求，将确认缺失记录为正常结果。
 	MaxRetries      int              `json:"max_retries"`
 	RetryDelay      time.Duration    `json:"retry_delay"`
 	Timeout         time.Duration    `json:"timeout"`

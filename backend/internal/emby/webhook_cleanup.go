@@ -88,11 +88,9 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		state := states[key]
 		return state.Outcome == models.EmbyDeletionDeleted || state.Outcome == models.EmbyDeletionAlreadyAbsent
 	}
-	names := make(map[string]string, len(plan.Targets))
-	kinds := make(map[string]string, len(plan.Targets))
+	targets := make(map[string]models.EmbyDeletionTarget, len(plan.Targets))
 	for _, target := range plan.Targets {
-		names[target.Key] = target.File.FileName
-		kinds[target.Key] = target.Kind
+		targets[target.Key] = target
 	}
 	persist := func(attempt string, results []models.EmbyDeletionResult) error {
 		if ctx.Err() != nil {
@@ -111,12 +109,18 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		if helpers.AppLogger != nil {
 			item := embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record))
 			for _, result := range results {
+				target := targets[result.Key]
+				if result.Outcome == models.EmbyDeletionFailed {
+					helpers.AppLogger.Warnf("Emby 删除诊断：通知 #%d，处理轮次=%d，账号=%d，来源=%q，file_id=%.128q，parent_id=%.128q，已发送次数=%d",
+						record.ID, record.Attempts+1, target.File.AccountID, target.File.SourceType,
+						webhookLogURL.ReplaceAllString(target.File.FileID, "[URL]"), webhookLogURL.ReplaceAllString(target.File.ParentID, "[URL]"), states[result.Key].Attempts)
+				}
 				reasonLabel := embyWebhookReasonLabel(webhookLogURL.ReplaceAllString(result.Reason, "[URL]"))
 				if reasonLabel != "" {
 					reasonLabel = "，原因：" + reasonLabel
 				}
-				helpers.AppLogger.Infof("Emby 删除文件结果：通知 #%d，ItemId %s，%s %q，结果：%s%s", record.ID, item, embyDeletionTargetNoun(kinds[result.Key]),
-					webhookLogURL.ReplaceAllString(names[result.Key], "[URL]"), embyDeletionOutcomeLabel(result.Outcome), reasonLabel)
+				helpers.AppLogger.Infof("Emby 删除文件结果：通知 #%d，ItemId %s，%s %q，结果：%s%s", record.ID, item, embyDeletionTargetNoun(target.Kind),
+					webhookLogURL.ReplaceAllString(target.File.FileName, "[URL]"), embyDeletionOutcomeLabel(result.Outcome), reasonLabel)
 			}
 		}
 		return nil

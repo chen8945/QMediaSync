@@ -369,6 +369,10 @@ func TestWebhookCleanupJointBatchReusesCompleteEmbyHTTPScan(t *testing.T) {
 
 func TestWebhookCleanupPartialBatchRecoversOnlyUnfinishedVideo(t *testing.T) {
 	f := setupCleanupWorkerTest(t, "Movie", false)
+	previousLogger := helpers.AppLogger
+	var logs bytes.Buffer
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	f.cloud.beforeBatch = func(_ context.Context, files []models.EmbyFrozenFile) (bool, error) {
 		for _, file := range files {
 			if file.FileID != "f1" {
@@ -384,12 +388,30 @@ func TestWebhookCleanupPartialBatchRecoversOnlyUnfinishedVideo(t *testing.T) {
 	if first.Status != models.EmbyWebhookRetry || rows["f1"].Outcome != models.EmbyDeletionFailed || rows["nfo"].Outcome != models.EmbyDeletionDeleted || rows["image"].Outcome != models.EmbyDeletionDeleted {
 		t.Fatalf("非原子结果被合并: record=%s rows=%+v", first.Status, rows)
 	}
+	var diagnostic string
+	for line := range strings.SplitSeq(logs.String(), "\n") {
+		if strings.Contains(line, "Emby 删除诊断") {
+			diagnostic += line
+		}
+	}
+	for _, want := range []string{fmt.Sprintf("通知 #%d", record.ID), "处理轮次=1", fmt.Sprintf("账号=%d", f.file.AccountId), `file_id="f1"`, fmt.Sprintf("parent_id=%q", f.file.ParentId), "已发送次数=1"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Errorf("missing %q in %s", want, diagnostic)
+		}
+	}
+	if strings.Count(diagnostic, "Emby 删除诊断") != 1 {
+		t.Fatal("completed targets emitted failure diagnostics")
+	}
+	logs.Reset()
 	f.cloud.beforeBatch = nil
 	if err := models.RecoverEmbyWebhookWork(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	f.worker.process(t.Context(), claimWebhookTest(t))
 	assertCleanupWorkerDone(t, record.ID)
+	if strings.Contains(logs.String(), "Emby 删除诊断") {
+		t.Fatal("successful recovery emitted failure diagnostics")
+	}
 	if len(f.cloud.batchCalls) != 2 || !slices.Equal(f.cloud.batchCalls[1], []string{"f1"}) {
 		t.Fatalf("恢复重放了已完成成员: %v", f.cloud.batchCalls)
 	}

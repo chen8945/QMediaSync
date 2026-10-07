@@ -277,7 +277,7 @@ func addItemToDeletedEpisodeBuffer(seriesId string, seasonNumber, episodeNumber 
 	series.Seasons[seasonNumber] = append(series.Seasons[seasonNumber], episodeNumber)
 	series.LastUpdated = time.Now()
 	deletedSeriesBuffer[seriesId] = series
-	helpers.AppLogger.Infof("已将剧集添加到删除剧集缓冲区，seriesID=%s，season=%d，episode=%d", seriesId, seasonNumber, episodeNumber)
+	helpers.AppLogger.Debugf("已将剧集添加到删除剧集缓冲区，seriesID=%s，season=%d，episode=%d", seriesId, seasonNumber, episodeNumber)
 	// 启动轮询协程
 	newSeriesBufferTickerStartedMu.Lock()
 	defer newSeriesBufferTickerStartedMu.Unlock()
@@ -313,7 +313,7 @@ func startNewSeriesBufferTicker() {
 	defer ticker.Stop()
 	for {
 		<-ticker.C
-		helpers.AppLogger.Infof("检查剧集缓冲区，新增缓冲区大小=%d，删除缓冲区大小=%d", len(newSeriesBuffer), len(deletedSeriesBuffer))
+		helpers.AppLogger.Debugf("检查剧集缓冲区，新增缓冲区大小=%d，删除缓冲区大小=%d", len(newSeriesBuffer), len(deletedSeriesBuffer))
 		now := time.Now()
 
 		// 处理新增缓冲区
@@ -335,20 +335,20 @@ func startNewSeriesBufferTicker() {
 		for _, series := range deletedSeriesBuffer {
 			helpers.AppLogger.Infof("检查删除剧集，seriesID=%s，最后更新时间=%s", series.ID, series.LastUpdated.Format("2006-01-02 15:04:05"))
 			if now.Sub(series.LastUpdated) >= 10*time.Second {
-				helpers.AppLogger.Infof("删除剧集缓冲区达到触发时间，发送删除通知，seriesID=%s，季数=%d", series.ID, len(series.Seasons))
+				helpers.AppLogger.Debugf("删除剧集缓冲区达到触发时间，发送删除通知，seriesID=%s，季数=%d", series.ID, len(series.Seasons))
 				// 触发通知
 				go sendDeletedSeriesNotification(series.ID, series.Name, series.Seasons)
 				// 从缓冲区删除，锁定
 				delete(deletedSeriesBuffer, series.ID)
 			} else {
 				// 还没到时间，继续等待
-				helpers.AppLogger.Infof("等待更多剧集删除通知，seriesID=%s，已缓存季数=%d", series.ID, len(series.Seasons))
+				helpers.AppLogger.Debugf("等待更多剧集删除通知，seriesID=%s，已缓存季数=%d", series.ID, len(series.Seasons))
 			}
 		}
 
 		// 检查是否还有数据需要处理，如果没有则退出协程
 		if len(newSeriesBuffer) == 0 && len(deletedSeriesBuffer) == 0 {
-			helpers.AppLogger.Infof("剧集缓冲区已清空，停止轮询协程")
+			helpers.AppLogger.Debugf("剧集缓冲区已清空，停止轮询协程")
 			newSeriesBufferTickerStartedMu.Lock()
 			newSeriesBufferTickerStarted = false
 			newSeriesBufferTickerStartedMu.Unlock()

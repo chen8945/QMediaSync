@@ -427,8 +427,13 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 		return response, resp, resBytes, nil
 	}
 
-	helpers.V115Log.Infof("队列执行 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n",
-		req.Request.Method, req.URL, resp.State, resp.Code, resp.Message, string(resp.Data))
+	if req.DeletionDetail && IsAlreadyDeleted(deletionDetailAbsenceError(resBytes,
+		NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功"))) {
+		helpers.V115Log.Infof("115 删除核验：确认目标已不存在，账号=%d，file_id=%.128q", req.AccountID, req.Request.QueryParams.Get("file_id"))
+	} else {
+		helpers.V115Log.Infof("队列执行 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n",
+			req.Request.Method, req.URL, resp.State, resp.Code, resp.Message, string(resp.Data))
+	}
 
 	// 检查错误码
 	switch resp.Code {

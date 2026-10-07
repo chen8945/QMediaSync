@@ -301,6 +301,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			CreatedAt:       time.Now(),
 			Ctx:             ctx,
 			BeforeSend:      options.BeforeSend,
+			DeletionDetail:  options.DeletionDetail,
 		}
 
 		// 将请求加入队列
