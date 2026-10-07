@@ -891,10 +891,13 @@ func embyOwnerHasPlanningIssue(plan EmbyDeletionPlan, owner EmbyDeletionOwner) b
 			}
 			continue
 		}
-		if strings.HasPrefix(issue, "sidecar_inventory_unavailable:") {
+		if strings.HasPrefix(issue, "sidecar_inventory_unavailable:") ||
+			strings.HasPrefix(issue, "sidecar_identity_changed:") ||
+			strings.HasPrefix(issue, "sidecar_history_unconfirmed:") {
+			_, directoryKey, _ := strings.Cut(issue, ":")
 			for _, file := range owner.Files {
 				key := embyDigest([]any{file.SourceType, file.AccountID, file.Path})
-				if issue == "sidecar_inventory_unavailable:"+key {
+				if directoryKey == key {
 					return true
 				}
 			}

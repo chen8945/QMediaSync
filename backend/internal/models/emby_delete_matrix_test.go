@@ -680,6 +680,89 @@ func TestEmbyDeletionMatrixPartialBatchRetainsEvidenceAndConfirmsSidecars(t *tes
 	}
 }
 
+func TestEmbyDeletionMatrixSidecarPlanningIssuesFinalizePerDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name, issue string
+		historical  bool
+	}{
+		{name: "sidecar identity changed", issue: "sidecar_identity_changed:", historical: true},
+		{name: "sidecar history unconfirmed", issue: "sidecar_history_unconfirmed:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := setupDeletionMatrix(t, []deletionMatrixVideo{
+				{id: "201", kind: "Episode", name: "S01E01.mkv", season: "900", series: "800"},
+				{id: "202", kind: "Episode", name: "S01E02.mkv", directory: "/movies/other", season: "900", series: "800"},
+				{id: "203", kind: "Episode", name: "S01E01.mkv", account: 2, season: "900", series: "800"},
+			})
+			matrix.addFile(t, 1, "metadata", "/movies", "S01E01.nfo", false, true, false)
+			if tc.historical {
+				matrix.observeSidecars(t)
+				remote := matrix.remote["1:metadata"]
+				remote.SHA1 = "replacement-hash"
+				matrix.remote["1:metadata"] = remote
+			}
+			plan := matrix.plan(t, "900", "Season")
+			if len(plan.Issues) != 1 || !strings.HasPrefix(plan.Issues[0], tc.issue) {
+				t.Fatalf("unexpected sidecar planning issues: %v", plan.Issues)
+			}
+			results := matrix.execute(t, plan)
+			assertDeletionMatrixIDs(t, matrix.called, []string{"1:file-201", "1:file-202", "2:file-203"})
+			for _, result := range results {
+				if result.Outcome != EmbyDeletionDeleted {
+					t.Fatalf("confirmed video deletion failed: %+v", results)
+				}
+			}
+			if err := FinalizeEmbyDeletionPlan(t.Context(), plan, results); err != nil {
+				t.Fatal(err)
+			}
+			assertDeletionMatrixOwner(t, "201", true)
+			assertDeletionMatrixOwner(t, "202", false)
+			assertDeletionMatrixOwner(t, "203", false)
+			if _, exists := matrix.remote["1:metadata"]; !exists {
+				t.Fatal("unconfirmed sidecar was removed")
+			}
+			for _, owner := range plan.Input.Owners {
+				var evidence EmbyItemEvidence
+				if err := db.Db.First(&evidence, owner.Evidence.ID).Error; err != nil || evidence != owner.Evidence {
+					t.Fatalf("immutable owner evidence changed: item=%s error=%v", owner.Item.ItemId, err)
+				}
+			}
+			var ledgerCount int64
+			if err := db.Db.Model(&SyncFile{}).Count(&ledgerCount).Error; err != nil || ledgerCount != 4 {
+				t.Fatalf("STRM reconciliation ledger changed: count=%d error=%v", ledgerCount, err)
+			}
+		})
+	}
+}
+
+func TestEmbyDeletionMatrixFinalizePlanningIssueSourceScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, issue string
+		retained    bool
+	}{
+		{name: "inventory unavailable in another source", issue: "sidecar_inventory_unavailable:"},
+		{name: "identity changed in another source", issue: "sidecar_identity_changed:"},
+		{name: "history unconfirmed in another source", issue: "sidecar_history_unconfirmed:"},
+		{name: "unknown issue remains conservative", issue: "sidecar_unknown:", retained: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix := setupDeletionMatrix(t, []deletionMatrixVideo{{id: "101", name: "Movie.mkv"}})
+			plan := matrix.plan(t, "101", "Movie")
+			results := matrix.execute(t, plan)
+			if len(results) != 1 || results[0].Outcome != EmbyDeletionDeleted {
+				t.Fatalf("confirmed video deletion failed: %+v", results)
+			}
+			// 同账号 ID 和路径也不能将其他来源的问题关联到本 owner；未知问题仍须保留。
+			file := plan.Input.Owners[0].Files[0]
+			plan.Issues = append(plan.Issues, tc.issue+embyDigest([]any{SourceTypeBaiduPan, file.AccountID, file.Path}))
+			if err := FinalizeEmbyDeletionPlan(t.Context(), plan, results); err != nil {
+				t.Fatal(err)
+			}
+			assertDeletionMatrixOwner(t, "101", tc.retained)
+		})
+	}
+}
+
 func TestEmbyDeletionMatrixSharedSidecarAllOwnersSelected(t *testing.T) {
 	matrix := setupDeletionMatrix(t, []deletionMatrixVideo{
 		{id: "101", kind: "Episode", name: "Movie.mkv", season: "900", series: "800"},

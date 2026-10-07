@@ -376,6 +376,97 @@ func TestWebhookCleanupDeferredPreservesBlockedDependency(t *testing.T) {
 	}
 }
 
+func TestWebhookCleanupDeferredIncompleteDependencyRetries(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		verificationRetry bool
+	}{
+		{"initial_empty_result", false},
+		{"unresolved_then_repeated_delete_failure", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := setupCleanupDeferredTest(t, 1)
+			var record models.EmbyWebhookRecord
+			if tt.verificationRetry {
+				record = f.verificationRetry(t)
+			} else {
+				record = f.receive(t)
+			}
+			independent, video, metadata := f.independent[0].FileId, f.dependent[0].FileId, f.sidecars[0].FileId
+			f.cloud.beforeBatch = func(_ context.Context, files []models.EmbyFrozenFile) (bool, error) {
+				if !tt.verificationRetry && len(f.cloud.batchCalls) == 1 {
+					if row := cleanupWorkerRows(t, record.ID)[video]; row.Outcome != "" || row.Attempts != 0 {
+						t.Fatalf("首次跨批执行前依赖视频已有结果: %+v", row)
+					}
+				}
+				if slices.ContainsFunc(files, func(file models.EmbyFrozenFile) bool { return file.FileID == video }) {
+					return false, errors.New("temporary dependent video delete failure")
+				}
+				for _, file := range files {
+					delete(f.cloud.files, file.FileID)
+				}
+				return true, nil
+			}
+			var frozen models.EmbyWebhookRecord
+			var completedVideo models.EmbyWebhookTarget
+			for failure := 1; failure <= 2; failure++ {
+				f.worker.process(t.Context(), claimWebhookTest(t))
+				current := readWebhookTest(t, record.ID)
+				rows := cleanupWorkerRows(t, record.ID)
+				if failure == 1 {
+					frozen, completedVideo = current, rows[independent]
+				}
+				if current.Status != models.EmbyWebhookRetry || current.NextAttemptAt == 0 || current.PlanJSON == "" || current.PlanJSON != frozen.PlanJSON || current.InputJSON != record.InputJSON {
+					t.Fatalf("第 %d 次删除失败未保留冻结计划重试: status=%s reason=%s", failure, current.Status, current.Reason)
+				}
+				if row := rows[video]; row.Outcome != models.EmbyDeletionFailed || row.Attempts != failure {
+					t.Fatalf("第 %d 次视频删除失败结果错误: %+v", failure, row)
+				}
+				if row := rows[metadata]; row.Outcome != models.EmbyDeletionUnresolved || row.Attempts != 0 {
+					t.Fatalf("第 %d 次视频删除失败后附件被发送或完成: %+v", failure, row)
+				}
+				if row := rows[independent]; row.Outcome != models.EmbyDeletionDeleted || row.Attempts != 1 || row.TargetJSON != completedVideo.TargetJSON {
+					t.Fatalf("第 %d 次失败重放或改写已成功视频: %+v", failure, row)
+				}
+				if len(f.cloud.files) != 2 || len(f.cloud.batchCalls) != 1+failure || len(f.cloud.scalarCalls) != 0 || !slices.Equal(f.cloud.batchCalls[0], []string{independent}) {
+					t.Fatalf("第 %d 次失败的网盘范围或发送次数错误: batches=%v scalar=%v files=%v", failure, f.cloud.batchCalls, f.cloud.scalarCalls, f.cloud.files)
+				}
+				for _, id := range []string{video, metadata} {
+					if _, exists := f.cloud.files[id]; !exists {
+						t.Fatalf("第 %d 次失败后原文件被删除: %s", failure, id)
+					}
+				}
+				for _, batch := range f.cloud.batchCalls[1:] {
+					if !slices.Equal(batch, []string{video}) {
+						t.Fatalf("第 %d 次失败重发成功视频或发送附件: %v", failure, f.cloud.batchCalls)
+					}
+				}
+				countWebhookTest(t, &models.EmbyMediaSyncFile{}, 1)
+			}
+
+			f.cloud.beforeBatch = nil
+			f.worker.process(t.Context(), claimWebhookTest(t))
+			final := readWebhookTest(t, record.ID)
+			if final.Status != models.EmbyWebhookDone || final.NextAttemptAt != 0 || final.PlanJSON != frozen.PlanJSON || final.InputJSON != record.InputJSON {
+				t.Fatalf("视频恢复后未完成原冻结计划: status=%s reason=%s", final.Status, final.Reason)
+			}
+			if len(f.cloud.files) != 0 || len(f.cloud.scalarCalls) != 0 || len(f.cloud.batchCalls) != 5 || !slices.Equal(f.cloud.batchCalls[3], []string{video}) || !slices.Equal(f.cloud.batchCalls[4], []string{metadata}) {
+				t.Fatalf("连续失败恢复后未按视频、附件补齐: batches=%v scalar=%v files=%v", f.cloud.batchCalls, f.cloud.scalarCalls, f.cloud.files)
+			}
+			for id, row := range cleanupWorkerRows(t, record.ID) {
+				wantAttempts := 1
+				if id == video {
+					wantAttempts = 3
+				}
+				if row.Outcome != models.EmbyDeletionDeleted || row.Attempts != wantAttempts || id == independent && row.TargetJSON != completedVideo.TargetJSON {
+					t.Fatalf("连续失败恢复后结果或发送次数错误: %s %+v", id, row)
+				}
+			}
+			countWebhookTest(t, &models.EmbyMediaSyncFile{}, 0)
+		})
+	}
+}
+
 func TestWebhookCleanupDeferredRecoversAfterVideosComplete(t *testing.T) {
 	f := setupCleanupDeferredTest(t, 1)
 	first := f.verificationRetry(t)

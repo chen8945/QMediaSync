@@ -237,7 +237,8 @@ python3 scripts/tests/test_release.py
 ## 稳定回归验证
 
 - 长期回归风险优先由相关 Go 包内测试保护；新增或修改测试时遵循 table-driven 模式。
-- Emby 附件跨批重试运行 `(cd backend && go test ./internal/emby -run '^TestWebhookCleanupDeferred' -count=1)`，并加 `-race` 检查。用例须实际形成附件先于依赖视频的分包，覆盖暂缓后的临时核验／删除失败及恢复、共享和身份冲突、发送次数耗尽，以及视频结果已保存但附件补处理前中断后的恢复；断言冻结计划不变、附件保护、成功视频不重发、通知与关联正确收尾。使用隔离 SQLite、本地 Emby HTTP 和内存网盘替身，不代表真实网盘或断电持久化验收。
+- Emby 附件跨批删除与重试运行 `(cd backend && go test ./internal/emby -run '^TestWebhookCleanupDeferred' -count=1)`，并加 `-race` 检查。用例须实际形成附件先于依赖视频的分包，覆盖初始无结果、暂缓后的临时核验失败、待核验转发送失败后的连续失败与恢复、共享和身份冲突、发送次数耗尽，以及视频结果已保存但附件补处理前中断后的恢复；断言冻结计划不变、附件保护、成功视频不重发、发送范围与次数、通知与关联正确收尾。使用隔离 SQLite、本地 Emby HTTP 和内存网盘替身，不代表真实网盘或断电持久化验收。
+- Emby 目录旁车问题隔离运行 `(cd backend && go test ./internal/models -run '^TestEmbyDeletionMatrix(SidecarPlanningIssues|FinalizePlanningIssue)' -count=1)`。覆盖旁车身份变化和历史身份未确认时只保留相关目录的媒体关联，其他目录、账号或来源已完成的成员独立收尾；未知问题仍保留，历史证据与 `SyncFile` 账本不变。
 - 分类保存回归在 `models` 包中使用隔离 SQLite，确认电影／电视剧分类写入失败时 `Save` 返回数据库错误而非固定成功。运行 `(cd backend && go test ./internal/models -run TestCategorySaveReturnsDBError)`。
 - 上传后的 STRM 收尾与 OpenList 上传队列回归须覆盖生产 SQLite 单连接配置；信息准备、事务回滚和幂等边界见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList 凭据变更须验证内存与数据库两处的过时结果保护，并覆盖临时验证失败、条件保存冲突与正常刷新；认证重试变更还须验证一次独立认证恢复、完整 multipart 重发及普通网络重试次数不变。契约和回归范围见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。

@@ -261,8 +261,8 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			blocked, waitForVideo := false, false
 			if target.Kind != "video" {
 				for _, video := range plan.Targets {
-					// 同批视频由执行器核验；组外旧结果须区分后续待执行与已确认保留。
-					if video.Kind != "video" || groupVideos[video.Key] || states[video.Key].Outcome != models.EmbyDeletionUnresolved || !slices.ContainsFunc(video.Owners, func(owner models.EmbyDeletionOwnerRef) bool {
+					// 同批视频由执行器核验；组外未完成视频须区分后续待执行与本轮保留。
+					if video.Kind != "video" || groupVideos[video.Key] || complete(video.Key) || !slices.ContainsFunc(video.Owners, func(owner models.EmbyDeletionOwnerRef) bool {
 						return slices.Contains(target.Owners, owner)
 					}) {
 						continue
@@ -277,7 +277,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			}
 			switch {
 			case blocked:
-				retained = append(retained, models.EmbyDeletionResult{Key: target.Key, Outcome: models.EmbyDeletionUnresolved, Reason: "原视频在其他批次已确认需保留或身份不明，保留其元数据"})
+				retained = append(retained, models.EmbyDeletionResult{Key: target.Key, Outcome: models.EmbyDeletionUnresolved, Reason: "原视频在其他批次尚未完成删除，保留其元数据"})
 			case waitForVideo:
 				deferred = append(deferred, target)
 			default:
