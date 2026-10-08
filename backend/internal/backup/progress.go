@@ -171,6 +171,15 @@ func StartRestore(filePath string, removeAfterRestore bool) error {
 
 // StartRestoreWithReceipt 返回本轮进度和结束后重启的随机凭据，不恢复登录权限。
 func StartRestoreWithReceipt(filePath string, removeAfterRestore bool) (string, error) {
+	return startRestoreWithReceipt(filePath, removeAfterRestore, func() error { return restore(filePath) })
+}
+
+// StartUploadedRestoreWithReceipt 校验上传归档后持久保存，再复用同一恢复计划；启动失败时临时文件仍由调用方清理。
+func StartUploadedRestoreWithReceipt(tempPath string) (string, error) {
+	return startRestoreWithReceipt(tempPath, true, func() error { return restoreUploadedArchive(tempPath) })
+}
+
+func startRestoreWithReceipt(filePath string, removeAfterRestore bool, operation func() error) (string, error) {
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return "", err
@@ -186,7 +195,7 @@ func StartRestoreWithReceipt(filePath string, removeAfterRestore bool) (string, 
 		if removeAfterRestore {
 			defer os.Remove(filePath)
 		}
-		_ = runTask(func() error { return restore(filePath) })
+		_ = runTask(operation)
 	}()
 	return receipt, nil
 }

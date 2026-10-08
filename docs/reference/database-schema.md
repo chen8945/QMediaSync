@@ -119,6 +119,8 @@
 
 浏览器会话和可重建的 Emby 派生索引是明确排除项；API Key 哈希、TOTP 密文和上传续传记录必须保留。TOTP 密文在恢复预检时必须能被当前已加载的实例密钥解密，验证不生成密钥、不重新加密，也不把密钥写入归档。归档资源边界见[数据库运维](../operations/database.md#恢复与风险边界)。恢复在一个事务中创建结构、导入数据、清空浏览器会话并重建全部必要索引／外键／序列。活跃任务唯一索引的冲突导致回滚，不通过取消任务让恢复成功。PostgreSQL 序列使用事务内 `ALTER SEQUENCE ... RESTART`，不能依赖不可回滚的 `setval` 提供原子恢复保证。
 
+`backup_record` 表示目标实例的本地备份历史。它仍按原格式写入归档，恢复时也完整校验其内容，但不参与目标表的删除、重建和行导入；新格式与无清单旧包都保留目标现有历史。归档中的 `running` 快照和已清理的来源记录不会覆盖或补入目标历史。`backup_config` 仍正常恢复，因此重启后使用归档中的备份策略。此边界不增加格式版本、归档标识字段或新的备份表。
+
 跨引擎的通知时间统一为 UTC 微秒精度，按微秒四舍五入；其他 Unix 秒不转换。文本须为有效 UTF-8 且不含 PostgreSQL 不支持的零字节，真正有限长的列须符合长度约束。完整操作、旧包兼容和配置目录要求见[数据库运维](../operations/database.md#恢复与风险边界)。
 
 ## 不变量
@@ -1093,11 +1095,11 @@ STRM 生成任务表，上传完成、远端已存在跳过和 [STRM Webhook](st
 
 ### `backup_record`
 
-备份历史记录表。
+当前实例的本地备份历史记录表。数据库恢复保留该表，来源实例的备份执行历史不随恢复迁入；操作与保留策略见 [数据库运维](../operations/database.md#备份)。
 
 - `task_id`：关联的任务 ID。
-- `status`：状态，`pending`、`running`、`completed`、`failed`、`cancelled` 或 `timeout`。
-- `file_path`：备份文件路径。
+- `status`：状态，`pending`、`running`、`completed`、`failed`、`cancelled`、`timeout` 或 `unconfirmed`。`unconfirmed` 展示为“结果未记录”，表示无法确认上次进程中的任务结果，不等同于成功或已确认失败。
+- `file_path`：生成备份时记录的文件路径；配置目录迁移后可能仍保留旧值，不按同名文件自动重定位。记录清理规则见 [数据库运维](../operations/database.md#备份)。
 - `file_size`：备份文件大小，单位字节。
 - `database_size`：数据库大小，单位字节。
 - `table_count`：备份表数量。
@@ -1108,6 +1110,8 @@ STRM 生成任务表，上传完成、远端已存在跳过和 [STRM Webhook](st
 - `compression_ratio`：压缩比。
 - `is_compressed`：是否已压缩。
 - `completed_at`：完成时间戳。
+
+启动时在后台任务和 Cron 启动前，将遗留的 `pending`、`running` 标记为 `unconfirmed`，不补造完成时间。普通列表读取不修订任务状态。历史执行结果与文件是否可用分别判断；文件存在也不表示归档已通过完整校验。手动复制或上传保存的 ZIP 不伪造本地备份执行记录。
 
 ### `notification_channels`
 

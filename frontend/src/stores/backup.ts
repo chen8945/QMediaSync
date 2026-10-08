@@ -11,6 +11,7 @@ import {
   type BackupStatusResponse,
 } from '@/api/backup'
 import { parseHttpError } from '@/http/errors'
+import { fetchSession } from '@/api/auth'
 
 export const useBackupStore = defineStore('backup', () => {
   const progress = ref<BackupProgress | null>(null)
@@ -24,7 +25,9 @@ export const useBackupStore = defineStore('backup', () => {
   const isPolling = shallowRef(false)
   const restartRequired = shallowRef(false)
   const restartSupported = shallowRef(false)
-  const restartPhase = shallowRef<'idle' | 'requesting' | 'waiting' | 'unknown' | 'ready'>('idle')
+  const restartPhase = shallowRef<
+    'idle' | 'requesting' | 'waiting' | 'checking' | 'unknown' | 'ready'
+  >('idle')
   const restartError = shallowRef('')
   let restartDeadline = 0
   const progressQueryError = shallowRef('')
@@ -96,7 +99,7 @@ export const useBackupStore = defineStore('backup', () => {
       return
     pollInFlight.value = true
     try {
-      if (restartPhase.value === 'waiting' && Date.now() >= restartDeadline) {
+      if (['waiting', 'checking'].includes(restartPhase.value) && Date.now() >= restartDeadline) {
         stopProgressPolling()
         restartPhase.value = 'unknown'
         restartError.value = '尚未确认服务重新上线，请检查服务状态，或重新检查；不要重复提交恢复。'
@@ -104,11 +107,14 @@ export const useBackupStore = defineStore('backup', () => {
       }
       const statusData = await fetchBackupStatus(http, restoreReceipt)
       if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
-      if (restartPhase.value === 'waiting') {
+      if (restartPhase.value === 'waiting' || restartPhase.value === 'checking') {
         if (statusData.restart_requested !== true) {
+          const manuallyChecking = restartPhase.value === 'checking'
           stopProgressPolling()
           restartPhase.value = 'idle'
-          restartError.value = '重启尚未执行，请重试；若持续失败，请手动重启服务。'
+          restartError.value = manuallyChecking
+            ? '服务仍处于恢复维护状态，请先重启 QMS 服务后再检查。'
+            : '重启尚未执行，请重试；若持续失败，请手动重启服务。'
         } else {
           restartError.value = ''
         }
@@ -134,7 +140,8 @@ export const useBackupStore = defineStore('backup', () => {
       if (status !== 'running') {
         stopProgressPolling()
         handleTaskComplete(status)
-        if (restartRequired.value && statusData.restart_requested === true) checkRestartStatus()
+        if (restartRequired.value && statusData.restart_requested === true)
+          beginRestartCheck('waiting')
       }
     } catch (error) {
       if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden) return
@@ -142,15 +149,24 @@ export const useBackupStore = defineStore('backup', () => {
         fallbackMessage: '查询备份或恢复进度失败',
         publicMessages: backupPublicMessages,
       })
-      if (restartPhase.value === 'waiting') {
-        // 只有应用明确拒绝旧进程回执，才确认新进程已上线；普通 401 可能来自代理。
+      if (restartPhase.value === 'waiting' || restartPhase.value === 'checking') {
+        // 回执失效证明进程已更换；仍需确认新进程已退出维护、可处理登录会话。
         if (
           parsed.diagnostics.status === 401 &&
           parsed.diagnostics.errorCode === 'RESTORE_RECEIPT_INVALID'
         ) {
-          stopProgressPolling()
-          restartPhase.value = 'ready'
-          restartError.value = ''
+          try {
+            const session = await fetchSession(http)
+            if (generation !== pollingGeneration.value || !pageVisible.value || document.hidden)
+              return
+            if (typeof session?.authenticated === 'boolean') {
+              stopProgressPolling()
+              restartPhase.value = 'ready'
+              restartError.value = ''
+            }
+          } catch {
+            // 新进程仍在维护或暂不可达时继续等待，保留本轮恢复结果与回执。
+          }
         }
         return
       }
@@ -241,7 +257,7 @@ export const useBackupStore = defineStore('backup', () => {
     return `${action}任务结果尚未确认，请查看服务日志并核验结果。`
   }
 
-  const checkRestartStatus = () => {
+  const beginRestartCheck = (phase: 'waiting' | 'checking') => {
     if (
       !pollingHttp ||
       !restoreReceipt ||
@@ -249,10 +265,15 @@ export const useBackupStore = defineStore('backup', () => {
       restartPhase.value === 'requesting'
     )
       return
-    restartPhase.value = 'waiting'
+    restartPhase.value = phase
     restartError.value = ''
     restartDeadline = Date.now() + 60000
     resumeProgressPolling()
+  }
+
+  const checkRestartStatus = () => {
+    if (['requesting', 'waiting', 'checking', 'ready'].includes(restartPhase.value)) return
+    beginRestartCheck('checking')
   }
 
   const requestRestart = async () => {
@@ -284,7 +305,7 @@ export const useBackupStore = defineStore('backup', () => {
     }
     if (generation !== pollingGeneration.value) return
     restartPhase.value = 'waiting'
-    checkRestartStatus()
+    beginRestartCheck('waiting')
     if (responseLost) restartError.value = '重启请求结果尚未确认，正在检查服务状态；不会重复提交。'
   }
 

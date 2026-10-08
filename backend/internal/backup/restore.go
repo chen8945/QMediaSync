@@ -21,7 +21,7 @@ import (
 	"qmediasync/internal/models"
 )
 
-// Restore 从逻辑备份恢复数据库，所有表在同一事务内替换。
+// Restore 从逻辑备份恢复数据库，保留本机备份历史，其余恢复表在同一事务内替换。
 func Restore(filePath string) error {
 	if err := beginTask("restore"); err != nil {
 		return err
@@ -55,9 +55,10 @@ func restoreDBError(operation string, cause error) error {
 }
 
 func restore(filePath string) (err error) {
-	if _, err := os.Stat(filePath); err != nil {
-		return fmt.Errorf("读取备份文件失败：%w", err)
-	}
+	return restoreArchive(filePath, false)
+}
+
+func restoreArchive(filePath string, publishUpload bool) (err error) {
 	backupDir := filepath.Join(helpers.ConfigDir, "backups")
 	if err := helpers.EnsurePrivateDir(helpers.ConfigDir, "backups"); err != nil {
 		return fmt.Errorf("创建恢复目录失败：%w", err)
@@ -82,6 +83,12 @@ func restore(filePath string) (err error) {
 	plan, err := prepareRestorePlan(inputDir, db.Db)
 	if err != nil {
 		return err
+	}
+	if publishUpload {
+		// 解压结果已经通过完整预检；发布后的归档即使数据库恢复失败也保留。
+		if _, err := publishUploadedBackup(filePath); err != nil {
+			return err
+		}
 	}
 	maintenance, err := beginRestoreMaintenance(context.Background())
 	if err != nil {
@@ -126,6 +133,10 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 			if err != nil {
 				return nil, err
 			}
+			// prepareLogicalBackup 已校验全部归档内容；本机历史不参与后续 DDL、导入或序列重置。
+			if entry.schema.Table == "backup_record" {
+				continue
+			}
 			entry.rowCount = table.RowCount
 			entry.readRows = func(consume func(map[string]any) error) error {
 				return readLogicalRows(dir, table, consume)
@@ -142,7 +153,7 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 			if err != nil {
 				return nil, err
 			}
-			if exists {
+			if exists && entry.schema.Table != "backup_record" {
 				plan.tables = append(plan.tables, entry)
 			} else if entry.schema.Table == "migrator" {
 				return nil, fmt.Errorf("%w：旧备份缺少 Migrator.json，无法确认数据库版本", ErrArchiveInvalid)

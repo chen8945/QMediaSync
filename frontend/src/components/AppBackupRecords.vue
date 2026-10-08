@@ -8,7 +8,7 @@
             size="large"
             :icon="Upload"
             :loading="backupStarting"
-            :disabled="backupStore.isRunning"
+            :disabled="backupStore.isRunning || backupStore.restartRequired"
             @click="startManualBackup"
           >
             <span>手动备份</span>
@@ -51,6 +51,11 @@
             </template>
             <template #cell-created_at="{ row }">
               {{ formatTimestamp(row.created_at) }}
+            </template>
+            <template #cell-file_status="{ row }">
+              <el-tag :type="row.file_status === 'available' ? 'info' : 'warning'" size="small">
+                {{ getFileStatusText(row.file_status) }}
+              </el-tag>
             </template>
           </ResponsiveRecordTable>
 
@@ -119,11 +124,11 @@ const backupRecordColumns: RecordColumn<BackupRecordListItem>[] = [
   },
   {
     key: 'status',
-    label: '状态',
+    label: '任务状态',
     priority: 'primary',
-    width: 80,
+    width: 110,
     align: 'center',
-    detailField: { key: 'status', label: '状态', value: (row) => getStatusText(row.status) },
+    detailField: { key: 'status', label: '任务状态', value: (row) => getStatusText(row.status) },
   },
   {
     key: 'backup_type',
@@ -169,6 +174,17 @@ const backupRecordColumns: RecordColumn<BackupRecordListItem>[] = [
     },
   },
   {
+    key: 'file_status',
+    label: '备份文件',
+    priority: 'primary',
+    width: 120,
+    detailField: {
+      key: 'file_status',
+      label: '备份文件',
+      value: (row) => getFileStatusText(row.file_status),
+    },
+  },
+  {
     key: 'file_path',
     label: '文件路径',
     priority: 'secondary',
@@ -196,12 +212,17 @@ const backupRecordColumns: RecordColumn<BackupRecordListItem>[] = [
 ]
 
 const backupRecordActions: RecordAction<BackupRecordListItem>[] = [
-  { key: 'download', label: '下载', type: 'primary', visible: (row) => row.status === 'completed' },
+  {
+    key: 'download',
+    label: '下载',
+    type: 'primary',
+    visible: (row) => row.file_status === 'available',
+  },
   {
     key: 'restore',
     label: '恢复',
     type: 'warning',
-    visible: (row) => row.status === 'completed',
+    visible: (row) => row.file_status === 'available',
     disabled: () => restoringBackup.value || backupStore.isRunning || backupStore.restartRequired,
   },
   { key: 'delete', label: '删除', type: 'danger' },
@@ -256,10 +277,12 @@ const handleBackupRecordAction = ({
   row,
 }: RecordActionPayload<BackupRecordListItem>) => {
   if (actionKey === 'download') {
+    if (row.file_status !== 'available') return
     void downloadBackup(row.id, getFilenameFromPath(row.file_path))
     return
   }
   if (actionKey === 'restore') {
+    if (row.file_status !== 'available') return
     void handleRestoreBackup(row)
     return
   }
@@ -291,11 +314,15 @@ const downloadBackup = async (recordId: number, filename: string) => {
 
 const deleteBackupRecord = async (recordId: number) => {
   try {
-    await ElMessageBox.confirm('确定要删除此备份记录吗？相关的备份文件也将被删除。', '确认删除', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      '确定要删除此备份记录吗？当前备份目录内关联的文件也将删除。',
+      '确认删除',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
 
     await backupAPI.deleteBackup(http, recordId)
     ElMessage.success('备份记录已删除')
@@ -306,13 +333,15 @@ const deleteBackupRecord = async (recordId: number) => {
 }
 
 const handleRestoreBackup = async (record: BackupRecordListItem) => {
+  if (restoringBackup.value || backupStore.isRunning || backupStore.restartRequired) return
+  restoringBackup.value = true
   try {
     await ElMessageBox.confirm(
       `<div style="line-height: 1.8;">
         <p><strong>备份时间：</strong>${formatTimestamp(record.created_at)}</p>
         <p><strong>备份类型：</strong>${record.backup_type === 'manual' ? '手动备份' : '自动备份'}</p>
         ${record.created_reason ? `<p><strong>备份原因：</strong>${record.created_reason}</p>` : ''}
-        <p>此操作将整体替换当前数据库，导入失败会回滚；如果提交结果异常，请查看日志核验数据。</p>
+        <p>此操作将替换当前业务数据，本实例的备份历史保留，导入失败会回滚；如果提交结果异常，请查看日志核验数据。</p>
         <p>迁移时请一并保留原 config/，尤其是 encryption.key。</p>
         <p style="color: var(--el-color-danger); font-weight: bold; font-size: 16px; margin-top: 8px;">恢复期间服务暂停；进入维护后，无论恢复成功或失败，都需重启应用服务后重新登录。支持的运行方式可在结果弹窗中点击“重启服务”。</p>
       </div>`,
@@ -329,6 +358,8 @@ const handleRestoreBackup = async (record: BackupRecordListItem) => {
     await restoreBackup(record.id)
   } catch (error) {
     reportError(error, '恢复备份失败')
+  } finally {
+    restoringBackup.value = false
   }
 }
 
@@ -356,6 +387,7 @@ const getStatusTagType = (status: BackupStatus): string => {
     case 'cancelled':
       return 'info'
     case 'timeout':
+    case 'unconfirmed':
       return 'warning'
     default:
       return ''
@@ -376,8 +408,21 @@ const getStatusText = (status: BackupStatus): string => {
       return '运行中'
     case 'pending':
       return '等待中'
+    case 'unconfirmed':
+      return '结果未记录'
     default:
       return status
+  }
+}
+
+const getFileStatusText = (status: BackupRecordListItem['file_status']) => {
+  switch (status) {
+    case 'available':
+      return '文件存在'
+    case 'missing':
+      return '文件已缺失'
+    default:
+      return '文件不可用'
   }
 }
 

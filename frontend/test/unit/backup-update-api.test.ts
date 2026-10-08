@@ -31,6 +31,25 @@ const operations = (http: AxiosInstance) => [
 ]
 
 describe('备份和更新 API', () => {
+  it('备份目录列表只读元数据，文件恢复提交文件名而非目录或记录 ID', async () => {
+    const listing = {
+      directory: '/config/backups',
+      files: [{ file_name: '历史备份.ZIP', file_size: 4096, modified_at: 123 }],
+    }
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: listing } })
+    const post = vi
+      .fn()
+      .mockResolvedValue({ data: { code: 200, data: { restore_receipt: 'receipt' } } })
+    const http = { get, post } as unknown as AxiosInstance
+    await expect(backup.fetchBackupFiles(http)).resolves.toEqual(listing)
+    expect(get).toHaveBeenCalledExactlyOnceWith('/api/backup/files')
+    await expect(backup.restoreBackup(http, { file_name: '历史备份.ZIP' })).resolves.toEqual({
+      restore_receipt: 'receipt',
+    })
+    expect(post).toHaveBeenCalledExactlyOnceWith('/api/backup/restore', {
+      file_name: '历史备份.ZIP',
+    })
+  })
   it('上传超限保留安全原因，不清理当前登录状态', async () => {
     const http = axios.create({
       adapter: async (config) => ({

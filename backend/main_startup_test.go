@@ -24,7 +24,7 @@ func TestAppWebhookStartup(t *testing.T) {
 	const childEnv = "QMS_TEST_WEBHOOK_STARTUP"
 	mode := os.Getenv(childEnv)
 	if mode == "" {
-		for _, mode := range []string{"recovery_failure", "success"} {
+		for _, mode := range []string{"recovery_failure", "backup_reconciliation_failure", "success"} {
 			t.Run(mode, func(t *testing.T) {
 				// 最终停机不可在同一进程恢复，使用独立进程验证真实初始化和退出。
 				ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
@@ -35,7 +35,7 @@ func TestAppWebhookStartup(t *testing.T) {
 				if ctx.Err() != nil {
 					t.Fatalf("startup did not finish: %v\n%s", ctx.Err(), output)
 				}
-				if mode == "success" {
+				if mode != "recovery_failure" {
 					if err != nil {
 						t.Fatalf("successful startup failed: %v\n%s", err, output)
 					}
@@ -84,6 +84,17 @@ func TestAppWebhookStartup(t *testing.T) {
 	if err := db.Db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
+	interruptedBackup := models.BackupRecord{Status: models.BackupStatusRunning}
+	if err := db.Db.Create(&interruptedBackup).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mode == "backup_reconciliation_failure" {
+		if err := db.Db.Exec(`CREATE TRIGGER reject_backup_reconciliation
+			BEFORE UPDATE ON backup_record
+			BEGIN SELECT RAISE(FAIL, 'backup reconciliation rejected'); END`).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	if mode == "recovery_failure" {
 		// 迁移仍可完成，只有恢复遗留 running 工作时才触发真实 SQL 错误。
 		if err := db.Db.Exec(`CREATE TRIGGER reject_webhook_recovery
@@ -111,6 +122,21 @@ func TestAppWebhookStartup(t *testing.T) {
 		}
 	})
 
+	if mode == "backup_reconciliation_failure" {
+		if initEnv() {
+			QMSApp.Stop()
+			t.Fatal("backup reconciliation failure accepted application initialization")
+		}
+		defer instanceLock.Close()
+		defer helpers.CloseLogger()
+		if models.GlobalDownloadQueue != nil || models.GlobalUploadQueue != nil {
+			t.Fatal("backup reconciliation failure started background queues")
+		}
+		if QMSApp == nil || QMSApp.httpServer != nil || QMSApp.httpsServer != nil {
+			t.Fatal("backup reconciliation failure entered HTTP serving")
+		}
+		return
+	}
 	if mode == "recovery_failure" {
 		defer func() {
 			if QMSApp == nil || QMSApp.httpServer != nil || QMSApp.httpsServer != nil {
@@ -157,5 +183,12 @@ func TestAppWebhookStartup(t *testing.T) {
 	}
 	if recovered.Status != models.EmbyWebhookRetry || recovered.ClaimToken != "" || recovered.Attempts != record.Attempts {
 		t.Fatalf("startup did not recover persisted work: %+v", recovered)
+	}
+	var recoveredBackup models.BackupRecord
+	if err := db.Db.First(&recoveredBackup, interruptedBackup.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recoveredBackup.Status != models.BackupStatusUnconfirmed || recoveredBackup.CompletedAt != 0 {
+		t.Fatalf("startup did not preserve uncertain backup outcome: %+v", recoveredBackup)
 	}
 }

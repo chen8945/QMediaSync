@@ -189,6 +189,14 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 备份配置中 `backup_retention` 为 0 时表示不更新或使用既有值；大于 0 时限制为 1 到 365。
 - 首次数据库配置保存只接受 `sqlite`、`postgres` 引擎；PostgreSQL 配置中遗留的 `postgresType: embedded` 或未知模式必须被拒绝，不得静默改成外部连接。旧 SQLite 配置中的该字段不参与连接。
 
+### 备份文件与恢复请求
+
+`GET /api/backup/files` 沿用备份接口的鉴权与维护门禁，无需客户端传目录。成功的 `data` 为 `{ directory, files }`：`directory` 是当前进程实际使用的备份目录，每项包含 `file_name`、`file_size`（字节）、`modified_at`（Unix 秒）。仅列出该目录根层的普通 `.zip` 文件，扩展名不区分大小写；不递归、跟随符号链接或读取归档内容。目录为空或尚未创建时返回空数组，其他目录访问故障返回业务失败，不能伪装为空列表。该入口独立于仍只返回目录的 `/api/path/list`。
+
+`POST /api/backup/restore` 的 `BackupRestoreRequest` 接受二选一：正数 `record_id` 或非空 `file_name`，同时指定或同时缺失均拒绝。保留原记录恢复调用；文件名方式只允许备份目录根层 ZIP 名称，拒绝绝对路径、目录分隔符、路径穿越和 Windows 盘符。服务器根据实际目录解析，并在启动时重新检查文件类型及可用性，不能直接使用客户端路径。接受后仍返回 `restore_receipt`，通过原状态、恢复和重启流程执行。
+
+备份记录列表及详情在原字段之外返回即时 `file_status`：`available` 表示普通文件存在，`missing` 表示已确认不存在，`unavailable` 表示未记录文件路径、路径不受支持或无法确认可用。它不入库，不改变历史任务 `status`，也不代表内容校验通过；恢复前仍完整校验所选 ZIP。上传保存和重复恢复的生命周期见 [恢复与风险边界](../operations/database.md#恢复与风险边界)。
+
 ### 文件与目录浏览排序
 
 `GET /api/path/sort-options?source_type=...&scope=files|directories` 返回当前来源、场景的 `fields`、`folders_first` 能力及 `default` 选择，不访问网盘。`requests/browse_sort.go` 是能力、字段校验及上游映射的共同来源；前端只维护显示文案。

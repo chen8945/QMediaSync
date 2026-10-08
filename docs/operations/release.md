@@ -18,7 +18,7 @@
 
 前端 CI、正式发布与两份源码 Dockerfile 统一使用 Node 26 和 pnpm 12，pnpm 只指定主版本。CI 与正式发布通过 `pnpm/action-setup` 安装 pnpm，两份 Dockerfile 使用 `npm install --global pnpm@12`。升级 pnpm 主版本时同步这些安装入口及本地开发命令；版本约束和发布时间要求见 [本地开发](../engineering/local-development.md#前端启动)。
 
-`ci.yaml` 在 pull request，以及 `dev`、`feature/**` 分支推送时执行。前端依次运行 `pnpm run test`、`pnpm run build`（包含类型检查）和 `pnpm run check:build`；后端依次运行 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。独立的 `docs` job 使用 Lychee 最新正式版（`lycheeVersion: latest`） 离线检查 Git 文件列表中的 Markdown 本地链接和锚点，跳过网络链接与未跟踪的忽略文件。CI 不运行前端 ESLint 或 Prettier；完整验证范围见 [验证说明](../engineering/verification.md)。
+`ci.yaml` 在 pull request，以及 `dev`、`feature/**` 分支推送时执行。前端依次运行 `pnpm run test`、`pnpm run build`（包含类型检查）和 `pnpm run check:build`；后端依次运行 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。独立的 `docs` job 使用 Lychee 最新正式版（`lycheeVersion: latest`） 离线检查 Git 文件列表中的 Markdown 本地链接和锚点，跳过网络链接与未跟踪的忽略文件。CI 与 Wiki 发布前检查都使用 `git -c core.quotepath=false ls-files` 生成列表，避免中文文件名被 Git 转义后无法由 Lychee 找到。CI 不运行前端 ESLint 或 Prettier；完整验证范围见 [验证说明](../engineering/verification.md)。
 
 前后端测试共用 STRM 正则兼容性样例，并覆盖标签输入交互、四类列表的合并导入和清空、真实表单保存回读、全局空扩展名默认值回退、原文落库、迁移重试与各同步入口的排除行为。Vitest 在测试模式下通过 Vite 环境配置内联处理 Element Plus，确保真实表单校验的 CommonJS 互操作与浏览器构建一致；配置方式见 [前端命令](../engineering/verification.md#前端命令)。这些回归沿用上述命令，不增加依赖或单独的校验服务；覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
@@ -38,7 +38,7 @@ STRM 生成结果与后台账本的独立状态、双耗时、详情 SSE／HTTP 
 
 目录浏览的来源排序能力、偏好持久化、目录完整读取、共享缓存及动态图标回归沿用现有 Go／Vitest 入口；批量切换同时验证普通表格节点复用与选择行为，返回上级导航验证逐级返回及与文件数据隔离。生产构建和 `check:build` 覆盖共享控件与图标集成，不新增发布步骤。真实账号及浏览器人工检查边界见 [验证说明](../engineering/verification.md#改动范围与最小验证)。
 
-发布前还须验证失败后的分页、双向关联窗口切换、设置初始化重试、账号列表变化后的旧请求失效、突发刮削事件的请求合并与错误提示去重，以及更新请求在途时的页面可见性切换。备份与恢复须覆盖原子回滚、会话清空后的回执查询、重启授权与重复请求、查询失败重试与页面可见性切换。须验证格式 2 的 `tables/` 布局与无清单旧包兼容路径；SQLite 导出期间的业务池读写、ZIP 权限和 Docker 纯重启入口须有回归。备份收尾还须覆盖成功后清理、原子发布不覆盖、归档与上传资源边界、禁用后撤销 Cron、TOTP 密钥预检，以及回滚／提交结果在前端准确展示。Windows 重启除交叉编译外还需在实际桌面核验。SQLite ↔ PostgreSQL ZIP 互转及驱动门禁需要额外的隔离 PostgreSQL 集成验证，普通 CI 的无 DSN 测试不能替代；命令与范围见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
+发布前还须验证失败后的分页、双向关联窗口切换、设置初始化重试、账号列表变化后的旧请求失效、突发刮削事件的请求合并与错误提示去重，以及更新请求在途时的页面可见性切换。备份与恢复须覆盖原子回滚、会话清空后的回执查询、重启授权与重复请求、手动检查服务就绪、维护错误提示、查询失败重试与页面可见性切换。须验证格式 2 的 `tables/` 布局与无清单旧包兼容路径、归档历史校验而目标历史保留、启动中断状态收敛、服务器文件列表与选择恢复、上传校验后保存及再次恢复；SQLite 导出期间的业务池读写、ZIP 权限和 Docker 纯重启入口须有回归。备份还须覆盖导出前按保留策略清理及失败边界、原子发布不覆盖、归档与上传资源边界、禁用后撤销 Cron、TOTP 密钥预检，以及回滚／提交结果在前端准确展示。Windows 重启除交叉编译外还需在实际桌面核验。SQLite ↔ PostgreSQL ZIP 互转及驱动门禁需要额外的隔离 PostgreSQL 集成验证，普通 CI 的无 DSN 测试不能替代；命令与范围见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
 推送 `dev` 还会触发 `beta.yaml`，发布多架构镜像 `ghcr.io/<owner>/qmediasync:beta`。推送 `feature/**` 还会触发 `feature.yaml`，发布 `ghcr.io/<owner>/qmediasync:<branch-tag>`：分支名会去掉 `feature/` 前缀、转为小写，斜杠和非法字符替换为连字符，最长 120 个字符。`dev` 的同一分支构建会取消仍在运行的旧 beta 构建。
 

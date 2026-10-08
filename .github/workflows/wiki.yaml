@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - name: List documentation files
-        run: git ls-files --cached --others --exclude-standard --deduplicate '*.md' '*.markdown' > "$RUNNER_TEMP/doc-files.txt"
+        run: git -c core.quotepath=false ls-files --cached --others --exclude-standard --deduplicate '*.md' '*.markdown' > "$RUNNER_TEMP/doc-files.txt"
 
       - name: Check internal documentation links
         uses: lycheeverse/lychee-action@v2

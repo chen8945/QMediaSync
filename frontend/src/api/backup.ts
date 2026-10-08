@@ -31,6 +31,17 @@ export interface RestoreStartResponse {
   restore_receipt: string
 }
 
+export interface BackupFile {
+  file_name: string
+  file_size: number
+  modified_at: number
+}
+
+export interface BackupFilesResponse {
+  directory: string
+  files: BackupFile[]
+}
+
 export function getBackupTaskStatus(
   data: BackupStatusResponse,
 ): 'running' | 'completed' | 'failed' | 'unknown' {
@@ -74,18 +85,25 @@ export async function createBackup(http: AxiosInstance, reason: string): Promise
   unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/backup/create`, { reason }))
 }
 
+export async function fetchBackupFiles(http: AxiosInstance): Promise<BackupFilesResponse> {
+  return unwrapResponse(
+    await http.get<APIResponse<BackupFilesResponse>>(`${SERVER_URL}/backup/files`),
+  )
+}
+
 export async function deleteBackup(http: AxiosInstance, recordId: number): Promise<void> {
   unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/backup/records/${recordId}`))
 }
 
 export async function restoreBackup(
   http: AxiosInstance,
-  recordId: number,
+  source: number | { file_name: string },
 ): Promise<RestoreStartResponse | null> {
   return unwrapResponse(
-    await http.post<APIResponse<RestoreStartResponse | null>>(`${SERVER_URL}/backup/restore`, {
-      record_id: recordId,
-    }),
+    await http.post<APIResponse<RestoreStartResponse | null>>(
+      `${SERVER_URL}/backup/restore`,
+      typeof source === 'number' ? { record_id: source } : { file_name: source.file_name },
+    ),
   )
 }
 

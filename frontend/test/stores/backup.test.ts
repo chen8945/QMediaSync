@@ -6,6 +6,7 @@ import { AxiosError, CanceledError } from 'axios'
 import { ElMessage } from 'element-plus'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import { useBackupStore } from '@/stores/backup'
+import * as authAPI from '@/api/auth'
 import { createDeferred } from '../support/deferred'
 
 describe('backup store 进度轮询', () => {
@@ -16,6 +17,7 @@ describe('backup store 进度轮询', () => {
     vi.spyOn(ElMessage, 'info').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
     vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(authAPI, 'fetchSession').mockResolvedValue({ authenticated: false })
     setActivePinia(createPinia())
     Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   })
@@ -555,6 +557,69 @@ describe('backup store 进度轮询', () => {
     await vi.advanceTimersByTimeAsync(3000)
     return { store, http }
   }
+
+  it('手动检查仍处于旧进程时不重启、不结束维护，保留恢复结果和回执', async () => {
+    const { store, http } = await setupRestart({ restart_supported: false })
+    const result = { ...store.progress }
+    store.checkRestartStatus()
+    expect(store.restartPhase).toBe('checking')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.restartPhase).toBe('idle')
+    expect(store.restartError).toContain('请先重启 QMS 服务后再检查')
+    expect(store.progress).toEqual(result)
+    expect(store.showProgressDialog).toBe(true)
+    expect(http.post).not.toHaveBeenCalled()
+    expect(authAPI.fetchSession).not.toHaveBeenCalled()
+    http.get.mockRejectedValue(receiptExpired())
+    store.checkRestartStatus()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.restartPhase).toBe('ready')
+    expect(store.progress).toEqual(result)
+    expect(authAPI.fetchSession).toHaveBeenCalledWith(http)
+    expect(http.get).toHaveBeenLastCalledWith('/api/backup/status', {
+      headers: { 'X-Restore-Receipt': 'test-restore-receipt' },
+      skipAuthInvalidation: true,
+    })
+  })
+
+  it.each([true, false])(
+    '旧回执失效后新进程会话成功 authenticated=%s 才允许重新登录',
+    async (authenticated) => {
+      const { store, http } = await setupRestart()
+      http.get.mockRejectedValue(receiptExpired())
+      vi.mocked(authAPI.fetchSession).mockRejectedValueOnce(
+        new HttpResponseError({
+          status: 503,
+          data: { code: 503, error_code: 'DATABASE_MAINTENANCE' },
+        }),
+      )
+      store.checkRestartStatus()
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(store.restartPhase).toBe('checking')
+      expect(store.progress?.status).toBe('completed')
+      vi.mocked(authAPI.fetchSession).mockResolvedValueOnce({ authenticated })
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(store.restartPhase).toBe('ready')
+      expect(http.post).not.toHaveBeenCalled()
+    },
+  )
+
+  it('新进程会话响应缺少认证状态时继续等待，停止后忽略在途检查', async () => {
+    const { store, http } = await setupRestart()
+    http.get.mockRejectedValue(receiptExpired())
+    vi.mocked(authAPI.fetchSession).mockResolvedValueOnce({} as never)
+    store.checkRestartStatus()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.restartPhase).toBe('checking')
+    const session = createDeferred<authAPI.SessionResponseData>()
+    vi.mocked(authAPI.fetchSession).mockReturnValueOnce(session.promise)
+    await vi.advanceTimersByTimeAsync(2000)
+    store.resetState()
+    session.resolve({ authenticated: false })
+    await flushPromises()
+    expect(store.restartPhase).toBe('idle')
+    expect(store.progress).toBeNull()
+  })
 
   it.each([
     { status: 'completed', restore_outcome: 'committed', error_msg: '' },

@@ -56,11 +56,12 @@ func backup(backupType, reason string) (err error) {
 				err = errors.Join(err, fmt.Errorf("保存备份失败状态失败：%w", updateErr))
 			}
 		}
-		if err == nil {
-			cleanupOldBackupsAfterSuccess()
-		}
 	}()
 	helpers.AppLogger.Infof("开始 %s 备份，备份记录 ID：%d", backupType, record.ID)
+	SetRunningResult("backup", "正在清理超过保留策略的旧备份", 0, 0, "")
+	if err := models.GetBackupService().CleanupOldBackupsBeforeBackup(); err != nil {
+		return fmt.Errorf("清理旧备份失败，未开始导出：%w", err)
+	}
 	tables, _, err := logicalTables(db.Db)
 	if err != nil {
 		return err
@@ -110,14 +111,4 @@ func backup(backupType, reason string) (err error) {
 	record.TableCount = totalTable
 	helpers.AppLogger.Infof("备份文件已生成：共 %d 张表，耗时 %.1f 秒，文件大小 %.2f MB", totalTable, time.Since(startTime).Seconds(), float64(stat.Size())/1024/1024)
 	return nil
-}
-
-func cleanupOldBackupsAfterSuccess() {
-	// 清理只影响保留策略，不能让已完成的新备份变成失败。
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			helpers.AppLogger.Warnf("清理旧备份异常，已保留新备份结果")
-		}
-	}()
-	models.GetBackupService().CleanupOldBackups()
 }

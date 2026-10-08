@@ -59,7 +59,7 @@ func extractBackupArchive(src, dst string) error {
 }
 
 func extractBackupArchiveWithLimits(src, dst string, limits backupArchiveLimits) (err error) {
-	file, err := os.Open(src)
+	file, err := openArchiveSource(src)
 	if err != nil {
 		return err
 	}

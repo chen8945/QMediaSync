@@ -12,6 +12,7 @@ import App from '@/App.vue'
 import { HttpResponseError } from '@/http/errors'
 import { useBackupStore } from '@/stores/backup'
 import { useAuthStore } from '@/stores/auth'
+import * as authAPI from '@/api/auth'
 
 describe('AppBackupRestore', () => {
   it('仅接受 ZIP 备份，并提示恢复后重启服务', () => {
@@ -38,6 +39,7 @@ describe('恢复结果与重启服务交互', () => {
   enableAutoUnmount(afterEach)
   beforeEach(() => {
     vi.useFakeTimers()
+    vi.spyOn(authAPI, 'fetchSession').mockResolvedValue({ authenticated: false })
     Object.defineProperty(document, 'hidden', { configurable: true, value: false })
     for (const method of ['success', 'error', 'warning'] as const)
       vi.spyOn(ElMessage, method).mockImplementation(() => ({ close: vi.fn() }))
@@ -137,13 +139,50 @@ describe('恢复结果与重启服务交互', () => {
     const { wrapper, store } = await setup({ restart_supported: false })
     expect(button(wrapper, '重启服务')).toBeUndefined()
     expect(wrapper.text()).toContain('当前运行方式不支持页面重启')
-    expect(button(wrapper, '重启后刷新页面')).toBeDefined()
+    expect(button(wrapper, '检查服务状态')).toBeDefined()
     store.restartRequired = false
     store.progress = { running: false, status: 'failed', current_step: '恢复任务失败' }
     await flushPromises()
-    expect(button(wrapper, '重启后刷新页面')).toBeUndefined()
+    expect(button(wrapper, '检查服务状态')).toBeUndefined()
     await button(wrapper, '关闭')!.trigger('click')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('手动检查服务先保留恢复弹窗，重启且会话可用后才允许重新登录', async () => {
+    const { wrapper, router, store, http } = await setup({ restart_supported: false })
+    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {})
+    await button(wrapper, '检查服务状态')!.trigger('click')
+    expect(wrapper.text()).toContain('正在检查服务状态')
+    expect(button(wrapper, '正在重启服务')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(wrapper.text()).toContain('请先重启 QMS 服务后再检查')
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(store.showProgressDialog).toBe(true)
+    expect(reload).not.toHaveBeenCalled()
+    expect(http.post).not.toHaveBeenCalled()
+
+    http.get.mockRejectedValue(
+      new HttpResponseError({
+        status: 401,
+        data: { code: 401, error_code: 'RESTORE_RECEIPT_INVALID' },
+      }),
+    )
+    vi.mocked(authAPI.fetchSession).mockRejectedValueOnce(
+      new HttpResponseError({
+        status: 503,
+        data: { code: 503, error_code: 'DATABASE_MAINTENANCE' },
+      }),
+    )
+    await button(wrapper, '检查服务状态')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(button(wrapper, '重新登录')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(button(wrapper, '重新登录')).toBeDefined()
+    await button(wrapper, '重新登录')!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(http.post).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('恢复已提交后的收尾失败明确说明数据已提交，重启后仍保留结论', async () => {

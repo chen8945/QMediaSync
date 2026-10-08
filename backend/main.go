@@ -798,6 +798,7 @@ func setRouter(r *gin.Engine) {
 
 		// 备份与恢复相关路由
 		api.GET("/backup/list", controllers.GetBackupList)               // 获取备份列表
+		api.GET("/backup/files", controllers.GetBackupFiles)             // 获取本地备份文件列表
 		api.GET("/backup/records/:id", controllers.GetBackupRecord)      // 获取备份记录详情
 		api.POST("/backup/create", controllers.CreateBackup)             // 创建手动备份
 		api.DELETE("/backup/records/:id", controllers.DeleteBackup)      // 删除备份记录
@@ -900,6 +901,11 @@ func initEnv() bool {
 
 	if err := QMSApp.StartDatabase(); err != nil {
 		helpers.AppLogger.Errorf("数据库启动失败：%v", err)
+		return false
+	}
+	// 后台任务和 Cron 启动前归并旧进程的备份状态，避免误改本次运行的任务。
+	if err := models.ReconcileInterruptedBackups(); err != nil {
+		helpers.AppLogger.Errorf("更新上次未结束的备份状态失败：%v", err)
 		return false
 	}
 

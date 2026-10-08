@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"path/filepath"
 	"strings"
 
 	"qmediasync/internal/validation"
@@ -43,12 +44,20 @@ func (r *BackupListRequest) Normalize() {
 
 // BackupRestoreRequest 备份恢复请求。
 type BackupRestoreRequest struct {
-	RecordID uint `json:"record_id"`
+	RecordID uint   `json:"record_id"`
+	FileName string `json:"file_name"`
 }
 
 // Validate 校验备份恢复请求。
 func (r BackupRestoreRequest) Validate() error {
-	return validation.PositiveID("record_id", r.RecordID)
+	if (r.RecordID > 0) == (r.FileName != "") {
+		return validation.New("", "请指定备份记录 ID 或备份文件名，且不能同时指定")
+	}
+	if r.FileName != "" && (!filepath.IsLocal(r.FileName) || strings.ContainsAny(r.FileName, "/\\:\x00") ||
+		!strings.EqualFold(filepath.Ext(r.FileName), ".zip")) {
+		return validation.New("file_name", "仅支持备份目录中的 ZIP 文件名")
+	}
+	return nil
 }
 
 // BackupConfigUpdateRequest 更新备份配置请求。

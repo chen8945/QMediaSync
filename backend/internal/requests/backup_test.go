@@ -96,7 +96,18 @@ func TestBackupRestoreRequestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "合法备份记录 ID 通过", req: BackupRestoreRequest{RecordID: 1}},
-		{name: "备份记录 ID 为空失败", req: BackupRestoreRequest{}, wantErr: true},
+		{name: "合法备份文件名通过", req: BackupRestoreRequest{FileName: "备份 2026.ZIP"}},
+		{name: "文件名保留首部空白", req: BackupRestoreRequest{FileName: " backup.zip"}},
+		{name: "未指定来源失败", req: BackupRestoreRequest{}, wantErr: true},
+		{name: "同时指定两个来源失败", req: BackupRestoreRequest{RecordID: 1, FileName: "backup.zip"}, wantErr: true},
+		{name: "上级目录失败", req: BackupRestoreRequest{FileName: "../backup.zip"}, wantErr: true},
+		{name: "子目录失败", req: BackupRestoreRequest{FileName: "temp/backup.zip"}, wantErr: true},
+		{name: "绝对路径失败", req: BackupRestoreRequest{FileName: "/backup.zip"}, wantErr: true},
+		{name: "Windows 路径失败", req: BackupRestoreRequest{FileName: `C:\backup.zip`}, wantErr: true},
+		{name: "反斜杠失败", req: BackupRestoreRequest{FileName: `temp\backup.zip`}, wantErr: true},
+		{name: "冒号失败", req: BackupRestoreRequest{FileName: "backup:stream.zip"}, wantErr: true},
+		{name: "空字符失败", req: BackupRestoreRequest{FileName: "backup\x00.zip"}, wantErr: true},
+		{name: "非 ZIP 失败", req: BackupRestoreRequest{FileName: "backup.tar"}, wantErr: true},
 	}
 
 	for _, tt := range tests {

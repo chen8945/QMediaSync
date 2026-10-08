@@ -65,7 +65,7 @@ func TestLogicalBackupRestoreCrossEngine(t *testing.T) {
 				}
 			}
 			db.Db = source
-			// 导出前初始化配置，避免备份收尾新增配置行后与快照行数不一致。
+			// 备份服务配置在导出前初始化，保留策略也先于快照执行。
 			models.GetBackupService()
 			records := seedCrossEngineRecords(t, source)
 			if err := helpers.InitEncryptionKey(); err != nil {
@@ -86,12 +86,20 @@ func TestLogicalBackupRestoreCrossEngine(t *testing.T) {
 			if err := target.Create(&models.UserSession{SessionID: "target-browser", TokenID: "target-token"}).Error; err != nil {
 				t.Fatal(err)
 			}
+			localHistory := models.BackupRecord{BaseModel: models.BaseModel{ID: 501}, Status: models.BackupStatusCompleted, FilePath: "target-instance-history.zip"}
+			if err := target.Create(&localHistory).Error; err != nil {
+				t.Fatal(err)
+			}
 			db.Db = target
 			models.GlobalBackupService = nil
 			if err := Restore(backupRecord.FilePath); err != nil {
 				t.Fatal(err)
 			}
 			assertCrossEngineSchemaAndCounts(t, source, target, manifest)
+			var histories []models.BackupRecord
+			if err := target.Find(&histories).Error; err != nil || len(histories) != 1 || !reflect.DeepEqual(histories[0], localHistory) {
+				t.Fatalf("target backup history changed: %+v, %v", histories, err)
+			}
 			for _, record := range records {
 				assertCrossEngineRecord(t, target, record)
 			}
@@ -297,6 +305,8 @@ func assertCrossEngineSchemaAndCounts(t *testing.T, source, target *gorm.DB, man
 			continue
 		}
 		switch model.(type) {
+		case models.BackupRecord, *models.BackupRecord:
+			continue // 本机备份历史单独验证，不比较源实例的历史行数。
 		case models.EmbyObservedEvidenceIndex, *models.EmbyObservedEvidenceIndex, models.EmbyItemMembership, *models.EmbyItemMembership:
 			continue // 派生索引有独立原始数据重建回归。
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type backupRecordResponse struct {
+	models.BackupRecord
+	FileStatus string `json:"file_status"`
+}
+
+type backupFilesResponse struct {
+	Directory string              `json:"directory"`
+	Files     []backup.BackupFile `json:"files"`
+}
 
 func CreateBackup(c *gin.Context) {
 	var req requests.BackupCreateRequest
@@ -63,15 +74,38 @@ func GetBackupList(c *gin.Context) {
 		return
 	}
 
+	items := make([]backupRecordResponse, 0, len(records))
+	for _, record := range records {
+		items = append(items, backupRecordResponse{
+			BackupRecord: record,
+			FileStatus:   backup.BackupFileAvailability(record.FilePath),
+		})
+	}
 	c.JSON(http.StatusOK, APIResponse[map[string]any]{
 		Code:    Success,
 		Message: "获取备份列表成功",
 		Data: map[string]any{
-			"list":      records,
+			"list":      items,
 			"total":     total,
 			"page":      req.Page,
 			"page_size": req.PageSize,
 		},
+	})
+}
+
+// GetBackupFiles 列出本机备份目录中的 ZIP 文件元数据，不读取归档内容。
+func GetBackupFiles(c *gin.Context) {
+	files, err := backup.ListBackupFiles()
+	if err != nil {
+		helpers.AppLogger.Errorf("获取本地备份文件列表失败：%v", err)
+		c.JSON(http.StatusOK, APIResponse[any]{
+			Code: BadRequest, Message: "获取备份文件列表失败，请检查备份目录是否可访问", Data: nil,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, APIResponse[backupFilesResponse]{
+		Code: Success, Message: "获取备份文件列表成功",
+		Data: backupFilesResponse{Directory: backup.BackupDirectory(), Files: files},
 	})
 }
 
@@ -96,10 +130,13 @@ func GetBackupRecord(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, APIResponse[models.BackupRecord]{
+	c.JSON(http.StatusOK, APIResponse[backupRecordResponse]{
 		Code:    Success,
 		Message: "获取备份记录成功",
-		Data:    record,
+		Data: backupRecordResponse{
+			BackupRecord: record,
+			FileStatus:   backup.BackupFileAvailability(record.FilePath),
+		},
 	})
 }
 
@@ -161,11 +198,20 @@ func DownloadBackup(c *gin.Context) {
 		return
 	}
 
-	if _, err := os.Stat(record.FilePath); os.IsNotExist(err) {
+	file, err := backup.OpenBackupFile(record.FilePath)
+	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
-			Message: fmt.Sprintf("备份文件不存在：%s", record.FilePath),
+			Message: "备份文件不可用，请检查文件是否存在且可访问",
 			Data:    nil,
+		})
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{
+			Code: BadRequest, Message: "读取备份文件失败", Data: nil,
 		})
 		return
 	}
@@ -173,9 +219,9 @@ func DownloadBackup(c *gin.Context) {
 	fileName := filepath.Base(record.FilePath)
 	c.Header("Content-Description", "File Transfer")
 	c.Header("Content-Transfer-Encoding", "binary")
-	c.Header("Content-Disposition", "attachment; filename="+fileName)
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fileName}))
 	c.Header("Content-Type", "application/octet-stream")
-	c.File(record.FilePath)
+	http.ServeContent(c.Writer, c.Request, fileName, info.ModTime(), file)
 }
 
 func GetBackupConfig(c *gin.Context) {
@@ -266,23 +312,40 @@ func RestoreFromBackup(c *gin.Context) {
 	if err := req.Validate(); err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code:    BadRequest,
-			Message: "请指定要恢复的备份记录 ID",
+			Message: err.Error(),
 			Data:    nil,
 		})
 		return
 	}
 
-	var record models.BackupRecord
-	if err := db.Db.First(&record, req.RecordID).Error; err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{
-			Code:    BadRequest,
-			Message: "备份记录不存在",
-			Data:    nil,
-		})
-		return
+	var filePath string
+	if req.RecordID > 0 {
+		var record models.BackupRecord
+		if err := db.Db.First(&record, req.RecordID).Error; err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{
+				Code: BadRequest, Message: "备份记录不存在", Data: nil,
+			})
+			return
+		}
+		if backup.BackupFileAvailability(record.FilePath) != "available" {
+			c.JSON(http.StatusOK, APIResponse[any]{
+				Code: BadRequest, Message: "备份文件不可用，请检查文件是否存在且可访问", Data: nil,
+			})
+			return
+		}
+		filePath = record.FilePath
+	} else {
+		var err error
+		filePath, err = backup.ResolveBackupFile(req.FileName)
+		if err != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{
+				Code: BadRequest, Message: "备份文件不可用，请刷新文件列表后重试", Data: nil,
+			})
+			return
+		}
 	}
 
-	receipt, err := backup.StartRestoreWithReceipt(record.FilePath, false)
+	receipt, err := backup.StartRestoreWithReceipt(filePath, false)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{
 			Code: BadRequest, Message: "备份或恢复任务正在运行，请稍后再试", Data: nil,
@@ -387,7 +450,7 @@ func uploadAndRestore(c *gin.Context, maxArchiveSize int64) {
 		return
 	}
 
-	receipt, err := backup.StartRestoreWithReceipt(tempPath, true)
+	receipt, err := backup.StartUploadedRestoreWithReceipt(tempPath)
 	if err != nil {
 		os.Remove(tempPath)
 		c.JSON(http.StatusOK, APIResponse[any]{

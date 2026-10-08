@@ -241,14 +241,11 @@
           {{ restartingService ? '正在重启服务' : '重启服务' }}
         </el-button>
         <el-button
-          v-if="backupStore.restartPhase === 'unknown'"
-          type="primary"
+          v-if="!restartingService"
+          :loading="backupStore.restartPhase === 'checking'"
           @click="backupStore.checkRestartStatus"
         >
-          重新检查服务
-        </el-button>
-        <el-button v-if="!restartingService" @click="reloadAfterRestore">
-          重启后刷新页面
+          检查服务状态
         </el-button>
       </template>
       <el-button v-else-if="backupStore.progress" @click="backupStore.closeProgressDialog">
@@ -506,8 +503,6 @@ const backupDialogTitle = computed(() => {
   }
 })
 
-const reloadAfterRestore = () => window.location.reload()
-
 const restartingService = computed(() =>
   ['requesting', 'waiting'].includes(backupStore.restartPhase),
 )
@@ -516,13 +511,15 @@ const restartStatusMessage = computed(() => {
   if (backupStore.restartError) return backupStore.restartError
   if (backupStore.restartPhase === 'requesting') return '正在请求重启服务…'
   if (backupStore.restartPhase === 'waiting') return '正在等待服务重新上线，请勿关闭或刷新本页。'
+  if (backupStore.restartPhase === 'checking') return '正在检查服务状态，请勿关闭或刷新本页。'
   if (backupStore.restartPhase === 'ready') return '服务已重新上线，请重新登录。恢复结果见上方。'
   if (backupStore.restartRequired && !backupStore.restartSupported)
-    return '当前运行方式不支持页面重启，请手动重启应用服务后刷新页面。'
+    return '当前运行方式不支持页面重启，请手动重启 QMS 服务，再点击“检查服务状态”。'
   return ''
 })
 
 const loginAfterRestore = async () => {
+  if (backupStore.restartPhase !== 'ready') return
   authStore.clearAuth()
   await router.replace('/login')
   backupStore.showProgressDialog = false

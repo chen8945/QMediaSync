@@ -24,19 +24,29 @@ const record = {
   status: 'completed',
   file_path: '/backups/kept-name.zip',
   file_size: 100,
+  file_status: 'available',
   backup_type: 'manual',
   backup_duration: 1,
   created_reason: '手动备份',
 }
 const setup = async (
   component: typeof AppBackupSettings | typeof AppBackupRestore | typeof AppBackupRecords,
+  records = [record],
 ) => {
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
     .mockResolvedValue({ code: 200, message: '', data: null })
   const read = vi.fn(async (url: string): Promise<unknown> => {
     if (url.endsWith('/config')) return { code: 200, data: configData }
-    if (url.endsWith('/list')) return { code: 200, data: { list: [record], total: 1 } }
+    if (url.endsWith('/list')) return { code: 200, data: { list: records, total: records.length } }
+    if (url.endsWith('/files'))
+      return {
+        code: 200,
+        data: {
+          directory: '/config/backups',
+          files: [{ file_name: 'stored-upload.zip', file_size: 512, modified_at: 1 }],
+        },
+      }
     if (url.includes('/download/')) return new Blob(['PK archive'])
     return { code: 200, data: [] }
   })
@@ -67,6 +77,8 @@ const click = async (wrapper: VueWrapper, label: string) => {
   await flushPromises()
 }
 const selectFile = async (wrapper: VueWrapper) => {
+  await wrapper.get('#tab-upload').trigger('click')
+  await flushPromises()
   const input = wrapper.get('input[type="file"]')
   Object.defineProperty(input.element, 'files', {
     configurable: true,
@@ -93,6 +105,69 @@ afterEach(() => {
 })
 
 describe('备份页面失败反馈', () => {
+  it('从服务器目录恢复文件只发送文件名，保留原有回执与进度流程', async () => {
+    const { wrapper, adapter, reply, poll, read } = await setup(AppBackupRestore)
+    expect(wrapper.text()).toContain('/config/backups')
+    expect(wrapper.text()).toContain('stored-upload.zip')
+    expect(wrapper.text()).toContain('每次恢复时会校验所选备份')
+    expect(read).toHaveBeenCalledExactlyOnceWith('/api/backup/files')
+    reply.mockResolvedValueOnce({
+      code: 200,
+      message: '',
+      data: { restore_receipt: 'file-receipt' },
+    })
+    await click(wrapper, '恢复')
+    const request = adapter.mock.calls.find(([config]) => config.method === 'post')?.[0]
+    expect(request.url).toBe('/api/backup/restore')
+    expect(JSON.parse(request.data)).toEqual({ file_name: 'stored-upload.zip' })
+    expect(poll).toHaveBeenCalledWith('restore', undefined, expect.anything(), 'file-receipt')
+  })
+
+  it('服务器文件列表读取失败不伪装成空目录，允许刷新重试', async () => {
+    const { wrapper, read, reply, poll } = await setup(AppBackupRestore)
+    read.mockResolvedValueOnce({ code: 500, message: '备份目录不可访问', data: null })
+    await click(wrapper, '刷新文件列表')
+    expect(wrapper.text()).toContain('备份目录不可访问')
+    expect(wrapper.text()).toContain('stored-upload.zip')
+    expect(reply).not.toHaveBeenCalled()
+    expect(poll).not.toHaveBeenCalled()
+    await click(wrapper, '刷新文件列表')
+    expect(wrapper.text()).not.toContain('备份目录不可访问')
+  })
+
+  it('服务器文件恢复失败保留文件入口，确认取消不发起恢复', async () => {
+    const { wrapper, reply, poll } = await setup(AppBackupRestore)
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    await click(wrapper, '恢复')
+    expect(reply).not.toHaveBeenCalled()
+    reply.mockResolvedValueOnce({ code: 500, message: '备份文件已不存在', data: null })
+    await click(wrapper, '恢复')
+    expect(wrapper.text()).toContain('stored-upload.zip')
+    expect(ElMessage.error).toHaveBeenCalledWith('备份文件已不存在')
+    expect(poll).not.toHaveBeenCalled()
+  })
+
+  it.each(['unconfirmed', 'failed'])('任务 %s 但文件存在时仍可选择恢复', async (status) => {
+    const { wrapper, reply, poll } = await setup(AppBackupRecords, [{ ...record, status }])
+    expect(wrapper.text()).toContain(status === 'unconfirmed' ? '结果未记录' : '失败')
+    expect(wrapper.text()).toContain('文件存在')
+    await click(wrapper, '恢复')
+    expect(reply).toHaveBeenCalledOnce()
+    expect(poll).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { file_status: 'missing', label: '文件已缺失' },
+    { file_status: 'unavailable', label: '文件不可用' },
+  ])('历史成功而文件 $file_status 时保留状态但不提供恢复和下载', async ({ file_status, label }) => {
+    const { wrapper } = await setup(AppBackupRecords, [{ ...record, file_status }])
+    expect(wrapper.text()).toContain('成功')
+    expect(wrapper.text()).toContain(label)
+    expect(
+      wrapper.findAll('button').some((button) => ['恢复', '下载'].includes(button.text())),
+    ).toBe(false)
+  })
+
   it.each([
     { component: AppBackupRestore, upload: true, label: '开始恢复' },
     { component: AppBackupRecords, upload: false, label: '恢复' },

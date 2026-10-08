@@ -11,6 +11,21 @@ const responseError = (status: number, data: unknown, method = 'get') =>
   new HttpResponseError({ status, data, config: { method, url: '/api/example' } })
 
 describe('公共 HTTP 错误解析', () => {
+  it('恢复维护错误在登录和普通请求中明确提示重启服务，不泄露服务端原文', () => {
+    const parsed = parseHttpError(
+      responseError(503, {
+        code: 503,
+        error_code: 'DATABASE_MAINTENANCE',
+        message: 'internal secret',
+      }),
+    )
+    expect(parsed.kind).toBe('maintenance')
+    expect(parsed.message).toBe(
+      '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMS 服务后重新登录',
+    )
+    expect(parsed.shouldNotify).toBe(true)
+    expect(parsed.message).not.toContain('secret')
+  })
   it.each([
     ['REQUEST_ORIGIN_INVALID', 'origin'],
     ['CSRF_TOKEN_INVALID', 'csrf'],

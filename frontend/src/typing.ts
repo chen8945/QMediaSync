@@ -25,7 +25,8 @@ interface CloudAccount {
 
 // 备份相关类型定义
 type BackupTaskType = 'backup' | 'restore' | null
-type BackupStatus = 'pending' | 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed'
+type BackupStatus =
+  'pending' | 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed' | 'unconfirmed'
 type BackupType = 'manual' | 'auto'
 
 // 备份配置接口
@@ -60,6 +61,7 @@ interface BackupRecordListItem {
   status: BackupStatus
   file_path: string
   file_size: number
+  file_status: 'available' | 'missing' | 'unavailable'
   backup_type: BackupType
   backup_duration: number
   created_reason: string

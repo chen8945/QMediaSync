@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,6 +190,35 @@ func TestSyncPathAggregateWriteRoutesReplaceLegacyRoutes(t *testing.T) {
 		if _, ok := routes[retained]; !ok {
 			t.Fatalf("应保留的查询或运行接口缺失：%s", retained)
 		}
+	}
+}
+
+func TestBackupFileRoutesRequireAuthentication(t *testing.T) {
+	root := t.TempDir()
+	previousRoot := helpers.RootDir
+	helpers.RootDir = root
+	t.Cleanup(func() { helpers.RootDir = previousRoot })
+	if err := os.MkdirAll(filepath.Join(root, "web_statics"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web_statics", "index.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	setRouter(router)
+	for _, scenario := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/backup/files", ""},
+		{http.MethodPost, "/api/backup/restore", `{"file_name":"backup.zip"}`},
+		{http.MethodPost, "/api/backup/upload-restore", ""},
+	} {
+		t.Run(scenario.method+" "+scenario.path, func(t *testing.T) {
+			request := httptest.NewRequest(scenario.method, scenario.path, strings.NewReader(scenario.body))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "AUTHENTICATION_REQUIRED") {
+				t.Fatalf("backup route bypassed authentication: HTTP %d %s", response.Code, response.Body)
+			}
+		})
 	}
 }
 
