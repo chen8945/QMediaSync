@@ -542,7 +542,7 @@ const getProgressStatus = () => {
 }
 
 const openHelp = () => {
-  window.open('https://gitee.com/qicfan/qmediasync/wikis/Home', '_blank')
+  window.open('https://github.com/chen8945/QMediaSync/wiki', '_blank')
 }
 
 watch(isMobile, (nextIsMobile) => {

@@ -107,7 +107,7 @@
               <el-icon><InfoFilled /></el-icon>
               <span>将此链接配置到 Emby 的通知设置中，</span>
               <a
-                href="https://github.com/qicfan/qmediasync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
+                href="https://github.com/chen8945/QMediaSync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="help-link"
@@ -270,7 +270,7 @@
               <div class="config-links">
                 <span>需要在 Emby 中配置通知后才会生效，</span>
                 <a
-                  href="https://github.com/qicfan/qmediasync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
+                  href="https://github.com/chen8945/QMediaSync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="help-link"
@@ -509,7 +509,7 @@
               <div class="config-links">
                 <span>需要在 Emby 中配置通知后才会生效，</span>
                 <a
-                  href="https://github.com/qicfan/qmediasync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
+                  href="https://github.com/chen8945/QMediaSync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="help-link"

@@ -35,7 +35,7 @@ cliff.toml           git-cliff 配置（从提交记录生成 changelog）
 
 ## 原项目地址
 
-本仓库基于以下原项目合并而来：
+本仓库基于以下原项目合并修改而来：
 
 - 后端：[qicfan/qmediasync](https://github.com/qicfan/qmediasync)
 - 前端：[qicfan/q115-strm-frontend](https://github.com/qicfan/q115-strm-frontend)

@@ -7,7 +7,7 @@
 <p align="center">连接网盘与 Emby，让媒体同步与刮削更简单。</p>
 
 <p align="center">
-  <a href="https://github.com/chen8945/QMediaSync/wiki">📖 Wiki 使用手册</a> ·
+  <a href="https://github.com/chen8945/QMediaSync/wiki">📖 使用手册</a> ·
   <a href="https://github.com/chen8945/QMediaSync/releases">📦 版本下载</a> ·
   <a href="https://github.com/chen8945/QMediaSync/issues">🐛 问题反馈</a>
 </p>
