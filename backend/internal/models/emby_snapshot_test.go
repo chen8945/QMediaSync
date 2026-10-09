@@ -18,7 +18,7 @@ func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, Sync
 	if err := MigrateEmbyDeletionSchema(db.Db); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Db.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &SyncFile{}, &SyncPath{}, &Account{}, &SyncRootEvidence{}); err != nil {
 		t.Fatal(err)
 	}
 	config := &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}

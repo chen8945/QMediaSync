@@ -59,7 +59,7 @@ func GetEmbySyncStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取配置失败：" + err.Error()})
 		return
 	}
-	helpers.AppLogger.Infof("获取 Emby 同步状态，最后同步时间：%s", helpers.FormatUnixLogTime(config.LastSyncTime))
+	helpers.AppLogger.Debugf("获取 Emby 同步状态，最后同步时间：%s", helpers.FormatUnixLogTime(config.LastSyncTime))
 	total, _ := models.GetEmbyMediaItemsCount()
 	c.JSON(http.StatusOK, APIResponse[any]{
 		Code:    Success,

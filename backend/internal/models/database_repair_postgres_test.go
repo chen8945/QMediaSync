@@ -23,15 +23,15 @@ func TestRepairDatabasePostgresRepairsAllRegisteredSequences(t *testing.T) {
 	if err := conn.Table("sync_files").Create(map[string]any{"id": 100, "file_id": "restored-file"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Migrator().DropIndex(&SyncFile{}, syncFileSiblingPathIndexName); err != nil {
-		t.Fatal(err)
+	for _, index := range []string{syncFileSiblingPathIndexName, syncFileNameIndexName} {
+		if err := conn.Migrator().DropIndex(&SyncFile{}, index); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := RepairDatabase(conn); err != nil {
 		t.Fatal(err)
 	}
-	if !conn.Migrator().HasIndex(&SyncFile{}, syncFileSiblingPathIndexName) {
-		t.Fatal("repair omitted the missing lookup index")
-	}
+	assertSyncFileLookupIndexes(t)
 	next := SyncFile{FileId: "after-repair"}
 	if err := conn.Create(&next).Error; err != nil || next.ID != 101 {
 		t.Fatalf("repair did not repair the restored ID sequence: id=%d err=%v", next.ID, err)

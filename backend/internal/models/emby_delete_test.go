@@ -91,6 +91,21 @@ func setupEmbyDeleteTest(t *testing.T) (EmbyDeletionPlan, *embyDeleteTestProvide
 
 func allowEmbyDeleteTest(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error { return nil }
 
+func TestEmbyLegacyDeletionReferenceRejectsNewExplicitMapping(t *testing.T) {
+	plan, provider := setupEmbyDeleteTest(t)
+	root := plan.Targets[0].File.LocalRoot
+	mappings := []EmbyPathMapping{{EmbyRoot: root, LocalRoot: t.TempDir()}}
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("path_mappings_json", embyJSON(mappings)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEmbyDeletionTarget(t.Context(), plan, plan.Targets[0]); !errors.Is(err, ErrEmbySnapshotStale) {
+		t.Fatal("legacy deletion ignored a newly configured mapping", err)
+	}
+	if provider.calls != 0 {
+		t.Fatal("changed mapping reached destructive execution")
+	}
+}
+
 // 单成员回归仍通过共同批次执行器，复用相同的范围、身份和结果确认边界。
 func executeEmbyDeletionTestTarget(ctx context.Context, plan EmbyDeletionPlan, target EmbyDeletionTarget, provider EmbyDeleteProvider, verify EmbyDeletionVerifier) EmbyDeletionResult {
 	return ExecuteEmbyDeletionBatch(ctx, plan, []EmbyDeletionTarget{target}, provider, verify, func([]EmbyDeletionTarget) error { return nil })[0]

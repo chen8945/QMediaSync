@@ -1,6 +1,10 @@
 package requests
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestEmbyConfigRequestValidate(t *testing.T) {
 	valid := UpdateEmbyConfigRequest{
@@ -46,5 +50,42 @@ func TestEmbyConfigRequestValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestEmbyConfigPathMappingRequest(t *testing.T) {
+	for _, test := range []struct {
+		name, body       string
+		present, invalid bool
+	}{
+		{"omitted", `{}`, false, false},
+		{"null preserves", `{"path_mappings":null}`, false, false},
+		{"clear", `{"path_mappings":[]}`, true, false},
+		{"mapped", `{"path_mappings":[{"emby_root":"/emby","local_root":"/mnt/strm","sync_path_id":42}]}`, true, false},
+		{"relative path", `{"path_mappings":[{"emby_root":"relative","local_root":"/mnt/strm"}]}`, true, true},
+		{"overlap", `{"path_mappings":[{"emby_root":"/emby","local_root":"/mnt/strm"},{"emby_root":"/emby/films","local_root":"/mnt/films"}]}`, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var request UpdateEmbyConfigRequest
+			if err := json.Unmarshal([]byte(test.body), &request); err != nil {
+				t.Fatal(err)
+			}
+			if (request.PathMappings != nil) != test.present {
+				t.Fatalf("field presence = %v", request.PathMappings != nil)
+			}
+			err := request.Validate()
+			if (err != nil) != test.invalid {
+				t.Fatalf("validation = %v", err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "path_mappings") {
+				t.Fatalf("missing field: %v", err)
+			}
+		})
+	}
+	for _, body := range []string{`{"path_mappings":{}}`, `{"path_mappings":"[]"}`, `{"path_mappings":[{"sync_path_id":-1}]}`} {
+		var request UpdateEmbyConfigRequest
+		if err := json.Unmarshal([]byte(body), &request); err == nil {
+			t.Fatalf("accepted malformed input %s", body)
+		}
 	}
 }

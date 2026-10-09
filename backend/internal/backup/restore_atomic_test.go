@@ -356,8 +356,8 @@ func TestRestoreLegacyAuthenticationLossIsRejected(t *testing.T) {
 
 func TestRestoreLegacySchema66TextAdapter(t *testing.T) {
 	conn := setupBackupTest(t)
-	if models.MaxVersionCode != 67 {
-		t.Skip("66 → 67 adapter is intentionally limited to the text-only migration")
+	if models.MaxVersionCode != 67 && models.MaxVersionCode != 68 {
+		t.Fatal("schema 66 adapter needs an explicit review for this target version")
 	}
 	models.AllTables = []any{&backupTestItem{}, &models.Migrator{}}
 	archive := writeBackupArchive(t, map[string]string{
@@ -368,8 +368,11 @@ func TestRestoreLegacySchema66TextAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version models.Migrator
-	if err := conn.First(&version).Error; err != nil || version.VersionCode != 67 {
+	if err := conn.First(&version).Error; err != nil || version.VersionCode != models.MaxVersionCode {
 		t.Fatalf("explicit adapter did not advance restored schema version: %+v %v", version, err)
+	}
+	if conn.Migrator().HasTable(&models.SyncRootEvidence{}) {
+		t.Fatal("version adapter created an unregistered model")
 	}
 }
 

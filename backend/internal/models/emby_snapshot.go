@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -65,37 +66,46 @@ type EmbyItemEvidence struct {
 
 // EmbyFrozenFile 是不含凭据的物理文件证据。Reason 非空的证据不能直接用于删除。
 type EmbyFrozenFile struct {
-	SyncFileID       uint       `json:"sync_file_id"`
-	SyncPathID       uint       `json:"sync_path_id"`
-	SourceType       SourceType `json:"source_type"`
-	AccountID        uint       `json:"account_id"`
-	AccountIdentity  string     `json:"account_identity"`
-	LocalRoot        string     `json:"local_root"`
-	RemoteRoot       string     `json:"remote_root"`
-	RootFileID       string     `json:"root_file_id"`
-	FileID           string     `json:"file_id"`
-	ParentID         string     `json:"parent_id"`
-	FileName         string     `json:"file_name"`
-	Path             string     `json:"path"`
-	LocalFilePath    string     `json:"local_file_path"`
-	PickCode         string     `json:"pick_code"`
-	SHA1             string     `json:"sha1"`
-	FileSize         int64      `json:"file_size"`
-	MTime            int64      `json:"mtime"`
-	FileCreatedAt    int64      `json:"file_created_at"`
-	SourceID         string     `json:"source_id"`
-	OpenlistObjectID string     `json:"openlist_object_id"`
-	OpenlistSHA1     string     `json:"openlist_sha1"`
-	OpenlistMD5      string     `json:"openlist_md5"`
-	Reason           string     `json:"reason,omitempty"`
+	SyncFileID       uint              `json:"sync_file_id"`
+	SyncPathID       uint              `json:"sync_path_id"`
+	SourceType       SourceType        `json:"source_type"`
+	AccountID        uint              `json:"account_id"`
+	AccountIdentity  string            `json:"account_identity"`
+	LocalRoot        string            `json:"local_root"`
+	RemoteRoot       string            `json:"remote_root"`
+	RootFileID       string            `json:"root_file_id"`
+	FileID           string            `json:"file_id"`
+	ParentID         string            `json:"parent_id"`
+	FileName         string            `json:"file_name"`
+	Path             string            `json:"path"`
+	LocalFilePath    string            `json:"local_file_path"`
+	PickCode         string            `json:"pick_code"`
+	SHA1             string            `json:"sha1"`
+	FileSize         int64             `json:"file_size"`
+	MTime            int64             `json:"mtime"`
+	FileCreatedAt    int64             `json:"file_created_at"`
+	SourceID         string            `json:"source_id"`
+	OpenlistObjectID string            `json:"openlist_object_id"`
+	OpenlistSHA1     string            `json:"openlist_sha1"`
+	OpenlistMD5      string            `json:"openlist_md5"`
+	Reason           string            `json:"reason,omitempty"`
+	Reference        EmbySTRMReference `json:"reference,omitzero"`
+	ExternalSource   bool              `json:"external_source,omitempty"`
 }
 
 // EmbySnapshotSource 保留物理媒体源身份和播放路径，不混用 Item.Path。
 type EmbySnapshotSource struct {
-	ID       string `json:"id"`
-	ItemID   string `json:"item_id"`
-	Path     string `json:"path"`
-	PickCode string `json:"pick_code"`
+	ID              string            `json:"id"`
+	ItemID          string            `json:"item_id"`
+	Path            string            `json:"path"`
+	PickCode        string            `json:"pick_code"`
+	SourceType      SourceType        `json:"source_type,omitempty"`
+	AccountID       uint              `json:"account_id,omitempty"`
+	AccountIdentity string            `json:"account_identity,omitempty"`
+	ObjectKind      string            `json:"object_kind,omitempty"`
+	ObjectID        string            `json:"object_id,omitempty"`
+	SyncFileID      uint              `json:"sync_file_id,omitempty"`
+	Reference       EmbySTRMReference `json:"reference,omitzero"`
 }
 
 type EmbyItemSnapshot struct {
@@ -104,8 +114,12 @@ type EmbyItemSnapshot struct {
 	LibraryName            string
 	MembersComplete        bool
 	VersionMembershipKnown bool
+	MediaDirectories       []EmbyMediaDirectory
 	DirectoryScopes        []EmbyDirectoryScope
 	cleanupFiles           []EmbyFrozenFile
+	pathConfig             *EmbyConfig
+	frozenSources          []EmbySnapshotSource
+	preparedSTRMReferences map[int]embyPreparedSTRMReference
 }
 
 type EmbyIndexToken struct {
@@ -143,7 +157,16 @@ func EmbyConfigIdentity(config *EmbyConfig) string {
 			selected = embyJSON(slices.Compact(libraries))
 		}
 	}
-	return embyDigest([]any{EmbyServerConfigIdentity(config), config.SyncEnabled, config.SyncAllLibraries, selected})
+	values := []any{EmbyServerConfigIdentity(config), config.SyncEnabled, config.SyncAllLibraries, selected}
+	if len(config.PathMappings) != 0 {
+		mappings, err := NormalizeEmbyPathMappings(config.PathMappings)
+		if err != nil {
+			return embyDigest(append(values, config.PathMappings))
+		}
+		slices.SortFunc(mappings, func(a, b EmbyPathMapping) int { return strings.Compare(a.EmbyRoot, b.EmbyRoot) })
+		values = append(values, mappings)
+	}
+	return embyDigest(values)
 }
 
 // ReadEmbyConfigSnapshot 读取独立配置值，不改写供旧调用方使用的全局缓存。
@@ -211,6 +234,15 @@ func lockEmbyIndexState(tx *gorm.DB) (*EmbyIndexState, error) {
 		return nil, err
 	}
 	return &state, nil
+}
+
+// LockEmbySourceMutationTx 让来源写事务先取得屏障，避免与快照按相反顺序锁定目录和文件。
+func LockEmbySourceMutationTx(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	_, err := lockEmbyIndexState(tx)
+	return err
 }
 
 func checkEmbyConfig(tx *gorm.DB, key string) error {
@@ -282,8 +314,17 @@ func AdmitEmbyItemGenerationTx(tx *gorm.DB, serverID, itemID string, expectedRev
 
 // ApplyEmbySnapshots 原子保存主项、版本和分段，所有依赖错误均回滚关联替换。
 func ApplyEmbySnapshots(token EmbyIndexToken, snapshots []EmbyItemSnapshot) error {
+	return ApplyEmbySnapshotsContext(context.Background(), token, snapshots)
+}
+
+// ApplyEmbySnapshotsContext 允许并行执行器取消等待连接或锁，并收齐真实提交结果。
+func ApplyEmbySnapshotsContext(ctx context.Context, token EmbyIndexToken, snapshots []EmbyItemSnapshot) error {
 	expectedMembers := map[string]map[string]bool{}
+	exclusive := len(snapshots) != 1
 	for _, snapshot := range snapshots {
+		if snapshot.Item.PartOfItemID != "" || snapshot.Item.VersionOfItemID != "" {
+			exclusive = true
+		}
 		for field, parent := range map[string]string{"part_of_item_id": snapshot.Item.PartOfItemID, "version_of_item_id": snapshot.Item.VersionOfItemID} {
 			key := field + "\x00" + parent
 			if expectedMembers[key] == nil {
@@ -292,37 +333,74 @@ func ApplyEmbySnapshots(token EmbyIndexToken, snapshots []EmbyItemSnapshot) erro
 			expectedMembers[key][snapshot.Item.ItemId] = true
 		}
 	}
-	return db.Db.Transaction(func(tx *gorm.DB) error {
-		if err := checkEmbyToken(tx, token); err != nil {
-			return err
-		}
-		for i := range snapshots {
-			if err := applyEmbySnapshot(tx, token, &snapshots[i]); err != nil {
+	apply := func(exclusive bool) error {
+		return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			config, err := lockEmbyApplyGuard(tx, token, exclusive)
+			if err != nil {
 				return err
 			}
-		}
-		// 完整主项响应才解除消失成员关系；独立 Video 查询不代表成员关系已消失。
-		for _, snapshot := range snapshots {
-			if !snapshot.MembersComplete {
-				continue
+			if err := lockEmbyApplyItems(tx, snapshots); err != nil {
+				return err
 			}
-			for _, field := range []string{"part_of_item_id", "version_of_item_id"} {
-				var members []EmbyMediaItem
-				if err := tx.Where("server_id = ? AND "+field+" = ?", token.ServerID, snapshot.Item.ItemId).Find(&members).Error; err != nil {
+			cache := newEmbyApplyCache(config)
+			tx = tx.Set(embyApplyCacheKey, cache).Session(&gorm.Session{})
+			if err := loadEmbyApplyItems(tx, token, snapshots, cache); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() == "postgres" && !exclusive {
+				for _, item := range cache.media {
+					if item.PartOfItemID != "" || item.VersionOfItemID != "" {
+						return errEmbyApplyNeedsExclusive
+					}
+				}
+			}
+			if err := loadEmbyApplySources(tx, snapshots, cache); err != nil {
+				return err
+			}
+			for i := range snapshots {
+				if err := applyEmbySnapshot(tx, token, &snapshots[i]); err != nil {
 					return err
 				}
-				for _, member := range members {
-					if expectedMembers[field+"\x00"+snapshot.Item.ItemId][member.ItemId] {
-						continue
-					}
-					if err := detachEmbyMembership(tx, token, member, field); err != nil {
-						return err
+			}
+			// 完整主项响应才解除消失成员；使用本事务读取并随提交更新的投影集合。
+			memberIDs := make([]string, 0, len(cache.media))
+			for id := range cache.media {
+				memberIDs = append(memberIDs, id)
+			}
+			slices.Sort(memberIDs)
+			for _, snapshot := range snapshots {
+				if !snapshot.MembersComplete {
+					continue
+				}
+				for _, field := range []string{"part_of_item_id", "version_of_item_id"} {
+					for _, id := range memberIDs {
+						member := cache.media[id]
+						parent := member.PartOfItemID
+						if field == "version_of_item_id" {
+							parent = member.VersionOfItemID
+						}
+						if member.ServerId != token.ServerID || parent != snapshot.Item.ItemId || expectedMembers[field+"\x00"+snapshot.Item.ItemId][member.ItemId] {
+							continue
+						}
+						if err := detachEmbyMembership(tx, token, member, field); err != nil {
+							return err
+						}
 					}
 				}
 			}
-		}
-		return nil
-	})
+			for _, validate := range cache.validations {
+				if err := validate(); err != nil {
+					return err
+				}
+			}
+			return saveEmbyApplyLibraryRelations(tx, snapshots, cache)
+		})
+	}
+	err := apply(exclusive)
+	if errors.Is(err, errEmbyApplyNeedsExclusive) {
+		return apply(true)
+	}
+	return err
 }
 
 // detachEmbyMembership 只修改旧快照的成员边，不从当前账本制造一次新的远端观察。
@@ -337,7 +415,18 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 		if state.SnapshotID != member.SnapshotID || state.Generation != member.Generation {
 			return nil
 		}
-		return tx.Model(&EmbyMediaItem{}).Where("id = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", member.ID, token.ServerID, member.ItemId, member.SnapshotID, member.Generation).Update(field, "").Error
+		if err := tx.Model(&EmbyMediaItem{}).Where("id = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", member.ID, token.ServerID, member.ItemId, member.SnapshotID, member.Generation).Update(field, "").Error; err != nil {
+			return err
+		}
+		if cache := embyApplyCacheFrom(tx); cache != nil {
+			if field == "part_of_item_id" {
+				member.PartOfItemID = ""
+			} else {
+				member.VersionOfItemID = ""
+			}
+			cache.media[member.ItemId] = member
+		}
+		return nil
 	}
 	var evidence EmbyItemEvidence
 	if err := tx.First(&evidence, member.SnapshotID).Error; err != nil {
@@ -371,6 +460,15 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 		return err
 	}
 	state.SnapshotID = evidence.ID
+	if cache := embyApplyCacheFrom(tx); cache != nil {
+		member.SnapshotID = evidence.ID
+		if field == "part_of_item_id" {
+			member.PartOfItemID = ""
+		} else {
+			member.VersionOfItemID = ""
+		}
+		cache.media[member.ItemId], cache.states[member.ItemId], cache.evidence[evidence.ID] = member, state, evidence
+	}
 	return saveEmbyItemMembershipTx(tx, state, evidence)
 }
 
@@ -381,11 +479,9 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 		return err
 	}
 	item.ItemIdInt, item.ServerId = id, token.ServerID
-	var state EmbyItemState
-	err = tx.Where("server_id = ? AND item_id = ?", token.ServerID, item.ItemId).First(&state).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
+	cache := embyApplyCacheFrom(tx)
+	state := cache.states[item.ItemId]
+	previousState := state
 	if state.Deleted {
 		return fmt.Errorf("%w: %s", ErrEmbyItemDeleted, item.ItemId)
 	}
@@ -393,66 +489,73 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 	if err != nil {
 		return err
 	}
-	var previous EmbyItemEvidence
-	if state.SnapshotID != 0 {
-		if err := tx.First(&previous, state.SnapshotID).Error; err != nil {
-			return err
-		}
-	}
+	previous := cache.evidence[state.SnapshotID]
 	if previous.EvidenceKey == evidence.EvidenceKey {
 		evidence.ID = previous.ID
 	} else if err := tx.Create(&evidence).Error; err != nil {
 		return err
 	}
 	item.SnapshotID = evidence.ID
-	if err := upsertEmbyMediaItem(tx, item); err != nil {
+	if err := applyEmbyProjection(tx, item, cache.media[item.ItemId]); err != nil {
 		return err
 	}
-	if err := tx.Where("emby_item_id = ?", id).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+	cache.media[item.ItemId] = *item
+	if err := replaceEmbyLinks(tx, item, files, cache); err != nil {
 		return err
-	}
-	for _, file := range files {
-		var currentFile SyncFile
-		if err := tx.First(&currentFile, file.SyncFileID).Error; err != nil {
-			return err
-		}
-		link := EmbyMediaSyncFile{
-			EmbyItemId: uint(id),
-			SyncFileId: file.SyncFileID,
-			SyncPathId: file.SyncPathID,
-			PickCode:   currentFile.PickCode,
-			SnapshotID: evidence.ID,
-			SourceID:   file.SourceID,
-		}
-		if err := tx.Create(&link).Error; err != nil {
-			return err
-		}
-		if item.LibraryId != "" {
-			relation := EmbyLibrarySyncPath{LibraryId: item.LibraryId, SyncPathId: file.SyncPathID, LibraryName: snapshot.LibraryName}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&relation).Error; err != nil {
-				return err
-			}
-		}
 	}
 	state.IdentityKey, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.ID, token.Revision
-	if err := tx.Save(&state).Error; err != nil {
-		return err
+	if state.ID == 0 {
+		if err := tx.Create(&state).Error; err != nil {
+			return err
+		}
+	} else if previousState.Generation != state.Generation || previousState.SnapshotID != state.SnapshotID || previousState.IdentityKey != state.IdentityKey || previousState.Revision != state.Revision || previousState.Deleted != state.Deleted {
+		if err := tx.Model(&state).Select("generation", "snapshot_id", "identity_key", "revision", "deleted").Updates(&state).Error; err != nil {
+			return err
+		}
 	}
-	return saveEmbyItemMembershipTx(tx, state, evidence)
+	cache.states[item.ItemId], cache.evidence[evidence.ID] = state, evidence
+	return saveEmbyApplyMembership(tx, state, evidence)
 }
 
 func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot, state *EmbyItemState) (EmbyItemEvidence, []EmbyFrozenFile, error) {
 	item := &snapshot.Item
+	cache := embyApplyCacheFrom(tx)
+	var config *EmbyConfig
+	if cache != nil {
+		config = cache.config
+	} else {
+		config = &EmbyConfig{}
+		if err := tx.First(config).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return EmbyItemEvidence{}, nil, err
+		}
+	}
+	snapshot.pathConfig = config
 	files, err := resolveEmbySnapshotFiles(tx, *snapshot)
 	if err != nil {
 		return EmbyItemEvidence{}, nil, err
 	}
-	identityKey := embyDigest([]any{item.ItemId, item.Path, item.DateCreated, files})
+	if snapshot.cleanupFiles != nil && !slices.Equal(files, snapshot.cleanupFiles) &&
+		(slices.ContainsFunc(files, hasEmbyAutoSTRMReference) || slices.ContainsFunc(snapshot.cleanupFiles, hasEmbyAutoSTRMReference)) {
+		return EmbyItemEvidence{}, nil, ErrEmbySnapshotStale
+	}
+	safeSources, err := freezeEmbySnapshotSources(tx, *snapshot, files)
+	if err != nil {
+		return EmbyItemEvidence{}, nil, err
+	}
+	snapshot.frozenSources = safeSources
+	identityKey := embySnapshotIdentity(*item, files, safeSources)
 	if state.ID != 0 && state.IdentityKey == identityKey {
 		var current EmbyMediaItem
-		err := tx.Where("item_id = ? AND server_id = ?", item.ItemId, token.ServerID).First(&current).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return EmbyItemEvidence{}, nil, err
+		if cache != nil {
+			current = cache.media[item.ItemId]
+			if current.ServerId != token.ServerID {
+				current = EmbyMediaItem{}
+			}
+		} else {
+			err := tx.Where("item_id = ? AND server_id = ?", item.ItemId, token.ServerID).First(&current).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return EmbyItemEvidence{}, nil, err
+			}
 		}
 		if item.PartOfItemID == "" {
 			item.PartOfItemID = current.PartOfItemID
@@ -475,7 +578,6 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	stableItem.Path = sanitizeEmbyEvidencePath(stableItem.Path)
 	stableItem.MediaSourcePath = sanitizeEmbyEvidencePath(stableItem.MediaSourcePath)
 	stableItem.PickCode = sanitizeEmbyEvidencePath(stableItem.PickCode)
-	safeSources := append([]EmbySnapshotSource(nil), snapshot.Sources...)
 	for i := range safeSources {
 		safeSources[i].Path = sanitizeEmbyEvidencePath(safeSources[i].Path)
 		safeSources[i].PickCode = sanitizeEmbyEvidencePath(safeSources[i].PickCode)
@@ -495,10 +597,14 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	if err != nil {
 		return EmbyItemEvidence{}, nil, err
 	}
-	metadata := EmbyMetadataEnvelope{Version: 2, ExclusiveFiles: sidecars, ScopedFiles: []EmbyScopedFile{}, DirectoryScopes: []EmbyDirectoryScope{}}
+	metadata := EmbyMetadataEnvelope{Version: 2, ExclusiveFiles: sidecars, ScopedFiles: []EmbyScopedFile{}, DirectoryScopes: []EmbyDirectoryScope{}, MediaDirectories: append([]EmbyMediaDirectory(nil), snapshot.MediaDirectories...)}
 	// 目录观察在 SQL 事务外完成；账本身份变化不能把旧读取绑定到新文件。
 	if slices.Equal(files, snapshot.cleanupFiles) {
-		for _, scope := range snapshot.DirectoryScopes {
+		scopes, err := ValidateEmbyDirectoryScopesTx(tx, files, snapshot.DirectoryScopes, *snapshot)
+		if err != nil {
+			return EmbyItemEvidence{}, nil, err
+		}
+		for _, scope := range scopes {
 			if validEmbyDirectoryScope(scope) {
 				metadata.DirectoryScopes = append(metadata.DirectoryScopes, scope)
 			}
@@ -519,21 +625,91 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 func resolveEmbySnapshotFiles(tx *gorm.DB, snapshot EmbyItemSnapshot) ([]EmbyFrozenFile, error) {
 	files := []EmbyFrozenFile{}
 	seen := map[uint]bool{}
+	config := snapshot.pathConfig
+	loadReference := func() (EmbySTRMReference, error) {
+		if config == nil {
+			config = &EmbyConfig{}
+			if err := tx.First(config).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return EmbySTRMReference{}, err
+			}
+		}
+		return ResolveEmbySTRMReference(config, snapshot.Item.Path), nil
+	}
 	for _, source := range snapshot.Sources {
 		if source.ItemID != "" && source.ItemID != snapshot.Item.ItemId {
 			return nil, ErrEmbyIdentityAmbiguous
 		}
-		if source.PickCode == "" {
-			continue
-		}
 		var candidates []SyncFile
-		if err := tx.Where("pick_code = ?", source.PickCode).Find(&candidates).Error; err != nil {
-			return nil, err
+		query := tx.Model(&SyncFile{})
+		if source.PickCode != "" {
+			query = query.Where("pick_code = ?", source.PickCode)
+			// 明确的账号声明可以消除同码跨账号歧义；未知路由仍保留旧版唯一绑定。
+			if sourceType, userID, _, recognized := embySourceAccountHint(source); recognized {
+				accounts := tx.Model(&Account{}).Select("id").Where("source_type = ? AND user_id = ?", sourceType, userID)
+				query = query.Where("source_type = ? AND account_id IN (?)", sourceType, accounts)
+			}
+		} else {
+			resolved, err := resolveEmbySourceIdentity(tx, source)
+			if err != nil {
+				return nil, err
+			}
+			if resolved.ObjectKind != "local_path" && (resolved.ObjectKind != "openlist_path" || resolved.AccountID == 0) {
+				continue
+			}
+			query = query.Where("source_type = ? AND file_id = ?", resolved.SourceType, resolved.ObjectID)
+			if resolved.AccountID != 0 {
+				query = query.Where("account_id = ?", resolved.AccountID)
+			}
+		}
+		cache := embyApplyCacheFrom(tx)
+		if cache != nil && source.PickCode != "" {
+			cache.pickUses[source.PickCode]++
+			candidates = append([]SyncFile(nil), cache.picks[source.PickCode]...)
+			if sourceType, userID, _, recognized := embySourceAccountHint(source); recognized {
+				candidates = slices.DeleteFunc(candidates, func(candidate SyncFile) bool {
+					account := cache.accounts[candidate.AccountId]
+					return candidate.SourceType != sourceType || account.SourceType != sourceType || account.UserId != userID
+				})
+			}
+		} else {
+			var err error
+			candidates, err = embyApplyFileCandidates(tx, "source:"+embyJSON(source), query.Order("id"))
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(candidates) == 0 && strings.Contains(source.Path, "/d/") {
+			// OpenList 的签名会变化，已确定账号后复用稳定路径账本，不以旧签名失配否决绑定。
+			resolved, err := resolveEmbySourceIdentity(tx, source)
+			if err != nil {
+				return nil, err
+			}
+			if resolved.SourceType == SourceTypeOpenList && resolved.AccountID != 0 && resolved.ObjectID != "" {
+				if err := tx.Where("source_type = ? AND account_id = ? AND file_id = ?", resolved.SourceType, resolved.AccountID, resolved.ObjectID).Find(&candidates).Error; err != nil {
+					return nil, err
+				}
+			}
+		}
+		if len(candidates) > 1 {
+			reference, err := loadReference()
+			if err != nil {
+				return nil, err
+			}
+			if reference.SyncPathID != 0 {
+				candidates = slices.DeleteFunc(candidates, func(candidate SyncFile) bool { return candidate.SyncPathId != reference.SyncPathID })
+				if len(candidates) == 0 {
+					return nil, ErrEmbyIdentityAmbiguous
+				}
+			}
 		}
 		if len(candidates) > 1 && snapshot.Item.Path != "" {
+			reference, err := loadReference()
+			if err != nil {
+				return nil, err
+			}
 			exact := []SyncFile{}
 			for _, candidate := range candidates {
-				if candidate.LocalFilePath == snapshot.Item.Path {
+				if candidate.LocalFilePath == snapshot.Item.Path || reference.LocalPath != "" && candidate.LocalFilePath == reference.LocalPath {
 					exact = append(exact, candidate)
 				}
 			}
@@ -553,7 +729,11 @@ func resolveEmbySnapshotFiles(tx *gorm.DB, snapshot EmbyItemSnapshot) ([]EmbyFro
 			continue
 		}
 		seen[file.ID] = true
-		frozen, err := freezeEmbyFile(tx, file, source.ID, snapshot.Item.Path)
+		_, err := loadReference()
+		if err != nil {
+			return nil, err
+		}
+		frozen, err := freezeEmbyFile(tx, file, source.ID, snapshot.Item.Path, config)
 		if err != nil {
 			return nil, err
 		}
@@ -562,7 +742,7 @@ func resolveEmbySnapshotFiles(tx *gorm.DB, snapshot EmbyItemSnapshot) ([]EmbyFro
 	return files, nil
 }
 
-func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string) (EmbyFrozenFile, error) {
+func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string, configs ...*EmbyConfig) (EmbyFrozenFile, error) {
 	frozen := EmbyFrozenFile{
 		SyncFileID:       file.ID,
 		SyncPathID:       file.SyncPathId,
@@ -583,8 +763,8 @@ func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string) (Emby
 		FileCreatedAt:    file.CreatedAt,
 		SourceID:         sourceID,
 	}
-	var root SyncPath
-	if err := tx.First(&root, file.SyncPathId).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	root, rootErr := loadEmbyApplyRoot(tx, file.SyncPathId)
+	if err := rootErr; errors.Is(err, gorm.ErrRecordNotFound) {
 		frozen.Reason = "missing_sync_root"
 		return frozen, nil
 	} else if err != nil {
@@ -594,11 +774,11 @@ func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string) (Emby
 	if root.AccountId != file.AccountId || root.SourceType != file.SourceType || !embyPathWithin(frozen.LocalRoot, file.LocalFilePath) || !embyRemotePathWithin(file.SourceType, root.RemotePath, file.Path) {
 		frozen.Reason = "sync_scope_mismatch"
 	}
-	if itemPath == "" || itemPath != file.LocalFilePath {
+	if itemPath == "" {
 		frozen.Reason = "physical_path_unverified"
 	}
-	var account Account
-	if err := tx.First(&account, file.AccountId).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	account, accountErr := loadEmbyApplyAccount(tx, file.AccountId)
+	if err := accountErr; errors.Is(err, gorm.ErrRecordNotFound) {
 		frozen.Reason = "missing_account"
 		return frozen, nil
 	} else if err != nil {
@@ -614,7 +794,34 @@ func freezeEmbyFile(tx *gorm.DB, file SyncFile, sourceID, itemPath string) (Emby
 	if file.Sha1 == "" && file.OpenlistSHA1 == "" && file.OpenlistMD5 == "" && file.MTime == 0 {
 		frozen.Reason = "missing_file_generation"
 	}
+	var config *EmbyConfig
+	if len(configs) != 0 {
+		config = configs[0]
+	}
+	if itemPath != "" && (itemPath != file.LocalFilePath || config != nil) {
+		if config == nil {
+			config = &EmbyConfig{}
+			if err := tx.First(config).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return frozen, err
+			}
+		}
+		reference := ResolveEmbySTRMReference(config, itemPath)
+		if reference.LocalRoot == "" && reference.Reason == "" && itemPath != file.LocalFilePath && frozen.Reason == "" {
+			reference = embyAutoSTRMReference(itemPath, file.LocalFilePath, root, frozen.AccountIdentity)
+			if reference.AutoSyncPathID != 0 {
+				reference.SyncPathID = root.ID
+			}
+		}
+		// 相同路径且没有显式映射时保留旧格式，不制造无变化的新代际。
+		if reference.LocalRoot != "" || reference.Reason != "" || itemPath != file.LocalFilePath {
+			frozen.Reference = reference
+		}
+	}
 	return frozen, nil
+}
+
+func hasEmbyAutoSTRMReference(file EmbyFrozenFile) bool {
+	return file.Reference.AutoSyncPathID != 0
 }
 
 // EmbyAccountIdentity 固定账号主体；安全更换同主体授权不会改变身份。

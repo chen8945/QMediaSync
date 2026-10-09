@@ -25,7 +25,7 @@ func TestEmbySourceFinalGuardUsesCompletedReadsOnly(t *testing.T) {
 			f := setupCleanupWorkerTest(t, "Movie", true)
 			finalCalls, providerReads := 0, 0
 			f.worker.verify = func(ctx context.Context, input models.EmbyDeletionInput, target models.EmbyDeletionTarget) error {
-				if !models.IsEmbyDeletionFinalGuard(ctx) {
+				if !models.IsEmbyDeletionFinalGuard(ctx) || target.Kind != "directory" {
 					return verifyEmbyDeletion(ctx, input, target)
 				}
 				finalCalls++
@@ -107,5 +107,23 @@ func TestEmbySourceFinalGuardUsesCompletedReadsOnly(t *testing.T) {
 				t.Fatalf("final=%d source reads=%d full scans=%d directory writes=%d, want writes=%d", finalCalls, providerReads, f.fullScans.Load(), f.cloud.directoryCalls, wantWrites)
 			}
 		})
+	}
+}
+
+func TestEmbyFileFinalGuardDoesNotReloadExpiredSnapshot(t *testing.T) {
+	f := setupCleanupWorkerTest(t, "Movie", false)
+	finalCalls := 0
+	f.worker.verify = func(ctx context.Context, input models.EmbyDeletionInput, target models.EmbyDeletionTarget) error {
+		if models.IsEmbyDeletionFinalGuard(ctx) {
+			finalCalls++
+			cache := ctx.Value(embyDeletionVerificationKey{}).(*embyDeletionVerificationState)
+			cache.completedAt = cache.now().Add(-embyDeletionVerificationWindow)
+		}
+		return verifyEmbyDeletion(ctx, input, target)
+	}
+	record := f.receive(t)
+	f.worker.process(t.Context(), claimWebhookTest(t))
+	if finalCalls != 1 || f.fullScans.Load() != 1 || len(f.cloud.batchCalls) != 0 || readWebhookTest(t, record.ID).Status == models.EmbyWebhookDone {
+		t.Fatalf("文件发送前刷新了过期清单或发送删除：final=%d scans=%d writes=%v", finalCalls, f.fullScans.Load(), f.cloud.batchCalls)
 	}
 }

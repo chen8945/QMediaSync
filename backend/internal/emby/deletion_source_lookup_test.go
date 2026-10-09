@@ -221,6 +221,7 @@ func TestEmbySourceLookupCacheSanitizesWrappedErrors(t *testing.T) {
 		{name: "cancelled", cause: context.Canceled, want: context.Canceled},
 		{name: "timeout", cause: context.DeadlineExceeded, want: context.DeadlineExceeded},
 		{name: "stale", cause: models.ErrEmbySnapshotStale, want: models.ErrEmbySnapshotStale},
+		{name: "identity_conflict", cause: models.ErrEmbyIdentityAmbiguous, want: models.ErrEmbyIdentityAmbiguous},
 		{name: "transport", cause: errors.New("transport failed"), want: models.ErrEmbyDeleteUnverified},
 	} {
 		t.Run(test.name, func(t *testing.T) {

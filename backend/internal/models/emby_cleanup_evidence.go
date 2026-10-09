@@ -54,10 +54,11 @@ type EmbyScopedFile struct {
 
 // EmbyMetadataEnvelope 在 sidecars_json 中保存版本化的元数据证据。
 type EmbyMetadataEnvelope struct {
-	Version         int                  `json:"version"`
-	ExclusiveFiles  []EmbyFrozenFile     `json:"exclusive_files"`
-	ScopedFiles     []EmbyScopedFile     `json:"scoped_files"`
-	DirectoryScopes []EmbyDirectoryScope `json:"directory_scopes"`
+	Version          int                  `json:"version"`
+	ExclusiveFiles   []EmbyFrozenFile     `json:"exclusive_files"`
+	ScopedFiles      []EmbyScopedFile     `json:"scoped_files"`
+	DirectoryScopes  []EmbyDirectoryScope `json:"directory_scopes"`
+	MediaDirectories []EmbyMediaDirectory `json:"media_directories,omitempty"`
 }
 
 // DecodeEmbyMetadata 只接受当前版本的完整证据集合，拒绝旧数组、空值和未知版本。
@@ -72,6 +73,11 @@ func DecodeEmbyMetadata(raw string) (EmbyMetadataEnvelope, error) {
 	}
 	if envelope.Version != 2 || envelope.ExclusiveFiles == nil || envelope.ScopedFiles == nil || envelope.DirectoryScopes == nil {
 		return EmbyMetadataEnvelope{}, errors.New("Emby 元数据证据版本或集合无效")
+	}
+	for _, directory := range envelope.MediaDirectories {
+		if !validEmbyMediaDirectory(directory) {
+			return EmbyMetadataEnvelope{}, errors.New("Emby 媒体目录角色无效")
+		}
 	}
 	for _, scope := range envelope.DirectoryScopes {
 		if !validEmbyDirectoryScope(scope) {
@@ -167,4 +173,16 @@ func CaptureEmbyDirectoryScopesTx(_ *gorm.DB, input EmbyDeletionInput) ([]EmbyDi
 		}
 	}
 	return scopes, nil
+}
+
+func validEmbyMediaDirectory(directory EmbyMediaDirectory) bool {
+	if directory.MediaType != "Movie" && directory.MediaType != "Season" && directory.MediaType != "Series" {
+		return false
+	}
+	if _, err := parseEmbyItemID(directory.ItemID); err != nil {
+		return false
+	}
+	_, _, err := normalizeEmbyMappingPath(directory.LocalPath)
+	return (err == nil || filepath.IsAbs(directory.LocalPath) && filepath.Clean(directory.LocalPath) == directory.LocalPath) &&
+		(directory.EvidenceKind == "" || directory.EvidenceKind == "emby_physical_ancestor" || directory.EvidenceKind == "qms_scrape_output")
 }

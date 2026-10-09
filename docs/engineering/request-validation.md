@@ -151,7 +151,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/scrape_settings.go` | TMDB、AI、分类和 TMDB 搜索 | URL、语言代码、国家代码、AI 动作枚举、模型名长度、超时范围、分类名称必须是单层目录名、Genre ID、年份范围。 |
 | `requests/accounts.go` | 账号、账号授权更换/取消、OpenList 账号、API Key | 账号来源类型、名称长度、115 授权来源组合、更换授权的确认标志和来源字段、授权会话绑定、OpenList URL 规范化、用户名/密码或 Token、API Key 状态。 |
 | `requests/connections.go` | HTTP 代理、OAuth、二维码、远程直链、反代、请求队列限制和统计 | 代理 URL、`preserve_proxy_credentials` 的显式凭据保留意图、账号 ID、OAuth 回调 URL、`authorization_id` 长度、`data`/`payload` 条件必填、二维码 UID、PickCode、反代下载域名白名单、QPS/QPM/QPH、统计窗口和清理天数。 |
-| `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串。 |
+| `requests/emby.go` | Emby 配置 | Emby URL、同步 Cron、布尔开关枚举、媒体库 JSON 字符串及 STRM 根路径映射。 |
 | `requests/backup.go` | 备份创建、列表、记录 ID、恢复和配置 | 手动备份原因默认值、分页默认值、备份记录 ID、启用开关、Cron、保留天数、最大备份数、压缩开关。 |
 | `requests/notification.go` | Telegram、MeoW、Bark、ServerChan、自定义 Webhook 渠道 | 渠道名称、必填凭据、URL、Webhook 方法、格式、认证方式和模板格式。 |
 | `requests/users.go` | 登录、启用/关闭两步验证、当前用户用户名/密码修改 | 登录校验用户名和密码非空，用户名 20 个字符上限；创建和修改使用严格用户名 / 密码规则，用户名去除首尾空白后长度为 3 到 20 个字符且只能包含英文和数字，密码长度至少 6 个字符且不能是纯数字或纯字母；两步验证码必填。 |
@@ -161,6 +161,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 
 ## 重要兼容性规则
 
+- `UpdateEmbyConfigRequest.path_mappings` 省略或为 `null` 时保留原映射，显式 `[]` 清空。DTO 校验绝对根、路径分段及重复／重叠映射；控制器核验所选同步目录、来源及账号主体，失败不写配置。普通配置保存不覆盖同步状态，普通状态写入不清空映射。字段与两种映射用途见 [Emby 路径映射](../operations/configuration.md#emby-外部-strm-路径映射)。
 - `SyncPathRequest` 同时支持计划中的嵌套 `setting` 字段和旧前端使用的顶层 STRM 字段；存在非零嵌套配置时优先使用 `setting`。
 - 同步路径自定义 STRM 配置使用 `-1` 表示继承全局值；全局 STRM 配置不接受 `-1`。
 - 全局 `/api/setting/strm-config` 的 `multi_playback_enabled` 只接受整数 `0/1`，省略时按现有整表单保存语义取 `0`。它直接保存到 `Settings`，不属于同步目录可继承字段；与其他 STRM 字段同次落库，失败不替换运行时配置。本地代理开启时前端仅禁用编辑，仍提交保留值；实际播放请求的智能跳过见 [115 多端播放](../operations/configuration.md#115-多端播放)。

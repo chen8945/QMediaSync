@@ -58,6 +58,7 @@ func (s *SyncStrm) acquireScope() error {
 	s.Config = config
 	s.LastSyncAt, s.FullSync = syncPath.LastSyncAt, syncPath.IsFullSync
 	s.SourcePathId = syncPath.BaseCid
+	s.rootEvidenceBaseID = syncPath.BaseCid
 	return nil
 }
 

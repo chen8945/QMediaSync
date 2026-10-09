@@ -303,21 +303,25 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 		invalidateEmbyDeletionVerification(ctx)
 		return &embySurvivingItemsError{IDs: surviving}
 	}
+	filesByOwner := make(map[string][]models.EmbyFrozenFile, len(owners))
 	for _, owner := range owners {
-		if len(owner.Files) == 0 {
-			return models.ErrEmbyDeleteUnverified
+		files, err := embyOwnerVerificationFiles(owner, target)
+		if err != nil {
+			return err
 		}
-		for _, file := range owner.Files {
-			if file.Reason != "" || owner.Item.Path != file.LocalFilePath {
-				return models.ErrEmbyIdentityAmbiguous
+		for _, file := range files {
+			if err := verifyEmbyFileReference(ctx, config, owner, file); err != nil {
+				return err
 			}
 		}
+		filesByOwner[owner.Item.ItemId] = files
 	}
 	snapshots, err := embyDeletionLiveSnapshots(ctx, input, client)
 	if err != nil {
 		return err
 	}
 	var protected []string
+	resolvedSources := map[models.EmbySnapshotSource]models.EmbySnapshotSource{}
 	for _, snapshot := range snapshots {
 		for _, owner := range owners {
 			if snapshot.Item.Path == owner.Item.Path || snapshot.Item.ItemId == owner.Item.ItemId {
@@ -333,10 +337,17 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 				if source.Path == "" {
 					return errors.New("Emby 存活来源缺少路径")
 				}
-				for _, file := range owner.Files {
+				for _, file := range filesByOwner[owner.Item.ItemId] {
 					if source.ID != "" && source.ID == file.SourceID ||
 						sameEmbySource(source.PickCode, file.PickCode) ||
 						sameEmbySource(source.Path, filepath.Join(file.Path, file.FileName)) {
+						different, err := embyLiveSourceDifferentAccount(ctx, source, file.SourceType, file.AccountID, file.AccountIdentity, resolvedSources)
+						if err != nil {
+							return err
+						}
+						if different {
+							continue
+						}
 						if !slices.Contains(protected, owner.Item.ItemId) {
 							protected = append(protected, owner.Item.ItemId)
 						}
@@ -344,6 +355,13 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 				}
 				for _, old := range historical {
 					if sameEmbySource(source.Path, old.Path) {
+						different, err := embyLiveSourceDifferentAccount(ctx, source, old.SourceType, old.AccountID, old.AccountIdentity, resolvedSources)
+						if err != nil {
+							return err
+						}
+						if different {
+							continue
+						}
 						if !slices.Contains(protected, owner.Item.ItemId) {
 							protected = append(protected, owner.Item.ItemId)
 						}
@@ -391,8 +409,12 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 		}
 	}
 	for _, owner := range owners {
-		for _, file := range owner.Files {
-			if err := embyOriginalPathAbsent(file.LocalRoot, owner.Item.Path); err != nil {
+		for _, file := range filesByOwner[owner.Item.ItemId] {
+			root, original := file.LocalRoot, owner.Item.Path
+			if file.Reference.EmbyPath != "" {
+				root, original = file.Reference.LocalRoot, file.Reference.LocalPath
+			}
+			if err := embyOriginalPathAbsent(root, original, file.Reference.AutoSyncPathID != 0); err != nil {
 				invalidateEmbyDeletionVerification(ctx)
 				return err
 			}
@@ -402,10 +424,98 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 	return embyDeletionVerificationStillCurrent(ctx, input)
 }
 
+func embyOwnerVerificationFiles(owner models.EmbyDeletionOwner, target models.EmbyDeletionTarget) ([]models.EmbyFrozenFile, error) {
+	files := slices.Clone(owner.Files)
+	var sources []models.EmbySnapshotSource
+	for _, binding := range target.SourceBindings {
+		if binding.Owner.ItemID != owner.Item.ItemId || binding.Owner.SnapshotID != owner.Evidence.ID || binding.Owner.Generation != owner.Evidence.Generation {
+			continue
+		}
+		if sources == nil {
+			if err := json.Unmarshal([]byte(owner.Evidence.SourcesJSON), &sources); err != nil {
+				return nil, err
+			}
+		}
+		if !slices.Contains(sources, binding.Source) || binding.File.Reference != binding.Source.Reference {
+			return nil, models.ErrEmbyIdentityAmbiguous
+		}
+		files = append(files, binding.File)
+	}
+	if len(files) == 0 && target.Directory != nil {
+		if err := json.Unmarshal([]byte(owner.Evidence.SourcesJSON), &sources); err != nil {
+			return nil, err
+		}
+		for _, source := range sources {
+			if source.Reference.EmbyPath == owner.Item.Path && source.Reference.LocalRoot != "" {
+				files = append(files, embySourceFrozenFile(source))
+			}
+		}
+	}
+	if len(files) == 0 {
+		return nil, models.ErrEmbyDeleteUnverified
+	}
+	return files, nil
+}
+
+func verifyEmbyFileReference(ctx context.Context, config *models.EmbyConfig, owner models.EmbyDeletionOwner, file models.EmbyFrozenFile) error {
+	if file.Reason != "" {
+		return models.ErrEmbyIdentityAmbiguous
+	}
+	if file.Reference.EmbyPath == "" {
+		if file.ExternalSource || owner.Item.Path != file.LocalFilePath {
+			return models.ErrEmbyIdentityAmbiguous
+		}
+		currentReference := models.ResolveEmbySTRMReference(config, owner.Item.Path)
+		if currentReference.LocalRoot != "" || currentReference.Reason != "" {
+			return models.ErrEmbySnapshotStale
+		}
+		return nil
+	}
+	if owner.Item.Path != file.Reference.EmbyPath {
+		return models.ErrEmbyIdentityAmbiguous
+	}
+	return models.ValidateEmbySTRMReference(ctx, config, file.Reference)
+}
+
+// 只有两边都可靠标识账号时才排除同码的其他账号；未知来源仍保持原保留规则。
+func embyLiveSourceDifferentAccount(ctx context.Context, source models.EmbySnapshotSource, sourceType models.SourceType, accountID uint, identity string, cache map[models.EmbySnapshotSource]models.EmbySnapshotSource) (bool, error) {
+	if sourceType == "" || accountID == 0 || identity == "" {
+		return false, nil
+	}
+	resolved, found := cache[source]
+	if !found {
+		var err error
+		resolved, err = models.ResolveEmbySnapshotSourceIdentity(ctx, source)
+		if err != nil {
+			return false, err
+		}
+		cache[source] = resolved
+	}
+	if resolved.AccountID == 0 || resolved.AccountIdentity == "" {
+		return false, nil
+	}
+	return resolved.SourceType != sourceType || resolved.AccountID != accountID || resolved.AccountIdentity != identity, nil
+}
+
 // verifyEmbyDirectoryLiveItems 将直接子项身份与存活来源交叉核验，防止账本旧路径漏掉外部移入。
 // 不递归子目录，不查询陌生文件详情；必要时只反查明确的存活来源。
 func verifyEmbyDirectoryLiveItems(ctx context.Context, scope models.EmbyDirectoryScope, snapshots []models.EmbyItemSnapshot) error {
 	if !filepath.IsAbs(scope.LocalPath) || scope.Root.AccountID == 0 || scope.Root.SourceType == "" {
+		return models.ErrEmbyIdentityAmbiguous
+	}
+	embyDirectory := scope.LocalPath
+	if scope.Root.Reference.EmbyPath != "" {
+		relative, err := filepath.Rel(scope.Root.LocalRoot, scope.LocalPath)
+		if err != nil || !filepath.IsLocal(relative) || scope.Root.Reference.EmbyRoot == "" {
+			return models.ErrEmbyIdentityAmbiguous
+		}
+		embyDirectory = scope.Root.Reference.EmbyRoot
+		if relative != "." {
+			embyDirectory = strings.TrimRight(embyDirectory, `/\`) + "/" + filepath.ToSlash(relative)
+		}
+	}
+	mediaDirectory := models.EmbyPathMapping{EmbyRoot: embyDirectory}
+	if _, valid := mediaDirectory.RelativePath(embyDirectory); !valid {
 		return models.ErrEmbyIdentityAmbiguous
 	}
 	children, err := models.ListEmbyDeletionDirectory(ctx, scope)
@@ -433,16 +543,18 @@ func verifyEmbyDirectoryLiveItems(ctx context.Context, scope models.EmbyDirector
 	var sourceReads []embySourceLocationUse
 	remoteRoot := path.Join("/", scope.Root.Path, scope.Root.FileName)
 	for _, snapshot := range snapshots {
-		if !filepath.IsAbs(snapshot.Item.Path) {
+		if _, valid := (models.EmbyPathMapping{EmbyRoot: snapshot.Item.Path}).RelativePath(snapshot.Item.Path); !valid {
 			return errors.New("Emby 存活条目的目录位置无法核验")
 		}
-		if embyVerificationPathWithin(scope.LocalPath, snapshot.Item.Path) {
+		if _, inside := mediaDirectory.RelativePath(snapshot.Item.Path); inside {
 			return errors.New("Emby 存活条目仍位于待删除媒体目录")
 		}
 		for _, source := range snapshot.Sources {
-			if source.PickCode == "" && filepath.IsAbs(source.Path) {
+			_, localSource := (models.EmbyPathMapping{EmbyRoot: source.Path}).RelativePath(source.Path)
+			if source.PickCode == "" && localSource {
 				// 本地物理媒体源可以直接核对；远端命名空间不能用本地目录排除。
-				if embyVerificationPathWithin(scope.LocalPath, source.Path) || embyVerificationPathWithin(remoteRoot, source.Path) {
+				_, inside := mediaDirectory.RelativePath(source.Path)
+				if inside || embyVerificationPathWithin(remoteRoot, source.Path) {
 					return errors.New("Emby 存活来源仍位于待删除媒体目录")
 				}
 				continue
@@ -527,7 +639,7 @@ func embyVerificationPathWithin(root, candidate string) bool {
 }
 
 // embyOriginalPathAbsent 必须先证明挂载根仍可访问；挂载丢失不等于原文件删除。
-func embyOriginalPathAbsent(root, original string) error {
+func embyOriginalPathAbsent(root, original string, automatic bool) error {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(original) {
 		return models.ErrEmbyDeleteUnverified
 	}
@@ -535,16 +647,33 @@ func embyOriginalPathAbsent(root, original string) error {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return models.ErrEmbyDeleteUnverified
 	}
-	rootInfo, err := os.Stat(root)
+	statRoot := os.Stat
+	if automatic {
+		statRoot = os.Lstat
+	}
+	rootInfo, err := statRoot(root)
 	if err != nil || !rootInfo.IsDir() {
 		return errors.New("原 STRM 挂载根不可访问")
 	}
+	access, err := os.OpenRoot(root)
+	if err != nil {
+		return errors.New("原 STRM 挂载根不可访问")
+	}
+	defer access.Close()
+	opened, err := access.Stat(".")
+	if err != nil || !os.SameFile(rootInfo, opened) {
+		return errors.New("原 STRM 挂载根已变化")
+	}
 	// Lstat 使断链也被视为仍有原件；中间符号链接不作为缺失证明。
-	current := filepath.Clean(root)
+	current := "."
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := access.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
+			latest, err := statRoot(root)
+			if err != nil || !latest.IsDir() || !os.SameFile(rootInfo, latest) {
+				return errors.New("原 STRM 挂载根已变化")
+			}
 			return nil
 		}
 		if err != nil {

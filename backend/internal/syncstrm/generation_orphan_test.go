@@ -512,11 +512,13 @@ func TestGenerationOrphanDeletionBetweenGenerationAndFinalization(t *testing.T) 
 			if err := os.WriteFile(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath), []byte("generated"), 0600); err != nil {
 				return err
 			}
-			close(generated)
-			<-proceed
 			return nil
 		}
 		service.resolveRefreshTarget = func(*models.SyncFile) (models.EmbyRefreshTarget, error) {
+			// 首次保存账本会推进范围版本；在保存后排队删除，避免旧申请重排时收尾先获权。
+			// 此处生成仍持有范围，删除完成后才能重新取得收尾许可。
+			close(generated)
+			<-proceed
 			return models.EmbyRefreshTarget{TargetType: models.EmbyRefreshTargetTypeItem, ItemID: "item"}, nil
 		}
 		oldCleanup := cleanupSourceAfterStrmSuccess

@@ -42,7 +42,7 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Emby-媒体库同步.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 设置](../../frontend/src/components/AppEmbySettings.vue) | 扫描媒体库、条目同步、选库、定时与进度的区别 |
 | `Emby-媒体信息提取.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 实现](../../backend/internal/emby/) | 手动与通知触发、API Key、插件配合与结果检查 |
 | `Emby-通知配置.md` | [Emby 同步](../architecture/emby-library-sync.md)、[认证会话](../architecture/authentication-sessions.md) | Webhook 地址、鉴权、事件选择和通知转发 |
-| `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 删除前提、来源与路径限制、附件保护、跳过与失败 |
+| `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[路径映射配置](../operations/configuration.md#emby-外部-strm-路径映射)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 开启步骤、支持来源、STRM 存放与挂载要求、删除范围、结果查看与排障 |
 | `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、客户端和网络排障 |
 | `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/) | 实际运行身份、目录读写、容器挂载与密钥保护 |
 | `常见问题.md` | 本表中对应专题的权威资料与 Wiki 操作页 | 问题入口、排查顺序和跨页链接；详细流程留在专题页 |

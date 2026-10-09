@@ -3,7 +3,6 @@ package emby
 import (
 	"context"
 	"errors"
-	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -24,11 +23,14 @@ type embySourceLocationKey struct {
 
 // readAt 保留真实读取开始时间；失败也在本次持有范围的执行中复用。
 type embySourceLocationRead struct {
-	ready      chan struct{}
-	readAt     time.Time
-	snapshotAt time.Time
-	path       string
-	err        error
+	ready        chan struct{}
+	key          embySourceLocationKey
+	writeVersion uint64
+	readAt       time.Time
+	snapshotAt   time.Time
+	path         string
+	file         models.EmbyRemoteFile
+	err          error
 }
 
 type embySourceLocationUse struct {
@@ -50,42 +52,16 @@ func embyDirectorySourceLocation(ctx context.Context, root models.EmbyFrozenFile
 		return nil, models.ErrEmbyIdentityAmbiguous
 	}
 	key := embySourceLocationKey{root.SourceType, root.AccountID, root.AccountIdentity, code}
-	read, err := cachedEmbySourceLocation(ctx, key, func(readCtx context.Context) (string, error) {
-		var location string
-		switch account.SourceType {
-		case models.SourceType115:
-			client := account.Get115Client()
-			download, err := client.GetDownloadURLWithError(readCtx, code, "QMediaSync", false)
-			if err != nil {
-				return "", err
-			}
-			if download == nil || download.FileID == "" || download.PickCode != code {
-				return "", models.ErrEmbyIdentityAmbiguous
-			}
-			detail, err := client.GetFsDetailByCidForDeletion(readCtx, download.FileID)
-			if err != nil {
-				return "", err
-			}
-			location, err = emby115SourceLocation(code, download, detail)
-			if err != nil {
-				return "", err
-			}
-		case models.SourceTypeBaiduPan:
-			detail, err := account.GetBaiDuPanClient().GetFileDetail(readCtx, code, 0)
-			if err != nil {
-				return "", err
-			}
-			location, err = embyBaiduSourceLocation(code, detail)
-			if err != nil {
-				return "", err
-			}
-		default:
-			return "", models.ErrEmbyDeleteUnsupported
-		}
-		if _, err := readEmbySourceAccount(readCtx, root); err != nil {
-			return "", err
-		}
-		return location, nil
+	// 存活清单保留原 URL；先用同一个解析器确认账号，再复用按需补全的完整身份读取。
+	resolved := source
+	resolved.SourceType, resolved.AccountID, resolved.AccountIdentity = root.SourceType, root.AccountID, root.AccountIdentity
+	resolved.ObjectKind, resolved.ObjectID = "pickcode", code
+	if root.SourceType == models.SourceTypeBaiduPan {
+		resolved.ObjectKind = "fs_id"
+	}
+	key.object = resolved.ObjectKind + ":" + resolved.ObjectID
+	read, err := cachedEmbySourceIdentity(ctx, key, func(readCtx context.Context) (embySourceIdentity, error) {
+		return readEmbyDeletionSourceIdentity(readCtx, resolved, models.NewEmbyDeleteProvider)
 	})
 	if err != nil {
 		return nil, err
@@ -130,57 +106,11 @@ func embySourceBaseURLs(ctx context.Context, root models.EmbyFrozenFile) ([]stri
 
 // 只识别本实例配置地址上的受支持路由，不跟随播放 URL，也不使用 path 参数猜测网盘位置。
 func embySourceLookupCode(source models.EmbySnapshotSource, account models.Account, bases []string) (string, bool) {
-	u, err := url.Parse(source.Path)
-	if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" || u.Fragment != "" || u.Scheme != "http" && u.Scheme != "https" || u.RawPath != "" || !validEmbySourcePath(u.Path) {
+	sourceType, userID, code, ok := models.EmbySourceLookupIdentity(source, bases)
+	if !ok || sourceType != account.SourceType || account.UserId == "" || userID != account.UserId {
 		return "", false
 	}
-	query, err := url.ParseQuery(u.RawQuery)
-	if err != nil || len(query["userid"]) != 1 || query.Get("userid") != account.UserId || account.UserId == "" {
-		return "", false
-	}
-	var code string
-	for _, key := range []string{"pickcode", "pick_code"} {
-		values := query[key]
-		if len(values) > 1 || len(values) == 1 && (values[0] == "" || code != "" && code != values[0]) {
-			return "", false
-		}
-		if len(values) == 1 {
-			code = values[0]
-		}
-	}
-	if len(query["pickcode"]) != 1 || code == "" || source.PickCode != "" && source.PickCode != code || !validEmbySourceCode(code) {
-		return "", false
-	}
-	if account.SourceType == models.SourceTypeBaiduPan {
-		id, err := strconv.ParseInt(code, 10, 64)
-		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != code {
-			return "", false
-		}
-	}
-	for _, base := range bases {
-		configured, err := url.Parse(base)
-		if err != nil || configured.User != nil || configured.Fragment != "" || configured.Scheme != u.Scheme || !strings.EqualFold(configured.Host, u.Host) {
-			continue
-		}
-		// 115/百度生成器覆盖 base 的 Path 和 RawQuery，先匹配其实际生成的根路由。
-		if embySourceLookupRoute(account.SourceType, u.Path) {
-			return code, true
-		}
-		prefix := strings.TrimRight(configured.Path, "/")
-		if configured.RawPath != "" || prefix == "" || !validEmbySourcePath(prefix) {
-			continue
-		}
-		route, matched := strings.CutPrefix(u.Path, prefix)
-		if matched && embySourceLookupRoute(account.SourceType, route) {
-			return code, true
-		}
-	}
-	return "", false
-}
-
-func embySourceLookupRoute(source models.SourceType, route string) bool {
-	return source == models.SourceType115 && (route == "/115/newurl" || strings.HasPrefix(route, "/115/url/") && len(route) > len("/115/url/")) ||
-		source == models.SourceTypeBaiduPan && strings.HasPrefix(route, "/baidupan/url/") && len(route) > len("/baidupan/url/")
+	return code, true
 }
 
 func validEmbySourceCode(code string) bool {
@@ -216,20 +146,9 @@ func emby115SourceLocation(code string, download *v115open.DownloadUrlResult, de
 			return "", models.ErrEmbyIdentityAmbiguous
 		}
 	}
-	seen := map[string]bool{detail.FileId: true}
-	parts := []string{"/"}
-	for i, parent := range detail.Paths {
-		if parent.FileId == "" || seen[parent.FileId] || i > 0 && !validEmbySourceName(parent.Name) {
-			return "", models.ErrEmbyIdentityAmbiguous
-		}
-		seen[parent.FileId] = true
-		if i > 0 {
-			parts = append(parts, parent.Name)
-		}
-	}
-	directory := path.Join(parts...)
-	if detail.Path != "" && "/"+strings.TrimPrefix(detail.Path, "/") != directory {
-		return "", models.ErrEmbyIdentityAmbiguous
+	directory, err := models.Emby115SourceDirectory(detail)
+	if err != nil {
+		return "", err
 	}
 	return path.Join(directory, detail.FileName), nil
 }
@@ -242,6 +161,13 @@ func embyBaiduSourceLocation(code string, detail *baidupan.FileDetail) (string, 
 }
 
 func cachedEmbySourceLocation(ctx context.Context, key embySourceLocationKey, load func(context.Context) (string, error)) (*embySourceLocationRead, error) {
+	return cachedEmbySourceIdentity(ctx, key, func(ctx context.Context) (embySourceIdentity, error) {
+		location, err := load(ctx)
+		return embySourceIdentity{path: location}, err
+	})
+}
+
+func cachedEmbySourceIdentity(ctx context.Context, key embySourceLocationKey, load func(context.Context) (embySourceIdentity, error)) (*embySourceLocationRead, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -250,7 +176,7 @@ func cachedEmbySourceLocation(ctx context.Context, key embySourceLocationKey, lo
 	if cache == nil && finalGuard {
 		return nil, models.ErrEmbySnapshotStale
 	}
-	read := &embySourceLocationRead{ready: make(chan struct{}), readAt: time.Now()}
+	read := &embySourceLocationRead{ready: make(chan struct{}), key: key, readAt: time.Now()}
 	budget := embyDeletionVerificationWindow
 	if cache != nil {
 		for {
@@ -262,7 +188,7 @@ func cachedEmbySourceLocation(ctx context.Context, key embySourceLocationKey, lo
 			if previous != nil {
 				select {
 				case <-previous.ready:
-					if previous.err != nil || cache.loaded && previous.snapshotAt == cache.completedAt && cache.now().Sub(cache.completedAt) < embyDeletionVerificationWindow && cache.now().Sub(previous.readAt) < embyDeletionVerificationWindow {
+					if previous.err != nil || cache.loaded && previous.snapshotAt == cache.completedAt && cache.now().Sub(cache.completedAt) < embyDeletionVerificationWindow && cache.now().Sub(previous.readAt) < embyDeletionVerificationWindow && embySourceWriteStillCurrent(previous) {
 						cache.mu.Unlock()
 						return previous, previous.err
 					}
@@ -299,9 +225,20 @@ func cachedEmbySourceLocation(ctx context.Context, key embySourceLocationKey, lo
 	}
 	readCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	read.path, read.err = load(readCtx)
+	identity, err := load(readCtx)
+	read.path, read.file, read.err = identity.path, identity.file, err
+	if !identity.readAt.IsZero() && identity.readAt.Before(read.readAt) {
+		read.readAt = identity.readAt
+	}
 	if read.err == nil {
 		read.err = readCtx.Err()
+	}
+	if read.err == nil && key.source == models.SourceType115 {
+		var idle bool
+		read.writeVersion, idle = v115open.DirectoryReadVersion(key.account, read.file.ParentID)
+		if !idle {
+			read.err = models.ErrEmbySnapshotStale
+		}
 	}
 	if read.err == nil {
 		read.err = embySourceReadFresh(ctx, read)
@@ -314,6 +251,8 @@ func cachedEmbySourceLocation(ctx context.Context, key embySourceLocationKey, lo
 		read.err = context.DeadlineExceeded
 	case errors.Is(read.err, models.ErrEmbySnapshotStale):
 		read.err = models.ErrEmbySnapshotStale
+	case errors.Is(read.err, models.ErrEmbyIdentityAmbiguous):
+		read.err = models.ErrEmbyIdentityAmbiguous
 	case read.err != nil:
 		read.err = models.ErrEmbyDeleteUnverified
 	}
@@ -334,10 +273,18 @@ func embySourceReadFresh(ctx context.Context, read *embySourceLocationRead) erro
 			return models.ErrEmbySnapshotStale
 		}
 	}
-	if now.Sub(read.readAt) >= embyDeletionVerificationWindow {
+	if now.Sub(read.readAt) >= embyDeletionVerificationWindow || !embySourceWriteStillCurrent(read) {
 		return models.ErrEmbySnapshotStale
 	}
 	return nil
+}
+
+func embySourceWriteStillCurrent(read *embySourceLocationRead) bool {
+	if read.key.source != models.SourceType115 {
+		return true
+	}
+	version, idle := v115open.DirectoryReadVersion(read.key.account, read.file.ParentID)
+	return idle && version == read.writeVersion
 }
 
 func verifyEmbySourceLocationReads(ctx context.Context, root models.EmbyFrozenFile, reads []embySourceLocationUse) error {

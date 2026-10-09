@@ -6,7 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
+	"gorm.io/gorm"
+
+	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 )
@@ -50,6 +54,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 	}
 
 	var plan models.EmbyDeletionPlan
+	var supplementRetriesExhausted bool
 	if record.PlanJSON != "" {
 		if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
 			return err
@@ -61,10 +66,18 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "invalid_metadata_evidence", 0, false)
 		}
 	} else {
-		plan, err = models.BuildEmbyDeletionPlan(ctx, input, worker.provider, verify)
+		supplements, supplementIssues, supplementErr := prepareEmbyDeletionSupplements(ctx, input, worker.provider, verify, record.Attempts+1 >= webhookMaxAttempts)
+		if supplementErr != nil {
+			return supplementErr
+		}
+		supplementRetriesExhausted = slices.ContainsFunc(supplementIssues, func(issue string) bool {
+			return strings.HasPrefix(issue, "source_unresolved:source_lookup_retries_exhausted:")
+		})
+		plan, err = models.BuildEmbyDeletionPlanWithSupplements(ctx, input, supplements, worker.provider, verify)
 		if err != nil {
 			return err
 		}
+		plan.Issues = append(plan.Issues, supplementIssues...)
 		var absent []models.EmbyDeletionResult
 		plan, absent, err = models.ConfirmEmbyDeletionPlanInventory(ctx, plan, worker.provider, verify)
 		if err != nil {
@@ -125,10 +138,42 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		}
 		return nil
 	}
+	retainProviderFailure := func(failed []models.EmbyDeletionTarget, providerErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(failed) == 0 || !errors.Is(providerErr, gorm.ErrRecordNotFound) && !errors.Is(providerErr, models.ErrEmbyDeleteUnverified) {
+			// 数据库等未知故障不能按目标缩小影响范围。
+			return providerErr
+		}
+		original := failed[0].File
+		if original.AccountID == 0 || original.AccountIdentity == "" || slices.ContainsFunc(failed, func(target models.EmbyDeletionTarget) bool {
+			return target.File.SourceType != original.SourceType || target.File.AccountID != original.AccountID || target.File.AccountIdentity != original.AccountIdentity
+		}) {
+			return providerErr
+		}
+		// factory 的通用错误本身不证明账号冲突；必须核对这组原账号。
+		var account models.Account
+		accountErr := db.Db.WithContext(ctx).First(&account, original.AccountID).Error
+		reason := "source_account_changed"
+		switch {
+		case errors.Is(accountErr, gorm.ErrRecordNotFound):
+			reason = "source_account_missing"
+		case accountErr != nil:
+			return accountErr
+		case account.SourceType == original.SourceType && models.EmbyAccountIdentity(account) == original.AccountIdentity:
+			return providerErr
+		}
+		results := make([]models.EmbyDeletionResult, 0, len(failed))
+		for _, target := range failed {
+			results = append(results, models.EmbyDeletionResult{Key: target.Key, Outcome: models.EmbyDeletionUnresolved, Reason: reason})
+		}
+		return persist("", results)
+	}
 	confirmExhausted := func(target models.EmbyDeletionTarget) error {
 		provider, err := worker.provider(target.File)
 		if err != nil {
-			return err
+			return retainProviderFailure([]models.EmbyDeletionTarget{target}, err)
 		}
 		result := models.ConfirmEmbyWebhookTargetAbsence(ctx, plan, target, provider, verify)
 		// 确认不属于旧 claim 的发送，不补写旧 attempt，也不增加发送次数。
@@ -151,7 +196,10 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		}
 		provider, err := worker.provider(target.File)
 		if err != nil {
-			return err
+			if err := retainProviderFailure([]models.EmbyDeletionTarget{target}, err); err != nil {
+				return err
+			}
+			continue
 		}
 		previous, err := models.FindEmbyWebhookSuccess(ctx, record, target)
 		if err != nil {
@@ -171,6 +219,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		}
 	}
 	var pending []models.EmbyDeletionTarget
+	providers := make(map[string]models.EmbyDeleteProvider)
 	for _, target := range plan.Targets {
 		state := states[target.Key]
 		if target.Kind == "directory" || complete(target.Key) {
@@ -186,13 +235,17 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		if err != nil {
 			return err
 		}
-		if previous == nil {
-			pending = append(pending, target)
-			continue
-		}
 		provider, err := worker.provider(target.File)
 		if err != nil {
-			return err
+			if err := retainProviderFailure([]models.EmbyDeletionTarget{target}, err); err != nil {
+				return err
+			}
+			continue
+		}
+		if previous == nil {
+			providers[target.Key] = provider
+			pending = append(pending, target)
+			continue
 		}
 		// 同代际成功只允许确认缺失，原对象重现不能再次删除。
 		results := models.ExecuteEmbyDeletionBatch(ctx, plan, []models.EmbyDeletionTarget{target}, embyCompletedProvider{provider}, verify, func([]models.EmbyDeletionTarget) error {
@@ -202,7 +255,16 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			return err
 		}
 	}
-	groups, err := models.GroupEmbyDeletionTargets(pending, worker.provider)
+	// 分组复用刚取得的 provider，避免为排除失效账号增加重复查询。
+	// 执行时仍获取当前 provider 并完成原有身份及发送前核验。
+	groupProvider := func(file models.EmbyFrozenFile) (models.EmbyDeleteProvider, error) {
+		provider, found := providers[models.EmbyDeletionFileKey(file)]
+		if !found {
+			return nil, models.ErrEmbyIdentityAmbiguous
+		}
+		return provider, nil
+	}
+	groups, err := models.GroupEmbyDeletionTargets(pending, groupProvider)
 	if err != nil {
 		return err
 	}
@@ -212,7 +274,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		}
 		provider, err := worker.provider(group[0].File)
 		if err != nil {
-			return err
+			return retainProviderFailure(group, err)
 		}
 		attempt := ""
 		beforeVerification := verificationCalls
@@ -318,7 +380,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 				return err
 			}
 		}
-		deferredGroups, err := models.GroupEmbyDeletionTargets(eligible, worker.provider)
+		deferredGroups, err := models.GroupEmbyDeletionTargets(eligible, groupProvider)
 		if err != nil {
 			return err
 		}
@@ -365,7 +427,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 	if unresolved {
 		status, reason = models.EmbyWebhookUnresolved, "部分目标或目录证据不完整，已保留原因"
 	}
-	return finishEmbyWebhook(ctx, record, status, reason, 0, false)
+	return finishEmbyWebhook(ctx, record, status, reason, 0, supplementRetriesExhausted)
 }
 
 type embyCompletedDirectoryProvider struct{ models.EmbyDeleteProvider }

@@ -41,6 +41,7 @@ func SetEmbySyncRunning(running bool) {
 
 // PerformEmbySync 全量同步 Emby 条目到本地数据库。
 func PerformEmbySync() (result int, err error) {
+	startedAt := time.Now()
 	// 检查是否已有任务在运行，避免并发执行
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
@@ -71,13 +72,17 @@ func PerformEmbySync() (result int, err error) {
 	}
 	var processed int64
 	var token models.EmbyIndexToken
+	completed := false
 	defer func() {
-		embySyncRunning.Store(0)
+		defer embySyncRunning.Store(0)
 		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeFull, processed, helpers.NowUnix(), 0, err); ferr != nil {
 			helpers.AppLogger.Warnf("更新 Emby 同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
 			}
+		}
+		if completed && err == nil {
+			helpers.AppLogger.Infof("全量同步 Emby 条目到本地完成，处理 %d 个项目，耗时 %s，网盘查询 0 次", processed, time.Since(startedAt).Round(time.Millisecond))
 		}
 	}()
 
@@ -141,29 +146,12 @@ func PerformEmbySync() (result int, err error) {
 	syncRunID := fmt.Sprintf("full-%d", time.Now().UnixNano())
 	lastSeenAt := helpers.NowUnix()
 	handled := make(map[string]bool)
-	var cleanupEvidence embyCleanupEvidenceCollector
 	var runErrors []error
 	for _, lib := range libs {
-		gerr := client.FetchMediaItemsByLibraryID(context.Background(), embyclientrestgo.EmbyItemsQuery{LibraryID: lib.ID, Fields: embyIncrementalFields}, func(item embyclientrestgo.BaseItemDtoV2) error {
-			if handled[item.Id] {
-				return nil
-			}
-			snapshots, err := collectEmbySnapshots(context.Background(), client, item, lib.ID, lib.Name, syncRunID, lastSeenAt)
-			if err != nil {
-				return err
-			}
-			if err := cleanupEvidence.enrich(context.Background(), client, snapshots); err != nil {
-				return err
-			}
-			if err := models.ApplyEmbySnapshots(token, snapshots); err != nil {
-				return err
-			}
-			for _, snapshot := range snapshots {
-				handled[snapshot.Item.ItemId] = true
-			}
-			processed += int64(len(snapshots))
-			return nil
-		})
+		count, gerr := syncEmbyLibrary(context.Background(), client,
+			embyclientrestgo.EmbyItemsQuery{LibraryID: lib.ID, Fields: embyIncrementalFields},
+			lib.Name, syncRunID, lastSeenAt, token, handled)
+		processed += count
 		if gerr == nil {
 			gerr = models.CleanupEmbyLibrarySnapshot(token, lib.ID, syncRunID)
 		}
@@ -174,7 +162,7 @@ func PerformEmbySync() (result int, err error) {
 	if len(runErrors) > 0 {
 		return int(processed), errors.Join(runErrors...)
 	}
-	helpers.AppLogger.Infof("全量同步 Emby 条目到本地完成，处理 %d 个项目", processed)
+	completed = true
 	return int(processed), nil
 }
 
@@ -192,7 +180,7 @@ func buildMinDateLastSaved(cursor int64, overlapSeconds int64) string {
 
 // PerformEmbyIncrementalSync 增量同步 Emby 条目到本地数据库。
 func PerformEmbyIncrementalSync() (result int, err error) {
-	var cleanupEvidence embyCleanupEvidenceCollector
+	startedAt := time.Now()
 	if IsEmbySyncRunning() {
 		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
 		return 0, nil
@@ -223,13 +211,17 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 	}
 	var processed int64
 	var token models.EmbyIndexToken
+	completed := false
 	defer func() {
-		embySyncRunning.Store(0)
+		defer embySyncRunning.Store(0)
 		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeIncremental, processed, helpers.NowUnix(), scanStartedAt, err); ferr != nil {
 			helpers.AppLogger.Warnf("更新 Emby 增量同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
 			}
+		}
+		if completed && err == nil {
+			helpers.AppLogger.Infof("增量同步 Emby 条目到本地完成，处理 %d 个项目，耗时 %s，网盘查询 0 次", processed, time.Since(startedAt).Round(time.Millisecond))
 		}
 	}()
 
@@ -270,10 +262,10 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 		// 失败删除后的存活项可能没有新的 DateLastSaved；本轮从头读取，但仍不清旧。
 		minDateLastSaved = buildMinDateLastSaved(0, embyIncrementalCursorOverlapSeconds)
 	}
-	handledItemIDs := make(map[string]struct{})
+	handledItemIDs := make(map[string]bool)
 	for _, lib := range libs {
-		gerr := client.FetchMediaItemsByLibraryID(
-			context.Background(),
+		count, gerr := syncEmbyLibrary(
+			context.Background(), client,
 			embyclientrestgo.EmbyItemsQuery{
 				LibraryID:         lib.ID,
 				Limit:             100,
@@ -284,32 +276,14 @@ func PerformEmbyIncrementalSync() (result int, err error) {
 				Fields:            embyIncrementalFields,
 				LastDateCreatedAt: 0,
 			},
-			func(item embyclientrestgo.BaseItemDtoV2) error {
-				if _, ok := handledItemIDs[item.Id]; ok {
-					return nil
-				}
-				snapshots, err := collectEmbySnapshots(context.Background(), client, item, lib.ID, lib.Name, "", scanStartedAt)
-				if err != nil {
-					return err
-				}
-				if err := cleanupEvidence.enrich(context.Background(), client, snapshots); err != nil {
-					return err
-				}
-				if err := models.ApplyEmbySnapshots(token, snapshots); err != nil {
-					return err
-				}
-				for _, snapshot := range snapshots {
-					handledItemIDs[snapshot.Item.ItemId] = struct{}{}
-				}
-				processed += int64(len(snapshots))
-				return nil
-			},
+			lib.Name, "", scanStartedAt, token, handledItemIDs,
 		)
+		processed += count
 		if gerr != nil {
 			return int(processed), gerr
 		}
 	}
-	helpers.AppLogger.Infof("增量同步 Emby 条目到本地完成，处理 %d 个项目", processed)
+	completed = true
 	return int(processed), nil
 }
 

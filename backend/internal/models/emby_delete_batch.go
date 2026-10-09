@@ -168,6 +168,7 @@ func validateEmbyDeletionBarrier(ctx context.Context, input EmbyDeletionInput, t
 func embyDeletionBatchTarget(targets []EmbyDeletionTarget) EmbyDeletionTarget {
 	merged := targets[0]
 	merged.Owners = slices.Clone(merged.Owners)
+	merged.SourceBindings = slices.Clone(merged.SourceBindings)
 	merged.ScopedMetadata = nil
 	for _, target := range targets {
 		if target.Kind == "scoped_metadata" {
@@ -175,6 +176,11 @@ func embyDeletionBatchTarget(targets []EmbyDeletionTarget) EmbyDeletionTarget {
 		}
 	}
 	for _, target := range targets[1:] {
+		for _, binding := range target.SourceBindings {
+			if !slices.ContainsFunc(merged.SourceBindings, func(known EmbyDeletionSupplement) bool { return embyJSON(known) == embyJSON(binding) }) {
+				merged.SourceBindings = append(merged.SourceBindings, binding)
+			}
+		}
 		for _, ref := range target.Owners {
 			if !slices.Contains(merged.Owners, ref) {
 				merged.Owners = append(merged.Owners, ref)
@@ -373,7 +379,8 @@ func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, target
 				return err
 			}
 		}
-		if err := verify(ctx, plan.Input, embyDeletionBatchTarget(pending)); err != nil {
+		finalCtx := context.WithValue(ctx, embyDeletionFinalGuardKey{}, true)
+		if err := verify(finalCtx, plan.Input, embyDeletionBatchTarget(pending)); err != nil {
 			return err
 		}
 		if err := validateEmbyDeletionBarrier(ctx, plan.Input, pending); err != nil {

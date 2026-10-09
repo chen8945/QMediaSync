@@ -102,8 +102,34 @@ func embyDeleteDirectory(directory string) string {
 }
 
 func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (EmbyRemoteFile, error) {
-	if err := p.validate(ctx, file); err != nil {
-		return EmbyRemoteFile{}, err
+	if file.SourceType != p.source || file.AccountID != p.accountID || file.AccountIdentity != p.accountIdentity || file.Reason != "" {
+		return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+	}
+	if file.ExternalSource && (file.SyncFileID != 0 || file.SyncPathID != 0) {
+		return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+	}
+	remote, err := embyCachedDeletionStat(ctx, file, func() (EmbyRemoteFile, error) { return p.statFresh(ctx, file) })
+	if err == nil && file.ExternalSource && !embyDeletionStatComplete(file, remote) {
+		return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+	}
+	return remote, err
+}
+
+func (p *embyDeleteProvider) statFresh(ctx context.Context, file EmbyFrozenFile) (EmbyRemoteFile, error) {
+	if file.ExternalSource && (p.source == SourceType115 || p.source == SourceTypeBaiduPan) {
+		if err := ctx.Err(); err != nil {
+			return EmbyRemoteFile{}, err
+		}
+		if file.SyncFileID != 0 || file.SyncPathID != 0 || embyFrozenPhysicalID(file) == "" {
+			return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+		}
+	} else {
+		if err := p.validate(ctx, file); err != nil {
+			return EmbyRemoteFile{}, err
+		}
+	}
+	if p.source == SourceTypeBaiduPan && file.ExternalSource && (file.Path == "" || file.FileName == "") {
+		return p.statExternalBaidu(ctx, file)
 	}
 	switch p.source {
 	case SourceType115:
@@ -121,7 +147,18 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 		if !valid {
 			return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
 		}
-		return EmbyRemoteFile{FileID: detail.FileId, ParentID: detail.Paths[len(detail.Paths)-1].FileId, FileName: detail.FileName, Path: directory, PickCode: detail.PickCode, SHA1: detail.Sha1, FileSize: detail.FileSizeByte, MTime: detail.ModifiedAt(), IsDir: detail.FileCategory == v115open.TypeDir}, nil
+		if file.ExternalSource {
+			if detail.FileCategory != v115open.TypeFile || detail.FileId != file.FileID || file.PickCode != "" && detail.PickCode != file.PickCode {
+				return EmbyRemoteFile{}, ErrEmbyIdentityAmbiguous
+			}
+			var err error
+			directory, err = Emby115SourceDirectory(detail)
+			if err != nil {
+				return EmbyRemoteFile{}, err
+			}
+		}
+		createdAt, _ := strconv.ParseInt(detail.Ptime, 10, 64)
+		return EmbyRemoteFile{FileID: detail.FileId, ParentID: detail.Paths[len(detail.Paths)-1].FileId, FileName: detail.FileName, Path: directory, PickCode: detail.PickCode, SHA1: detail.Sha1, FileSize: detail.FileSizeByte, MTime: detail.ModifiedAt(), FileCreatedAt: createdAt, IsDir: detail.FileCategory == v115open.TypeDir}, nil
 	case SourceTypeBaiduPan, SourceTypeOpenList:
 		// 无结构化 not-found 的客户端用完整新鲜目录证明缺失，不能解析错误文案。
 		files, err := p.List(ctx, file)
@@ -149,18 +186,7 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 			if p.source == SourceTypeBaiduPan {
 				return current, nil
 			}
-			detail, err := p.openlist.FileDetailContext(ctx, path.Join(file.Path, file.FileName))
-			if err != nil {
-				return EmbyRemoteFile{}, embyDeleteProviderError("OpenList 文件详情", err)
-			}
-			if detail == nil {
-				return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
-			}
-			observed, err := embyRemoteOpenList(file.Path, openlist.FileListItemInfo{Name: detail.Name, ID: detail.ID, Size: detail.Size, IsDir: detail.IsDir, Modified: detail.Modified, HashInfoMap: detail.HashInfoMap})
-			if err != nil || observed != current {
-				return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
-			}
-			return current, nil
+			return p.statOpenListDetail(ctx, file, current)
 		}
 		if p.source == SourceTypeBaiduPan {
 			_, err := p.baidu.GetFileDetail(ctx, embyFrozenPhysicalID(file), 0)
@@ -177,6 +203,63 @@ func (p *embyDeleteProvider) Stat(ctx context.Context, file EmbyFrozenFile) (Emb
 	default:
 		return EmbyRemoteFile{}, ErrEmbyDeleteUnsupported
 	}
+}
+
+func (p *embyDeleteProvider) statOpenListDetail(ctx context.Context, file EmbyFrozenFile, listed EmbyRemoteFile) (EmbyRemoteFile, error) {
+	detail, err := p.openlist.FileDetailContext(ctx, path.Join(file.Path, file.FileName))
+	if err != nil {
+		return EmbyRemoteFile{}, embyDeleteProviderError("OpenList 文件详情", err)
+	}
+	if detail == nil {
+		return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+	}
+	observed, err := embyRemoteOpenList(file.Path, openlist.FileListItemInfo{Name: detail.Name, ID: detail.ID, Size: detail.Size, IsDir: detail.IsDir, Modified: detail.Modified, HashInfoMap: detail.HashInfoMap})
+	if err != nil || observed != listed {
+		return EmbyRemoteFile{}, ErrEmbyDeleteUnverified
+	}
+	return observed, nil
+}
+
+// Emby115SourceDirectory 从完整祖先链核对文件真实目录，不赋予任何历史目录删除权限。
+func Emby115SourceDirectory(detail *v115open.FileDetail) (string, error) {
+	if detail == nil || detail.FileId == "" || !embyDeleteBasename(detail.FileName) || len(detail.Paths) == 0 || detail.Paths[0].FileId != "0" {
+		return "", ErrEmbyIdentityAmbiguous
+	}
+	seen := map[string]bool{detail.FileId: true}
+	directory := "/"
+	for i, parent := range detail.Paths {
+		if parent.FileId == "" || seen[parent.FileId] || i > 0 && !embyDeleteBasename(parent.Name) {
+			return "", ErrEmbyIdentityAmbiguous
+		}
+		seen[parent.FileId] = true
+		if i > 0 {
+			directory = path.Join(directory, parent.Name)
+		}
+	}
+	if detail.Path != "" && "/"+strings.TrimPrefix(detail.Path, "/") != directory {
+		return "", ErrEmbyIdentityAmbiguous
+	}
+	return directory, nil
+}
+
+func (p *embyDeleteProvider) statExternalBaidu(ctx context.Context, file EmbyFrozenFile) (EmbyRemoteFile, error) {
+	identity := embyFrozenPhysicalID(file)
+	detail, err := p.baidu.GetFileDetail(ctx, identity, 0)
+	if errors.Is(err, baidupan.ErrFileAbsent) {
+		return EmbyRemoteFile{}, ErrEmbyRemoteFileAbsent
+	}
+	if err != nil {
+		return EmbyRemoteFile{}, embyDeleteProviderError("百度网盘原文件详情", err)
+	}
+	if detail == nil || detail.FsID == 0 || strconv.FormatUint(detail.FsID, 10) != identity || detail.IsDir != 0 || detail.Size > math.MaxInt64 || detail.ServerMtime > math.MaxInt64 || detail.ServerCtime > math.MaxInt64 || !embyDeleteBasename(detail.FileName) || path.Base(detail.Path) != detail.FileName {
+		return EmbyRemoteFile{}, ErrEmbyIdentityAmbiguous
+	}
+	full, valid := embyRemoteDirectory(detail.Path)
+	if !valid || !strings.HasPrefix(detail.Path, "/") || full != detail.Path {
+		return EmbyRemoteFile{}, ErrEmbyIdentityAmbiguous
+	}
+	directory := path.Dir(full)
+	return EmbyRemoteFile{FileID: identity, ParentID: directory, Path: directory, FileName: detail.FileName, FileSize: int64(detail.Size), MTime: int64(detail.ServerMtime), FileCreatedAt: int64(detail.ServerCtime)}, nil
 }
 
 func (p *embyDeleteProvider) listFresh(ctx context.Context, file EmbyFrozenFile) ([]EmbyRemoteFile, error) {

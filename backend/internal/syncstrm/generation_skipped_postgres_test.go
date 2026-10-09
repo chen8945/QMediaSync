@@ -55,7 +55,7 @@ func TestGenerationSkippedPostgres(t *testing.T) {
 			}
 			t.Cleanup(func() { sqliteDB.Close() })
 			db.Db = conn
-			if err := conn.AutoMigrate(&models.Migrator{}, &models.Account{}, &models.SyncPath{}, &models.Sync{}, &models.SyncFile{}, &models.StrmGenerationTask{}, &models.Settings{}, &models.DbUploadTask{}); err != nil {
+			if err := conn.AutoMigrate(&models.Migrator{}, &models.Account{}, &models.SyncPath{}, &models.Sync{}, &models.SyncFile{}, &models.StrmGenerationTask{}, &models.Settings{}, &models.DbUploadTask{}, &models.EmbyIndexState{}); err != nil {
 				t.Fatal(err)
 			}
 			for _, row := range []any{account, sp, models.SettingsGlobal} {

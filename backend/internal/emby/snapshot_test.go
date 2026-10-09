@@ -21,10 +21,18 @@ import (
 
 func setupSnapshotTestTables(t *testing.T) {
 	t.Helper()
+	// :memory: 按连接隔离数据库；并发准备和提交必须共享夹具的同一个连接。
+	if db.Db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.Db.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+	}
 	if err := models.MigrateEmbyDeletionSchema(db.Db); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}); err != nil {
+	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}, &models.Media{}, &models.ScrapePath{}, &models.SyncRootEvidence{}); err != nil {
 		t.Fatal(err)
 	}
 }

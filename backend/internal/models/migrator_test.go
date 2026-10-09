@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
+	"qmediasync/internal/v115open"
 )
 
 func TestResetSequenceReturnsMaxIDQueryFailure(t *testing.T) {
@@ -2000,7 +2002,7 @@ func TestMigrateVersion64PreservesPartialSyncResultMigration(t *testing.T) {
 }
 
 func TestMigrateVersion64AddsSyncFileSiblingPathIndex(t *testing.T) {
-	for _, scenario := range []string{"existing_rows", "index_failure", "identity_index_failure", "missing_table"} {
+	for _, scenario := range []string{"existing_rows", "index_failure", "identity_index_failure", "name_index_failure", "missing_table"} {
 		t.Run(scenario, func(t *testing.T) {
 			setupSyncLedgerTestDB(t)
 			if scenario == "identity_index_failure" && db.Db.Dialector.Name() != "sqlite" {
@@ -2037,8 +2039,10 @@ func TestMigrateVersion64AddsSyncFileSiblingPathIndex(t *testing.T) {
 			failedIndexName := syncFileSiblingPathIndexName
 			if scenario == "identity_index_failure" {
 				failedIndexName = syncFileIdentityIndexName
+			} else if scenario == "name_index_failure" {
+				failedIndexName = syncFileNameIndexName
 			}
-			failIndex := scenario == "index_failure" || scenario == "identity_index_failure"
+			failIndex := scenario == "index_failure" || scenario == "identity_index_failure" || scenario == "name_index_failure"
 			indexErr := errors.New("index creation failed")
 			if err := db.Db.Callback().Raw().Before("gorm:raw").Register("test:fail_sibling_index", func(tx *gorm.DB) {
 				if failIndex && strings.Contains(tx.Statement.SQL.String(), "CREATE INDEX IF NOT EXISTS "+failedIndexName) {
@@ -2077,8 +2081,8 @@ func TestMigrateVersion64AddsSyncFileSiblingPathIndex(t *testing.T) {
 				if version.VersionCode != 64 || db.Db.Migrator().HasIndex(&SyncFile{}, failedIndexName) {
 					t.Fatalf("索引失败不能升级：%+v", version)
 				}
-				if scenario == "identity_index_failure" && !db.Db.Migrator().HasIndex(&SyncFile{}, syncFileSiblingPathIndexName) {
-					t.Fatal("第二个索引失败不应删除第一个索引")
+				if scenario != "index_failure" && !db.Db.Migrator().HasIndex(&SyncFile{}, syncFileSiblingPathIndexName) {
+					t.Fatal("后续索引失败不应删除已完成的路径索引")
 				}
 				failIndex = false
 				Migrate()
@@ -2113,6 +2117,9 @@ func TestBatchCreateTableRepairsSyncFileSiblingPathIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Db.Migrator().DropIndex(&SyncFile{}, syncFileSiblingPathIndexName); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Migrator().DropIndex(&SyncFile{}, syncFileNameIndexName); err != nil {
 		t.Fatal(err)
 	}
 	failedIndexName := syncFileSiblingPathIndexName
@@ -2154,6 +2161,9 @@ func assertSyncFileLookupIndexes(t *testing.T) {
 	}
 	if db.Db.Migrator().HasIndex(&SyncFile{}, syncFileIdentityIndexName) != (db.Db.Dialector.Name() == "sqlite") {
 		t.Fatal("文件身份索引应只在 SQLite 创建")
+	}
+	if !db.Db.Migrator().HasIndex(&SyncFile{}, syncFileNameIndexName) {
+		t.Fatal("缺少完整名称查询索引")
 	}
 }
 
@@ -2205,5 +2215,80 @@ func TestSyncFileIdentityIndexKeepsLookupResults(t *testing.T) {
 				t.Logf("plan=%s", plan[0].Detail)
 			}
 		})
+	}
+}
+
+func TestSyncFileNameIndexKeepsLookupResults(t *testing.T) {
+	setupSyncLedgerTestDB(t)
+	if err := db.Db.AutoMigrate(&SyncFile{}); err != nil {
+		t.Fatal(err)
+	}
+	assertRows := seedSyncFileNameIndexRows(t, db.Db)
+	assertRows(db.Db)
+	for range 2 {
+		if err := EnsureSyncFileLookupIndexes(db.Db); err != nil {
+			t.Fatal(err)
+		}
+		assertSyncFileLookupIndexes(t)
+		assertRows(db.Db)
+	}
+}
+
+func seedSyncFileNameIndexRows(t *testing.T, conn *gorm.DB) func(*gorm.DB) {
+	t.Helper()
+	// 不可压缩的长名称防止 PostgreSQL 压缩恰好掩盖 B-tree 单项长度限制。
+	name := []byte("电影'完整名称-")
+	random := rand.New(rand.NewPCG(3, 4))
+	for range 16 * 1024 {
+		name = append(name, "abcdefghijklmnopqrstuvwxyz0123456789"[random.IntN(36)])
+	}
+	base := SyncFile{SourceType: SourceType115, AccountId: 1, SyncPathId: 10,
+		FileId: "same-directory", FileType: v115open.TypeDir, Path: "/movies", FileName: string(name)}
+	rows := make([]SyncFile, 9)
+	ids := make([]uint, len(rows))
+	for i := range rows {
+		rows[i] = base
+		rows[i].ID = uint(i + 1)
+		ids[i] = rows[i].ID
+	}
+	rows[2].Path = "movies"
+	rows[3].AccountId = 2
+	rows[4].SyncPathId = 20
+	rows[5].SourceType = SourceTypeBaiduPan
+	rows[6].Path = "/elsewhere"
+	rows[7].FileName += "-suffix"
+	rows[8].FileType = v115open.TypeFile
+	if err := conn.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec("INSERT INTO sync_files (id, file_name) VALUES (?, NULL)", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	return func(current *gorm.DB) {
+		t.Helper()
+		var got []SyncFile
+		if err := current.Where("id IN ?", ids).Order("id").Find(&got).Error; err != nil || !reflect.DeepEqual(got, rows) {
+			t.Fatalf("名称索引改写了长名称或重复名称记录：err=%v", err)
+		}
+		var nullRows int64
+		if err := current.Model(&SyncFile{}).Where("id = ? AND file_name IS NULL", 10).Count(&nullRows).Error; err != nil || nullRows != 1 {
+			t.Fatalf("NULL 名称变化：count=%d err=%v", nullRows, err)
+		}
+		for _, lookup := range []struct {
+			name string
+			ids  []uint
+		}{
+			{base.FileName, []uint{1, 2, 3}},
+			{rows[7].FileName, []uint{8}},
+			{base.FileName[:len(base.FileName)-1], nil},
+		} {
+			var gotIDs []uint
+			if err := current.Model(&SyncFile{}).
+				Where("source_type = ? AND account_id = ? AND sync_path_id = ? AND file_type = ?", base.SourceType, base.AccountId, base.SyncPathId, base.FileType).
+				Where("path IN ? AND file_name = ?", embyDirectoryPathRepresentations(base.Path), lookup.name).
+				Order("id").Pluck("id", &gotIDs).Error; err != nil || !slices.Equal(gotIDs, lookup.ids) {
+				t.Fatalf("完整名称查询的范围或结果变化：got=%v want=%v err=%v", gotIDs, lookup.ids, err)
+			}
+		}
 	}
 }

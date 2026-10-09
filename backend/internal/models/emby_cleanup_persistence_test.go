@@ -68,7 +68,7 @@ func setupCleanupSQLite(t *testing.T) (*gorm.DB, func() *gorm.DB) {
 
 func seedCleanupPersistence(t *testing.T, conn *gorm.DB) (EmbyIndexToken, EmbyItemSnapshot) {
 	t.Helper()
-	if err := conn.AutoMigrate(&EmbyConfig{}, &Account{}, &SyncPath{}, &SyncFile{}, &EmbyLibrarySyncPath{}); err != nil {
+	if err := conn.AutoMigrate(&EmbyConfig{}, &Account{}, &SyncPath{}, &SyncFile{}, &SyncRootEvidence{}, &EmbyLibrarySyncPath{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigrateEmbyDeletionSchema(conn); err != nil {

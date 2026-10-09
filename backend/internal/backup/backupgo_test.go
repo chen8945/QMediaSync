@@ -333,7 +333,7 @@ func TestRestoreTerminalStatusAndAtomicFailure(t *testing.T) {
 }
 
 func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
-	for _, scenario := range []string{"rows", "empty", "index_failure", "identity_index_failure"} {
+	for _, scenario := range []string{"rows", "empty", "index_failure", "identity_index_failure", "name_index_failure", "sidecar_index_failure", "directory_name_index_failure", "directory_pick_code_index_failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			testDB := setupBackupTest(t)
 			if scenario == "identity_index_failure" && testDB.Dialector.Name() != "sqlite" {
@@ -349,13 +349,13 @@ func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
 			if err := testDB.AutoMigrate(&models.SyncFile{}); err != nil {
 				t.Fatal(err)
 			}
-			if err := models.EnsureSyncFileLookupIndexes(testDB); err != nil {
+			if err := models.EnsureRestoreIndexes(testDB, []any{&models.SyncFile{}}); err != nil {
 				t.Fatal(err)
 			}
-			if err := testDB.Create(&models.SyncFile{FileId: "old"}).Error; err != nil {
+			if err := testDB.Create(&models.SyncFile{FileId: "old", FileName: "old.mkv"}).Error; err != nil {
 				t.Fatal(err)
 			}
-			want := models.SyncFile{SyncPathId: 10, FileId: "restored", Path: "/媒体/目录", Uploaded: true, Processed: true}
+			want := models.SyncFile{SyncPathId: 10, FileId: "restored", FileName: "完整'名称.mkv", Path: "/媒体/目录", Uploaded: true, Processed: true}
 			record, err := json.Marshal(want)
 			if err != nil {
 				t.Fatal(err)
@@ -370,8 +370,16 @@ func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
 			failedIndexName := "idx_sync_files_sibling_path"
 			if scenario == "identity_index_failure" {
 				failedIndexName = "idx_sync_files_identity"
+			} else if scenario == "name_index_failure" {
+				failedIndexName = "idx_sync_files_file_name"
+			} else if scenario == "sidecar_index_failure" {
+				failedIndexName = "idx_sync_files_sidecar_lookup"
+			} else if scenario == "directory_name_index_failure" {
+				failedIndexName = "idx_sync_files_directory_name"
+			} else if scenario == "directory_pick_code_index_failure" {
+				failedIndexName = "idx_sync_files_directory_pick_code"
 			}
-			failIndex := scenario == "index_failure" || scenario == "identity_index_failure"
+			failIndex := strings.HasSuffix(scenario, "index_failure")
 			indexErr := errors.New("sync file index creation failed")
 			if err := testDB.Callback().Raw().Before("gorm:raw").Register("test:fail_sibling_index", func(tx *gorm.DB) {
 				if failIndex && strings.Contains(tx.Statement.SQL.String(), "CREATE INDEX IF NOT EXISTS "+failedIndexName) {
@@ -394,19 +402,27 @@ func TestRestoreSyncFileSiblingPathIndex(t *testing.T) {
 			if testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_identity") != (testDB.Dialector.Name() == "sqlite") {
 				t.Fatal("文件身份索引应在 SQLite 成功恢复或回滚后存在")
 			}
+			if !testDB.Migrator().HasIndex(&models.SyncFile{}, "idx_sync_files_file_name") {
+				t.Fatal("完整名称索引应在成功恢复或回滚后存在")
+			}
+			for _, index := range []string{"idx_sync_files_sidecar_lookup", "idx_sync_files_directory_name", "idx_sync_files_directory_pick_code"} {
+				if testDB.Migrator().HasIndex(&models.SyncFile{}, index) != (testDB.Dialector.Name() == "sqlite") {
+					t.Fatalf("SQLite 查询索引 %s 应在成功恢复或回滚后存在", index)
+				}
+			}
 			var rows []models.SyncFile
 			if err := testDB.Find(&rows).Error; err != nil {
 				t.Fatal(err)
 			}
 			if failIndex {
-				if len(rows) != 1 || rows[0].FileId != "old" {
+				if len(rows) != 1 || rows[0].FileId != "old" || rows[0].FileName != "old.mkv" {
 					t.Fatalf("索引失败必须回滚原记录：%+v", rows)
 				}
 			} else if scenario == "empty" {
 				if len(rows) != 0 {
 					t.Fatalf("空备份应恢复为空表：%d", len(rows))
 				}
-			} else if len(rows) != 1 || rows[0].FileId != want.FileId || rows[0].Path != want.Path || !rows[0].Uploaded || !rows[0].Processed {
+			} else if len(rows) != 1 || rows[0].FileId != want.FileId || rows[0].FileName != want.FileName || rows[0].Path != want.Path || !rows[0].Uploaded || !rows[0].Processed {
 				t.Fatalf("恢复记录不完整：%+v", rows)
 			}
 			if failIndex {

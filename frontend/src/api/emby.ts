@@ -4,6 +4,12 @@ import { HttpResponseError } from '@/http/errors'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 
+export interface EmbyPathMapping {
+  emby_root: string
+  local_root: string
+  sync_path_id?: number
+}
+
 export interface EmbyConfig {
   emby_url: string
   emby_api_key: string
@@ -18,6 +24,7 @@ export interface EmbyConfig {
   enable_daily_first_full_sync: number
   enable_playback_overview: number
   enable_playback_progress: number
+  path_mappings: EmbyPathMapping[]
 }
 
 export interface EmbyConfigResult {
@@ -75,10 +82,29 @@ export async function fetchEmbyConfig(http: AxiosInstance): Promise<EmbyConfigRe
   ) {
     throw new HttpResponseError(response)
   }
+  const mappings = data.config?.path_mappings
+  if (
+    mappings !== undefined &&
+    (!Array.isArray(mappings) ||
+      !mappings.every(
+        (mapping) =>
+          mapping !== null &&
+          typeof mapping === 'object' &&
+          typeof mapping.emby_root === 'string' &&
+          typeof mapping.local_root === 'string' &&
+          (mapping.sync_path_id === undefined ||
+            (Number.isSafeInteger(mapping.sync_path_id) && mapping.sync_path_id >= 0)),
+      ))
+  ) {
+    throw new HttpResponseError(response)
+  }
   return data
 }
 
-export async function saveEmbyConfig(http: AxiosInstance, payload: EmbyConfig): Promise<void> {
+export async function saveEmbyConfig(
+  http: AxiosInstance,
+  payload: Omit<EmbyConfig, 'path_mappings'> & { path_mappings?: EmbyPathMapping[] },
+): Promise<void> {
   unwrapResponse(
     await http.post<APIResponse<null>>(`${SERVER_URL}/setting/emby-config`, payload, {
       headers: { 'Content-Type': 'application/json' },

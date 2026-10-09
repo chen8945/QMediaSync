@@ -672,7 +672,7 @@ func TestPrepareLogicalBackupValidatesEntireArchive(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "version":
-				manifest.SchemaVersion--
+				manifest.SchemaVersion = 65
 			case "column_definition":
 				manifest.Tables[0].Columns[0].Type = "text"
 			case "exclusion":

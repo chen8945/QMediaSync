@@ -49,6 +49,7 @@ mainloop:
 			d.s.Sync.Logger.Infof("获取 115 网盘文件列表的上下文已取消，offset=%d，limit=%d", offset, limit)
 			return nil, ctx.Err()
 		default:
+			observedAt := time.Now().Unix()
 			resp, err := list115FilesPage(ctx, d.client, parentPathId, true, false, true, offset, limit)
 			if err != nil {
 				if err.Error() == "访问频率过高" {
@@ -72,6 +73,9 @@ mainloop:
 				return nil, fmt.Errorf("115 目录总数在分页期间变化")
 			}
 			if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
+				return nil, err
+			}
+			if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
 				return nil, err
 			}
 			if resp.PathStr != "" {
@@ -176,21 +180,39 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 }
 
 func (d *open115Driver) GetPathIdByPath(ctx context.Context, path string) (string, error) {
+	observedAt := time.Now().Unix()
 	fsDetail, err := d.client.GetFsDetailByPath(ctx, path)
 	if err != nil {
 		return "", err
+	}
+	if fsDetail == nil || fsDetail.FileCategory != v115open.TypeDir || fsDetail.FileId == "" {
+		return "", fmt.Errorf("115 同步根详情缺少目录身份")
+	}
+	parts := append(slices.Clone(fsDetail.Paths), v115open.FileDetailPath{FileId: fsDetail.FileId, Name: fsDetail.FileName})
+	if d.s != nil {
+		rootID := d.s.SourcePathId
+		if sameSourceDirectory(path, d.s.SourcePath) {
+			rootID = fsDetail.FileId
+		}
+		if err := d.s.observe115RootPaths(ctx, parts, rootID, observedAt); err != nil {
+			return "", err
+		}
 	}
 	return fsDetail.FileId, nil
 }
 
 // DetailByPath 保留路径查询已经返回的详情，供上传父目录确认复用。
 func (d *open115Driver) DetailByPath(ctx context.Context, path string) (*SyncFileCache, error) {
+	observedAt := time.Now().Unix()
 	resp, err := d.client.GetFsDetailByPath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
 		return nil, fmt.Errorf("115 路径详情为空")
+	}
+	if err := d.observeRootDetail(ctx, resp, observedAt); err != nil {
+		return nil, err
 	}
 	return d.fileDetailCache(resp), nil
 }
@@ -215,6 +237,7 @@ func (d *open115Driver) MakeStrmContent(sf *SyncFileCache) string {
 }
 
 func (d *open115Driver) GetTotalFileCount(ctx context.Context) (int64, string, error) {
+	observedAt := time.Now().Unix()
 	resp, err := list115FilesPage(ctx, d.client, d.s.SourcePathId, false, false, false, 0, 1)
 	if err != nil {
 		return 0, "", err
@@ -223,6 +246,9 @@ func (d *open115Driver) GetTotalFileCount(ctx context.Context) (int64, string, e
 		return 0, "", fmt.Errorf("115 文件计数响应为空")
 	}
 	if err := validate115FilePage(resp.Data, int64(resp.Count), 0, 1, make(map[string]struct{})); err != nil {
+		return 0, "", err
+	}
+	if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
 		return 0, "", err
 	}
 	if resp.Count == 0 {
@@ -239,6 +265,7 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 	expectedTotal := -1
 	seen := make(map[string]struct{})
 	for {
+		observedAt := time.Now().Unix()
 		resp, err := list115FilesPage(ctx, d.client, pathId, true, true, true, offset, limit)
 		if err != nil {
 			if err.Error() == "访问频率过高" {
@@ -262,6 +289,9 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 			return nil, fmt.Errorf("115 子目录总数在分页期间变化")
 		}
 		if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
+			return nil, err
+		}
+		if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
 			return nil, err
 		}
 		for _, file := range resp.Data {
@@ -301,6 +331,7 @@ func wait115RateLimitRetry(ctx context.Context) error {
 
 // 查询目录下的所有文件
 func (d *open115Driver) GetFilesByPathId(ctx context.Context, rootPathId string, offset, limit int) ([]v115open.File, error) {
+	observedAt := time.Now().Unix()
 	resp, err := list115FilesPage(ctx, d.client, rootPathId, false, false, false, offset, limit)
 	if err != nil {
 		return nil, err
@@ -311,11 +342,15 @@ func (d *open115Driver) GetFilesByPathId(ctx context.Context, rootPathId string,
 	if d.s.sync115 != nil && int64(resp.Count) != d.s.sync115.expectedTotal {
 		return nil, fmt.Errorf("115 文件总数在分页期间变化：offset=%d，预期=%d，实际=%d", offset, d.s.sync115.expectedTotal, resp.Count)
 	}
+	if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
+		return nil, err
+	}
 	return resp.Data, nil
 }
 
 // 所有文件详情，含路径
 func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*SyncFileCache, error) {
+	observedAt := time.Now().Unix()
 	resp, err := d.client.GetFsDetailByCid(ctx, fileId)
 	if err != nil {
 		return nil, err
@@ -323,7 +358,21 @@ func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*Syn
 	if resp == nil || resp.FileId != fileId || (len(resp.Paths) == 0 && fileId != "0") {
 		return nil, fmt.Errorf("115 详情缺少匹配身份或祖先路径：file_id=%s", fileId)
 	}
+	if err := d.observeRootDetail(ctx, resp, observedAt); err != nil {
+		return nil, err
+	}
 	return d.fileDetailCache(resp), nil
+}
+
+func (d *open115Driver) observeRootDetail(ctx context.Context, detail *v115open.FileDetail, observedAt int64) error {
+	if d.s == nil {
+		return nil
+	}
+	parts := detail.Paths
+	if detail.FileCategory == v115open.TypeDir {
+		parts = append(slices.Clone(parts), v115open.FileDetailPath{FileId: detail.FileId, Name: detail.FileName})
+	}
+	return d.s.observe115RootPaths(ctx, parts, d.s.SourcePathId, observedAt)
 }
 
 func (d *open115Driver) fileDetailCache(resp *v115open.FileDetail) *SyncFileCache {

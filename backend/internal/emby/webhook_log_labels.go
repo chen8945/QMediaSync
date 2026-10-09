@@ -36,6 +36,13 @@ var embyWebhookReasonLabels = map[string]string{
 	"connection_changed":                      "Emby 连接信息已变化，无法确认文件身份",
 	"server_instance_changed":                 "Emby 服务器标识已变化，无法确认是同一台服务器",
 	"no_confirmed_historical_identity":        "没有可确认的历史身份记录，无法核实文件归属",
+	"source_identity_unconfirmed":             "来源或网盘账号身份不明确",
+	"strm_reference_unverified":               "STRM 路径映射已变化或无法确认",
+	"source_account_changed":                  "网盘账号身份已变化",
+	"source_account_missing":                  "网盘账号已不存在",
+	"source_owner_conflict":                   "Emby 条目或共享引用仍需保留",
+	"source_identity_conflict":                "文件身份与已保存记录不一致",
+	"source_lookup_retries_exhausted":         fmt.Sprintf("文件信息查询仍失败，已用完 %d 次处理机会并停止本次重试", webhookMaxAttempts),
 }
 
 // embyWebhookStatusLabels 把通知工作状态翻译为面向用户的中文。
@@ -70,6 +77,37 @@ func embyWebhookReasonLabel(reason string) string {
 		reason = strings.ReplaceAll(reason, token, embyWebhookReasonLabels[token])
 	}
 	return reason
+}
+
+// embyDeletionSupplementRetentionLabel 按原因汇总本次未补齐的来源，不输出来源标识或原始错误。
+func embyDeletionSupplementRetentionLabel(issues []string) string {
+	counts := map[string]int{}
+	total := 0
+	for _, issue := range issues {
+		detail, ok := strings.CutPrefix(issue, "source_unresolved:")
+		if !ok {
+			continue
+		}
+		reason, _, _ := strings.Cut(detail, ":")
+		label := "来源信息仍无法确认"
+		if _, known := embyWebhookReasonLabels[reason]; known {
+			label = embyWebhookReasonLabel(reason)
+		}
+		counts[label]++
+		total++
+	}
+	if total == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(counts))
+	for label := range counts {
+		labels = append(labels, label)
+	}
+	slices.Sort(labels)
+	for i, label := range labels {
+		labels[i] = fmt.Sprintf("%s：%d 个", label, counts[label])
+	}
+	return fmt.Sprintf("；%d 个来源已保留（%s）", total, strings.Join(labels, "；"))
 }
 
 func embyWebhookStatusLabel(status string) string {

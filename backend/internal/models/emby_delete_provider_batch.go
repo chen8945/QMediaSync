@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"qmediasync/internal/baidupan"
-	"qmediasync/internal/openlist"
 	"qmediasync/internal/v115open"
 )
 
@@ -135,15 +134,13 @@ func (p *embyDeleteProvider) DeleteBatch(ctx context.Context, files []EmbyFrozen
 			return false, ErrEmbyDeleteUnverified
 		}
 		if p.source == SourceTypeOpenList {
-			detail, err := p.openlist.FileDetailContext(ctx, path.Join(file.Path, file.FileName))
+			observed, err := embyCachedDeletionStat(ctx, file, func() (EmbyRemoteFile, error) {
+				return p.statOpenListDetail(ctx, file, current)
+			})
 			if err != nil {
-				return false, embyDeleteProviderError("OpenList 批量文件详情", err)
+				return false, err
 			}
-			if detail == nil {
-				return false, ErrEmbyDeleteUnverified
-			}
-			observed, err := embyRemoteOpenList(file.Path, openlist.FileListItemInfo{Name: detail.Name, ID: detail.ID, Size: detail.Size, IsDir: detail.IsDir, Modified: detail.Modified, HashInfoMap: detail.HashInfoMap})
-			if err != nil || observed != current {
+			if observed != current {
 				return false, ErrEmbyDeleteUnverified
 			}
 		}

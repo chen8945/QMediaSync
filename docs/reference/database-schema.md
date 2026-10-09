@@ -54,7 +54,7 @@
 2. 创建默认 `settings` 记录。
 3. 创建默认刮削配置和默认分类。
 4. 创建默认 `emby_config` 记录。
-5. 最后写入当前版本号 `MaxVersionCode`，当前值是 `67`，并提交事务。
+5. 最后写入当前版本号 `MaxVersionCode`，当前值是 `68`，并提交事务。
 
 建表、索引、默认数据或版本写入任一步失败，都会回滚本次初始化，并将错误传到启动入口；提交成功后才记录初始化完成。SQLite 和 PostgreSQL 使用相同边界，排除故障后可重新启动并重试。事务内的辅助函数必须使用传入的事务连接，不能再次通过全局连接查询或写入。
 
@@ -106,14 +106,17 @@
 | 64 | 65 | `syncs` 新增可空 `scan_result` 文本 JSON、可空 `ledger_status`、可空 `ledger_finished_at` 和 `ledger_error`，保存扫描结果与后台账本结果；`db_download_tasks` 新增 `replace_baseline` 和 `published_sha256`，保存元数据替换与重试所需信息；`strm_generation_tasks` 新增 `skip_reason` 和默认 `0` 的 `skipped_items`；`sync_files` 新增同目录查询索引，SQLite 另增同步目录与文件 ID 的查询索引；`strm_generation_tasks` 的等待与收尾任务新增匹配领取顺序的部分表达式索引。迁移失败后可重试，保留已有字段值，历史结果和终点不推算。 |
 | 65 | 66 | Emby 媒体项新增分段／版本成员、快照 ID 和代际，关联新增来源 ID 与快照 ID；新增单实例索引版本、条目状态、含 `sidecars_json` 的不可变证据、`emby_webhook_records` 持久收件、`emby_webhook_targets` 逐文件结果和 `emby_observed_evidence_indices` 观察范围索引表。全部表／字段变更和版本推进在同一事务内完成，任一步失败均回滚并保留版本 65，可修复原因后重试。保留原媒体和关联数据，不从旧索引或当前同名文件推断历史删除身份。 |
 | 66 | 67 | 将没有业务长度上限的第三方文本改为 `text`：`account` 的 `token`、`refresh_token`、`username`、`password`、`base_url`、`token_failed_reason`，`emby_config` 的 `emby_url`、`emby_api_key`、`sync_cron`，`request_stats.url`，以及 `emby_library_refresh_tasks` 的 `library_name`、`fallback_library_name`。保留值、空值和默认值，类型调整与版本推进一并提交；失败保留版本 66。 |
+| 67 | 68 | 新增每同步根一份的 `sync_root_evidences`，以及 `emby_config.path_mappings_json`，默认 `[]`；为 `sync_files.file_name` 补齐非唯一查询索引，SQLite 另增三个旁车／目录查询索引和两个 Emby 分段／版本成员索引。建表、加列、建索引及版本推进在一个事务内完成；失败保留版本 67，重试保留既有值。不从当前文件或旧通知伪造根链、账号线索、历史映射或网盘读取时间。 |
 
-当前数据库版本是 `67`。版本 65 尚无 Emby 身份证据和持久删除工作表，升级时统一创建完整结构；成功后再次启动保留已有证据和工作记录。
+当前数据库版本是 `68`。版本 65 尚无 Emby 身份证据和持久删除工作表，升级时统一创建完整结构；成功后再次启动保留已有证据和工作记录。版本 67 升级保留原文件关联、不可变证据和未完成删除计划，新增根资料等待正常 STRM 同步保存。
 
 ### 逻辑备份的数据契约
 
 新备份清单携带独立的格式版本和数据库 schema 版本，列定义从注册模型推导。恢复显式写入全部持久化列，保留 SQL `NULL`、空字符串、零值、布尔值和整数精度；模型的 API 隐藏标签、创建钩子、自动时间和默认值不参与还原。新格式要求完整的同版表／列集合，版本不匹配必须有明确适配，不能靠反序列化忽略未知字段。
 
-当前备份格式版本为 2：ZIP 根目录保存 `manifest.json`，表数据保存为 `tables/<模型名>.json`，清单中的 `tables[].file` 使用相同的相对路径。恢复严格核对预期文件路径与完整文件集合，不接受平铺表文件、重复条目或额外文件。无清单旧包走单独的兼容路径；备份格式版本与数据库 schema 67 独立。
+当前备份格式版本为 2：ZIP 根目录保存 `manifest.json`，表数据保存为 `tables/<模型名>.json`，清单中的 `tables[].file` 使用相同的相对路径。恢复严格核对预期文件路径与完整文件集合，不接受平铺表文件、重复条目或额外文件。无清单旧包走单独的兼容路径；备份格式版本与数据库 schema 68 独立。
+
+格式 2 额外接受 schema 67 的精确升级：先按版本 67 的完整表／列集合校验，再补空根资料表、默认 `[]` 的路径映射并写入版本 68；不一般化接受其他旧版本或缺失字段。无清单旧包保留版本 66 的既有兼容，并明确适配版本 67 到 68；其他旧表、字段和关联校验不放宽。66、67 的升级适配不会沿用目标库的新根资料或替旧通知建立目录权限；当前 schema 的无关部分恢复仍保留目标根资料，依赖检查见 [恢复与风险边界](../operations/database.md#恢复与风险边界)。
 
 清单的可选字符串字段 `application_version` 记录生成备份时的应用版本，仅作诊断信息，不与目标应用版本比较。升级后的读取端兼容未包含该字段的旧清单；恢复资格仍由 `format_version`、`schema_version` 和数据校验决定。这不承诺旧读取端能够接受新格式或新增清单字段。
 
@@ -200,7 +203,7 @@
 
 - `id`：固定为 `1`。
 - `created_at` / `updated_at`：创建和更新时间。
-- `version_code`：当前数据库版本号，当前值为 `67`。
+- `version_code`：当前数据库版本号，当前值为 `68`。
 
 ### `users`
 
@@ -445,11 +448,38 @@ Emby 查找同目录记录时，使用非唯一索引缩小查询范围：SQLite
 
 SQLite 另有 `sync_path_id` 与 `file_id` 的非唯一索引，查找单个文件时可直接按两个条件定位，避免先遍查整个同步目录。上述索引在新库初始化、64→65 升级、数据库修复和恢复该表时建立，不修改文件记录。
 
+目录身份校验还使用完整 `file_name` 的非唯一索引 `idx_sync_files_file_name`，避免每条 Emby 快照反复读取同一父目录下的全部记录。SQLite 使用 B-tree，PostgreSQL 使用支持长名称的 HASH；查询仍同时核对来源、账号、同步根、完整父路径和名称，并按稳定对象 ID 查找已移动的目录。该索引随新库初始化、67→68 升级、数据库修复及该表恢复建立，不合并同名记录，也不改写原数据。
+
+SQLite 的 Emby 旁车和目录查询另使用以下非唯一索引，由 `EnsureEmbySyncFileLookupIndexes` 在新库初始化、67→68 事务、修复及恢复 `sync_files` 时建立；PostgreSQL 保留上述 HASH 索引。
+
+| 索引 | 列 | 查询范围 |
+| --- | --- | --- |
+| `idx_sync_files_sidecar_lookup` | `source_type, account_id, path, is_meta, is_video` | 同来源、账号与目录的旁车，保留跨同步根匹配 |
+| `idx_sync_files_directory_name` | `sync_path_id, path, file_name` | 目录原父路径与名称 |
+| `idx_sync_files_directory_pick_code` | `sync_path_id, pick_code` | 百度目录的稳定身份 |
+
+目录稳定 ID 使用等值条件；其他来源继续使用已有的 `sync_path_id, file_id` 索引。查询仍合并、去重并按 ID 排序，再核对来源、账号及当前目录身份。优化器可选择其他适用索引，索引存在不代替移动、改名和同名替换校验。
+
 完整同步在后台按 ID 读取旧记录，每页最多 256 条，并在一个短事务内保存该页差异。变化记录的每条 SQL 最多处理 SQLite 32 条、PostgreSQL 256 条；新增记录两库均为 32 条，每个事务最多新增 256 条。无变化的记录仍更新 `updated_at`，其他列不重写。
 
 已有记录只更新文件名、PickCode、大小、修改时间、远端与本地路径、缩略图、OpenList 签名及对象 ID、摘要和父目录 ID；身份、归属、`uploaded`、`processed` 等其他字段保持原值。空字符串、零值及旧数据中的空列按原同步字段语义写入。新增记录继续使用来源各自的身份规则，不能用全行覆盖代替已有记录更新。
 
 某页失败时回滚该页，此前已经提交的页保留，后续页停止。后台报错与下次扫描恢复的规则见[生成结果与后台账本](../architecture/sync-orchestration.md#生成结果与后台账本)。
+
+### `sync_root_evidences`
+
+每个保存型同步目录一份的物理根资料，嵌入 BaseModel，`sync_path_id` 唯一，并纳入 `AllTables` 的初始化、修复和备份恢复。根下文件和目录继续由 `sync_files` 维护。
+
+| 字段 | 含义 |
+| --- | --- |
+| `sync_path_id` | 关联的真实同步目录 |
+| `source_type`、`account_id`、`account_identity` | 来源及当时账号主体 |
+| `root_file_id`、`root_path` | 最终确认的同步根 ID 与规范远端路径 |
+| `ancestors_json` | 从网盘根到同步根自身的连续父链，节点包含 ID、父 ID 和路径 |
+| `observed_at` | 正常网盘响应的真实读取时间，不使用缓存命中或提交时间替代 |
+| `invalidated_at` | 已确认冲突的失效时间；非零记录不可作为当前目录授权资料 |
+
+当前完整根链保存针对 115 正常同步响应。根外祖先仅证明位置，不成为普通受管文件，不扩大生成、清理或删除范围。已确认的根或祖先变化先使旧资料失效，新链只在后台账本保存成功后发布；失败保留旧资料及失效状态。消费方仍核对当前账号、根配置和目录关系，不能仅凭持久行存在授权。
 
 ### `scrape_settings`
 
@@ -720,11 +750,13 @@ Emby 总配置表。
 - `enable_daily_first_full_sync`：是否启用每日首次定时全量同步，默认启用。
 - `enable_playback_overview`：播放通知是否显示剧情简介。
 - `enable_playback_progress`：播放通知是否显示播放进度。
+- `path_mappings_json`：手工指定的 STRM 根映射，默认 `[]`；运行时通过 `path_mappings` 类型化数组访问，数组本身不入库。自动对应保存在条目快照中，不写入此配置。
 
 说明：
 
 - `selected_libraries` 是 JSON 数组字符串，不是逗号分隔文本。
 - `enable_playback_overview`、`enable_playback_progress` 是后加字段。
+- 映射的字段、两种用途和保存校验见[配置说明](../operations/configuration.md#emby-外部-strm-路径映射)。配置更新只写设置字段，不能覆盖并发同步状态；普通状态写入也不能清空映射。
 
 ### `emby_media_items`
 
@@ -756,6 +788,8 @@ Emby 总配置表。
 - `version_of_item_id`：带明确 MediaSource.ItemId 的已确认版本组根；同组按最小数值条目 ID 取稳定根，不因查询入口改变方向，也不按标题聚合。
 - `snapshot_id`、`generation`：当前不可变证据与物理代际，普通更新时间不是代际。
 
+SQLite 增加非唯一索引 `idx_emby_server_part_lookup (server_id, part_of_item_id)` 与 `idx_emby_server_version_lookup (server_id, version_of_item_id)`，按服务器读取完整成员。直接 `item_id` 查询仍使用全局唯一语义。`EnsureEmbyMediaLookupIndexes` 独立于同步文件表，在新库初始化、67→68 事务、修复及恢复 `emby_media_items` 时建立，单表恢复不依赖另一张表存在。PostgreSQL 不创建这两个 SQLite 专用索引。
+
 ### `emby_media_sync_files`
 
 Emby 媒体项与同步文件的关联表。
@@ -772,10 +806,13 @@ Emby 媒体项与同步文件的关联表。
 
 三表均沿用 BaseModel 的 Unix 秒时间。当前配置只连接一个 Emby 服务，媒体项仍以 `item_id` 全局唯一。
 
-- `emby_index_states`：固定行 ID=1，保存核验的 `server_id`、同步范围摘要 `config_key`、服务连接摘要 `server_config_key` 和单调递增 `revision`。条目读取前取版本，提交／清旧与删除登记持有同一 SQL 写锁；实例或有效配置范围变化使旧版本失效并清除旧成功水位；不因全库模式下无效的选库字符串变化重置。
+- `emby_index_states`：固定行 ID=1，保存核验的 `server_id`、同步范围摘要 `config_key`、服务连接摘要 `server_config_key` 和单调递增 `revision`。条目读取前取版本；PostgreSQL 独立普通组以共享行锁核验，并用全局条目 ID 事务锁保护首次插入，复杂组、清旧与删除登记持排他锁；同步目录删除和文件账本批量写入在首次来源写入前取得同一排他保护，但不推进版本。SQLite 以写事务保护核验和提交。实例或有效配置范围变化使旧版本失效并清除旧成功水位；不因全库模式下无效的选库字符串变化重置。
 - `emby_item_states`：`server_id + item_id` 唯一，保存 `generation`、`snapshot_id`、`identity_key`、`deleted` 和屏障 `revision`。删除屏障只允许经独立核验的调用方释放，释放仍递增全局版本。
 - `emby_item_evidences`：按 `server_id + item_id` 索引，保存同步范围／独立服务连接摘要、代际、内容摘要及 `item_json`、`sources_json`、`files_json` 和 `sidecars_json` 文本。媒体快照保留来源 ID／ItemId，文件证据冻结 SyncFile、来源、账号主体、根目录、物理 file_id、大小／哈希／mtime 及候选不完整原因。
 - `sidecars_json` 只接受版本 2 元数据封装，包含 `exclusive_files`、`scoped_files`、`directory_scopes`，三个集合都必须存在，空集合写为 `[]`。旧旁车数组、空字符串、损坏数据或未知封装版本使读取失败；构建、执行计划及复制成员证据均不得自动转换旧格式，也不能用当前账本补造历史身份。
+- 版本 2 封装新增可选 `media_directories`，独立记录 Emby 已观察的媒体角色、路径、条目和季号；没有文件绑定也保存，角色本身不提供网盘目录权限。旧有效版本 2 缺少此字段仍可读，不改变原三个必需集合的校验。
+- `sources_json` 保存每个来源的 ID、ItemID、脱敏路径、PickCode，以及可确定的来源类型、账号 ID／主体和稳定对象种类／键。来源的 `reference` 保存实际 Emby 路径、访问根和路径对应；自动对应还保存原定位根及账号依据，供提交和删除时复核。已绑定文件的 `reference` 与 QMS 管理路径分开，外部自动定位的本地根不等于用于网盘目录归属的 `sync_path_id`。自动引用保存在原有 JSON 快照中，不写回 `emby_config.path_mappings_json`，不从历史记录事后补造；旧引用按原有语义处理。无法恢复的历史账号线索保持缺失，不从脱敏 URL 猜测；后续正常同步才能补充新观察。
+- 自动引用的可选字段 `auto_sync_path_id` 标识本地定位根，`auto_root_identity` 保存该根的身份摘要，包含原账号主体及影响定位的根信息。它们与表达媒体结构归属的 `sync_path_id` 分开；缺少自动字段的历史引用保持原语义，不迁移或重新推导旧通知。
 - `config_key` 只约束同步提交与水位；删除身份使用 `server_id + server_config_key`，同步选库变化不会使同一服务的历史删除证据失效，也不构成删除白名单。
 - 新增历史证据去除播放 URL 中 userinfo、签名等查询凭据；已有播放字段继续使用原兼容语义。OpenList 可用对象 ID、SHA1、MD5 单独保存，不能将路径型 FileId 当作文件代际。
 - OpenList 账本及冻结文件的 `pick_code` 可保留脱敏下载 URL，该值不参与远端删除身份比较；继续使用独立对象 ID／哈希及既有大小、时间和位置核验，不改写历史目标键。
@@ -794,6 +831,7 @@ Emby 媒体项与同步文件的关联表。
 
 - `emby_webhook_records`：每次接收独立插入，`event`、`item_id`、`item_type`、`server_id` 和 `server_config_key` 固定输入范围；不将 item ID／事件日期当作永久去重键。`authorized` 固定接收时授权，关闭期间事件不能因后来启用而补删。
 - `payload_json` 只保存规范化、脱敏字段；条目名称字段（`item_name`／`series_name`／`season_name`）经 URL 脱敏、控制字符剔除与限长后仅用于诊断展示，不参与身份或删除授权。`input_json` 保存收件时冻结的成员和文件身份；`plan_json` 在任何远端删除前保存完整计划。上述身份与授权不得在重试中替换。删除计划只接受版本 2 清理政策；可执行收件中的缺失、旧版或未知政策按 `unresolved` 收尾，不再进入旧顺序执行路径。
+- 删除时按需取得的来源补充身份保存到计划，关联原来源及 owner 的快照／代际并记录真实读取时间，不回写 `input_json` 或历史 `files_json`。重试和恢复仍核验这份原对象与来源关系，不能扩大旧通知授权或使用新资料伪造历史整目录权限。
 - 增强候选只在已有历史成员范围内核对，匹配结果保存为 `input_json.candidate_keys`；缺少映射记录原因，不扩大删除范围。明确路径或候选身份冲突的事件保持 `unresolved`，不对正确当前身份登记删除屏障。
 - `observation_json` 引用提前查询取得的不可变证据及预期条目状态行 ID、状态版本、旧快照和代际；保存早期观察不改当前媒体项、关联或同步水位。读取前的 token 同时记录不可变证据 ID 高水位，保存观察时拒绝对应条目在读取期间才提交的新快照；不因其他条目提交而拒绝。删除收件只在该条目的预期状态仍匹配且未删除时采用，再与删除屏障和事件一起原子保存；其他条目删除导致的全局版本变化不丢弃这份已保存的独立观察。此前删除因 API 故障留下屏障而实际条目仍存活时，全量／增量同步在读取前版本下分页取得屏障候选，单条同步只读取目标及实际关联组，完整核验实际存活的物理项集合；`new/modified` 另核验领取且集合必须包含事件主 ID。共同 helper 先核对整个实际读取集合的服务器、版本、证据水位与当前屏障，再一次事务释放匹配屏障并使全局版本增加 1；任一冲突或写失败整组回滚。主项、确认分段与版本一并恢复，必须丢弃解除前的全部响应并重新取 token/GET，旧删除的状态与授权不改变。隐藏 part 无法直接枚举时，只把同服务器／连接且状态一致的历史 `PartOfItemID`／`VersionOfItemID` 补为只读父项查询入口；仍须由实际 GET／AdditionalParts 返回的完整物理身份决定是否准入，不能把历史父项关系本身当作成员存活证明。
 - `deletion_revision` 是本次登记屏障的版本；`claim_token` 只属于本次领取。领取后所有状态／计划／结果写入都核验记录 ID、领取令牌与 `running`，旧执行者不能覆盖恢复后的结果。

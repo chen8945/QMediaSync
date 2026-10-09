@@ -323,8 +323,8 @@ func freezeEmbySnapshotSidecars(tx *gorm.DB, files []EmbyFrozenFile) ([]EmbyFroz
 	sidecars := []EmbyFrozenFile{}
 	seen := map[uint]bool{}
 	for _, video := range files {
-		var candidates []SyncFile
-		if err := tx.Where("source_type = ? AND account_id = ? AND path = ? AND is_meta = ? AND is_video = ?", video.SourceType, video.AccountID, video.Path, true, false).Order("id").Find(&candidates).Error; err != nil {
+		candidates, err := embyApplyFileCandidates(tx, "sidecars:"+embyJSON([]any{video.SourceType, video.AccountID, video.Path}), tx.Where("source_type = ? AND account_id = ? AND path = ? AND is_meta = ? AND is_video = ?", video.SourceType, video.AccountID, video.Path, true, false).Order("id"))
+		if err != nil {
 			return nil, err
 		}
 		for _, candidate := range candidates {

@@ -683,7 +683,7 @@ func prepareLogicalBackup(dir string, database *gorm.DB) (*logicalManifest, erro
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w：备份清单包含额外内容", ErrArchiveInvalid)
 	}
-	if manifest.FormatVersion != logicalFormatVersion || manifest.SchemaVersion != models.MaxVersionCode {
+	if manifest.FormatVersion != logicalFormatVersion || !supportsLogicalSchemaVersion(manifest.SchemaVersion) {
 		return nil, fmt.Errorf("%w：不支持备份格式或数据库版本：格式 %d，数据库 %d，当前数据库 %d", ErrArchiveUnsupported, manifest.FormatVersion, manifest.SchemaVersion, models.MaxVersionCode)
 	}
 	if manifest.TimePrecision != logicalTimePrecision || (manifest.SourceEngine != "sqlite" && manifest.SourceEngine != "postgres") {
@@ -693,6 +693,7 @@ func prepareLogicalBackup(dir string, database *gorm.DB) (*logicalManifest, erro
 	if err != nil {
 		return nil, err
 	}
+	expected = logicalTablesForSchemaVersion(expected, manifest.SchemaVersion)
 	if len(manifest.Tables) != len(expected) || !reflect.DeepEqual(manifest.Excluded, exclusions) {
 		return nil, fmt.Errorf("%w：备份清单的表集合或明确排除项与当前程序不一致", ErrArchiveInvalid)
 	}

@@ -32,6 +32,7 @@ const emby: EmbyConfig = {
   enable_daily_first_full_sync: 0,
   enable_playback_overview: 1,
   enable_playback_progress: 0,
+  path_mappings: [],
 }
 const proxy = {
   http_proxy: 'http://user:private-password@proxy:8080',
@@ -169,6 +170,52 @@ describe('Emby 与代理 API', () => {
       await expect(fetchEmbyConfig(http)).rejects.toBeInstanceOf(HttpResponseError)
     },
   )
+
+  it.each([
+    { mappings: undefined },
+    { mappings: [] },
+    { mappings: [{ emby_root: '/emby', local_root: '/mounted' }] },
+    { mappings: [{ emby_root: '/emby', local_root: '/mounted', sync_path_id: 9 }] },
+  ])('Emby 映射回读兼容旧字段缺省并保留明确的映射 %j', async ({ mappings }) => {
+    const data = { exists: true, config: { path_mappings: mappings } }
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { code: 200, data },
+      }),
+    })
+    await expect(fetchEmbyConfig(http)).resolves.toEqual(data)
+  })
+
+  it.each([
+    { mappings: null },
+    { mappings: '[]' },
+    { mappings: {} },
+    { mappings: [null] },
+    { mappings: [{ emby_root: '/emby', local_root: null }] },
+    { mappings: [{ emby_root: '/emby', local_root: '/mounted', sync_path_id: '9' }] },
+    { mappings: [{ emby_root: '/emby', local_root: '/mounted', sync_path_id: -1 }] },
+    { mappings: [{ emby_root: '/emby', local_root: '/mounted', sync_path_id: 1.5 }] },
+    {
+      mappings: [
+        { emby_root: '/emby', local_root: '/mounted', sync_path_id: Number.MAX_SAFE_INTEGER + 1 },
+      ],
+    },
+  ])('Emby 映射回读损坏时不能作为空配置保存 %j', async ({ mappings }) => {
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { code: 200, data: { exists: true, config: { path_mappings: mappings } } },
+      }),
+    })
+    await expect(fetchEmbyConfig(http)).rejects.toBeInstanceOf(HttpResponseError)
+  })
 
   it('取消、已处理 401 和写入超时保留原错误且不重试', async () => {
     const handled = new AxiosError('private-key', 'ERR_BAD_REQUEST')

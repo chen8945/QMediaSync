@@ -34,6 +34,8 @@ type restoreTable struct {
 	schema   *schema.Schema
 	readRows func(func(map[string]any) error) error
 	rowCount int64
+	// 旧包保留原版本，兼容补值只能按已验证的来源版本执行。
+	sourceVersion int
 }
 
 type restorePlan struct {
@@ -127,7 +129,9 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 		return nil, err
 	}
 	plan := &restorePlan{legacy: manifest == nil}
+	sourceVersion := 0
 	if manifest != nil {
+		sourceVersion = manifest.SchemaVersion
 		for _, table := range manifest.Tables {
 			entry, err := newRestoreTable(database, table.Model)
 			if err != nil {
@@ -155,6 +159,9 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 			}
 			if exists && entry.schema.Table != "backup_record" {
 				plan.tables = append(plan.tables, entry)
+				if entry.schema.Table == "migrator" {
+					sourceVersion = entry.sourceVersion
+				}
 			} else if entry.schema.Table == "migrator" {
 				return nil, fmt.Errorf("%w：旧备份缺少 Migrator.json，无法确认数据库版本", ErrArchiveInvalid)
 			}
@@ -162,6 +169,11 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 	}
 	if len(plan.tables) == 0 {
 		return nil, fmt.Errorf("%w：备份中没有可恢复的模型文件", ErrArchiveInvalid)
+	}
+	if models.MaxVersionCode == 68 && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
+		if err := adaptEmbySyncRestorePlan(database, plan); err != nil {
+			return nil, err
+		}
 	}
 	// 浏览器会话一律清空；派生索引只从恢复后的原始记录重建。
 	for _, model := range models.AllTables {
@@ -322,6 +334,14 @@ func checkLegacyRestoreDependencies(database *gorm.DB, plan *restorePlan) error 
 		if replaced[table.schema.Table] || !database.Migrator().HasTable(model) {
 			continue
 		}
+		if table.schema.Table == "sync_root_evidences" {
+			// 根链没有外键，但必须与同一份账号、同步目录及根下账本一起恢复。
+			for _, dependency := range []string{"account", "sync_paths", "sync_files"} {
+				if replaced[dependency] {
+					return fmt.Errorf("%w：旧备份缺少关联表 %s，不能单独替换其引用的 %s", ErrArchiveUnsupported, table.schema.Table, dependency)
+				}
+			}
+		}
 		for _, relation := range table.schema.Relationships.Relations {
 			constraint := relation.ParseConstraint()
 			if constraint != nil && constraint.Schema.Table == table.schema.Table && replaced[constraint.ReferenceSchema.Table] {
@@ -429,7 +449,16 @@ func prepareLegacyRestoreTable(dir, modelName string, model any, database *gorm.
 		return table, false, fmt.Errorf("读取 %s 备份失败：%w", modelName, err)
 	}
 	table.readRows = func(consume func(map[string]any) error) error {
-		return readLegacyRows(path, table, consume)
+		return readLegacyRows(path, table, func(row map[string]any) error {
+			if table.schema.Table == "migrator" {
+				version, _ := row["version_code"].(int64)
+				table.sourceVersion = int(version)
+				if err := adaptLegacyVersion(row); err != nil {
+					return err
+				}
+			}
+			return consume(row)
+		})
 	}
 	if err := table.readRows(func(row map[string]any) error {
 		if err := validateLogicalTargetRow(database, logical, row); err != nil {
@@ -451,9 +480,10 @@ func adaptLegacyVersion(row map[string]any) error {
 	if ok && version == int64(models.MaxVersionCode) {
 		return nil
 	}
-	// 66 → 67 只放宽文本列，旧逻辑值可直接导入；与其他历史迁移保持明确边界。
-	if ok && version == 66 && models.MaxVersionCode == 67 {
-		row["version_code"] = int64(67)
+	// 66 → 67 只放宽文本列；67 → 68 的新表与配置默认值由恢复计划明确补齐。
+	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68)) ||
+		(version == 67 && models.MaxVersionCode == 68)) {
+		row["version_code"] = int64(models.MaxVersionCode)
 		return nil
 	}
 	return fmt.Errorf("%w：旧备份数据库版本不兼容，需先使用对应版本程序升级后重新备份", ErrArchiveUnsupported)
@@ -471,11 +501,6 @@ func readLegacyRows(path string, table restoreTable, consume func(map[string]any
 		row, err := decodeLegacyRow(raw, table)
 		if err != nil {
 			return fmt.Errorf("%w：%s 第 %d 行：%w", ErrArchiveInvalid, table.schema.Table, lineNumber, err)
-		}
-		if table.schema.Table == "migrator" {
-			if err := adaptLegacyVersion(row); err != nil {
-				return err
-			}
 		}
 		return consume(row)
 	})

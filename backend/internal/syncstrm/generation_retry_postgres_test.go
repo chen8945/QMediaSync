@@ -69,7 +69,7 @@ func setupGenerationRetryPostgresTestDB(t *testing.T) (*models.Account, *models.
 	sqliteDB, _ := db.Db.DB()
 	t.Cleanup(func() { sqliteDB.Close() })
 	db.Db = conn
-	if err := conn.AutoMigrate(&models.Account{}, &models.SyncPath{}, &models.Sync{}, &models.SyncFile{}, &models.StrmGenerationTask{}, &models.Settings{}, &models.DbUploadTask{}); err != nil {
+	if err := conn.AutoMigrate(&models.Account{}, &models.SyncPath{}, &models.Sync{}, &models.SyncFile{}, &models.StrmGenerationTask{}, &models.Settings{}, &models.DbUploadTask{}, &models.EmbyIndexState{}); err != nil {
 		t.Fatal(err)
 	}
 	sp.ID = 0

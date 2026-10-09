@@ -75,10 +75,11 @@ func assertBackupTextPersistence(t *testing.T, conn *gorm.DB) {
 		{
 			name: "emby_configuration",
 			value: &EmbyConfig{
-				BaseModel:  base,
-				EmbyUrl:    "https://emby.invalid/" + strings.Repeat("prefix/", 128),
-				EmbyApiKey: strings.Repeat("test-key-", 128),
-				SyncCron:   longCron,
+				BaseModel:    base,
+				EmbyUrl:      "https://emby.invalid/" + strings.Repeat("prefix/", 128),
+				EmbyApiKey:   strings.Repeat("test-key-", 128),
+				SyncCron:     longCron,
+				PathMappings: []EmbyPathMapping{},
 			},
 			loaded: &EmbyConfig{},
 		},

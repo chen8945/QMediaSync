@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/v115open"
 )
 
 func TestEmbyObservedEvidenceExcludesMovedCurrentMembership(t *testing.T) {
@@ -88,8 +88,22 @@ func assertEmbyObservedCurrentMembership(t *testing.T, config *EmbyConfig, seed 
 				{FileID: "moved-series-dir", ParentID: frozen.RootFileID, Path: poster.Path},
 				{FileID: file.ParentId, ParentID: "moved-series-dir", Path: file.Path},
 			}
-			key := embyDigest([]any{frozen.SourceType, frozen.AccountIdentity, frozen.AccountID, frozen.ParentID, frozen.Path})
-			collector := EmbyDirectoryEvidenceCollector{chains: map[string]embyObservedDirectoryChain{key: {Nodes: nodes, At: time.Now()}}}
+			if err := db.Db.AutoMigrate(&SyncRootEvidence{}); err != nil {
+				t.Fatal(err)
+			}
+			rootEvidence := SyncRootEvidence{SyncPathID: file.SyncPathId, SourceType: file.SourceType, AccountID: file.AccountId, AccountIdentity: frozen.AccountIdentity,
+				RootFileID: frozen.RootFileID, RootPath: nodes[1].Path, Ancestors: nodes[:2], ObservedAt: 123}
+			if err := SaveSyncRootEvidenceTx(db.Db, rootEvidence, frozen.RootFileID); err != nil {
+				t.Fatal(err)
+			}
+			for _, node := range nodes[2:] {
+				directory := SyncFile{SyncPathId: file.SyncPathId, SourceType: file.SourceType, AccountId: file.AccountId, FileType: v115open.TypeDir,
+					FileId: node.FileID, ParentId: node.ParentID, Path: path.Dir(node.Path), FileName: path.Base(node.Path)}
+				if err := db.Db.Create(&directory).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			collector := EmbyDirectoryEvidenceCollector{}
 			seasonNumber := 1
 			if err := collector.Enrich(t.Context(), &snapshot, []EmbyMediaDirectory{
 				{ItemID: "201", MediaType: "Season", LocalPath: filepath.Dir(file.LocalFilePath), SeasonNumber: &seasonNumber},

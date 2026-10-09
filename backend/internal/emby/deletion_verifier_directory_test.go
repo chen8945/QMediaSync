@@ -106,3 +106,37 @@ func TestEmbyDirectoryLiveRetentionReusesSeparateDirectoryListings(t *testing.T)
 		t.Fatalf("expected one direct listing per directory: lists=%d stats=%v", provider.listCalls, provider.statCalls)
 	}
 }
+
+func TestEmbyDirectoryLiveRetentionUsesMappedEmbyPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, root, item, source string
+		allowed                  bool
+	}{
+		{name: "POSIX inside", root: "/emby", item: "/emby/Feature/live.strm"},
+		{name: "POSIX outside", root: "/emby", item: "/emby/Other/live.strm", allowed: true},
+		{name: "Windows inside", root: `D:\Media`, item: `d:\media\Feature\live.strm`},
+		{name: "Windows outside", root: `D:\Media`, item: `D:\Media\Other\live.strm`, allowed: true},
+		{name: "Windows source inside", root: `D:\Media`, item: `D:\Media\Other\live.strm`, source: `d:\media\Feature\live.mkv`},
+		{name: "Windows traversal", root: `D:\Media`, item: `D:\Media\Other\..\Feature\live.strm`},
+		{name: "UNC inside", root: `\\NAS\Media`, item: `\\nas\media\Feature\live.strm`},
+		{name: "UNC outside", root: `\\NAS\Media`, item: `\\nas\media\Other\live.strm`, allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &cleanupWorkerProvider{webhookTestProvider: &webhookTestProvider{files: map[string]models.EmbyRemoteFile{}}}
+			ctx := models.WithEmbyDirectoryProvider(t.Context(), provider)
+			scope := models.EmbyDirectoryScope{LocalPath: "/qms/Feature", Root: models.EmbyFrozenFile{
+				SourceType: models.SourceType115, AccountID: 1, AccountIdentity: "owner", FileID: "2", Path: "/cloud", FileName: "Feature", LocalRoot: "/qms",
+				Reference: models.EmbySTRMReference{EmbyPath: tc.root + "/Feature/original.strm", EmbyRoot: tc.root},
+			}}
+			source := tc.source
+			if source == "" {
+				source = tc.item
+			}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: tc.item}, Sources: []models.EmbySnapshotSource{{Path: source}}}
+			err := verifyEmbyDirectoryLiveItems(ctx, scope, []models.EmbyItemSnapshot{snapshot})
+			if (err == nil) != tc.allowed {
+				t.Fatalf("mapped directory allowed=%t err=%v", tc.allowed, err)
+			}
+		})
+	}
+}

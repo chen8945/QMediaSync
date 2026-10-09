@@ -2,28 +2,25 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"math"
 	"path"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
 
-	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
 )
 
 // EmbyMediaDirectory 是 Emby 实际祖先响应里的媒体目录角色（电影为其父文件夹），尚未取得云端删除能力。
 type EmbyMediaDirectory struct {
-	ItemID       string
-	MediaType    string
-	LocalPath    string
-	SeasonNumber *int
+	ItemID       string `json:"item_id"`
+	MediaType    string `json:"media_type"`
+	LocalPath    string `json:"local_path"`
+	SeasonNumber *int   `json:"season_number,omitempty"`
+	EvidenceKind string `json:"evidence_kind,omitempty"`
 }
 
 // embyDirectoryCandidate 记录目录角色的证据来源；同一目录两种来源并存时物理祖先优先。
@@ -32,38 +29,54 @@ type embyDirectoryCandidate struct {
 	kind      string
 }
 
-type embyObservedDirectoryChain struct {
-	Nodes []EmbyDirectoryAncestor
-	At    time.Time
-	Err   error
-}
-
-type embyObservedBaiduDirectory struct {
-	Files []*baidupan.FileInfo
-	At    time.Time
-	Err   error
-}
-
-// EmbyDirectoryEvidenceCollector 仅在一次同步／早期观察中复用短时目录读取。
-// 它不执行删除，也不在 SQL 事务内调用网盘。过期结果不会跨后续同步复用。
+// EmbyDirectoryEvidenceCollector 在单个准备 worker 内复用本地目录账本。
+// 不调用网盘；提交时会在事务内重新核对目录身份。
 type EmbyDirectoryEvidenceCollector struct {
-	chains     map[string]embyObservedDirectoryChain
-	baiduFiles map[string]embyObservedBaiduDirectory
+	roots      map[string]*embyLocalDirectoryView
+	strmRoots  map[string][]SyncPath
+	pathConfig *EmbyConfig
 }
 
 // Enrich 保存可验证的季剧祖先、电影物理父目录或 QMS 电影输出目录；缺少能力时保留原文件快照。
 func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *EmbyItemSnapshot, ancestors []EmbyMediaDirectory) error {
+	snapshot.MediaDirectories = nil
+	snapshot.preparedSTRMReferences, snapshot.frozenSources = nil, nil
+	for _, directory := range ancestors {
+		if embyCandidateRelated(snapshot.Item, directory) && validEmbyMediaDirectory(directory) {
+			directory.EvidenceKind = "emby_physical_ancestor"
+			snapshot.MediaDirectories = append(snapshot.MediaDirectories, directory)
+		}
+	}
 	if db.Db == nil {
 		return nil
 	}
+	if c.pathConfig == nil {
+		c.pathConfig = &EmbyConfig{}
+		if err := db.Db.WithContext(ctx).First(c.pathConfig).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.pathConfig = nil
+			return err
+		}
+	}
+	snapshot.pathConfig = c.pathConfig
 	files, err := resolveEmbySnapshotFiles(db.Db.WithContext(ctx), *snapshot)
 	if err != nil {
 		return err
 	}
+	if err := c.prepareSTRMReferences(ctx, snapshot, files); err != nil {
+		return err
+	}
 	snapshot.DirectoryScopes = nil
 	snapshot.cleanupFiles = files
+	contexts := files
+	if len(snapshot.MediaDirectories) > 0 {
+		mapped, err := embyMappedDirectoryContexts(db.Db.WithContext(ctx), *snapshot, files)
+		if err != nil {
+			return err
+		}
+		contexts = append(append([]EmbyFrozenFile(nil), files...), mapped...)
+	}
 	keys := map[string]bool{}
-	for _, file := range files {
+	for _, file := range contexts {
 		if file.Reason != "" || file.SourceType != SourceType115 && file.SourceType != SourceTypeBaiduPan {
 			continue
 		}
@@ -71,36 +84,33 @@ func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *E
 		for _, ancestor := range ancestors {
 			candidates = append(candidates, embyDirectoryCandidate{directory: ancestor, kind: "emby_physical_ancestor"})
 		}
-		if snapshot.Item.Type == "Movie" {
+		if snapshot.Item.Type == "Movie" && file.SyncFileID != 0 {
 			movie, err := embyScrapedMovieDirectory(ctx, file, snapshot.Item.ItemId)
 			if err != nil {
 				return err
 			}
 			if movie != nil {
+				movie.EvidenceKind = "qms_scrape_output"
+				snapshot.MediaDirectories = append(snapshot.MediaDirectories, *movie)
 				candidates = append(candidates, embyDirectoryCandidate{directory: *movie, kind: "qms_scrape_output"})
 			}
 		}
 		if len(candidates) == 0 {
 			continue
 		}
-		nodes, err := c.directoryChain(ctx, file)
+		nodes, err := c.directoryChain(ctx, *snapshot, file)
 		if err != nil {
 			return err
 		}
-		if file.SourceType == SourceTypeBaiduPan {
-			var account Account
-			if err := db.Db.WithContext(ctx).First(&account, file.AccountID).Error; err != nil {
-				return err
-			}
-			if account.SourceType != file.SourceType || EmbyAccountIdentity(account) != file.AccountIdentity {
-				return ErrEmbyIdentityAmbiguous
-			}
-			if err := c.baiduDirectoryMember(ctx, file, nodes, account.GetBaiDuPanClient()); err != nil {
-				return err
-			}
-		}
 		for _, candidate := range candidates {
 			directory := candidate.directory
+			if candidate.kind == "emby_physical_ancestor" {
+				var valid bool
+				directory.LocalPath, valid = embyManagedMediaDirectory(file, directory.LocalPath)
+				if !valid {
+					continue
+				}
+			}
 			if !embyCandidateRelated(snapshot.Item, directory) || !validEmbyObservedLocalDirectory(file, directory.LocalPath) {
 				continue
 			}
@@ -120,6 +130,7 @@ func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *E
 					SyncPathID: file.SyncPathID, SourceType: file.SourceType, AccountID: file.AccountID,
 					AccountIdentity: file.AccountIdentity, LocalRoot: file.LocalRoot, RemoteRoot: file.RemoteRoot,
 					RootFileID: file.RootFileID, FileID: node.FileID, ParentID: node.ParentID,
+					Reference: file.Reference, SourceID: file.SourceID,
 					FileName: path.Base(remote), Path: path.Dir(remote), LocalFilePath: directory.LocalPath,
 				}
 				scope := EmbyDirectoryScope{Root: root, MediaType: directory.MediaType, ItemID: directory.ItemID, SeasonNumber: directory.SeasonNumber,
@@ -187,195 +198,6 @@ func embyScrapedMovieDirectory(ctx context.Context, file EmbyFrozenFile, itemID 
 	return candidate, nil
 }
 
-func (c *EmbyDirectoryEvidenceCollector) directoryChain(ctx context.Context, file EmbyFrozenFile) ([]EmbyDirectoryAncestor, error) {
-	if c.chains == nil {
-		c.chains = map[string]embyObservedDirectoryChain{}
-	}
-	key := embyDigest([]any{file.SourceType, file.AccountIdentity, file.AccountID, file.ParentID, file.Path})
-	if cached, ok := c.chains[key]; ok && time.Since(cached.At) < 30*time.Second {
-		return cached.Nodes, cached.Err
-	}
-	var account Account
-	if err := db.Db.WithContext(ctx).First(&account, file.AccountID).Error; err != nil {
-		return nil, err
-	}
-	if account.SourceType != file.SourceType || EmbyAccountIdentity(account) != file.AccountIdentity {
-		return nil, ErrEmbyIdentityAmbiguous
-	}
-	var nodes []EmbyDirectoryAncestor
-	var err error
-	if file.SourceType == SourceType115 {
-		detail, readErr := account.Get115Client().GetFsDetailByCid(ctx, file.ParentID)
-		if readErr != nil {
-			c.chains[key] = embyObservedDirectoryChain{At: time.Now(), Err: readErr}
-			return nil, readErr
-		}
-		nodes, err = emby115ObservedDirectoryChain(file, detail)
-	} else {
-		nodes, err = c.baiduDirectoryChain(ctx, file, account.GetBaiDuPanClient())
-	}
-	if err != nil {
-		c.chains[key] = embyObservedDirectoryChain{At: time.Now(), Err: err}
-		return nil, err
-	}
-	c.chains[key] = embyObservedDirectoryChain{Nodes: nodes, At: time.Now()}
-	return nodes, nil
-}
-
-func emby115ObservedDirectoryChain(file EmbyFrozenFile, detail *v115open.FileDetail) ([]EmbyDirectoryAncestor, error) {
-	if detail == nil || detail.FileCategory != v115open.TypeDir || detail.FileId != file.ParentID || !embyDeleteBasename(detail.FileName) || len(detail.Paths) == 0 {
-		return nil, ErrEmbyIdentityAmbiguous
-	}
-	nodes := []EmbyDirectoryAncestor{}
-	seen := map[string]bool{}
-	currentPath, parentID := "/", ""
-	for i, ancestor := range detail.Paths {
-		if ancestor.FileId == "" || seen[ancestor.FileId] || i == 0 && ancestor.FileId != "0" || i > 0 && !embyDeleteBasename(ancestor.Name) {
-			return nil, ErrEmbyIdentityAmbiguous
-		}
-		seen[ancestor.FileId] = true
-		if i > 0 {
-			currentPath = path.Join(currentPath, ancestor.Name)
-		}
-		nodes = append(nodes, EmbyDirectoryAncestor{FileID: ancestor.FileId, ParentID: parentID, Path: currentPath})
-		parentID = ancestor.FileId
-	}
-	if seen[detail.FileId] || !embyRemoteDirectoriesMatch(file.SourceType, currentPath, detail.Path) || !embyRemoteDirectoriesMatch(file.SourceType, path.Join(currentPath, detail.FileName), file.Path) {
-		return nil, ErrEmbyIdentityAmbiguous
-	}
-	nodes = append(nodes, EmbyDirectoryAncestor{FileID: detail.FileId, ParentID: parentID, Path: path.Join(currentPath, detail.FileName)})
-	rootFound := false
-	for _, node := range nodes {
-		if embyRemoteDirectoriesMatch(file.SourceType, node.Path, file.RemoteRoot) && node.FileID == file.RootFileID {
-			rootFound = true
-		}
-	}
-	if !rootFound {
-		return nil, ErrEmbyIdentityAmbiguous
-	}
-	return nodes, nil
-}
-
-type embyBaiduDirectoryReader interface {
-	GetFileListWithOptions(context.Context, string, int, int32, int32, int32, baidupan.FileListOptions) ([]*baidupan.FileInfo, error)
-}
-
-// 百度文件账本的 FileID/ParentID 是路径；必须另以原 fsid 证明成员仍在
-// 已读取的父目录中，防止把同路径替代目录绑定到旧媒体。完整当层清单按父目录复用。
-func (c *EmbyDirectoryEvidenceCollector) baiduDirectoryMember(ctx context.Context, file EmbyFrozenFile, nodes []EmbyDirectoryAncestor, client embyBaiduDirectoryReader) error {
-	fsid, err := strconv.ParseUint(file.PickCode, 10, 64)
-	if err != nil || fsid == 0 || len(nodes) == 0 {
-		return ErrEmbyIdentityAmbiguous
-	}
-	parent := nodes[len(nodes)-1]
-	if !embyRemoteDirectoriesMatch(file.SourceType, parent.Path, file.Path) {
-		return ErrEmbyIdentityAmbiguous
-	}
-	entries, err := c.baiduDirectoryEntries(ctx, file, parent, client)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.FsId != fsid {
-			continue
-		}
-		if entry.IsDir != 0 || entry.ServerFilename != file.FileName || !embyRemoteDirectoriesMatch(file.SourceType, entry.Path, path.Join(file.Path, file.FileName)) || entry.Size > math.MaxInt64 || int64(entry.Size) != file.FileSize ||
-			file.SHA1 != "" && !strings.EqualFold(entry.Md5, file.SHA1) || file.MTime != 0 && (entry.ServerMtime > math.MaxInt64 || int64(entry.ServerMtime) != file.MTime) {
-			return ErrEmbyIdentityAmbiguous
-		}
-		return nil
-	}
-	return ErrEmbyIdentityAmbiguous
-}
-
-func (c *EmbyDirectoryEvidenceCollector) baiduDirectoryEntries(ctx context.Context, file EmbyFrozenFile, parent EmbyDirectoryAncestor, client embyBaiduDirectoryReader) ([]*baidupan.FileInfo, error) {
-	if c.baiduFiles == nil {
-		c.baiduFiles = map[string]embyObservedBaiduDirectory{}
-	}
-	key := embyDigest([]any{file.AccountID, file.AccountIdentity, parent.FileID, parent.Path})
-	if cached, ok := c.baiduFiles[key]; ok && time.Since(cached.At) < 30*time.Second {
-		return cached.Files, cached.Err
-	}
-	var files []*baidupan.FileInfo
-	seenIDs, seenNames := map[uint64]bool{}, map[string]bool{}
-	for offset := int32(0); ; offset += embyDeleteListPageSize {
-		if offset > math.MaxInt32-embyDeleteListPageSize {
-			return nil, ErrEmbyIdentityAmbiguous
-		}
-		ascending := int32(0)
-		entries, err := client.GetFileListWithOptions(ctx, parent.Path, 0, 1, offset, embyDeleteListPageSize, baidupan.FileListOptions{Order: "name", Desc: &ascending})
-		if err != nil {
-			c.baiduFiles[key] = embyObservedBaiduDirectory{At: time.Now(), Err: err}
-			return nil, err
-		}
-		if entries == nil || len(entries) > embyDeleteListPageSize {
-			return nil, ErrEmbyIdentityAmbiguous
-		}
-		for _, entry := range entries {
-			if entry == nil || entry.FsId == 0 || seenIDs[entry.FsId] || seenNames[entry.ServerFilename] || !embyDeleteBasename(entry.ServerFilename) || entry.Path != path.Join(parent.Path, entry.ServerFilename) || entry.IsDir > 1 {
-				return nil, ErrEmbyIdentityAmbiguous
-			}
-			seenIDs[entry.FsId], seenNames[entry.ServerFilename] = true, true
-		}
-		files = append(files, entries...)
-		if len(entries) < embyDeleteListPageSize {
-			break
-		}
-	}
-	c.baiduFiles[key] = embyObservedBaiduDirectory{Files: files, At: time.Now()}
-	return files, nil
-}
-
-func (c *EmbyDirectoryEvidenceCollector) baiduDirectoryChain(ctx context.Context, file EmbyFrozenFile, client embyBaiduDirectoryReader) ([]EmbyDirectoryAncestor, error) {
-	directory, valid := embyRemoteDirectory(file.Path)
-	if !valid {
-		return nil, ErrEmbyIdentityAmbiguous
-	}
-	nodes := []EmbyDirectoryAncestor{{FileID: "0", Path: "/"}}
-	for _, name := range strings.Split(strings.TrimPrefix(directory, "/"), "/") {
-		if !embyDeleteBasename(name) {
-			return nil, ErrEmbyIdentityAmbiguous
-		}
-		parent := nodes[len(nodes)-1]
-		nextPath := path.Join(parent.Path, name)
-		cacheKey := embyDigest([]any{file.SourceType, file.AccountIdentity, file.AccountID, nextPath})
-		if cached, ok := c.chains[cacheKey]; ok && time.Since(cached.At) < 30*time.Second && len(cached.Nodes) > 0 {
-			node := cached.Nodes[len(cached.Nodes)-1]
-			if node.ParentID == parent.FileID {
-				nodes = append(nodes, node)
-				continue
-			}
-		}
-		var found *baidupan.FileInfo
-		var observedDirectories []EmbyDirectoryAncestor
-		entries, err := c.baiduDirectoryEntries(ctx, file, parent, client)
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range entries {
-			if entry.IsDir == 1 {
-				observedDirectories = append(observedDirectories, EmbyDirectoryAncestor{FileID: strconv.FormatUint(entry.FsId, 10), ParentID: parent.FileID, Path: entry.Path})
-			}
-			if entry.ServerFilename == name {
-				if found != nil || entry.IsDir != 1 || entry.Path != nextPath {
-					return nil, ErrEmbyIdentityAmbiguous
-				}
-				found = entry
-			}
-		}
-		if found == nil {
-			return nil, ErrEmbyIdentityAmbiguous
-		}
-		for _, observed := range observedDirectories {
-			observedKey := embyDigest([]any{file.SourceType, file.AccountIdentity, file.AccountID, observed.Path})
-			c.chains[observedKey] = embyObservedDirectoryChain{Nodes: []EmbyDirectoryAncestor{observed}, At: time.Now()}
-		}
-		nodes = append(nodes, EmbyDirectoryAncestor{FileID: strconv.FormatUint(found.FsId, 10), ParentID: parent.FileID, Path: nextPath})
-		c.chains[cacheKey] = embyObservedDirectoryChain{Nodes: append([]EmbyDirectoryAncestor(nil), nodes...), At: time.Now()}
-	}
-	return nodes, nil
-}
-
 func freezeEmbyScopedMetadata(tx *gorm.DB, snapshot EmbyItemSnapshot, scopes []EmbyDirectoryScope) ([]EmbyScopedFile, error) {
 	files := []EmbyScopedFile{}
 	if snapshot.Item.SeasonId == "" || snapshot.Item.ParentIndexNumber < 0 {
@@ -390,8 +212,8 @@ func freezeEmbyScopedMetadata(tx *gorm.DB, snapshot EmbyItemSnapshot, scopes []E
 				continue
 			}
 			name := fmt.Sprintf("season%02d-poster.jpg", snapshot.Item.ParentIndexNumber)
-			var candidates []SyncFile
-			if err := tx.Where("source_type = ? AND account_id = ? AND file_name = ? AND is_meta = ? AND is_video = ?", series.Root.SourceType, series.Root.AccountID, name, true, false).Find(&candidates).Error; err != nil {
+			candidates, err := embyApplyFileCandidates(tx, "scoped-meta:"+embyJSON([]any{series.Root.SourceType, series.Root.AccountID, path.Join(series.Root.Path, series.Root.FileName), name}), tx.Where("source_type = ? AND account_id = ? AND path IN ? AND file_name = ? AND is_meta = ? AND is_video = ?", series.Root.SourceType, series.Root.AccountID, embyDirectoryPathRepresentations(path.Join(series.Root.Path, series.Root.FileName)), name, true, false).Order("id"))
+			if err != nil {
 				return nil, err
 			}
 			for _, candidate := range candidates {

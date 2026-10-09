@@ -108,7 +108,7 @@ func TestEmbyOriginalPathAbsentPreservesDanglingSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "missing-target"), link); err != nil {
 		t.Skip(err)
 	}
-	if err := embyOriginalPathAbsent(root, link); err == nil {
+	if err := embyOriginalPathAbsent(root, link, false); err == nil {
 		t.Fatal("dangling STRM link treated as deleted")
 	}
 }

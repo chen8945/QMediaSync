@@ -418,6 +418,9 @@ func DeleteSyncPathByID(ctx context.Context, id uint) error {
 	finish := BeginSyncPositionMutation()
 	defer finish()
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := LockEmbySourceMutationTx(tx); err != nil {
+			return err
+		}
 		result := tx.Delete(&SyncPath{}, id)
 		if result.Error != nil {
 			return result.Error

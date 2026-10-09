@@ -109,6 +109,11 @@ type SyncStrm struct {
 	// 115 同步器
 	sync115 *Sync115
 
+	rootEvidenceMu       sync.Mutex
+	rootEvidence         *models.SyncRootEvidence
+	rootEvidenceConflict bool
+	rootEvidenceBaseID   string
+
 	memSyncCache *MemorySyncCache // 同步缓存
 
 	embyRefreshTargetsMu sync.Mutex
@@ -189,6 +194,8 @@ func newSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePat
 		PathErrChan:   make(chan error, 1),
 		LastSyncAt:    lastSyncAt,
 		IsFile:        isFile,
+
+		rootEvidenceBaseID: sourcePathId,
 	}
 	s.memSyncCache = NewMemorySyncCache(syncPathId)
 	if s.Account == nil {

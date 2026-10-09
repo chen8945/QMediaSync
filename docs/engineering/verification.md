@@ -138,6 +138,49 @@ GitHub 私有连接池回收运行 `go test -race ./internal/github -run '^TestM
 
 `TestProxyCustomJsWaitsForEmby` 通过 Node.js 执行处理器生成的脚本，验证等待初始化、单次执行及异常隔离。运行相关 Go 测试前确认 `node --version` 可用；没有 Node.js 时该项会明确跳过，不能据此声称脚本行为已验证。
 
+## Emby 本地资料与外部 STRM 验证
+
+根链、来源快照和删除执行必须一起验证。普通回归覆盖 `syncstrm`、`emby`、`models`、`controllers`、`requests`、`backup`、`embyclient-rest-go` 及三个网盘客户端；相关并发执行 race 和 vet。低内存机器用 `GOMAXPROCS=2 GOMEMLIMIT=300MiB`、`-p 1` 串行运行，避免多个编译／链接进程挤占内存。
+
+```bash
+cd backend
+go test -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/embyclient-rest-go ./internal/v115open ./internal/baidupan ./internal/openlist .
+go vet -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/embyclient-rest-go ./internal/v115open ./internal/baidupan ./internal/openlist .
+go test -p 1 -race ./internal/syncstrm ./internal/emby ./internal/models ./internal/backup
+```
+
+- `TestSTRMLocalEvidenceSurvivesReopenAndEmbySync` 用正常 115 HTTP 响应建立空库资料，完成后台账本后重开数据库，再验证 Emby 文件、目录、专属附件、季海报及联动删除；不能只预填根资料表代替正常 STRM 链路。
+- `sync_pipeline*`、`TestEmbyLocalDirectory*` 和来源账号测试覆盖两次全量、增量、单条及 Webhook 的零网盘预采集，乱序／有界／取消／删除屏障、读取失败保旧、Windows／UNC 映射和不同账号的同码来源。`TestEmbySeasonPosterQueryUsesExactDirectory` 同时核对 SQL 目录条件及实际返回行数。
+- `TestEmbySnapshotParallelPipeline*` 覆盖三个完整 worker、四个在途组、复杂及已有成员屏障、普通重复 ID 等待、失败时收齐成功提交与取消退出。`TestEmbySnapshotOptimized*` 覆盖差量写、原始 URL、全量标记的 SQL NULL 保留、缺失派生记录修复与全局条目身份；这些行为在证据未变化时也必须成立。
+- 自动 STRM 路径对应另覆盖已有文件绑定、115／百度／OpenList 的无文件记录外部候选、相同路径与不同前缀、POSIX／Windows／UNC、单个条目即可识别、错误来源／账号、候选冲突及符号链接边界。核对候选只在已知根中有界查找，普通绑定不增加网盘请求；提交与删除重验冻结依据，根／账号／手工配置变化不重定向旧通知，外部自动定位不增加整目录权限，原 STRM 仍在或根不可访问时阻止删除。`TestEmbyAutoSTRMDeletionAfterReopen` 与带 `integration` 标签的 `TestEmbyAutoSTRMPostgres` 共用重开后执行固定文件删除计划及根变化保留的用例；PostgreSQL 用例同时验证路径引用持久化。新引用还需覆盖旧引用兼容。
+- 补查与执行使用真实 provider／SDK 和本地 HTTP 替身计数，区分详情、列表、删除与确认。完整身份不增加补查，已知 FileID 不走 downurl，同目录已取得的完整清单应复用；保留共享引用、来源隔离、过期与写后失效、部分成功及重启核验。
+- `TestWebhookCleanupExternalAccountConflictIsolated`、`TestWebhookCleanupExternalLookupFailureKeepsRetryBudget` 和 `TestWebhookCleanupExternalGlobalFailureNeverSavesPartialPlan` 验证同条目多来源、账号冲突、临时补查恢复／四次耗尽、健康目标完成及重开不变；全局快照、未知影响范围和取消不能保存局部计划。`TestWebhookCleanupExternalRetryIsolatesConfirmedAccountConflict` 验证计划保存后账号删除／换主体仍能处理其他账号，并拒绝将任意 provider 或数据库错误降级为局部冲突；日志测试核对中文原因汇总与请求次数表述。
+- 设置隔离 `QMS_TEST_POSTGRES_DSN` 后，以 `-tags=integration` 运行 `TestSyncRootEvidencePostgres`、`TestEmbySyncMigrationPostgres`、`TestEmbyExternalDeletionPostgresResume`、`TestEmbyCleanupPostgresPersistence`、`TestRestoreEmbySyncSchemaCompatibilityPostgres`、`TestRestoreLegacyRootEvidenceDependenciesPostgres` 和 `TestLogicalBackupRestoreCrossEngine`。冷库与并发删除屏障另有真实 PostgreSQL 入口 `TestSTRMLocalEvidenceSurvivesReopenAndEmbySyncPostgres`、`TestEmbySnapshotPipelineDeletionDuringParallelPreparationPreservesOldStatePostgres`，与普通 SQLite 用例共用场景；缺 DSN 的 skip 不算 PostgreSQL 通过。当前及旧版备份必须验证完整性、原子回滚、目标根资料不混用和无关部分恢复兼容。
+- 文件名称索引另验证 SQLite／PostgreSQL 新库、67→68 升级、修复与恢复；建索引失败与前序 DDL、版本一并回滚，重开后可重试。保留长名称、重复名称、空值及原记录；目录身份查询继续拒绝同名替换和稳定 ID 移动，不因索引优化跳过提交期核验。
+- `TestSQLiteEmbyLookup*` 和 `TestRestoreEmbyMediaLookupIndexes` 覆盖 SQLite 五个查询索引的独立建表、真实查询结果／计划、新库和 67→68 回滚重试、修复及单表恢复；64→65 不提前建立这五项索引，PostgreSQL 不创建 SQLite 专用索引。目录名称或多 ID 成员查询可以选择其他有效索引，不强制规划器使用某一个索引。
+- PG 真实并发证明使用 `TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML` 和 `TestEmbySnapshotOptimizedPostgres*`：前者从 `syncEmbyLibrary` 入口同时完成三次未提交的 INSERT，后者验证独立提交可前进、同一全局条目首次插入被串行化，以及删除同步根在写来源记录之前等待快照完成。这些并发回归及 STRM 冷启动／重开辅助使用生产的 `lib/pq` 驱动；实验池的四条连接不是生产默认值。
+- `TestSyncLedgerPostgresSerializesBeforeSourceRows` 用真实差异页验证批量账本写入先等待索引保护，再修改目录与视频；位置变化和仅更新时间两种批次都必须成功提交，不能靠取消中断掩盖死锁，也不能因协调而推进索引版本。
+
+两万条媒体／两千个目录的性能对照由 `TestEmbySyncPerformancePostgres` 显式启用，`QMS_TEST_POSTGRES_DSN` 必须指向可丢弃的专用 PostgreSQL 测试库，每个场景新建并清理独立 schema：
+
+```bash
+cd backend
+GOMAXPROCS=2 GOMEMLIMIT=300MiB QMS_EMBY_PERFORMANCE=1 QMS_TEST_POSTGRES_DSN='postgres://用户:密码@127.0.0.1:端口/测试库?sslmode=disable' go test -p 1 -tags=integration -run '^TestEmbySyncPerformancePostgres$' -count=1 -timeout=40m -v ./internal/emby
+```
+
+改动前后使用相同工具链、数据、分页和 HTTP 配额，夹具调用各版本的生产索引辅助，不能只执行模型 AutoMigrate；新版同时调用 `EnsureEmbySyncFileLookupIndexes` 与 `EnsureEmbyMediaLookupIndexes`，由数据库方言决定是否创建专用索引。分别重复全量与增量的两轮；记录完整同步耗时、Emby／网盘请求、SQL 数量及累计耗时，以及从 BeginTx 调用到提交返回的累计耗时，另核对全部条目与文件、目录证据。该事务指标包含连接等待，多个 worker 的区间可以重叠；不能从同步墙钟减去累计值推算事务外耗时，也不能与 SQL 累计相加。数据准备和断言耗时不计入同步耗时。两版测量必须串行且避免同时构建；本地 HTTP 服务的高配额不能代表真实网盘限速，也不能据此承诺生产实例固定耗时。
+
+STRM 的规模对照使用 `TestSTRMSyncPerformancePostgres`，同样需要专用 PostgreSQL 测试库：
+
+```bash
+cd backend
+GOMAXPROCS=2 GOMEMLIMIT=300MiB QMS_STRM_PERFORMANCE=1 QMS_TEST_POSTGRES_DSN='postgres://用户:密码@127.0.0.1:端口/测试库?sslmode=disable' go test -p 1 -tags=integration -run '^TestSTRMSyncPerformancePostgres$' -count=1 -timeout=40m -v ./internal/syncstrm
+```
+
+该夹具从空账本开始，用真实 HTTP 分页响应同步两万个视频和两千个目录，依次执行首次全量、重复全量及无变化增量，每轮都创建新同步器，并等正常后台账本完成后停止计时。分别记录生成阶段、后台剩余时间、完整耗时、SQL 和网盘详情／列表／写入数量，核对全部账本及输出文件，重开数据库后再核对完整根链。分页大小为 `1000`，两版沿用同一数据和配额，分别创建各版本的生产索引，以计入新增索引的写入成本；旧版仅适配不支持的根链初始化及断言，不能改动其扫描、HTTP 或保存逻辑。
+
+前端运行 `pnpm exec vitest run test/components/AppEmbySettings.path-mappings.test.ts test/components/AppEmbySettings.errors.test.ts test/unit/emby-proxy-api.test.ts`，以及类型检查、改动文件 lint 和生产构建。覆盖手工映射组件未挂载、不发起隐藏组件的同步目录请求、有／无既有映射时普通设置均可保存、同步启用／停用时保留原映射、保存期间锁定、失败保留输入和坏响应。普通设置请求省略 `path_mappings`，由后端保留当前值；浏览器复核窄屏布局、键盘操作及原删除开关的停用范围。
+
 ## 数据库启动与部署验证
 
 ```bash

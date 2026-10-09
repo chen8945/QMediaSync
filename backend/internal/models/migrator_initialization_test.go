@@ -304,6 +304,7 @@ func assertFreshInitializationDefaults(t *testing.T, conn *gorm.DB) {
 		t.Fatalf("changed default categories or order: movies=%+v tv=%+v", movies, tvShows)
 	}
 	assertSyncFileLookupIndexes(t)
+	assertSQLiteEmbyLookupIndexes(t, conn)
 	if !conn.Migrator().HasIndex(&DbUploadTask{}, activeUploadTaskUniqueIndexName) {
 		t.Fatal("missing required upload uniqueness index")
 	}

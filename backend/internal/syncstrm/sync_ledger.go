@@ -188,6 +188,9 @@ func (s *SyncStrm) handleTempTableDiff() error {
 			return fmt.Errorf("删除已替换的百度旧路径记录失败：%w", err)
 		}
 	}
+	if err := s.saveRootEvidence(); err != nil {
+		return err
+	}
 	s.Sync.Logger.Infof("同步文件记录保存完成，缓存中剩余 %d 条受保护数据", s.memSyncCache.Count())
 	return s.Context.Err()
 }
@@ -229,5 +232,10 @@ func syncPositionTransaction(handle *gorm.DB, changed bool, write func(*gorm.DB)
 		finish := models.BeginSyncPositionMutation()
 		defer finish()
 	}
-	return handle.Transaction(write)
+	return handle.Transaction(func(tx *gorm.DB) error {
+		if err := models.LockEmbySourceMutationTx(tx); err != nil {
+			return err
+		}
+		return write(tx)
+	})
 }

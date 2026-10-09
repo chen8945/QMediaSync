@@ -38,6 +38,11 @@ func EnsureRestoreIndexes(tx *gorm.DB, tables []any) error {
 			err = createActiveUploadTaskUniqueIndex(tx)
 		case "sync_files":
 			err = EnsureSyncFileLookupIndexes(tx)
+			if err == nil {
+				err = EnsureEmbySyncFileLookupIndexes(tx)
+			}
+		case "emby_media_items":
+			err = EnsureEmbyMediaLookupIndexes(tx)
 		case "strm_generation_tasks":
 			err = EnsureStrmGenerationQueueIndex(tx)
 		}

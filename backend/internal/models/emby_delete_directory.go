@@ -18,7 +18,7 @@ import (
 
 type embyDeletionFinalGuardKey struct{}
 
-// IsEmbyDeletionFinalGuard 表示已进入目录发送前检查，只能使用已完成且未过期的核验读取。
+// IsEmbyDeletionFinalGuard 表示已进入发送前检查，只能使用已完成且未过期的核验读取。
 func IsEmbyDeletionFinalGuard(ctx context.Context) bool {
 	final, _ := ctx.Value(embyDeletionFinalGuardKey{}).(bool)
 	return final
@@ -68,6 +68,7 @@ func AddEmbyDirectoryTargets(ctx context.Context, plan *EmbyDeletionPlan, factor
 				break
 			}
 			target.CoveredKeys = append(target.CoveredKeys, member.Key)
+			target.SourceBindings = append(target.SourceBindings, member.SourceBindings...)
 			for _, ref := range member.Owners {
 				if !slices.Contains(target.Owners, ref) {
 					target.Owners = append(target.Owners, ref)
@@ -154,6 +155,7 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 		return ErrEmbyIdentityAmbiguous
 	}
 	seen := map[string]bool{}
+	var sourceBindings []EmbyDeletionSupplement
 	for _, key := range target.CoveredKeys {
 		memberIndex := slices.IndexFunc(plan.Targets, func(member EmbyDeletionTarget) bool { return member.Key == key })
 		if memberIndex < 0 || seen[key] {
@@ -164,6 +166,12 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 		if member.Kind == "directory" || !embyDirectoryContainsFile(scope, member.File) || member.CoveredBy != "" && member.CoveredBy != target.Key {
 			return ErrEmbyIdentityAmbiguous
 		}
+		if len(member.SourceBindings) != 0 {
+			if err := validateEmbyDeletionTarget(ctx, plan, member); err != nil {
+				return err
+			}
+			sourceBindings = append(sourceBindings, member.SourceBindings...)
+		}
 		for _, ref := range member.Owners {
 			if !slices.Contains(target.Owners, ref) {
 				return ErrEmbyIdentityAmbiguous
@@ -173,6 +181,9 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 	if len(seen) == 0 {
 		return ErrEmbyIdentityAmbiguous
 	}
+	if embyJSON(sourceBindings) != embyJSON(target.SourceBindings) {
+		return ErrEmbyIdentityAmbiguous
+	}
 	conn := db.Db.WithContext(ctx)
 	var config EmbyConfig
 	if err := conn.First(&config).Error; err != nil {
@@ -180,6 +191,16 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 	}
 	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
 		return ErrEmbyDeleteDisabled
+	}
+	if scope.Root.Reference.EmbyPath != "" {
+		if err := validateEmbySTRMReferenceTx(conn, &config, scope.Root.Reference); err != nil {
+			return err
+		}
+	} else {
+		currentReference := ResolveEmbySTRMReference(&config, scope.LocalPath)
+		if currentReference.LocalRoot != "" || currentReference.Reason != "" {
+			return ErrEmbySnapshotStale
+		}
 	}
 	var index EmbyIndexState
 	if err := conn.First(&index, 1).Error; err != nil {
@@ -657,18 +678,31 @@ type embyDirectoryChecks struct {
 	active            bool
 	reads             map[string]embyDirectoryRead
 	listings          map[embyDeletionListingKey]embyDeletionListing
+	stats             map[embyDeletionStatKey]embyDeletionStat
+	statReads         map[embyDeletionStatKey]*embyDeletionPendingRead
+	listReads         map[embyDeletionListingKey]*embyDeletionPendingRead
+	done              chan struct{}
+	statInvalidatedAt time.Time
 	listingGeneration uint64
 }
 
 // 仅一次已持有 syncscope 的执行可复用；释放范围立即使所有云端边界读取失效。
 func beginEmbyDirectoryChecks(ctx context.Context) (context.Context, func()) {
-	checks := &embyDirectoryChecks{active: true, reads: map[string]embyDirectoryRead{}, listings: map[embyDeletionListingKey]embyDeletionListing{}}
+	checks := &embyDirectoryChecks{
+		active: true, reads: map[string]embyDirectoryRead{}, listings: map[embyDeletionListingKey]embyDeletionListing{},
+		statReads: map[embyDeletionStatKey]*embyDeletionPendingRead{}, listReads: map[embyDeletionListingKey]*embyDeletionPendingRead{},
+		done: make(chan struct{}), statInvalidatedAt: time.Now(),
+	}
 	return context.WithValue(ctx, embyDirectoryChecksKey{}, checks), func() {
 		checks.mu.Lock()
 		defer checks.mu.Unlock()
-		checks.active = false
+		if checks.active {
+			checks.active = false
+			close(checks.done)
+		}
 		clear(checks.reads)
 		clear(checks.listings)
+		clear(checks.stats)
 	}
 }
 

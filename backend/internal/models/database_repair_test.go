@@ -98,7 +98,7 @@ func TestRepairDatabaseRestoresMissingSchemaWithVersion(t *testing.T) {
 func TestRestoreSchemaUsesCallerTransaction(t *testing.T) {
 	setupFreshInitializationSQLite(t)
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		tables := []any{ApiKey{}, User{}, DbDownloadTask{}, DbUploadTask{}, SyncFile{}, StrmGenerationTask{}}
+		tables := []any{ApiKey{}, User{}, DbDownloadTask{}, DbUploadTask{}, SyncFile{}, EmbyMediaItem{}, StrmGenerationTask{}}
 		if err := CreateRestoreSchema(tx, tables); err != nil {
 			return err
 		}
@@ -115,6 +115,12 @@ func TestRestoreSchemaUsesCallerTransaction(t *testing.T) {
 			{DbDownloadTask{}, activeDownloadTaskUniqueIndexName},
 			{DbUploadTask{}, activeUploadTaskUniqueIndexName},
 			{SyncFile{}, syncFileSiblingPathIndexName},
+			{SyncFile{}, syncFileNameIndexName},
+			{SyncFile{}, syncFileSidecarLookupIndexName},
+			{SyncFile{}, syncFileDirectoryNameIndexName},
+			{SyncFile{}, syncFileDirectoryPickCodeIndexName},
+			{EmbyMediaItem{}, embyMediaPartLookupIndexName},
+			{EmbyMediaItem{}, embyMediaVersionLookupIndexName},
 			{StrmGenerationTask{}, strmGenerationQueueIndexName},
 		} {
 			if !tx.Migrator().HasIndex(test.model, test.index) {

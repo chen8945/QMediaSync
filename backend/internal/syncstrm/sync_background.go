@@ -88,11 +88,17 @@ func (s *SyncStrm) backgroundLedgerView(record *models.Sync) *SyncStrm {
 		protectedFileIDs: maps.Clone(s.protectedFileIDs), protectedPickCodes: maps.Clone(s.protectedPickCodes),
 		protectedLocalPaths: maps.Clone(s.protectedLocalPaths), missingCleanupReason: s.missingCleanupReason,
 		protectedLocalDirectories: maps.Clone(s.protectedLocalDirectories),
+		rootEvidence:              s.rootEvidence, rootEvidenceConflict: s.rootEvidenceConflict,
+		rootEvidenceBaseID: s.rootEvidenceBaseID,
+	}
+	if s.sync115 != nil && s.sync115.pathConflict {
+		view.rootEvidenceConflict = true
 	}
 	s.scanMu.Unlock()
 	s.memSyncCache = nil
 	s.scopeRelease = nil
 	s.scopeLocalRoot = ""
+	s.rootEvidence = nil
 	return view
 }
 

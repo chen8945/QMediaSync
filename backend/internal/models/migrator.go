@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 67
+var MaxVersionCode = 68
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -33,7 +33,7 @@ var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
 	ApiKey{}, UserSession{}, Settings{}, Sync{}, User{}, Account{},
-	SyncPath{}, SyncFile{}, SyncPathScrapePath{}, DirectoryUploadRule{}, DirectoryUploadProcessedFile{}, SyncPathIdempotencyRecord{},
+	SyncPath{}, SyncFile{}, SyncRootEvidence{}, SyncPathScrapePath{}, DirectoryUploadRule{}, DirectoryUploadProcessedFile{}, SyncPathIdempotencyRecord{},
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
 	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
@@ -824,6 +824,17 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 		}
 		migrator.VersionCode = 67
 	}
+	if migrator.VersionCode == 67 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if err := MigrateEmbySyncEvidenceSchema(tx); err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 68).Error
+		}); err != nil {
+			return fmt.Errorf("迁移同步目录资料和 Emby 路径映射失败：%w", err)
+		}
+		migrator.VersionCode = 68
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -1413,6 +1424,12 @@ func batchCreateTable(conn *gorm.DB, stopOnError bool) error {
 		return err
 	}
 	if err := EnsureSyncFileLookupIndexes(conn); err != nil {
+		return err
+	}
+	if err := EnsureEmbySyncFileLookupIndexes(conn); err != nil {
+		return err
+	}
+	if err := EnsureEmbyMediaLookupIndexes(conn); err != nil {
 		return err
 	}
 	if err := EnsureStrmGenerationQueueIndex(conn); err != nil {

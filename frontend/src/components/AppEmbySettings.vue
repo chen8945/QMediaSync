@@ -469,101 +469,108 @@
 
           <el-divider class="feature-divider" />
 
-          <div class="feature-item danger-item" :class="{ 'is-disabled': !embyData.sync_enabled }">
-            <el-form-item label="删除时联动删除网盘文件" prop="enable_delete_netdisk">
-              <div class="switch-wrapper">
-                <el-switch
-                  v-model="embyData.enable_delete_netdisk"
-                  :active-value="1"
-                  :inactive-value="0"
-                  :disabled="embyLoading || !embyData.sync_enabled"
-                  active-color="#f56c6c"
-                  inactive-color="#dcdfe6"
-                />
-                <span class="switch-label" :class="{ 'is-danger': embyData.enable_delete_netdisk }">
-                  {{ embyData.enable_delete_netdisk ? '启用' : '禁用' }}
-                </span>
-              </div>
-            </el-form-item>
-            <div class="feature-description">
-              <el-alert type="warning" :closable="false" class="danger-alert">
-                <template #default>
-                  <strong>⚠ 谨慎启用：</strong>
-                  开启后，QMS
-                  收到删除通知不会立即删文件，而是先保存通知，再在后台核实网盘上的文件和目录确实属于被删除的条目，确认后才删除。因此从“Emby
-                  中删除”到“网盘文件被删”可能有延迟，通知接收成功也不代表删除已完成。<br />
-                  重命名、修改 STRM 文件或实时监控发现文件消失，都可能触发 Emby 删除通知。QMS
-                  会先核验；原条目或 STRM
-                  仍存在、文件被其他条目共用，或无法完成核验时，会保留网盘文件，并在日志中记录原因。<br />
-                  <strong
-                    >注意：在文件系统中删除 STRM
-                    文件或文件夹，也可能触发网盘联动删除。若只想清理本地
-                    STRM，请先关闭联动删除并保存配置。</strong
-                  ><br />
-                  <strong
-                    >关闭期间收到的通知，之后重新开启也不会补删；每次删除前 QMS
-                    都会重新检查开关和文件身份。</strong
+          <div class="feature-item danger-item">
+            <div class="delete-settings" :class="{ 'is-disabled': !embyData.sync_enabled }">
+              <el-form-item label="删除时联动删除网盘文件" prop="enable_delete_netdisk">
+                <div class="switch-wrapper">
+                  <el-switch
+                    v-model="embyData.enable_delete_netdisk"
+                    :active-value="1"
+                    :inactive-value="0"
+                    :disabled="embyLoading || !embyData.sync_enabled"
+                    active-color="#f56c6c"
+                    inactive-color="#dcdfe6"
+                  />
+                  <span
+                    class="switch-label"
+                    :class="{ 'is-danger': embyData.enable_delete_netdisk }"
                   >
-                </template>
-              </el-alert>
-              <div class="config-links">
-                <span>需要在 Emby 中配置通知后才会生效，</span>
-                <a
-                  href="https://github.com/chen8945/QMediaSync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="help-link"
-                  >配置教程</a
-                >
-                <a
-                  :href="embyData.emby_url + '/web/index.html#!/settings/notifications.html'"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="help-link action-link"
-                  >去配置</a
-                >
+                    {{ embyData.enable_delete_netdisk ? '启用' : '禁用' }}
+                  </span>
+                </div>
+              </el-form-item>
+              <div class="feature-description">
+                <el-alert type="warning" :closable="false" class="danger-alert">
+                  <template #default>
+                    <strong>⚠ 谨慎启用：</strong>
+                    开启后，QMS
+                    收到删除通知不会立即删文件，而是先保存通知，再在后台核实网盘上的文件和目录确实属于被删除的条目，确认后才删除。因此从“Emby
+                    中删除”到“网盘文件被删”可能有延迟，通知接收成功也不代表删除已完成。<br />
+                    重命名、修改 STRM 文件或实时监控发现文件消失，都可能触发 Emby 删除通知。QMS
+                    会先核验；原条目或 STRM
+                    仍存在、文件被其他条目共用，或无法完成核验时，会保留网盘文件，并在日志中记录原因。<br />
+                    <strong
+                      >注意：在文件系统中删除 STRM
+                      文件或文件夹，也可能触发网盘联动删除。若只想清理本地
+                      STRM，请先关闭联动删除并保存配置。</strong
+                    ><br />
+                    <strong
+                      >关闭期间收到的通知，之后重新开启也不会补删；每次删除前 QMS
+                      都会重新检查开关和文件身份。</strong
+                    >
+                  </template>
+                </el-alert>
+                <div class="config-links">
+                  <span>需要在 Emby 中配置通知后才会生效，</span>
+                  <a
+                    href="https://github.com/chen8945/QMediaSync/wiki/Emby-%E9%80%9A%E7%9F%A5%E9%85%8D%E7%BD%AE"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="help-link"
+                    >配置教程</a
+                  >
+                  <a
+                    :href="embyData.emby_url + '/web/index.html#!/settings/notifications.html'"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="help-link action-link"
+                    >去配置</a
+                  >
+                </div>
+                <ul class="delete-rules">
+                  <li>
+                    电影（Movie）：删除电影正片和确认属于它的合并分段（part1/part2
+                    等）；未选中的其他版本和其他分段会保留。
+                  </li>
+                  <li>
+                    季／整剧（Season／Series）：删除季最多删到该季自己的文件夹；删除整剧才可能清理整剧根目录。QMS
+                    不会根据目录名（如“第 2 季”）猜测并扩大删除范围。
+                  </li>
+                  <li>
+                    只有当 QMS
+                    已确认整个目录属于这部作品、且目录里没有需要保留的文件时，才会删除整个目录——目录内
+                    QMS 不认识的附件、子目录和未关联视频会一并删除。
+                  </li>
+                  <li>
+                    目录里若有其他版本、其他季或被其他条目共用的文件，就不会删整个目录；同步目录的根目录（包括嵌套的同步目录）永远受到保护。
+                  </li>
+                  <li>
+                    单集（Episode）：只删除该集正片 part1 和它专属的元数据（NFO、封面、字幕）；part2
+                    等其他分段保留，之后可能重新入库。删到季里最后一集也不会自动删季／剧目录。
+                  </li>
+                  <li>独立视频（Video）：只删除该视频文件和它专属的元数据，不删除所在目录。</li>
+                  <li>
+                    不满足整目录删除条件时，只批量删除选中的视频和明确属于它的
+                    NFO、字幕、图片；共用的文件和来历不明的文件都会保留。
+                  </li>
+                  <li>
+                    删除按批次提交；部分失败时可能出现“视频已删、元数据还在”，QMS
+                    会记录每个文件的结果，并自动核对未完成的部分。
+                  </li>
+                </ul>
+                <p class="feature-note">
+                  升级到本版本后，请先刷新 STRM 文件记录，再完成一次全量 Emby 条目同步，让 QMS
+                  补齐每个条目的版本、分段和目录归属信息。升级前的旧通知不会按新规则重新处理，也不会补删历史残留；缺少这些信息、或通知当时从未送达时，之后也无法补做删除。插件“增强通知”提示删除成功，也不代表原
+                  STRM 文件已真正删除。
+                </p>
+                <p class="feature-note">
+                  网盘文件删除后，本地的 STRM 文件和文件记录不会立即删除，会在之后一次完整的 STRM
+                  同步中自动对账清理。
+                </p>
               </div>
-              <ul class="delete-rules">
-                <li>
-                  电影（Movie）：删除电影正片和确认属于它的合并分段（part1/part2
-                  等）；未选中的其他版本和其他分段会保留。
-                </li>
-                <li>
-                  季／整剧（Season／Series）：删除季最多删到该季自己的文件夹；删除整剧才可能清理整剧根目录。QMS
-                  不会根据目录名（如“第 2 季”）猜测并扩大删除范围。
-                </li>
-                <li>
-                  只有当 QMS
-                  已确认整个目录属于这部作品、且目录里没有需要保留的文件时，才会删除整个目录——目录内
-                  QMS 不认识的附件、子目录和未关联视频会一并删除。
-                </li>
-                <li>
-                  目录里若有其他版本、其他季或被其他条目共用的文件，就不会删整个目录；同步目录的根目录（包括嵌套的同步目录）永远受到保护。
-                </li>
-                <li>
-                  单集（Episode）：只删除该集正片 part1 和它专属的元数据（NFO、封面、字幕）；part2
-                  等其他分段保留，之后可能重新入库。删到季里最后一集也不会自动删季／剧目录。
-                </li>
-                <li>独立视频（Video）：只删除该视频文件和它专属的元数据，不删除所在目录。</li>
-                <li>
-                  不满足整目录删除条件时，只批量删除选中的视频和明确属于它的
-                  NFO、字幕、图片；共用的文件和来历不明的文件都会保留。
-                </li>
-                <li>
-                  删除按批次提交；部分失败时可能出现“视频已删、元数据还在”，QMS
-                  会记录每个文件的结果，并自动核对未完成的部分。
-                </li>
-              </ul>
-              <p class="feature-note">
-                升级到本版本后，请先刷新 STRM 文件记录，再完成一次全量 Emby 条目同步，让 QMS
-                补齐每个条目的版本、分段和目录归属信息。升级前的旧通知不会按新规则重新处理，也不会补删历史残留；缺少这些信息、或通知当时从未送达时，之后也无法补做删除。插件“增强通知”提示删除成功，也不代表原
-                STRM 文件已真正删除。
-              </p>
-              <p class="feature-note">
-                网盘文件删除后，本地的 STRM 文件和文件记录不会立即删除，会在之后一次完整的 STRM
-                同步中自动对账清理。
-              </p>
             </div>
+
+            <!-- STRM 路径统一自动识别，暂隐藏手工映射入口。 -->
           </div>
         </el-card>
 
@@ -897,6 +904,7 @@ const embyData = reactive<EmbyConfig>({
   enable_daily_first_full_sync: 1,
   enable_playback_overview: 0,
   enable_playback_progress: 0,
+  path_mappings: [],
 })
 
 // 媒体库选择相关数据
@@ -975,6 +983,7 @@ const defaultConfig = {
   sync_all_libraries: 1,
   selected_libraries: '[]',
   enable_daily_first_full_sync: 1,
+  path_mappings: [],
 }
 
 // 配置读取与第三方媒体库请求分开，读取成功即可允许保存。
@@ -997,6 +1006,7 @@ const loadEmbyConfig = async (refreshFailureTitle?: string) => {
       embyData.enable_daily_first_full_sync = config.enable_daily_first_full_sync ?? 1
       embyData.enable_playback_overview = config.enable_playback_overview ?? 0
       embyData.enable_playback_progress = config.enable_playback_progress ?? 0
+      embyData.path_mappings = (config.path_mappings ?? []).map((mapping) => ({ ...mapping }))
 
       // 解析选中的媒体库 ID 列表
       try {
@@ -1305,6 +1315,7 @@ onBeforeUnmount(() => {
     transform 0.2s ease,
     box-shadow 0.2s ease;
   width: 100%;
+  margin-right: 0;
 }
 
 .settings-card:hover,
@@ -1494,7 +1505,8 @@ onBeforeUnmount(() => {
   padding-top: 0;
 }
 
-.feature-item.is-disabled {
+.feature-item.is-disabled,
+.delete-settings.is-disabled {
   opacity: 0.5;
   pointer-events: none;
 }

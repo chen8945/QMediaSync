@@ -84,22 +84,24 @@ type EmbyDeletionOwnerRef struct {
 
 // EmbyDeletionTarget 固定物理目标及其视频使用者，完成部分删除后也不能缩小使用者清单。
 type EmbyDeletionTarget struct {
-	ScopedMetadata  []EmbyFrozenFile       `json:"-"`
-	Directory       *EmbyDirectoryScope    `json:"directory,omitempty"`
-	CoveredKeys     []string               `json:"covered_keys,omitempty"`
-	CoveredBy       string                 `json:"covered_by,omitempty"`
-	Key             string                 `json:"key"`
-	Kind            string                 `json:"kind"`
-	File            EmbyFrozenFile         `json:"file"`
-	Owners          []EmbyDeletionOwnerRef `json:"owners"`
-	DirectoryVideos []EmbyRemoteFile       `json:"directory_videos,omitempty"`
-	Reason          string                 `json:"reason,omitempty"`
+	SourceBindings  []EmbyDeletionSupplement `json:"source_bindings,omitempty"`
+	ScopedMetadata  []EmbyFrozenFile         `json:"-"`
+	Directory       *EmbyDirectoryScope      `json:"directory,omitempty"`
+	CoveredKeys     []string                 `json:"covered_keys,omitempty"`
+	CoveredBy       string                   `json:"covered_by,omitempty"`
+	Key             string                   `json:"key"`
+	Kind            string                   `json:"kind"`
+	File            EmbyFrozenFile           `json:"file"`
+	Owners          []EmbyDeletionOwnerRef   `json:"owners"`
+	DirectoryVideos []EmbyRemoteFile         `json:"directory_videos,omitempty"`
+	Reason          string                   `json:"reason,omitempty"`
 }
 
 type EmbyDeletionPlan struct {
-	Input   EmbyDeletionInput    `json:"input"`
-	Targets []EmbyDeletionTarget `json:"targets"`
-	Issues  []string             `json:"issues,omitempty"`
+	Supplements []EmbyDeletionSupplement `json:"supplements,omitempty"`
+	Input       EmbyDeletionInput        `json:"input"`
+	Targets     []EmbyDeletionTarget     `json:"targets"`
+	Issues      []string                 `json:"issues,omitempty"`
 }
 
 type EmbyDeletionOutcome string
@@ -271,7 +273,12 @@ func embyOwnerRef(owner EmbyDeletionOwner) EmbyDeletionOwnerRef {
 
 // BuildEmbyDeletionPlan 只补充已确认视频的专属旁车；调用方必须在执行前持久保存整个计划。
 func BuildEmbyDeletionPlan(ctx context.Context, input EmbyDeletionInput, factory EmbyDeleteProviderFactory, verify ...EmbyDeletionVerifier) (EmbyDeletionPlan, error) {
-	plan := EmbyDeletionPlan{Input: input, Issues: slices.Clone(input.Issues)}
+	return BuildEmbyDeletionPlanWithSupplements(ctx, input, nil, factory, verify...)
+}
+
+// BuildEmbyDeletionPlanWithSupplements 将删除期补查与原收件输入分别保存，重试直接使用已保存计划。
+func BuildEmbyDeletionPlanWithSupplements(ctx context.Context, input EmbyDeletionInput, supplements []EmbyDeletionSupplement, factory EmbyDeleteProviderFactory, verify ...EmbyDeletionVerifier) (EmbyDeletionPlan, error) {
+	plan := EmbyDeletionPlan{Input: input, Supplements: slices.Clone(supplements), Issues: slices.Clone(input.Issues)}
 	if !input.CleanupPolicy.AllowsJointBatch() {
 		return plan, ErrEmbyDeleteUnsupported
 	}
@@ -283,9 +290,6 @@ func BuildEmbyDeletionPlan(ctx context.Context, input EmbyDeletionInput, factory
 	}
 	byKey := map[string]int{}
 	for _, owner := range input.Owners {
-		if len(owner.Files) == 0 {
-			plan.Issues = append(plan.Issues, "no_confirmed_files:"+owner.Item.ItemId)
-		}
 		for _, file := range owner.Files {
 			key := EmbyDeletionFileKey(file)
 			if index, ok := byKey[key]; ok {
@@ -296,6 +300,14 @@ func BuildEmbyDeletionPlan(ctx context.Context, input EmbyDeletionInput, factory
 			}
 			byKey[key] = len(plan.Targets)
 			plan.Targets = append(plan.Targets, EmbyDeletionTarget{Key: key, Kind: "video", File: file, Owners: []EmbyDeletionOwnerRef{embyOwnerRef(owner)}, Reason: file.Reason})
+		}
+	}
+	if err := addEmbyDeletionSupplements(ctx, &plan); err != nil {
+		return plan, err
+	}
+	for _, owner := range input.Owners {
+		if !slices.ContainsFunc(plan.Targets, func(target EmbyDeletionTarget) bool { return slices.Contains(target.Owners, embyOwnerRef(owner)) }) {
+			plan.Issues = append(plan.Issues, "no_confirmed_files:"+owner.Item.ItemId)
 		}
 	}
 	AddEmbyScopedMetadataTargets(&plan)
@@ -311,7 +323,7 @@ func BuildEmbyDeletionPlan(ctx context.Context, input EmbyDeletionInput, factory
 	}
 	dirs := map[string]*directory{}
 	for i, target := range plan.Targets {
-		if target.Kind != "video" || target.CoveredBy != "" {
+		if target.Kind != "video" || target.CoveredBy != "" || target.Reason != "" {
 			continue
 		}
 		key := embyDigest([]any{target.File.SourceType, target.File.AccountID, target.File.Path})
@@ -667,26 +679,16 @@ func embyRemoteMatches(file EmbyFrozenFile, remote EmbyRemoteFile) bool {
 }
 
 func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, target EmbyDeletionTarget) error {
-	if !plan.Input.Authorized {
-		return ErrEmbyDeleteDisabled
-	}
 	conn := db.Db.WithContext(ctx)
-	var config EmbyConfig
-	if err := conn.First(&config).Error; err != nil {
+	config, err := validateEmbyDeletionContext(conn, plan.Input)
+	if err != nil {
 		return err
-	}
-	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
-		return ErrEmbyDeleteDisabled
-	}
-	var index EmbyIndexState
-	if err := conn.First(&index, 1).Error; err != nil {
-		return err
-	}
-	if plan.Input.ServerID == "" || index.ServerID != plan.Input.ServerID || index.ServerConfigKey != plan.Input.ServerConfigKey || EmbyServerConfigIdentity(&config) != plan.Input.ServerConfigKey {
-		return ErrEmbySnapshotStale
 	}
 	if target.Key != EmbyDeletionFileKey(target.File) || len(target.Owners) == 0 {
 		return ErrEmbyIdentityAmbiguous
+	}
+	if err := validateEmbyTargetSourceBindings(conn, config, plan, target); err != nil {
+		return err
 	}
 	physicalEvidenceFound := false
 	sidecarEvidenceFound := false
@@ -697,28 +699,16 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 				continue
 			}
 			found = true
-			var state EmbyItemState
-			if err := conn.Where("server_id = ? AND item_id = ?", plan.Input.ServerID, ref.ItemID).First(&state).Error; err != nil {
+			if err := validateEmbyDeletionOwnerEvidence(conn, plan.Input, owner, false); err != nil {
 				return err
 			}
-			if state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation {
-				return ErrEmbySnapshotStale
-			}
-			var evidence EmbyItemEvidence
-			if err := conn.First(&evidence, ref.SnapshotID).Error; err != nil {
-				return err
-			}
-			if evidence != owner.Evidence || evidence.ServerID != plan.Input.ServerID || evidence.ServerConfigKey != plan.Input.ServerConfigKey {
-				return ErrEmbyIdentityAmbiguous
-			}
+			evidence := owner.Evidence
 			metadata, err := DecodeEmbyMetadata(evidence.SidecarsJSON)
 			if err != nil {
 				return err
 			}
-			if embyJSON(owner.Files) != evidence.FilesJSON || owner.Item.ItemId != evidence.ItemID || owner.Item.Generation != evidence.Generation {
-				return ErrEmbyIdentityAmbiguous
-			}
-			if target.Kind == "video" && !slices.ContainsFunc(owner.Files, func(file EmbyFrozenFile) bool { return EmbyDeletionFileKey(file) == target.Key }) {
+			bound := slices.ContainsFunc(target.SourceBindings, func(binding EmbyDeletionSupplement) bool { return binding.Owner == ref })
+			if target.Kind == "video" && !bound && !slices.ContainsFunc(owner.Files, func(file EmbyFrozenFile) bool { return EmbyDeletionFileKey(file) == target.Key }) {
 				return ErrEmbyIdentityAmbiguous
 			}
 			if target.Kind == "sidecar" {
@@ -727,6 +717,9 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 				}
 			}
 			if slices.Contains(owner.Files, target.File) {
+				physicalEvidenceFound = true
+			}
+			if bound && target.File.ExternalSource {
 				physicalEvidenceFound = true
 			}
 		}
@@ -755,22 +748,41 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 	default:
 		return ErrEmbyDeleteUnsupported
 	}
-	var current SyncFile
-	if err := conn.First(&current, file.SyncFileID).Error; err != nil {
-		return err
-	}
-	if current.FileType == v115open.TypeDir || target.Kind == "video" && !current.IsVideo || (target.Kind == "sidecar" || target.Kind == "scoped_metadata") && (!current.IsMeta || current.IsVideo) {
-		return ErrEmbyIdentityAmbiguous
-	}
-	frozen, err := freezeEmbyFile(conn, current, file.SourceID, file.LocalFilePath)
-	if err != nil {
-		return err
-	}
-	if frozen != file || frozen.Reason != "" {
-		return fmt.Errorf("%w: 当前记录、账号或同步目录已变化", ErrEmbyDeleteUnverified)
+	if !file.ExternalSource {
+		var current SyncFile
+		if file.SyncFileID == 0 || file.SyncPathID == 0 {
+			return ErrEmbyIdentityAmbiguous
+		}
+		if err := conn.First(&current, file.SyncFileID).Error; err != nil {
+			return err
+		}
+		if current.FileType == v115open.TypeDir || target.Kind == "video" && !current.IsVideo || (target.Kind == "sidecar" || target.Kind == "scoped_metadata") && (!current.IsMeta || current.IsVideo) {
+			return ErrEmbyIdentityAmbiguous
+		}
+		itemPath := file.LocalFilePath
+		var referenceConfig *EmbyConfig
+		if file.Reference.EmbyPath != "" {
+			if err := validateEmbySTRMReferenceTx(conn, config, file.Reference); err != nil {
+				return err
+			}
+			itemPath = file.Reference.EmbyPath
+			referenceConfig = config
+		} else if target.Kind == "video" {
+			currentReference := ResolveEmbySTRMReference(config, itemPath)
+			if currentReference.LocalRoot != "" || currentReference.Reason != "" {
+				return ErrEmbySnapshotStale
+			}
+		}
+		frozen, err := freezeEmbyFile(conn, current, file.SourceID, itemPath, referenceConfig)
+		if err != nil {
+			return err
+		}
+		if frozen != file || frozen.Reason != "" {
+			return fmt.Errorf("%w: 当前记录、账号或同步目录已变化", ErrEmbyDeleteUnverified)
+		}
 	}
 	directory, validDirectory := embyRemoteDirectory(file.Path)
-	if !embySafeName(file.FileName) || !validDirectory || !filepath.IsAbs(file.LocalFilePath) || !embyRemotePathWithin(file.SourceType, file.RemoteRoot, path.Join(directory, file.FileName)) || !embyPathWithin(file.LocalRoot, file.LocalFilePath) {
+	if !embySafeName(file.FileName) || !validDirectory || !file.ExternalSource && (!filepath.IsAbs(file.LocalFilePath) || !embyRemotePathWithin(file.SourceType, file.RemoteRoot, path.Join(directory, file.FileName)) || !embyPathWithin(file.LocalRoot, file.LocalFilePath)) {
 		return ErrEmbyIdentityAmbiguous
 	}
 	var roots []SyncPath
@@ -829,7 +841,7 @@ func FinalizeEmbyDeletionPlan(ctx context.Context, plan EmbyDeletionPlan, result
 			return ErrEmbySnapshotStale
 		}
 		for _, owner := range plan.Input.Owners {
-			if len(owner.Files) == 0 || embyOwnerHasPlanningIssue(plan, owner) {
+			if embyOwnerHasPlanningIssue(plan, owner) {
 				continue
 			}
 			ref, all, found := embyOwnerRef(owner), true, false
@@ -885,8 +897,8 @@ func embyOwnerHasPlanningIssue(plan EmbyDeletionPlan, owner EmbyDeletionOwner) b
 		if issue == "candidate_unresolved" {
 			continue
 		}
-		if strings.HasPrefix(issue, "no_confirmed_files:") {
-			if issue == "no_confirmed_files:"+owner.Item.ItemId {
+		if strings.HasPrefix(issue, "no_confirmed_files:") || strings.HasPrefix(issue, "source_unresolved:") {
+			if strings.HasSuffix(issue, ":"+owner.Item.ItemId) {
 				return true
 			}
 			continue
@@ -895,7 +907,13 @@ func embyOwnerHasPlanningIssue(plan EmbyDeletionPlan, owner EmbyDeletionOwner) b
 			strings.HasPrefix(issue, "sidecar_identity_changed:") ||
 			strings.HasPrefix(issue, "sidecar_history_unconfirmed:") {
 			_, directoryKey, _ := strings.Cut(issue, ":")
-			for _, file := range owner.Files {
+			files := slices.Clone(owner.Files)
+			for _, supplement := range plan.Supplements {
+				if supplement.Owner == embyOwnerRef(owner) {
+					files = append(files, supplement.File)
+				}
+			}
+			for _, file := range files {
 				key := embyDigest([]any{file.SourceType, file.AccountID, file.Path})
 				if directoryKey == key {
 					return true

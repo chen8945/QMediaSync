@@ -67,6 +67,8 @@ func TestLogicalBackupRestoreCrossEngine(t *testing.T) {
 			db.Db = source
 			// 备份服务配置在导出前初始化，保留策略也先于快照执行。
 			models.GetBackupService()
+			cleanup := seedEmbyCleanupBackup(t, source)
+			corruptEmbyCleanupBackupIndexes(t, source)
 			records := seedCrossEngineRecords(t, source)
 			if err := helpers.InitEncryptionKey(); err != nil {
 				t.Fatal(err)
@@ -103,6 +105,7 @@ func TestLogicalBackupRestoreCrossEngine(t *testing.T) {
 			for _, record := range records {
 				assertCrossEngineRecord(t, target, record)
 			}
+			assertEmbyCleanupBackup(t, target, cleanup)
 			var user models.User
 			if err := target.First(&user, 41).Error; err != nil || !user.IsTwoFactorEnabled() {
 				t.Fatalf("restored TOTP is not enabled: %v", err)
@@ -332,6 +335,20 @@ func assertCrossEngineSchemaAndCounts(t *testing.T, source, target *gorm.DB, man
 	} {
 		if !target.Migrator().HasIndex(index.model, index.name) {
 			t.Errorf("restored schema lacks index %s", index.name)
+		}
+	}
+	for _, index := range []struct {
+		model any
+		name  string
+	}{
+		{&models.SyncFile{}, "idx_sync_files_sidecar_lookup"},
+		{&models.SyncFile{}, "idx_sync_files_directory_name"},
+		{&models.SyncFile{}, "idx_sync_files_directory_pick_code"},
+		{&models.EmbyMediaItem{}, "idx_emby_server_part_lookup"},
+		{&models.EmbyMediaItem{}, "idx_emby_server_version_lookup"},
+	} {
+		if target.Migrator().HasIndex(index.model, index.name) != (target.Dialector.Name() == "sqlite") {
+			t.Errorf("restored index %s must match the target SQLite dialect", index.name)
 		}
 	}
 }
