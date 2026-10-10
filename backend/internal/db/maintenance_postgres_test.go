@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -29,7 +30,7 @@ func TestMaintenancePostgresDrainsTransactionsAndRows(t *testing.T) {
 	if err != nil || parsed.Host == "" {
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
-	admin, err := sql.Open("postgres", dsn)
+	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,17 +48,17 @@ func TestMaintenancePostgresDrainsTransactionsAndRows(t *testing.T) {
 	query.Set("search_path", schema)
 	query.Set("statement_timeout", "5000")
 	parsed.RawQuery = query.Encode()
-	pool, err := OpenMaintenanceSQL("postgres", parsed.String())
+	pool, err := OpenMaintenanceSQL("pgx", parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pool.Close() })
 	pool.SetMaxOpenConns(4)
-	database, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: pool}), &gorm.Config{})
+	database, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", Conn: pool}), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 已有表的 AutoMigrate/ColumnTypes 必须使用 lib/pq 参数语义。
+	// 已有表的 AutoMigrate/ColumnTypes 必须透传 pgx 的协议控制参数。
 	for range 2 {
 		if err := database.AutoMigrate(&maintenanceSchemaProbe{}); err != nil {
 			t.Fatal(err)
@@ -72,11 +73,22 @@ func TestMaintenancePostgresDrainsTransactionsAndRows(t *testing.T) {
 	if _, err := pool.Exec("INSERT INTO maintenance_items VALUES (1,'initial')"); err != nil {
 		t.Fatal(err)
 	}
+	_, err = pool.Exec("INSERT INTO maintenance_items VALUES (1,'duplicate')")
+	if pgErr, ok := errors.AsType[*pgconn.PgError](fmt.Errorf("insert: %w", err)); !ok || pgErr.SQLState() != "23505" {
+		t.Fatalf("PostgreSQL error lost its SQLSTATE through maintenance gate: %v", err)
+	}
 	prepared, err := pool.Prepare("UPDATE maintenance_items SET value=$1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer prepared.Close()
+	if _, err := prepared.ExecContext(t.Context(), "prepared"); err != nil {
+		t.Fatal(err)
+	}
+	var preparedValue string
+	if err := pool.QueryRowContext(t.Context(), "SELECT value FROM maintenance_items WHERE id=1").Scan(&preparedValue); err != nil || preparedValue != "prepared" {
+		t.Fatalf("prepared SQL did not persist its parameter: value=%q err=%v", preparedValue, err)
+	}
 	tx, err := pool.Begin()
 	if err != nil {
 		t.Fatal(err)

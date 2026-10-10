@@ -738,7 +738,7 @@ Emby 总配置表。
 - `last_sync_time`：上次同步时间戳。
 - `last_full_sync_at`：最近一次成功全量同步时间戳。
 - `last_incremental_sync_at`：最近一次成功增量同步时间戳。
-- `last_saved_cursor_at`：增量同步使用的 `DateLastSaved` 游标时间戳。
+- `last_saved_cursor_at`：增量同步使用的 `DateLastSaved` 游标时间戳；全量或增量全部成功后按扫描开始时间单调推进，失败不推进，查询保留 600 秒重叠窗口。
 - `last_processed_count`：最近一次 Emby 条目同步处理数量。
 - `last_success_sync_mode`：最近一次成功同步模式，取值包括 `full`、`incremental`、`webhook`。
 - `last_error`：最近一次 Emby 条目同步失败原因。
@@ -820,6 +820,8 @@ Emby 媒体项与同步文件的关联表。
 - 旧索引不做推断回填，成功同步后建立真实证据。账号／根／物理路径或独立文件代际不完整时保留 `reason`，不能将候选直接用于网盘删除。
 
 `emby_item_memberships` 是状态所引用历史证据的派生成员索引，嵌入 BaseModel 并纳入 `AllTables`。保存 `server_id`、`server_config_key`、`item_id`、`snapshot_id`、`item_type`、`part_of_item_id`、`season_id` 和 `series_id`；服务器与条目唯一，分段父项、季和剧分别按服务器／连接建立复合索引。查询核对 `state.snapshot_id`，再由原证据验证实际归属，不以派生行提供删除授权。普通快照提交、早期观察采用及无屏障成员关系解除同事务更新投影；带屏障成员仅脱离当前展示关系时保留历史投影。当前媒体索引清空不影响历史成员查找。
+
+批提交在当前事务内预读成员投影，完全一致时跳过 UPSERT；缺行、字段变化及历史 SQL NULL 仍需补齐，条件 UPSERT 保留原 CreatedAt。SQLite 可复用同事务内构造的 evidence 条目，PostgreSQL 从 evidence JSON 构建；持久格式、完整性验证、修复和恢复重建来源均不改变。本轮写入与调度优化不新增表、列或 schema 版本。
 
 [目录清理策略](../architecture/emby-library-sync.md#已采纳的目录清理策略)复用上述文本列，不增加 SQL 列或数据库版本。目录证据保存真实媒体类型／条目 ID、来源账号、同步根、目录自身 ID／父 ID、实际路径及父链；目录的大小／mtime 不作为文件式代际。层级元数据保存独立文件身份和对应的季／目录范围，不能凭当前文件名补造历史归属。
 

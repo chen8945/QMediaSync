@@ -83,6 +83,28 @@ func TestEmbyJointBatchDeletesVideoAndSidecarsWithOneWrite(t *testing.T) {
 	}
 }
 
+func TestEmbyJointBatchRejectsChangedTargetWithSameKey(t *testing.T) {
+	plan, _ := setupEmbyJointBatch(t)
+	target := plan.Targets[0]
+	target.CoveredBy = "unsaved-directory"
+	provider := &releasedEmbyScopeProvider{}
+	prepared := 0
+	results := ExecuteEmbyDeletionBatch(t.Context(), plan, []EmbyDeletionTarget{target}, provider, allowEmbyDeleteTest, func([]EmbyDeletionTarget) error {
+		prepared++
+		return nil
+	})
+	if len(results) != 1 || results[0].Outcome != EmbyDeletionUnresolved || results[0].Reason != ErrEmbyIdentityAmbiguous.Error() {
+		t.Fatalf("unsaved target borrowed matching key: %+v", results)
+	}
+	confirmation := ConfirmEmbyWebhookTargetAbsence(t.Context(), plan, target, provider, allowEmbyDeleteTest)
+	if confirmation.Outcome != EmbyDeletionUnresolved || confirmation.Reason != ErrEmbyIdentityAmbiguous.Error() {
+		t.Fatalf("unsaved target accepted for absence confirmation: %+v", confirmation)
+	}
+	if prepared != 0 || provider.calls != 0 {
+		t.Fatalf("changed target caused external work: prepared=%d provider calls=%d", prepared, provider.calls)
+	}
+}
+
 func TestEmbyJointBatchRecoversOnlyUnfinishedMember(t *testing.T) {
 	plan, provider := setupEmbyJointBatch(t)
 	provider.fail[deletionMatrixKey(1, "file-101")] = true

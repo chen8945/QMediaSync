@@ -57,11 +57,11 @@ func OpenExisting(ctx context.Context, configDir string, config helpers.ConfigDb
 				"sslmode": {sslMode}, "connect_timeout": {"10"},
 			}.Encode(),
 		}
-		sqlDB, err = sql.Open("postgres", dsn.String())
+		sqlDB, err = sql.Open("pgx", dsn.String())
 		if err != nil {
 			return nil, fmt.Errorf("打开 PostgreSQL 连接失败：%w", err)
 		}
-		dialector = postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB})
+		dialector = postgres.New(postgres.Config{DriverName: "pgx", Conn: sqlDB})
 	default:
 		return nil, fmt.Errorf("管理员恢复需要已配置的 SQLite 或 PostgreSQL 数据库")
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -18,7 +19,13 @@ var errEmbyApplyNeedsExclusive = errors.New("Emby 旧成员需要排他提交")
 
 const embyApplyCacheKey = "qms:emby-apply-cache"
 
+type embyApplyMembershipRow struct {
+	EmbyItemMembership
+	HasNull bool
+}
+
 type embyApplyCache struct {
+	memberships        map[string]embyApplyMembershipRow
 	config             *EmbyConfig
 	media              map[string]EmbyMediaItem
 	states             map[string]EmbyItemState
@@ -168,12 +175,15 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		return nil
 	}
 	if tx.Dialector.Name() == "sqlite" {
-		// SQLite 分开命中条目和成员索引；PostgreSQL 保留单次组合查询。
-		for _, query := range []*gorm.DB{
-			tx.Where("item_id IN ?", ids),
-			tx.Where("server_id = ? AND part_of_item_id IN ?", token.ServerID, ids),
-			tx.Where("server_id = ? AND version_of_item_id IN ?", token.ServerID, ids),
-		} {
+		// 多 ID 的成员查询拆成等值条件，避免 ORDER BY 选择全服务器扫描。
+		queries := make([]*gorm.DB, 0, 3*len(ids))
+		for _, id := range ids {
+			queries = append(queries,
+				tx.Where("item_id = ?", id),
+				tx.Where("server_id = ? AND part_of_item_id = ?", token.ServerID, id),
+				tx.Where("server_id = ? AND version_of_item_id = ?", token.ServerID, id))
+		}
+		for _, query := range queries {
 			var media []EmbyMediaItem
 			if err := query.Order("id").Find(&media).Error; err != nil {
 				return err
@@ -189,6 +199,19 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		}
 		for _, row := range media {
 			cache.media[row.ItemId] = row
+		}
+	}
+	if tx.Dialector.Name() == "sqlite" || tx.Dialector.Name() == "postgres" {
+		// 预读位于索引保护和条目锁内；NULL 记录仍必须修复，不能当作相同投影。
+		var memberships []embyApplyMembershipRow
+		if err := tx.Model(&EmbyItemMembership{}).
+			Select("emby_item_memberships.*, (server_config_key IS NULL OR snapshot_id IS NULL OR item_type IS NULL OR part_of_item_id IS NULL OR season_id IS NULL OR series_id IS NULL) AS has_null").
+			Where("server_id = ? AND item_id IN ?", token.ServerID, ids).Find(&memberships).Error; err != nil {
+			return err
+		}
+		cache.memberships = make(map[string]embyApplyMembershipRow, len(memberships))
+		for _, row := range memberships {
+			cache.memberships[row.ItemID] = row
 		}
 	}
 	var states []EmbyItemState
@@ -249,6 +272,10 @@ func loadEmbyApplySources(tx *gorm.DB, snapshots []EmbyItemSnapshot, cache *emby
 			return err
 		}
 		cache.validations = append(cache.validations, func() error {
+			// SQLite writer 保护覆盖整个事务；范围不会被并发 writer 改写。
+			if tx.Dialector.Name() == "sqlite" {
+				return nil
+			}
 			repeated := false
 			for _, code := range codes {
 				if cache.pickUses[code] > 1 {
@@ -381,6 +408,10 @@ func embyApplyFileCandidates(tx *gorm.DB, key string, query *gorm.DB) ([]SyncFil
 		}
 		expected := append([]SyncFile(nil), rows...)
 		cache.validations = append(cache.validations, func() error {
+			// SQLite writer 保护覆盖整个事务；范围不会被并发 writer 改写。
+			if tx.Dialector.Name() == "sqlite" {
+				return nil
+			}
 			if cache.candidateUses[key] < 2 {
 				return nil
 			}
@@ -412,8 +443,92 @@ func applyEmbyProjection(tx *gorm.DB, item *EmbyMediaItem, existing EmbyMediaIte
 		item.UpdatedAt = existing.UpdatedAt
 		return nil
 	}
-	fields := []string{"item_id_int", "server_id", "name", "type", "parent_id", "series_id", "series_name", "season_id", "season_name", "library_id", "path", "pick_code", "media_source_path", "index_number", "parent_index_number", "production_year", "premiere_date", "date_created", "date_created_time", "date_modified", "date_modified_time", "is_folder", "last_seen_at", "part_count", "part_of_item_id", "version_of_item_id", "snapshot_id", "generation"}
-	if updateSyncRun {
+	fields := make([]string, 0, 4)
+	if existing.ItemIdInt != item.ItemIdInt {
+		fields = append(fields, "item_id_int")
+	}
+	if existing.ServerId != item.ServerId {
+		fields = append(fields, "server_id")
+	}
+	if existing.Name != item.Name {
+		fields = append(fields, "name")
+	}
+	if existing.Type != item.Type {
+		fields = append(fields, "type")
+	}
+	if existing.ParentId != item.ParentId {
+		fields = append(fields, "parent_id")
+	}
+	if existing.SeriesId != item.SeriesId {
+		fields = append(fields, "series_id")
+	}
+	if existing.SeriesName != item.SeriesName {
+		fields = append(fields, "series_name")
+	}
+	if existing.SeasonId != item.SeasonId {
+		fields = append(fields, "season_id")
+	}
+	if existing.SeasonName != item.SeasonName {
+		fields = append(fields, "season_name")
+	}
+	if existing.LibraryId != item.LibraryId {
+		fields = append(fields, "library_id")
+	}
+	if existing.Path != item.Path {
+		fields = append(fields, "path")
+	}
+	if existing.PickCode != item.PickCode {
+		fields = append(fields, "pick_code")
+	}
+	if existing.MediaSourcePath != item.MediaSourcePath {
+		fields = append(fields, "media_source_path")
+	}
+	if existing.IndexNumber != item.IndexNumber {
+		fields = append(fields, "index_number")
+	}
+	if existing.ParentIndexNumber != item.ParentIndexNumber {
+		fields = append(fields, "parent_index_number")
+	}
+	if existing.ProductionYear != item.ProductionYear {
+		fields = append(fields, "production_year")
+	}
+	if existing.PremiereDate != item.PremiereDate {
+		fields = append(fields, "premiere_date")
+	}
+	if existing.DateCreated != item.DateCreated {
+		fields = append(fields, "date_created")
+	}
+	if existing.DateCreatedTime != item.DateCreatedTime {
+		fields = append(fields, "date_created_time")
+	}
+	if existing.DateModified != item.DateModified {
+		fields = append(fields, "date_modified")
+	}
+	if existing.DateModifiedTime != item.DateModifiedTime {
+		fields = append(fields, "date_modified_time")
+	}
+	if existing.IsFolder != item.IsFolder {
+		fields = append(fields, "is_folder")
+	}
+	if existing.LastSeenAt != item.LastSeenAt {
+		fields = append(fields, "last_seen_at")
+	}
+	if existing.PartCount != item.PartCount {
+		fields = append(fields, "part_count")
+	}
+	if existing.PartOfItemID != item.PartOfItemID {
+		fields = append(fields, "part_of_item_id")
+	}
+	if existing.VersionOfItemID != item.VersionOfItemID {
+		fields = append(fields, "version_of_item_id")
+	}
+	if existing.SnapshotID != item.SnapshotID {
+		fields = append(fields, "snapshot_id")
+	}
+	if existing.Generation != item.Generation {
+		fields = append(fields, "generation")
+	}
+	if updateSyncRun && existing.LastSeenSyncRun != item.LastSeenSyncRun {
 		fields = append(fields, "last_seen_sync_run")
 	}
 	return tx.Model(&existing).Select(fields).Updates(item).Error
@@ -472,17 +587,31 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 	return nil
 }
 
-func saveEmbyApplyMembership(tx *gorm.DB, state EmbyItemState, evidence EmbyItemEvidence) error {
-	row, err := makeEmbyItemMembership(state, evidence)
+func saveEmbyApplyMembership(tx *gorm.DB, state EmbyItemState, evidence EmbyItemEvidence, item *EmbyMediaItem) error {
+	row, err := makeEmbyItemMembershipFromItem(state, evidence, item)
 	if err != nil {
 		return err
+	}
+	cache := embyApplyCacheFrom(tx)
+	if cache != nil && cache.memberships != nil {
+		if current, ok := cache.memberships[row.ItemID]; ok && !current.HasNull {
+			previous, next := current.EmbyItemMembership, row
+			previous.BaseModel, next.BaseModel = BaseModel{}, BaseModel{}
+			if previous == next {
+				return nil
+			}
+		}
 	}
 	columns := []string{"server_config_key", "snapshot_id", "item_type", "part_of_item_id", "season_id", "series_id"}
 	conditions := make([]clause.Expression, 0, len(columns))
 	for _, name := range columns {
 		conditions = append(conditions, clause.Expr{SQL: "? IS DISTINCT FROM ?", Vars: []any{clause.Column{Table: "emby_item_memberships", Name: name}, clause.Column{Table: "excluded", Name: name}}})
 	}
-	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.AssignmentColumns(append(columns, "updated_at")), Where: clause.Where{Exprs: []clause.Expression{clause.Or(conditions...)}}}).Create(&row).Error
+	err = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.AssignmentColumns(append(columns, "updated_at")), Where: clause.Where{Exprs: []clause.Expression{clause.Or(conditions...)}}}).Create(&row).Error
+	if err == nil && cache != nil && cache.memberships != nil {
+		cache.memberships[row.ItemID] = embyApplyMembershipRow{EmbyItemMembership: row}
+	}
+	return err
 }
 
 func saveEmbyApplyLibraryRelations(tx *gorm.DB, snapshots []EmbyItemSnapshot, cache *embyApplyCache) error {
@@ -493,6 +622,22 @@ func saveEmbyApplyLibraryRelations(tx *gorm.DB, snapshots []EmbyItemSnapshot, ca
 				row := EmbyLibrarySyncPath{LibraryId: snapshot.Item.LibraryId, SyncPathId: file.SyncPathId, LibraryName: snapshot.LibraryName}
 				relations[embyJSON([]any{row.LibraryId, row.SyncPathId})] = row
 			}
+		}
+	}
+	// SQLite writer 或 PG 行共享锁保证已存在关联在本事务内不被删除。
+	if len(relations) > 0 {
+		predicates := make([]string, 0, len(relations))
+		args := make([]any, 0, 2*len(relations))
+		for _, row := range relations {
+			predicates = append(predicates, "(library_id = ? AND sync_path_id = ?)")
+			args = append(args, row.LibraryId, row.SyncPathId)
+		}
+		var existing []EmbyLibrarySyncPath
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Select("library_id", "sync_path_id").Where(strings.Join(predicates, " OR "), args...).Find(&existing).Error; err != nil {
+			return err
+		}
+		for _, row := range existing {
+			delete(relations, embyJSON([]any{row.LibraryId, row.SyncPathId}))
 		}
 	}
 	rows := make([]EmbyLibrarySyncPath, 0, len(relations))
@@ -543,6 +688,10 @@ func loadEmbyApplySourceAccounts(tx *gorm.DB, sourceType SourceType, userID stri
 		}
 		expected := append([]Account(nil), rows...)
 		cache.validations = append(cache.validations, func() error {
+			// SQLite writer 保护覆盖整个事务；范围不会被并发 writer 改写。
+			if tx.Dialector.Name() == "sqlite" {
+				return nil
+			}
 			if cache.sourceAccountUses[key] < 2 {
 				return nil
 			}

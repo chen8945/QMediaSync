@@ -34,13 +34,18 @@ func embyObservedEvidenceItem(evidence EmbyItemEvidence, serverID, serverConfigK
 	if err := json.Unmarshal([]byte(evidence.ItemJSON), &item); err != nil {
 		return item, err
 	}
-	if item.ItemId != evidence.ItemID || item.ServerId != evidence.ServerID || item.Generation != evidence.Generation {
-		return item, ErrEmbyIdentityAmbiguous
-	}
-	if _, err := parseEmbyItemID(item.ItemId); err != nil {
+	if err := validateEmbyEvidenceItem(evidence, item); err != nil {
 		return item, err
 	}
 	return item, nil
+}
+
+func validateEmbyEvidenceItem(evidence EmbyItemEvidence, item EmbyMediaItem) error {
+	if item.ItemId != evidence.ItemID || item.ServerId != evidence.ServerID || item.Generation != evidence.Generation {
+		return ErrEmbyIdentityAmbiguous
+	}
+	_, err := parseEmbyItemID(item.ItemId)
+	return err
 }
 
 func makeEmbyObservedIndex(record EmbyWebhookRecord, refIndex int, evidence EmbyItemEvidence) (EmbyObservedEvidenceIndex, error) {

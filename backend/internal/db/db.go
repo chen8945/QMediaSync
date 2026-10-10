@@ -12,7 +12,7 @@ import (
 	"qmediasync/internal/helpers"
 
 	"github.com/glebarez/sqlite"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -99,11 +99,11 @@ func ConnectPostgres(dbConfig *database.Config) error {
 		connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.DBName, dbConfig.SSLMode)
 		helpers.AppLogger.Infof("连接数据库：%s", connStr)
-		sqlDB, err = OpenMaintenanceSQL("postgres", connStr)
+		sqlDB, err = OpenMaintenanceSQL("pgx", connStr)
 		if err != nil {
 			return fmt.Errorf("创建 PostgreSQL 连接失败：%w", err)
 		}
-		pg := postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB})
+		pg := postgres.New(postgres.Config{DriverName: "pgx", Conn: sqlDB})
 		Db, err = gorm.Open(pg, &gorm.Config{Logger: newDatabaseLogger()})
 		if err != nil {
 			helpers.AppLogger.Errorf("连接数据库失败：%v", err)
@@ -127,7 +127,7 @@ func ConnectPostgres(dbConfig *database.Config) error {
 	}
 	// 配置连接池
 	sqlDB.SetMaxOpenConns(dbConfig.MaxOpenConns) // 最多打开 25 个连接
-	sqlDB.SetMaxIdleConns(dbConfig.MaxIdleConns) // 最多 5 个空闲连接
+	sqlDB.SetMaxIdleConns(dbConfig.MaxIdleConns) // 最多 25 个空闲连接
 	sqlDB.SetConnMaxLifetime(60 * time.Minute)   // 连接最多使用 60 分钟
 	sqlDB.SetConnMaxIdleTime(1 * time.Minute)    // 空闲超过 1 分钟则关闭
 
@@ -148,7 +148,7 @@ func CreatePostgresDatabase(dbConfig *database.Config) error {
 	connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
 		dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.SSLMode)
 	helpers.AppLogger.Infof("连接数据库：%s", connStr)
-	sqlDB, cerr = sql.Open("postgres", connStr)
+	sqlDB, cerr = sql.Open("pgx", connStr)
 	if cerr != nil {
 		helpers.AppLogger.Errorf("连接数据库失败：%v", cerr)
 		return cerr

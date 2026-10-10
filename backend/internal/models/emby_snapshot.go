@@ -119,6 +119,7 @@ type EmbyItemSnapshot struct {
 	cleanupFiles           []EmbyFrozenFile
 	pathConfig             *EmbyConfig
 	frozenSources          []EmbySnapshotSource
+	evidenceItem           *EmbyMediaItem
 	preparedSTRMReferences map[int]embyPreparedSTRMReference
 }
 
@@ -319,19 +320,26 @@ func ApplyEmbySnapshots(token EmbyIndexToken, snapshots []EmbyItemSnapshot) erro
 
 // ApplyEmbySnapshotsContext 允许并行执行器取消等待连接或锁，并收齐真实提交结果。
 func ApplyEmbySnapshotsContext(ctx context.Context, token EmbyIndexToken, snapshots []EmbyItemSnapshot) error {
-	expectedMembers := map[string]map[string]bool{}
-	exclusive := len(snapshots) != 1
-	for _, snapshot := range snapshots {
-		if snapshot.Item.PartOfItemID != "" || snapshot.Item.VersionOfItemID != "" {
+	return ApplyEmbySnapshotGroupsContext(ctx, token, [][]EmbyItemSnapshot{snapshots}, false)
+}
+
+// ApplyEmbySnapshotGroupsContext 在有界事务内提交多个独立物理组，组内成员完整性分别判断。
+func ApplyEmbySnapshotGroupsContext(ctx context.Context, token EmbyIndexToken, groups [][]EmbyItemSnapshot, forceExclusive bool) error {
+	if len(groups) > 4 {
+		return errors.New("Emby 批事务最多提交四个物理组")
+	}
+	exclusive := forceExclusive
+	var snapshots []EmbyItemSnapshot
+	for _, group := range groups {
+		if len(group) != 1 {
 			exclusive = true
 		}
-		for field, parent := range map[string]string{"part_of_item_id": snapshot.Item.PartOfItemID, "version_of_item_id": snapshot.Item.VersionOfItemID} {
-			key := field + "\x00" + parent
-			if expectedMembers[key] == nil {
-				expectedMembers[key] = map[string]bool{}
+		for _, snapshot := range group {
+			if snapshot.Item.PartOfItemID != "" || snapshot.Item.VersionOfItemID != "" {
+				exclusive = true
 			}
-			expectedMembers[key][snapshot.Item.ItemId] = true
 		}
+		snapshots = append(snapshots, group...)
 	}
 	apply := func(exclusive bool) error {
 		return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -357,43 +365,19 @@ func ApplyEmbySnapshotsContext(ctx context.Context, token EmbyIndexToken, snapsh
 			if err := loadEmbyApplySources(tx, snapshots, cache); err != nil {
 				return err
 			}
-			for i := range snapshots {
-				if err := applyEmbySnapshot(tx, token, &snapshots[i]); err != nil {
+			applied := make([]EmbyItemSnapshot, 0, len(snapshots))
+			for _, group := range groups {
+				if err := applyEmbySnapshotGroupTx(tx, token, group, cache); err != nil {
 					return err
 				}
-			}
-			// 完整主项响应才解除消失成员；使用本事务读取并随提交更新的投影集合。
-			memberIDs := make([]string, 0, len(cache.media))
-			for id := range cache.media {
-				memberIDs = append(memberIDs, id)
-			}
-			slices.Sort(memberIDs)
-			for _, snapshot := range snapshots {
-				if !snapshot.MembersComplete {
-					continue
-				}
-				for _, field := range []string{"part_of_item_id", "version_of_item_id"} {
-					for _, id := range memberIDs {
-						member := cache.media[id]
-						parent := member.PartOfItemID
-						if field == "version_of_item_id" {
-							parent = member.VersionOfItemID
-						}
-						if member.ServerId != token.ServerID || parent != snapshot.Item.ItemId || expectedMembers[field+"\x00"+snapshot.Item.ItemId][member.ItemId] {
-							continue
-						}
-						if err := detachEmbyMembership(tx, token, member, field); err != nil {
-							return err
-						}
-					}
-				}
+				applied = append(applied, group...)
 			}
 			for _, validate := range cache.validations {
 				if err := validate(); err != nil {
 					return err
 				}
 			}
-			return saveEmbyApplyLibraryRelations(tx, snapshots, cache)
+			return saveEmbyApplyLibraryRelations(tx, applied, cache)
 		})
 	}
 	err := apply(exclusive)
@@ -403,8 +387,54 @@ func ApplyEmbySnapshotsContext(ctx context.Context, token EmbyIndexToken, snapsh
 	return err
 }
 
+func applyEmbySnapshotGroupTx(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemSnapshot, cache *embyApplyCache) error {
+	expectedMembers := map[string]map[string]bool{}
+	for _, snapshot := range snapshots {
+		for field, parent := range map[string]string{"part_of_item_id": snapshot.Item.PartOfItemID, "version_of_item_id": snapshot.Item.VersionOfItemID} {
+			key := field + "\x00" + parent
+			if expectedMembers[key] == nil {
+				expectedMembers[key] = map[string]bool{}
+			}
+			expectedMembers[key][snapshot.Item.ItemId] = true
+		}
+	}
+	for i := range snapshots {
+		if err := applyEmbySnapshot(tx, token, &snapshots[i]); err != nil {
+			return err
+		}
+	}
+	// 各物理组分别解除消失成员，共用缓存始终随本事务写入更新。
+	memberIDs := make([]string, 0, len(cache.media))
+	for id := range cache.media {
+		memberIDs = append(memberIDs, id)
+	}
+	slices.Sort(memberIDs)
+	for _, snapshot := range snapshots {
+		if !snapshot.MembersComplete {
+			continue
+		}
+		for _, field := range []string{"part_of_item_id", "version_of_item_id"} {
+			for _, id := range memberIDs {
+				member := cache.media[id]
+				parent := member.PartOfItemID
+				if field == "version_of_item_id" {
+					parent = member.VersionOfItemID
+				}
+				if member.ServerId != token.ServerID || parent != snapshot.Item.ItemId || expectedMembers[field+"\x00"+snapshot.Item.ItemId][member.ItemId] {
+					continue
+				}
+				if err := detachEmbyMembership(tx, token, member, field); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // detachEmbyMembership 只修改旧快照的成员边，不从当前账本制造一次新的远端观察。
 func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaItem, field string) error {
+	previousSnapshotID := member.SnapshotID
 	var state EmbyItemState
 	if err := tx.Where("server_id = ? AND item_id = ?", token.ServerID, member.ItemId).First(&state).Error; err != nil {
 		return err
@@ -468,6 +498,12 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 			member.VersionOfItemID = ""
 		}
 		cache.media[member.ItemId], cache.states[member.ItemId], cache.evidence[evidence.ID] = member, state, evidence
+		delete(cache.memberships, member.ItemId)
+		for i := range cache.links[uint(member.ItemIdInt)] {
+			if cache.links[uint(member.ItemIdInt)][i].SnapshotID == previousSnapshotID {
+				cache.links[uint(member.ItemIdInt)][i].SnapshotID = evidence.ID
+			}
+		}
 	}
 	return saveEmbyItemMembershipTx(tx, state, evidence)
 }
@@ -514,7 +550,7 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 		}
 	}
 	cache.states[item.ItemId], cache.evidence[evidence.ID] = state, evidence
-	return saveEmbyApplyMembership(tx, state, evidence)
+	return saveEmbyApplyMembership(tx, state, evidence, snapshot.evidenceItem)
 }
 
 func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot, state *EmbyItemState) (EmbyItemEvidence, []EmbyFrozenFile, error) {
@@ -618,6 +654,11 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	evidence.EvidenceKey = embyDigest([]string{evidence.ConfigKey, evidence.ItemJSON, evidence.SourcesJSON, evidence.FilesJSON, evidence.SidecarsJSON})
 	if err := checkEmbyWebhookSize(evidence); err != nil {
 		return EmbyItemEvidence{}, nil, err
+	}
+	snapshot.evidenceItem = nil
+	if tx.Dialector.Name() == "sqlite" {
+		// 成员投影复用编码前的同一份证据；持久证据仍按原 JSON 格式保存。
+		snapshot.evidenceItem = &stableItem
 	}
 	return evidence, files, nil
 }
@@ -1008,9 +1049,9 @@ func FinishEmbyIndexSyncRun(token EmbyIndexToken, mode string, processed, finish
 				updates["last_full_sync_at"] = finishedAt
 			case EmbySyncModeIncremental:
 				updates["last_incremental_sync_at"] = finishedAt
-				if cursorAt > 0 {
-					updates["last_saved_cursor_at"] = cursorAt
-				}
+			}
+			if (mode == EmbySyncModeFull || mode == EmbySyncModeIncremental) && cursorAt > 0 {
+				updates["last_saved_cursor_at"] = gorm.Expr("CASE WHEN COALESCE(last_saved_cursor_at, 0) < ? THEN ? ELSE last_saved_cursor_at END", cursorAt, cursorAt)
 			}
 		}
 		return tx.Model(&EmbyConfig{}).Where("id > 0").Updates(updates).Error

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,11 +42,22 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 	for _, mode := range []string{"full", "incremental"} {
 		for _, failure := range []string{"link", "parts", "empty_page", "delete_race"} {
 			t.Run(mode+"_"+failure, func(t *testing.T) {
+				previousDB, previousLogger, previousConfig := db.Db, helpers.AppLogger, models.GlobalEmbyConfig
 				helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-				conn, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+				// 取消事务可能丢弃物理连接；文件库让重连后仍可核对失败前状态。
+				conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "snapshot.db")), &gorm.Config{})
 				if err != nil {
 					t.Fatal(err)
 				}
+				sqlDB, err := conn.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					SetEmbySyncRunning(false)
+					db.Db, helpers.AppLogger, models.GlobalEmbyConfig = previousDB, previousLogger, previousConfig
+					_ = sqlDB.Close()
+				})
 				db.Db = conn
 				models.GlobalEmbyConfig = nil
 				SetEmbySyncRunning(false)
@@ -116,12 +128,16 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 					t.Fatal("incomplete run reported success")
 				}
 				var fresh models.EmbyConfig
-				conn.First(&fresh)
+				if err := conn.First(&fresh).Error; err != nil {
+					t.Fatal(err)
+				}
 				if fresh.LastSavedCursorAt != 100 || fresh.LastFullSyncAt != 50 || fresh.LastError == "" {
 					t.Fatalf("failure advanced successful state: %+v", fresh)
 				}
 				var count int64
-				conn.Model(&models.EmbyMediaItem{}).Where("item_id = ?", "999").Count(&count)
+				if err := conn.Model(&models.EmbyMediaItem{}).Where("item_id = ?", "999").Count(&count).Error; err != nil {
+					t.Fatal(err)
+				}
 				if count != 1 {
 					t.Fatal("failed library cleaned old item")
 				}

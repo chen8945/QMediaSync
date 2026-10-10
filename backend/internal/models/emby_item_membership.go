@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -25,13 +26,30 @@ type EmbyItemMembership struct {
 }
 
 func makeEmbyItemMembership(state EmbyItemState, evidence EmbyItemEvidence) (EmbyItemMembership, error) {
+	return makeEmbyItemMembershipFromItem(state, evidence, nil)
+}
+
+func makeEmbyItemMembershipFromItem(state EmbyItemState, evidence EmbyItemEvidence, item *EmbyMediaItem) (EmbyItemMembership, error) {
 	if state.SnapshotID != evidence.ID || state.ItemID != evidence.ItemID || state.ServerID != evidence.ServerID ||
 		state.Generation != evidence.Generation || state.IdentityKey != evidence.IdentityKey {
 		return EmbyItemMembership{}, ErrEmbyIdentityAmbiguous
 	}
-	item, err := embyObservedEvidenceItem(evidence, state.ServerID, evidence.ServerConfigKey)
-	if err != nil {
-		return EmbyItemMembership{}, err
+	// JSON 会替换非法 UTF-8；此时沿用解码路径以保持历史投影语义。
+	if item == nil || !utf8.ValidString(item.ItemId) || !utf8.ValidString(item.ServerId) ||
+		!utf8.ValidString(item.Type) || !utf8.ValidString(item.PartOfItemID) ||
+		!utf8.ValidString(item.SeasonId) || !utf8.ValidString(item.SeriesId) {
+		decoded, err := embyObservedEvidenceItem(evidence, state.ServerID, evidence.ServerConfigKey)
+		if err != nil {
+			return EmbyItemMembership{}, err
+		}
+		item = &decoded
+	} else {
+		if evidence.ID == 0 {
+			return EmbyItemMembership{}, ErrEmbyIdentityAmbiguous
+		}
+		if err := validateEmbyEvidenceItem(evidence, *item); err != nil {
+			return EmbyItemMembership{}, err
+		}
 	}
 	return EmbyItemMembership{
 		ServerID: state.ServerID, ItemID: state.ItemID, ServerConfigKey: evidence.ServerConfigKey,

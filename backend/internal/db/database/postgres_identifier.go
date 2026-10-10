@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"unicode"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 )
 
 const maxPostgresIdentifierBytes = 63
@@ -22,5 +22,5 @@ func QuotePostgresIdentifier(name string) (string, error) {
 			return "", fmt.Errorf("PostgreSQL 标识符不能包含空白或控制字符")
 		}
 	}
-	return pq.QuoteIdentifier(name), nil
+	return pgx.Identifier{name}.Sanitize(), nil
 }

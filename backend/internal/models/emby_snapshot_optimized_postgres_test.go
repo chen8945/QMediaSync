@@ -27,6 +27,19 @@ func optimizedSnapshotFixture(template EmbyItemSnapshot, itemID, name string) Em
 	return snapshot
 }
 
+func TestEmbySnapshotOptimizedPostgresRepairsMembershipNulls(t *testing.T) {
+	conn, _ := setupEmbySnapshotPostgres(t)
+	_, token, snapshot := seedEmbyPostgresSnapshot(t, conn)
+	testEmbySnapshotMembershipNulls(t, token, snapshot)
+}
+
+func TestEmbySnapshotOptimizedPostgresGroupsRollbackAndBound(t *testing.T) {
+	conn, _ := setupEmbySnapshotPostgres(t)
+	_, token, snapshot := seedEmbyPostgresSnapshot(t, conn)
+	second := optimizedSnapshotFixture(snapshot, "9209", "second group")
+	testEmbySnapshotGroupsRollbackAndBound(t, token, snapshot, second)
+}
+
 // holdOptimizedSnapshotEvidence 暂停在真实 INSERT 成功后，尚未执行其余投影和 COMMIT。
 func holdOptimizedSnapshotEvidence(t *testing.T, conn *gorm.DB, itemID string) (<-chan int, func()) {
 	t.Helper()

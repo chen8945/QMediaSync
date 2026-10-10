@@ -32,7 +32,7 @@ func setupEmbySnapshotPostgres(t *testing.T) (*gorm.DB, string) {
 	if err != nil || parsed.User == nil || parsed.Host == "" {
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
-	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func setupEmbySnapshotPostgres(t *testing.T) (*gorm.DB, string) {
 	query.Set("application_name", schema)
 	query.Set("statement_timeout", "15000")
 	parsed.RawQuery = query.Encode()
-	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: parsed.String()}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: parsed.String()}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

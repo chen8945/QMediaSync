@@ -153,7 +153,7 @@ func openCrossEngineDatabase(t *testing.T, engine string) *gorm.DB {
 		if parseErr != nil || parsed.User == nil || parsed.Host == "" || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
 			t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 		}
-		admin, openErr := sql.Open("postgres", dsn)
+		admin, openErr := sql.Open("pgx", dsn)
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
@@ -171,12 +171,12 @@ func openCrossEngineDatabase(t *testing.T, engine string) *gorm.DB {
 		query.Set("search_path", schema)
 		query.Set("statement_timeout", "15000")
 		parsed.RawQuery = query.Encode()
-		sqlDB, openErr := sql.Open("postgres", parsed.String())
+		sqlDB, openErr := sql.Open("pgx", parsed.String())
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
-		// 与生产使用同一个 lib/pq 驱动；DriverName 也影响 GORM 的参数处理。
-		conn, err = gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB}), config)
+		// 与生产使用同一个 pgx 驱动；DriverName 也影响 GORM 的参数处理。
+		conn, err = gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", Conn: sqlDB}), config)
 		if err != nil {
 			sqlDB.Close()
 		}
@@ -228,6 +228,23 @@ func seedCrossEngineRecords(t *testing.T, conn *gorm.DB) []crossEngineRecord {
 		values["id"] = record.id
 		if err := conn.Model(record.model).Create(values).Error; err != nil {
 			t.Fatalf("seed %T: %v", record.model, err)
+		}
+		if conn.Dialector.Name() == "postgres" {
+			for column, value := range record.values {
+				timestamp, ok := value.(time.Time)
+				if !ok {
+					continue
+				}
+				var stored time.Time
+				if err := conn.Model(record.model).Select(column).Where("id = ?", record.id).Row().Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				if !stored.Equal(timestamp.Truncate(time.Microsecond)) {
+					t.Fatalf("pgx did not preserve the expected stored microsecond timestamp: %s", column)
+				}
+				// pgx 入库时截断微秒尾数；恢复应保留源库实值，SQLite 源仍覆盖纳秒四舍五入。
+				record.values[column] = stored
+			}
 		}
 	}
 	settings := crossEngineRecord{&models.Settings{}, 1, map[string]any{"video_ext": `["mkv","mp4"]`, "meta_ext": `["nfo"]`, "exclude_name": `["sample"]`, "exclude_name_regex": `["(?i)trailer"]`, "delete_dir": 0, "url_validity_check_enabled": 0}}

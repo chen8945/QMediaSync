@@ -185,6 +185,19 @@ func TestEmbyWebhookClaimRetryRecoveryAndImmutablePlan(t *testing.T) {
 	if err := SaveEmbyWebhookPlan(t.Context(), first, forged); err == nil {
 		t.Fatal("immutable input replaced")
 	}
+	beforeTargets, err := LoadEmbyWebhookTargets(t.Context(), first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedTarget := plan.Targets[0]
+	changedTarget.CoveredBy = "unsaved-directory"
+	if attempt, err := BeginEmbyWebhookAttempt(t.Context(), first, []EmbyDeletionTarget{changedTarget}); attempt != "" || !errors.Is(err, ErrEmbyIdentityAmbiguous) {
+		t.Fatalf("same key authorized a changed target: attempt=%q err=%v", attempt, err)
+	}
+	afterTargets, err := LoadEmbyWebhookTargets(t.Context(), first.ID)
+	if err != nil || !slices.Equal(beforeTargets, afterTargets) {
+		t.Fatalf("rejected target changed stored attempts or identity: before=%+v after=%+v err=%v", beforeTargets, afterTargets, err)
+	}
 	attempt, err := BeginEmbyWebhookAttempt(t.Context(), first, plan.Targets)
 	if err != nil {
 		t.Fatal(err)

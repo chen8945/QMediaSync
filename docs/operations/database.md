@@ -14,7 +14,9 @@ QMediaSync 支持 SQLite 和 PostgreSQL，默认使用 PostgreSQL。程序和 Do
 
 SQLite 连接使用 WAL 日志模式、`synchronous = NORMAL` 和 10 秒 `busy_timeout`，并且连接池固定为一个连接（`MaxOpenConns` 和 `MaxIdleConns` 均为 1，连接不设置存活和空闲上限）。SQLite 同一时间只允许一个写事务：多连接时，事务读取快照之后如果其他连接提交了写入，本事务的写升级会立即失败并返回 `SQLITE_BUSY`（快照冲突），`busy_timeout` 不会重试这种错误。单连接把所有语句串行化到进程内的连接锁上排队，写入不再返回 `database is locked`。`MaxOpenConns` 不适用于 SQLite 引擎，只作用于 PostgreSQL。
 
-因此 SQLite 下的写事务体内不得再通过全局 `db.Db` 发起新语句，必须使用事务自身的 `tx`：单连接会让这种嵌套语句等待自己持有的连接而死锁。PostgreSQL 连接池仍按 `config/config.yaml` 的 `maxOpenConns` 和 `maxIdleConns` 配置。
+因此 SQLite 下的写事务体内不得再通过全局 `db.Db` 发起新语句，必须使用事务自身的 `tx`：单连接会让这种嵌套语句等待自己持有的连接而死锁。PostgreSQL 连接池仍按 `config/config.yaml` 的 `maxOpenConns` 和 `maxIdleConns` 配置，默认均为 `25`；连接按需打开，上限不代表同步时固定占用 25 条连接。
+
+PostgreSQL 统一使用 pgx 的 `database/sql` 驱动，包括正常启动、首次建库、安装探测和本地管理员恢复；GORM 使用相同的 `pgx` 驱动名，以保持迁移查询与参数处理一致。原连接配置和数据库结构不变，驱动切换不重写已有数据。pgx 写入 `time.Time` 参数时截断到 PostgreSQL 的微秒精度；通知表可能与旧驱动的亚微秒舍入相差 1 微秒，Unix 秒字段不受影响。备份仍以实际存储的时间为准，跨引擎 UTC 微秒规整遵循[原有数据契约](../reference/database-schema.md#逻辑备份的数据契约)。
 
 SQLite 和 PostgreSQL 共用 GORM 日志配置：忽略 `ErrRecordNotFound` 日志，保留真实 SQL 错误和超过 200 毫秒的慢查询。忽略日志不改变查询返回值；空库初始化和后台队列无待办时仍由业务代码处理“记录不存在”，不会因此持续刷出错误日志。
 

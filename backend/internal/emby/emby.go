@@ -60,7 +60,8 @@ func PerformEmbySync() (result int, err error) {
 	if !embySyncRunning.CompareAndSwap(0, 1) {
 		return 0, errors.New("Emby 条目同步任务已在运行")
 	}
-	started, serr := models.StartEmbySyncRun(models.EmbySyncModeFull, helpers.NowUnix())
+	scanStartedAt := helpers.NowUnix()
+	started, serr := models.StartEmbySyncRun(models.EmbySyncModeFull, scanStartedAt)
 	if serr != nil {
 		embySyncRunning.Store(0)
 		return 0, serr
@@ -73,9 +74,14 @@ func PerformEmbySync() (result int, err error) {
 	var processed int64
 	var token models.EmbyIndexToken
 	completed := false
+	selectedLibrariesComplete := true
 	defer func() {
 		defer embySyncRunning.Store(0)
-		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeFull, processed, helpers.NowUnix(), 0, err); ferr != nil {
+		var cursorAt int64
+		if completed && selectedLibrariesComplete {
+			cursorAt = scanStartedAt
+		}
+		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeFull, processed, helpers.NowUnix(), cursorAt, err); ferr != nil {
 			helpers.AppLogger.Warnf("更新 Emby 同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
@@ -121,6 +127,8 @@ func PerformEmbySync() (result int, err error) {
 			for _, id := range selectedLibIds {
 				if lib, ok := libMap[id]; ok {
 					filteredLibs = append(filteredLibs, lib)
+				} else {
+					selectedLibrariesComplete = false
 				}
 			}
 			libs = filteredLibs

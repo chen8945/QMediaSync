@@ -281,6 +281,143 @@ func TestEmbySnapshotFinishChecksTokenEvenWithoutItems(t *testing.T) {
 	}
 }
 
+func TestEmbySnapshotFinishAdvancesSuccessfulCursorMonotonically(t *testing.T) {
+	config, token, _ := setupEmbySnapshotModelTest(t)
+	for _, test := range []struct {
+		name          string
+		mode          string
+		initialCursor any
+		cursor        int64
+		runErr        error
+		wantCursor    int64
+	}{
+		{name: "full initializes NULL", mode: EmbySyncModeFull, initialCursor: nil, cursor: 100, wantCursor: 100},
+		{name: "incremental does not move backward", mode: EmbySyncModeIncremental, initialCursor: int64(100), cursor: 80, wantCursor: 100},
+		{name: "full does not move backward", mode: EmbySyncModeFull, initialCursor: int64(100), cursor: 90, wantCursor: 100},
+		{name: "failed full does not advance", mode: EmbySyncModeFull, initialCursor: int64(100), cursor: 200, runErr: errors.New("scan failed"), wantCursor: 100},
+		{name: "failed incremental does not advance", mode: EmbySyncModeIncremental, initialCursor: int64(100), cursor: 200, runErr: errors.New("scan failed"), wantCursor: 100},
+		{name: "incremental advances", mode: EmbySyncModeIncremental, initialCursor: int64(100), cursor: 150, wantCursor: 150},
+		{name: "webhook does not own cursor", mode: EmbySyncModeWebhook, initialCursor: int64(150), cursor: 300, wantCursor: 150},
+		{name: "zero cursor leaves watermark", mode: EmbySyncModeFull, initialCursor: int64(150), wantCursor: 150},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := db.Db.Model(config).UpdateColumn("last_saved_cursor_at", test.initialCursor).Error; err != nil {
+				t.Fatal(err)
+			}
+			var before EmbyConfig
+			if err := db.Db.First(&before, config.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := FinishEmbyIndexSyncRun(token, test.mode, 0, before.LastSyncTime+1, test.cursor, test.runErr); err != nil {
+				t.Fatal(err)
+			}
+			var after EmbyConfig
+			if err := db.Db.First(&after, config.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if after.LastSavedCursorAt != test.wantCursor || (after.LastError != "") != (test.runErr != nil) {
+				t.Fatalf("unexpected cursor/error: cursor=%d error=%q", after.LastSavedCursorAt, after.LastError)
+			}
+			if test.runErr != nil && (after.LastSyncTime != before.LastSyncTime || after.LastFullSyncAt != before.LastFullSyncAt || after.LastIncrementalSyncAt != before.LastIncrementalSyncAt) {
+				t.Fatal("failed run advanced success watermarks")
+			}
+		})
+	}
+}
+
+func TestEmbySnapshotGroupsRollbackAndBound(t *testing.T) {
+	_, token, file := setupEmbySnapshotModelTest(t)
+	first, second := snapshotForFile(file), snapshotForFile(file)
+	second.Item.ItemId, second.Sources[0].ItemID = "102", "102"
+	testEmbySnapshotGroupsRollbackAndBound(t, token, first, second)
+}
+
+func testEmbySnapshotGroupsRollbackAndBound(t *testing.T, token EmbyIndexToken, first, second EmbyItemSnapshot) {
+	t.Helper()
+	groups := [][]EmbyItemSnapshot{{first}, {second}}
+	if err := ApplyEmbySnapshotGroupsContext(t.Context(), token, groups, false); err != nil {
+		t.Fatal(err)
+	}
+	before := readEmbyMembershipTables(t)
+	for i := range groups {
+		groups[i][0].Item.Name = "must rollback"
+	}
+	injected := errors.New("second group membership failed")
+	const callback = "test:batch_membership_failure"
+	if err := db.Db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "emby_item_memberships" {
+			if row, ok := tx.Statement.Dest.(*EmbyItemMembership); ok && row.ItemID == second.Item.ItemId {
+				tx.AddError(injected)
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Db.Callback().Create().Remove(callback)
+	if err := ApplyEmbySnapshotGroupsContext(t.Context(), token, groups, false); !errors.Is(err, injected) {
+		t.Fatalf("second group failure ignored: %v", err)
+	}
+	if after := readEmbyMembershipTables(t); !reflect.DeepEqual(before, after) {
+		t.Fatal("later group failure partially committed earlier group")
+	}
+	if err := ApplyEmbySnapshotGroupsContext(t.Context(), token, make([][]EmbyItemSnapshot, 5), false); err == nil {
+		t.Fatal("oversized snapshot batch accepted")
+	}
+	if after := readEmbyMembershipTables(t); !reflect.DeepEqual(before, after) {
+		t.Fatal("oversized batch changed snapshot data")
+	}
+}
+
+func TestEmbySnapshotGroupsKeepSeparateMemberSets(t *testing.T) {
+	_, token, file := setupEmbySnapshotModelTest(t)
+	first, firstPart := snapshotForFile(file), snapshotForFile(file)
+	firstPart.Item.ItemId, firstPart.Item.Type, firstPart.Item.PartOfItemID = "102", "Video", "101"
+	firstPart.Sources[0].ItemID, firstPart.MembersComplete = "102", false
+	second, secondPart := snapshotForFile(file), snapshotForFile(file)
+	second.Item.ItemId, second.Sources[0].ItemID = "201", "201"
+	secondPart.Item.ItemId, secondPart.Item.Type, secondPart.Item.PartOfItemID = "202", "Video", "201"
+	secondPart.Sources[0].ItemID, secondPart.MembersComplete = "202", false
+	if err := ApplyEmbySnapshotGroupsContext(t.Context(), token, [][]EmbyItemSnapshot{{first, firstPart}, {second, secondPart}}, false); err != nil {
+		t.Fatal(err)
+	}
+	var original EmbyItemEvidence
+	if err := db.Db.Where("item_id = ?", "102").First(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyEmbySnapshotGroupsContext(t.Context(), token, [][]EmbyItemSnapshot{{first}, {second, secondPart}}, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ id, parent string }{{"102", ""}, {"202", "201"}} {
+		var item EmbyMediaItem
+		var state EmbyItemState
+		var member EmbyItemMembership
+		var links []EmbyMediaSyncFile
+		for _, row := range []any{&item, &state, &member} {
+			if err := db.Db.Where("item_id = ?", test.id).First(row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if item.PartOfItemID != test.parent || member.PartOfItemID != test.parent || state.SnapshotID != item.SnapshotID || member.SnapshotID != item.SnapshotID {
+			t.Fatalf("group membership diverged: item=%+v state=%+v membership=%+v", item, state, member)
+		}
+		if err := db.Db.Where("emby_item_id = ?", item.ItemIdInt).Find(&links).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(links) != 1 || links[0].SnapshotID != item.SnapshotID {
+			t.Fatalf("group links lost or stale: %+v", links)
+		}
+		if test.parent == "" {
+			var detached EmbyItemEvidence
+			if err := db.Db.First(&detached, item.SnapshotID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if detached.ID == original.ID || detached.FilesJSON != original.FilesJSON || detached.SidecarsJSON != original.SidecarsJSON {
+				t.Fatal("detach did not preserve the original physical evidence")
+			}
+		}
+	}
+}
+
 func TestEmbySnapshotDetachKeepsOldFileGeneration(t *testing.T) {
 	for _, relation := range []string{"part", "version"} {
 		t.Run(relation, func(t *testing.T) {

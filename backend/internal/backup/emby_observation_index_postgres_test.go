@@ -29,12 +29,12 @@ func setupEmbyObservationBackupPostgres(t *testing.T) (*gorm.DB, models.EmbyWebh
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
 	setupBackupTest(t)
-	adminSQL, err := sql.Open("postgres", dsn)
+	adminSQL, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { adminSQL.Close() })
-	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: adminSQL}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", Conn: adminSQL}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +51,12 @@ func setupEmbyObservationBackupPostgres(t *testing.T) (*gorm.DB, models.EmbyWebh
 	query.Set("search_path", schema)
 	query.Set("statement_timeout", "15000")
 	parsed.RawQuery = query.Encode()
-	sqlDB, err := sql.Open("postgres", parsed.String())
+	sqlDB, err := sql.Open("pgx", parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sqlDB.Close() })
-	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", Conn: sqlDB}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", Conn: sqlDB}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

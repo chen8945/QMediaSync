@@ -43,7 +43,8 @@ func ConfirmEmbyWebhookTargetAbsence(ctx context.Context, plan EmbyDeletionPlan,
 	if !plan.Input.CleanupPolicy.AllowsJointBatch() || provider == nil || verify == nil || target.Reason != "" || target.File.Reason != "" {
 		return fail(EmbyDeletionUnresolved, ErrEmbyDeleteUnverified)
 	}
-	if !slices.ContainsFunc(plan.Targets, func(known EmbyDeletionTarget) bool { return embyJSON(known) == embyJSON(target) }) {
+	knownTargets := embyDeletionTargetJSONIndex(plan.Targets)
+	if !slices.Contains(knownTargets[target.Key], embyJSON(target)) {
 		return fail(EmbyDeletionUnresolved, ErrEmbyIdentityAmbiguous)
 	}
 	release, err := acquireEmbyDeletionScope(ctx)
@@ -119,9 +120,10 @@ func BeginEmbyWebhookAttempt(ctx context.Context, record EmbyWebhookRecord, targ
 		if !plan.Input.CleanupPolicy.AllowsJointBatch() || len(targets) == 0 {
 			return ErrEmbyIdentityAmbiguous
 		}
+		knownTargets := embyDeletionTargetJSONIndex(plan.Targets)
 		keys := make([]string, 0, len(targets))
 		for _, target := range targets {
-			if !slices.ContainsFunc(plan.Targets, func(known EmbyDeletionTarget) bool { return embyJSON(known) == embyJSON(target) }) {
+			if !slices.Contains(knownTargets[target.Key], embyJSON(target)) {
 				return ErrEmbyIdentityAmbiguous
 			}
 			keys = append(keys, target.Key)

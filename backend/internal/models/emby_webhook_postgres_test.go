@@ -278,7 +278,7 @@ func reopenEmbyWebhookPostgres(t *testing.T, old *gorm.DB, schema string) *gorm.
 	query.Set("application_name", schema)
 	query.Set("statement_timeout", "15000")
 	parsed.RawQuery = query.Encode()
-	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: parsed.String()}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: parsed.String()}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

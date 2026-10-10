@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -118,6 +119,19 @@ func TestEmbySyncPerformancePostgres(t *testing.T) {
 	if os.Getenv("QMS_TEST_POSTGRES_DSN") == "" {
 		t.Fatal("performance fixture requires QMS_TEST_POSTGRES_DSN for an isolated verification database")
 	}
+	runEmbySyncPerformance(t, setupEmbyPerformancePostgres)
+}
+
+// TestEmbySyncPerformanceSQLite 使用同一批媒体与断言，数据库位于独立临时目录。
+func TestEmbySyncPerformanceSQLite(t *testing.T) {
+	if os.Getenv("QMS_EMBY_PERFORMANCE") != "1" {
+		t.Skip("requires QMS_EMBY_PERFORMANCE=1")
+	}
+	runEmbySyncPerformance(t, setupEmbyPerformanceSQLite)
+}
+
+func runEmbySyncPerformance(t *testing.T, setup func(*testing.T) (*gorm.DB, *embyPerformanceSQLCounter)) {
+	t.Helper()
 	previousLog, previous115Log := helpers.AppLogger, helpers.V115Log
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.V115Log = helpers.AppLogger
@@ -137,7 +151,7 @@ func TestEmbySyncPerformancePostgres(t *testing.T) {
 		{name: "incremental_delete_on", incremental: true, deleteEnabled: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			conn, sqlCounter := setupEmbyPerformancePostgres(t)
+			conn, sqlCounter := setup(t)
 			items, directories := seedEmbyPerformanceData(t, conn)
 			counts := &embyPerformanceHTTPCounts{}
 			server := newEmbyPerformanceServer(t, items, counts)
@@ -180,7 +194,7 @@ func TestEmbySyncPerformancePostgres(t *testing.T) {
 				if err != nil || processed != embyPerformanceItems || sqlFailures != 0 {
 					t.Fatalf("round %d: processed=%d SQL errors=%d err=%v", round, processed, sqlFailures, err)
 				}
-				if sqlCounter.txCount.Load() < embyPerformanceItems || sqlCounter.txElapsed.Load() <= 0 {
+				if sqlCounter.txCount.Load() < (embyPerformanceItems+3)/4 || sqlCounter.txElapsed.Load() <= 0 {
 					t.Fatal("transaction timing did not cover snapshot commits")
 				}
 				wantCloud := int64(0)
@@ -201,8 +215,8 @@ func TestEmbySyncPerformancePostgres(t *testing.T) {
 				if embyDelta != baseRequests+pageDelta+ancestorDelta {
 					t.Fatalf("round %d: unexpected Emby detail or other HTTP requests: %d", round, embyDelta)
 				}
+				assertEmbyPerformanceEvidence(t, conn)
 			}
-			assertEmbyPerformanceEvidence(t, conn)
 		})
 	}
 }
@@ -210,7 +224,7 @@ func TestEmbySyncPerformancePostgres(t *testing.T) {
 func setupEmbyPerformancePostgres(t *testing.T) (*gorm.DB, *embyPerformanceSQLCounter) {
 	t.Helper()
 	dsn := os.Getenv("QMS_TEST_POSTGRES_DSN")
-	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +252,7 @@ func setupEmbyPerformancePostgres(t *testing.T) (*gorm.DB, *embyPerformanceSQLCo
 	query.Set("statement_timeout", "30000")
 	parsed.RawQuery = query.Encode()
 	counter := &embyPerformanceSQLCounter{Interface: logger.Default.LogMode(logger.Silent)}
-	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: parsed.String()}), &gorm.Config{Logger: counter})
+	conn, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: parsed.String()}), &gorm.Config{Logger: counter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +260,39 @@ func setupEmbyPerformancePostgres(t *testing.T) (*gorm.DB, *embyPerformanceSQLCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	sqlDB.SetMaxOpenConns(4)
-	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(25)
+	setupEmbyPerformanceDatabase(t, conn, sqlDB, counter)
+	t.Logf("isolated_schema=%s postgres_connections=25 lookup_indexes=idx_sync_files_sibling_path,idx_sync_files_file_name", schema)
+	return conn, counter
+}
+
+func setupEmbyPerformanceSQLite(t *testing.T) (*gorm.DB, *embyPerformanceSQLCounter) {
+	t.Helper()
+	counter := &embyPerformanceSQLCounter{Interface: logger.Default.LogMode(logger.Silent)}
+	conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "emby.sqlite")), &gorm.Config{
+		Logger: counter, SkipDefaultTransaction: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	setupEmbyPerformanceDatabase(t, conn, sqlDB, counter)
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL", "PRAGMA busy_timeout=10000"} {
+		if err := conn.Exec(pragma).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return conn, counter
+}
+
+func setupEmbyPerformanceDatabase(t *testing.T, conn *gorm.DB, sqlDB *sql.DB, counter *embyPerformanceSQLCounter) {
+	t.Helper()
 	pool := embyPerformancePool{DB: sqlDB, counter: counter}
 	conn.ConnPool, conn.Statement.ConnPool = pool, pool
 	previousDB, previousConfig := db.Db, models.GlobalEmbyConfig
@@ -278,8 +323,6 @@ func setupEmbyPerformancePostgres(t *testing.T) (*gorm.DB, *embyPerformanceSQLCo
 			t.Fatalf("performance fixture is missing production index %s", index)
 		}
 	}
-	t.Logf("isolated_schema=%s postgres_connections=4 lookup_indexes=idx_sync_files_sibling_path,idx_sync_files_file_name", schema)
-	return conn, counter
 }
 
 func seedEmbyPerformanceData(t *testing.T, conn *gorm.DB) ([]embyclientrestgo.BaseItemDtoV2, map[string]string) {
@@ -409,7 +452,7 @@ func newEmbyPerformanceCloudServer(t *testing.T, directories map[string]string, 
 
 func assertEmbyPerformanceEvidence(t *testing.T, conn *gorm.DB) {
 	t.Helper()
-	for _, table := range []string{"emby_media_items", "emby_item_states", "emby_media_sync_files"} {
+	for _, table := range []string{"emby_media_items", "emby_item_states", "emby_media_sync_files", "emby_item_evidences", "emby_item_memberships"} {
 		var count int64
 		if err := conn.Table(table).Count(&count).Error; err != nil || count != embyPerformanceItems {
 			t.Fatalf("%s: rows=%d err=%v", table, count, err)
@@ -422,7 +465,26 @@ func assertEmbyPerformanceEvidence(t *testing.T, conn *gorm.DB) {
 	if len(evidence) != embyPerformanceItems {
 		t.Fatalf("current evidence rows=%d", len(evidence))
 	}
+	var memberships []models.EmbyItemMembership
+	if err := conn.Find(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	membershipByItem := make(map[string]models.EmbyItemMembership, len(memberships))
+	for _, member := range memberships {
+		membershipByItem[member.ItemID] = member
+	}
 	for _, row := range evidence {
+		var persistedItem models.EmbyMediaItem
+		if err := json.Unmarshal([]byte(row.ItemJSON), &persistedItem); err != nil {
+			t.Fatal(err)
+		}
+		member, ok := membershipByItem[row.ItemID]
+		if !ok || member.ServerID != row.ServerID || member.ServerConfigKey != row.ServerConfigKey ||
+			member.SnapshotID != row.ID || member.ItemType != persistedItem.Type ||
+			member.PartOfItemID != persistedItem.PartOfItemID || member.SeasonID != persistedItem.SeasonId ||
+			member.SeriesID != persistedItem.SeriesId {
+			t.Fatalf("membership differs from persisted evidence for item %s", row.ItemID)
+		}
 		itemID, err := strconv.Atoi(row.ItemID)
 		if err != nil || itemID < 100_000 || itemID >= 100_000+embyPerformanceItems {
 			t.Fatalf("unexpected current item ID: %q", row.ItemID)

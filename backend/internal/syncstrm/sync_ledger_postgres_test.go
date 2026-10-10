@@ -34,7 +34,7 @@ func setupSyncLedgerPostgres(t *testing.T) string {
 	if err != nil || parsed.User == nil || parsed.Host == "" {
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
-	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func setupSyncLedgerPostgres(t *testing.T) string {
 	query.Set("application_name", schema)
 	query.Set("statement_timeout", "10000")
 	parsed.RawQuery = query.Encode()
-	setupLocalEvidenceDatabase(t, postgres.New(postgres.Config{DriverName: "postgres", DSN: parsed.String()}))
+	setupLocalEvidenceDatabase(t, postgres.New(postgres.Config{DriverName: "pgx", DSN: parsed.String()}))
 	return schema
 }
 

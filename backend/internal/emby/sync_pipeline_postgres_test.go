@@ -32,8 +32,8 @@ func TestEmbySnapshotPipelineDeletionDuringParallelPreparationPreservesOldStateP
 	})
 }
 
-// TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML 在真实 INSERT 后暂停，核对生产入口的三个并行事务。
-func TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML(t *testing.T) {
+// TestEmbySnapshotPipelineThreeCommitWorkersPostgresDML 在真实 INSERT 后暂停，核对生产入口的三个并行批事务。
+func TestEmbySnapshotPipelineThreeCommitWorkersPostgresDML(t *testing.T) {
 	if os.Getenv("QMS_TEST_POSTGRES_DSN") == "" {
 		t.Skip("requires QMS_TEST_POSTGRES_DSN for an isolated PostgreSQL test database")
 	}
@@ -47,11 +47,14 @@ func TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"Items":[
-			{"Id":"801","Name":"first","Type":"Movie","Path":"/media/801.mkv","MediaSources":[]},
-			{"Id":"802","Name":"second","Type":"Movie","Path":"/media/802.mkv","MediaSources":[]},
-			{"Id":"803","Name":"third","Type":"Movie","Path":"/media/803.mkv","MediaSources":[]}
-		],"TotalRecordCount":3}`)
+		fmt.Fprint(w, `{"Items":[`)
+		for i := range 12 {
+			if i != 0 {
+				fmt.Fprint(w, ",")
+			}
+			fmt.Fprintf(w, `{"Id":"%d","Name":"movie","Type":"Movie","Path":"/media/%d.mkv","MediaSources":[]}`, 801+i, 801+i)
+		}
+		fmt.Fprint(w, `],"TotalRecordCount":12}`)
 	}))
 	t.Cleanup(server.Close)
 	config := &models.EmbyConfig{
@@ -75,7 +78,10 @@ func TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML(t *testing.T) {
 		if tx.Error != nil || tx.RowsAffected == 0 || tx.Statement.Table != "emby_item_evidences" {
 			return
 		}
-		writes.Add(1)
+		// 首次三个 INSERT 必须来自不同的活跃事务；放行后只统计后续写入。
+		if writes.Add(1) > 3 {
+			return
+		}
 		active.Add(1)
 		defer active.Add(-1)
 		select {
@@ -107,8 +113,8 @@ func TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML(t *testing.T) {
 			token,
 			handled,
 		)
-		if err == nil && count != 3 {
-			err = fmt.Errorf("processed=%d, want 3", count)
+		if err == nil && count != 12 {
+			err = fmt.Errorf("processed=%d, want 12", count)
 		}
 		done <- err
 	}()
@@ -133,14 +139,14 @@ func TestEmbySnapshotPipelineThreeCompleteWorkersPostgresDML(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if writes.Load() != 3 || active.Load() != 0 || len(handled) != 3 {
+	if writes.Load() != 12 || active.Load() != 0 || len(handled) != 12 {
 		t.Fatalf("transaction results were lost: writes=%d active=%d handled=%v", writes.Load(), active.Load(), handled)
 	}
 	for _, model := range []any{
 		&models.EmbyMediaItem{}, &models.EmbyItemState{}, &models.EmbyItemEvidence{}, &models.EmbyItemMembership{},
 	} {
 		var count int64
-		if err := conn.Model(model).Count(&count).Error; err != nil || count != 3 {
+		if err := conn.Model(model).Count(&count).Error; err != nil || count != 12 {
 			t.Fatalf("committed rows %T count=%d err=%v", model, count, err)
 		}
 	}

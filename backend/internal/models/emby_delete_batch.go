@@ -190,6 +190,15 @@ func embyDeletionBatchTarget(targets []EmbyDeletionTarget) EmbyDeletionTarget {
 	return merged
 }
 
+// embyDeletionTargetJSONIndex 仅索引候选，仍以完整 JSON 确认目标身份。
+func embyDeletionTargetJSONIndex(targets []EmbyDeletionTarget) map[string][]string {
+	index := make(map[string][]string, len(targets))
+	for _, target := range targets {
+		index[target.Key] = append(index[target.Key], embyJSON(target))
+	}
+	return index
+}
+
 // ExecuteEmbyDeletionBatch 共同提交选定视频与专属旁车，逐原对象确认部分结果。
 // beforeSend 必须先持久登记实际发送的成员，失败即禁止写请求。
 func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, targets []EmbyDeletionTarget, provider EmbyDeleteProvider, verify EmbyDeletionVerifier, beforeSend func([]EmbyDeletionTarget) error) []EmbyDeletionResult {
@@ -231,10 +240,11 @@ func ExecuteEmbyDeletionBatch(ctx context.Context, plan EmbyDeletionPlan, target
 		}
 		return eligible
 	}
+	knownTargets := embyDeletionTargetJSONIndex(plan.Targets)
 	var eligible []EmbyDeletionTarget
 	for _, target := range targets {
 		if target.Kind != "video" && target.Kind != "sidecar" && target.Kind != "scoped_metadata" || target.Reason != "" || target.File.Reason != "" ||
-			!embySameBatchParent(targets[0].File, target.File) || !slices.ContainsFunc(plan.Targets, func(known EmbyDeletionTarget) bool { return embyJSON(known) == embyJSON(target) }) {
+			!embySameBatchParent(targets[0].File, target.File) || !slices.Contains(knownTargets[target.Key], embyJSON(target)) {
 			reject(target, EmbyDeletionUnresolved, ErrEmbyIdentityAmbiguous)
 			continue
 		}

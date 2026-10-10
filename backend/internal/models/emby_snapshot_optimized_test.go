@@ -165,3 +165,45 @@ func TestEmbySnapshotOptimizedPrefetchPreservesGlobalItemIdentity(t *testing.T) 
 		t.Fatalf("complete group modified another server's member: before=%+v after=%+v", foreignMember, memberAfter)
 	}
 }
+
+func TestEmbySnapshotOptimizedRepairsMembershipNulls(t *testing.T) {
+	_, token, file := setupEmbySnapshotModelTest(t)
+	testEmbySnapshotMembershipNulls(t, token, snapshotForFile(file))
+}
+
+func testEmbySnapshotMembershipNulls(t *testing.T, token EmbyIndexToken, snapshot EmbyItemSnapshot) {
+	t.Helper()
+	if err := ApplyEmbySnapshotsContext(t.Context(), token, []EmbyItemSnapshot{snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	var before EmbyItemMembership
+	if err := db.Db.Where("server_id = ? AND item_id = ?", token.ServerID, snapshot.Item.ItemId).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"server_config_key", "snapshot_id", "item_type", "part_of_item_id", "season_id", "series_id"} {
+		t.Run(column, func(t *testing.T) {
+			if err := db.Db.Model(&EmbyItemMembership{}).Where("id = ?", before.ID).UpdateColumn(column, nil).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyEmbySnapshotsContext(t.Context(), token, []EmbyItemSnapshot{snapshot}); err != nil {
+				t.Fatal(err)
+			}
+			var after EmbyItemMembership
+			if err := db.Db.First(&after, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			beforeValue, afterValue := before, after
+			beforeValue.BaseModel, afterValue.BaseModel = BaseModel{}, BaseModel{}
+			if beforeValue != afterValue || before.CreatedAt != after.CreatedAt {
+				t.Fatalf("membership repair changed evidence or identity: before=%+v after=%+v", before, after)
+			}
+			var nulls int64
+			if err := db.Db.Model(&EmbyItemMembership{}).Where("id = ? AND "+column+" IS NULL", before.ID).Count(&nulls).Error; err != nil {
+				t.Fatal(err)
+			}
+			if nulls != 0 {
+				t.Fatal("NULL membership was skipped instead of repaired")
+			}
+		})
+	}
+}

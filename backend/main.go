@@ -1147,7 +1147,7 @@ func StartConfigWebServer() {
 		}
 		connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
 			req.Host, req.Port, req.User, req.Password, sslMode)
-		sqlDB, err := sql.Open("postgres", connStr)
+		sqlDB, err := sql.Open("pgx", connStr)
 		if err != nil {
 			c.JSON(200, gin.H{"success": false, "error": "连接失败：" + err.Error()})
 			return
@@ -1176,7 +1176,7 @@ func StartConfigWebServer() {
 
 		connStrDb := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			req.Host, req.Port, req.User, req.Password, req.Database, sslMode)
-		sqlDBDb, err := sql.Open("postgres", connStrDb)
+		sqlDBDb, err := sql.Open("pgx", connStrDb)
 		if err != nil {
 			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": false})
 			return
@@ -1221,7 +1221,7 @@ func StartConfigWebServer() {
 				}
 				connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
 					req.Host, req.Port, req.User, req.Password, sslMode)
-				sqlDB, err := sql.Open("postgres", connStr)
+				sqlDB, err := sql.Open("pgx", connStr)
 				if err == nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()

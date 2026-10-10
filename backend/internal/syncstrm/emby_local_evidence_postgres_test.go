@@ -23,7 +23,7 @@ func TestSTRMLocalEvidenceSurvivesReopenAndEmbySyncPostgres(t *testing.T) {
 	if err != nil || parsed.User == nil || parsed.Host == "" {
 		t.Fatal("QMS_TEST_POSTGRES_DSN must be a PostgreSQL URL")
 	}
-	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "postgres", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	admin, err := gorm.Open(postgres.New(postgres.Config{DriverName: "pgx", DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,5 +52,5 @@ func TestSTRMLocalEvidenceSurvivesReopenAndEmbySyncPostgres(t *testing.T) {
 	query.Set("statement_timeout", "15000")
 	parsed.RawQuery = query.Encode()
 	t.Logf("isolated_schema=%s postgres_connections=4", schema)
-	testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t, postgres.New(postgres.Config{DriverName: "postgres", DSN: parsed.String()}))
+	testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t, postgres.New(postgres.Config{DriverName: "pgx", DSN: parsed.String()}))
 }

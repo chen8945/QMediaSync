@@ -74,7 +74,9 @@ func TestRecoverAdminPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sqlDB.SetMaxOpenConns(1)
+		if got := sqlDB.Stats().MaxOpenConnections; got != 1 {
+			t.Fatalf("recovery connection pool must have one connection, got %d", got)
+		}
 		t.Cleanup(func() {
 			if err := sqlDB.Close(); err != nil {
 				t.Error(err)

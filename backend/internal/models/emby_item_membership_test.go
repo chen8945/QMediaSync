@@ -287,3 +287,54 @@ func readEmbyMembershipTables(t *testing.T) []any {
 	}
 	return rows
 }
+
+func TestEmbyItemMembershipReusedItemMatchesJSON(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		item    EmbyMediaItem
+		mutate  func(*EmbyItemState, *EmbyItemEvidence, *EmbyMediaItem)
+		wantErr bool
+	}{
+		{name: "movie zero values", item: EmbyMediaItem{Type: "Movie"}},
+		{name: "video part", item: EmbyMediaItem{Type: "Video", PartOfItemID: "100"}},
+		{name: "episode membership", item: EmbyMediaItem{Type: "Episode", SeasonId: "200", SeriesId: "300", Name: "剧集"}},
+		{name: "invalid UTF-8 uses JSON normalization", item: EmbyMediaItem{Type: "Episode", SeasonId: "bad\xff"}},
+		{name: "state mismatch", wantErr: true, mutate: func(state *EmbyItemState, _ *EmbyItemEvidence, _ *EmbyMediaItem) { state.SnapshotID++ }},
+		{name: "zero evidence", wantErr: true, mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, _ *EmbyMediaItem) {
+			state.SnapshotID, evidence.ID = 0, 0
+		}},
+		{name: "item server mismatch", wantErr: true, mutate: func(_ *EmbyItemState, _ *EmbyItemEvidence, item *EmbyMediaItem) { item.ServerId = "other" }},
+		{name: "item generation mismatch", wantErr: true, mutate: func(_ *EmbyItemState, _ *EmbyItemEvidence, item *EmbyMediaItem) { item.Generation++ }},
+		{name: "invalid item ID", wantErr: true, mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, item *EmbyMediaItem) {
+			state.ItemID, evidence.ItemID, item.ItemId = "invalid", "invalid", "invalid"
+		}},
+		{name: "invalid server UTF-8 remains rejected", wantErr: true, mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, item *EmbyMediaItem) {
+			state.ServerID, evidence.ServerID, item.ServerId = "bad\xff", "bad\xff", "bad\xff"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := test.item
+			item.ItemId, item.ServerId, item.Generation = "101", "server-a", 2
+			evidence := EmbyItemEvidence{BaseModel: BaseModel{ID: 7}, ItemID: item.ItemId, ServerID: item.ServerId, ServerConfigKey: "connection", Generation: item.Generation, IdentityKey: "identity"}
+			state := EmbyItemState{ItemID: item.ItemId, ServerID: item.ServerId, SnapshotID: evidence.ID, Generation: item.Generation, IdentityKey: evidence.IdentityKey}
+			if test.mutate != nil {
+				test.mutate(&state, &evidence, &item)
+			}
+			evidence.ItemJSON = embyJSON(item)
+			decoded, decodeErr := makeEmbyItemMembership(state, evidence)
+			reused, reuseErr := makeEmbyItemMembershipFromItem(state, evidence, &item)
+			if (decodeErr != nil) != test.wantErr || (reuseErr != nil) != test.wantErr {
+				t.Fatalf("want error=%t: JSON=%v reused=%v", test.wantErr, decodeErr, reuseErr)
+			}
+			if !test.wantErr && decoded != reused {
+				t.Fatalf("reused projection differs from saved JSON: decoded=%+v reused=%+v", decoded, reused)
+			}
+			if !test.wantErr {
+				evidence.ItemJSON = "{"
+				if _, err := makeEmbyItemMembershipFromItem(state, evidence, nil); err == nil {
+					t.Fatal("JSON fallback accepted corrupt evidence")
+				}
+			}
+		})
+	}
+}

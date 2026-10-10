@@ -320,18 +320,22 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 	if err != nil {
 		return err
 	}
+	historicalByOwner := make([][]models.EmbySnapshotSource, len(owners))
+	if len(snapshots) > 0 {
+		for i, owner := range owners {
+			if err := json.Unmarshal([]byte(owner.Evidence.SourcesJSON), &historicalByOwner[i]); err != nil {
+				return err
+			}
+		}
+	}
 	var protected []string
 	resolvedSources := map[models.EmbySnapshotSource]models.EmbySnapshotSource{}
 	for _, snapshot := range snapshots {
-		for _, owner := range owners {
+		for ownerIndex, owner := range owners {
 			if snapshot.Item.Path == owner.Item.Path || snapshot.Item.ItemId == owner.Item.ItemId {
 				if !slices.Contains(protected, owner.Item.ItemId) {
 					protected = append(protected, owner.Item.ItemId)
 				}
-			}
-			var historical []models.EmbySnapshotSource
-			if err := json.Unmarshal([]byte(owner.Evidence.SourcesJSON), &historical); err != nil {
-				return err
 			}
 			for _, source := range snapshot.Sources {
 				if source.Path == "" {
@@ -353,7 +357,7 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 						}
 					}
 				}
-				for _, old := range historical {
+				for _, old := range historicalByOwner[ownerIndex] {
 					if sameEmbySource(source.Path, old.Path) {
 						different, err := embyLiveSourceDifferentAccount(ctx, source, old.SourceType, old.AccountID, old.AccountIdentity, resolvedSources)
 						if err != nil {

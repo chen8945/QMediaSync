@@ -2,6 +2,7 @@ package emby
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,43 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
 )
+
+func TestVerifyEmbyDeletionHistoricalSourcesStayScopedToOwner(t *testing.T) {
+	for _, mode := range []string{"matching owner", "corrupt owner", "unselected corrupt owner"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newDeletionVerificationFixture(t)
+			owner := f.input.Owners[0]
+			owner.Item.ItemId = "5"
+			owner.Item.Path = filepath.Join(owner.Files[0].LocalRoot, "second.strm")
+			owner.Evidence.ID = 5
+			owner.Files = []models.EmbyFrozenFile{{LocalRoot: f.input.Owners[0].Files[0].LocalRoot, LocalFilePath: owner.Item.Path}}
+			owner.Evidence.SourcesJSON = `[{"path":"/other/direct.mkv"}]`
+			if mode != "matching owner" {
+				owner.Evidence.SourcesJSON = "{"
+			}
+			f.input.Owners = append(f.input.Owners, owner)
+			if mode != "unselected corrupt owner" {
+				f.target.Owners = append(f.target.Owners, models.EmbyDeletionOwnerRef{ItemID: "5", SnapshotID: 5, Generation: owner.Evidence.Generation})
+			}
+			err := verifyEmbyDeletion(f.attempt(t.Context()), f.input, f.target)
+			switch mode {
+			case "matching owner":
+				protected, ok := errors.AsType[*embyProtectedOwnersError](err)
+				if !ok || len(protected.IDs) != 1 || protected.IDs[0] != "5" {
+					t.Fatalf("历史来源跨 owner 混用或未保护匹配 owner：%v", err)
+				}
+			case "corrupt owner":
+				if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+					t.Fatalf("损坏的历史来源未中止核验：%v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("无关 owner 影响目标核验：%v", err)
+				}
+			}
+		})
+	}
+}
 
 func TestVerifyEmbyDeletionProtectsSurvivorsAndUnknownInventory(t *testing.T) {
 	for _, name := range []string{"absent", "original alive", "STRM alive", "missing root", "renamed source", "hidden shared part", "missing inventory", "source gap", "server changed", "query failure"} {
