@@ -62,7 +62,7 @@ func UpdateTokenIfCurrent(accountId uint, expectedToken string, expectedRefreshT
 		) {
 			continue
 		}
-		helpers.AppLogger.Infof("条件更新 115 客户端 %s 的 Token 成功", key)
+		helpers.AppLogger.Debugf("条件更新 115 客户端 %s 的 Token 成功", key)
 		updated = true
 	}
 	return updated

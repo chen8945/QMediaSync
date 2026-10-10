@@ -26,7 +26,7 @@ const formRef = useTemplateRef<FormInstance>('formRef')
 const validating = shallowRef(false)
 const form = reactive({
   setupToken: '',
-  username: 'admin',
+  username: '',
   password: '',
   passwordConfirm: '',
 })

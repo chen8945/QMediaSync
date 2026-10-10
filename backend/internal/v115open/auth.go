@@ -220,7 +220,7 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 		helpers.AppLogger.Errorf("115 获取访问凭证失败：%+v", tokenDataOrArray)
 		return nil, fmt.Errorf("115 获取访问凭证失败")
 	}
-	helpers.AppLogger.Infof("115 开放平台刷新访问凭证成功")
+	helpers.AppLogger.Debugf("115 开放平台刷新访问凭证成功")
 	// 给客户端设置新的 Token
 	c.SetAuthToken(tokenData.AccessToken, tokenData.RefreshToken)
 	// 通知修改数据库
