@@ -139,6 +139,24 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 	lastExistsPathId := ""
 	for i := range slices.Backward(pathParts) {
 		dir := filepath.Join(pathParts[:i+1]...)
+		if d.s.sync115 != nil {
+			id, absent, err := d.s.known115UploadDirectory(dir)
+			if err != nil {
+				return "", "", err
+			}
+			if id != "" || normalizeStrmRemotePath(dir) == normalizeStrmRemotePath(d.s.SourcePath) {
+				lastExistsPathId = id
+				if lastExistsPathId == "" {
+					lastExistsPathId = d.s.SourcePathId
+				}
+				break
+			}
+			if !absent || !slices.Contains(uploadDirNames, strings.ToLower(filepath.Base(dir))) {
+				return "", "", fmt.Errorf("115 无法确认元数据所属目录是否存在：%s", dir)
+			}
+			notExistIndex = i
+			continue
+		}
 		fsDetail, err := d.client.GetFsDetailByPath(ctx, dir)
 		if isFatalSyncError(err) {
 			return "", "", fmt.Errorf("查询目录失败：%s，错误：%w", dir, err)
@@ -151,6 +169,9 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 		lastExistsPathId = fsDetail.FileId
 		break
 	}
+	if notExistIndex == -1 {
+		return lastExistsPathId, relPath, nil
+	}
 	// 从 notExistIndex 开始，正向创建目录
 	for i := notExistIndex + 1; i <= len(pathParts); i++ {
 		dir := filepath.Join(pathParts[:i]...)
@@ -159,6 +180,11 @@ func (d *open115Driver) CreateDirRecursively(ctx context.Context, path string) (
 		// 完整本地路径
 		if err != nil {
 			return "", "", fmt.Errorf("创建目录失败：%s，错误：%w", dir, err)
+		}
+		if d.s.sync115 != nil {
+			if err := d.s.record115CreatedDirectory(ctx, dir, currentFileId, lastExistsPathId); err != nil {
+				return "", "", err
+			}
 		}
 		// 将新添加的目录加入同步缓存
 		syncFileCache := &SyncFileCache{
@@ -259,10 +285,19 @@ func (d *open115Driver) GetTotalFileCount(ctx context.Context) (int64, string, e
 
 // 查询目录下的子目录
 func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]pathQueueItem, error) {
+	return d.GetDirsByPath(ctx, "", pathId)
+}
+
+// GetDirsByPath 同时核对请求路径，避免空列表丢失父目录的位置证据。
+func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId string) ([]pathQueueItem, error) {
 	offset := 0
 	limit := models.GetFileListPageSize()
 	pathDirs := make([]pathQueueItem, 0)
 	expectedTotal := -1
+	expectedPath := ""
+	if parentPath != "" {
+		expectedPath = normalizeStrmRemotePath(parentPath)
+	}
 	seen := make(map[string]struct{})
 	for {
 		observedAt := time.Now().Unix()
@@ -291,14 +326,37 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 		if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
 			return nil, err
 		}
+		if len(resp.Path) == 0 || resp.Path[len(resp.Path)-1].FileId.String() != pathId {
+			return nil, fmt.Errorf("115 子目录列表缺少匹配父目录身份")
+		}
+		parts := make([]string, 0, len(resp.Path))
+		pathIDs := make(map[string]bool, len(resp.Path))
+		for i, part := range resp.Path {
+			id := part.FileId.String()
+			if id == "0" && i == 0 {
+				continue
+			}
+			if id == "" || id == "0" || pathIDs[id] || part.Name == "" || part.Name == "." || part.Name == ".." || strings.ContainsAny(part.Name, "/\\\x00") {
+				return nil, fmt.Errorf("115 子目录列表祖先路径不完整")
+			}
+			pathIDs[id] = true
+			parts = append(parts, part.Name)
+		}
+		currentPath := normalizeStrmRemotePath(filepath.Join(parts...))
+		if currentPath != normalizeStrmRemotePath(resp.PathStr) || expectedPath != "" && currentPath != expectedPath {
+			return nil, fmt.Errorf("115 子目录列表父路径不匹配或在分页期间变化")
+		}
+		expectedPath = currentPath
 		if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
 			return nil, err
 		}
 		for _, file := range resp.Data {
-			if file.Aid != "1" {
-				continue
+			if file.Aid != "1" || file.FileCategory != v115open.TypeDir && file.FileCategory != v115open.TypeFile || file.FileId == "0" || file.FileId == pathId || file.Pid != pathId ||
+				file.FileName == "" || file.FileName == "." || file.FileName == ".." || strings.ContainsAny(file.FileName, "/\\\x00") {
+				return nil, fmt.Errorf("115 子目录列表条目身份或父目录不匹配")
 			}
-			if file.FileCategory != v115open.TypeDir {
+			// stdir=1 仍可能返回文件，原始页必须全部校验后再筛出目录。
+			if file.FileCategory == v115open.TypeFile {
 				continue
 			}
 			path := filepath.Join(resp.PathStr, file.FileName)

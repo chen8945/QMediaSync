@@ -325,7 +325,7 @@
               <el-radio-button :value="STRM_CUSTOM_OPTIONS.downloadMeta[1]">否</el-radio-button>
             </el-radio-group>
             <div class="form-help">
-              <p>选择“是”时，同步会下载本地缺失的元数据文件</p>
+              <p>选择“是”时，同步会下载本地缺失且未被排除的元数据文件</p>
               <p>
                 选择“否”时，同步不会下载缺失的元数据，<strong style="color: black"
                   >后续元数据处理也会跳过：已存在的保留，新增的不上传</strong
@@ -351,16 +351,20 @@
               <el-radio-button :value="STRM_CUSTOM_OPTIONS.uploadMeta[1]">保留</el-radio-button>
             </el-radio-group>
             <div class="form-help">
+              <p>排除规则优先：命中的文件或整个目录不生成 STRM、不下载、不上传、不清理本地文件。</p>
               <p>删除：本地存在但网盘不存在时，删除本地文件</p>
               <p>
-                上传：本地存在但网盘不存在时，按以下规则处理：<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;1. 父目录在网盘存在则上传<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;2. 父目录在网盘不存在（网盘已删除）则删除本地文件<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;3. 父目录名属于特殊目录时，创建父目录后上传，特殊目录包括：
+                上传：普通父目录在网盘存在时上传；已删除、移动或改名导致原路径不存在时，删除本地文件。
+              </p>
+              <p>
+                未命中排除规则时，以下附属目录可补建后上传：
                 <code>extrafanart</code
                 >、<code>exfanarts</code>、<code>extrafanarts</code>、<code>extras</code>、<code>specials</code>、<code>shorts</code>、<code>scenes</code>、<code>featurettes</code>、<code
                   >behind the scenes</code
-                >、<code>trailers</code>、<code>interviews</code>
+                >、<code>trailers</code>、<code>interviews</code>、<code>subs</code>
+              </p>
+              <p>
+                115 同步只在所属影片、剧名或季目录仍在原位置时补建附属目录，无法确认时保留本地文件。
               </p>
               <p>保留：不处理本地文件，即使网盘中已经不存在</p>
             </div>
@@ -920,7 +924,7 @@
               <el-radio-button :value="STRM_CUSTOM_OPTIONS.downloadMeta[1]">否</el-radio-button>
             </el-radio-group>
             <div class="form-help">
-              <p>选择“是”时，同步会下载本地缺失的元数据文件</p>
+              <p>选择“是”时，同步会下载本地缺失且未被排除的元数据文件</p>
               <p>
                 选择“否”时，同步不会下载缺失的元数据，<strong style="color: black"
                   >后续元数据处理也会跳过：已存在的保留，新增的不上传</strong
@@ -946,16 +950,20 @@
               <el-radio-button :value="STRM_CUSTOM_OPTIONS.uploadMeta[1]">保留</el-radio-button>
             </el-radio-group>
             <div class="form-help">
+              <p>排除规则优先：命中的文件或整个目录不生成 STRM、不下载、不上传、不清理本地文件。</p>
               <p>删除：本地存在但网盘不存在时，删除本地文件</p>
               <p>
-                上传：本地存在但网盘不存在时，按以下规则处理：<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;1. 父目录在网盘存在则上传<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;2. 父目录在网盘不存在（网盘已删除）则删除本地文件<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;3. 父目录名属于特殊目录时，创建父目录后上传，特殊目录包括：
+                上传：普通父目录在网盘存在时上传；已删除、移动或改名导致原路径不存在时，删除本地文件。
+              </p>
+              <p>
+                未命中排除规则时，以下附属目录可补建后上传：
                 <code>extrafanart</code
                 >、<code>exfanarts</code>、<code>extrafanarts</code>、<code>extras</code>、<code>specials</code>、<code>shorts</code>、<code>scenes</code>、<code>featurettes</code>、<code
                   >behind the scenes</code
-                >、<code>trailers</code>、<code>interviews</code>
+                >、<code>trailers</code>、<code>interviews</code>、<code>subs</code>
+              </p>
+              <p>
+                115 同步只在所属影片、剧名或季目录仍在原位置时补建附属目录，无法确认时保留本地文件。
               </p>
               <p>保留：不处理本地文件，即使网盘中已经不存在</p>
             </div>

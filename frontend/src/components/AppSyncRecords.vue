@@ -245,7 +245,7 @@ const syncRecordColumns: RecordColumn<SyncRecord>[] = [
     key: 'status',
     label: '状态',
     priority: 'primary',
-    width: 96,
+    width: 112,
     align: 'center',
     detailField: {
       key: 'status',

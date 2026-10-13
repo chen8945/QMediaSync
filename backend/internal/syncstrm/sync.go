@@ -95,6 +95,8 @@ type SyncStrm struct {
 	protectedPickCodes        map[string]bool
 	protectedLocalPaths       map[string]bool
 	protectedLocalDirectories map[string]bool
+	excludedLocalPaths        map[string]bool // 值为 true 时保护整个旧目录子树
+	exclusionsPrepared        bool
 	missingCleanupReason      string
 	cleanupStarted            bool
 	generationSaved           bool
@@ -615,7 +617,25 @@ func (s *SyncStrm) Start() (resultErr error) {
 	if err := s.startSync(); err != nil {
 		return err
 	}
-	if s.IsFile {
+	if err := s.prepareSyncExclusions(); err != nil {
+		return err
+	}
+	if s.IsExcludePath(s.SourcePath) {
+		s.Sync.Logger.Infof("同步入口 %s 命中排除规则，跳过", s.SourcePath)
+		if s.IsFile {
+			file := &SyncFileCache{
+				FileId:     s.SourcePathId,
+				FileType:   v115open.TypeFile,
+				FileName:   filepath.Base(s.SourcePath),
+				Path:       filepath.Dir(s.SourcePath),
+				SourceType: s.Account.SourceType,
+			}
+			if file.SourceType == models.SourceTypeOpenList || file.SourceType == models.SourceTypeLocal {
+				file.ParentId = file.Path
+			}
+			s.recordFileSkipped(file)
+		}
+	} else if s.IsFile {
 		// 如果是文件，直接同步文件
 		s.Sync.Logger.Infof("本次同步的文件：%s，目标目录：%s", s.SourcePath, s.TargetPath)
 		// 直接同步文件
@@ -725,6 +745,11 @@ func (s *SyncStrm) processNetFile(file *SyncFileCache) error {
 	// 1. 检查对应的本地文件是否存在
 	// s.Sync.Logger.Infof("正在处理网盘文件 %s => %s", file.FileId, file.FileName)
 	localFilePath := file.GetLocalFilePath(s.TargetPath, s.SourcePath)
+	if s.IsExcludeName(file.FileName) || s.IsExcludePath(file.GetPath()) || s.localPathExcluded(localFilePath) {
+		s.Sync.Logger.Infof("文件 %s 命中排除规则，跳过", file.GetFullRemotePath())
+		s.recordFileSkipped(file)
+		return nil
+	}
 	if s.scopeRelease != nil {
 		if err := ensureGeneratedStrmPathWithinResolvedRoot(s.scopeLocalRoot, localFilePath); err != nil {
 			return err
@@ -800,6 +825,10 @@ func (s *SyncStrm) AddDownloadTaskFromMemCache() error {
 	// 遍历内存同步缓存的下载索引
 	s.memSyncCache.mu.RLock()
 	for _, file := range s.memSyncCache.downloadIndex {
+		if s.IsExcludeName(file.FileName) || s.IsExcludePath(file.GetPath()) || s.localPathExcluded(file.GetLocalFilePath(s.TargetPath, s.SourcePath)) {
+			s.recordFileSkipped(file)
+			continue
+		}
 		if _, exists := existingDownloads[file.GetPickCode(s.Account.BaseUrl)]; exists {
 			// 已经存在下载任务，跳过
 			continue
@@ -870,6 +899,9 @@ func (s *SyncStrm) pendingDownloadFileIDs() (map[string]bool, error) {
 
 // 对比本地文件和临时表中的文件
 func (s *SyncStrm) compareLocalFilesWithTempTable() error {
+	if err := s.prepareSyncExclusions(); err != nil {
+		return err
+	}
 	if err := s.updateSyncSubStatus(models.SyncSubStatusProcessLocalFileList); err != nil {
 		return err
 	}
@@ -894,6 +926,13 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 			case <-s.Context.Done():
 				return s.Context.Err()
 			default:
+				if s.localPathExcluded(path) {
+					s.Sync.Logger.Infof("本地路径 %s 命中排除规则，跳过", path)
+					if info != nil && info.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				if err != nil {
 					s.recordScanFailure(s.remotePathForLocal(path), err)
 					return nil
@@ -1036,6 +1075,16 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						var parentPath, parentPathId, remotePath string
 						s.Sync.Logger.Infof("准备上传本地元数据文件 %s，检查父目录 %s 是否存在网盘", parentDir, sourceRootPath)
 						if existsPath == nil && parentDir != sourceRootPath {
+							if isAllowedUploadDir && s.Account.SourceType == models.SourceType115 {
+								isAllowedUploadDir, err = s.confirm115UploadHost(parentDir)
+								if err != nil {
+									s.recordScanFailure(s.remotePathForLocal(parentDir), err)
+									if isFatalSyncError(err) {
+										return err
+									}
+									return nil
+								}
+							}
 							if !isAllowedUploadDir {
 								s.Sync.Logger.Infof("父目录 %s 不存在网盘，进入删除流程 %s，", parentDir, path)
 								if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {

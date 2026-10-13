@@ -144,6 +144,10 @@ func (s *SyncStrm) confirm115Path(ctx context.Context, pathId, expectedPath stri
 }
 
 func (s *SyncStrm) confirm115PathDetail(ctx context.Context, pathId, expectedPath string, detail *SyncFileCache) error {
+	return s.publish115DirectoryDetail(ctx, pathId, expectedPath, detail, false)
+}
+
+func (s *SyncStrm) publish115DirectoryDetail(ctx context.Context, pathId, expectedPath string, detail *SyncFileCache, allowOutside bool) error {
 	if detail == nil || detail.FileId != pathId || detail.FileType != v115open.TypeDir {
 		return fmt.Errorf("115 目录详情身份或类型不匹配：path_id=%s", pathId)
 	}
@@ -167,7 +171,7 @@ func (s *SyncStrm) confirm115PathDetail(ctx context.Context, pathId, expectedPat
 		seen[part.FileId] = struct{}{}
 		foundRoot = foundRoot || part.FileId == s.SourcePathId
 	}
-	if !foundRoot {
+	if !foundRoot && !allowOutside {
 		return fmt.Errorf("115 目录不在本轮同步根内：path_id=%s", pathId)
 	}
 	facts := make(map[string]verified115Path, len(paths))
@@ -211,11 +215,28 @@ func (s *SyncStrm) publish115Paths(ctx context.Context, facts map[string]verifie
 	if s.sync115.pathConflict {
 		return fmt.Errorf("115 本轮目录位置存在冲突")
 	}
+	newPathIDs := make(map[string]string, len(facts))
 	for id, fact := range facts {
-		if oldID, ok := s.sync115.pathIDs[normalizeStrmRemotePath(fact.path)]; ok && oldID != id {
+		key := normalizeStrmRemotePath(fact.path)
+		if fact.within && !fact.root && s.sync115.completeDirs[normalizeStrmRemotePath(filepath.Dir(key))] && s.sync115.pathIDs[key] == "" {
+			s.sync115.pathConflict = true
+			return fmt.Errorf("115 目录列表与查询结果不一致：%s", fact.path)
+		}
+		for absent := range s.sync115.absentDirs {
+			if strmRemotePathWithin(key, absent) {
+				s.sync115.pathConflict = true
+				return fmt.Errorf("115 目录列表与查询结果不一致：%s", fact.path)
+			}
+		}
+		oldID := s.sync115.pathIDs[key]
+		if oldID == "" {
+			oldID = newPathIDs[key]
+		}
+		if oldID != "" && oldID != id {
 			s.sync115.pathConflict = true
 			return fmt.Errorf("115 目录路径 %s 在本轮返回了不同身份", fact.path)
 		}
+		newPathIDs[key] = id
 		if old, ok := s.sync115.paths[id]; ok && (old.path != fact.path || old.parentID != "" && fact.parentID != "" && old.parentID != fact.parentID) {
 			s.sync115.pathConflict = true
 			return fmt.Errorf("115 目录 %s 在本轮返回了不同位置", id)
@@ -265,6 +286,7 @@ func (s *SyncStrm) publish115Paths(ctx context.Context, facts map[string]verifie
 		s.sync115.pathIDs[normalizeStrmRemotePath(fact.path)] = id
 	}
 	if s.sync115.pathsApplied && len(invalidRoots) > 0 {
+		s.sync115.pathConflict = true
 		err := fmt.Errorf("115 已应用文件路径后发现历史目录位置变化，本轮保留同步根并等待后续核对")
 		s.recordScanFailure(s.SourcePath, err)
 		return err

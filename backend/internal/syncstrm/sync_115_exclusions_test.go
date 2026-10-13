@@ -43,10 +43,12 @@ func Test115CachedAndPreloadedDirectoriesHonorRegexOnlyExclusions(t *testing.T) 
 		if err := db.Db.Create(row).Error; err != nil {
 			t.Fatal(err)
 		}
-		preloaded = append(preloaded, pathQueueItem{
-			PathId: directory.id,
-			Path:   filepath.ToSlash(filepath.Join(directory.path, directory.name)),
-		})
+		if directory.path == "Media" {
+			preloaded = append(preloaded, pathQueueItem{
+				PathId: directory.id,
+				Path:   filepath.ToSlash(filepath.Join(directory.path, directory.name)),
+			})
+		}
 	}
 	for _, mode := range []string{"读取已有目录", "预取目录"} {
 		t.Run(mode, func(t *testing.T) {

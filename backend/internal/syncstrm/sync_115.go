@@ -21,6 +21,8 @@ type Sync115 struct {
 	pathMu          sync.Mutex
 	paths           map[string]verified115Path // 仅保存本轮成功响应确认的目录
 	pathIDs         map[string]string          // 完整路径对应的本轮目录 ID
+	completeDirs    map[string]bool            // 已完整列举直接子目录的本轮路径
+	absentDirs      map[string]bool            // 本轮明确缺席的路径，后代可复用
 	historicalPaths map[string]verified115Path // 增量同步可复用的持久目录，不代表本轮观察到目录仍存在
 	pathsApplied    bool                       // 文件路径已应用后发现旧目录矛盾，只能保护本轮并等待后续核对
 	pathConflict    bool

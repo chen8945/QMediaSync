@@ -40,6 +40,9 @@ func (s *SyncStrm) handleTempTableDiff() error {
 	if err := s.Context.Err(); err != nil {
 		return err
 	}
+	if err := s.prepareSyncExclusions(); err != nil {
+		return err
+	}
 	ledgerDB := db.Db.WithContext(s.Context)
 	// 父目录索引的最后一个读者已退出，删除缓存时无需再逐条搬移子项。
 	s.memSyncCache.releaseLedgerParentIndex()

@@ -272,23 +272,46 @@ func (c *OpenClient) GetFsDetailByPath(ctx context.Context, path string) (*FileD
 	helpers.V115Log.Infof("调用文件详情接口，path：%s", path)
 	url := fmt.Sprintf("%s/open/folder/get_info", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	var respData *FileDetail = &FileDetail{}
-	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), respData)
+	_, bodyBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 60), nil)
 	if err != nil {
+		err = deletionDetailAbsenceError(bodyBytes, err)
 		if !c.playback || !IsAlreadyDeleted(err) {
 			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
 		}
 		return nil, err
 	}
-	resp := &RespBaseBool[json.RawMessage]{}
+	var resp struct {
+		State   json.RawMessage `json:"state"`
+		Code    int             `json:"code"`
+		Errno   int             `json:"errno"`
+		Message string          `json:"message"`
+		Error   string          `json:"error"`
+		Data    json.RawMessage `json:"data"`
+	}
 	bodyErr := json.Unmarshal(bodyBytes, &resp)
 	if bodyErr != nil {
 		helpers.V115Log.Errorf("解析文件详情接口响应失败：%v", bodyErr)
-		return respData, bodyErr
+		return nil, bodyErr
 	}
-	if resp.Code != 0 {
-		// helpers.V115Log.Errorf("文件 %s 不存在：%v", fileId, err)
-		return nil, fmt.Errorf("错误码=%d，消息=%s", resp.Code, resp.Message)
+	state := strings.TrimSpace(string(resp.State))
+	if (state != "true" && state != "1") || resp.Code != 0 || resp.Errno != 0 {
+		err := NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
+		return nil, deletionDetailAbsenceError(bodyBytes, err)
+	}
+	// 路径查询可能成功返回空数组，只能要求调用方补查，不能据此确认删除。
+	if len(resp.Data) > 0 && resp.Data[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(resp.Data, &items); err != nil {
+			return nil, fmt.Errorf("解析 115 文件详情失败：%w", err)
+		}
+		if len(items) == 0 {
+			return nil, ErrEmptyPathDetail
+		}
+		return nil, fmt.Errorf("115 文件详情格式错误")
+	}
+	respData := &FileDetail{}
+	if err := json.Unmarshal(resp.Data, respData); err != nil {
+		return nil, fmt.Errorf("解析 115 文件详情失败：%w", err)
 	}
 	if respData.FileId == "" {
 		return nil, fmt.Errorf("115 返回空数据")

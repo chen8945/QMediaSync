@@ -236,6 +236,9 @@ func (s *SyncStrm) localDirectoryForRemote(remote string) string {
 
 // cleanupProtected 对目录同时检查祖先关系，避免删除容纳受保护后代的空目录。
 func (s *SyncStrm) cleanupProtected(local string, isDir bool) bool {
+	if s.localPathExcluded(local) {
+		return true
+	}
 	s.scanMu.Lock()
 	defer s.scanMu.Unlock()
 	for _, failure := range s.scanFailures {
@@ -262,6 +265,9 @@ func (s *SyncStrm) cleanupProtected(local string, isDir bool) bool {
 }
 
 func (s *SyncStrm) ledgerProtected(file *models.SyncFile) bool {
+	if s.IsExcludeName(file.FileName) || s.IsExcludePath(file.Path) {
+		return true
+	}
 	s.scanMu.Lock()
 	for _, failure := range s.scanFailures {
 		if failure.Kind == "directory" && (pathWithin(failure.Path, s.SourcePath) ||
