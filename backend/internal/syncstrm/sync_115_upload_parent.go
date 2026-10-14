@@ -29,6 +29,13 @@ func (s *SyncStrm) confirm115LocalUploadParent(localDir string) error {
 	if s.IsExcludePath(remotePath) {
 		return nil
 	}
+	if s.sync115 != nil {
+		if id, absent, err := s.known115UploadDirectory(remotePath); err != nil || absent {
+			return err
+		} else if id != "" {
+			return s.cache115UploadDirectory(id)
+		}
+	}
 	candidate, err := s.has115UploadCandidate(localDir)
 	if err != nil || !candidate {
 		return err
@@ -64,9 +71,16 @@ func (s *SyncStrm) has115UploadCandidate(localDir string) (bool, error) {
 		if filepath.Ext(entry.Name()) == ".strm" || !s.IsValidMetaExt(entry.Name()) {
 			continue
 		}
-		if cached, _ := s.memSyncCache.GetByLocalPath(local); cached == nil &&
-			models.CheckCanUploadByLocalPath(models.UploadSourceStrm, local) {
-			return true, nil
+		if cached, _ := s.memSyncCache.GetByLocalPath(local); cached == nil {
+			canUpload, err := models.CheckCanUploadByLocalPath(s.Context, models.UploadSourceStrm, local)
+			if err != nil {
+				s.Sync.Logger.Warnf("查询本地元数据上传任务失败：local_path=%s，错误=%v", local, err)
+				s.recordLocalFileFailure(local, err)
+				return false, fatalSyncError(err)
+			}
+			if canUpload {
+				return true, nil
+			}
 		}
 	}
 	return false, nil

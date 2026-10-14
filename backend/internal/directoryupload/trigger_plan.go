@@ -100,7 +100,11 @@ func (service *Service) buildTriggerPlan(
 		return plan, nil
 	}
 
-	if !models.CheckCanUploadByLocalPath(models.UploadSourceDirectoryMonitor, filePath) {
+	canUpload, err := models.CheckCanUploadByLocalPath(ctx, models.UploadSourceDirectoryMonitor, filePath)
+	if err != nil {
+		return plan, err
+	}
+	if !canUpload {
 		plan.skip = true
 		plan.addReason(triggerReasonActiveUploadTask)
 		return plan, nil

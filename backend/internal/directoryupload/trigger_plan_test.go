@@ -2,6 +2,7 @@ package directoryupload
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,8 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
+
+	"gorm.io/gorm"
 )
 
 func TestBuildTriggerPlanSkipsTerminalProcessedRecord(t *testing.T) {
@@ -146,6 +149,61 @@ func TestBuildTriggerPlanForceKeepsActiveUploadTaskDedup(t *testing.T) {
 	}
 	if got, want := plan.reasonString(), "stable_file,force_reprocess,active_upload_task"; got != want {
 		t.Fatalf("trigger reasons = %q，期望 %q", got, want)
+	}
+}
+
+func TestHandleStableFileStopsWhenUploadTaskQueryFails(t *testing.T) {
+	for _, mode := range []string{"query_failure", "cancel_during_query"} {
+		t.Run(mode, func(t *testing.T) {
+			setupDirectoryUploadServiceTestDB(t)
+			monitorPath := t.TempDir()
+			filePath := filepath.Join(monitorPath, "movie.mkv")
+			writeFileWithMtime(t, filePath, []byte("movie"), time.Unix(720, 0))
+			_, rule := createDirectoryUploadRuleForTest(t, monitorPath)
+			remote := &fakeRemoteClient{parentID: "remote-parent"}
+			service := NewService(ServiceOptions{RemoteClient: remote})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cause := errors.New("upload task query failed")
+			if mode == "cancel_during_query" {
+				cause = context.Canceled
+			}
+			queryAttempts := 0
+			const callback = "test:directory_upload_local_path_failure"
+			if err := db.Db.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table != "db_upload_tasks" {
+					return
+				}
+				queryAttempts++
+				if mode == "cancel_during_query" {
+					cancel()
+				} else {
+					tx.AddError(cause)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err := service.HandleStableFile(ctx, rule, filePath)
+			if removeErr := db.Db.Callback().Query().Remove(callback); removeErr != nil {
+				t.Fatal(removeErr)
+			}
+			if !errors.Is(err, cause) || queryAttempts != 1 {
+				t.Fatalf("应返回上传检查的错误: err=%v, queryAttempts=%d", err, queryAttempts)
+			}
+			if remote.ensureDirCalls != 0 || remote.findFileCalls != 0 || len(remote.deletedFileIDs) != 0 {
+				t.Fatalf("查询失败后不应访问网盘: %+v", remote)
+			}
+			for _, model := range []any{&models.DbUploadTask{}, &models.DirectoryUploadProcessedFile{}} {
+				var count int64
+				if err := db.Db.Model(model).Count(&count).Error; err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Fatalf("查询失败后不应写入 %T: count=%d", model, count)
+				}
+			}
+			assertPathExists(t, filePath)
+		})
 	}
 }
 

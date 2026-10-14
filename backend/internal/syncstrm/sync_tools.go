@@ -46,39 +46,71 @@ func (s *SyncStrm) MakeFullLocalPath(file *models.SyncFile) string {
 	return fullPath
 }
 
-func (s *SyncStrm) RemoveFileAndCheckDirEmtry(filePath string) error {
-	// 删除文件
+func (s *SyncStrm) removeLocalFile(filePath string, removedFileParents map[string]bool) error {
+	if err := s.Context.Err(); err != nil {
+		return err
+	}
 	if s.cleanupProtected(filePath, false) {
 		return nil
 	}
 	if err := os.Remove(filePath); err != nil {
 		return fmt.Errorf("删除文件失败：%w", err)
-	} else {
-		s.Sync.Logger.Infof("删除文件成功：%s", filePath)
 	}
-	if !s.Config.DelEmptyLocalDir || s.cleanupProtected(filepath.Dir(filePath), true) {
-		return nil
+	if removedFileParents != nil {
+		removedFileParents[filepath.ToSlash(filepath.Dir(filePath))] = true
 	}
-	// 检查目录是否为空
-	dir := filepath.Dir(filePath)
-	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+	s.Sync.Logger.Infof("删除文件成功：%s", filePath)
+	return nil
+}
+
+// removeEmptyLocalDirs 在遍历成功后从子目录向父目录收尾，保留之后新增的失败保护。
+func (s *SyncStrm) removeEmptyLocalDirs(dirs []string, removedFileParents map[string]bool) error {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := s.Context.Err(); err != nil {
+			return err
+		}
+		dir := dirs[i]
+		if !s.Config.DelEmptyLocalDir || s.missingCleanupReason != "" {
+			s.Sync.Logger.Infof("当前设置不允许删除空目录，跳过本地目录 %s", dir)
+			continue
+		}
+		if s.cleanupProtected(dir, true) {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			s.Sync.Logger.Warnf("读取目录 %s 的文件列表失败：%v", dir, err)
+			s.recordScanFailure(s.remotePathForLocal(dir), err)
+			continue
+		}
+		if len(entries) != 0 {
+			s.Sync.Logger.Infof("本地目录 %s 不是空目录，跳过删除", dir)
+			continue
+		}
+		if err := s.Context.Err(); err != nil {
+			return err
+		}
+		if s.cleanupProtected(dir, true) {
+			continue
+		}
 		if err := os.Remove(dir); err != nil {
-			return fmt.Errorf("删除空目录失败：%w", err)
-		} else {
-			s.Sync.Logger.Infof("删除空目录成功：%s", dir)
-			// 删除网盘目录
-			file, err := s.memSyncCache.GetByLocalPath(dir)
-			if err != nil || file == nil {
-				s.Sync.Logger.Warnf("查询空目录对应的网盘记录失败：%s，%s", filePath, err)
-				return nil
-			}
-			// 从同步缓存中删除
-			err = s.memSyncCache.DeleteByFileId(file.GetFileId())
-			if err != nil {
-				s.Sync.Logger.Warnf("删除空目录对应的网盘记录失败：%s，%s", file.GetFileId(), err.Error())
-				return nil
-			}
+			s.Sync.Logger.Warnf("删除空目录失败：local_path=%s，错误=%v", dir, err)
+			s.recordScanFailure(s.remotePathForLocal(dir), err)
+			continue
+		}
+		s.Sync.Logger.Infof("删除空目录成功：%s", dir)
+		// 原本已空或仅因子目录删除变空的目录，保留本轮确认的远端账本。
+		if !removedFileParents[dir] {
+			continue
+		}
+		file, err := s.memSyncCache.GetByLocalPath(dir)
+		if err != nil || file == nil {
+			s.Sync.Logger.Warnf("查询空目录对应的网盘记录失败：%s，%v", dir, err)
+			continue
+		}
+		if err := s.memSyncCache.DeleteByFileId(file.GetFileId()); err != nil {
+			s.Sync.Logger.Warnf("删除空目录对应的网盘记录失败：%s，%v", file.GetFileId(), err)
 		}
 	}
-	return nil
+	return s.Context.Err()
 }

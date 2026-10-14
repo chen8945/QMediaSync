@@ -920,6 +920,11 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		s.scanMu.Lock()
 		s.cleanupStarted = true
 		s.scanMu.Unlock()
+		var localDirs []string
+		var removedFileParents map[string]bool
+		if s.Config.DelEmptyLocalDir && s.missingCleanupReason == "" {
+			removedFileParents = make(map[string]bool)
+		}
 		walkErr := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			path = filepath.ToSlash(path)
 			select {
@@ -966,23 +971,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						return nil
 					}
 					if s.Config.DelEmptyLocalDir && s.missingCleanupReason == "" {
-						// 如果目录是空的则删除目录
-						dirEntries, rerr := os.ReadDir(path)
-						if rerr != nil {
-							s.Sync.Logger.Errorf("读取目录 %s 的文件列表失败：%v", path, rerr)
-							s.recordScanFailure(s.remotePathForLocal(path), rerr)
-							return nil
-						}
-						if len(dirEntries) == 0 {
-							if err := os.Remove(path); err != nil {
-								s.Sync.Logger.Warnf("删除空目录失败：local_path=%s，错误=%v", path, err)
-								s.recordScanFailure(s.remotePathForLocal(path), err)
-								return nil
-							}
-							s.Sync.Logger.Infof("删除空目录 %s", path)
-						} else {
-							s.Sync.Logger.Infof("本地目录 %s 不是空目录，跳过删除", path)
-						}
+						localDirs = append(localDirs, path)
 					} else {
 						s.Sync.Logger.Infof("当前设置不允许删除空目录，跳过本地目录 %s", path)
 					}
@@ -1028,7 +1017,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						return nil
 					}
 					s.Sync.Logger.Infof("本地 STRM 对应的网盘文件不存在，准备删除：local_path=%s", path)
-					if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+					if err := s.removeLocalFile(path, removedFileParents); err != nil {
 						s.Sync.Logger.Warnf("删除本地 STRM 文件失败：local_path=%s，错误=%v", path, err)
 						s.recordLocalFileFailure(path, err)
 					}
@@ -1042,7 +1031,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					}
 					// 如果选择删除，则检查是否存在，不存在则删除
 					if s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionDelete && existsFile == nil {
-						if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+						if err := s.removeLocalFile(path, removedFileParents); err != nil {
 							s.Sync.Logger.Warnf("删除本地元数据文件失败：local_path=%s，错误=%v", path, err)
 							s.recordLocalFileFailure(path, err)
 						}
@@ -1051,7 +1040,12 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					// 如果允许上传，则检查是否需要上传（文件在网盘不存在）
 					if s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionUpload && existsFile == nil {
 						// 检查 dbupload 表中是否已经有对应的上传任务
-						canUpload := models.CheckCanUploadByLocalPath(models.UploadSourceStrm, path)
+						canUpload, err := models.CheckCanUploadByLocalPath(s.Context, models.UploadSourceStrm, path)
+						if err != nil {
+							s.Sync.Logger.Warnf("查询本地元数据上传任务失败：local_path=%s，错误=%v", path, err)
+							s.recordLocalFileFailure(path, err)
+							return fatalSyncError(err)
+						}
 						if !canUpload {
 							s.Sync.Logger.Debugf("本地元数据文件 %s 由于存在上传任务所以不需要处理", path)
 							return nil
@@ -1071,9 +1065,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						isAllowedUploadDir := slices.Contains(uploadDirNames, strings.ToLower(parentName))
 						// 检查父目录是否在网盘存在
 						existsPath, _ := s.memSyncCache.GetByLocalPath(parentDir)
-						// 如果不存在，检查是否可以创建目录
-						var parentPath, parentPathId, remotePath string
-						s.Sync.Logger.Infof("准备上传本地元数据文件 %s，检查父目录 %s 是否存在网盘", parentDir, sourceRootPath)
+						// 先处理不能上传的缺失目录，确认可上传后再准备任务。
 						if existsPath == nil && parentDir != sourceRootPath {
 							if isAllowedUploadDir && s.Account.SourceType == models.SourceType115 {
 								isAllowedUploadDir, err = s.confirm115UploadHost(parentDir)
@@ -1086,25 +1078,28 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								}
 							}
 							if !isAllowedUploadDir {
-								s.Sync.Logger.Infof("父目录 %s 不存在网盘，进入删除流程 %s，", parentDir, path)
-								if err := s.RemoveFileAndCheckDirEmtry(path); err != nil {
+								s.Sync.Logger.Infof("父目录 %s 不存在网盘，进入删除流程：%s", parentDir, path)
+								if err := s.removeLocalFile(path, removedFileParents); err != nil {
 									s.Sync.Logger.Warnf("删除本地元数据文件失败：local_path=%s，错误=%v", path, err)
 									s.recordLocalFileFailure(path, err)
 								}
 								return nil
-							} else {
-								// 递归创建目录，调用对应的 driver
-								parentPathId, remotePath, err = s.SyncDriver.CreateDirRecursively(s.Context, parentDir)
-								if err != nil {
-									s.Sync.Logger.Errorf("创建目录 %s 失败：%v", parentDir, err)
-									s.recordLocalFileFailure(path, err)
-									if isFatalSyncError(err) {
-										return err
-									}
-									return nil
-								}
-								parentPath = parentDir
 							}
+						}
+						var parentPath, parentPathId, remotePath string
+						s.Sync.Logger.Infof("准备上传本地元数据文件 %s，父目录：%s", path, parentDir)
+						if existsPath == nil && parentDir != sourceRootPath {
+							// 递归创建目录，调用对应的 driver
+							parentPathId, remotePath, err = s.SyncDriver.CreateDirRecursively(s.Context, parentDir)
+							if err != nil {
+								s.Sync.Logger.Errorf("创建目录 %s 失败：%v", parentDir, err)
+								s.recordLocalFileFailure(path, err)
+								if isFatalSyncError(err) {
+									return err
+								}
+								return nil
+							}
+							parentPath = parentDir
 						} else {
 							if parentDir == sourceRootPath {
 								parentPath = sourceRootPath
@@ -1218,8 +1213,8 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		if walkErr != nil {
 			return walkErr
 		}
+		return s.removeEmptyLocalDirs(localDirs, removedFileParents)
 	}
-	return nil
 }
 
 // localUploadParentPath 将本地来源的相对或被缓存截短的目录补回配置的源根目录。
