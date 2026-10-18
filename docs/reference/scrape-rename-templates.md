@@ -1,12 +1,12 @@
 # 刮削命名模板与其他类型 NFO 契约
 
-> 职责：说明刮削整理时命名模板的渲染与回退规则，以及媒体类型为其他时可用的 NFO 信息来源。
+> 职责：说明刮削整理时命名模板的渲染与回退规则、生成 NFO 的日期格式，以及媒体类型为其他时可用的 NFO 信息来源。
 >
-> 权威范围：本文件唯一维护模板渲染结果的清理与回退行为、其他类型的 NFO 兼容范围和番号取值顺序；可用变量以 [模板实现](../../backend/internal/models/scrapemedia.go)及其测试为准，用户变量表的同步关系见 [Wiki 用户手册维护](../engineering/wiki-maintenance.md)。数据库字段语义见 [数据库 schema 与迁移](database-schema.md)。
+> 权威范围：本文件唯一维护模板渲染结果的清理与回退行为、生成 NFO 的日期格式、其他类型的 NFO 兼容范围和番号取值顺序；可用变量以 [模板实现](../../backend/internal/models/scrapemedia.go)及其测试为准，用户变量表的同步关系见 [Wiki 用户手册维护](../engineering/wiki-maintenance.md)。数据库字段语义见 [数据库 schema 与迁移](database-schema.md)。
 >
-> 修改时机：修改命名模板渲染、模板变量、文件夹与文件名生成、NFO 解析或其他类型的信息来源时必须更新本文件。
+> 修改时机：修改命名模板渲染、模板变量、文件夹与文件名生成、NFO 日期生成、NFO 解析或其他类型的信息来源时必须更新本文件。
 >
-> 相关代码：`backend/internal/models/scrapemedia.go`、`backend/internal/scrape/scrape_movie.go`、`backend/internal/scrape/scrape_tvshow.go`、`backend/internal/scrape/scrape_episode.go`、`backend/internal/helpers/nfo_decode.go`、`backend/internal/helpers/nfo_movie.go`。
+> 相关代码：`backend/internal/models/scrapemedia.go`、`backend/internal/scrape/scrape_movie.go`、`backend/internal/scrape/scrape_tvshow.go`、`backend/internal/scrape/scrape_season.go`、`backend/internal/scrape/scrape_episode.go`、`backend/internal/helpers/nfo_decode.go`、`backend/internal/helpers/nfo_movie.go`。
 
 ## 模板渲染流程
 
@@ -52,6 +52,12 @@
 3. 创建目录前校验：影视剧和季目录创建前用 `helpers.EnsureWithinDir` 校验目标路径仍在目标根目录内，越界时整理直接失败并记录错误日志，避免数据库里的旧值绕过前两层；本地二级分类目录使用 `helpers.SafeJoin` 创建。
 
 网盘来源的路径是网盘内的逻辑路径，`..` 片段同样会被清理，不会影响宿主文件系统。
+
+## 生成 NFO 的日期
+
+电影、电视剧、季和单集新生成的 NFO 中，`dateadded` 使用生成时的北京时间（UTC+8），格式为 `YYYY-MM-DD HH:mm:ss`，例如 `2026-10-18 09:53:03`，与 Emby NFO 的添加时间格式一致。上映、首播日期 `premiered`、`releasedate`、`aired` 保持原有年月日格式。
+
+已有 NFO 不会因升级自动改写；重新刮削生成后使用新格式。
 
 ## 媒体类型为其他
 

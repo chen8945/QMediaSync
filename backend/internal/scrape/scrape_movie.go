@@ -849,7 +849,7 @@ func (sm *movieScrapeImpl) GenerateMovieNfo(mediaFile *models.ScrapeMediaFile, l
 		Director:  mediaFile.Media.Director,
 		Premiered: mediaFile.Media.ReleaseDate,
 		Year:      mediaFile.Media.Year,
-		DateAdded: time.Now().Format("2006-01-02"),
+		DateAdded: time.Now().Format("2006-01-02 15:04:05"),
 		FileInfo: struct {
 			StreamDetails struct {
 				Video    []helpers.StreamVideo    `xml:"video,omitempty"`

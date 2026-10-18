@@ -313,7 +313,7 @@ func (t *tvShowScrapeImpl) GenerateEpisodeNfo(mediaFile *models.ScrapeMediaFile)
 		EpisodeNumber: mediaFile.MediaEpisode.EpisodeNumber,
 		Season:        mediaFile.MediaSeason.SeasonNumber,
 		Episode:       mediaFile.MediaEpisode.EpisodeNumber,
-		DateAdded:     time.Now().Format("2006-01-02"),
+		DateAdded:     time.Now().Format("2006-01-02 15:04:05"),
 		Director:      mediaFile.Media.Director,
 		Outline:       fmt.Sprintf("<![CDATA[%s]]>", mediaFile.MediaEpisode.Overview),
 		Plot:          fmt.Sprintf("<![CDATA[%s]]>", mediaFile.MediaEpisode.Overview),

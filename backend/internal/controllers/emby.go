@@ -32,10 +32,11 @@ const embyTempImagePrefix = "qms_emby_"
 type EmbyEvent = requests.EmbyWebhookRequest
 
 type newSeries struct {
-	ID          string        // 剧的 ID
-	Name        string        // 剧的名称
-	Seasons     map[int][]int // 季的集 ID 列表
-	LastUpdated time.Time     // 最后更新时间
+	ID          string               // 剧的 ID
+	Name        string               // 剧的名称
+	Seasons     map[int][]int        // 季的集 ID 列表
+	Episodes    map[string]time.Time // 单集 ID 与事件或接收时间
+	LastUpdated time.Time            // 最后更新时间
 }
 
 var newSeriesBuffer = make(map[string]newSeries)
@@ -66,6 +67,7 @@ var newSeriesBufferTickerStartedMu = sync.Mutex{}
 // @Failure 503 {object} object
 // @Router /emby/webhook [post]
 func Webhook(ctx *gin.Context) {
+	receivedAt := time.Now()
 	config, err := models.ReadEmbyConfigSnapshot()
 	if err != nil {
 		ctx.JSON(http.StatusServiceUnavailable, gin.H{"message": "Webhook 配置读取失败"})
@@ -128,16 +130,17 @@ func Webhook(ctx *gin.Context) {
 		// 同步 Emby 条目到本地与联动删除均交给应用生命周期内的持久 worker。
 	}
 	if event.Event == "library.new" {
+		fallbackTime := parseEmbyNotificationTime(event.Date, receivedAt)
 		// 新入库通知
 		// 如果是 Episode 就先存起来，等待 10 秒；如果后续有同 series 的 library.new 事件，就合并通知。
 		// 触发通知
 		go func() {
 			if event.Item.Type == "Episode" {
-				addItemToEpisodeBuffer(event.Item.SeriesId, event.Item.ParentIndexNumber, event.Item.IndexNumber)
+				addItemToEpisodeBuffer(event.Item.SeriesId, event.Item.ParentIndexNumber, event.Item.IndexNumber, event.Item.ID, fallbackTime)
 				return
 			}
 			if event.Item.Type == "Movie" {
-				sendNewMovieNotification(event.Item.ID)
+				sendNewMovieNotification(event.Item.ID, fallbackTime)
 			}
 
 		}()
@@ -232,13 +235,14 @@ func isEmbyTempImageName(name string) bool {
 	return len(body[65:]) > 0
 }
 
-func addItemToEpisodeBuffer(seriesId string, seasonNumber, episodeNumber int) {
+func addItemToEpisodeBuffer(seriesId string, seasonNumber, episodeNumber int, itemID string, fallbackTime time.Time) {
 	newSeriesBufferMu.Lock()
 	defer newSeriesBufferMu.Unlock()
 	if _, exists := newSeriesBuffer[seriesId]; !exists {
 		newSeriesBuffer[seriesId] = newSeries{
 			ID:          seriesId,
 			Seasons:     make(map[int][]int),
+			Episodes:    make(map[string]time.Time),
 			LastUpdated: time.Now(),
 		}
 	}
@@ -247,6 +251,9 @@ func addItemToEpisodeBuffer(seriesId string, seasonNumber, episodeNumber int) {
 		series.Seasons[seasonNumber] = make([]int, 0)
 	}
 	series.Seasons[seasonNumber] = append(series.Seasons[seasonNumber], episodeNumber)
+	if fallbackTime.After(series.Episodes[itemID]) {
+		series.Episodes[itemID] = fallbackTime
+	}
 	series.LastUpdated = time.Now()
 	newSeriesBuffer[seriesId] = series
 	helpers.AppLogger.Infof("已将剧集添加到新剧集缓冲区，seriesID=%s，season=%d，episode=%d", seriesId, seasonNumber, episodeNumber)
@@ -296,16 +303,16 @@ func TestAddItemToEpisodeBuffer() {
 
 	// 测试添加第一个剧集
 	seriesId := "64647"
-	addItemToEpisodeBuffer(seriesId, 1, 9)
-	addItemToEpisodeBuffer(seriesId, 1, 8)
-	addItemToEpisodeBuffer(seriesId, 1, 5)
-	addItemToEpisodeBuffer(seriesId, 1, 4)
-	addItemToEpisodeBuffer(seriesId, 1, 3)
-	addItemToEpisodeBuffer(seriesId, 1, 1)
+	addItemToEpisodeBuffer(seriesId, 1, 9, "649479", time.Now())
+	addItemToEpisodeBuffer(seriesId, 1, 8, "649478", time.Now())
+	addItemToEpisodeBuffer(seriesId, 1, 5, "649475", time.Now())
+	addItemToEpisodeBuffer(seriesId, 1, 4, "649474", time.Now())
+	addItemToEpisodeBuffer(seriesId, 1, 3, "649473", time.Now())
+	addItemToEpisodeBuffer(seriesId, 1, 1, "649471", time.Now())
 	time.Sleep(3 * time.Second)
-	addItemToEpisodeBuffer(seriesId, 2, 1)
-	addItemToEpisodeBuffer(seriesId, 2, 2)
-	addItemToEpisodeBuffer(seriesId, 2, 3)
+	addItemToEpisodeBuffer(seriesId, 2, 1, "649481", time.Now())
+	addItemToEpisodeBuffer(seriesId, 2, 2, "649482", time.Now())
+	addItemToEpisodeBuffer(seriesId, 2, 3, "649483", time.Now())
 }
 
 func startNewSeriesBufferTicker() {
@@ -313,6 +320,8 @@ func startNewSeriesBufferTicker() {
 	defer ticker.Stop()
 	for {
 		<-ticker.C
+		newSeriesBufferMu.Lock()
+		deletedSeriesBufferMu.Lock()
 		helpers.AppLogger.Debugf("检查剧集缓冲区，新增缓冲区大小=%d，删除缓冲区大小=%d", len(newSeriesBuffer), len(deletedSeriesBuffer))
 		now := time.Now()
 
@@ -322,7 +331,7 @@ func startNewSeriesBufferTicker() {
 			if now.Sub(series.LastUpdated) >= 10*time.Second {
 				helpers.AppLogger.Infof("新剧集缓冲区达到触发时间，发送入库通知，seriesID=%s，季数=%d", series.ID, len(series.Seasons))
 				// 触发通知
-				go sendNewSeriesNotification(series.ID, series.Seasons)
+				go sendNewSeriesNotification(series.ID, series.Seasons, series.Episodes)
 				// 从缓冲区删除，锁定
 				delete(newSeriesBuffer, series.ID)
 			} else {
@@ -352,8 +361,12 @@ func startNewSeriesBufferTicker() {
 			newSeriesBufferTickerStartedMu.Lock()
 			newSeriesBufferTickerStarted = false
 			newSeriesBufferTickerStartedMu.Unlock()
+			deletedSeriesBufferMu.Unlock()
+			newSeriesBufferMu.Unlock()
 			return
 		}
+		deletedSeriesBufferMu.Unlock()
+		newSeriesBufferMu.Unlock()
 	}
 }
 
@@ -370,7 +383,7 @@ var notificationTemplate = `
 `
 
 // 发送新电影消息
-func sendNewMovieNotification(itemId string) {
+func sendNewMovieNotification(itemId string, fallbackTime time.Time) {
 	detail := emby.GetEmbyItemDetail(itemId)
 	if detail == nil {
 		helpers.AppLogger.Errorf("获取 Emby 媒体 %s 详情失败，无法发送新电影通知", itemId)
@@ -407,13 +420,7 @@ func sendNewMovieNotification(itemId string) {
 		actors = "暂无数据"
 	}
 	content = strings.ReplaceAll(content, "{{actors}}", actors)
-	// 通过格式化 detail.DateCreated 字段得到入库时间，格式：2025-12-10T16:00:00.0000000Z
-	addedTime := time.Now().Format("2006-01-02 15:04:05")
-	if detail.DateCreated != "" {
-		if parsedTime, err := time.Parse(time.RFC3339, detail.DateCreated); err == nil {
-			addedTime = parsedTime.Format("2006-01-02 15:04:05")
-		}
-	}
+	addedTime := parseEmbyNotificationTime(detail.DateCreated, fallbackTime).Format("2006-01-02 15:04:05")
 	content = strings.ReplaceAll(content, "{{addedTime}}", addedTime)
 	// 简介
 	overview := detail.Overview
@@ -427,7 +434,49 @@ func sendNewMovieNotification(itemId string) {
 	sendNewItemNotification(content, detail, "电影")
 }
 
-func sendNewSeriesNotification(seriesId string, seasons map[int][]int) {
+func parseEmbyNotificationTime(value string, fallback time.Time) time.Time {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil && !parsed.IsZero() {
+		return parsed.In(time.Local)
+	}
+	return fallback.In(time.Local)
+}
+
+func newSeriesAddedTime(ctx context.Context, episodes map[string]time.Time) time.Time {
+	ids := make([]string, 0, len(episodes))
+	for id := range episodes {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	created := make(map[string]string, len(ids))
+	client := embyclientrestgo.NewClient(models.GlobalEmbyConfig.EmbyUrl, models.GlobalEmbyConfig.EmbyApiKey)
+	for start := 0; start < len(ids); start += 100 {
+		query := embyclientrestgo.EmbyItemsQuery{
+			IDs:              strings.Join(ids[start:min(start+100, len(ids))], ","),
+			Fields:           "DateCreated",
+			IncludeItemTypes: "Episode",
+		}
+		err := client.FetchMediaItemsByLibraryID(ctx, query, func(item embyclientrestgo.BaseItemDtoV2) error {
+			if item.Type == "Episode" {
+				created[item.Id] = item.DateCreated
+			}
+			return nil
+		})
+		if err != nil {
+			helpers.AppLogger.Warnf("查询入库单集时间失败，缺失的时间使用事件或接收时间")
+		}
+	}
+	var latest time.Time
+	for id, fallback := range episodes {
+		if added := parseEmbyNotificationTime(created[id], fallback); added.After(latest) {
+			latest = added
+		}
+	}
+	return latest
+}
+
+func sendNewSeriesNotification(seriesId string, seasons map[int][]int, episodes map[string]time.Time) {
 	detail := emby.GetEmbyItemDetail(seriesId)
 	if detail == nil {
 		helpers.AppLogger.Errorf("获取 Emby 媒体 %s 详情失败，无法发送新剧集通知", seriesId)
@@ -471,7 +520,9 @@ func sendNewSeriesNotification(seriesId string, seasons map[int][]int) {
 	}
 
 	// 入库时间
-	addedTime := time.Now().Format("2006-01-02 15:04:05")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	addedTime := newSeriesAddedTime(ctx, episodes).Format("2006-01-02 15:04:05")
 	content = strings.ReplaceAll(content, "{{addedTime}}", addedTime)
 	// 简介
 	overview := detail.Overview

@@ -232,7 +232,7 @@ func (sm *tvShowScrapeImpl) GenerateSeasonNfo(mediaFile *models.ScrapeMediaFile)
 		Releasedate:   mediaFile.MediaSeason.ReleaseDate,
 		Year:          mediaFile.MediaSeason.Year,
 		SeasonNumber:  mediaFile.MediaSeason.SeasonNumber,
-		DateAdded:     time.Now().Format("2006-01-02"),
+		DateAdded:     time.Now().Format("2006-01-02 15:04:05"),
 	}
 	seasonPath := mediaFile.GetTmpFullSeasonPath()
 	seasonFileName := mediaFile.GetSeasonNfoName()

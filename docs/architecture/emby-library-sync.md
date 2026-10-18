@@ -466,6 +466,12 @@ GET /emby/Users/{UserId}/Items/{itemId}?Fields=DateCreated,DateModified,Path,Med
 
 具体范围见下文[目录清理策略](#已采纳的目录清理策略)：Movie、Season、Series 已有可信媒体目录身份且没有明确保留成员时，可以整目录清理，包含陌生文件和未关联视频；证据或来源能力不足时退回明确文件。Episode 仍仅处理 part1 和明确专属旁车，Video 仅自身；保留的版本、分段、其他季、共享使用者及同步根受到保护。网盘删除后的本地 STRM 和 SyncFile 记录由后续符合条件的完整 STRM 对账收敛，不自动触发即时清理；完整对账资格见 [STRM 同步调度](sync-orchestration.md)。
 
+### 入库通知时间
+
+电影入库通知使用 Emby 媒体详情的 `DateCreated`。电视剧合并通知按本批新增单集 ID 批量查询 `DateCreated`，取本批单集添加时间的最大值，不使用整部剧的创建时间。缺失、零值、解析失败或查询失败的单集时间，依次回退到该条 `library.new` 的 `Date` 和 QMS 接收该事件的时间；电影使用相同的回退顺序。等待合并与发送通知不会改变这个时间。
+
+时间统一转换为程序本地时区（北京时间，UTC+8），以 `YYYY-MM-DD HH:mm:ss` 显示，支持 Emby 返回的 RFC3339 小数秒和时区偏移。单集查询只包含当前批次，每批最多 100 个 ID，整个批量查询最多等待 30 秒；未查到的单集继续使用各自的回退时间。
+
 ### Webhook 持久接收与后台处理
 
 `POST /emby/webhook` 保留现有鉴权、`X-API-Key` 与旧 `api_key` 查询参数兼容。官方教程使用 `application/json`。请求先校验体积、JSON 类型与关键字段，不记录原始正文或带凭据的播放 URL；关键字段冲突不生成删除工作。保存失败返回非成功响应，成功仍返回兼容的响应形状，仅表示事件已保存。
