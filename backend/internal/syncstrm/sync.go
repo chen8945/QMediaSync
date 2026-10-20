@@ -925,6 +925,10 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		if s.Config.DelEmptyLocalDir && s.missingCleanupReason == "" {
 			removedFileParents = make(map[string]bool)
 		}
+		var missingVideos map[string]struct{}
+		if s.Config.EnableDownloadMeta != 0 && s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionUpload && s.missingCleanupReason == "" {
+			missingVideos = make(map[string]struct{})
+		}
 		walkErr := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 			path = filepath.ToSlash(path)
 			select {
@@ -942,7 +946,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					s.recordScanFailure(s.remotePathForLocal(path), err)
 					return nil
 				}
-				if s.cleanupProtected(path, info.IsDir()) {
+				if s.cleanupProtected(path, false) {
 					// 祖先仍继续遍历，完整兄弟目录保留独立清理资格。
 					return nil
 				}
@@ -963,6 +967,15 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					}
 				}
 				if info.IsDir() {
+					if missingVideos != nil {
+						if err := s.collectMissingLocalVideos(path, missingVideos); err != nil {
+							s.recordScanFailure(s.remotePathForLocal(path), err)
+							return filepath.SkipDir
+						}
+					}
+					if s.cleanupProtected(path, true) {
+						return nil
+					}
 					if err := s.confirm115LocalUploadParent(path); err != nil {
 						s.recordScanFailure(s.remotePathForLocal(path), err)
 						if isFatalSyncError(err) {
@@ -1048,6 +1061,23 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						}
 						if !canUpload {
 							s.Sync.Logger.Debugf("本地元数据文件 %s 由于存在上传任务所以不需要处理", path)
+							return nil
+						}
+						if owner := s.missingMetadataVideoOwner(path, missingVideos); owner != "" {
+							if s.cleanupProtected(owner, false) {
+								return nil
+							}
+							if s.scopeRelease != nil {
+								if err := ensureGeneratedStrmPathWithinResolvedRoot(s.scopeLocalRoot, owner); err != nil {
+									s.recordLocalFileFailure(owner, err)
+									return nil
+								}
+							}
+							s.Sync.Logger.Infof("对应视频已失效，清理本地专属元数据：video_path=%s，local_path=%s", owner, path)
+							if err := s.removeLocalFile(path, removedFileParents); err != nil {
+								s.Sync.Logger.Warnf("删除本地专属元数据失败：local_path=%s，错误=%v", path, err)
+								s.recordLocalFileFailure(path, err)
+							}
 							return nil
 						}
 						sourceRootPath := filepath.ToSlash(filepath.Join(s.TargetPath, s.Sync.RemotePath))
