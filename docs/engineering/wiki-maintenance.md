@@ -45,6 +45,7 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Emby-通知配置.md` | [Emby 同步](../architecture/emby-library-sync.md)、[认证会话](../architecture/authentication-sessions.md) | Webhook 地址、鉴权、事件选择和通知转发 |
 | `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[路径映射配置](../operations/configuration.md#emby-外部-strm-路径映射)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 开启步骤、支持来源、STRM 存放与挂载要求、删除范围、结果查看与排障 |
 | `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、客户端和网络排障 |
+| `飞牛影视反代.md` | [飞牛影视反代运维](../operations/fnos-proxy.md)、[飞牛影视反代 API](../reference/fnos-proxy-api.md)、[飞牛配置页面](../../frontend/src/components/AppFnosProxySettings.vue)、[反代实现](../../backend/internal/fnosproxy/) | 「飞牛影视」入口、默认关闭、保存立即应用、根目录对应、容器端口映射、恢复重启边界、客户端限制及排障；不另写飞牛 HTTPS 教程 |
 | `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../backend/fnos/)、[目录选择器](../../frontend/src/components/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
 | `常见问题.md` | 本表中对应专题的权威资料与 Wiki 操作页 | 问题入口、排查顺序和跨页链接；详细流程留在专题页 |
 

@@ -274,6 +274,7 @@
       <!-- STRM 配置状态显示 -->
       <el-alert
         v-if="strmStatus"
+        ref="feedbackRef"
         :title="strmStatus.title"
         :type="strmStatus.type"
         :description="strmStatus.description"
@@ -302,6 +303,7 @@ import { Check } from '@element-plus/icons-vue'
 import { onBeforeUnmount, onMounted, reactive, ref, watch, useTemplateRef } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import PageHeader from '@/components/common/PageHeader.vue'
 import MetadataExtInput from './MetadataExtInput.vue'
@@ -332,6 +334,7 @@ const formRef = useTemplateRef<FormInstance>('formRef')
 const strmLoading = ref(false)
 const strmConfigLoaded = ref(false)
 const strmStatus = ref<StrmStatus | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(strmStatus)
 const strmExample = ref('')
 
 // Cron 下次执行时间相关状态
@@ -453,6 +456,7 @@ const saveStrmConfig = async () => {
     }
   } finally {
     strmLoading.value = false
+    void revealFeedback()
   }
 }
 

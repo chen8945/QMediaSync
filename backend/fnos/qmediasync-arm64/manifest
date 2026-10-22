@@ -1,7 +1,7 @@
 appname = qmediasync
 version = 0.14.15
 display_name = QMediaSync
-desc = QMediaSync 是开源的 STRM 生成、影视元数据刮削与 Emby 联动工具，支持网盘和本地挂载目录。
+desc = QMediaSync 是一个开源的媒体同步与刮削工具，支持 115 网盘、百度网盘、OpenList 及本地挂载目录，提供文件同步、STRM 生成和影视元数据刮削功能，并支持与 Emby、飞牛影视联动。
 platform = arm
 source = thirdparty
 maintainer = chen8945

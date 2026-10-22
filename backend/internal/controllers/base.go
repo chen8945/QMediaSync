@@ -163,7 +163,11 @@ func Proxy115(c *gin.Context) {
 	target := proxyReq.URL
 	helpers.AppLogger.Infof("反代网盘下载链接：%s", target)
 	// 创建请求
-	req, err := http.NewRequest("GET", target, nil)
+	method := http.MethodGet
+	if c.Request.Method == http.MethodHead {
+		method = http.MethodHead
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), method, target, nil)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求创建失败", Data: nil})
 		return
@@ -201,6 +205,9 @@ func Proxy115(c *gin.Context) {
 		}
 	}
 	c.Status(resp.StatusCode)
+	if method == http.MethodHead {
+		return
+	}
 	// 复制响应内容
 	_, _ = io.Copy(c.Writer, resp.Body)
 }

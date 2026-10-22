@@ -37,7 +37,7 @@ func GetOpenListFileUrl(c *gin.Context) {
 		return
 	}
 	client := account.GetOpenListClient()
-	fileDetail, err := client.FileDetail(req.Path)
+	fileDetail, err := client.FileDetailContext(c.Request.Context(), req.Path)
 	if err != nil {
 		helpers.AppLogger.Errorf("[下载] 获取文件详情失败：%v", err)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取文件详情失败", Data: nil})

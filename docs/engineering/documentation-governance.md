@@ -139,6 +139,7 @@ QMediaSync 当前应优先建立或强化以下契约：
 | 开发方式、前端实现、目录和请求校验 | `docs/engineering/` |
 | 部署、配置、代理、数据库操作和发布 | `docs/operations/` |
 | API、schema、枚举和配置示例 | `docs/reference/`、`docs/examples/` |
+| 飞牛影视反代的 API 与运行操作 | `docs/reference/fnos-proxy-api.md`、`docs/operations/fnos-proxy.md` |
 | 单个模块的入口与限制 | 对应代码目录内的 `README.md` |
 
 ## 维护流程

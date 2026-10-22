@@ -29,6 +29,7 @@
 - [部署与持久化](operations/deployment.md)：Docker、发布二进制和飞牛运行方式，以及端口、挂载目录、管理员恢复和数据保留边界。
 - [配置、密钥与日志](operations/configuration.md)：配置文件、端口、第三方密钥、日志和运行参数。
 - [反向代理与 SSE](operations/reverse-proxy.md)：同源部署、可信代理和 SSE 缓冲 / 超时配置。
+- [飞牛影视](operations/fnos-proxy.md)：网页保存并应用、固定端口、路径映射、自动 HTTPS、播放限制和排障。
 - [数据库运维](operations/database.md)：数据库初始化、修复、清库、备份和恢复。
 - [发布流程](operations/release.md)：版本发布、GitHub Actions、changelog 和 FPK 打包。
 
@@ -39,6 +40,7 @@
 - [账号授权与更换](reference/account-authorization.md)：账号关联、同来源校验、授权会话、QR/OAuth 传递、OpenList 凭据回写和原子落库契约。
 - [同步目录聚合 API](reference/sync-path-api.md)：同步目录和目录监控上传规则的原子写入、幂等与错误契约。
 - [STRM Webhook](reference/strm-webhook.md)：外部程序创建 STRM 任务的 API、字段、响应和幂等边界。
+- [飞牛影视反代 API](reference/fnos-proxy-api.md)：保存与应用、实际运行状态、兼容协议与原生网页接管、来源缓存与内部转交契约。
 - [任务来源](reference/task-sources.md)：下载、上传和同步队列的机器值与前端映射。
 - [完整配置示例](examples/config.yaml)：`config/config.yaml` 的主配置项和注释。
 - [变更日志](../CHANGELOG.md)：历史版本的功能、修复和性能变更。

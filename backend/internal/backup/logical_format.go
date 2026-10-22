@@ -68,6 +68,8 @@ func retiredLogicalColumns(table string) []string {
 		return []string{"bai_du_pan_qps", "bai_du_pan_qpm", "bai_du_pan_qph", "bai_du_pan_qpt"}
 	case "sync_paths":
 		return []string{"baidu_sync_method"}
+	case "fnos_proxy_config":
+		return []string{"listen_port", "https_enabled", "https_port"}
 	default:
 		return nil
 	}
@@ -694,6 +696,7 @@ func prepareLogicalBackup(dir string, database *gorm.DB) (*logicalManifest, erro
 		return nil, err
 	}
 	expected = logicalTablesForSchemaVersion(expected, manifest.SchemaVersion)
+	exclusions = logicalExclusionsForSchemaVersion(exclusions, manifest.SchemaVersion)
 	if len(manifest.Tables) != len(expected) || !reflect.DeepEqual(manifest.Excluded, exclusions) {
 		return nil, fmt.Errorf("%w：备份清单的表集合或明确排除项与当前程序不一致", ErrArchiveInvalid)
 	}

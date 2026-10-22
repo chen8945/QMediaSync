@@ -59,6 +59,7 @@
     <!-- 保存状态显示 -->
     <el-alert
       v-if="saveStatus"
+      ref="feedbackRef"
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
@@ -91,6 +92,7 @@ import {
   userSettingsPublicMessages,
 } from '@/api/userSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import TwoFactorSettings from '@/components/user-settings/TwoFactorSettings.vue'
@@ -113,6 +115,7 @@ const { isMobile: checkIsMobile } = useDeviceType()
 const http = useHttpClient()
 const loading = shallowRef(false)
 const saveStatus = shallowRef<SaveStatus | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(saveStatus)
 const originalUsername = shallowRef('')
 
 const formData = reactive<UserSettings>({
@@ -188,6 +191,7 @@ const saveSettings = async () => {
     showSettingsError(error, '保存用户设置失败')
   } finally {
     loading.value = false
+    void revealFeedback()
   }
 }
 

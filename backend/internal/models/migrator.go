@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 68
+var MaxVersionCode = 69
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -32,7 +32,7 @@ const (
 var AllTables = []any{
 	Migrator{},
 	BackupConfig{}, BackupRecord{},
-	ApiKey{}, UserSession{}, Settings{}, Sync{}, User{}, Account{},
+	ApiKey{}, UserSession{}, Settings{}, FnosProxyConfig{}, Sync{}, User{}, Account{},
 	SyncPath{}, SyncFile{}, SyncRootEvidence{}, SyncPathScrapePath{}, DirectoryUploadRule{}, DirectoryUploadProcessedFile{}, SyncPathIdempotencyRecord{},
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
@@ -834,6 +834,17 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 			return fmt.Errorf("迁移同步目录资料和 Emby 路径映射失败：%w", err)
 		}
 		migrator.VersionCode = 68
+	}
+	if migrator.VersionCode == 68 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.AutoMigrate(&FnosProxyConfig{}); err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 69).Error
+		}); err != nil {
+			return fmt.Errorf("迁移飞牛影视反代配置失败：%w", err)
+		}
+		migrator.VersionCode = 69
 	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {

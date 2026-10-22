@@ -12,6 +12,8 @@ body:
     attributes:
       label: 提交前确认
       options:
+        - label: 我已阅读 [Wiki 使用手册](https://github.com/chen8945/QMediaSync/wiki) 中与本问题相关的说明
+          required: true
         - label: 我已搜索现有 issue，没有发现相同问题
           required: true
   - type: input
@@ -28,13 +30,27 @@ body:
       options:
         - Docker
         - 发布二进制
+        - fnOS
         - 其他
     validations:
       required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 请按实际情况填写运行环境，涉及的服务或网盘信息按需补充。
+      placeholder: |
+        运行系统及版本：
+        数据库：SQLite / PostgreSQL
+        浏览器或播放器名称及版本：
+        Emby / 飞牛影视版本：
+        网盘来源：
+    validations:
+      required: false
   - type: dropdown
     id: proxy
     attributes:
-      label: 是否通过反向代理访问
+      label: 是否通过 Nginx 等外部反向代理访问
       description: 选"是"时，请在下方「问题描述」中补充代理软件类型和关键配置片段，并脱敏域名、证书等敏感信息。
       options:
         - 是

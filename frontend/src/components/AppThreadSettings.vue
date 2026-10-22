@@ -225,6 +225,7 @@
     <!-- 保存状态显示 -->
     <el-alert
       v-if="saveStatus"
+      ref="feedbackRef"
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
@@ -261,6 +262,7 @@ import {
   type ThreadSettings as ThreadSettingsPayload,
 } from '@/api/systemSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface ThreadSettings {
@@ -291,6 +293,7 @@ const { isMobile: checkIsMobile } = useDeviceType()
 const loading = ref(false)
 const configLoaded = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(saveStatus)
 let saveStatusTimer: ReturnType<typeof setTimeout> | undefined
 const clearSaveStatusTimer = () => {
   clearTimeout(saveStatusTimer)
@@ -395,6 +398,7 @@ async function saveSettings() {
       type: 'error',
       description: `同时上传任务数必须是 ${THREAD_LIMITS.uploadThreads.min} 到 ${THREAD_LIMITS.uploadThreads.max} 的整数`,
     }
+    void revealFeedback()
     return
   }
 
@@ -445,6 +449,7 @@ async function saveSettings() {
     }
   } finally {
     loading.value = false
+    void revealFeedback()
   }
 }
 </script>

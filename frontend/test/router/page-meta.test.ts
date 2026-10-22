@@ -27,4 +27,17 @@ describe('页面展示元信息', () => {
     expect(accounts.meta.page?.icon).toBe('Cloudy')
     expect(getPageTitle(accounts.meta)).toBe('网盘账号管理')
   })
+
+  it('飞牛影视反代作为受保护的设置菜单独立接入', () => {
+    const fnos = router.resolve('/settings/fnos-proxy')
+    expect(fnos.name).toBe('settings-fnos-proxy')
+    expect(fnos.meta).toMatchObject({
+      title: '飞牛影视',
+      requiresAuth: true,
+      parent: 'settings',
+      showInMenu: true,
+    })
+    expect(fnos.meta.page?.variant).toBe('settings')
+    expect(router.resolve('/settings/emby').name).toBe('settings-emby')
+  })
 })

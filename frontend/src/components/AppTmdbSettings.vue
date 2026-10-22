@@ -111,6 +111,7 @@
     <!-- 保存状态显示 -->
     <el-alert
       v-if="saveStatus"
+      ref="saveFeedbackRef"
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
@@ -123,6 +124,7 @@
     <!-- 测试状态显示 -->
     <el-alert
       v-if="testStatus"
+      ref="testFeedbackRef"
       :title="testStatus.title"
       :type="testStatus.type"
       :description="testStatus.description"
@@ -157,6 +159,7 @@ import {
   scrapeSettingsPublicMessages,
 } from '@/api/scrapeSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface TmdbSettings {
@@ -183,6 +186,10 @@ const settingsLoaded = ref(false)
 const testing = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
 const testStatus = ref<SaveStatus | null>(null)
+const { feedbackRef: saveFeedbackRef, revealFeedback: revealSaveFeedback } =
+  useFeedbackScroll(saveStatus)
+const { feedbackRef: testFeedbackRef, revealFeedback: revealTestFeedback } =
+  useFeedbackScroll(testStatus)
 
 // 表单数据
 const formData = reactive<TmdbSettings>({
@@ -277,6 +284,7 @@ async function saveSettings() {
     saveStatus.value = { title: '保存失败', type: 'error', description: parsed.message }
   } finally {
     loading.value = false
+    void revealSaveFeedback()
   }
 }
 
@@ -328,6 +336,7 @@ async function testConnection() {
     testStatus.value = { title: '测试失败', type: 'error', description: parsed.message }
   } finally {
     testing.value = false
+    void revealTestFeedback()
   }
 }
 </script>

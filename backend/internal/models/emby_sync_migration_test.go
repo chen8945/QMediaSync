@@ -118,7 +118,7 @@ func testEmbySyncMigration(t *testing.T, conn *gorm.DB, reopen func() *gorm.DB, 
 		if err := Migrate(); err != nil {
 			t.Fatal(err)
 		}
-		assertEmbyMigrationVersion(t, conn, 68)
+		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		if !conn.Migrator().HasTable(&SyncRootEvidence{}) || !conn.Migrator().HasColumn(&EmbyConfig{}, "PathMappingsJSON") {
 			t.Fatal("migration did not create the complete new schema")
 		}

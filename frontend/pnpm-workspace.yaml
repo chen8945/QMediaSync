@@ -4,6 +4,3 @@ overrides:
 allowBuilds:
   esbuild: true
   vue-demi: true
-
-minimumReleaseAgeExclude:
-  - vite@8.3.5

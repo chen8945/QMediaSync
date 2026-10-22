@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -266,12 +265,13 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 	ua := c.Request.UserAgent()
 	client := account.GetBaiDuPanClient()
 	cacheKey := fmt.Sprintf("baidupanurl:%s, ua=%s", pickCode, ua)
-	if keyLock.LockWithTimeout(cacheKey, 10*time.Second) {
+	ctx := c.Request.Context()
+	if keyLock.lockContext(ctx, cacheKey, 10*time.Second) {
 		defer keyLock.Unlock(cacheKey)
 		cachedUrl := string(db.Cache.Get(cacheKey))
 		if cachedUrl == "" {
-			fsDetail, err := client.GetFileDetail(context.Background(), pickCode, 1)
-			if err != nil {
+			fsDetail, err := client.GetFileDetail(ctx, pickCode, 1)
+			if err != nil || ctx.Err() != nil {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘文件详情失败", Data: nil})
 				return
 			}
@@ -285,6 +285,10 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 			db.Cache.Set(cacheKey, []byte(cachedUrl), 27000)
 		} else {
 			helpers.AppLogger.Infof("从缓存中查询到百度网盘下载链接：%s => %s", pickCode, cachedUrl)
+		}
+		if ctx.Err() != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘下载链接失败", Data: nil})
+			return
 		}
 		// 检查是否开启了本地播放代理，如果开启则跳转到代理链接
 		// if models.SettingsGlobal.LocalProxy == 1 {

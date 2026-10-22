@@ -2,6 +2,7 @@
 import type { LogLevel } from '@/types/log'
 import { isLogLevel, LOG_LEVEL_OPTIONS } from '@/utils/logLevel'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import { useHttpClient } from '@/http/client'
 import { Check } from '@element-plus/icons-vue'
 import { onMounted, onBeforeUnmount, reactive, shallowRef } from 'vue'
@@ -24,6 +25,7 @@ const { isMobile: checkIsMobile } = useDeviceType()
 const loading = shallowRef(false)
 const configLoaded = shallowRef(false)
 const saveStatus = shallowRef<SaveStatus | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(saveStatus)
 let saveStatusTimer: ReturnType<typeof setTimeout> | undefined
 const clearSaveStatusTimer = () => {
   clearTimeout(saveStatusTimer)
@@ -131,6 +133,7 @@ async function saveLogSetting() {
       type: 'error',
       description: validationError,
     }
+    void revealFeedback()
     return
   }
 
@@ -168,6 +171,7 @@ async function saveLogSetting() {
     }
   } finally {
     loading.value = false
+    void revealFeedback()
   }
 }
 
@@ -252,6 +256,7 @@ onMounted(() => {
 
     <el-alert
       v-if="saveStatus"
+      ref="feedbackRef"
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"

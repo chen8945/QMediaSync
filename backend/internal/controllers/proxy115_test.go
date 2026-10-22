@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -214,6 +215,39 @@ func TestProxy115DoesNotForwardBrowserCookies(t *testing.T) {
 				t.Errorf("Content-Range = %q, want bytes 2-4/5", got)
 			}
 		})
+	}
+}
+
+func TestProxy115PreservesHEADAndRequestContext(t *testing.T) {
+	previousTransport, previousLogger := http.DefaultTransport, helpers.AppLogger
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { http.DefaultTransport, helpers.AppLogger = previousTransport, previousLogger })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var upstreamRequest *http.Request
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		upstreamRequest = request
+		if request.Method != http.MethodHead {
+			t.Fatalf("HEAD probe became %s video download", request.Method)
+		}
+		if request.Header.Get("Cookie") != "" || request.Header.Get("Range") != "bytes=0-1" {
+			t.Fatalf("unexpected upstream headers: %v", request.Header)
+		}
+		return proxy115TestResponse(request, http.StatusOK, "must not be read", http.Header{"Content-Length": {"1024"}}), nil
+	})
+	router := gin.New()
+	router.HEAD("/proxy-115", Proxy115)
+	request := httptest.NewRequest(http.MethodHead, "/proxy-115?url=https%3A%2F%2Fcdn.115cdn.net%2Ffile", nil).WithContext(ctx)
+	request.Header.Set("Cookie", "auth_token=private")
+	request.Header.Set("Range", "bytes=0-1")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if upstreamRequest == nil || response.Code != http.StatusOK || response.Body.Len() != 0 || response.Header().Get("Content-Length") != "1024" {
+		t.Fatalf("HEAD response: %d %v %q", response.Code, response.Header(), response.Body)
+	}
+	cancel()
+	if upstreamRequest.Context().Err() == nil {
+		t.Fatal("upstream request lost caller cancellation")
 	}
 }
 

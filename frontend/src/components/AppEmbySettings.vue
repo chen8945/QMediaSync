@@ -617,6 +617,7 @@
 
       <el-alert
         v-if="embyStatus"
+        ref="feedbackRef"
         :title="embyStatus.title"
         :type="embyStatus.type"
         :description="embyStatus.description"
@@ -823,6 +824,7 @@ import { computed, onMounted, ref, reactive, onBeforeUnmount, useTemplateRef, wa
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsiveActionBar from '@/components/common/ResponsiveActionBar.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { copyText } from '@/utils/clipboard'
 import { formatMaybeUnixDateTime, formatRelativeTime } from '@/utils/timeUtils'
@@ -929,6 +931,7 @@ const embyStatus = ref<{
   type: 'success' | 'warning' | 'error' | 'info'
   description: string
 } | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(embyStatus)
 let embyStatusTimer: number | null = null
 
 const clearEmbyStatus = () => {
@@ -1095,6 +1098,7 @@ const saveEmbyConfig = async () => {
       type: 'success',
       description: 'Emby 配置已成功保存',
     }
+    void revealFeedback()
     embyStatusTimer = window.setTimeout(() => {
       embyStatus.value = null
       embyStatusTimer = null
@@ -1104,6 +1108,7 @@ const saveEmbyConfig = async () => {
     showEmbyFailure(error, '保存 Emby 配置失败')
   } finally {
     embyLoading.value = false
+    void revealFeedback()
   }
 }
 

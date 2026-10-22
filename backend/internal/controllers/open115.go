@@ -245,7 +245,8 @@ func Get115UrlByPickCode(c *gin.Context) {
 	helpers.AppLogger.Debugf("检查是否具有直链播放标记， force=%d", req.Force)
 	cacheKey := v115URLCacheKey(pickCode, req.Force, localProxy, requestUA)
 	helpers.AppLogger.Debugf("准备获取 115 文件下载链接：PickCode=%s，ua=%s，8095 播放=%d，加锁 10 秒", pickCode, ua, req.Force)
-	if !keyLock.lockContext(c.Request.Context(), cacheKey, v115URLCacheLockWait) {
+	ctx := c.Request.Context()
+	if !keyLock.lockContext(ctx, cacheKey, v115URLCacheLockWait) {
 		helpers.AppLogger.Warnf("获取 115 下载链接缓存锁超时：PickCode=%s，ua=%s", pickCode, ua)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接超时，请稍后重试", Data: nil})
 		return
@@ -262,7 +263,10 @@ func Get115UrlByPickCode(c *gin.Context) {
 		helpers.AppLogger.Infof("命中 115 下载链接缓存：文件=%q，PickCode=%s，UA=%q", fileName, pickCode, ua)
 		if !models.IsURLValidityCheckEnabled() {
 			helpers.AppLogger.Debugf("115 缓存直链 HEAD 检查已关闭：文件=%q，PickCode=%s，UA=%q", fileName, pickCode, ua)
-		} else if !checkURLValidity(cachedUrl, ua, v115URLValidityCheckTimeout(models.URLValidityCheckTimeout())) {
+		} else if valid := checkURLValidity(ctx, cachedUrl, ua, v115URLValidityCheckTimeout(models.URLValidityCheckTimeout())); ctx.Err() != nil {
+			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
+			return
+		} else if !valid {
 			helpers.AppLogger.Infof("115 缓存直链检查未通过，删除缓存并重新获取：文件=%q，PickCode=%s，UA=%q", fileName, pickCode, ua)
 			db.Cache.Delete(cacheKey)
 			cachedUrl = ""
@@ -276,7 +280,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 		if c.Request.TLS != nil {
 			originURL.Scheme = "https"
 		}
-		cachedUrl = resolve115URLMiss(c.Request.Context(), v115Playback, source, slot, cacheKey, originURL.String(), multiPlaybackEnabled,
+		cachedUrl = resolve115URLMiss(ctx, v115Playback, source, slot, cacheKey, originURL.String(), multiPlaybackEnabled,
 			func(ctx context.Context) string { return client.GetDownloadUrl(ctx, pickCode, ua, true) },
 			func(ctx context.Context) (string, error) { return copy115URL(ctx, account, pickCode, ua) },
 		)
@@ -284,6 +288,10 @@ func Get115UrlByPickCode(c *gin.Context) {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
 			return
 		}
+	}
+	if ctx.Err() != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
+		return
 	}
 	fileName := helpers.URLFileName(cachedUrl)
 	if req.Force == 0 && localProxy == 1 {
@@ -937,10 +945,10 @@ func CleanOldRequestStats(c *gin.Context) {
 }
 
 // checkURLValidity 使用 HEAD 请求检查 URL 是否有效。
-// 返回 true 表示 URL 有效（2xx 状态码），false 表示 URL 已失效。
+// 返回 true 表示 URL 有效（2xx 状态码），false 表示未通过校验。
 // ua 参数必须复用生成直链时的 User-Agent；115 直链 f=1 不接受不同 UA，f=3 还需要 Cookie。
 // 此函数只复用 UA，不负责获取或补充 f=3 所需的 Cookie。
-func checkURLValidity(urlStr string, ua string, timeout time.Duration) bool {
+func checkURLValidity(ctx context.Context, urlStr string, ua string, timeout time.Duration) bool {
 	if timeout <= 0 {
 		timeout = time.Duration(models.DefaultURLValidityCheckTimeoutSeconds) * time.Second
 	}
@@ -959,7 +967,7 @@ func checkURLValidity(urlStr string, ua string, timeout time.Duration) bool {
 		},
 	}
 
-	req, err := http.NewRequest("HEAD", urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, urlStr, nil)
 	if err != nil {
 		helpers.AppLogger.Errorf("115 缓存直链 HEAD 请求创建失败：文件=%q，UA=%q，错误=%v", fileName, ua, helpers.URLRequestErrorForLog(err))
 		return false

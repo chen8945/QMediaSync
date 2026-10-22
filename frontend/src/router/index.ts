@@ -19,6 +19,10 @@ const AppEmbySettings = createAsyncRouteComponent(
   'AppEmbySettings',
   () => import('@/components/AppEmbySettings.vue'),
 )
+const AppFnosProxySettings = createAsyncRouteComponent(
+  'AppFnosProxySettings',
+  () => import('@/components/AppFnosProxySettings.vue'),
+)
 const AppSyncRecords = createAsyncRouteComponent(
   'AppSyncRecords',
   () => import('@/components/AppSyncRecords.vue'),
@@ -644,6 +648,23 @@ const routes: RouteRecordRaw[] = [
       title: 'Emby',
       page: {
         description: '配置 Emby 服务器、通知链接和同步行为',
+        icon: 'VideoPlay',
+        variant: 'settings',
+      },
+      requiresAuth: true,
+      parent: 'settings',
+      icon: 'VideoPlay',
+      showInMenu: true,
+    },
+  },
+  {
+    path: '/settings/fnos-proxy',
+    name: 'settings-fnos-proxy',
+    component: AppFnosProxySettings,
+    meta: {
+      title: '飞牛影视',
+      page: {
+        description: '设置飞牛影视连接和 STRM 路径映射',
         icon: 'VideoPlay',
         variant: 'settings',
       },

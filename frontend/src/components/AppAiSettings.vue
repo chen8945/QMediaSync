@@ -99,6 +99,7 @@
     <!-- 保存状态显示 -->
     <el-alert
       v-if="saveStatus"
+      ref="saveFeedbackRef"
       :title="saveStatus.title"
       :type="saveStatus.type"
       :description="saveStatus.description"
@@ -111,6 +112,7 @@
     <!-- 测试状态显示 -->
     <el-alert
       v-if="testStatus"
+      ref="testFeedbackRef"
       :title="testStatus.title"
       :type="testStatus.type"
       :description="testStatus.description"
@@ -147,6 +149,7 @@ import {
   scrapeSettingsPublicMessages,
 } from '@/api/scrapeSettings'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 interface AiSettings {
@@ -168,6 +171,10 @@ const settingsLoaded = ref(false)
 const testing = ref(false)
 const saveStatus = ref<SaveStatus | null>(null)
 const testStatus = ref<SaveStatus | null>(null)
+const { feedbackRef: saveFeedbackRef, revealFeedback: revealSaveFeedback } =
+  useFeedbackScroll(saveStatus)
+const { feedbackRef: testFeedbackRef, revealFeedback: revealTestFeedback } =
+  useFeedbackScroll(testStatus)
 const formRef = useTemplateRef<FormInstance>('formRef')
 
 // 表单数据
@@ -262,6 +269,7 @@ async function saveSettings() {
       type: 'success',
       description: 'AI 识别设置已成功保存',
     }
+    void revealSaveFeedback()
 
     const status = saveStatus.value
     setTimeout(() => {
@@ -275,6 +283,7 @@ async function saveSettings() {
     if (!parsed.shouldNotify) return
     console.error('保存 AI 设置失败：', parsed.diagnostics)
     saveStatus.value = { title: '保存失败', type: 'error', description: parsed.message }
+    void revealSaveFeedback()
   } finally {
     loading.value = false
   }
@@ -315,6 +324,7 @@ async function testConnection() {
     testStatus.value = { title: '测试失败', type: 'error', description: parsed.message }
   } finally {
     testing.value = false
+    void revealTestFeedback()
   }
 }
 </script>

@@ -58,6 +58,7 @@
     <!-- 代理状态显示 -->
     <el-alert
       v-if="proxyStatus"
+      ref="feedbackRef"
       :title="proxyStatus.title"
       :type="proxyStatus.type"
       :description="proxyStatus.description"
@@ -90,6 +91,7 @@ import { Connection, Check } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useDeviceType } from '@/composables/useDeviceType'
+import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import PageHeader from '@/components/common/PageHeader.vue'
 const { isMobile: checkIsMobile } = useDeviceType()
 interface ProxyData {
@@ -110,6 +112,7 @@ const proxyConfigLoading = ref(false)
 const proxyConfigLoaded = ref(false)
 const testingProxy = ref(false)
 const proxyStatus = ref<ProxyStatus | null>(null)
+const { feedbackRef, revealFeedback } = useFeedbackScroll(proxyStatus)
 // 已保存的凭据是否被后端脱敏，决定是否展示占位串说明
 const credentialsMasked = ref(false)
 // 初始脱敏值尚未编辑时可自动请求保留当前凭据；用户输入后，xxxxx 是可保存的普通凭据。
@@ -229,6 +232,7 @@ const testProxy = async () => {
     showProxyFailure(error, '代理测试失败')
   } finally {
     testingProxy.value = false
+    void revealFeedback()
   }
 }
 
@@ -266,6 +270,7 @@ const saveProxy = async () => {
     showProxyFailure(error, '保存代理设置失败')
   } finally {
     proxyLoading.value = false
+    void revealFeedback()
   }
 }
 

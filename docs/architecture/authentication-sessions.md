@@ -6,7 +6,7 @@
 >
 > 修改时机：修改管理员恢复、登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
 >
-> 相关代码：`backend/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`frontend/src/stores/auth.ts`。
+> 相关代码：`backend/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`frontend/src/stores/auth.ts`。
 
 ## 首次管理员
 
@@ -97,6 +97,7 @@
 - 反向代理必须保留原始 `Host`，由可信代理传递 `X-Forwarded-Proto: https`；后端 HTTP 监听不得直接暴露，以防客户端伪造该 header。具体代理配置见 [反向代理](../operations/reverse-proxy.md)。
 - `/proxy-115` 仅允许 115 CDN 和百度网盘下载域名；初始目标和每次重定向目标都执行同一白名单校验。
 - 共享下载代理只转发客户端的 `Range`、`Referer`，并设置对应网盘的 UA；首跳和后续重定向均不转发浏览器 `Cookie`，包括 `auth_token`、`csrf_token` 及其他会话凭据。
+- 共享 `Proxy115` 保持 GET 流式转发；内部以 HEAD 调用时向网盘仍发 HEAD，只返回状态和响应头，不读取或发送视频 Body。两种方法都传播请求 context，使客户端取消与服务停止能取消出站连接，不把 HEAD 转成整段 GET 后丢弃内容。主站 `/proxy-115` 的既有 GET 路由不变，飞牛 GET／HEAD 由应用入口局部分发，仍执行相同 URL 和逐跳重定向校验；维护准入与短许可边界见 [飞牛内部转交](../reference/fnos-proxy-api.md#播放接管与回退)。
 
 ## 不变量
 
@@ -112,7 +113,7 @@
 
 ## 验证方式
 
-- 运行 `(cd backend && go test -race ./internal/controllers -run '^TestProxy115')`，覆盖 115、百度网盘首跳及同域、跨允许域重定向的 Cookie 隔离，同时验证 Range、Referer、网盘 UA 和响应内容。
+- 运行 `(cd backend && go test -race ./internal/controllers -run '^TestProxy115')`，覆盖 115、百度网盘首跳及同域、跨允许域重定向的 Cookie 隔离，同时验证 Range、Referer、网盘 UA、GET 响应内容、HEAD 方法与无 Body，以及请求 context 取消。
 - 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Login|Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景；控制器测试同时保护登录失败完整响应一致、已知拒绝原因的错误码及数据库故障不误分类。
 - 管理员恢复的 SQLite、PostgreSQL、命令入口及 Compose 脚本验证命令见 [验证说明](../engineering/verification.md#管理员恢复验证)，覆盖事务回滚、损坏旧凭据、非固定管理员 ID、认证清理和业务数据保留。
 - 运行 `(cd frontend && pnpm lint)`、`(cd frontend && pnpm run type-check)` 检查前端认证调用改动。

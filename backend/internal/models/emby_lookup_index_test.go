@@ -157,7 +157,7 @@ func TestSQLiteEmbyLookupIndexesRepairAndRetry(t *testing.T) {
 		assertSQLiteEmbyLookupIndexes(t, db.Db)
 		assertFiles(db.Db)
 		assertMembers(db.Db)
-		assertEmbyMigrationVersion(t, db.Db, 68)
+		assertEmbyMigrationVersion(t, db.Db, MaxVersionCode)
 	}
 }
 

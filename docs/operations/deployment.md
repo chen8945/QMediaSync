@@ -24,6 +24,8 @@
 
 Emby 海报、背景原图模式通过持久化主配置 `config/config.yaml` 的 `emby302.images_original` 开启，默认关闭，修改后重启 QMediaSync 即可，无需重建镜像。流量和图片标记变化见 [Emby 302 图片与自定义脚本](configuration.md#emby-302-图片与自定义脚本)。
 
+飞牛影视反代默认关闭，网页保存后立即应用本模块，不重启主站或 Emby。内置固定 HTTP `9005`；主站证书和私钥均存在时自动尝试 HTTPS `9006`，缺任一文件仅 HTTP，HTTPS 失败不停止 HTTP。Docker 可发布为 `19005:9005` 等宿主机端口，并需挂载同一批 STRM；二进制部署需释放固定端口。新增／替换证书和数据库恢复仍需按原方式重启，fnOS 下须区分程序根目录与业务共享配置目录。完整操作见 [飞牛影视反代运维](fnos-proxy.md)。
+
 ## Docker
 
 源码构建镜像的 Go 版本与更新方式见 [发布流程](release.md#持续集成与预发布镜像)；Windows 二进制升级时同时检查 [出站证书信任](configuration.md#emby-302-出站-https)。

@@ -170,8 +170,13 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 	if len(plan.tables) == 0 {
 		return nil, fmt.Errorf("%w：备份中没有可恢复的模型文件", ErrArchiveInvalid)
 	}
-	if models.MaxVersionCode == 68 && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
+	if (models.MaxVersionCode == 68 || models.MaxVersionCode == 69) && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
 		if err := adaptEmbySyncRestorePlan(database, plan); err != nil {
+			return nil, err
+		}
+	}
+	if models.MaxVersionCode == 69 && (sourceVersion == 67 || sourceVersion == 68 || (plan.legacy && sourceVersion == 66)) {
+		if err := adaptFnosProxyRestorePlan(database, plan); err != nil {
 			return nil, err
 		}
 	}
@@ -480,9 +485,10 @@ func adaptLegacyVersion(row map[string]any) error {
 	if ok && version == int64(models.MaxVersionCode) {
 		return nil
 	}
-	// 66 → 67 只放宽文本列；67 → 68 的新表与配置默认值由恢复计划明确补齐。
-	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68)) ||
-		(version == 67 && models.MaxVersionCode == 68)) {
+	// 66 → 67 只放宽文本列；后续新增表与配置默认值由恢复计划明确补齐。
+	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68 || models.MaxVersionCode == 69)) ||
+		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69)) ||
+		(version == 68 && models.MaxVersionCode == 69)) {
 		row["version_code"] = int64(models.MaxVersionCode)
 		return nil
 	}
