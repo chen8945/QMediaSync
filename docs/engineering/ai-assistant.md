@@ -34,7 +34,7 @@
 
 QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网盘、OpenList 等云存储与 Emby 媒体服务器之间的文件同步、STRM 生成和媒体刮削。
 
-- 语言：Go 1.27.1。
+- 语言：Go 1.27.3。
 - 后端：Gin、GORM，模块名为 `qmediasync`，位于 `backend/`。
 - 数据库：SQLite 或 PostgreSQL，默认 PostgreSQL；不包含内嵌 PostgreSQL 和旧库自动迁移能力。
 - 前端：Vue 3、Vite、TypeScript，位于 `frontend/`；本地生产构建输出 `frontend/dist`，发布流程将其复制为 `backend/web_statics`，运行目录使用 `web_statics`。

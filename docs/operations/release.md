@@ -14,9 +14,9 @@
 
 ## 持续集成与预发布镜像
 
-后端工具链最低版本为 Go 1.27.1。CI 与正式发布通过 `backend/go.mod` 选择 Go 版本；两份源码 Dockerfile 使用 `golang:1.27-alpine`，跟随 1.27 系列补丁更新，升级 Go 系列时须一起更新。
+后端工具链最低版本为 Go 1.27.3。CI 与正式发布通过 `backend/go.mod` 选择 Go 版本；两份源码 Dockerfile 使用 `golang:1.27-alpine`，自动跟随 1.27 系列补丁更新，升级 Go 系列时须一起更新。
 
-前端 CI、正式发布与两份源码 Dockerfile 统一使用 Node 26 和 pnpm 12，pnpm 只指定主版本。CI 与正式发布通过 `pnpm/action-setup` 安装 pnpm，两份 Dockerfile 使用 `npm install --global pnpm@12`。升级 pnpm 主版本时同步这些安装入口及本地开发命令；版本约束和发布时间要求见 [本地开发](../engineering/local-development.md#前端启动)。
+前端 CI、正式发布与两份源码 Dockerfile 统一使用 Node 26 和 pnpm 12，按主版本自动跟随更新；Docker 使用 `node:26-alpine`。CI 与正式发布通过 `pnpm/action-setup` 安装 pnpm，两份 Dockerfile 使用 `npm install --global pnpm@12`。升级 Node 或 pnpm 主版本时同步这些安装入口及本地开发命令。版本约束和发布时间要求见 [本地开发](../engineering/local-development.md#前端启动)。
 
 `ci.yaml` 在 pull request，以及 `dev`、`feature/**` 分支推送时执行。前端依次运行 `pnpm run test`、`pnpm run build`（包含类型检查）和 `pnpm run check:build`；后端依次运行 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。独立的 `docs` job 使用 Lychee 最新正式版（`lycheeVersion: latest`） 离线检查 Git 文件列表中的 Markdown 本地链接和锚点，跳过网络链接与未跟踪的忽略文件。CI 与 Wiki 发布前检查都使用 `git -c core.quotepath=false ls-files` 生成列表，避免中文文件名被 Git 转义后无法由 Lychee 找到。CI 不运行前端 ESLint 或 Prettier；完整验证范围见 [验证说明](../engineering/verification.md)。
 
