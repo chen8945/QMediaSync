@@ -1080,10 +1080,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							}
 							return nil
 						}
-						sourceRootPath := filepath.ToSlash(filepath.Join(s.TargetPath, s.Sync.RemotePath))
-						if s.Account.SourceType == models.SourceTypeLocal {
-							sourceRootPath = s.Sync.RemotePath
-						}
+						localRootPath := normalizedScanPath(s.GetLocalBaseDir())
 						// 添加上传任务
 						// 检查文件是否可以上传
 						// 普通元数据文件需要父目录存在才可以上传，允许上传目录下的文件需要循环创建目录上传
@@ -1096,7 +1093,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 						// 检查父目录是否在网盘存在
 						existsPath, _ := s.memSyncCache.GetByLocalPath(parentDir)
 						// 先处理不能上传的缺失目录，确认可上传后再准备任务。
-						if existsPath == nil && parentDir != sourceRootPath {
+						if existsPath == nil && parentDir != localRootPath {
 							if isAllowedUploadDir && s.Account.SourceType == models.SourceType115 {
 								isAllowedUploadDir, err = s.confirm115UploadHost(parentDir)
 								if err != nil {
@@ -1116,9 +1113,9 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								return nil
 							}
 						}
-						var parentPath, parentPathId, remotePath string
+						var parentPathId, remotePath string
 						s.Sync.Logger.Infof("准备上传本地元数据文件 %s，父目录：%s", path, parentDir)
-						if existsPath == nil && parentDir != sourceRootPath {
+						if existsPath == nil && parentDir != localRootPath {
 							// 递归创建目录，调用对应的 driver
 							parentPathId, remotePath, err = s.SyncDriver.CreateDirRecursively(s.Context, parentDir)
 							if err != nil {
@@ -1129,22 +1126,14 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 								}
 								return nil
 							}
-							parentPath = parentDir
 						} else {
-							if parentDir == sourceRootPath {
-								parentPath = sourceRootPath
+							if parentDir == localRootPath {
 								parentPathId = s.SourcePathId
 								remotePath = s.SourcePath
 							} else {
-								parentPath = parentDir
 								parentPathId = existsPath.GetFileId()
-								remotePath = fmt.Sprintf("%s/%s", existsPath.Path, existsPath.FileName)
+								remotePath = existsPath.GetFullRemotePath()
 							}
-						}
-						if s.Account.SourceType == models.SourceTypeLocal {
-							// 本地缓存的 Path 为空时，已有子目录只会以“/目录名”进入这里。
-							// 上传任务仍须保存实际的本地目标父目录，不能丢失受限源根目录。
-							remotePath = localUploadParentPath(sourceRootPath, remotePath)
 						}
 						// 加入上传队列
 						db115File := &models.SyncFile{
@@ -1160,7 +1149,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							MTime:         info.ModTime().Unix(),
 							IsMeta:        isMeta,
 							IsVideo:       isVideo,
-							LocalFilePath: filepath.Join(parentPath, info.Name()),
+							LocalFilePath: path,
 						}
 						s.Sync.Logger.Infof("准备添加上传任务，路径检查：文件 ID=%s，路径=%s，文件名=%s", db115File.FileId, db115File.Path, db115File.FileName)
 						if err := models.AddUploadTaskFromSyncFile(db115File); err != nil {
@@ -1245,24 +1234,6 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		}
 		return s.removeEmptyLocalDirs(localDirs, removedFileParents)
 	}
-}
-
-// localUploadParentPath 将本地来源的相对或被缓存截短的目录补回配置的源根目录。
-// 已是该根目录下的完整路径时原样保留，避免重复拼接。
-func localUploadParentPath(sourceRoot string, remotePath string) string {
-	sourceRoot = filepath.ToSlash(filepath.Clean(strings.TrimSpace(sourceRoot)))
-	remotePath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(remotePath)))
-	if sourceRoot == "" || sourceRoot == "." || remotePath == "" || remotePath == "." {
-		return remotePath
-	}
-	if remotePath == sourceRoot {
-		return sourceRoot
-	}
-	rootPrefix := strings.TrimSuffix(sourceRoot, "/") + "/"
-	if strings.HasPrefix(remotePath, rootPrefix) {
-		return remotePath
-	}
-	return filepath.ToSlash(filepath.Join(sourceRoot, strings.TrimPrefix(remotePath, "/")))
 }
 
 func (s *SyncStrm) decideMetadataMtimeAction(path string, info os.FileInfo, remote *SyncFileCache) metadataMtimeAction {

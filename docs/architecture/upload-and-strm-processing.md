@@ -26,6 +26,8 @@ OpenList 上传的普通重试预算保持为 `0`，网络错误或超时不自�
 
 ## 115 上传增强
 
+STRM 元数据回传的根目录识别和目录层级保留遵循[同步编排](sync-orchestration.md#sync-记录与执行状态)，上传队列执行创建任务时确定的完整目标路径。
+
 115 上传任务先执行 `/open/upload/init`。所有上传入口在创建任务时写入不可变的 `remote_full_path`（包含文件名）；`remote_file_id` 在完成前保持空，完成后才记录新远端文件 ID。local 上传的 `remote_full_path` 记录受配置源根目录约束的本地目标完整路径，供复制 worker 使用；它不是远端身份，队列详情不会以远端路径展示它。115 官方秒传返回只保证包含新增 `file_id`，不返回 mtime；因此秒传成功后系统会按 `file_id` 查询远端文件详情，补齐 PickCode、SHA1、大小和官方修改时间，并记录 `upload_result=rapid_upload`。任务公开 `remote_sha1` 只接受远端详情或完成 callback 返回的 SHA1，不能用本地 SHA1 或 `upload_sessions` checkpoint 兜底。115 列表的 `upt` 和详情的 `utime` 是修改时间；只有字段缺失或零值时才回退列表 `uppt` 或详情 `ptime`。`strm_sync` 上传需要用最终查询到的远端官方修改时间同步本地元数据文件，详情查询失败会让任务失败；目录监控上传可用 init 返回的 `file_id` 兜底完成，后续 STRM worker 仍可按 `file_id` 补齐文件详情。如果未命中秒传且启用了秒传等待策略，任务会按 `upload_rapid_wait_interval_seconds` 重复尝试 init，直到命中秒传或达到 `upload_rapid_wait_timeout_seconds`。`upload_rapid_wait_interval_seconds` 是两次 init 之间的重试间隔，`upload_rapid_wait_timeout_seconds` 是最大等待时长；最后一次等待会按剩余超时时间裁剪，不会因为间隔更长而超过最大等待时长。`upload_rapid_wait_min_size` 控制进入等待策略的最小文件大小，`upload_rapid_wait_force_size` 控制必须等待到超时的大文件阈值；等待超时后是否跳过真实上传由 `upload_rapid_wait_skip_upload` 控制。
 
 非秒传上传使用 OSS multipart。初始化 OSS multipart 时会带 `sequential=1`；真实非秒传任务验证显示，该参数配合 115 callback 原样透传后，OSS 会在完成对象上返回可供 115 校验的最终 SHA1。默认 part size 为 `32 MiB`；当文件按该大小切分会超过 `9999` 个 part 时，part size 会按文件大小动态放大并向上取整到 `1 MiB`。首次创建 `upload_sessions` 后会持久化 part size、OSS `upload_id`、本地文件签名、115 调度字段和已上传进度，后续重试或进程重启恢复时必须复用这些 checkpoint。

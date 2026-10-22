@@ -80,22 +80,29 @@ func (d *localDriver) CreateDirRecursively(ctx context.Context, path string) (pa
 	if err != nil {
 		return "", "", fmt.Errorf("计算相对路径失败：%s，错误：%v", path, err)
 	}
-	targetPath := filepath.Join(d.s.SourcePath, relPath)
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) || filepath.IsAbs(relPath) {
+		return "", "", fmt.Errorf("目录超出 STRM 同步范围：%s", path)
+	}
+	targetPath := filepath.ToSlash(filepath.Join(d.s.SourcePath, relPath))
 	if err := os.MkdirAll(targetPath, 0755); err != nil {
 		return "", "", fmt.Errorf("创建目录失败：%s，错误：%v", targetPath, err)
 	}
 	// 将新添加的目录加入同步缓存
 	syncFileCache := &SyncFileCache{
-		ParentId:   filepath.Dir(relPath),
-		FileName:   filepath.Base(relPath),
+		ParentId:   filepath.ToSlash(filepath.Dir(targetPath)),
+		FileName:   filepath.Base(targetPath),
 		FileType:   v115open.TypeDir,
 		IsVideo:    false,
 		IsMeta:     false,
 		SourceType: models.SourceTypeLocal,
 	}
-	syncFileCache.GetLocalFilePath(d.s.TargetPath, d.s.SourcePath)
-	d.s.memSyncCache.Insert(syncFileCache)
-	return targetPath, relPath, nil
+	if syncFileCache.GetLocalFilePath(d.s.TargetPath, d.s.SourcePath) == "" {
+		return "", "", fmt.Errorf("无法计算目录的本地同步路径：%s", targetPath)
+	}
+	if err := d.s.memSyncCache.Insert(syncFileCache); err != nil {
+		return "", "", fmt.Errorf("写入目录同步缓存失败：%s，错误：%w", targetPath, err)
+	}
+	return targetPath, targetPath, nil
 }
 
 func (d *localDriver) GetPathIdByPath(ctx context.Context, path string) (string, error) {
