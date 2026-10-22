@@ -51,15 +51,45 @@ func PrepareAppRestart() error {
 			return errors.New("尚未初始化配置目录")
 		}
 		// 入口只消费与刚退出子进程 PID 匹配的信号，遗留信号不会触发下一轮重启。
-		path := filepath.Join(ConfigDir, ".restart-request")
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return fmt.Errorf("准备 Docker 重启信号失败：%w", err)
+		return writeRestartRequest(filepath.Join(ConfigDir, ".restart-request"))
+	}
+	return nil
+}
+
+// PrepareInitialConfigRestart 为首次配置交付启动请求，不扩大完整服务的重启支持范围。
+func PrepareInitialConfigRestart() (bool, error) {
+	if runtime.GOOS == "linux" && IsFnOS && os.Getenv("DOCKER") != "1" {
+		path := os.Getenv("QMS_INITIAL_CONFIG_RESTART_FILE")
+		if path == "" {
+			return false, nil
 		}
-		_, writeErr := file.WriteString(strconv.Itoa(os.Getpid()))
-		if err := errors.Join(writeErr, file.Close()); err != nil {
-			return fmt.Errorf("写入 Docker 重启信号失败：%w", errors.Join(err, os.Remove(path)))
+		runDir := os.Getenv("TRIM_PKGVAR")
+		if !filepath.IsAbs(runDir) || !filepath.IsAbs(path) ||
+			filepath.Clean(path) != filepath.Join(filepath.Clean(runDir), ".initial-config-restart") {
+			return false, errors.New("fnOS 启动请求不在应用运行目录中")
 		}
+		if err := writeRestartRequest(path); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if IsFnOS || (runtime.GOOS != "windows" && os.Getenv("DOCKER") != "1") || !SupportsAppRestart() {
+		return false, nil
+	}
+	if err := PrepareAppRestart(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func writeRestartRequest(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("准备启动请求失败：%w", err)
+	}
+	_, writeErr := file.WriteString(strconv.Itoa(os.Getpid()))
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return fmt.Errorf("写入启动请求失败：%w", errors.Join(err, os.Remove(path)))
 	}
 	return nil
 }

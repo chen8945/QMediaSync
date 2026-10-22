@@ -1,5 +1,0 @@
-#!/bin/bash
-
-### This script is called after the user change environment variables in application setting page.
-curl -X POST "http://127.0.0.1:${TRIM_SERVICE_PORT}/api/update-fn-access-path" -d "path=${TRIM_DATA_ACCESSIBLE_PATHS}"
-exit 0

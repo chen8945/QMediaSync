@@ -1,0 +1,22 @@
+#!/bin/bash
+set -eu
+fail() {
+    echo "$*" >&2
+    [[ -z "${TRIM_TEMP_LOGFILE:-}" ]] || printf '%s\n' "$*" >> "$TRIM_TEMP_LOGFILE"
+    exit 1
+}
+port="${TRIM_SERVICE_PORT:-12333}"
+[[ "$port" =~ ^[0-9]+$ && "$port" -gt 0 && "$port" -le 65535 ]] || fail 'QMediaSync 服务端口无效，请检查应用设置。'
+if ! response=$(curl --noproxy '*' --silent --show-error --connect-timeout 3 --max-time 10 \
+    --request POST --data-urlencode "path=${TRIM_DATA_ACCESSIBLE_PATHS:-}" \
+    --write-out $'\n%{http_code}' "http://127.0.0.1:$port/api/update-fn-access-path"); then
+    fail 'QMediaSync 尚未就绪，目录授权未能刷新。请启动应用后刷新目录，必要时重启应用。'
+fi
+status=${response##*$'\n'}
+body=${response%$'\n'*}
+if [[ "$status" == 404 ]]; then
+    fail 'QMediaSync 尚未完成数据库设置。请完成网页设置后刷新目录，必要时重启应用。'
+fi
+if [[ "$status" != 200 || ! "$body" =~ \"code\"[[:space:]]*:[[:space:]]*200[[:space:]]*[,}] ]]; then
+    fail 'QMediaSync 未能刷新目录授权。请确认应用已启动后重试，必要时重启应用。'
+fi

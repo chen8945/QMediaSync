@@ -47,6 +47,17 @@ jobs:
             echo "::error::.changes/${TAG}.md does not exist"
             exit 1
           fi
+          python3 - "$TAG" <<'PYCODE'
+          import pathlib, re, sys
+          tag = sys.argv[1]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit("Invalid release tag")
+          for arch in ("amd64", "arm64"):
+              path = pathlib.Path(f"backend/fnos/qmediasync-{arch}/manifest")
+              versions = re.findall(r"^version\s*=\s*(.*?)\s*$", path.read_text(), re.M)
+              if versions != [tag[1:]]:
+                  raise SystemExit(f"{path}: version must equal {tag[1:]}")
+          PYCODE
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "::error::GitHub Release ${TAG} already exists"
             exit 1
@@ -166,6 +177,12 @@ jobs:
           if [ "$GOOS" = "linux" ]; then
             cp "$output" "linux-binaries/QMediaSync_linux_${GOARCH}_exe"
             chmod +x "linux-binaries/QMediaSync_linux_${GOARCH}_exe"
+            python3 - <<'PYCODE'
+          import hashlib, json, os, pathlib
+          path = pathlib.Path(f"linux-binaries/QMediaSync_linux_{os.environ['GOARCH']}_exe")
+          metadata = {"version": os.environ["TAG"], "goos": "linux", "goarch": os.environ["GOARCH"], "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+          pathlib.Path(str(path) + ".build.json").write_text(json.dumps(metadata) + "\n")
+          PYCODE
           fi
 
       - uses: actions/upload-artifact@v7
@@ -178,7 +195,9 @@ jobs:
         if: matrix.goos == 'linux'
         with:
           name: linux-binary-${{ matrix.goarch }}
-          path: linux-binaries/QMediaSync_linux_${{ matrix.goarch }}_exe
+          path: |
+            linux-binaries/QMediaSync_linux_${{ matrix.goarch }}_exe
+            linux-binaries/QMediaSync_linux_${{ matrix.goarch }}_exe.build.json
           if-no-files-found: error
 
   docker:
@@ -256,8 +275,6 @@ jobs:
       - packages
     permissions:
       contents: read
-    outputs:
-      has_assets: ${{ steps.fpk_assets.outputs.has_assets }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -279,45 +296,32 @@ jobs:
           name: linux-binary-arm64
           path: temp_build
 
-      - name: Install fnpack from URL
+      - name: Install fnpack
         env:
           FNPACK_DOWNLOAD_URL: ${{ secrets.FNPACK_DOWNLOAD_URL }}
+          FNPACK_VERSION: ${{ vars.FNPACK_VERSION }}
         run: |
-          if [ -z "$FNPACK_DOWNLOAD_URL" ]; then
-            echo "FNPACK_DOWNLOAD_URL is not set, fnpack installation skipped"
-            exit 0
-          fi
-          curl -fsSL "$FNPACK_DOWNLOAD_URL" -o /tmp/fnpack
-          chmod +x /tmp/fnpack
-          sudo mv /tmp/fnpack /usr/local/bin/fnpack
+          scripts/release/install-fnpack.sh "$RUNNER_TEMP/fnpack-bin"
+          echo "$RUNNER_TEMP/fnpack-bin" >> "$GITHUB_PATH"
 
-      - name: Build FNOS packages
+      - name: Build fnOS packages
         env:
           TAG: ${{ needs.metadata.outputs.tag }}
+          REQUIRE_FNPACK: "1"
         run: |
           mkdir -p release-assets
           scripts/release/package-fnos.sh "$TAG" amd64 temp_build/QMediaSync_linux_amd64_exe backend/web_statics release-assets
           scripts/release/package-fnos.sh "$TAG" arm64 temp_build/QMediaSync_linux_arm64_exe backend/web_statics release-assets
 
-      - name: Detect FNOS packages
-        id: fpk_assets
+      - name: Verify both fnOS packages
         run: |
-          shopt -s nullglob
-          assets=(release-assets/*.fpk)
-          if [ "${#assets[@]}" -gt 0 ]; then
-            printf 'has_assets=true\n' >> "$GITHUB_OUTPUT"
-            printf 'Generated %s FNOS package(s):\n' "${#assets[@]}"
-            printf '%s\n' "${assets[@]}"
-          else
-            printf 'has_assets=false\n' >> "$GITHUB_OUTPUT"
-            printf 'No FNOS packages generated; skipping fpk-assets artifact.\n'
-          fi
+          test -s release-assets/QMediaSync_fnos_x86_64.fpk
+          test -s release-assets/QMediaSync_fnos_arm64.fpk
 
       - uses: actions/upload-artifact@v7
-        if: steps.fpk_assets.outputs.has_assets == 'true'
         with:
           name: fpk-assets
-          path: release-assets/*.fpk
+          path: release-assets/QMediaSync_fnos_*.fpk
           if-no-files-found: error
 
   github-release:
@@ -340,7 +344,6 @@ jobs:
           merge-multiple: true
 
       - uses: actions/download-artifact@v8
-        if: needs.fpk.outputs.has_assets == 'true'
         with:
           name: fpk-assets
           path: release-assets

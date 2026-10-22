@@ -240,11 +240,13 @@ const formatUpdatePublishedAt = (update: { published_at?: number; date?: string 
     <div class="update-section fnos-tip" v-else>
       <div class="section-card">
         <div class="section-header">
-          <span class="section-icon">💡</span>
-          <span>提示</span>
+          <div class="section-header-left">
+            <span class="section-icon">💡</span>
+            <span>提示</span>
+          </div>
         </div>
         <div class="fnos-content">
-          <p>检测到您正在使用飞牛 NAS 系统，版本更新请通过飞牛应用商店进行。</p>
+          <p>请在飞牛应用中心更新 QMediaSync。手动安装的版本，请按发布说明下载对应的 FPK 更新。</p>
         </div>
       </div>
     </div>

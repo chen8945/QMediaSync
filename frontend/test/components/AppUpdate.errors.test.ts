@@ -135,9 +135,12 @@ describe('更新页面请求反馈', () => {
     },
   )
 
-  it('飞牛环境成功检测后显示应用商店提示', async () => {
-    const { wrapper } = await setup(undefined, true)
-    expect(wrapper.text()).toContain('版本更新请通过飞牛应用商店进行')
+  it('原生 fnOS 显示应用中心和手动 FPK 更新说明，保持在线安装关闭', async () => {
+    const { wrapper, adapter } = await setup(undefined, true)
+    expect(wrapper.text()).toContain('请在飞牛应用中心更新 QMediaSync')
+    expect(wrapper.text()).toContain('手动安装的版本，请按发布说明下载对应的 FPK 更新')
     expect(wrapper.text()).not.toContain('可用版本')
+    expect(wrapper.findAll('button').some((button) => button.text() === '在线更新')).toBe(false)
+    expect(adapter.mock.calls.some(([config]) => config.url.endsWith('/to-version'))).toBe(false)
   })
 })

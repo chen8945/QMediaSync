@@ -85,15 +85,16 @@ test_guid.sh
 postgres/
 backend/postgres/
 
-# FNOS packaging outputs
-FNOS/qmediasync-arm64/app/QMediaSync
-FNOS/qmediasync-arm64/app/web_statics/
-FNOS/qmediasync-amd64/app/QMediaSync
-FNOS/qmediasync-amd64/app/web_statics/
-backend/FNOS/qmediasync-arm64/app/QMediaSync
-backend/FNOS/qmediasync-arm64/app/web_statics/
-backend/FNOS/qmediasync-amd64/app/QMediaSync
-backend/FNOS/qmediasync-amd64/app/web_statics/
+# fnOS platform declarations are source files
+!backend/fnos/qmediasync-*/config/
+!backend/fnos/qmediasync-*/config/privilege
+!backend/fnos/qmediasync-*/config/resource
+
+# fnOS packaging outputs
+backend/fnos/qmediasync-arm64/app/QMediaSync
+backend/fnos/qmediasync-arm64/app/web_statics/
+backend/fnos/qmediasync-amd64/app/QMediaSync
+backend/fnos/qmediasync-amd64/app/web_statics/
 
 # Frontend dependencies and build outputs
 node_modules/

@@ -77,3 +77,35 @@ jobs:
           go vet ./...
           go test ./...
           go build -trimpath -tags=nomsgpack -ldflags="-s -w" -o /tmp/QMediaSync .
+
+  release-scripts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test release and fnOS scripts
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+          bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
+          for script in backend/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
+
+  windows-restart:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.mod
+
+      - name: Test native Windows restart
+        working-directory: backend
+        env:
+          GOSUMDB: "off"
+          CGO_ENABLED: "0"
+        run: go test ./internal/helpers -run 'Test(SupportsAppRestart|StopAppWaitsForShutdownWithoutTray|RestartChildArgumentsAndDirectory|InitialConfigWindowsRestart|AcquireInstanceLock)$' -count=1

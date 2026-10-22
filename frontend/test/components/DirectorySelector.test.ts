@@ -11,6 +11,7 @@ import DirectorySelector from '@/components/DirectorySelector.vue'
 import BrowseSortControl from '@/components/BrowseSortControl.vue'
 import { ElMessage } from 'element-plus'
 import { httpKey } from '@/http/client'
+import { HttpResponseError } from '@/http/errors'
 
 const directorySelectorSource = readFileSync(
   resolve(__dirname, '../../src/components/DirectorySelector.vue'),
@@ -35,6 +36,7 @@ const mountSelector = (
   get = vi.fn(),
   additionalProps: Record<string, unknown> = {},
   post = vi.fn(),
+  platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: false } }),
 ) =>
   mount(DirectorySelector, {
     props: {
@@ -46,15 +48,18 @@ const mountSelector = (
       plugins: [createPinia()],
       provide: {
         [httpKey]: {
-          get: (url: string, config: { params: Record<string, unknown> }) =>
-            url.endsWith('/path/sort-options')
-              ? Promise.resolve({
-                  data: {
-                    code: 200,
-                    data: browseSortOptions(String(config.params.source_type), 'directories'),
-                  },
-                })
-              : get(url, config),
+          get: (url: string, config: { params: Record<string, unknown> }) => {
+            if (url.endsWith('/path/is-fn-os')) return platformGet()
+            if (url.endsWith('/path/sort-options')) {
+              return Promise.resolve({
+                data: {
+                  code: 200,
+                  data: browseSortOptions(String(config.params.source_type), 'directories'),
+                },
+              })
+            }
+            return get(url, config)
+          },
           post,
         },
       },
@@ -68,6 +73,101 @@ beforeEach(() => {
 })
 
 describe('DirectorySelector', () => {
+  it('原生 fnOS 本地目录显示授权说明，刷新仍重新读取目录', async () => {
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: true } })
+    const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('请到 fnOS 应用设置检查目录授权')
+    expect(wrapper.get('[role="tree"]').text()).toContain('空目录')
+    await wrapper.get('[aria-label="刷新目录"]').trigger('click')
+    await flushPromises()
+
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(get).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ params: expect.objectContaining({ refresh: 1 }) }),
+    )
+    expect(platformGet).toHaveBeenCalledOnce()
+  })
+
+  it('非原生 fnOS 不显示授权说明', async () => {
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const wrapper = mountSelector(get)
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tree"]').text()).toContain('空目录')
+  })
+
+  it('网盘目录不请求 fnOS 环境，也不显示本地授权说明', async () => {
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: true } })
+    const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 }, vi.fn(), platformGet)
+    await flushPromises()
+
+    expect(platformGet).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tree"]').text()).toContain('空目录')
+  })
+
+  it('环境识别失败不阻断目录加载，也不增加错误提示', async () => {
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const platformGet = vi.fn().mockRejectedValue(new Error('环境识别失败'))
+    const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tree"]').text()).toContain('空目录')
+    expect(error).not.toHaveBeenCalled()
+    await wrapper.get('[aria-label="刷新目录"]').trigger('click')
+    await flushPromises()
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('环境识别失败时仍显示目录请求的原始业务错误', async () => {
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const get = vi.fn().mockRejectedValue(
+      new HttpResponseError({
+        status: 200,
+        data: { code: 500, message: '无权读取这个目录' },
+      }),
+    )
+    const platformGet = vi.fn().mockRejectedValue(new Error('环境识别失败'))
+    const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(error).toHaveBeenCalledExactlyOnceWith('无权读取这个目录')
+  })
+
+  it('切换来源后旧环境识别不能回写，再切回本地只接受当前结果', async () => {
+    const oldPlatform = createDeferred<{ data: { code: number; data: boolean } }>()
+    const newPlatform = createDeferred<{ data: { code: number; data: boolean } }>()
+    const platformGet = vi
+      .fn()
+      .mockReturnValueOnce(oldPlatform.promise)
+      .mockReturnValueOnce(newPlatform.promise)
+    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
+    await flushPromises()
+    await wrapper.setProps({ sourceType: '115', accountId: 1 })
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+
+    await wrapper.setProps({ sourceType: 'local', accountId: 0 })
+    newPlatform.resolve({ data: { code: 200, data: false } })
+    await flushPromises()
+    oldPlatform.resolve({ data: { code: 200, data: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tree"]').text()).toContain('空目录')
+  })
+
   it('有根目录 ID 时从该目录加载初始和刷新列表', async () => {
     const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
     const wrapper = mountSelector(get, {

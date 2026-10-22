@@ -120,6 +120,68 @@ afterEach(async () => {
 })
 
 describe('数据库配置页面', () => {
+  it.each([
+    {
+      scenario: '自动启动',
+      message:
+        '配置已保存，正在启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。',
+    },
+    {
+      scenario: '手动重启',
+      message: '配置已保存。请重启 QMediaSync，查看日志中的初始化码，再刷新此页面创建管理员账号。',
+    },
+  ])('准确显示$scenario说明，等待用户手动刷新页面', async ({ message }) => {
+    await reply(testConnection(), { success: true, dbExists: false })
+    const originalURL = page.location.href
+    const schedule = vi.spyOn(page, 'setTimeout')
+    element<HTMLButtonElement>('#btn-save').click()
+    await reply(saveRequests()[0]!, { success: true, message })
+
+    expect(element('#message').textContent).toBe(message)
+    expect(element('#message').classList.contains('success')).toBe(true)
+    expect(element('#loading').classList.contains('active')).toBe(false)
+    expect(page.document.querySelector('.step.active')).toBeNull()
+    expect(page.location.href).toBe(originalURL)
+    expect(schedule).not.toHaveBeenCalled()
+  })
+
+  it('配置已保存但自动启动准备失败时保留表单，允许重试而无需重新测试连接', async () => {
+    await reply(testConnection(), { success: true, dbExists: false })
+    element<HTMLButtonElement>('#btn-save').click()
+    const firstSave = saveRequests()[0]!
+    const message =
+      '配置已保存，但未能自动启动。可点击保存重试；仍失败时，请停止后重新启动 QMediaSync。'
+    await reply(firstSave, { success: true, restartPending: true, message })
+
+    expect(element('#message').textContent).toBe(message)
+    expect(element('#message').textContent).not.toContain('保存失败')
+    expect(element('#step-postgres-config').classList.contains('active')).toBe(true)
+    expect(element('#loading').classList.contains('active')).toBe(false)
+    expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(false)
+    element<HTMLButtonElement>('#btn-save').click()
+    expect(saveRequests()).toHaveLength(2)
+    expect(saveRequests()[1]!.body).toEqual(firstSave.body)
+
+    const successMessage = '配置已保存，正在启动 QMediaSync。启动后请手动刷新页面。'
+    await reply(saveRequests()[1]!, { success: true, message: successMessage })
+    expect(element('#message').textContent).toBe(successMessage)
+    expect(page.document.querySelector('.step.active')).toBeNull()
+    expect(page.location.href).toBe('http://localhost:12333/db-config.html')
+  })
+
+  it('保存失败时显示失败原因并保留当前输入，仍可再次保存', async () => {
+    await reply(testConnection(), { success: true, dbExists: false })
+    const originalHost = element<HTMLInputElement>('#host').value
+    element<HTMLButtonElement>('#btn-save').click()
+    await reply(saveRequests()[0]!, { success: false, error: '配置文件无法写入，请检查目录权限' })
+
+    expect(element('#message').textContent).toBe('配置文件无法写入，请检查目录权限')
+    expect(element('#message').classList.contains('error')).toBe(true)
+    expect(element<HTMLInputElement>('#host').value).toBe(originalHost)
+    expect(element('#step-postgres-config').classList.contains('active')).toBe(true)
+    expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(false)
+  })
+
   it('忽略参数修改后才返回的旧成功，不弹出清库确认或放行保存', async () => {
     confirm.mockReturnValue(true)
     const oldRequest = testConnection()

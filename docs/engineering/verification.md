@@ -194,7 +194,7 @@ GOMAXPROCS=2 GOMEMLIMIT=300MiB QMS_STRM_PERFORMANCE=1 QMS_TEST_POSTGRES_DSN='pos
 
 # 安装入口语法
 bash -n scripts/install/linux-init.sh
-bash -n backend/FNOS/qmediasync-amd64/cmd/install_callback backend/FNOS/qmediasync-arm64/cmd/install_callback
+bash -n backend/fnos/qmediasync-amd64/cmd/install_callback backend/fnos/qmediasync-arm64/cmd/install_callback
 
 # 本地源码镜像；正式发布镜像按发布流程准备独立构建上下文
 docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
@@ -206,7 +206,26 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
 
 定向回归可运行 `cd backend && go test -tags=integration ./internal/models . -run 'TestMigrateFresh|TestStartDatabaseRejectsInitializationFailure'`；PostgreSQL 用例要求 `QMS_TEST_POSTGRES_DSN` 指向可丢弃测试库，缺少 DSN 的跳过不算通过。驱动变更另运行 `go test -tags=integration ./internal/db/...`，验证 pgx 的 SQLSTATE 错误链、维护门禁下的预编译语句和重复 AutoMigrate，以及已有库恢复的单连接、缺库不创建和取消行为。
 
-镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。飞牛两架构分别验证 SQLite 和 PostgreSQL 配置生成；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
+镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。fnOS 两架构验证模板不生成业务配置，数据库生成复用 QMS 网页；真实系统分别验证 SQLite 和独立 PostgreSQL 保存后进入正式服务；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
+
+fnOS / Windows 首次配置和打包变更还运行：
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
+for script in backend/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
+(cd backend && go test ./internal/helpers .)
+(cd backend && go vet ./internal/helpers .)
+(cd frontend && pnpm exec vitest run test/components/DirectorySelector.test.ts test/components/DbConfigPage.test.ts test/components/AppUpdate.errors.test.ts)
+```
+
+回归覆盖一次落盘、并发保存、准备失败保留服务和重试、Docker 原协议、旧/新 fnOS 请求能力边界、共享目录优先和迁移锁。`TestFnOSConfigMigrationFailureRetry` 在 Linux 的临时目录与 `/dev/shm` 间制造 YAML 已搬走、密钥和数据库仍留在旧目录的真实复制失败，验证再次启动拒绝不完整实例；缺少第二文件系统时跳过。未完成标记另覆盖旧目录缺失、已空、仅剩锁文件和文件已搬完但尚未清除标记，成功迁移验证标记被清除。生命周期测试使用隔离进程验证启动早退、重复启动、PID 身份、错误/过期请求、仅交接一次、停止优先和超时；安装保留及删除边界不操作本机实例。FPK 测试读取归档及真实二进制架构，覆盖假成功、旧产物、资源缺失、源码/二进制构建记录/FPK 版本不符和源码不被修改。fnpack 发现使用官网替身验证排序、平台、覆盖参数、下载和执行失败；普通 CI 不依赖官网可用。
+
+`TestFnOSConfigMigrationSourceLockRetry` 验证旧目录被实例或恢复命令占用时不写迁移标记、不移动文件，释放占用后可直接重试，成功与搬移失败后均释放源锁且保留两侧锁文件。生命周期权限回归覆盖 `start` 与直接 `run`、平台 umask `0022` / `0002` / `0077`，检查首次配置前后两次应用进程的掩码与实际新建目录、STRM 权限，同时确认 PID、控制锁、诊断日志和停止文件保持私有。
+
+发版测试在临时 Git 仓库和远端中验证两份 manifest 与 changelog/发布说明同提交、tag、分支同步、重选、中止/EOF、部分写入失败、推送失败、dry-run 不改写、simulate 仅改沙箱。CI 的 `release-scripts` job 运行上述脚本回归；`windows-restart` 在原生 Windows 执行 `TestInitialConfigWindowsRestart` 等定向测试，验证等待旧实例退出、原参数、带中文/空格的工作目录和锁释放。Linux 交叉编译不能代替此测试，也不能证明 Windows 托盘与无控制台行为已验收。
+
+真实 fnOS 需另验新装、网页保存后自动启动、日志初始化码、配置/密钥保留、实际平台升级、保留数据重装、明确删除、目录授权和系统自启。FPK 两架构均能构建不代表 ARM64 已实测。恢复后 fnOS 仍手动重启；不把首次配置交接当成通用重启。前端验证平台条件提示、识别失败和旧响应不影响目录，配置保存消息与重试，不自动跳转。
 
 systemd 在线更新中“进程退出后由 systemd 用新版本拉起”只能在真实 systemd 环境验证。步骤：
 

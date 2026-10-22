@@ -1,0 +1,33 @@
+[
+    {
+        "stepTitle": "卸载 QMediaSync",
+        "items": [
+            {
+                "type": "radio",
+                "field": "wizard_delete_data",
+                "label": "是否删除应用数据？",
+                "initValue": "no",
+                "options": [
+                    {
+                        "label": "保留数据，重新安装后可继续使用",
+                        "value": "no"
+                    },
+                    {
+                        "label": "删除配置、SQLite 数据库、密钥和本地备份，请先备份",
+                        "value": "yes"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择保留或删除应用数据"
+                    }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "删除后无法直接恢复。此操作不会删除外部 PostgreSQL 数据库和媒体目录中的文件。"
+            }
+        ]
+    }
+]

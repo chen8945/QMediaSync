@@ -14,7 +14,7 @@ backend/             Go 后端
   emby302/            嵌入的 Emby 302 代理子项目
   openxpanapi/        百度网盘 OpenAPI 客户端
   assets/             嵌入的首次配置向导和图标资源
-  FNOS/               飞牛 FPK 打包模板与素材
+  fnos/               fnOS FPK 模板、素材和两架构共享的运行脚本
   web_statics/        运行时 Web UI 静态资源（生成且忽略）
 docker/              Dockerfile、容器入口脚本和在线更新监视脚本
 frontend/            Vue / Vite 前端源码
@@ -28,6 +28,8 @@ scripts/tests/       shell 脚本的 Python 替身测试（不依赖真实部署
 .changes/            每个版本的 GitHub Release 正文
 cliff.toml           git-cliff 配置（从提交记录生成 changelog）
 ```
+
+fnOS 模板和生命周期脚本的局部约束见 [原生包说明](../../backend/fnos/README.md)，二进制与前端只在临时目录组包。
 
 前端生产构建会输出到 `frontend/dist`。发布包、Docker 镜像和运行目录仍使用 `web_statics` 作为 Web UI 静态资源目录，后端从程序根目录下的 `web_statics` 提供 Web UI。
 

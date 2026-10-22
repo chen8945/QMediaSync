@@ -1,0 +1,32 @@
+[
+    {
+        "stepTitle": "欢迎安装 QMediaSync",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "QMediaSync 是开源的 STRM 生成、影视元数据刮削与 Emby 联动工具，支持网盘和本地挂载目录。"
+            },
+            {
+                "type": "tips",
+                "helpText": "已有配置会继续使用。升级或保留数据后重新安装，无需重新配置数据库。"
+            }
+        ]
+    },
+    {
+        "stepTitle": "安装后开始使用",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "安装并启动后，打开 QMediaSync，在网页选择 SQLite，或填写已有 PostgreSQL 的连接信息。"
+            },
+            {
+                "type": "tips",
+                "helpText": "保存成功后会自动启动 QMediaSync。请等待启动完成，查看应用日志中的初始化码，再刷新网页创建管理员账号。"
+            },
+            {
+                "type": "tips",
+                "helpText": "本地媒体和输出目录需要在 fnOS 应用设置中授权。读取媒体需要读取权限，保存文件还需要写入权限。"
+            }
+        ]
+    }
+]

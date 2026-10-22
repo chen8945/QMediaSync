@@ -1,8 +1,0 @@
-#!/bin/bash
-
-### This script is called after the user uninstalls the application.
-// 如果wizard_delete_data环境变量为yes则删除环境变量TRIM_DATA_SHARE_PATHS 
-if [ "$wizard_delete_data" = "yes" ]; then
-    rm -rf $TRIM_DATA_SHARE_PATHS/config
-fi
-exit 0

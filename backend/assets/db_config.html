@@ -1179,6 +1179,9 @@
                         document.getElementById("loading").classList.remove("active");
                         if (result.success) {
                             showMessage("success", result.message);
+                            if (result.restartPending) {
+                                showStep(currentConfig.engine === "postgres" ? "step-postgres-config" : "step-engine");
+                            }
                         } else {
                             showMessage("error", result.error || "保存失败");
                             if (currentConfig.engine === "postgres") {

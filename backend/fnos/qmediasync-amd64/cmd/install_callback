@@ -1,0 +1,17 @@
+#!/bin/bash
+set -eu
+fail() {
+    echo "$*" >&2
+    [[ -z "${TRIM_TEMP_LOGFILE:-}" ]] || printf '%s\n' "$*" >> "$TRIM_TEMP_LOGFILE"
+    exit 1
+}
+shared="${TRIM_DATA_SHARE_PATHS:-}"
+if [[ "${TRIM_PKGETC:-}" != /* || "$TRIM_PKGETC" == / || "$shared" != /* ||
+      "$shared" == *:* || "$shared" == */../* || "$shared" == */./* || "$shared" == *$'\n'* ]]; then
+    fail 'QMediaSync 数据目录不可用，请检查应用共享目录设置。'
+fi
+shared=$(realpath -m -- "$shared") || fail '无法确认 QMediaSync 数据目录。'
+[[ "${shared##*/}" == qmediasync ]] || fail '无法确认 QMediaSync 数据目录，已取消安装。'
+mkdir -p -- "$TRIM_PKGETC" "$shared/config" || fail '无法创建 QMediaSync 配置目录，请检查目录权限。'
+[[ -w "$TRIM_PKGETC" && -w "$shared/config" ]] || fail 'QMediaSync 配置目录不可写，请检查目录权限。'
+# 配置由 QMediaSync 网页统一生成，重装时保留全部已有实例数据。

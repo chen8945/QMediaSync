@@ -35,7 +35,7 @@ backend/QMediaSync
 backend/QMediaSync.exe
 backend/Q115-STRM
 backend/Q115-STRM.exe
-backend/FNOS/qmediasync-arm64/app/QMediaSync
-backend/FNOS/qmediasync-arm64/app/web_statics
-backend/FNOS/qmediasync-amd64/app/QMediaSync
-backend/FNOS/qmediasync-amd64/app/web_statics
+backend/fnos/qmediasync-arm64/app/QMediaSync
+backend/fnos/qmediasync-arm64/app/web_statics
+backend/fnos/qmediasync-amd64/app/QMediaSync
+backend/fnos/qmediasync-amd64/app/web_statics

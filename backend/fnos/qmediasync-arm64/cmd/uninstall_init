@@ -1,0 +1,19 @@
+#!/bin/bash
+set -eu
+fail() {
+    echo "$*" >&2
+    [[ -z "${TRIM_TEMP_LOGFILE:-}" ]] || printf '%s\n' "$*" >> "$TRIM_TEMP_LOGFILE"
+    exit 1
+}
+case "${wizard_delete_data:-no}" in
+    no) exit 0 ;;
+    yes) ;;
+    *) fail '未能确认是否删除应用数据，已保留数据。' ;;
+esac
+shared="${TRIM_DATA_SHARE_PATHS:-}"
+if [[ "$shared" != /* || "$shared" == / || "$shared" == *:* || "$shared" == */../* || "$shared" == */./* || "$shared" == *$'\n'* ]]; then
+    fail '无法确认 QMediaSync 数据目录，已保留数据。'
+fi
+shared=$(realpath -m -- "$shared") || fail '无法确认 QMediaSync 数据目录，已保留数据。'
+[[ "${shared##*/}" == qmediasync && ! -L "$shared/config" ]] || fail '数据目录异常，已保留数据，请检查后重试。'
+rm -rf -- "$shared/config" || fail '未能删除 QMediaSync 应用数据，请检查目录权限。'

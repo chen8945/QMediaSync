@@ -1,0 +1,13 @@
+appname = qmediasync
+version = 0.14.15
+display_name = QMediaSync
+desc = QMediaSync 是开源的 STRM 生成、影视元数据刮削与 Emby 联动工具，支持网盘和本地挂载目录。
+platform = x86
+source = thirdparty
+maintainer = chen8945
+maintainer_url = https://github.com/chen8945/QMediaSync
+distributor = chen8945
+distributor_url = https://github.com/chen8945/QMediaSync
+desktop_applaunchname = qmediasync.Application
+service_port = 12333
+checkport = true

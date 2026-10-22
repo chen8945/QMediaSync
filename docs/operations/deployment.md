@@ -6,7 +6,7 @@
 >
 > 修改时机：修改 Dockerfile、容器入口脚本、管理员恢复入口、二进制运行目录、飞牛安装流程、运行端口或持久化目录时必须更新本文档。
 >
-> 相关代码：`docker/`、`backend/main.go`、`backend/admin_recovery.go`、`backend/FNOS/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
+> 相关代码：`docker/`、`backend/main.go`、`backend/admin_recovery.go`、`backend/fnos/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
 
 ## 部署选择与持久化边界
 
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Docker 镜像 | Linux 主机、NAS 或容器平台 | 容器内 `/app/config`，必须挂载到宿主机 |
 | 发布二进制 | Windows 或直接管理 Linux 进程 | 可执行文件同级的 `config/` |
-| 飞牛 FPK | 飞牛系统 | 平台的应用共享目录下 `config/`，由安装向导和 `TRIM_*` 环境变量管理 |
+| 飞牛 FPK | 飞牛系统 | 平台的应用共享目录下 `config/`，由 QMS 网页初始化，路径由 `TRIM_*` 环境变量提供 |
 
 正常启动在取得配置目录实例锁后、后台任务和 HTTP 服务启动前，会清理备份功能明确命名的遗留临时文件；正式 ZIP、配置和无法确认归属的旧目录保留。清理范围和文件发布保证见[数据库运维](database.md#备份)。
 
@@ -119,7 +119,9 @@ sudo systemctl daemon-reload && sudo systemctl restart qmediasync
 | Windows 发布版 | 独立子进程等待原进程退出，使用原启动参数和工作目录启动程序，不替换文件 |
 | 旧 Docker 入口、手动运行、自定义托管或飞牛 | 页面提示使用对应部署管理方式手动重启 |
 
-首次数据库配置保存后，支持纯重启的 Docker 默认入口会收到当前进程 PID 的重启请求；配置服务交付响应并延迟退出后，由入口重新启动正式服务，不依赖容器外层重启策略。请求准备失败时保留配置服务并提示手动重启；旧 Docker 入口和非 Docker 运行方式仍按原流程退出并等待外部重启。保存成功提示须引导用户等待服务启动完成，查看本轮启动日志中的初始化码，再手动刷新当前页面创建首个管理员；配置页面不会自动刷新或跳转。
+首次数据库配置保存后，普通 Windows 发布版、新 fnOS 原生包和支持纯重启的 Docker 默认入口会自动进入正式服务。Windows 复用独立重启进程，等待旧进程退出并释放实例锁；fnOS 和 Docker 使用只匹配本轮配置服务 PID 的请求。fnOS 包装脚本通过私有运行目录中的 `QMS_INITIAL_CONFIG_RESTART_FILE` 声明首次配置交接能力；旧包和手动 Linux 二进制仍提示外部重启，不增加 systemd 首次配置能力。
+
+保存端先落盘再准备启动；准备失败返回“已保存但未能自动启动”，保留配置服务和重试入口。保存成功后重复提交只重试启动，不重写配置或再次清库；准备成功只安排一次退出。PostgreSQL 清库失败会中止保存；清库成功但配置落盘失败时，再次保存沿用本轮数据库设置，不重复清库。等待服务启动后，查看本轮日志中的初始化码，再手动刷新当前页面创建管理员；配置页不会自动跳转。首次配置能力不代表 fnOS 支持恢复后的程序内重启或网页在线更新。
 
 Docker 入口在主进程退出后检查更新包和重启请求，仅在检测到更新包时提示执行更新；两者均无有效请求时退出容器，后续是否自动重启由容器重启策略决定。
 
@@ -127,11 +129,21 @@ Docker 的 `QMS_DOCKER_RESTART=1` 由支持此机制的入口脚本声明，不�
 
 ## 飞牛 FPK
 
-飞牛 FPK 由发布流程生成；应用安装向导负责选择 SQLite 或PostgreSQL 并写入配置。飞牛运行时由平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_DATA_SHARE_PATHS` 等路径变量，程序会将实际配置目录迁移或定位到共享数据目录下的 `config/`。
+fnOS FPK 由发布流程生成，源码位于 `backend/fnos/`。平台安装向导只说明使用步骤；数据库选择、连接测试和配置保存统一使用 QMS 网页，不在安装钩子维护第二套 YAML。全新安装启动后访问 HTTP `12333`，选择 SQLite 或已有 PostgreSQL，保存后自动启动正式服务。已有主配置（含旧 `config.yml`）直接沿用。
 
-不要把 Docker 的 `/app/config` 路径、`GUID`/`GPID` 约定或裸机 systemd 服务直接套用到飞牛安装；在飞牛文件管理器中保留应用共享目录下的 `config/`，再按 [数据库运维](database.md) 执行备份和恢复。
+平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_PKGVAR`、`TRIM_DATA_SHARE_PATHS` 等路径。共享目录下的 `config/` 是主配置、SQLite、日志和本机密钥的持久化目录。旧平台配置仅向空共享配置目录迁移；共享主配置已存在时继续使用它并保留旧目录，其他数据冲突时停止迁移并报告路径，不能覆盖或混合实例。迁移失败不能回退为空实例。Windows 旧目录迁移保持原行为。
 
-飞牛版本通过飞牛应用商店更新。更新页在飞牛环境只显示应用商店提示，后端同样拒绝在线更新请求。
+迁移先取得源目录锁，再在目标配置目录写入 `.fnos-config-migration-pending`，持锁移动全部文件，成功后才删除标记。源目录被占用时不写标记，停止占用进程或等待恢复命令结束后即可重试启动。启动时优先检查未完成标记，存在即停止，不因 YAML 已存在或旧目录已空而继续启动，也不自动补建密钥或数据库。迁移报错或进程中断后，先停止应用并分别备份日志列出的两个目录，再核对同一实例的 YAML、原 `encryption.key`、数据库及其他配置文件是否已完整归入共享配置目录；SQLite 同时保留可能存在的 `-wal`、`-shm` 文件。确认完整后才能手工移除标记并启动，不应仅删除标记反复重试。
+
+两架构共用启动脚本，运行身份仍由平台指定，不以 root 运行。首次配置服务也计为运行中；仅消费一次匹配请求，平台停止优先，正式服务崩溃不会循环重启。停止先 TERM，最多等待 90 秒才强制结束；诊断输出位于平台应用运行目录的 `info.log`。内部应用名、用户、组、共享目录和入口 ID 保持 `qmediasync`，显示名称为 QMediaSync。
+
+包装脚本的 PID、控制锁、停止标记和诊断日志使用私有 `umask 077`；主程序每次启动（含首次配置交接）沿用平台传入的 umask。STRM 和新建目录的实际权限由程序请求的权限、平台 umask 与目录 ACL 共同决定，Emby 需要获得相应的目录访问和文件读取权限。更新包装脚本只影响后续创建的文件，已有输出的权限需单独核对。
+
+安装、升级及保留数据重装不重建配置；卸载向导默认保留，明确删除时只删除已校验的本应用共享目录下 `config/`，包含其中的 SQLite、密钥和本地备份，不处理外部 PostgreSQL 或媒体目录。不要把 Docker 的 `/app/config`、`GUID`/`GPID` 或 systemd 配置套用到原生包。备份见 [数据库运维](database.md)。
+
+本地目录仍使用平台环境变量和既有授权刷新回调；找不到目录或无法写入时，在应用设置检查授权，返回 QMS 刷新，必要时停止后启动应用。全部撤销授权时，旧目录刷新接口不接受空值，需重启使新环境生效。本次不接入 fnOS 账号、统一网关或新文件授权 SDK。
+
+fnOS 的 QMS 网页仅提供更新说明，后端同样拒绝在线安装。应用中心来源的版本由平台提供更新；手动安装版本按发布说明下载对应 FPK，通过平台入口处理。是否有商店更新取决于应用来源，本项目构建 FPK 不代表已上架。GitHub `checksums.txt` 可供手工核对，平台生命周期脚本不读取它。
 
 ## 管理员恢复
 

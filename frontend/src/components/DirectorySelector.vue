@@ -36,6 +36,14 @@
       </div>
     </div>
 
+    <el-alert
+      v-if="isFnOS && sourceType === 'local'"
+      title="找不到目录或无法写入时，请到 fnOS 应用设置检查目录授权；授权后返回此处刷新，必要时重启应用。"
+      type="info"
+      :closable="false"
+      show-icon
+    />
+
     <div
       v-loading="loading"
       data-testid="directory-loading-container"
@@ -101,7 +109,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useHttpClient } from '@/http/client'
@@ -116,6 +124,7 @@ import {
 import { browseSortQuery, sortLocalDirectories, useBrowseSort } from '@/composables/useBrowseSort'
 import BrowseSortControl from './BrowseSortControl.vue'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
+import { fetchIsFnOS } from '@/api/update'
 
 interface Props {
   modelValue?: DirInfo | null
@@ -175,6 +184,27 @@ const {
 )
 const requests = new Set<AbortController>()
 let disposed = false
+const isFnOS = shallowRef(false)
+
+watch(
+  () => props.sourceType,
+  async (sourceType, _previous, onCleanup) => {
+    isFnOS.value = false
+    if (sourceType !== 'local') return
+
+    let active = true
+    onCleanup(() => {
+      active = false
+    })
+    try {
+      const nativeFnOS = await fetchIsFnOS(http)
+      if (active && !disposed) isFnOS.value = nativeFnOS === true
+    } catch {
+      // 环境识别只决定补充说明，失败时仍按原流程浏览目录。
+    }
+  },
+  { immediate: true },
+)
 
 function invalidateRequests() {
   latestRootLoadId += 1

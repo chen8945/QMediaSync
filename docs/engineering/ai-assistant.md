@@ -96,6 +96,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 
 ## 配置、密钥和日志
 
+- fnOS 模板位于 `backend/fnos/`，安装钩子不得生成或覆盖业务配置；首次配置交接与数据保留边界见 [部署](../operations/deployment.md#飞牛-fpk)，manifest 版本随 release 提交更新，打包只校验，见 [发布](../operations/release.md#飞牛-fpk)。
 - 主配置为 `config/config.yaml`，兼容旧 `config.yml`；敏感变量文件从程序根目录的 `config/.env` 加载并覆盖真实环境变量，不随飞牛共享配置目录改变，路径区别见 [配置](../operations/configuration.md#第三方密钥与本机敏感数据)。
 - 默认 API 密钥为 `FANART_API_KEY`、`TMDB_API_KEY`、`TMDB_ACCESS_TOKEN` 和 `SC_API_KEY`，可由 ldflags 或运行环境设置。取值优先级为 UI 配置（DB）> 环境变量 / `config/.env` > ldflags。
 - 本机敏感数据密钥由 `helpers.InitEncryptionKey()` 每实例生成并保存到 `config/encryption.key`，不使用 `ENCRYPTION_KEY` 环境变量或 ldflags。

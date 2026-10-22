@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -390,23 +391,8 @@ func getDataAndConfigDir() error {
 			} else {
 				configDir = filepath.Join(configDir, "config")
 				needMk = true
-				// 检查是否需要迁移文件
-				// oldConfigDir 必须存在且不为空
-				if helpers.PathExists(oldConfigDir) && oldConfigDir != configDir {
-					// 检查 oldConfigDir 是否为空目录
-					if !helpers.IsDirEmpty(oldConfigDir) {
-						err := os.MkdirAll(configDir, 0755)
-						if err != nil {
-							log.Printf("创建配置目录失败：%v\n", err)
-							panic("创建配置目录失败")
-						}
-						// 迁移旧配置
-						err = helpers.MoveConfigDir(oldConfigDir, configDir)
-						if err != nil {
-							return fmt.Errorf("迁移旧配置目录失败：%w", err)
-						}
-						needMk = false
-					}
+				if err := migrateFnOSConfig(oldConfigDir, configDir); err != nil {
+					return err
 				}
 			}
 			helpers.ConfigDir = configDir
@@ -418,6 +404,70 @@ func getDataAndConfigDir() error {
 			log.Printf("创建配置目录失败：%v\n", err)
 			panic("创建配置目录失败")
 		}
+	}
+	return nil
+}
+
+const fnOSConfigMigrationPendingFile = ".fnos-config-migration-pending"
+
+// migrateFnOSConfig 仅向空共享目录迁移；中断后停止启动，避免把部分文件当成完整实例。
+func migrateFnOSConfig(src, dst string) (err error) {
+	pending := filepath.Join(dst, fnOSConfigMigrationPendingFile)
+	if _, err := os.Lstat(pending); err == nil {
+		return fmt.Errorf("fnOS 配置迁移尚未完成，已停止启动以保护原数据；请先备份旧目录 %s 和共享目录 %s，确认配置、密钥和数据库完整后再移除标记 %s", src, dst, pending)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("检查 fnOS 配置迁移状态失败：%w", err)
+	}
+	if filepath.Clean(src) == filepath.Clean(dst) {
+		return nil
+	}
+	source, err := os.ReadDir(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取 fnOS 旧配置目录失败：%w", err)
+	}
+	hasData := func(entries []os.DirEntry) bool {
+		for _, entry := range entries {
+			if entry.Name() != ".qmediasync.lock" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasData(source) {
+		return nil
+	}
+	for _, name := range []string{"config.yaml", "config.yml"} {
+		if _, err := os.Stat(filepath.Join(dst, name)); err == nil {
+			log.Printf("继续使用 fnOS 共享目录 %s 中的配置；旧目录 %s 中的数据已保留，确认备份后可手工整理。", dst, src)
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("检查 fnOS 共享配置失败：%w", err)
+		}
+	}
+	target, err := os.ReadDir(dst)
+	if err != nil {
+		return fmt.Errorf("读取 fnOS 共享目录失败：%w", err)
+	}
+	if hasData(target) {
+		return fmt.Errorf("fnOS 旧目录 %s 和共享目录 %s 均有数据，已停止迁移以避免覆盖；请先备份并确认要使用的完整配置目录", src, dst)
+	}
+	lock, err := helpers.AcquireInstanceLock(src)
+	if err != nil {
+		return fmt.Errorf("锁定 fnOS 旧配置目录失败：%w", err)
+	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
+	// 取得源锁后才记录迁移开始，逐文件移动中断时不能用 YAML 判断完成。
+	if err := os.WriteFile(pending, []byte(src+"\n"), 0o600); err != nil {
+		return fmt.Errorf("记录 fnOS 配置迁移状态失败：%w", err)
+	}
+	if err := helpers.MoveDir(src, dst, ".qmediasync.lock"); err != nil {
+		return fmt.Errorf("迁移 fnOS 旧配置失败，已保留现有数据，请检查两个目录：%w", err)
+	}
+	if err := os.Remove(pending); err != nil {
+		return fmt.Errorf("清除 fnOS 配置迁移标记失败，已停止启动：%w", err)
 	}
 	return nil
 }
@@ -1103,7 +1153,7 @@ func (req databaseConfigRequest) toConfig() (*helpers.Config, error) {
 	return config, nil
 }
 
-func StartConfigWebServer() {
+func newConfigRouter(prepareRestart func() (bool, error), exit func()) *gin.Engine {
 	if helpers.IsRelease {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -1193,67 +1243,107 @@ func StartConfigWebServer() {
 		c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": tableCount > 0})
 	})
 
+	var saveMu sync.Mutex
+	var configSaved, restartPrepared bool
+	var clearedDatabaseConfig *helpers.Config
+	var savedMessage string
 	r.POST("/api/config/save", func(c *gin.Context) {
-		var req databaseConfigRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+		saveMu.Lock()
+		defer saveMu.Unlock()
+		if restartPrepared {
+			c.JSON(200, gin.H{"success": true, "message": savedMessage})
 			return
 		}
-		yamlConfig, err := req.toConfig()
-		if err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		if err := checkLegacyDatabaseState(); err != nil {
-			c.JSON(409, gin.H{"error": err.Error()})
-			return
-		}
-		if req.Engine == helpers.DbEnginePostgres {
-			quotedDatabase, err := database.QuotePostgresIdentifier(req.Database)
-			if err != nil {
-				c.JSON(200, gin.H{"error": "数据库名不合法：" + err.Error()})
+		if !configSaved {
+			yamlConfig := clearedDatabaseConfig
+			var req databaseConfigRequest
+			if yamlConfig == nil {
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(400, gin.H{"error": err.Error()})
+					return
+				}
+				var err error
+				yamlConfig, err = req.toConfig()
+				if err != nil {
+					c.JSON(400, gin.H{"error": err.Error()})
+					return
+				}
+			}
+			if err := checkLegacyDatabaseState(); err != nil {
+				c.JSON(409, gin.H{"error": err.Error()})
 				return
 			}
-			if req.DropDatabase {
-				sslMode := "disable"
-				if req.SSL {
-					sslMode = "require"
+			if clearedDatabaseConfig == nil && req.Engine == helpers.DbEnginePostgres {
+				quotedDatabase, err := database.QuotePostgresIdentifier(req.Database)
+				if err != nil {
+					c.JSON(200, gin.H{"error": "数据库名不合法：" + err.Error()})
+					return
 				}
-				connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-					req.Host, req.Port, req.User, req.Password, sslMode)
-				sqlDB, err := sql.Open("pgx", connStr)
-				if err == nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					sqlDB.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase)
-					sqlDB.Close()
+				if req.DropDatabase {
+					sslMode := "disable"
+					if req.SSL {
+						sslMode = "require"
+					}
+					connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
+						req.Host, req.Port, req.User, req.Password, sslMode)
+					sqlDB, err := sql.Open("pgx", connStr)
+					if err != nil {
+						c.JSON(200, gin.H{"error": "连接数据库失败：" + err.Error()})
+						return
+					}
+					ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+					_, dropErr := sqlDB.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase)
+					cancel()
+					if dropErr == nil {
+						// 清库后固定本次设置，落盘失败的重试不能再次删除数据库。
+						clearedDatabaseConfig = yamlConfig
+					}
+					if err := errors.Join(dropErr, sqlDB.Close()); err != nil {
+						c.JSON(200, gin.H{"error": "清空数据库失败：" + err.Error()})
+						return
+					}
 				}
 			}
+
+			if err := helpers.SaveConfig(yamlConfig); err != nil {
+				message := "保存配置失败：" + err.Error()
+				if clearedDatabaseConfig != nil {
+					message = "数据库已清空，但" + message + "。修复后再次保存将沿用本次数据库设置。"
+				}
+				c.JSON(500, gin.H{"error": message})
+				return
+			}
+
+			configSaved = true
 		}
 
-		if err := helpers.SaveConfig(yamlConfig); err != nil {
-			c.JSON(500, gin.H{"error": "保存配置失败：" + err.Error()})
-			return
-		}
-
-		autoRestart, err := prepareInitialConfigRestart()
+		autoRestart, err := prepareRestart()
 		if err != nil {
-			log.Printf("配置已保存，但准备 Docker 重启失败：%v", err)
+			log.Printf("配置已保存，但准备自动启动失败：%v", err)
 			c.JSON(200, gin.H{
-				"success": true,
-				"message": "配置已保存，但自动重启准备失败，请手动重启容器。待服务启动完成后，请查看启动日志中的初始化码，手动刷新当前页面，使用初始化码创建首个管理员。",
+				"success":        true,
+				"restartPending": true,
+				"message":        "配置已保存，但未能自动启动。可点击保存重试；仍失败时，请按当前部署方式停止后重新启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。",
 			})
 			return
 		}
 		message := "配置已保存，配置服务即将退出。请按当前部署方式重启服务；启动完成后，请查看启动日志中的初始化码，手动刷新当前页面，使用初始化码创建首个管理员。"
 		if autoRestart {
-			message = "配置已保存，正在自动重启并进入正式服务。待服务启动完成后，请查看启动日志中的初始化码，手动刷新当前页面，使用初始化码创建首个管理员。"
+			message = "配置已保存，正在启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。"
 		}
+		restartPrepared = true
+		savedMessage = message
 		c.JSON(200, gin.H{"success": true, "message": message})
-		go func() {
-			time.Sleep(1 * time.Second)
-			os.Exit(0)
-		}()
+		go exit()
+	})
+
+	return r
+}
+
+func StartConfigWebServer() {
+	r := newConfigRouter(helpers.PrepareInitialConfigRestart, func() {
+		time.Sleep(time.Second)
+		os.Exit(0)
 	})
 
 	fmt.Printf("配置服务已启动，请在浏览器中访问：http://ip:12333\n")
@@ -1265,15 +1355,4 @@ func StartConfigWebServer() {
 	if err := r.Run(":12333"); err != nil {
 		log.Fatalf("启动配置服务失败：%v", err)
 	}
-}
-
-// prepareInitialConfigRestart 仅为支持纯重启的 Docker 入口交付首次配置重启请求。
-func prepareInitialConfigRestart() (bool, error) {
-	if os.Getenv("DOCKER") != "1" || !helpers.SupportsAppRestart() {
-		return false, nil
-	}
-	if err := helpers.PrepareAppRestart(); err != nil {
-		return false, err
-	}
-	return true, nil
 }

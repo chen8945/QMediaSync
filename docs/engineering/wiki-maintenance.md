@@ -25,12 +25,13 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Home.md`、`快速开始.md`、`_Sidebar.md` | [部署](../operations/deployment.md)、[同步调度](../architecture/sync-orchestration.md)、[Emby 同步](../architecture/emby-library-sync.md)、[前端路由](../../frontend/src/router/index.ts) | 支持范围、首次使用顺序、页面入口与导航 |
 | `Docker安装.md` | [部署](../operations/deployment.md)、[配置](../operations/configuration.md)、[容器脚本](../../docker/) | 镜像、挂载、数据库网络、运行身份、初始化 |
 | `Linux-安装使用.md` | [部署](../operations/deployment.md)、[发布](../operations/release.md)、[安装脚本](../../scripts/install/) | 发布包目录、启动、systemd、自启、日志 |
-| `Windows-安装使用.md` | [部署](../operations/deployment.md)、[发布](../operations/release.md)、[程序入口](../../backend/main.go) | 架构选择、解压运行、托盘、初始化 |
+| `Windows-安装使用.md` | [部署](../operations/deployment.md)、[发布](../operations/release.md)、[程序入口](../../backend/main.go)、[重启实现](../../backend/internal/helpers/restart.go) | 架构选择、解压运行、托盘、首次配置后自动启动与失败重试、初始化码 |
+| `飞牛安装.md` | [部署](../operations/deployment.md)、[配置](../operations/configuration.md)、[发布](../operations/release.md)、[fnOS 模板](../../backend/fnos/)、[程序入口](../../backend/main.go) | FPK 架构与附件名、网页数据库配置、自动启动与初始化码、目录授权、数据保留和手动重启边界 |
 | `数据库的选择.md` | [数据库运维](../operations/database.md)、[数据库实现](../../backend/internal/db/) | SQLite / PostgreSQL 的适用条件与切换方式 |
 | `配置文件.md` | [配置](../operations/configuration.md)、[示例](../examples/config.yaml)、[加载实现](../../backend/internal/helpers/config.go) | 文件与网页设置的分工、实际生效值、端口与密钥 |
 | `备份与恢复.md` | [数据库运维](../operations/database.md)、[schema 与备份格式](../reference/database-schema.md)、[备份实现](../../backend/internal/backup/) | 备份范围、保留策略、跨引擎恢复、密钥、维护状态与重启 |
 | `管理员与密码恢复.md` | [认证会话](../architecture/authentication-sessions.md)、[管理员恢复](../operations/deployment.md#管理员恢复)、[恢复脚本](../../scripts/recover-admin.sh) | 初始化、密码与两步验证、恢复命令及影响 |
-| `更新与旧版迁移.md` | [部署](../operations/deployment.md)、[旧内嵌数据库](../operations/database.md#旧内嵌数据库)、[发布](../operations/release.md) | 各部署方式的更新、版本兼容、旧库迁出与回退准备 |
+| `更新与旧版迁移.md` | [部署](../operations/deployment.md)、[旧内嵌数据库](../operations/database.md#旧内嵌数据库)、[发布](../operations/release.md) | 各部署方式的更新、fnOS 应用中心与手动 FPK、校验文件用途、版本兼容、旧库迁出与回退准备 |
 | `反向代理配置.md` | [反向代理](../operations/reverse-proxy.md)、[认证会话](../architecture/authentication-sessions.md) | Nginx / Caddy、HTTPS、可信来源、SSE、转发与验证 |
 | `账号管理.md` | [账号授权与更换](../reference/account-authorization.md)、[认证会话](../architecture/authentication-sessions.md)、[账号页面](../../frontend/src/components/) | 添加账号、授权失效、重新授权与更换账号的区别 |
 | `生成-STRM.md` | [同步调度](../architecture/sync-orchestration.md)、[同步目录 API](../reference/sync-path-api.md)、[配置](../operations/configuration.md) | 来源差异、路径、全量 / 增量、定时、过滤与关联刮削 |
@@ -44,7 +45,7 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Emby-通知配置.md` | [Emby 同步](../architecture/emby-library-sync.md)、[认证会话](../architecture/authentication-sessions.md) | Webhook 地址、鉴权、事件选择和通知转发 |
 | `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[路径映射配置](../operations/configuration.md#emby-外部-strm-路径映射)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 开启步骤、支持来源、STRM 存放与挂载要求、删除范围、结果查看与排障 |
 | `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、客户端和网络排障 |
-| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/) | 实际运行身份、目录读写、容器挂载与密钥保护 |
+| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../backend/fnos/)、[目录选择器](../../frontend/src/components/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
 | `常见问题.md` | 本表中对应专题的权威资料与 Wiki 操作页 | 问题入口、排查顺序和跨页链接；详细流程留在专题页 |
 
 ## 编写与逐页核对

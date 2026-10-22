@@ -1,0 +1,2 @@
+#!/bin/bash
+exec /bin/bash "${TRIM_APPDEST:?}/scripts/fnos-service.sh" "$@"

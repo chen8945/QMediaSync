@@ -11,6 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_SRC = REPO_ROOT / "scripts" / "release"
+MANIFESTS = [f"backend/fnos/qmediasync-{arch}/manifest" for arch in ("amd64", "arm64")]
 
 CLIFF_STUB = r"""#!/usr/bin/env bash
 # 测试替身：忽略 cliff.toml，输出确定性的发布说明段落
@@ -86,7 +87,11 @@ class ReleaseFixture:
         scripts_dir.mkdir(parents=True)
         for name in ("release.sh", "lib.sh", "gen-changelog.sh"):
             shutil.copy2(SCRIPTS_SRC / name, scripts_dir / name)
-        fx.git("add", "scripts")
+        for name in MANIFESTS:
+            manifest = fx.work / name
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("appname = qmediasync\nversion = 0.1.0\n")
+        fx.git("add", "scripts", *MANIFESTS)
         fx.git("commit", "-qm", "chore: fixture init")
         fx.git("branch", "-M", "main")
         fx.git("tag", "v0.1.0")
@@ -143,6 +148,7 @@ class ReleaseFixture:
         env.pop("VISUAL", None)
         env.pop("EDITOR", None)
         env.pop("GIT_EDITOR", None)
+        env.pop("NO_COLOR", None)
         if env_extra:
             env.update(env_extra)
         proc = subprocess.Popen(
@@ -200,6 +206,11 @@ class ReleaseScriptTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def assert_manifest_versions(self, version, directory=None):
+        directory = directory or self.fx.work
+        for name in MANIFESTS:
+            self.assertIn(f"version = {version}\n", (directory / name).read_text())
+
     def test_help(self):
         result = self.fx.run_release(["-h"])
         self.assertEqual(result.returncode, 0)
@@ -230,6 +241,9 @@ class ReleaseScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("## [v0.1.1]", result.stdout)
         self.assertIn("dry-run 结束", result.stdout)
+        self.assert_manifest_versions("0.1.0")
+        for name in MANIFESTS:
+            self.assertIn(f"{name}: 0.1.0 -> 0.1.1", result.stdout)
         self.assertEqual(self.fx.status(), "")
         self.assertEqual(self.fx.current_branch(), "dev")
         self.assertEqual(self.fx.local_tags(), {"v0.1.0"})
@@ -264,6 +278,14 @@ class ReleaseScriptTest(unittest.TestCase):
         committed_changelog = self.fx.git("show", "HEAD:CHANGELOG.md").stdout
         self.assertIn("## [v0.1.1]", committed_changelog)
 
+        self.assert_manifest_versions("0.1.1")
+        self.assertEqual(
+            set(self.fx.git("diff-tree", "--no-commit-id", "--name-only", "-r", "main").stdout.splitlines()),
+            {"CHANGELOG.md", ".changes/v0.1.1.md", *MANIFESTS},
+        )
+        self.assertEqual(self.fx.git("rev-parse", "v0.1.1^{commit}").stdout, self.fx.git("rev-parse", "main").stdout)
+        for name in MANIFESTS:
+            self.assertIn(name, result.stdout)
         release_commit = self.fx.git("rev-parse", "main").stdout.strip()
         self.assertIn("chore: release v0.1.1", self.fx.git("log", "-1", "--format=%s", "main").stdout)
         self.assertEqual(self.fx.remote_tags(), {"v0.1.0", "v0.1.1"})
@@ -349,6 +371,7 @@ class ReleaseScriptTest(unittest.TestCase):
         result = self.fx.run_release(["patch"], stdin="\nq\n")
         self.assertEqual(result.returncode, 1)
         self.assertIn("已中止发布", result.stdout)
+        self.assert_manifest_versions("0.1.0")
         self.assertEqual(self.fx.status(), "")
         self.assertEqual(self.fx.current_branch(), "dev")
         self.assertFalse((self.fx.work / ".changes" / "v0.1.1.md").exists())
@@ -368,6 +391,7 @@ class ReleaseScriptTest(unittest.TestCase):
         self.assertIn("保留在 .changes/v0.1.1.md", result.stdout)
         # CHANGELOG 还原为干净状态，仅剩未跟踪的发布说明
         self.assertNotIn("## [v0.1.1]", (self.fx.work / "CHANGELOG.md").read_text())
+        self.assert_manifest_versions("0.1.0")
         self.assertEqual(self.fx.status(), "?? .changes/\n")
         self.assertEqual(self.fx.current_branch(), "dev")
 
@@ -399,12 +423,36 @@ class ReleaseScriptTest(unittest.TestCase):
         self.assertIn("⚠ 检测到 minor 版本发布: v0.1.0 -> v0.2.0", result.stdout)
         self.assertEqual(self.fx.remote_tags(), {"v0.1.0", "v0.2.0"})
 
+    def test_final_version_validation_rejects_changes_during_review(self):
+        editor = self.fx.bin / "editor-changes-version"
+        editor.write_text(f"#!/bin/sh\nprintf 'version = 9.9.9\\n' > {MANIFESTS[1]}\n")
+        editor.chmod(0o755)
+        result = self.fx.run_release(["v0.1.1"], stdin="e\n\nyes\n", editor=str(editor))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fnOS 版本与发布版本不一致", result.stdout)
+        self.assert_manifest_versions("0.1.0")
+        self.assertEqual(self.fx.status(), "?? .changes/\n")
+        self.assertEqual(self.fx.local_tags(), {"v0.1.0"})
+
+    def test_commit_failure_restores_generated_files_before_release_exists(self):
+        hook = self.fx.work / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        result = self.fx.run_release(["v0.1.1"], stdin="\nyes\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("创建 release 提交失败", result.stdout)
+        self.assert_manifest_versions("0.1.0")
+        self.assertEqual(self.fx.status(), "")
+        self.assertEqual(self.fx.current_branch(), "dev")
+        self.assertEqual(self.fx.local_tags(), {"v0.1.0"})
+
     def test_push_failure_reports_state(self):
         self.fx.reject_tag_pushes()
         result = self.fx.run_release(["patch"], stdin="\n\nyes\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("发布流程在上述步骤失败", result.stdout)
         self.assertIn("tag v0.1.1: 已创建但未推送", result.stdout)
+        self.assert_manifest_versions("0.1.1")
         self.assertIn("git push origin v0.1.1", result.stdout)
         # main 已推送、tag 已创建但未推送
         self.assertIn("v0.1.1", self.fx.git("tag", "-l").stdout)
@@ -423,6 +471,7 @@ class ReleaseScriptTest(unittest.TestCase):
         try:
             self.assertIn("## [v0.1.1]", (sandbox / "work" / "CHANGELOG.md").read_text())
             self.assertTrue((sandbox / "work" / ".changes" / "v0.1.1.md").exists())
+            self.assert_manifest_versions("0.1.1", sandbox / "work")
         finally:
             shutil.rmtree(sandbox, ignore_errors=True)
 
@@ -432,6 +481,55 @@ class ReleaseScriptTest(unittest.TestCase):
         self.assertEqual(self.fx.local_tags(), {"v0.1.0"})
         self.assertEqual(self.fx.remote_tags(), {"v0.1.0"})
         self.assertNotIn("v0.1.1", (self.fx.work / "CHANGELOG.md").read_text())
+
+    def test_reselect_updates_both_manifests_to_new_candidate(self):
+        result = self.fx.run_release(["patch"], stdin="\nv\nv0.1.2\n\nyes\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_manifest_versions("0.1.2")
+        self.assertFalse((self.fx.work / ".changes/v0.1.1.md").exists())
+        self.assertEqual(self.fx.remote_tags(), {"v0.1.0", "v0.1.2"})
+
+    def test_eof_after_preparation_restores_both_manifests(self):
+        result = self.fx.run_release(["v0.1.1"], stdin="")
+        self.assertEqual(result.returncode, 1)
+        self.assert_manifest_versions("0.1.0")
+        self.assertEqual(self.fx.status(), "")
+
+    def test_rejects_invalid_manifests_before_writing_either(self):
+        for invalid in (None, "appname = qmediasync\n", "version = 0.1.0\nversion = 0.1.0\n", "version = invalid\n"):
+            with self.subTest(invalid=invalid):
+                path = self.fx.work / MANIFESTS[1]
+                if invalid is None:
+                    path.unlink()
+                    self.fx.git("add", MANIFESTS[1])
+                    self.fx.git("commit", "-qm", "test: missing manifest")
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    self.fx.commit_file(MANIFESTS[1], invalid, "test: invalid manifest")
+                result = self.fx.run_release(["v0.1.1"], stdin="\nyes\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fnOS 版本准备失败", result.stderr)
+                self.assertIn("version = 0.1.0", (self.fx.work / MANIFESTS[0]).read_text())
+                self.assertEqual(self.fx.status(), "")
+
+    def test_partial_manifest_write_failure_restores_first_and_cleans_notes(self):
+        # 在文件替换边界注入第二次写入失败，真实执行其余文件操作和中止流程。
+        wrapper = self.fx.bin / "python3"
+        python = shutil.which("python3")
+        wrapper.write_text(f'''#!{python}
+import os, sys
+sys.argv = sys.argv[1:]
+source = sys.stdin.read()
+source = source.replace("os.replace(temporary, path)", "(_ for _ in ()).throw(OSError('write denied')) if 'arm64' in str(path) else os.replace(temporary, path)")
+exec(compile(source, '<manifest write failure>', 'exec'))
+''')
+        wrapper.chmod(0o755)
+        result = self.fx.run_release(["v0.1.1"], stdin="\nyes\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("write denied", result.stderr)
+        self.assert_manifest_versions("0.1.0")
+        self.assertEqual(self.fx.status(), "")
+        self.assertEqual(self.fx.current_branch(), "dev")
 
     def test_simulate_deletes_sandbox_by_default_on_eof(self):
         # 流程输入耗尽后，删除询问收到 EOF，应按回车默认删除

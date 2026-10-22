@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# 用户选择的数据清理已在 uninstall_init 完成。
+exit 0

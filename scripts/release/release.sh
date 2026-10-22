@@ -11,6 +11,7 @@ REMOTE="origin"
 MAIN_BRANCH="main"
 DEV_BRANCH="dev"
 CHANGELOG_FILE="CHANGELOG.md"
+FNOS_MANIFESTS=(backend/fnos/qmediasync-amd64/manifest backend/fnos/qmediasync-arm64/manifest)
 
 RELEASE_INPUT=""
 TAG=""
@@ -54,13 +55,13 @@ usage() {
   1. 前置检查（命令、工作区、分支、远端状态）
   2. 确定发布版本（推导 + 确认，或直接校验显式 tag）
   3. 同步 main，并把 dev 快进合入 main
-  4. 生成 CHANGELOG.md 和 .changes/<tag>.md
+  4. 生成 CHANGELOG.md、.changes/<tag>.md，并同步两架构 fnOS 版本
   5. 审查发布说明（可编辑、可返回重选版本）
   6. 输入 yes 后提交 release commit 到 main，创建 annotated tag
   7. 推送 main 和 tag，触发 release workflow
   8. 将 release commit 快进同步回 dev 并推送 dev
 
-中止发布会还原 CHANGELOG.md 并切回原分支；手动编辑过的发布说明会保留。
+中止发布会还原 CHANGELOG.md 和 fnOS 版本，并切回原分支；手动编辑过的发布说明会保留。
 EOF
 }
 
@@ -116,6 +117,7 @@ abort_release() {
       say_ok "已删除自动生成的 ${NOTES_FILE}"
     fi
   fi
+  restore_fnos_manifests
   restore_start_branch
   exit 1
 }
@@ -130,8 +132,84 @@ reset_generated_changes() {
     git restore -- "$CHANGELOG_FILE"
     say_ok "已还原 ${CHANGELOG_FILE} 的未提交改动"
   fi
+  restore_fnos_manifests
   NOTES_FILE=""
   EDITED_NOTES=0
+}
+
+# 两份版本一起准备；先验证全部输入，再写入。构建阶段只校验，不替发布脚本补版本。
+process_fnos_manifests() {
+  python3 - "$1" "${TAG#v}" "${FNOS_MANIFESTS[@]}" <<'PY_MANIFEST'
+import os
+import re
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+mode, expected, *names = sys.argv[1:]
+pattern = re.compile(rb"(?m)^([ \t]*version[ \t]*=[ \t]*)([^\r\n]*)(\r?)$")
+originals = []
+try:
+    for name in names:
+        path = Path(name)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"manifest 不存在或不是普通文件: {name}")
+        content = path.read_bytes()
+        matches = list(pattern.finditer(content))
+        if len(matches) != 1:
+            raise ValueError(f"manifest 必须且只能有一个 version 字段: {name}")
+        version = matches[0].group(2).strip().decode("ascii")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise ValueError(f"manifest version 格式无效: {name}")
+        if mode == "check" and version != expected:
+            raise ValueError(f"manifest 版本与 {expected} 不一致: {name} ({version})")
+        originals.append((path, content, stat.S_IMODE(path.stat().st_mode)))
+        if mode == "preview":
+            print(f"  {name}: {version} -> {expected}")
+    if mode == "update":
+        written = []
+        try:
+            for path, content, permissions in originals:
+                updated = pattern.sub(lambda m: m.group(1) + expected.encode() + m.group(3), content)
+                fd, temporary = tempfile.mkstemp(prefix=".manifest-", dir=path.parent)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(updated)
+                    os.chmod(temporary, permissions)
+                    os.replace(temporary, path)
+                    written.append((path, content))
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        except Exception:
+            for path, content in written:
+                path.write_bytes(content)
+            raise
+except (OSError, ValueError, UnicodeError) as error:
+    print(f"fnOS 版本准备失败: {error}", file=sys.stderr)
+    sys.exit(1)
+PY_MANIFEST
+}
+
+restore_fnos_manifests() {
+  if ! git diff --quiet -- "${FNOS_MANIFESTS[@]}"; then
+    git restore -- "${FNOS_MANIFESTS[@]}"
+    say_ok "已还原两架构 fnOS manifest 的未提交改动"
+  fi
+}
+
+prepare_release_files() {
+  if ! (ensure_new_release_version "$TAG" "$CHANGELOG_FILE" ".changes"); then
+    abort_release "发布版本准备失败，已中止发布"
+  fi
+  if ! process_fnos_manifests update; then
+    abort_release "fnOS 版本准备失败，已中止发布"
+  fi
+  NOTES_FILE=".changes/${TAG}.md"
+  if ! scripts/release/gen-changelog.sh "$TAG"; then
+    abort_release "生成 changelog 失败，已中止发布"
+  fi
 }
 
 # ---- 版本确定 ----
@@ -301,7 +379,10 @@ ensure_no_remote_tag() {
 show_changelog_diff() {
   echo
   echo "生成的发布说明变更（发布说明文件: ${NOTES_FILE}）:"
-  git --no-pager diff -- "$CHANGELOG_FILE" "$NOTES_FILE"
+  git --no-pager diff -- "$CHANGELOG_FILE" "${FNOS_MANIFESTS[@]}"
+  if [ -f "$NOTES_FILE" ]; then
+    git --no-pager diff --no-index -- /dev/null "$NOTES_FILE" || [ "$?" -eq 1 ]
+  fi
 }
 
 find_editor() {
@@ -485,8 +566,22 @@ report_release_failure() {
 run_release() {
   echo
   echo "开始执行发布..."
-  git add "$CHANGELOG_FILE" "$NOTES_FILE"
-  git commit -m "chore: release ${TAG}"
+  if ! process_fnos_manifests check; then
+    abort_release "fnOS 版本与发布版本不一致，已中止发布"
+  fi
+  local previous_head
+  previous_head="$(git rev-parse HEAD)"
+  if ! git add "$CHANGELOG_FILE" "$NOTES_FILE" "${FNOS_MANIFESTS[@]}" ||
+    ! git commit --only -m "chore: release ${TAG}" -- "$CHANGELOG_FILE" "$NOTES_FILE" "${FNOS_MANIFESTS[@]}"; then
+    if [ "$(git rev-parse HEAD)" = "$previous_head" ]; then
+      git restore --staged -- "$CHANGELOG_FILE" "${FNOS_MANIFESTS[@]}"
+      if git ls-files --error-unmatch "$NOTES_FILE" >/dev/null 2>&1; then
+        git restore --staged -- "$NOTES_FILE"
+      fi
+      abort_release "创建 release 提交失败，已还原本轮生成的内容"
+    fi
+    return 1
+  fi
   git tag -a "$TAG" -m "Release $TAG"
   git push "$REMOTE" "$MAIN_BRANCH"
   git push "$REMOTE" "$TAG"
@@ -559,12 +654,12 @@ run_dry_run() {
     say_warn "警告: 当前处于分离 HEAD，发布说明预览基于当前 HEAD 而非 ${DEV_BRANCH}" >&2
   fi
 
-  if ! git-cliff --unreleased --tag "$TAG" --strip header -o "$preview_file"; then
+  if ! process_fnos_manifests preview || ! git-cliff --unreleased --tag "$TAG" --strip header -o "$preview_file"; then
     if [ "$switched" -eq 1 ]; then
       git checkout "$START_BRANCH" >/dev/null 2>&1 || true
     fi
     rm -f "$preview_file"
-    die "dry-run: git-cliff 生成预览失败"
+    die "dry-run: 生成预览失败"
   fi
 
   if [ "$switched" -eq 1 ]; then
@@ -725,6 +820,7 @@ main() {
 
   require_command git
   require_command git-cliff
+  require_command python3
 
   if [ "$SIMULATE" -eq 1 ]; then
     # 沙箱演练：不要求真实工作区干净，全部检查由沙箱内的子流程执行
@@ -766,11 +862,7 @@ main() {
 
   ensure_no_remote_tag "$REMOTE" "$TAG"
 
-  if ! scripts/release/gen-changelog.sh "$TAG"; then
-    restore_start_branch
-    die "生成 changelog 失败"
-  fi
-  NOTES_FILE=".changes/${TAG}.md"
+  prepare_release_files
 
   # 审查 <-> 确认 <-> 重选版本 的状态循环；返回值 3 表示回退上一步
   stage="review"
@@ -788,11 +880,7 @@ main() {
             resolve_release_tag
             ensure_tag_newer_than_current "$TAG"
             ensure_no_remote_tag "$REMOTE" "$TAG"
-            if ! scripts/release/gen-changelog.sh "$TAG"; then
-              restore_start_branch
-              die "生成 changelog 失败"
-            fi
-            NOTES_FILE=".changes/${TAG}.md"
+            prepare_release_files
             ;;
           *)
             exit "$rc"

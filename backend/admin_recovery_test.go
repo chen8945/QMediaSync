@@ -256,8 +256,11 @@ func TestStartupConfigMigrationLock(t *testing.T) {
 				if err := os.MkdirAll(entry.dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(entry.dir, "config.yaml"), []byte(entry.value), 0o600); err != nil {
-					t.Fatal(err)
+				// fnOS 只向空目标迁移；Windows 保留既有迁移规则。
+				if runtime.GOOS == "windows" || entry.dir == source || held == "target" {
+					if err := os.WriteFile(filepath.Join(entry.dir, "config.yaml"), []byte(entry.value), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
 				lock, err := helpers.AcquireInstanceLock(entry.dir)
 				if err != nil {
@@ -282,7 +285,11 @@ func TestStartupConfigMigrationLock(t *testing.T) {
 				want = "legacy"
 			}
 			content, err := os.ReadFile(filepath.Join(target, "config.yaml"))
-			if err != nil || string(content) != want {
+			if runtime.GOOS != "windows" && held == "source" {
+				if !os.IsNotExist(err) {
+					t.Fatal("源目录被占用时不应迁移")
+				}
+			} else if err != nil || string(content) != want {
 				t.Fatal("迁移覆盖了正在使用的配置，或未完成允许的迁移")
 			}
 			lockAfter, err := os.Stat(filepath.Join(target, ".qmediasync.lock"))
