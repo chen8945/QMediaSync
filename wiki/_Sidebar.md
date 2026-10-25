@@ -3,6 +3,7 @@
   - [快速开始](快速开始.md)
 - **安装与配置**
   - [Docker 安装](Docker安装.md)
+  - [飞牛安装](飞牛安装.md)
   - [Windows 安装使用](Windows-安装使用.md)
   - [Linux 安装使用](Linux-安装使用.md)
   - [数据库的选择](数据库的选择.md)

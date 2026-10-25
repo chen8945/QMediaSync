@@ -79,7 +79,7 @@ services:
       - ./media:/media
 ```
 
-两个服务在同一网络中，QMediaSync 可以直接连接 `postgres:5432`，因此无需把数据库端口发布到宿主机。健康检查用于等待 PostgreSQL 就绪，再启动 QMediaSync；普通的启动顺序不能保证数据库已经可用。见 [Docker Compose 启动顺序说明](https://docs.docker.com/compose/how-tos/startup-order/)。
+两个服务在同一网络中，QMediaSync 可以直接连接 `postgres:5432`，因此无需把数据库端口发布到宿主机。健康检查用于等待 PostgreSQL 就绪后再启动 QMediaSync，请保留。见 [Docker Compose 启动顺序说明](https://docs.docker.com/compose/how-tos/startup-order/)。
 
 首次数据库向导按下表填写：
 
@@ -93,7 +93,7 @@ services:
 | 数据库名 | `qmediasync` |
 | SSL | 本例未给 PostgreSQL 配置 TLS，保持关闭 |
 
-PostgreSQL 官方镜像从 18 开始，默认数据目录放在版本子目录中，例如 `/var/lib/postgresql/18/docker`，应挂载父目录 `/var/lib/postgresql`。使用 17 或更早版本的默认配置时，挂载目标是 `/var/lib/postgresql/data`。这些路径属于 PostgreSQL 容器，与 QMediaSync 的 `/app/config` 无关。见 [PostgreSQL 官方镜像数据目录说明](https://github.com/docker-library/docs/blob/master/postgres/README.md#pgdata)。
+PostgreSQL 18 及以上镜像挂载 `/var/lib/postgresql`，17 及以下挂载 `/var/lib/postgresql/data`。这些路径属于 PostgreSQL 容器，与 QMediaSync 的 `/app/config` 无关。见 [PostgreSQL 官方镜像数据目录说明](https://github.com/docker-library/docs/blob/master/postgres/README.md#pgdata)。
 
 已有数据库不能只改镜像的大版本号直接启动。升级前先备份，并按 PostgreSQL 的升级方式迁移数据。`POSTGRES_*` 变量只在空数据目录初始化时生效，修改 Compose 中的密码不会自动修改已有数据库用户的密码。
 
@@ -152,7 +152,7 @@ networks:
 
 这两段是合并到原文件的补充配置，不是完整的部署文件。分别在两个项目的目录执行 `docker compose up -d` 后，QMediaSync 中的数据库主机填 `qms-postgres`，端口填 `5432`。共同网络让两个项目通过别名互相访问，具体规则见 [Docker Compose 网络说明](https://docs.docker.com/compose/how-tos/networking/)。
 
-给 QMediaSync 使用独立的数据库，不要填入其他应用正在使用的数据库名。数据库用户应能访问该数据库和向导测试使用的 `postgres` 数据库；需要让程序创建数据库时，还应有建库权限。
+给 QMediaSync 使用独立的数据库，不要填入其他应用正在使用的数据库名。数据库用户应能访问该数据库和 `postgres` 库；需要让程序创建数据库时，还应有建库权限。
 
 ## 3. 启动并配置数据库
 
@@ -169,7 +169,7 @@ docker compose logs --tail=100 -f qmediasync
 1. 在同一台主机访问 `http://127.0.0.1:12333`；从其他电脑访问时，把地址换成宿主机的局域网地址，例如 `http://192.168.1.10:12333`。首次配置请在可信的本机或局域网内完成。
 2. 选择 SQLite，或按上面的表格填写 PostgreSQL。PostgreSQL 先点击“测试连接”，通过后再保存。
 3. 如果提示已有数据库包含数据，保留旧数据应选择“取消”；选择“确定”会尝试删除并重建该数据库。全新安装使用独立的空数据库最容易核对。
-4. 保存成功后，使用新版默认入口的 Docker 镜像会自动重启 QMediaSync。等待服务启动完成，查看新一轮日志并手动刷新当前页面；页面不会自动跳转。如果页面提示自动重启准备失败，或服务没有重新启动，在部署目录执行 `docker compose restart qmediasync`。
+4. 保存成功后，镜像会自动重启 QMediaSync。等待服务启动完成，查看新一轮日志并手动刷新当前页面；页面不会自动跳转。如果页面提示自动重启准备失败，或服务没有重新启动，在部署目录执行 `docker compose restart qmediasync`。
 
 ## 4. 创建管理员
 
@@ -200,9 +200,9 @@ environment:
   GPID: "1000"
 ```
 
-请使用实际的数字 UID 和 GID，可在宿主机终端执行 `id` 查看。`GUID` 和 `GPID` 可以分别设置；通常一起设置更方便核对身份和权限。未设置 `GUID` 时，主程序默认以 root 运行，单独设置 `GPID` 不会切换主程序用户。
+请使用实际的数字 UID 和 GID，可在宿主机终端执行 `id` 查看。`GUID` 和 `GPID` 通常一起设置；未设置 `GUID` 时主程序默认以 root 运行，仅设置 `GPID` 不会切换用户身份。
 
-入口脚本会修正 `/app/config` 的所有者，**不会替你修正 `/media` 的权限**。媒体目录应允许 QMediaSync 写入、允许 Emby 读取；不要求两个应用必须使用同一个用户，只要权限满足即可。不要使用 Compose 的 `user:` 绕过镜像入口所需的初始化权限。
+入口脚本会修正 `/app/config` 的所有者，**不会替你修正 `/media` 的权限**。媒体目录应允许 QMediaSync 写入、允许 Emby 读取；不要求两个应用必须使用同一个用户，只要权限满足即可。不要使用 Compose 的 `user:`：镜像自带的启动脚本需要先完成初始化。
 
 ## 端口和版本
 
@@ -217,7 +217,7 @@ environment:
 
 需要 [飞牛影视](飞牛影视反代.md) 反代时，在网页开启并保存，另需映射容器端口 `9005` 并挂载同一份 STRM 文件夹。例如 `"19005:9005"` 对应宿主机 `19005`，播放器填写宿主机端口。不使用飞牛的用户无需增加这些配置。
 
-镜像标签 `latest` 对应最新正式发布，`v<版本号>` 用来固定发布版本，`beta` 为测试版本。升级和从旧项目迁移前先阅读 [更新与旧版迁移](更新与旧版迁移.md)，尤其不要直接用新镜像启动旧的内嵌 PostgreSQL 数据。
+镜像标签 `latest` 对应最新正式发布，`v<版本号>` 用来固定发布版本。升级和从旧项目迁移前先阅读 [更新与旧版迁移](更新与旧版迁移.md)，尤其不要直接用新镜像启动旧的内嵌 PostgreSQL 数据。
 
 ## 单独部署 PostgreSQL，供非容器部署连接
 

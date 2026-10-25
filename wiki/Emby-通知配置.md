@@ -40,7 +40,7 @@
 - Emby 的 Webhook 配置支持自定义请求头时，设置 `X-API-Key`，值为 QMediaSync API Key。
 - 没有请求头设置时，在通知地址末尾加上 `?api_key=你的_QMediaSync_API_Key`，例如 `http://192.168.1.10:12333/emby/webhook?api_key=你的_QMediaSync_API_Key`。
 
-保存通知。QMediaSync 当前处理的播放事件是开始、暂停和停止，不把“取消暂停”当作独立支持的播放事件。
+保存通知。QMediaSync 只处理开始、暂停和停止三种播放事件，其他播放事件忽略。
 
 ## 3. 验证通知能收到
 
@@ -51,9 +51,9 @@
 1. Emby 能否访问通知地址，容器网络、防火墙和反向代理是否放行。
 2. 使用的是否为 QMediaSync API Key，密钥是否仍有效；`401` 通常表示缺少密钥或密钥无效。
 3. 内容类型是否为 `application/json`，是否已关闭分组，是否勾选了对应媒体库和事件。
-4. 通知所属用户与实际操作用户是否符合 Emby 的通知设置。“通知属于管理员”不代表已经覆盖所有用户事件。
+4. 通知所属用户是否覆盖实际操作的用户；只选“管理员”会漏掉其他用户的事件。
 
-Emby 可能缓冲后再发送通知，QMediaSync 也会合并同一部剧的消息，因此不一定立即出现。
+Emby 通知可能延迟发送，同一部剧的消息也可能合并。
 
 ## 4. 把消息推送到 Telegram 等渠道
 
@@ -62,11 +62,11 @@ Emby 可能缓冲后再发送通知，QMediaSync 也会合并同一部剧的消�
 3. 打开渠道的“规则”，启用需要的媒体入库、媒体删除和播放事件。
 4. 再做一次实际入库或播放操作，确认事件消息能送达。
 
-详细说明见 [任务与通知](任务与通知.md)。只配 Emby Webhook，没有启用 QMediaSync 通知渠道或对应规则时，不会自动向 Telegram 等平台发送消息。
+详细说明见 [任务与通知](任务与通知.md)。
 
 ## 与媒体提取、联动删除的关系
 
-- 自动提取还需要开启“入库后提取媒体信息”，只对收到入库通知的电影和剧集生效，见 [Emby 媒体信息提取](Emby-媒体信息提取.md)。消息推送与媒体信息提取分别处理，不需要等提取成功才发送消息。
+- 自动提取还需要开启“入库后提取媒体信息”，见 [Emby 媒体信息提取](Emby-媒体信息提取.md)。
 - 删除网盘原文件还需要开启“删除时联动删除网盘文件”。先完整阅读 [Emby 联动删除网盘文件](Emby-联动删除网盘文件.md)，确认文件关联、删除范围和测试结果后再开启。
-- Emby 官方通知可以独立使用，无需安装插件。如果已使用 [Emby 神医助手（Strm Assistant）](https://github.com/sjtuross/StrmAssistant/wiki) 或 [MediaInfoKeeper](https://github.com/honue/MediaInfoKeeper/wiki)，且当前插件版本提供“通知增强”，可仅启用这项功能，并在 Webhook 中加选“媒体深度删除”（`deep.delete`）；不要为此开启插件自己的物理深度删除功能。
+- Emby 官方通知可以独立使用，无需安装插件。如果已使用 [Emby 神医助手（Strm Assistant）](https://github.com/sjtuross/StrmAssistant/wiki) 或 [MediaInfoKeeper](https://github.com/honue/MediaInfoKeeper/wiki)，且当前插件版本提供“通知增强”，可仅启用这项功能，并在 Webhook 中加选“媒体深度删除”；不要为此开启插件自己的物理深度删除功能。
 - 如事件列表提供独立的移动、重命名、扫描失效或移除媒体库事件，不要把它们勾选为联动删除入口。普通“媒体已移除”也可能由文件变化或扫描触发，仍需遵守联动删除页的注意事项。

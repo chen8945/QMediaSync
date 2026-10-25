@@ -5,8 +5,6 @@
 3. 双击 `QMediaSync.exe`。首次启动会尝试在浏览器打开数据库配置页面；保存配置后会自动启动正常服务，程序随后出现在任务栏通知区域，也就是系统托盘。
 4. 如果浏览器没有自动打开，访问 `http://127.0.0.1:12333`。从其他电脑访问时，使用这台 Windows 电脑的局域网 IP，例如 `http://192.168.1.10:12333`。
 
-需要 Beta 测试版时，按 [下载 Beta 测试版](更新与旧版迁移.md#下载-beta-测试版) 从 Actions 下载对应 Windows 包。Beta 文件名包含版本号，完整解压后的启动步骤相同。
-
 程序会在同级目录创建 `config`，用于保存配置、SQLite 数据库、日志和本机加密密钥。请使用自己有写入权限的目录；程序会对 C 盘或系统目录提示权限风险，建议使用可写的非系统盘目录。
 
 ## 2. 首次配置数据库
@@ -43,18 +41,8 @@
 
 只在选择 PostgreSQL 且还没有可用数据库时执行；SQLite 用户可以跳过。
 
-1. 从 [PostgreSQL 官方 Windows 下载入口](https://www.postgresql.org/download/windows/) 前往 EDB 安装包页面，选择受支持的 PostgreSQL 15 及以上正式版本。普通 Intel 或 AMD 电脑选择 Windows x86-64 安装包。
-2. 运行安装程序，选择安装目录和数据目录。组件中保留 PostgreSQL Server；需要图形化管理数据库时，同时勾选 pgAdmin 4。Stack Builder 用于安装额外工具，QMediaSync 不依赖它。
-
-<img width="708" height="549" alt="PostgreSQL 安装组件选择" src="https://github.com/user-attachments/assets/1b5df9ae-ec60-40fd-86dc-c0b6ac7c9154" />
-
-3. 为数据库管理员 `postgres` 设置自己的密码并记下来，不要沿用教程里的简单示例密码。这不是 QMediaSync 的登录密码。
-4. 端口通常保持 `5432`；已有其他数据库占用时换一个可用端口，并记下实际值。
-5. 区域设置可按自己的使用需要选择，然后继续完成安装。截图仅用于识别步骤，实际安装器版本和目录可能不同。安装器包含 PostgreSQL 服务和 pgAdmin，见 [PostgreSQL 官方安装说明](https://www.postgresql.org/download/windows/)。
-
-<img width="708" height="549" alt="PostgreSQL 数据库区域设置" src="https://github.com/user-attachments/assets/508c6ddb-6424-496a-85fc-cfe88d0a5dfb" />
-
-6. 打开 QMediaSync 的数据库配置向导，按下表填写：
+1. 从 [PostgreSQL 官方 Windows 下载入口](https://www.postgresql.org/download/windows/) 获取 PostgreSQL 15 及以上的官方安装包并完成安装，安装器各选项的说明以其官方文档为准。需要记下两件事：数据库管理员 `postgres` 的密码（这不是 QMediaSync 的登录密码），以及服务端口（通常 `5432`，被占用时换一个可用端口）。
+2. 打开 QMediaSync 的数据库配置向导，按下表填写：
 
 | 项目 | 本机安装 PostgreSQL 时的示例 |
 | --- | --- |
@@ -66,8 +54,8 @@
 | 数据库名 | `qmediasync`，使用独立数据库，不要与其他应用共用 |
 | SSL | 按数据库实际配置填写；本机未配置 TLS 时保持关闭 |
 
-7. 点击“测试连接”。如果失败，打开 Windows 的“服务”，确认对应的 PostgreSQL 服务正在运行，再核对端口和密码。
-8. 测试通过后保存，等待 QMediaSync 自动启动，再按本页“创建管理员”完成初始化。程序会使用你填写的数据库名创建数据库，所填用户需要有相应权限。
+3. 点击“测试连接”。如果失败，打开 Windows 的“服务”，确认对应的 PostgreSQL 服务正在运行，再核对端口和密码。
+4. 测试通过后保存，等待 QMediaSync 自动启动，再按本页“创建管理员”完成初始化。程序会使用你填写的数据库名创建数据库，所填用户需要有相应权限。
 
 如果 PostgreSQL 在另一台设备上，主机填写那台设备的局域网 IP 或域名，端口使用实际对外提供的端口。
 

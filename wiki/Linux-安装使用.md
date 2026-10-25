@@ -11,8 +11,6 @@
 
 从 [QMediaSync 发布页面](https://github.com/chen8945/QMediaSync/releases) 下载需要的版本。请下载发布附件中的压缩包，不是 `Source code` 源码包。压缩包文件名不带版本号，版本以发布页面为准。
 
-需要 Beta 测试版时，按 [下载 Beta 测试版](更新与旧版迁移.md#下载-beta-测试版) 从 Actions 下载对应 Linux 包。Beta 文件名包含版本号，下面解压命令中的压缩包名称需替换为实际下载文件名；解压后的目录和启动步骤相同。
-
 下面以 `x86_64` 为例。在压缩包所在目录打开终端，以日常使用的普通用户运行：
 
 ```bash
@@ -91,7 +89,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now qmediasync
 ```
 
-`User` 使用执行上述命令的用户，`sudo` 只用于写入服务文件和管理服务。请从普通用户终端执行，安装目录建议不含空格；如果原来用 root 运行过程序，先按 [文件权限相关问题](文件权限相关问题.md) 核对该用户对 `config/` 和媒体目录的读写权限。
+`User` 使用执行上述命令的用户，`sudo` 只用于写入服务文件和管理服务；`TimeoutStopSec` 给程序留足保存退出的时间，保持 70 即可。请从普通用户终端执行，安装目录建议不含空格；如果原来用 root 运行过程序，先按 [文件权限相关问题](文件权限相关问题.md) 核对该用户对 `config/` 和媒体目录的读写权限。
 
 查看状态和日志：
 
@@ -113,8 +111,6 @@ sudo journalctl -u qmediasync -f
 | 取消开机自启并停止 | `sudo systemctl disable --now qmediasync` |
 
 这份自建服务采用手动更新：停止服务，替换发布包中的 `QMediaSync` 和 `web_statics/`，保留 `config/` 后再启动。完整步骤见 [更新与旧版迁移](更新与旧版迁移.md)。页面提示不支持在线更新或重启时，使用上面的 systemd 命令即可。
-
-仓库另有 `linux-init.sh` 辅助脚本，它会安装或初始化 PostgreSQL，并创建服务；Linux 发布包不包含该脚本。本页的 SQLite 或已有数据库安装方式无需运行它。
 
 ## 安装后检查
 
