@@ -11,7 +11,7 @@ TARGET_ARCH="$2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]{14}\.g[0-9a-f]{7}$ ]]; then
   echo "Invalid release tag: $TAG" >&2
   exit 1
 fi
@@ -47,11 +47,12 @@ from pathlib import Path
 
 root, version, binary, web, arch = sys.argv[1:]
 try:
+    source_version = version.split("-beta.", 1)[0]
     for target in ("amd64", "arm64"):
         path = Path(root, f"qmediasync-{target}", "manifest")
         values = re.findall(r"(?m)^\s*version[ \t]*=[ \t]*([^\r\n]*)", path.read_text())
-        if len(values) != 1 or values[0].strip() != version:
-            raise ValueError(f"manifest version must match {version}: {path}")
+        if len(values) != 1 or values[0].strip() != source_version:
+            raise ValueError(f"manifest version must match {source_version}: {path}")
     binary_bytes = Path(binary).read_bytes()
     header = binary_bytes[:20]
     machine = 62 if arch == "amd64" else 183
@@ -80,10 +81,16 @@ PY_INPUT
 
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/qms-fnos-package-XXXXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
-python3 - "$FNOS_ROOT/qmediasync-$TARGET_ARCH" "$STAGING/package" <<'PY_COPY'
+python3 - "$FNOS_ROOT/qmediasync-$TARGET_ARCH" "$STAGING/package" "$FNOS_VERSION" <<'PY_COPY'
+import re
 import shutil
 import sys
+from pathlib import Path
 shutil.copytree(sys.argv[1], sys.argv[2], ignore=shutil.ignore_patterns("*.fpk"))
+if "-beta." in sys.argv[3]:
+    # Beta 版本只写入临时副本，源码 manifest 留给正式发版维护。
+    manifest = Path(sys.argv[2], "manifest")
+    manifest.write_text(re.sub(r"(?m)^([ \t]*version[ \t]*=[ \t]*)[^\r\n]*", rf"\g<1>{sys.argv[3]}", manifest.read_text()))
 PY_COPY
 APP_DIR="$STAGING/package/app"
 rm -f "$STAGING/package/config.yaml" "$APP_DIR/QMediaSync"
@@ -159,5 +166,9 @@ except (OSError, ValueError, tarfile.TarError, UnicodeError) as error:
 PY_PACKAGE
 
 mkdir -p "$OUT_DIR"
-cp "$FPK" "$OUT_DIR/QMediaSync_fnos_${ASSET_ARCH}.fpk"
-echo "Created $OUT_DIR/QMediaSync_fnos_${ASSET_ARCH}.fpk"
+ASSET_NAME="QMediaSync_fnos_${ASSET_ARCH}.fpk"
+if [[ "$FNOS_VERSION" == *-beta.* ]]; then
+  ASSET_NAME="QMediaSync_${FNOS_VERSION}_fnos_${ASSET_ARCH}.fpk"
+fi
+cp "$FPK" "$OUT_DIR/$ASSET_NAME"
+echo "Created $OUT_DIR/$ASSET_NAME"

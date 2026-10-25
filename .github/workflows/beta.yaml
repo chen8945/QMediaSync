@@ -3,6 +3,11 @@ run-name: ${{ github.event.head_commit.message || github.ref_name }}
 
 on:
   workflow_dispatch:
+    inputs:
+      retention_days:
+        description: "保留天数（1～90；留空使用仓库变量，未设置时为 90 天）"
+        required: false
+        type: string
   push:
     branches:
       - "dev"
@@ -13,9 +18,187 @@ concurrency:
   group: beta-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      retention_days: ${{ steps.meta.outputs.retention_days }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve beta metadata
+        id: meta
+        env:
+          INPUT_RETENTION_DAYS: ${{ inputs.retention_days }}
+          BETA_ARTIFACT_RETENTION_DAYS: ${{ vars.BETA_ARTIFACT_RETENTION_DAYS }}
+        run: python3 scripts/release/beta-metadata.py >> "$GITHUB_OUTPUT"
+
+  frontend:
+    runs-on: ubuntu-latest
+    needs: metadata
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Include standalone backend assets
+        run: cp backend/assets/db_config.html frontend/dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-statics
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: ${{ needs.metadata.outputs.retention_days }}
+
+  packages:
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.mod
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-statics
+          path: backend/web_statics
+
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOSUMDB: "off"
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          BUILD_DATE: ${{ needs.metadata.outputs.build_date }}
+          FANART_API_KEY: ${{ secrets.FANART_API_KEY }}
+          OAUTH_RELAY_ENCRYPTION_KEY: ${{ secrets.OAUTH_RELAY_ENCRYPTION_KEY }}
+          TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          SC_API_KEY: ${{ secrets.SC_API_KEY }}
+        run: |
+          mkdir -p dist beta-assets linux-binaries
+          extra_ldflags=""
+          output="dist/QMediaSync_${GOOS}_${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            extra_ldflags="-H=windowsgui "
+            output="${output}.exe"
+          fi
+          ldflags="${extra_ldflags}-s -w -X main.Version=${VERSION} -X 'main.PublishDate=${BUILD_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.OAuthRelayEncryptionKey=${OAUTH_RELAY_ENCRYPTION_KEY} -X main.TMDB_ACCESS_TOKEN=${TMDB_ACCESS_TOKEN} -X main.TMDB_API_KEY=${TMDB_API_KEY} -X main.SC_API_KEY=${SC_API_KEY}"
+          cd backend
+          go mod download
+          go build -trimpath -tags=nomsgpack -ldflags "$ldflags" -o "$GITHUB_WORKSPACE/$output" .
+          cd "$GITHUB_WORKSPACE"
+          scripts/release/package-release-asset.sh "$VERSION" "$GOOS" "$GOARCH" "$output" backend/web_statics beta-assets
+
+          if [ "$GOOS" = "linux" ]; then
+            cp "$output" "linux-binaries/QMediaSync_linux_${GOARCH}_exe"
+            python3 - <<'PYCODE'
+          import hashlib, json, os, pathlib
+          path = pathlib.Path(f"linux-binaries/QMediaSync_linux_{os.environ['GOARCH']}_exe")
+          metadata = {"version": os.environ["VERSION"], "goos": "linux", "goarch": os.environ["GOARCH"], "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+          pathlib.Path(str(path) + ".build.json").write_text(json.dumps(metadata) + "\n")
+          PYCODE
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: beta-assets/*
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ needs.metadata.outputs.retention_days }}
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.goos == 'linux'
+        with:
+          name: linux-binary-${{ matrix.goarch }}
+          path: |
+            linux-binaries/QMediaSync_linux_${{ matrix.goarch }}_exe
+            linux-binaries/QMediaSync_linux_${{ matrix.goarch }}_exe.build.json
+          if-no-files-found: error
+          retention-days: ${{ needs.metadata.outputs.retention_days }}
+
+  fpk:
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - frontend
+      - packages
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-statics
+          path: backend/web_statics
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-binary-${{ matrix.goarch }}
+          path: temp_build
+
+      - name: Install fnpack
+        env:
+          FNPACK_DOWNLOAD_URL: ${{ secrets.FNPACK_DOWNLOAD_URL }}
+          FNPACK_VERSION: ${{ vars.FNPACK_VERSION }}
+        run: |
+          scripts/release/install-fnpack.sh "$RUNNER_TEMP/fnpack-bin"
+          echo "$RUNNER_TEMP/fnpack-bin" >> "$GITHUB_PATH"
+
+      - name: Build fnOS package
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+          REQUIRE_FNPACK: "1"
+        run: |
+          scripts/release/package-fnos.sh "$VERSION" "$GOARCH" "temp_build/QMediaSync_linux_${GOARCH}_exe" backend/web_statics beta-assets
+          git diff --exit-code -- backend/fnos/qmediasync-amd64/manifest backend/fnos/qmediasync-arm64/manifest
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: beta-assets/*.fpk
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ needs.metadata.outputs.retention_days }}
+
   docker:
     runs-on: ubuntu-latest
+    needs: metadata
     permissions:
       contents: read
       packages: write
@@ -23,13 +206,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Build metadata
-        id: meta
-        run: |
-          build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          echo "build_date=${build_date}" >> "$GITHUB_OUTPUT"
-          echo "version=${GITHUB_REF_NAME}.${build_date}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -55,8 +231,8 @@ jobs:
           file: docker/source.Dockerfile
           platforms: linux/amd64,linux/arm64
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            VERSION=${{ needs.metadata.outputs.version }}
+            BUILD_DATE=${{ needs.metadata.outputs.build_date }}
             FANART_API_KEY=${{ secrets.FANART_API_KEY }}
             OAUTH_RELAY_ENCRYPTION_KEY=${{ secrets.OAUTH_RELAY_ENCRYPTION_KEY }}
             TMDB_ACCESS_TOKEN=${{ secrets.TMDB_ACCESS_TOKEN }}

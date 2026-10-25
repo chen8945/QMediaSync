@@ -214,7 +214,7 @@ fnOS / Windows 首次配置和打包变更还运行：
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
+bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/package-release-asset.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
 for script in backend/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
 (cd backend && go test ./internal/helpers .)
 (cd backend && go vet ./internal/helpers .)
@@ -303,7 +303,9 @@ python3 scripts/tests/test_release.py
 
 当前 `.github/workflows/ci.yaml` 会在 `main`、`dev`、`feature/**` 推送和 Pull Request 上依次执行前端 `pnpm run test`、`pnpm run build`（其中包含类型检查）和 `pnpm run check:build`，以及后端 `go vet ./...`、`go test ./...` 和 `go build -trimpath -tags=nomsgpack`。它不会运行前端 ESLint 或 Prettier。
 
-因此，涉及行为、校验或兼容性的改动不能只依赖 CI 构建通过；仍应按本文档的改动范围运行相关本地验证。`feature.yaml` 和 `beta.yaml` 负责分支镜像构建，不替代 CI 或测试。
+因此，涉及行为、校验或兼容性的改动不能只依赖 CI 构建通过；仍应按本文档的改动范围运行相关本地验证。`feature.yaml` 负责分支镜像，`beta.yaml` 负责 Beta 镜像和 Windows / Linux / fnOS 安装包，两者都不替代 CI 或测试。
+
+Beta 元数据与打包改动沿用 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`。其中 `test_beta_metadata.py` 覆盖“手动输入 > 仓库变量 > 90 天”、保留期上下界及非法值不回退、两架构基础版本一致、统一 UTC 时间与提交号；`test_package_release_asset.py` 覆盖正式版及 Beta 的四平台文件名和包内布局、Linux 执行权限；`test_package_fnos.py` 另覆盖两架构 Beta 成品版本、成功与失败时源码模板哈希不变、错误基础版本、二进制版本及损坏成品拒绝。Windows 下 fnpack 替身仅在归档中模拟 Unix 执行位，真实权限及依赖 PTY 的发布脚本测试由 Linux CI 验证。shell 语法检查同时包含 `scripts/release/package-release-asset.sh`。工作流变更另用 actionlint 检查，并在实际 Actions 上验收六份完整安装包的下载、保留期和独立镜像 job；本地脚本测试不能替代 fnpack 真包及 fnOS 安装升级验证。
 
 ## 稳定回归验证
 

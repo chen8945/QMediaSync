@@ -32,10 +32,15 @@ if mode == "missing-service":
     Path("app/scripts/fnos-service.sh").unlink()
 if mode == "missing-web-asset":
     Path("app/web_statics/assets.js").unlink()
+def archive_mode(member):
+    # shortcut: Windows 替身模拟 Unix 执行位，真实权限由 Linux CI 验证。
+    if os.name == "nt" and member.name in ("QMediaSync", "scripts/fnos-service.sh"):
+        member.mode |= 0o111
+    return member
 payload = io.BytesIO()
 with tarfile.open(fileobj=payload, mode="w:gz") as app:
     for path in sorted(Path("app").iterdir()):
-        app.add(path, arcname=path.name)
+        app.add(path, arcname=path.name, filter=archive_mode)
 payload.seek(0)
 with tarfile.open("qmediasync.fpk", "w:gz") as fpk:
     for path in sorted(Path(".").iterdir()):
@@ -86,11 +91,11 @@ class PackageFnosTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def write_binary(self, arch="amd64"):
+    def write_binary(self, arch="amd64", version="v1.2.3"):
         header = bytearray(b"\x7fELF\x02\x01" + b"\x00" * 14)
         struct.pack_into("<H", header, 18, 62 if arch == "amd64" else 183)
         self.binary.write_bytes(header + b"test executable")
-        metadata = {"version": "v1.2.3", "goos": "linux", "goarch": arch,
+        metadata = {"version": version, "goos": "linux", "goarch": arch,
                     "sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest()}
         Path(str(self.binary) + ".build.json").write_text(json.dumps(metadata))
 
@@ -119,6 +124,36 @@ class PackageFnosTest(unittest.TestCase):
                         self.assertIn("scripts/fnos-service.sh", app.getnames())
                 self.assertEqual(self.source_hashes(), before)
         self.assertEqual(len(list(self.out.iterdir())), 2)
+
+    def test_beta_versions_only_change_staging_manifest_for_both_architectures(self):
+        version = "1.2.3-beta.20261025103000.g1a2b3c4"
+        before = self.source_hashes()
+        for arch, asset in (("amd64", "x86_64"), ("arm64", "arm64")):
+            with self.subTest(arch=arch):
+                self.write_binary(arch, version)
+                result = self.run_package(arch, tag=version)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                with tarfile.open(self.out / f"QMediaSync_{version}_fnos_{asset}.fpk") as package:
+                    manifest = package.extractfile("manifest").read().decode().splitlines()
+                    self.assertIn(f"version = {version}", manifest)
+                    self.assertIn("appname = qmediasync", manifest)
+                self.assertEqual(self.source_hashes(), before)
+
+    def test_beta_failure_preserves_source_and_rejects_wrong_inputs_or_package(self):
+        version = "1.2.3-beta.20261025103000.g1a2b3c4"
+        before = self.source_hashes()
+        for mode in ("fail", "no-output", "wrong-version", "wrong-binary", "missing-web-asset"):
+            with self.subTest(mode=mode):
+                self.write_binary(version=version)
+                result = self.run_package(mode=mode, tag=version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.out.exists())
+                self.assertEqual(self.source_hashes(), before)
+        self.write_binary()
+        self.assertNotEqual(self.run_package(tag=version).returncode, 0)
+        self.write_binary(version="1.2.2-beta.20261025103000.g1a2b3c4")
+        self.assertNotEqual(self.run_package(tag="1.2.2-beta.20261025103000.g1a2b3c4").returncode, 0)
+        self.assertEqual(self.source_hashes(), before)
 
     def test_stale_artifact_and_success_without_output_are_rejected(self):
         self.write_binary()
@@ -195,7 +230,8 @@ class PackageFnosTest(unittest.TestCase):
         self.assertIn("skipping fnOS", result.stdout)
 
     def test_invalid_tag_and_arch(self):
-        for arch, tag in (("amd64", "latest"), ("riscv64", "v1.2.3")):
+        for arch, tag in (("amd64", "latest"), ("riscv64", "v1.2.3"),
+                          ("amd64", "1.2.3-beta.bad"), ("amd64", "1.2.3-beta.20261025103000.g../bad")):
             result = self.run_package(arch=arch, tag=tag)
             self.assertNotEqual(result.returncode, 0)
 

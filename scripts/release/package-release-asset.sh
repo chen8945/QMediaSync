@@ -59,6 +59,10 @@ case "$TARGET_OS" in
 esac
 
 ARCHIVE_NAME="QMediaSync_${TARGET_OS}_${ARCHIVE_ARCH}"
+ASSET_NAME="$ARCHIVE_NAME"
+if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]{14}\.g[0-9a-f]{7}$ ]]; then
+  ASSET_NAME="QMediaSync_${TAG}_${TARGET_OS}_${ARCHIVE_ARCH}"
+fi
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -84,11 +88,11 @@ fi
 
 case "$ARCHIVE_EXT" in
   zip)
-    (cd "$WORK_DIR/$ARCHIVE_NAME" && zip -qr "$OUT_DIR/${ARCHIVE_NAME}.zip" .)
+    (cd "$WORK_DIR/$ARCHIVE_NAME" && zip -qr "$OUT_DIR/${ASSET_NAME}.zip" .)
     ;;
   tar.gz)
-    tar -czf "$OUT_DIR/${ARCHIVE_NAME}.tar.gz" -C "$WORK_DIR" "$ARCHIVE_NAME"
+    tar -czf "$OUT_DIR/${ASSET_NAME}.tar.gz" -C "$WORK_DIR" "$ARCHIVE_NAME"
     ;;
 esac
 
-echo "Created $OUT_DIR/${ARCHIVE_NAME}.${ARCHIVE_EXT} for $TAG"
+echo "Created $OUT_DIR/${ASSET_NAME}.${ARCHIVE_EXT} for $TAG"
