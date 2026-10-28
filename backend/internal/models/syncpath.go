@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/db"
@@ -82,6 +83,26 @@ type SyncPathScrapePath struct {
 	BaseModel
 	SyncPathId   uint `json:"sync_path_id" form:"sync_path_id"  gorm:"uniqueIndex:sync_path_id_scrape_path_id"`    // 同步目录 ID
 	ScrapePathId uint `json:"scrape_path_id" form:"scrape_path_id" gorm:"uniqueIndex:sync_path_id_scrape_path_id"` // 刮削路径 ID
+}
+
+type strmOriginsChangeHook struct{ changed func() }
+
+var strmOriginsChanged atomic.Pointer[strmOriginsChangeHook]
+
+// SetStrmOriginsChangeHook 注册目录来源提交后的失效通知，由应用组合层维护可信来源快照。
+func SetStrmOriginsChangeHook(changed func()) {
+	if changed == nil {
+		strmOriginsChanged.Store(nil)
+		return
+	}
+	strmOriginsChanged.Store(&strmOriginsChangeHook{changed: changed})
+}
+
+// NotifyStrmOriginsChanged 仅在目录事务成功且释放范围后调用，不从事务内的 WithDB helper 通知。
+func NotifyStrmOriginsChanged() {
+	if hook := strmOriginsChanged.Load(); hook != nil {
+		hook.changed()
+	}
 }
 
 func GetStrmSettingDefault() SettingStrm {
@@ -417,7 +438,7 @@ func DeleteSyncPathByID(ctx context.Context, id uint) error {
 	defer release()
 	finish := BeginSyncPositionMutation()
 	defer finish()
-	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := LockEmbySourceMutationTx(tx); err != nil {
 			return err
 		}
@@ -438,6 +459,12 @@ func DeleteSyncPathByID(ctx context.Context, id uint) error {
 		}
 		return nil
 	})
+	finish()
+	release()
+	if err == nil {
+		NotifyStrmOriginsChanged()
+	}
+	return err
 }
 
 // 根据 ID 获取同步路径

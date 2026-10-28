@@ -24,6 +24,7 @@ const strm: StrmSettings = {
   upload_meta: 0,
   download_meta: 1,
   delete_dir: 0,
+  strm_preload_enabled: 1,
   multi_playback_enabled: 1,
   local_proxy: 1,
   exclude_name_arr: [],

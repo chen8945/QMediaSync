@@ -93,7 +93,11 @@ func TestMigrateBackupTextColumnsPostgresPreservesExistingValuesAndConstraints(t
 func TestMigrateBackupTextColumnsPostgresRollsBackAndRetries(t *testing.T) {
 	conn, _ := setupEmbySnapshotPostgres(t)
 	createLegacyBackupTextTables(t, conn)
-	if err := conn.AutoMigrate(&Migrator{}); err != nil {
+	// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
+	if err := conn.AutoMigrate(&Migrator{}, &Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Migrator().DropColumn(&Settings{}, "StrmPreloadEnabled"); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Create(&Migrator{BaseModel: BaseModel{ID: 1}, VersionCode: 66}).Error; err != nil {

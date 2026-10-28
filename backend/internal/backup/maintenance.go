@@ -14,6 +14,7 @@ import (
 	"qmediasync/internal/emby"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/synccron"
 	"qmediasync/internal/syncstrm"
@@ -125,6 +126,8 @@ func beginRestoreMaintenanceRuntime(ctx context.Context) (*restoreMaintenance, e
 	restoreRequests.Lock()
 	restoreRequests.blocked = true
 	restoreRequests.Unlock()
+	// HTTP 退出后预加载仍由应用持有，先撤销它再排空数据库。
+	playback.DefaultPreloader.Stop()
 	progressMu.Lock()
 	runningResult.RestartRequired = true
 	progressMu.Unlock()

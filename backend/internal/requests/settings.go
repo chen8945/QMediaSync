@@ -210,6 +210,7 @@ func (r UpdateThreadsRequest) ToModel(base models.SettingThreadAndRapidWait) mod
 // UpdateStrmConfigRequest 更新 STRM 配置请求。
 type UpdateStrmConfigRequest struct {
 	MultiPlaybackEnabled int      `form:"multi_playback_enabled" json:"multi_playback_enabled"`
+	StrmPreloadEnabled   *int     `form:"strm_preload_enabled" json:"strm_preload_enabled"`
 	LocalProxy           int      `form:"local_proxy" json:"local_proxy"`
 	StrmBaseURL          string   `form:"strm_base_url" json:"strm_base_url" binding:"required"`
 	Cron                 string   `form:"cron" json:"cron" binding:"required"`
@@ -250,6 +251,11 @@ func (r UpdateStrmConfigRequest) Validate() error {
 	}
 	if err := validation.OneOfInt("multi_playback_enabled", r.MultiPlaybackEnabled, []int{0, 1}); err != nil {
 		return err
+	}
+	if r.StrmPreloadEnabled != nil {
+		if err := validation.OneOfInt("strm_preload_enabled", *r.StrmPreloadEnabled, []int{0, 1}); err != nil {
+			return err
+		}
 	}
 	if err := validation.OneOfInt("upload_meta", r.UploadMeta, []int{0, 1, 2}); err != nil {
 		return err

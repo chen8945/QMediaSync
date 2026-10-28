@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/db"
@@ -81,6 +82,7 @@ type Settings struct {
 	SettingUploadRapidWait
 	SettingURLValidityCheck
 	MultiPlaybackEnabled int    `json:"multi_playback_enabled" gorm:"default:0"` // 是否启用 115 多端直链播放，仅作用于全局设置
+	StrmPreloadEnabled   int    `json:"strm_preload_enabled" gorm:"default:0"`   // 是否提前准备 STRM 播放链接，仅作用于全局设置
 	UseTelegram          int8   `json:"use_telegram"`                            // @deprecated 已迁移到 TelegramChannelConfig 是否使用 Telegram Bot 通知
 	TelegramBotToken     string `json:"telegram_bot_token"`                      // @deprecated 已迁移到 TelegramChannelConfig Telegram Bot Token
 	TelegramChatId       string `json:"telegram_chat_id"`                        // @deprecated 已迁移到 TelegramChannelConfig Telegram Chat ID
@@ -273,22 +275,83 @@ func (s SettingStrm) DecodeArr(isSetting bool) *SettingStrm {
 
 var SettingsGlobal = &Settings{}
 
-// settingsMu 串行设置加载和发布，保护播放配置与 STRM 快照读取。
+// settingsMu 串行设置加载和持久化；播放热路径读取不可变快照。
 var settingsMu sync.RWMutex
+
+// PlaybackSettingsSnapshot 保存同一次发布的播放模式和预加载代际。
+type PlaybackSettingsSnapshot struct {
+	LocalProxy           int
+	MultiPlaybackEnabled bool
+	PreloadEnabled       bool
+	StrmBaseURL          string
+	Generation           uint64
+}
+
+type playbackSettingsChangeHook struct {
+	changed func(PlaybackSettingsSnapshot)
+}
+
+var playbackSettings atomic.Pointer[PlaybackSettingsSnapshot]
+var playbackSettingsHook atomic.Pointer[playbackSettingsChangeHook]
+
+// GetPlaybackSettingsSnapshot 返回不可变播放配置；首次加载前默认关闭预加载。
+func GetPlaybackSettingsSnapshot() PlaybackSettingsSnapshot {
+	if current := playbackSettings.Load(); current != nil {
+		return *current
+	}
+	return PlaybackSettingsSnapshot{}
+}
+
+// SetPlaybackSettingsChangeHook 注册成功发布后的通知，回调在设置写锁外同步执行。
+// 并发保存的通知可能交错，接收方应按 Generation 或最新快照处理。
+func SetPlaybackSettingsChangeHook(changed func(PlaybackSettingsSnapshot)) {
+	if changed == nil {
+		playbackSettingsHook.Store(nil)
+		return
+	}
+	playbackSettingsHook.Store(&playbackSettingsChangeHook{changed: changed})
+}
+
+func publishPlaybackSettingsLocked(settings *Settings) *PlaybackSettingsSnapshot {
+	previous := playbackSettings.Load()
+	next := PlaybackSettingsSnapshot{
+		LocalProxy: settings.LocalProxy, MultiPlaybackEnabled: settings.MultiPlaybackEnabled == 1,
+		PreloadEnabled: settings.StrmPreloadEnabled == 1, StrmBaseURL: settings.StrmBaseUrl, Generation: 1,
+	}
+	if previous != nil {
+		if previous.LocalProxy == next.LocalProxy &&
+			previous.MultiPlaybackEnabled == next.MultiPlaybackEnabled && previous.PreloadEnabled == next.PreloadEnabled &&
+			previous.StrmBaseURL == next.StrmBaseURL {
+			return nil
+		}
+		next.Generation = previous.Generation + 1
+	}
+	playbackSettings.Store(&next)
+	return &next
+}
+
+func notifyPlaybackSettingsChanged(snapshot *PlaybackSettingsSnapshot) {
+	if snapshot != nil {
+		if hook := playbackSettingsHook.Load(); hook != nil {
+			hook.changed(*snapshot)
+		}
+	}
+}
 
 // GetPlaybackSettings 返回同一次发布的本地代理和多端播放配置。
 func GetPlaybackSettings() (localProxy int, multiPlaybackEnabled bool) {
-	settingsMu.RLock()
-	defer settingsMu.RUnlock()
-	if SettingsGlobal != nil {
-		localProxy = SettingsGlobal.LocalProxy
-		multiPlaybackEnabled = SettingsGlobal.MultiPlaybackEnabled == 1
-	}
-	return
+	current := GetPlaybackSettingsSnapshot()
+	return current.LocalProxy, current.MultiPlaybackEnabled
 }
 
 // StrmSnapshot 返回独立的 STRM 设置副本，供解锁后的响应编码与配置比较使用。
 func (settings *Settings) StrmSnapshot() (SettingStrm, int) {
+	strm, multiPlaybackEnabled, _ := settings.StrmConfigSnapshot()
+	return strm, multiPlaybackEnabled
+}
+
+// StrmConfigSnapshot 返回独立的 STRM 配置及两个全局开关。
+func (settings *Settings) StrmConfigSnapshot() (SettingStrm, int, int) {
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
 	strm := settings.SettingStrm
@@ -296,7 +359,7 @@ func (settings *Settings) StrmSnapshot() (SettingStrm, int) {
 	strm.MetaExtArr = slices.Clone(strm.MetaExtArr)
 	strm.ExcludeNameArr = slices.Clone(strm.ExcludeNameArr)
 	strm.ExcludeNameRegexArr = slices.Clone(strm.ExcludeNameRegexArr)
-	return strm, settings.MultiPlaybackEnabled
+	return strm, settings.MultiPlaybackEnabled, settings.StrmPreloadEnabled
 }
 
 func (settings *Settings) ThreadAndRapidWait() SettingThreadAndRapidWait {
@@ -376,9 +439,7 @@ func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
 	return true
 }
 
-func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int) bool {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
+func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int, preloadEnabled ...*int) bool {
 	if req.VideoExtArr == nil {
 		req.VideoExtArr = []string{}
 	}
@@ -395,36 +456,67 @@ func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int) 
 		helpers.AppLogger.Errorf("解码 STRM 设置失败")
 		return false
 	}
+	settingsMu.Lock()
 	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
 	updated := *settings
 	updated.SettingStrm = *strm
 	updated.MultiPlaybackEnabled = multiPlaybackEnabled
+	if len(preloadEnabled) > 0 && preloadEnabled[0] != nil {
+		updated.StrmPreloadEnabled = *preloadEnabled[0]
+	}
 
 	updateData := strm.ToMap(true, true)
 	updateData["multi_playback_enabled"] = multiPlaybackEnabled
+	updateData["strm_preload_enabled"] = updated.StrmPreloadEnabled
 	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
 	if err != nil {
+		settingsMu.Unlock()
 		helpers.AppLogger.Errorf("更新 STRM 设置失败：%v", err)
 		return false
 	}
 	settings.SettingStrm = updated.SettingStrm
 	settings.MultiPlaybackEnabled = updated.MultiPlaybackEnabled
+	previousPreload := settings.StrmPreloadEnabled
+	settings.StrmPreloadEnabled = updated.StrmPreloadEnabled
 	settings.UpdatedAt = updated.UpdatedAt
+	snapshot := publishPlaybackSettingsLocked(settings)
+	settingsMu.Unlock()
+	notifyPlaybackSettingsChanged(snapshot)
+	if previousPreload != updated.StrmPreloadEnabled {
+		helpers.AppLogger.Infof("STRM 预加载设置已更新：启用=%t", updated.StrmPreloadEnabled == 1)
+	}
 	return true
 }
 
 func LoadSettings() {
 	settingsMu.Lock()
-	defer settingsMu.Unlock()
-	if err := db.Db.Take(SettingsGlobal).Error; err != nil {
+	var loaded Settings
+	if err := db.Db.Take(&loaded).Error; err != nil {
+		settingsMu.Unlock()
 		helpers.AppLogger.Errorf("load settings failed: %v", err)
 		return
 	}
-	SettingsGlobal.SettingStrm = *SettingsGlobal.SettingStrm.DecodeArr(true)
-	if SettingsGlobal.MinVideoSize == 104857600 {
-		SettingsGlobal.MinVideoSize = 100
-		db.Db.Save(SettingsGlobal)
+	strm := loaded.SettingStrm.DecodeArr(true)
+	if strm == nil {
+		settingsMu.Unlock()
+		return
 	}
+	loaded.SettingStrm = *strm
+	if loaded.MinVideoSize == 104857600 {
+		loaded.MinVideoSize = 100
+		if err := db.Db.Save(&loaded).Error; err != nil {
+			settingsMu.Unlock()
+			helpers.AppLogger.Errorf("更新旧版 STRM 大小设置失败：%v", err)
+			return
+		}
+	}
+	if SettingsGlobal == nil {
+		SettingsGlobal = &Settings{}
+	}
+	*SettingsGlobal = loaded
+	snapshot := publishPlaybackSettingsLocked(SettingsGlobal)
+	settingsMu.Unlock()
+	notifyPlaybackSettingsChanged(snapshot)
 }
 
 func InitNotificationManager() {

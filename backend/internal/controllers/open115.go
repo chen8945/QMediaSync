@@ -35,6 +35,12 @@ type KeyLockWithTimeout struct {
 	global  sync.Mutex
 }
 
+// TryAcquire 供可跳过的后台工作非阻塞争用同一缓存键锁。
+func (kl *KeyLockWithTimeout) TryAcquire(key string) bool {
+	mutex, _ := kl.mutexes.LoadOrStore(key, &sync.Mutex{})
+	return mutex.(*sync.Mutex).TryLock()
+}
+
 // LockWithTimeout 尝试获取锁，如果超时则返回 false
 func (kl *KeyLockWithTimeout) LockWithTimeout(key string, timeout time.Duration) bool {
 	return kl.lockContext(context.Background(), key, timeout)
@@ -246,6 +252,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 	cacheKey := v115URLCacheKey(pickCode, req.Force, localProxy, requestUA)
 	helpers.AppLogger.Debugf("准备获取 115 文件下载链接：PickCode=%s，ua=%s，8095 播放=%d，加锁 10 秒", pickCode, ua, req.Force)
 	ctx := c.Request.Context()
+	playback.DefaultPreloader.Takeover(playbackPreloadIdentity(string(models.SourceType115), cacheKey))
 	if !keyLock.lockContext(ctx, cacheKey, v115URLCacheLockWait) {
 		helpers.AppLogger.Warnf("获取 115 下载链接缓存锁超时：PickCode=%s，ua=%s", pickCode, ua)
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接超时，请稍后重试", Data: nil})

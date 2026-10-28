@@ -522,6 +522,29 @@ func TestEffectiveCredentialsRejectConflict(t *testing.T) {
 	}
 }
 
+func TestEffectiveCredentialsCompatibleDescriptions(t *testing.T) {
+	for _, test := range []struct {
+		name, description string
+		valid             bool
+	}{
+		{"unquoted", `Emby Client=Yamby, DeviceId=opaque-device, Token = one`, true},
+		{"case-order", `MediaBrowser tOkEn=one, ClIeNt = Custom Player`, true},
+		{"bearer", `Bearer one`, true},
+		{"empty", `Emby Token = ""`, false},
+		{"duplicate", `Emby Token=one, Token=one`, false},
+		{"conflict", `Emby Token=two`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/?api_key=one", nil)
+			r.Header.Set("Authorization", test.description)
+			headers, token, valid := effectiveCredentials(r)
+			if valid != test.valid || valid && (token != "one" || headers.Get("Authorization") != test.description) {
+				t.Fatal("认证兼容、冲突拒绝或原请求保留不符")
+			}
+		})
+	}
+}
+
 func TestPlaybackInfoFallbackPreservesEncodedResponse(t *testing.T) {
 	for _, test := range []struct {
 		name     string

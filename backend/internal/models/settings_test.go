@@ -105,6 +105,7 @@ func TestStrmSnapshotOwnsMutableLists(t *testing.T) {
 
 func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 	originalDB, originalSettings, originalLogger := db.Db, SettingsGlobal, helpers.AppLogger
+	originalPlayback := playbackSettings.Load()
 	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +117,7 @@ func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		db.Db, SettingsGlobal, helpers.AppLogger = originalDB, originalSettings, originalLogger
+		playbackSettings.Store(originalPlayback)
 		_ = sqlDB.Close()
 	})
 	db.Db = testDB
@@ -147,7 +149,8 @@ func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 	workers.Go(func() {
 		<-start
 		for i := range 80 {
-			if !SettingsGlobal.UpdateStrm(config(i%2), i%2) {
+			flag := i % 2
+			if !SettingsGlobal.UpdateStrm(config(flag), flag, &flag) {
 				errors <- fmt.Errorf("第 %d 次保存失败", i)
 				return
 			}
@@ -172,6 +175,11 @@ func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 		workers.Go(func() {
 			<-start
 			for range 400 {
+				current := GetPlaybackSettingsSnapshot()
+				if current.Generation == 0 || (current.LocalProxy == 1) != current.MultiPlaybackEnabled || current.MultiPlaybackEnabled != current.PreloadEnabled {
+					errors <- fmt.Errorf("播放快照混合了不同代际：%+v", current)
+					return
+				}
 				proxy, enabled := GetPlaybackSettings()
 				if (proxy == 1) != enabled {
 					errors <- fmt.Errorf("播放配置混合了不同次发布：proxy=%d, enabled=%t", proxy, enabled)

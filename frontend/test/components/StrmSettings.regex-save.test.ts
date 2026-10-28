@@ -25,7 +25,7 @@ afterEach(() => {
 
 function createHTTP(
   patterns: string[] | undefined = ['^Before$'],
-  globalLists: Partial<StrmLists> = {},
+  globalLists: Partial<StrmLists> & { strm_preload_enabled?: 0 | 1 } = {},
 ) {
   let settings = {
     video_ext_arr: ['.mkv'],
@@ -142,6 +142,20 @@ describe('STRM 直连地址校验', () => {
 })
 
 describe('STRM 列表导入与清空', () => {
+  it.each([1280, 375])('目录表单在 %i px 下只导入列表，不继承全局预加载开关', async (width) => {
+    vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+    const http = createHTTP(undefined, { strm_preload_enabled: 1, video_ext_arr: ['.mp4'] })
+    const wrapper = await mountPage('directory', http, width)
+    expect(wrapper.text()).not.toContain('启用 STRM 预加载')
+    await listButton(listItem(wrapper, 'video_ext'), '导入全局设置').trigger('click')
+    await flushPromises()
+    expect(listValues(listItem(wrapper, 'video_ext'))).toEqual(['.mkv', '.mp4'])
+    await save(wrapper, 'directory')
+    expect(http.put).toHaveBeenCalledOnce()
+    expect(http.put.mock.calls[0]![1].sync_path.setting).not.toHaveProperty('strm_preload_enabled')
+    expect(http.put.mock.calls[0]![1].sync_path).not.toHaveProperty('strm_preload_enabled')
+  })
+
   it.each([1280, 375])(
     '目录表单在 %i px 下合并四类全局列表，重复导入不增加重复项',
     async (width) => {

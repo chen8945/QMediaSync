@@ -356,7 +356,7 @@ func TestRestoreLegacyAuthenticationLossIsRejected(t *testing.T) {
 
 func TestRestoreLegacySchema66TextAdapter(t *testing.T) {
 	conn := setupBackupTest(t)
-	if models.MaxVersionCode != 67 && models.MaxVersionCode != 68 && models.MaxVersionCode != 69 {
+	if models.MaxVersionCode != 67 && models.MaxVersionCode != 68 && models.MaxVersionCode != 69 && models.MaxVersionCode != 70 {
 		t.Fatal("schema 66 adapter needs an explicit review for this target version")
 	}
 	models.AllTables = []any{&backupTestItem{}, &models.Migrator{}}

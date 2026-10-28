@@ -11,6 +11,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 
 	"github.com/gin-gonic/gin"
@@ -264,8 +265,9 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 	}
 	ua := c.Request.UserAgent()
 	client := account.GetBaiDuPanClient()
-	cacheKey := fmt.Sprintf("baidupanurl:%s, ua=%s", pickCode, ua)
+	cacheKey := baiduURLCacheKey(pickCode, ua)
 	ctx := c.Request.Context()
+	playback.DefaultPreloader.Takeover(playbackPreloadIdentity(string(models.SourceTypeBaiduPan), cacheKey))
 	if keyLock.lockContext(ctx, cacheKey, 10*time.Second) {
 		defer keyLock.Unlock(cacheKey)
 		cachedUrl := string(db.Cache.Get(cacheKey))

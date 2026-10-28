@@ -75,6 +75,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 	ctx, cancel := context.WithTimeout(response.Request.Context(), 30*time.Second)
 	defer cancel()
 	request := response.Request.Clone(ctx)
+	playerUA := ""
 	if raw, present := data["header"]; present {
 		var headers http.Header
 		if json.Unmarshal(raw, &headers) != nil {
@@ -90,6 +91,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 			}
 			seen = true
 			request.Header.Set("User-Agent", values[0])
+			playerUA = values[0]
 		}
 	}
 	changed := false
@@ -114,6 +116,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 		if !ok || playbackURL == rawURL {
 			continue
 		}
+		inst.rememberNativePlayer(response.Request, playerUA, file.GUID)
 		quality["url"], err = json.Marshal(playbackURL)
 		if err != nil {
 			return nil

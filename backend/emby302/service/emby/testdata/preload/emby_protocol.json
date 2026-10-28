@@ -1,0 +1,504 @@
+{
+  "provenance": "Whitelisted Emby projections from 2026-10-28 preflight.json (L1-L3). IDs, units, order and fields retained. QMS resolver URLs alone normalized to current /115/newurl shape with fixture credentials; this replays Emby schema and candidate selection, not a provider request.",
+  "samples": [
+    {
+      "label": "emby-item-episode",
+      "method": "GET",
+      "route": "/Users/{user}/Items/{episode}",
+      "http_status": 200,
+      "payload": {
+        "Id": "1000",
+        "MediaSources": [
+          {
+            "Protocol": "Http",
+            "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+            "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+            "Type": "Default",
+            "Container": "strm",
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "ItemId": "1000"
+          }
+        ],
+        "Path": "/fixtures/preload/source-2.strm",
+        "IndexNumber": 1,
+        "ParentIndexNumber": 1,
+        "ParentId": "1002",
+        "Type": "Episode",
+        "UserData": {
+          "PlaybackPositionTicks": 0,
+          "PlayCount": 0,
+          "Played": false
+        },
+        "SeriesId": "1003",
+        "SeasonId": "1002",
+        "PartCount": 1
+      }
+    },
+    {
+      "label": "emby-proxy-detail",
+      "method": "GET",
+      "route": "/emby/Users/{user}/Items/{episode}",
+      "http_status": 200,
+      "payload": {
+        "Container": "mkv",
+        "Id": "1000",
+        "IndexNumber": 1,
+        "MediaSources": [
+          {
+            "Container": "mkv",
+            "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+            "ItemId": "1000",
+            "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+            "Protocol": "Http",
+            "RunTimeTicks": 14200160000,
+            "SupportsDirectPlay": true,
+            "SupportsDirectStream": true,
+            "SupportsTranscoding": false,
+            "Type": "Default"
+          }
+        ],
+        "ParentId": "1002",
+        "ParentIndexNumber": 1,
+        "PartCount": 1,
+        "Path": "/fixtures/preload/source-2.strm",
+        "RunTimeTicks": 14200160000,
+        "SeasonId": "1002",
+        "SeriesId": "1003",
+        "Type": "Episode",
+        "UserData": {
+          "PlayCount": 0,
+          "PlaybackPositionTicks": 4260000000,
+          "Played": false,
+          "PlayedPercentage": 29.999661975639714
+        }
+      }
+    },
+    {
+      "label": "emby-playbackinfo",
+      "method": "GET",
+      "route": "/Items/{episode}/PlaybackInfo",
+      "http_status": 200,
+      "payload": {
+        "MediaSources": [
+          {
+            "Protocol": "Http",
+            "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+            "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+            "Type": "Default",
+            "Container": "mkv",
+            "RunTimeTicks": 14200160000,
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "ItemId": "1000"
+          }
+        ],
+        "PlaySessionId": "7d4e069364e7de212ab7fe541a150607"
+      }
+    },
+    {
+      "label": "emby-nextup-empty",
+      "method": "GET",
+      "route": "/Shows/NextUp",
+      "http_status": 200,
+      "payload": {
+        "Items": [],
+        "TotalRecordCount": 0
+      }
+    },
+    {
+      "label": "emby-nextup-mid",
+      "method": "GET",
+      "route": "/Shows/NextUp",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1000",
+            "Container": "mkv",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+                "Type": "Default",
+                "Container": "mkv",
+                "RunTimeTicks": 14200160000,
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1000"
+              }
+            ],
+            "Path": "/fixtures/preload/source-2.strm",
+            "RunTimeTicks": 14200160000,
+            "IndexNumber": 1,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlayedPercentage": 29.999661975639714,
+              "PlaybackPositionTicks": 4260000000,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1003",
+            "SeasonId": "1002"
+          }
+        ],
+        "TotalRecordCount": 12
+      }
+    },
+    {
+      "label": "emby-nextup-after",
+      "method": "GET",
+      "route": "/Shows/NextUp",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1005",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "dbc107de5e70c1e003cdc183f2196fc9",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1005&userid=fixture-user",
+                "Type": "Default",
+                "Container": "strm",
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1005"
+              }
+            ],
+            "Path": "/fixtures/preload/source-5.strm",
+            "IndexNumber": 2,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1003",
+            "SeasonId": "1002"
+          }
+        ],
+        "TotalRecordCount": 11
+      }
+    },
+    {
+      "label": "emby-resume-mid",
+      "method": "GET",
+      "route": "/Users/{user}/Items/Resume",
+      "http_status": 200,
+      "payload": {
+        "Items": [],
+        "TotalRecordCount": 0
+      }
+    },
+    {
+      "label": "emby-resumable-filter",
+      "method": "GET",
+      "route": "/Users/{user}/Items?Filters=IsResumable&Limit=1",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1000",
+            "Container": "mkv",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+                "Type": "Default",
+                "Container": "mkv",
+                "RunTimeTicks": 14200160000,
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1000"
+              }
+            ],
+            "Path": "/fixtures/preload/source-2.strm",
+            "RunTimeTicks": 14200160000,
+            "IndexNumber": 1,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlayedPercentage": 29.999661975639714,
+              "PlaybackPositionTicks": 4260000000,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1003",
+            "SeasonId": "1002"
+          }
+        ],
+        "TotalRecordCount": 1
+      }
+    },
+    {
+      "label": "emby-episodes-start",
+      "method": "GET",
+      "route": "/Shows/{series}/Episodes?StartItemId={current}&Limit=2",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1000",
+            "Container": "mkv",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "8c439a76e843017f8f0054e4a4ca4a98",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1000&userid=fixture-user",
+                "Type": "Default",
+                "Container": "mkv",
+                "RunTimeTicks": 14200160000,
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1000"
+              }
+            ],
+            "Path": "/fixtures/preload/source-2.strm",
+            "RunTimeTicks": 14200160000,
+            "IndexNumber": 1,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1003",
+            "SeasonId": "1002"
+          },
+          {
+            "Id": "1005",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "dbc107de5e70c1e003cdc183f2196fc9",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1005&userid=fixture-user",
+                "Type": "Default",
+                "Container": "strm",
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1005"
+              }
+            ],
+            "Path": "/fixtures/preload/source-5.strm",
+            "IndexNumber": 2,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1003",
+            "SeasonId": "1002"
+          }
+        ],
+        "TotalRecordCount": 12
+      }
+    },
+    {
+      "label": "emby-cross-season-cursor",
+      "method": "GET",
+      "route": "/Shows/{series}/Episodes?StartItemId={lastSeason1}&Limit=2",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1007",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "5c58fef7403675866227d5dae5f1823c",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1007&userid=fixture-user",
+                "Type": "Default",
+                "Container": "strm",
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1007"
+              }
+            ],
+            "Path": "/fixtures/preload/source-7.strm",
+            "IndexNumber": 12,
+            "ParentIndexNumber": 1,
+            "Type": "Episode",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1009",
+            "SeasonId": "1010"
+          },
+          {
+            "Id": "1011",
+            "MediaSources": [
+              {
+                "Protocol": "Http",
+                "Id": "c19fc3555d2a3c0ca7c2e80badd79b35",
+                "Path": "http://qms.invalid/115/newurl?pickcode=fixture1011&userid=fixture-user",
+                "Type": "Default",
+                "Container": "strm",
+                "SupportsTranscoding": true,
+                "SupportsDirectStream": true,
+                "SupportsDirectPlay": true,
+                "ItemId": "1011"
+              }
+            ],
+            "Path": "/fixtures/preload/source-9.strm",
+            "IndexNumber": 1,
+            "ParentIndexNumber": 2,
+            "Type": "Episode",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            },
+            "SeriesId": "1009",
+            "SeasonId": "1013"
+          }
+        ],
+        "TotalRecordCount": 13
+      }
+    },
+    {
+      "label": "emby-item-movie",
+      "method": "GET",
+      "route": "/Users/{user}/Items/{movie}",
+      "http_status": 200,
+      "payload": {
+        "Id": "1014",
+        "Container": "mkv",
+        "MediaSources": [
+          {
+            "Protocol": "Http",
+            "Id": "8b0ecfefc139992c95e7b6adab3c7078",
+            "Path": "http://qms.invalid/115/newurl?pickcode=fixture1014&userid=fixture-user",
+            "Type": "Default",
+            "Container": "mkv",
+            "RunTimeTicks": 15320350000,
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "ItemId": "1014"
+          }
+        ],
+        "Path": "/fixtures/preload/source-11.strm",
+        "RunTimeTicks": 15320350000,
+        "ParentId": "1016",
+        "Type": "Movie",
+        "UserData": {
+          "PlaybackPositionTicks": 0,
+          "PlayCount": 0,
+          "Played": false
+        },
+        "PartCount": 4
+      }
+    },
+    {
+      "label": "emby-parts-movie",
+      "method": "GET",
+      "route": "/Videos/{movie}/AdditionalParts",
+      "http_status": 200,
+      "payload": {
+        "Items": [
+          {
+            "Id": "1017",
+            "Type": "Video",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            }
+          },
+          {
+            "Id": "1018",
+            "RunTimeTicks": 15309900000,
+            "Type": "Video",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            }
+          },
+          {
+            "Id": "1019",
+            "Type": "Video",
+            "UserData": {
+              "PlaybackPositionTicks": 0,
+              "PlayCount": 0,
+              "Played": false
+            }
+          }
+        ],
+        "TotalRecordCount": 3
+      }
+    },
+    {
+      "label": "emby-part-detail",
+      "method": "GET",
+      "route": "/Users/{user}/Items/{part}",
+      "http_status": 200,
+      "payload": {
+        "Id": "1018",
+        "Container": "mkv",
+        "MediaSources": [
+          {
+            "Protocol": "Http",
+            "Id": "eaa1f48b6155e31523ce23ce94d822a4",
+            "Path": "http://qms.invalid/115/newurl?pickcode=fixture1018&userid=fixture-user",
+            "Type": "Default",
+            "Container": "mkv",
+            "RunTimeTicks": 15309900000,
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "ItemId": "1018"
+          }
+        ],
+        "Path": "/fixtures/preload/source-13.strm",
+        "RunTimeTicks": 15309900000,
+        "ParentId": "1014",
+        "Type": "Video",
+        "UserData": {
+          "PlaybackPositionTicks": 0,
+          "PlayCount": 0,
+          "Played": false
+        },
+        "PartCount": 1
+      }
+    },
+    {
+      "label": "emby-parts-selected",
+      "method": "GET",
+      "route": "/Videos/{part}/AdditionalParts",
+      "http_status": 200,
+      "payload": {
+        "Items": [],
+        "TotalRecordCount": 0
+      }
+    },
+    {
+      "label": "emby-parts-ordinary",
+      "method": "GET",
+      "route": "/Videos/{ordinaryMovie}/AdditionalParts",
+      "http_status": 200,
+      "payload": {
+        "Items": [],
+        "TotalRecordCount": 0
+      }
+    }
+  ]
+}

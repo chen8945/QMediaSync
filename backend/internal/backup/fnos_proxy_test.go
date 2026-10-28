@@ -234,12 +234,14 @@ func fnosCompatibilityBackupDirectory(t *testing.T, conn *gorm.DB, version int) 
 		t.Fatal(err)
 	}
 	manifest.SchemaVersion = version
-	manifest.Excluded = slices.DeleteFunc(manifest.Excluded, func(item logicalExclusion) bool {
-		return item.Name == "fnos_proxy_config"
-	})
+	if version < 69 {
+		manifest.Excluded = slices.DeleteFunc(manifest.Excluded, func(item logicalExclusion) bool {
+			return item.Name == "fnos_proxy_config"
+		})
+	}
 	var tables []logicalTable
 	for _, table := range manifest.Tables {
-		if table.Name == "fnos_proxy_config" {
+		if version < 69 && table.Name == "fnos_proxy_config" {
 			if err := os.Remove(filepath.Join(dir, table.File)); err != nil {
 				t.Fatal(err)
 			}

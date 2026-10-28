@@ -1,0 +1,177 @@
+{
+  "fnos-native-to-compat-file": {
+    "Id": "647857b858949339a873483e48a80b44",
+    "MediaSources": [
+      {
+        "Container": "MP4",
+        "Id": "afe97260011dd43c53e20037290c58bb",
+        "Path": "/fixtures/preload/source-14.strm",
+        "Protocol": "File",
+        "RunTimeTicks": 2400000000,
+        "Type": "Default"
+      }
+    ],
+    "ParentId": "0118f66a19c1de6d501565bb00445a74",
+    "RunTimeTicks": 40000000,
+    "Type": "Episode",
+    "UserData": {
+      "PlaybackPositionTicks": 2060000000,
+      "PlayCount": 1,
+      "Played": false,
+      "PlayedPercentage": 85.83333333333333
+    },
+    "SeasonId": "0118f66a19c1de6d501565bb00445a74",
+    "SeriesId": "fb37b7d0bd51746ab9fc3d6f808284a2",
+    "IndexNumber": 1,
+    "ParentIndexNumber": 1
+  },
+  "fnos-compat-start-actual-id": {
+    "Items": [
+      {
+        "Id": "647857b858949339a873483e48a80b44",
+        "MediaSources": [
+          {
+            "Container": "MP4",
+            "Id": "afe97260011dd43c53e20037290c58bb",
+            "Path": "/fixtures/preload/source-14.strm",
+            "Protocol": "File",
+            "RunTimeTicks": 2400000000,
+            "Type": "Default"
+          }
+        ],
+        "ParentId": "0118f66a19c1de6d501565bb00445a74",
+        "RunTimeTicks": 40000000,
+        "Type": "Episode",
+        "UserData": {
+          "PlaybackPositionTicks": 0,
+          "PlayCount": 1,
+          "Played": true
+        },
+        "SeasonId": "0118f66a19c1de6d501565bb00445a74",
+        "SeriesId": "fb37b7d0bd51746ab9fc3d6f808284a2",
+        "IndexNumber": 1,
+        "ParentIndexNumber": 1
+      },
+      {
+        "Id": "e3e21f02f7ae8be71ab16f8952895508",
+        "MediaSources": [
+          {
+            "Container": "MP4",
+            "Id": "617ea86116184cc7776ec127abdc4424",
+            "Path": "/fixtures/preload/source-15.strm",
+            "Protocol": "File",
+            "RunTimeTicks": 2400000000,
+            "Type": "Default"
+          }
+        ],
+        "ParentId": "0118f66a19c1de6d501565bb00445a74",
+        "RunTimeTicks": 40000000,
+        "Type": "Episode",
+        "UserData": {
+          "PlaybackPositionTicks": 190000000,
+          "PlayCount": 1,
+          "Played": false,
+          "PlayedPercentage": 7.916666666666666
+        },
+        "SeasonId": "0118f66a19c1de6d501565bb00445a74",
+        "SeriesId": "fb37b7d0bd51746ab9fc3d6f808284a2",
+        "IndexNumber": 2,
+        "ParentIndexNumber": 1
+      }
+    ],
+    "TotalRecordCount": 2,
+    "StartIndex": 0
+  },
+  "fnos-native-detail-TV": {
+    "code": 0,
+    "data": {
+      "guid": "fb37b7d0bd51746ab9fc3d6f808284a2",
+      "season_number": 0,
+      "number_of_episodes": 0,
+      "local_number_of_episodes": 1,
+      "can_play": 1,
+      "type": "TV",
+      "parent_guid": "",
+      "ancestor_guid": "f5897eb88d850172615e3499fb013952",
+      "play_item_guid": "",
+      "duration": 0,
+      "logic_type": 0,
+      "media_stream": {}
+    }
+  },
+  "fnos-native-detail-Season": {
+    "code": 0,
+    "data": {
+      "guid": "0118f66a19c1de6d501565bb00445a74",
+      "season_number": 1,
+      "number_of_episodes": 0,
+      "local_number_of_episodes": 3,
+      "can_play": 1,
+      "type": "Season",
+      "parent_guid": "fb37b7d0bd51746ab9fc3d6f808284a2",
+      "ancestor_guid": "f5897eb88d850172615e3499fb013952",
+      "play_item_guid": "afe97260011dd43c53e20037290c58bb",
+      "duration": 0,
+      "logic_type": 0,
+      "media_stream": {}
+    }
+  },
+  "fnos-native-playinfo-episode": {
+    "code": 0,
+    "data": {
+      "grand_guid": "",
+      "guid": "afe97260011dd43c53e20037290c58bb",
+      "parent_guid": "0118f66a19c1de6d501565bb00445a74",
+      "ts": 0,
+      "type": "Episode",
+      "video_guid": "31dd2a6ad5e90753a7f11c22849478ca",
+      "audio_guid": "",
+      "subtitle_guid": "",
+      "media_guid": "647857b858949339a873483e48a80b44",
+      "item": {
+        "guid": "afe97260011dd43c53e20037290c58bb",
+        "season_number": 1,
+        "episode_number": 1,
+        "number_of_episodes": 0,
+        "local_number_of_episodes": 0,
+        "can_play": 1,
+        "type": "Episode",
+        "parent_guid": "0118f66a19c1de6d501565bb00445a74",
+        "ancestor_guid": "f5897eb88d850172615e3499fb013952",
+        "play_item_guid": "",
+        "duration": 0,
+        "logic_type": 0,
+        "media_stream": {}
+      }
+    }
+  },
+  "fnos-native-detail-Episode": {
+    "code": 0,
+    "data": {
+      "guid": "afe97260011dd43c53e20037290c58bb",
+      "season_number": 1,
+      "episode_number": 1,
+      "number_of_episodes": 0,
+      "local_number_of_episodes": 0,
+      "can_play": 1,
+      "type": "Episode",
+      "parent_guid": "0118f66a19c1de6d501565bb00445a74",
+      "ancestor_guid": "f5897eb88d850172615e3499fb013952",
+      "play_item_guid": "",
+      "duration": 0,
+      "logic_type": 0,
+      "media_stream": {}
+    }
+  },
+  "fnos-native-record-paused-repeat-1": {
+    "item_guid": "afe97260011dd43c53e20037290c58bb",
+    "media_guid": "647857b858949339a873483e48a80b44",
+    "video_guid": "31dd2a6ad5e90753a7f11c22849478ca",
+    "audio_guid": "",
+    "subtitle_guid": "",
+    "resolution": "原画",
+    "bitrate": 0,
+    "ts": 206,
+    "duration": 240
+  }
+}

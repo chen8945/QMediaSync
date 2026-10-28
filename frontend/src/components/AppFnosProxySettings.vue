@@ -179,6 +179,10 @@ onMounted(load)
             />
             <p class="form-help">填写完整服务地址，包含 http:// 或 https:// 和所需端口。</p>
           </el-form-item>
+          <p class="form-help">
+            想减少播放等待？可前往
+            <router-link to="/settings/strm">STRM 设置</router-link>开启预加载。
+          </p>
         </el-card>
         <el-card shadow="never">
           <FnosPathMappings v-model="form.path_mappings" :disabled="disabled" />

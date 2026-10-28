@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 69
+var MaxVersionCode = 70
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -845,6 +845,22 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 			return fmt.Errorf("迁移飞牛影视反代配置失败：%w", err)
 		}
 		migrator.VersionCode = 69
+	}
+	if migrator.VersionCode == 69 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if !tx.Migrator().HasColumn(&Settings{}, "StrmPreloadEnabled") {
+				if err := tx.Migrator().AddColumn(&Settings{}, "StrmPreloadEnabled"); err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&Settings{}).Where("strm_preload_enabled IS NULL").UpdateColumn("strm_preload_enabled", 0).Error; err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 70).Error
+		}); err != nil {
+			return fmt.Errorf("迁移 STRM 预加载开关失败：%w", err)
+		}
+		migrator.VersionCode = 70
 	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {

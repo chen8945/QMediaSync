@@ -36,6 +36,32 @@ func setup115PlaybackCache(t *testing.T) {
 	})
 }
 
+func setup115PlaybackSettings(t *testing.T, settings *models.Settings) {
+	t.Helper()
+	previous, previousSnapshot := models.SettingsGlobal, models.GetPlaybackSettingsSnapshot()
+	validityEnabled := settings.URLValidityCheckEnabled
+	if err := db.Db.Create(settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	// GORM 的默认值会把显式 0 改成 1，关闭校验的场景需显式落库。
+	if err := db.Db.Model(settings).Update("url_validity_check_enabled", validityEnabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	models.SettingsGlobal = &models.Settings{}
+	models.LoadSettings()
+	t.Cleanup(func() {
+		if err := db.Db.Model(settings).Updates(map[string]any{
+			"local_proxy": previousSnapshot.LocalProxy, "multi_playback_enabled": previousSnapshot.MultiPlaybackEnabled,
+			"strm_preload_enabled": previousSnapshot.PreloadEnabled, "strm_base_url": previousSnapshot.StrmBaseURL,
+		}).Error; err != nil {
+			t.Error(err)
+		} else {
+			models.LoadSettings()
+		}
+		models.SettingsGlobal = previous
+	})
+}
+
 func Test115PlaybackSmartSkip(t *testing.T) {
 	for _, tt := range []struct {
 		name              string
@@ -99,10 +125,8 @@ func Test115PlaybackLogsLinksOnlyWhenNewURLIsPublished(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setup115PlaybackCache(t)
-			setupControllerTestDB(t, &models.Account{})
-			previousSettings := models.SettingsGlobal
-			models.SettingsGlobal = &models.Settings{}
-			t.Cleanup(func() { models.SettingsGlobal = previousSettings })
+			setupControllerTestDB(t, &models.Account{}, &models.Settings{})
+			setup115PlaybackSettings(t, &models.Settings{})
 			account := &models.Account{Name: "日志测试", SourceType: models.SourceType115, UserId: "log-user"}
 			if err := db.Db.Create(account).Error; err != nil {
 				t.Fatal(err)
@@ -456,11 +480,11 @@ func TestGet115UrlByPickCodeIsolationFailureDoesNotRedirect(t *testing.T) {
 	for _, indexed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
 			setup115PlaybackCache(t)
-			setupControllerTestDB(t, &models.Account{}, &models.SyncFile{})
-			previousManager, previousSettings := v115Playback, models.SettingsGlobal
+			setupControllerTestDB(t, &models.Account{}, &models.SyncFile{}, &models.Settings{})
+			setup115PlaybackSettings(t, &models.Settings{MultiPlaybackEnabled: 1})
+			previousManager := v115Playback
 			v115Playback = playback.NewManager()
-			models.SettingsGlobal = &models.Settings{MultiPlaybackEnabled: 1}
-			t.Cleanup(func() { v115Playback, models.SettingsGlobal = previousManager, previousSettings })
+			t.Cleanup(func() { v115Playback = previousManager })
 			account := &models.Account{Name: "隔离保护", SourceType: models.SourceType115, UserId: "protected-user"}
 			if err := db.Db.Create(account).Error; err != nil {
 				t.Fatal(err)

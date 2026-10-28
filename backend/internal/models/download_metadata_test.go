@@ -227,7 +227,8 @@ func testMetadataDownloadMigration(t *testing.T, conn *gorm.DB) {
 	previousDB := db.Db
 	db.Db = conn
 	t.Cleanup(func() { db.Db = previousDB })
-	if err := conn.AutoMigrate(&DbDownloadTask{}, &Migrator{}); err != nil {
+	// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
+	if err := conn.AutoMigrate(&DbDownloadTask{}, &Migrator{}, &Settings{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, field := range []string{"ReplaceBaseline", "PublishedSHA256"} {

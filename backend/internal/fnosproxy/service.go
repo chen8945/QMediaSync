@@ -3,6 +3,7 @@ package fnosproxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"qmediasync/internal/backup"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/validation"
 )
 
@@ -44,6 +46,8 @@ type Options struct {
 	KnownOrigins       func(context.Context) ([]string, error)
 	OpenListOrigins    func(context.Context) ([]string, error)
 	IdentityCandidates func(context.Context, Source) ([]Candidate, error)
+	Preloader          *playback.Preloader
+	NewPreload         func(rawURL, userAgent string, forceDirect bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool)
 }
 
 // Service 独立持有飞牛监听器、出站连接与来源缓存。
@@ -76,6 +80,8 @@ type instance struct {
 	stopped   bool
 	done      sync.WaitGroup
 	active    sync.WaitGroup
+	preloadID string
+	preload   preloadState
 }
 
 // NewService 创建尚未监听的服务，关闭配置不会建立连接或启动后台任务。
@@ -207,7 +213,7 @@ func (s *Service) prepare(config models.FnosProxyConfig) (*instance, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	inst := &instance{service: s, config: config, upstream: upstream, ctx: ctx, cancel: cancel,
-		transport: transport, conns: make(map[*trackedConn]struct{}), cache: newSourceCache()}
+		transport: transport, conns: make(map[*trackedConn]struct{}), cache: newSourceCache(), preloadID: "fnos:" + rand.Text()}
 	inst.proxy = &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -380,6 +386,10 @@ func (inst *instance) closeResources() {
 	}
 	inst.mu.Unlock()
 	inst.cancel()
+	if preloader := inst.service.options.Preloader; preloader != nil {
+		preloader.CancelInstance(inst.preloadID)
+	}
+	inst.preload.clear()
 	inst.cache.clear()
 	for _, listener := range inst.listeners {
 		_ = listener.Close()
@@ -456,6 +466,11 @@ func (inst *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "QMediaSync 正在恢复数据库，请重启后再试", http.StatusServiceUnavailable)
 		return
 	}
+	progressReport := r.Method == http.MethodPost && preloadProgressRoute(upstreamPath(r.URL.Path))
+	if progressReport {
+		inst.capturePreloadBody(w, r)
+	}
+	inst.beginPreloadRequest(r)
 	if r.URL.Path == "/proxy-115" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		release()
 		inst.forwardProxy(w, r)
@@ -464,10 +479,18 @@ func (inst *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	playback, isPlayback := parsePlaybackRoute(r.URL.Path)
 	isMetadata := isPlayback && playback.kind == "info" && (r.Method == http.MethodGet || r.Method == http.MethodPost) ||
 		r.URL.Path == nativeStreamPath && r.Method == http.MethodPost
+	if inst.preloadEnabled() {
+		route := upstreamPath(r.URL.Path)
+		isMetadata = isMetadata || r.Method == http.MethodGet && (preloadDetailRoute.MatchString(route) || preloadQueueRoute.MatchString(route) || preloadNativePath(route)) ||
+			r.Method == http.MethodPost && (route == "/v/api/v1/play/info" || preloadProgressRoute(route))
+	}
 	if isMetadata {
 		metadataCtx, metadataCancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer metadataCancel()
 		r = r.Clone(metadataCtx)
+	}
+	if !progressReport {
+		inst.capturePreloadBody(w, r)
 	}
 	if isPlayback && r.Method == http.MethodPost && playback.kind == "info" {
 		controller := http.NewResponseController(w)
@@ -486,13 +509,23 @@ func (inst *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if isPlayback && playback.kind != "info" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		source, ok := inst.authorizedSource(r, playback.itemID)
+		var resolved sourceRecord
 		if ok {
-			resolved, ok := inst.resolveSource(r.Context(), r, source)
-			if ok {
-				release()
+			resolved, ok = inst.resolveSource(r.Context(), r, source)
+		}
+		inst.reconcilePreloadPlayer(r, source, ok)
+		if ok {
+			release()
+			if inst.preloadEnabled() {
+				observed := &preloadPlaybackWriter{ResponseWriter: w}
+				inst.serveResolved(observed, r, resolved)
+				if observed.successful() && r.Context().Err() == nil {
+					inst.rememberCompatiblePlayer(r, source)
+				}
+			} else {
 				inst.serveResolved(w, r, resolved)
-				return
 			}
+			return
 		}
 	}
 	// 短解析阶段已结束，长视频和 WebSocket 不占数据库恢复许可。
@@ -552,6 +585,9 @@ func (inst *instance) modifyResponse(response *http.Response) error {
 			cookie.Domain = ""
 		}
 		response.Header.Add("Set-Cookie", cookie.String())
+	}
+	if err := inst.observePreloadResponse(response); err != nil {
+		return err
 	}
 	if response.Request.URL.Path == nativeStreamPath && response.Request.Method == http.MethodPost && response.StatusCode == http.StatusOK {
 		return inst.rewriteNativeStream(response)

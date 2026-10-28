@@ -274,6 +274,10 @@ func TestUpdateStrmConfigRequestValidate(t *testing.T) {
 	}{
 		{name: "合法 STRM 配置通过"},
 		{name: "允许启用多端播放", mutate: func(r *UpdateStrmConfigRequest) { r.MultiPlaybackEnabled = 1 }},
+		{name: "允许启用预加载", mutate: func(r *UpdateStrmConfigRequest) { enabled := 1; r.StrmPreloadEnabled = &enabled }},
+		{name: "允许显式关闭预加载", mutate: func(r *UpdateStrmConfigRequest) { disabled := 0; r.StrmPreloadEnabled = &disabled }},
+		{name: "预加载不允许继承值", mutate: func(r *UpdateStrmConfigRequest) { value := -1; r.StrmPreloadEnabled = &value }, wantErr: true},
+		{name: "预加载枚举错误失败", mutate: func(r *UpdateStrmConfigRequest) { value := 2; r.StrmPreloadEnabled = &value }, wantErr: true},
 		{name: "本地代理保留多端播放选择", mutate: func(r *UpdateStrmConfigRequest) {
 			r.LocalProxy, r.MultiPlaybackEnabled = 1, 1
 		}},

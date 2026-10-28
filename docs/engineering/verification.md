@@ -23,6 +23,7 @@
 | Go helper、模型或请求 DTO | 对应包的 `go test`；需要时指定 `-run` | 请求校验、数据库 schema |
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
+| STRM 播放链接预加载 | 按 [预加载验证](#strm-预加载验证) 覆盖关闭、候选选择、动态窗口、配额／重试、身份隔离、接手、生命周期及日志；设置迁移和恢复分别验证 SQLite／隔离 PostgreSQL，前端验证默认关闭和单一开关 | [预加载契约](../architecture/upload-and-strm-processing.md#strm-播放链接预加载)、[配置](../operations/configuration.md#strm-预加载)、[飞牛协议](../reference/fnos-proxy-api.md#预加载观察与限制) |
 | STRM 本地缺项和空目录收尾 | `syncstrm`、`models`、`directoryupload` 普通测试及相关 race / vet；覆盖多层空目录同轮清理、排除及失败保护、取消收尾、活跃上传保留、目录读取错误和上传任务查询失败。核对已确认缺失目录的实际查询次数及存在性 SQL，不用整轮上传任务快照替代删除前检查 | [同步编排](../architecture/sync-orchestration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md) |
 | Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
 | Emby 目录清理与共同批删 | `models`、`emby`、`embyclient-rest-go`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
@@ -141,6 +142,66 @@ GitHub 私有连接池回收运行 `go test -race ./internal/github -run '^TestM
 项目没有配置 Go lint 工具。Go 文件的 import 以 `goimports -local qmediasync` 的实际输出为准；仅在用户请求或本次变更确实需要格式化时运行会写入文件的命令，并检查不会带入无关改动。
 
 `TestProxyCustomJsWaitsForEmby` 通过 Node.js 执行处理器生成的脚本，验证等待初始化、单次执行及异常隔离。运行相关 Go 测试前确认 `node --version` 可用；没有 Node.js 时该项会明确跳过，不能据此声称脚本行为已验证。
+
+## STRM 预加载验证
+
+以同样的授权源、UA、模式和缓存状态对照关闭／开启，区分元数据 HTTP、实际网盘签名、缓存 HEAD、CDN、复制／删除和 SQL。关闭、重复信号、未到窗口、冷却、已知普通电影进度或关联不明时新增后台查询为零；有效预加载命中后，普通播放少一次签名，实际播放原有探活与回退单独计数。快切详情只保留最新项，并验证已知源缺 codec、时长或 PlaySessionId 仍能成功，不能以全部跳过验收。
+
+播放器身份兼容在 `internal/playback`、`emby302/service/emby` 和 `internal/fnosproxy` 包验证：脱敏的 Yamby 无引号与 Hills 双引号请求、Emby／MediaBrowser 前缀、等号空格、字段顺序／大小写、非 UUID DeviceId、可选 Client，以及引号内逗号／转义和边界输入。多处同值可按调用方既有规则接受，冲突、显式空值、非法控制字符及超限不能降级成缺失。无 DeviceId 时验证 Token＋完整 UA 临时隔离、不读写跨次映射、当前会话实际 UA 的下一项正例和缺可靠关联反例；保留原生 Cookie／裸凭据、固定代理及真实播放正常缓存回退。对照解析前后转发字节，不能把协议夹具通过计为物理播放器实测。
+
+Emby 的换源／换会话取消测试必须先建立真实的新 Playing 或取流关联；只改变普通 Progress 的源或会话属于不匹配报告，应保留当前后继及在途取流观察，与迟到进度回归保持一致。不能为满足旧测试断言恢复误取消行为。上述三个包运行完整普通测试、race 和 vet，覆盖已有契约，不只运行新增用例。
+
+Emby 当前播放关联修正须覆盖剧集页、季页直接播放和自动连播，并以先打开单集详情为对照：当前 PlaybackInfo、成功取流和 Playing／Progress 能准备明确后继，浏览详情保持原项，签名使用本次实际 UA。类型缺失只允许在合格窗口内按原额度补查当前条目；窗口外不补查，补查为普通电影后不查后继。过期、选源歧义、源路径变化及明确会话不匹配不能串用资料；保留迟到进度／停止、暂停撤销和 Range 的已有回归。本项仅涉及 Emby 适配器时，完整运行该包的普通测试、race 和 vet，无须重复未改动的飞牛包验证。
+
+用假时钟和本地 transport 验证 2 秒详情防抖、15 秒候选保留、3 秒执行、10 秒账号间隔及一条 32 项队列／256 复合状态。两个已确认不同账号可同时执行，同账号、别名或未知账号不能并行；绑定账号后复核，繁忙账号不占其他账号名额。取消、接手、关闭和 Stop 必须排空两作业，无晚发布或泄漏。覆盖动态窗口的短片、60／90／120 分钟和超长内容边界，所有并发／压力输入仅使用替身。
+
+元数据默认最多两次实际 HTTP；普通第三次拒绝，只有前两次均成功且无失败重试、明确最后一层普通资料的 `FinalMetadataGET` 正例可达到三次，无第四次、无第三次 PlaybackInfo／失败连试。安全 GET 的唯一 400ms 退避重试占默认额度，PlaybackInfo 不重试；取消、超时或新信号不重置额度。签名每轮一次，30 秒后只因新合格信号允许唯一重入，不得因心跳重置预算。特别验证 `NewPlaybackClient` 在错误下只有一次 SDK 出站，普通客户端默认重试和多端副本原有重试保持。
+
+按入口分别验证电影／单集／剧集／季／特别篇、续播优先、跨季、明确 part、末段和多版本反例；当前用户／权限／源／UA 不可跨用。自然详情／PlaybackInfo 等资料相隔 15–60 秒仍可关联，超过 60 秒、旧详情及乱序选源须拒绝；资料齐全不等待 60 秒，不占作业等待响应，不增加 SQL 或网盘请求。缺媒体信息冷源不主动 PlaybackInfo 或提取，完整 Emby 源必要补查最多一次；响应覆盖 200 HTML、错误 schema、gzip 损坏和解压超限。飞牛原生三类 ID、裸 record 和可靠响应关联分别验证，不能以兼容接口通过代替原生支持。
+
+飞牛兼容与原生详情须验证：同项最新 401／403 撤销防抖中和已执行的详情准备，旧自然补源不能恢复；迟到拒绝不取消更新的成功详情，其他设备不受影响。同项新成功详情跨越 60 秒后仍可获得新机会；签名失败后至少 30 秒的新合格详情可按原额度重入，重复详情不重置防抖或增加重试次数。自然 Episodes 更新须覆盖锚点消失、锚点成为末项、空／单项及不能证明同季后继；可靠新列表立即取消旧后继，后续 Progress 同样不能沿用旧关系，旧响应不取消较新的有效准备。核对实际补查、签名和发布次数，并保留有效详情及同季后继正例；当前会话的可靠队列早于 60 秒仍能使用，避免长内容退化。
+
+飞牛详情与自然 PlaybackInfo 须分别覆盖唯一源变成未选定多源，核对防抖中、准备中及签名中的旧详情取消，仍保留明确选源及缺少源字段的补齐正例。剧集／季的唯一续播项变为空、多项或另一集，以及同一集的来源变化／变歧义时须撤销旧详情，迟到／无关列表及单集详情不受误伤。覆盖父页所选单集的自然 PlaybackInfo、列表与来源响应乱序、列表仅缺源字段和同父页刷新；父页刷新不能盖过更新的单集选源。兼容 Progress 的暂停／转码报告在上游响应悬挂时就应取消后继，迟到旧条目／源／明确会话报告不能推进当前播放顺序或干扰新流的实际 UA；缺省可选字段仍按现有规则核对。全部经真实 handler，断言签名、发布次数和请求体原样转发，不能靠下一次进度掩盖漏取消。
+
+原生详情另覆盖 HTTP 200 的 `can_play=0`、非空 `play_error`：最新明确拒绝清除旧关联，撤销等待中及已签名但未发布的任务；迟到拒绝不伤更新的成功详情或独立播放后继。兼容停止报告覆盖自动连播后的旧条目、同项旧源／旧会话及其拒绝响应，确认新播放关联、实际 UA 与后续合格 Progress 仍有效；匹配的停止须正常清理，省略可选字段及取流先于开始报告的正常顺序仍可处理。另覆盖当前集已开始但取流仍在途时的旧停止，确保它不推进播放顺序，而匹配的停止仍能阻止迟到旧流恢复资料。核对上游响应字节与状态不变。
+
+原生网页后台补源须用真实 Cookie／裸 Authorization 对照兼容接口所需客户端描述，最终正例不能由测试桥手工补头；冲突／重复凭据拒绝，authx 不进入后台 GET。季页辅助父 GET 在 play/info 之前、途中和之后均保留原季候选，基于已成功父子关系、请求顺序、完整 UA 和同 Host 的 HTTP(S) 当前季页 Referer；HTTPS 在外层终止的 HTTP 入站仍有正例，非 HTTP(S) Referer、真正返回 TV 页、其他父项／Host、最新拒绝及旧辅助响应分别回归。play/info 缺 `video_guid` 仍可用，字段存在但非法或缺文件／逻辑 GUID 仍拒绝。真实媒体文件与当前代码补查复验只证明观察及补源，签名替身不能计为真实网盘端到端通过。
+
+兼容缺省 `PlaySessionId` 正例必须先有当前代次的成功真实取流、准确 item 和唯一源；覆盖开始先于流、流先于开始、缺省报告在明确会话内的情况。实际流明确为 A 会话时，不能用于确认 B 开始；实际 B 流先于 B 开始、开始缺少会话而实际流已确认会话均须保留正例，并核对重复／非法取流会话参数。无取流、旧源／旧会话、无暂停证据、新代次沿用旧 UA、旧流迟到和慢 Playing 期间先到 Progress 均不得发后继签名；同一明确会话重复 Playing 保持代次。通过真实 handler 核对 Playing 请求体只读一次、原样转发及错误回放，不能只靠人工设置 GetBody。
+
+Emby 也须经真实 middleware 验证取流请求的明确会话：A 流后 B 开始不得使用 A 的 UA 准备后继，B 流先于 B 开始及迟到 A 停止仍可用 B。保留省略会话、同值重复及 opaque 非 UUID 会话正例；冲突、空值、非法或超限会话只跳过观察，原查询和响应字节保持。飞牛同会话重复 Playing 分别在后继排队、补资料和签名中回归，随后多次 Progress 不重置任务或导致永久失效；同会话 Range 交错仍保留候选，切源（含相同源 ID 的路径变化）、会话变化、无会话重启、明确暂停、转码和资格失效仍撤销。暂停或转码开始不等待下一次 Progress 即取消，并在上游响应仍悬挂时验证入口已撤销；最新资料多源无法选定时也撤销，签名中候选须核对 Publish 被拒。普通播放鉴权 GET 与后台元数据分开计数，不把门闩或计数 fixture 失败记成产品复现。
+
+Emby 停止报告分别覆盖自动切集、同项换源、同源换会话及 401／403：更新播放顺序前和响应处理时均须校验关联，旧报告不能取消新后继；新流仍在途时不得推进播放序号，成功后仍须记录本次实际 UA 并响应合格后继进度。保留匹配停止、可选字段省略、取流先于开始报告、当前播放未知时的旧流阻断正例；停止开始后才建立新播放的乱序响应也须保护。检查有界请求体观察和异常输入原样转发，禁止新增锁内读取或无界等待。
+
+飞牛同源 Range 与正常 Progress 交错须与串行顺序对照，两者均使用本次已确认实际 UA 准备后继；覆盖可选会话省略、完整 UA 版本变化、源路径变化及迟到流，不能只比较源 ID。Emby 须在原流程读完匹配暂停／停止正文、上游响应仍悬挂时验证排队或在途后继已撤销，旧签名 Publish 被拒；旧条目／源／会话、未读完／错误／超限正文不误伤，暂停后正常恢复仍可准备后继。通过真实 handler／middleware 核对签名次数和原转发字节，不用响应结束或额外一次进度掩盖竞争。
+
+本轮播放关联与来源撤销回归应另外覆盖：Emby 未暂停的旧条目／源／明确会话 Progress 在更新播放序号前被排除，正在签名的新后继和在途新流实际 UA 不受影响；飞牛 PlaybackInfo 同时包含 STRM 与本地视频时保留完整多源歧义，明确选源仍有效；可靠 Episodes 中同一后继 ID 的路径改变或单源变多源时取消旧发布，并允许后续进度使用新来源，缺源字段仍保留原有补查。原来源在歧义解除后重新获可靠确认时，核对新准备机会被接纳、旧发布被拒，且仍受原账号间隔限制；重复同源列表不重置机会。断言必须发生在旧签名／上游响应释放前，不能用后续取消掩盖旧缓存已发布。
+
+UA 用有界内存和真实播放观察验证：首次、重启、映射过期或控制端 A 更新为 A2 时，详情以本次合法 UA 准备；可靠 A→B 后后续 A 详情可用 B，实际改用 C 时必须查 C 的原缓存、命中则不新增签名、miss 才正常取链，成功后更新为 A→C。控制 UA 大小写、空格和版本完整比较；映射跨认证／设备／实例／模式隔离，72 小时闲置过期、活跃续期、满容量淘汰，generation／实例清理后不可复活。确认映射寿命不延长短期资料。下一项使用当前会话实际 UA；飞牛明确响应 UA 可与控制 UA 不同，但缺可靠关联不学习，不能靠外部播放器名单推断。115 签名与媒体 UA 完全一致，不跨 UA 试播或复用；计量预测失配带来的额外预热和原副本等待，固定代理 UA 保持。映射更新及版本失配只输出必要 Debug，不转储完整 UA、链接或凭据。
+
+版本边界须覆盖自然 PI／play-info／Episodes 在没有新详情时采用本次 UA、旧控制资料慢响应跨新版本详情返回，以及旧 stream 跨新版本资料返回。会话 UA 须覆盖真实 B 取流后控制端 A 开始／进度仍用 B、同源取流先于 SessionId，以及换 item／源／明确新会话而没有新成功取流时不复用旧 UA。
+
+覆盖普通播放早于防抖、准备中、同键签名中和缓存成功后的顺序；未签名不人为等待，已签名至多等待本轮剩余预算，失败回原 miss，后台不追加重试。关开关、账号提交／失效、Emby／飞牛切换、恢复维护和退出取消旧工作，不晚发布、无预留或 goroutine 泄漏；设置保存失败运行态不变。并发测试配合 race 核对复合快照和取消，受控阻塞 SQL、transport 及 logger 验证设置快读不等持久化、队列／槽位／发布锁不跨 I/O；counting logger 核对无逐心跳 SQL／写入。各日志等级、100 次重复事件、冷却去重、敏感哨兵和阻塞 writer 证明日志不泄漏完整链接、不误报播放失败，也不延长共享锁占用。
+
+日志断言以 [日志契约](../operations/configuration.md#日志行为与脱敏) 为准：INFO 成功不含任务／账号／尝试或未知零码，说明真实入口、触发及最终目标；DEBUG 包含确切安全原因，HTTP／业务码仅输出已知且正确标注来源的值。电影、单集、剧集／季页待播集及后继分段分别核对，目标名称缺失、控制字符、超长、含裸 Token／authx 等签名键值或带敏感 URL 时净化或安全回退且不影响签名。每次跳过只输出一次结果，保留冷却去重与阻塞 logger 的锁外检查；日志不增加 SQL／网络／文件读取，普通播放原有日志保持原契约。
+
+同步目录来源修改／删除提交后，同时覆盖 Emby 与飞牛的等待中、准备中及签名中旧作业；播放设置 Generation 未变化也必须撤销，旧任务无法发布。失败提交和幂等重放不误撤销，来源清单重建失败不能放过飞牛旧签名。取消不重置账号间隔、风控冷却或候选尝试次数；后续合法的新候选仍可正常进入队列。
+
+`TestPlaybackPreloadConfiguredPrefixes` 与 `TestPlaybackPreloadLifecycle` 覆盖 Emby 已配置全局／目录路径前缀、多个／重叠前缀、根端点兼容和原查询保留，Resolve 与 Account 均无热路径 SQL。未知／相似前缀、不同 origin、用户信息、fragment、编码／穿越路径、重复参数和非取链端点拒绝；模式代际变化、失败／过旧快照和来源通知后才运行的旧 resolver 不能签名或补查。
+
+后端运行以下包的普通测试和 vet，受影响的并发路径另运行 race；SQLite 和隔离 `QMS_TEST_POSTGRES_DSN` 验证新库／69→70、失败回滚重跑、字段省略／null／显式 0、旧逻辑 67–69／旧格式 66–69 适配及 70 往返，未知 shape 继续拒绝。未设置 DSN 的 skip 不算 PostgreSQL 通过。
+
+```sh
+cd backend
+go test . ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/...
+go test -race . ./internal/playback ./internal/controllers ./internal/models ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/service/emby
+go vet . ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/...
+go test -tags=integration ./internal/models ./internal/backup ./internal/db
+```
+
+前端用 Vitest 验证默认值／旧响应、保存失败、窄屏和键盘、飞牛跳转、同步目录不出现覆盖项，保留多端与本地代理相邻；运行类型检查、改动文件 lint／格式检查、构建和 `check:build`。用户文案说明收益、开启位置及支持范围，不展示内部配额或承诺所有客户端有效。
+
+真实客户端矩阵分别记录 Emby 网页／App、飞牛原生／兼容和实际版本，未观测入口单列。性能计时分别报告链接就绪、代理响应、媒体首字节和播放器首帧；本地延迟替身每条件至少 30 次，报告 p50／p95、样本和失败数。真实网盘仅少量串行正常请求并拉开间隔，遇风控、授权或超时停止，不为凑统计压测或造副本；少量真实签名样本不能宣称新开关、同时多端或首帧提速。测试会话、临时媒体与凭据验证后清理，正常缓存和服务日志不整库回滚。
 
 ## Emby 本地资料与外部 STRM 验证
 

@@ -144,6 +144,9 @@ func TestInitDBDoesNotCreateDefaultAdmin(t *testing.T) {
 	if settings.MultiPlaybackEnabled != 0 {
 		t.Fatalf("新库多端播放开关 = %d，期望默认关闭", settings.MultiPlaybackEnabled)
 	}
+	if settings.StrmPreloadEnabled != 0 || db.Db.Migrator().HasColumn(&SyncPath{}, "strm_preload_enabled") {
+		t.Fatal("预加载应默认关闭且只存在于全局设置")
+	}
 	if db.Db.Migrator().HasColumn(&SyncPath{}, "multi_playback_enabled") {
 		t.Fatal("多端播放应只存在于全局设置，不能扩散到同步目录")
 	}
@@ -414,6 +417,9 @@ func TestMigrateVersion61AddsAccountIdentityUniqueIndexes(t *testing.T) {
 	}
 	db.Db = testDb
 	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Db.AutoMigrate(&legacyAccountWithoutIdentityIndexes{}); err != nil {
 		t.Fatalf("创建旧账号表失败: %v", err)
 	}
@@ -921,6 +927,9 @@ func TestMigrateVersion59SeparatesEmbyRefreshTaskKeyFromLibraryID(t *testing.T) 
 	db.Db = testDb
 
 	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Db.Create(&Migrator{VersionCode: 59}).Error; err != nil {
 		t.Fatalf("创建迁移版本记录失败: %v", err)
 	}
@@ -1208,6 +1217,9 @@ func TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey(t *testing.T
 	db.Db = testDb
 
 	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Db.Create(&Migrator{VersionCode: 59}).Error; err != nil {
 		t.Fatalf("创建迁移版本记录失败: %v", err)
 	}
@@ -1258,6 +1270,9 @@ func TestMigrateVersion60SeparatesTransferRemoteIdentityFields(t *testing.T) {
 	}
 	db.Db = testDb
 	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Db.Create(&Migrator{VersionCode: 60}).Error; err != nil {
 		t.Fatalf("创建迁移版本记录失败: %v", err)
 	}
@@ -1874,6 +1889,9 @@ func TestMigrateVersion64KeepsHistoricalScanResultUnknown(t *testing.T) {
 	db.Db = testDB
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	createMigratorTestTable(t)
+	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1934,6 +1952,9 @@ func TestMigrateVersion64PreservesPartialSyncResultMigration(t *testing.T) {
 		t.Run(fixture.name, func(t *testing.T) {
 			setupSyncLedgerTestDB(t)
 			createMigratorTestTable(t)
+			if err := db.Db.AutoMigrate(&Settings{}); err != nil {
+				t.Fatal(err)
+			}
 			if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -2008,7 +2029,7 @@ func TestMigrateVersion64AddsSyncFileSiblingPathIndex(t *testing.T) {
 			if scenario == "identity_index_failure" && db.Db.Dialector.Name() != "sqlite" {
 				t.Skip("文件身份索引仅用于 SQLite")
 			}
-			if err := db.Db.AutoMigrate(&Migrator{}); err != nil {
+			if err := db.Db.AutoMigrate(&Migrator{}, &Settings{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.Db.Create(&Migrator{VersionCode: 64}).Error; err != nil {

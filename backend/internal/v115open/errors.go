@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // OpenAPIError 保留 115 开放平台返回的原始错误信息。
@@ -14,6 +17,21 @@ type OpenAPIError struct {
 	Code       int
 	Message    string
 	HTTPStatus int
+	RetryAfter time.Duration
+}
+
+func playbackRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > 0 && seconds <= int64((time.Duration(1<<63-1))/time.Second) {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	if deadline, err := http.ParseTime(value); err == nil && deadline.After(now) {
+		return deadline.Sub(now)
+	}
+	return 0
 }
 
 func NewOpenAPIError(code int, message string) *OpenAPIError {

@@ -190,7 +190,8 @@ func testStrmGenerationQueueMigration(t *testing.T, dialect string) {
 			if dialect == "postgres" {
 				db.Db = setupStrmGenerationQueuePostgres(t)
 			}
-			if err := db.Db.AutoMigrate(&Migrator{}, &DbUploadTask{}, &DbDownloadTask{}); err != nil {
+			// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
+			if err := db.Db.AutoMigrate(&Migrator{}, &DbUploadTask{}, &DbDownloadTask{}, &Settings{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.Db.Create(&Migrator{ID: 1, VersionCode: 64}).Error; err != nil {

@@ -468,9 +468,10 @@ func TestHttpProxy(c *gin.Context) {
 func GetStrmConfig(c *gin.Context) {
 	// 获取设置
 	models.LoadSettings() // 确保设置已加载
-	strm, multiPlaybackEnabled := models.SettingsGlobal.StrmSnapshot()
+	strm, multiPlaybackEnabled, preloadEnabled := models.SettingsGlobal.StrmConfigSnapshot()
 	data := strm.ToMap(false, true)
 	data["multi_playback_enabled"] = multiPlaybackEnabled
+	data["strm_preload_enabled"] = preloadEnabled
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 STRM 配置成功", Data: data})
 }
 
@@ -489,6 +490,7 @@ func GetStrmConfig(c *gin.Context) {
 // @Param delete_dir body integer false "是否删除空目录，1 删除 0 不删除"
 // @Param local_proxy body integer false "是否启用本地代理，1 启用 0 禁用"
 // @Param multi_playback_enabled body integer false "是否启用 115 多端直链播放，1 启用 0 禁用；实际代理请求自动跳过"
+// @Param strm_preload_enabled body integer false "是否启用 STRM 预加载，0 关闭 1 开启；省略时保留当前值"
 // @Param exclude_name body []string false "排除的文件名"
 // @Param download_meta body integer false "是否下载元数据，1 下载 0 不下载"
 // @Param add_path body integer false "是否添加路径，1 添加 2 不添加"
@@ -511,7 +513,7 @@ func UpdateStrmConfig(c *gin.Context) {
 	modelReq := req.ToModel()
 	previousStrm, _ := models.SettingsGlobal.StrmSnapshot()
 	// 更新设置
-	if !models.SettingsGlobal.UpdateStrm(modelReq, req.MultiPlaybackEnabled) {
+	if !models.SettingsGlobal.UpdateStrm(modelReq, req.MultiPlaybackEnabled, req.StrmPreloadEnabled) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新 STRM 配置失败", Data: nil})
 		return
 	}

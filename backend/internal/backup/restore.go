@@ -170,15 +170,18 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 	if len(plan.tables) == 0 {
 		return nil, fmt.Errorf("%w：备份中没有可恢复的模型文件", ErrArchiveInvalid)
 	}
-	if (models.MaxVersionCode == 68 || models.MaxVersionCode == 69) && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
+	if (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
 		if err := adaptEmbySyncRestorePlan(database, plan); err != nil {
 			return nil, err
 		}
 	}
-	if models.MaxVersionCode == 69 && (sourceVersion == 67 || sourceVersion == 68 || (plan.legacy && sourceVersion == 66)) {
+	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (sourceVersion == 67 || sourceVersion == 68 || (plan.legacy && sourceVersion == 66)) {
 		if err := adaptFnosProxyRestorePlan(database, plan); err != nil {
 			return nil, err
 		}
+	}
+	if models.MaxVersionCode == 70 && (sourceVersion == 67 || sourceVersion == 68 || sourceVersion == 69 || (plan.legacy && sourceVersion == 66)) {
+		adaptPreloadRestorePlan(plan)
 	}
 	// 浏览器会话一律清空；派生索引只从恢复后的原始记录重建。
 	for _, model := range models.AllTables {
@@ -486,9 +489,10 @@ func adaptLegacyVersion(row map[string]any) error {
 		return nil
 	}
 	// 66 → 67 只放宽文本列；后续新增表与配置默认值由恢复计划明确补齐。
-	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68 || models.MaxVersionCode == 69)) ||
-		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69)) ||
-		(version == 68 && models.MaxVersionCode == 69)) {
+	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
+		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
+		(version == 68 && (models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
+		(version == 69 && models.MaxVersionCode == 70)) {
 		row["version_code"] = int64(models.MaxVersionCode)
 		return nil
 	}

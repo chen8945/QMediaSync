@@ -49,6 +49,9 @@ describe('115 多端播放配置', () => {
     await flushPromises()
 
     const fields = wrapper.findAllComponents(ElFormItem).map((item) => item.props('prop'))
+    expect(fields.indexOf('strm_preload_enabled') + 1).toBe(
+      fields.indexOf('multi_playback_enabled'),
+    )
     expect(fields.indexOf('multi_playback_enabled') + 1).toBe(fields.indexOf('local_proxy'))
     const multi = formItem(wrapper, 'multi_playback_enabled')
     const proxy = formItem(wrapper, 'local_proxy')

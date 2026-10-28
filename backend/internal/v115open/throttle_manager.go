@@ -50,6 +50,10 @@ func (tm *ThrottleManager) IsThrottled() bool {
 
 // MarkThrottled 标记为限流状态，并启动恢复计时器
 func (tm *ThrottleManager) MarkThrottled(stats *RequestStats) {
+	tm.markThrottled(stats, false)
+}
+
+func (tm *ThrottleManager) markThrottled(stats *RequestStats, quiet bool) {
 	tm.Lock()
 	defer tm.Unlock()
 
@@ -61,7 +65,9 @@ func (tm *ThrottleManager) MarkThrottled(stats *RequestStats) {
 	tm.isThrottled = true
 	tm.throttleStartTime = time.Now()
 
-	helpers.V115Log.Warnf("检测到限流，将在 %.0f 秒后恢复", tm.throttleDuration.Seconds())
+	if !quiet {
+		helpers.V115Log.Warnf("检测到限流，将在 %.0f 秒后恢复", tm.throttleDuration.Seconds())
+	}
 
 	// 记录限流事件
 	if stats != nil {
@@ -69,18 +75,20 @@ func (tm *ThrottleManager) MarkThrottled(stats *RequestStats) {
 	}
 
 	// 启动恢复计时器
-	go tm.startRecoveryTimer()
+	go tm.startRecoveryTimer(quiet)
 }
 
 // startRecoveryTimer 启动恢复计时器
-func (tm *ThrottleManager) startRecoveryTimer() {
+func (tm *ThrottleManager) startRecoveryTimer(quiet bool) {
 	time.Sleep(tm.throttleDuration)
 
 	tm.Lock()
 	defer tm.Unlock()
 
 	tm.isThrottled = false
-	helpers.V115Log.Infof("限流已恢复，继续处理请求")
+	if !quiet {
+		helpers.V115Log.Infof("限流已恢复，继续处理请求")
+	}
 
 	// 发送恢复通知
 	select {

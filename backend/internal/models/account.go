@@ -13,6 +13,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/openlist"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/v115auth"
 	"qmediasync/internal/v115open"
 
@@ -117,16 +118,24 @@ func mapAccountIdentityError(err error, updateData map[string]any) error {
 	return err
 }
 
-func updateAccountWithIdentity(accountID uint, updateData map[string]any) error {
+func cancelAccountPreload(sourceType SourceType, accountID uint) {
+	if accountID != 0 {
+		// 本地账号可能已切换 UID，取消该账号全部旧身份且无需额外查询。
+		playback.DefaultPreloader.CancelAccount(playback.PreloadAccount{Provider: string(sourceType), AccountID: accountID})
+	}
+}
+
+func updateAccountWithIdentity(account *Account, updateData map[string]any) error {
 	// 账号授权字段在一条 UPDATE 中提交，唯一索引负责并发冲突判定。
 	// 不再先读后写，避免 SQLite 读快照升级为写事务时出现 SQLITE_BUSY_SNAPSHOT。
-	result := db.Db.Model(&Account{}).Where("id = ?", accountID).Updates(updateData)
+	result := db.Db.Model(&Account{}).Where("id = ?", account.ID).Updates(updateData)
 	if result.Error != nil {
 		return mapAccountIdentityError(result.Error, updateData)
 	}
 	if result.RowsAffected != 1 {
 		return gorm.ErrRecordNotFound
 	}
+	cancelAccountPreload(account.SourceType, account.ID)
 	return nil
 }
 
@@ -135,8 +144,8 @@ type accountTokenSnapshot struct {
 	refreshToken string
 }
 
-func persistAccountTokenFields(accountID uint, updateData map[string]any, expected *accountTokenSnapshot) error {
-	query := db.Db.Model(&Account{}).Where("id = ?", accountID)
+func persistAccountTokenFields(account *Account, updateData map[string]any, expected *accountTokenSnapshot) error {
+	query := db.Db.Model(&Account{}).Where("id = ?", account.ID)
 	if expected != nil {
 		query = query.Where("token = ? AND refresh_token = ?", expected.token, expected.refreshToken)
 	}
@@ -146,6 +155,9 @@ func persistAccountTokenFields(accountID uint, updateData map[string]any, expect
 	}
 	if expected != nil && result.RowsAffected != 1 {
 		return gorm.ErrRecordNotFound
+	}
+	if result.RowsAffected == 1 {
+		cancelAccountPreload(account.SourceType, account.ID)
 	}
 	return nil
 }
@@ -159,7 +171,7 @@ func (account *Account) applyTokenFields(token string, refreshToken string, expi
 
 func (account *Account) updateToken(token string, refreshToken string, expiresTime int64, expected *accountTokenSnapshot) error {
 	expiresAt := time.Now().Unix() + expiresTime
-	if err := persistAccountTokenFields(account.ID, map[string]any{
+	if err := persistAccountTokenFields(account, map[string]any{
 		"token":               token,
 		"refresh_token":       refreshToken,
 		"token_expiries_time": expiresAt,
@@ -202,7 +214,7 @@ func IsTokenCredentialsChanged(err error) bool {
 
 // 更新开放平台账号对应的用户信息
 func (account *Account) UpdateUser(userId string, username string) bool {
-	err := updateAccountWithIdentity(account.ID, map[string]any{
+	err := updateAccountWithIdentity(account, map[string]any{
 		"user_id":  userId,
 		"username": username,
 	})
@@ -259,7 +271,7 @@ func (account *Account) replaceV115Authorization(source v115auth.Source, token s
 		"token_failed_reason": "",
 	}
 
-	if err := updateAccountWithIdentity(account.ID, updateData); err != nil {
+	if err := updateAccountWithIdentity(account, updateData); err != nil {
 		helpers.AppLogger.Errorf("原子替换 115 账号授权失败：%v", err)
 		return err
 	}
@@ -301,7 +313,7 @@ func (account *Account) ReplaceBaiDuPanAuthorization(token string, refreshToken 
 		"username":            username,
 		"token_failed_reason": "",
 	}
-	if err := updateAccountWithIdentity(account.ID, updateData); err != nil {
+	if err := updateAccountWithIdentity(account, updateData); err != nil {
 		helpers.AppLogger.Errorf("原子更新百度网盘授权失败：%v", err)
 		return err
 	}
@@ -363,16 +375,19 @@ func (account *Account) Delete() error {
 		return fmt.Errorf("开放平台账号 %v 有关联的同步目录，不能删除", account.ID)
 	}
 
-	err := db.Db.Delete(account).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("删除开放平台账号失败：%v", err)
-		return err
+	result := db.Db.Delete(account)
+	if result.Error != nil {
+		helpers.AppLogger.Errorf("删除开放平台账号失败：%v", result.Error)
+		return result.Error
+	}
+	if result.RowsAffected != 0 {
+		cancelAccountPreload(account.SourceType, account.ID)
 	}
 	return nil
 }
 
 func (account *Account) clearToken(reason string, expected *accountTokenSnapshot) bool {
-	if err := persistAccountTokenFields(account.ID, map[string]any{
+	if err := persistAccountTokenFields(account, map[string]any{
 		"token":               "",
 		"refresh_token":       "",
 		"token_expiries_time": 0,
@@ -511,6 +526,12 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 		"user_id":  candidate.UserId,
 	}
 	// 网络验证已结束；数据库提交与缓存安装保持同序，避免慢编辑覆盖后来的配置。
+	committed := false
+	defer func() {
+		if committed {
+			cancelAccountPreload(account.SourceType, account.ID)
+		}
+	}()
 	openListAuthorizationMu.Lock()
 	defer openListAuthorizationMu.Unlock()
 	result := openListAccountIfCurrent(account.ID, oldBaseUrl, oldUsername, oldPassword, oldToken).Updates(updateData)
@@ -523,6 +544,7 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	}
 	*account = candidate
 	account.GetOpenListClient()
+	committed = true
 	return nil
 }
 
@@ -661,6 +683,7 @@ func CreateAccountFull(sourceType SourceType, AppId string, name string, token s
 	if account == nil {
 		account = &Account{}
 	}
+	previousSource, previousID := account.SourceType, account.ID
 	now := time.Now().Unix()
 	account.SourceType = sourceType
 	account.AppId = AppId
@@ -678,6 +701,7 @@ func CreateAccountFull(sourceType SourceType, AppId string, name string, token s
 		helpers.AppLogger.Errorf("保存开放平台账号失败：%v", err)
 		return nil
 	}
+	cancelAccountPreload(previousSource, previousID)
 	return account
 }
 
@@ -793,6 +817,12 @@ func HandleOpenListTokenSaveSync(event helpers.Event) helpers.EventResult {
 	if !ok || eventData.AccountID == 0 || eventData.Token == "" {
 		return helpers.EventResult{Success: false, Error: fmt.Errorf("OpenList 访问凭证保存事件缺少有效的登录快照")}
 	}
+	committed := false
+	defer func() {
+		if committed {
+			cancelAccountPreload(SourceTypeOpenList, eventData.AccountID)
+		}
+	}()
 	openListAuthorizationMu.Lock()
 	defer openListAuthorizationMu.Unlock()
 	result := openListAccountIfCurrent(eventData.AccountID, eventData.BaseURL, eventData.Username, eventData.Password, eventData.PreviousToken).
@@ -809,5 +839,6 @@ func HandleOpenListTokenSaveSync(event helpers.Event) helpers.EventResult {
 	if result.RowsAffected == 0 {
 		helpers.AppLogger.Infof("OpenList 账号 %d 配置已更新或已删除，跳过旧登录结果", eventData.AccountID)
 	}
+	committed = result.RowsAffected != 0
 	return helpers.EventResult{Success: true}
 }

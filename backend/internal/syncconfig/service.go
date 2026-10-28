@@ -207,14 +207,14 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 		LocalPath: command.SyncPath.LocalPath, RemotePath: command.SyncPath.RemotePath,
 	}
 	var release func()
+	var previous *models.SyncPath
 	positionChanged := command.ID == 0
 	if command.ID == 0 {
 		release, err = syncscope.Acquire(ctx, nextPath.Scope())
 	} else {
-		var current *models.SyncPath
-		current, release, err = models.AcquireSyncPathConfigScope(ctx, service.db, command.ID, nextPath.Scope())
+		previous, release, err = models.AcquireSyncPathConfigScope(ctx, service.db, command.ID, nextPath.Scope())
 		if err == nil {
-			positionChanged = current.SourceType != nextPath.SourceType || current.AccountId != nextPath.AccountId || current.LocalPath != nextPath.LocalPath || current.RemotePath != nextPath.RemotePath
+			positionChanged = previous.SourceType != nextPath.SourceType || previous.AccountId != nextPath.AccountId || previous.LocalPath != nextPath.LocalPath || previous.RemotePath != nextPath.RemotePath
 		}
 	}
 	if err != nil {
@@ -325,8 +325,13 @@ func (service *Service) Save(ctx context.Context, command SaveSyncPathCommand) (
 	if err := service.createLocalDirectory(result.SyncPath.GetFullLocalPath()); err != nil {
 		result.Warnings = append(result.Warnings, "同步目录已保存，但创建本地目录失败")
 	}
+	originsChanged := previous == nil || previous.LocalPath != result.SyncPath.LocalPath ||
+		previous.RemotePath != result.SyncPath.RemotePath || previous.StrmBaseUrl != result.SyncPath.StrmBaseUrl
 	// 重载服务可能等待任务结束，先让其他文件处理继续。
 	release()
+	if originsChanged {
+		models.NotifyStrmOriginsChanged()
+	}
 	if err := service.reloadSyncCron(); err != nil {
 		result.Warnings = append(result.Warnings, "同步目录已保存，但重载定时同步任务失败")
 	}

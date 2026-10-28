@@ -150,21 +150,19 @@ func TestV115URLValidityCheckTimeoutCapsUnderCacheLockWait(t *testing.T) {
 
 func TestGet115UrlByPickCodeSkipsHEADWhenURLValidityCheckDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	setupControllerTestDB(t, &models.Account{})
+	setupControllerTestDB(t, &models.Account{}, &models.Settings{})
 
 	originalCache := db.Cache
-	originalSettings := models.SettingsGlobal
 	db.Cache = db.CacheGlobal{
 		CacheInstance: freecache.NewCache(1024 * 1024),
 		CacheSize:     1024 * 1024,
 	}
-	models.SettingsGlobal = &models.Settings{
+	setup115PlaybackSettings(t, &models.Settings{
 		URLValidityCheckEnabled:        0,
 		URLValidityCheckTimeoutSeconds: 1,
-	}
+	})
 	t.Cleanup(func() {
 		db.Cache = originalCache
-		models.SettingsGlobal = originalSettings
 	})
 
 	account := &models.Account{
@@ -210,23 +208,21 @@ func TestGet115UrlByPickCodeSkipsHEADWhenURLValidityCheckDisabled(t *testing.T) 
 
 func TestGet115UrlByPickCode获取缓存锁超时时返回错误响应(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	setupControllerTestDB(t, &models.Account{})
+	setupControllerTestDB(t, &models.Account{}, &models.Settings{})
 
 	originalCache := db.Cache
-	originalSettings := models.SettingsGlobal
 	originalLockWait := v115URLCacheLockWait
 	db.Cache = db.CacheGlobal{
 		CacheInstance: freecache.NewCache(1024 * 1024),
 		CacheSize:     1024 * 1024,
 	}
-	models.SettingsGlobal = &models.Settings{
+	setup115PlaybackSettings(t, &models.Settings{
 		URLValidityCheckEnabled:        1,
 		URLValidityCheckTimeoutSeconds: 3,
-	}
+	})
 	v115URLCacheLockWait = 20 * time.Millisecond
 	t.Cleanup(func() {
 		db.Cache = originalCache
-		models.SettingsGlobal = originalSettings
 		v115URLCacheLockWait = originalLockWait
 	})
 
@@ -265,22 +261,20 @@ func TestGet115UrlByPickCode获取缓存锁超时时返回错误响应(t *testin
 
 func TestGet115UrlByPickCode关闭校验时按播放模式隔离缓存(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	setupControllerTestDB(t, &models.Account{})
+	setupControllerTestDB(t, &models.Account{}, &models.Settings{})
 
 	originalCache := db.Cache
-	originalSettings := models.SettingsGlobal
 	db.Cache = db.CacheGlobal{
 		CacheInstance: freecache.NewCache(1024 * 1024),
 		CacheSize:     1024 * 1024,
 	}
-	models.SettingsGlobal = &models.Settings{
+	setup115PlaybackSettings(t, &models.Settings{
 		LocalProxy:                     1,
 		URLValidityCheckEnabled:        0,
 		URLValidityCheckTimeoutSeconds: 1,
-	}
+	})
 	t.Cleanup(func() {
 		db.Cache = originalCache
-		models.SettingsGlobal = originalSettings
 	})
 
 	account := &models.Account{
@@ -343,12 +337,12 @@ const urlValidityTestUA = "qms-head-cancel-test"
 
 func setup115URLValidityPlayback(t *testing.T, cachedURL string) (*gin.Engine, string, string, *atomic.Int64) {
 	t.Helper()
-	setupControllerTestDB(t, &models.Account{})
+	setupControllerTestDB(t, &models.Account{}, &models.Settings{})
 	setup115PlaybackCache(t)
-	previousSettings, previousLogger := models.SettingsGlobal, helpers.V115Log
-	models.SettingsGlobal = &models.Settings{URLValidityCheckEnabled: 1, URLValidityCheckTimeoutSeconds: 9}
+	setup115PlaybackSettings(t, &models.Settings{URLValidityCheckEnabled: 1, URLValidityCheckTimeoutSeconds: 9})
+	previousLogger := helpers.V115Log
 	helpers.V115Log = helpers.AppLogger
-	t.Cleanup(func() { models.SettingsGlobal, helpers.V115Log = previousSettings, previousLogger })
+	t.Cleanup(func() { helpers.V115Log = previousLogger })
 	account := &models.Account{ID: 115999, SourceType: models.SourceType115, UserId: "head-cancel-user"}
 	if err := db.Db.Create(account).Error; err != nil {
 		t.Fatal(err)

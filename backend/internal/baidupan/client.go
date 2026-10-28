@@ -6,15 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/validation"
 	openapiclient "qmediasync/openxpanapi"
 )
 
@@ -455,6 +459,154 @@ func (c *Client) GetFileDetail(ctx context.Context, fileId string, dlink int32) 
 		return nil, fmt.Errorf("百度网盘详情响应条目无效")
 	}
 	return fileDetail.List[0], nil
+}
+
+// PreloadDownloadError 只公开可记录的分类标量，不携带 URL、响应正文或外部错误文字。
+type PreloadDownloadError struct {
+	HTTPStatus   int
+	Code         int
+	RetryAfter   time.Duration
+	Risk         bool
+	Unauthorized bool
+	Transient    bool
+}
+
+func (e *PreloadDownloadError) Error() string { return "百度网盘预加载取链未完成" }
+
+type preloadDownloadTransport struct{ base http.RoundTripper }
+
+func (t preloadDownloadTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(req)
+	if response != nil && response.Body != nil {
+		response.Body = &preloadDownloadBody{ReadCloser: response.Body, remaining: 65536}
+	}
+	return response, err
+}
+
+type preloadDownloadBody struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func (b *preloadDownloadBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if int64(len(p)) > b.remaining+1 {
+		p = p[:b.remaining+1]
+	}
+	n, err := b.ReadCloser.Read(p)
+	if int64(n) > b.remaining {
+		return 0, errors.New("百度网盘预加载响应超限")
+	}
+	b.remaining -= int64(n)
+	return n, err
+}
+
+// GetPreloadDownloadURL 使用固定 Token 和现有 SDK，仅执行一次受限文件元数据请求。
+// 配置和 HTTP 客户端按本次调用复制，不能改变普通共享客户端或触发媒体重定向。
+func (c *Client) GetPreloadDownloadURL(ctx context.Context, fileID string) (string, error) {
+	failure := &PreloadDownloadError{}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	id, err := strconv.ParseUint(fileID, 10, 64)
+	token := c.getAccessToken()
+	if err != nil || id == 0 || token == "" {
+		return "", failure
+	}
+	config := *c.client.GetConfig()
+	config.Debug = false
+	config.DefaultHeader = make(map[string]string, len(config.DefaultHeader)+1)
+	for key, value := range c.client.GetConfig().DefaultHeader {
+		config.DefaultHeader[key] = value
+	}
+	// 禁止自动解压，未知压缩响应直接拒绝，编码体和解码体都受同一上限约束。
+	config.DefaultHeader["Accept-Encoding"] = "identity"
+	baseHTTP := config.HTTPClient
+	if baseHTTP == nil {
+		baseHTTP = http.DefaultClient
+	}
+	httpClient := *baseHTTP
+	httpClient.Jar = nil
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	httpClient.Transport = preloadDownloadTransport{base: transport}
+	config.HTTPClient = &httpClient
+	client := openapiclient.NewAPIClient(&config)
+	body, response, requestErr := client.MultimediafileApi.Xpanmultimediafilemetas(ctx).
+		AccessToken(token).Fsids("[" + strconv.FormatUint(id, 10) + "]").Dlink("1").Execute()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if response == nil {
+		if errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, context.DeadlineExceeded) {
+			return "", requestErr
+		}
+		if dns, ok := errors.AsType[*net.DNSError](requestErr); ok && dns.IsNotFound {
+			return "", failure
+		}
+		if _, ok := errors.AsType[*net.OpError](requestErr); ok {
+			failure.Transient = true
+		}
+		return "", failure
+	}
+	defer response.Body.Close()
+	failure.HTTPStatus = response.StatusCode
+	if seconds, parseErr := strconv.ParseInt(response.Header.Get("Retry-After"), 10, 64); parseErr == nil {
+		if seconds > 0 && seconds <= int64((time.Duration(1<<63-1))/time.Second) {
+			failure.RetryAfter = time.Duration(seconds) * time.Second
+		}
+	} else if until, parseErr := http.ParseTime(response.Header.Get("Retry-After")); parseErr == nil && until.After(time.Now()) {
+		failure.RetryAfter = time.Until(until)
+	}
+	var envelope struct {
+		Errno *int          `json:"errno"`
+		List  []*FileDetail `json:"list"`
+	}
+	// SDK 在非 2xx 时不返回正文值；重新读取它已受限、可重读的响应副本即可分类。
+	if requestErr != nil && response.Body != nil {
+		if data, readErr := io.ReadAll(response.Body); readErr == nil && len(data) <= 65536 {
+			body = string(data)
+		}
+	}
+	parseErr := json.Unmarshal([]byte(body), &envelope)
+	if envelope.Errno != nil {
+		failure.Code = *envelope.Errno
+	}
+	failure.Risk = response.StatusCode == http.StatusTooManyRequests || failure.Code == 20012 || failure.Code == 31034
+	failure.Unauthorized = response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || isTokenErrno(int64(failure.Code))
+	if failure.Risk || failure.Unauthorized {
+		return "", failure
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		failure.Transient = failure.Code == 0 && (response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504)
+		return "", failure
+	}
+	if requestErr != nil || parseErr != nil || (response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity") ||
+		envelope.Errno == nil || failure.Code != 0 || len(envelope.List) != 1 || envelope.List[0] == nil {
+		return "", failure
+	}
+	file := envelope.List[0]
+	if file.IsDir != 0 || file.FsID != id || validation.DownloadProxyURL("url", file.Dlink) != nil {
+		return "", failure
+	}
+	download, err := url.Parse(file.Dlink)
+	if err != nil || download.User != nil || download.Fragment != "" {
+		return "", failure
+	}
+	host := strings.ToLower(strings.TrimSuffix(download.Hostname(), "."))
+	if host != "d.pcs.baidu.com" && host != "baidupcs.com" && !strings.HasSuffix(host, ".baidupcs.com") {
+		return "", failure
+	}
+	separator := "?"
+	if strings.Contains(file.Dlink, "?") {
+		separator = "&"
+	}
+	return file.Dlink + separator + "access_token=" + url.QueryEscape(token), nil
 }
 
 func (c *Client) Mkdir(ctx context.Context, path string) error {

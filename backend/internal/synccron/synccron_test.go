@@ -37,11 +37,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := testDB.AutoMigrate(&models.Account{}); err != nil {
-		os.Stderr.WriteString("迁移 Account 失败: " + err.Error() + "\n")
+	if err := testDB.AutoMigrate(&models.Account{}, &models.Settings{}); err != nil {
+		os.Stderr.WriteString("迁移测试表失败: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	db.Db = testDB
+	if err := testDB.Create(&models.Settings{}).Error; err != nil {
+		os.Stderr.WriteString("创建测试设置失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	models.LoadSettings()
 	os.Exit(m.Run())
 }
 
@@ -52,9 +57,16 @@ func TestSyncRecordRetentionDays(t *testing.T) {
 }
 
 func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T) {
-	previousSettings := models.SettingsGlobal
-	models.SettingsGlobal = &models.Settings{MultiPlaybackEnabled: 1}
-	t.Cleanup(func() { models.SettingsGlobal = previousSettings })
+	previousEnabled := models.SettingsGlobal.MultiPlaybackEnabled
+	setEnabled := func(enabled int) {
+		t.Helper()
+		if err := db.Db.Model(&models.Settings{}).Where("id = ?", models.SettingsGlobal.ID).Update("multi_playback_enabled", enabled).Error; err != nil {
+			t.Fatal(err)
+		}
+		models.LoadSettings()
+	}
+	setEnabled(1)
+	t.Cleanup(func() { setEnabled(previousEnabled) })
 	if err := db.Db.Where("1 = 1").Delete(&models.Account{}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +124,7 @@ func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T)
 		{name: "reenabled", enabled: 1, wantCalls: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			models.SettingsGlobal.MultiPlaybackEnabled = tc.enabled
+			setEnabled(tc.enabled)
 			clear(seen)
 			cleanup115PlaybackDirectories(t.Context())
 			if len(seen) != tc.wantCalls {

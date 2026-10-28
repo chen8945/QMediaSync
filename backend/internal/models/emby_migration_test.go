@@ -112,7 +112,8 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 
 func seedEmbyMigrationVersion65(t *testing.T, conn *gorm.DB) ([]EmbyMediaItem, []EmbyMediaSyncFile) {
 	t.Helper()
-	if err := conn.AutoMigrate(&Migrator{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}); err != nil {
+	// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
+	if err := conn.AutoMigrate(&Migrator{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}, &Settings{}); err != nil {
 		t.Fatal(err)
 	}
 	items := []EmbyMediaItem{

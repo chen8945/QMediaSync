@@ -10,18 +10,28 @@ import (
 
 func supportsLogicalSchemaVersion(version int) bool {
 	return version == models.MaxVersionCode ||
-		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69)) ||
-		(version == 68 && models.MaxVersionCode == 69)
+		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
+		(version == 68 && (models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
+		(version == 69 && models.MaxVersionCode == 70)
 }
 
 // logicalTablesForSchemaVersion 只回退明确新增的表和列，其他清单、行及文件校验保持原样。
 func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logicalTable {
-	if models.MaxVersionCode == 69 && (version == 67 || version == 68) {
+	if models.MaxVersionCode == 70 && (version == 67 || version == 68 || version == 69) {
+		for i := range tables {
+			if tables[i].Name == "settings" {
+				tables[i].Columns = slices.DeleteFunc(tables[i].Columns, func(column logicalColumn) bool {
+					return column.Name == "strm_preload_enabled"
+				})
+			}
+		}
+	}
+	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (version == 67 || version == 68) {
 		tables = slices.DeleteFunc(tables, func(table logicalTable) bool {
 			return table.Name == "fnos_proxy_config"
 		})
 	}
-	if version != 67 || (models.MaxVersionCode != 68 && models.MaxVersionCode != 69) {
+	if version != 67 || (models.MaxVersionCode != 68 && models.MaxVersionCode != 69 && models.MaxVersionCode != 70) {
 		return tables
 	}
 	tables = slices.DeleteFunc(tables, func(table logicalTable) bool {
@@ -38,12 +48,33 @@ func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logical
 }
 
 func logicalExclusionsForSchemaVersion(excluded []logicalExclusion, version int) []logicalExclusion {
-	if models.MaxVersionCode == 69 && (version == 67 || version == 68) {
+	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (version == 67 || version == 68) {
 		return slices.DeleteFunc(excluded, func(item logicalExclusion) bool {
 			return item.Name == "fnos_proxy_config"
 		})
 	}
 	return excluded
+}
+
+// adaptPreloadRestorePlan 只为已验证的旧版本补关闭值，不继承目标机的预加载开关。
+func adaptPreloadRestorePlan(plan *restorePlan) {
+	for i := range plan.tables {
+		table := &plan.tables[i]
+		if table.schema.Table != "settings" && table.schema.Table != "migrator" {
+			continue
+		}
+		readRows, name := table.readRows, table.schema.Table
+		table.readRows = func(consume func(map[string]any) error) error {
+			return readRows(func(row map[string]any) error {
+				if name == "settings" {
+					row["strm_preload_enabled"] = int64(0)
+				} else {
+					row["version_code"] = int64(70)
+				}
+				return consume(row)
+			})
+		}
+	}
 }
 
 // adaptFnosProxyRestorePlan 补空 69 新增的配置表，不保留目标机旧的启用配置。

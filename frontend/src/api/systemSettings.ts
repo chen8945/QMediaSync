@@ -14,6 +14,7 @@ export interface StrmSettings {
   upload_meta: 0 | 1 | 2
   download_meta: 0 | 1
   delete_dir: 0 | 1
+  strm_preload_enabled: 0 | 1
   multi_playback_enabled: 0 | 1
   local_proxy: 0 | 1
   exclude_name_arr: string[]
@@ -69,6 +70,7 @@ export const systemSettingsPublicMessages: Readonly<Record<string, string>> = {
   'meta_ext_arr：不能包含空白字符': '元数据扩展名不能包含空白字符',
   'meta_ext_arr：扩展名必须以 . 开头': '元数据扩展名必须以 . 开头',
   'local_proxy：不是允许的取值': '本地代理播放设置无效',
+  'strm_preload_enabled：不是允许的取值': 'STRM 预加载设置无效',
   'multi_playback_enabled：不是允许的取值': '115 多端播放设置无效',
   'upload_meta：不是允许的取值': '网盘不存在的元数据处理设置无效',
   'download_meta：不是允许的取值': '下载元数据设置无效',

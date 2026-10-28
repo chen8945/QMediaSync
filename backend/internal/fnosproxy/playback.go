@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"qmediasync/internal/backup"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 )
 
@@ -25,7 +26,6 @@ var (
 	streamRoute       = regexp.MustCompile(`(?i)^/Videos/([^/]+)/(?:stream|original)(?:\.[a-z0-9]+)?$`)
 	masterRoute       = regexp.MustCompile(`(?i)^/Videos/([^/]+)/master\.m3u8$`)
 	fileRoute         = regexp.MustCompile(`(?i)^/Items/([^/]+)/(?:Download|File)$`)
-	tokenInAuth       = regexp.MustCompile(`(?i)(?:^|[,\s])Token\s*=\s*"([^"\r\n]+)"`)
 )
 
 type playbackRoute struct {
@@ -98,6 +98,7 @@ func effectiveCredentials(r *http.Request) (http.Header, string, bool) {
 	if !ok {
 		return headers, "", false
 	}
+	authHasToken := make(map[string]bool, 2)
 	for _, name := range []string{"X-Emby-Authorization", "Authorization", "X-Emby-Token", "X-MediaBrowser-Token"} {
 		values := headers.Values(name)
 		if len(values) > 1 {
@@ -109,12 +110,14 @@ func effectiveCredentials(r *http.Request) (http.Header, string, bool) {
 		value := values[0]
 		token := value
 		if name == "X-Emby-Authorization" || name == "Authorization" {
-			matches := tokenInAuth.FindAllStringSubmatch(value, -1)
-			if len(matches) > 1 {
+			attributes, valid := playback.EmbyAuthAttributes(value)
+			tokens := attributes["token"]
+			if !valid || len(tokens) > 1 || len(tokens) == 1 && tokens[0] == "" {
 				return headers, "", false
 			}
-			if len(matches) == 1 {
-				token = matches[0][1]
+			if len(tokens) == 1 {
+				token = tokens[0]
+				authHasToken[name] = true
 			} else if strings.HasPrefix(strings.ToLower(value), "bearer ") {
 				token = strings.TrimSpace(value[len("bearer "):])
 			} else {
@@ -136,11 +139,11 @@ func effectiveCredentials(r *http.Request) (http.Header, string, bool) {
 	}
 	if selected != "" {
 		if current := headers.Get("X-Emby-Authorization"); current != "" {
-			if !tokenInAuth.MatchString(current) {
+			if !authHasToken["X-Emby-Authorization"] {
 				headers.Set("X-Emby-Authorization", current+`, Token="`+selected+`"`)
 			}
 		} else if strings.HasPrefix(strings.ToLower(headers.Get("Authorization")), "mediabrowser ") {
-			if !tokenInAuth.MatchString(headers.Get("Authorization")) {
+			if !authHasToken["Authorization"] {
 				headers.Set("Authorization", headers.Get("Authorization")+`, Token="`+selected+`"`)
 			}
 		} else {
@@ -413,7 +416,8 @@ func (inst *instance) rewritePlaybackInfo(response *http.Response, itemID string
 		return nil
 	}
 	changed := false
-	for _, raw := range media {
+	observedSources := itemSources(itemID, payload)
+	for index, raw := range media {
 		value, ok := raw.(map[string]any)
 		if !ok {
 			continue
@@ -425,6 +429,9 @@ func (inst *instance) rewritePlaybackInfo(response *http.Response, itemID string
 			}
 			if _, ok := inst.resolveSource(response.Request.Context(), response.Request, source); !ok {
 				continue
+			}
+			if len(observedSources) == len(media) {
+				observedSources[index] = source
 			}
 			query := url.Values{"MediaSourceId": {source.ID}, "static": {"true"}}
 			if token := requestToken(response.Request); token != "" {
@@ -439,6 +446,7 @@ func (inst *instance) rewritePlaybackInfo(response *http.Response, itemID string
 			changed = true
 		}
 	}
+	inst.observeCompatibleSource(response.Request, itemID, observedSources, payload)
 	if !changed {
 		return nil
 	}

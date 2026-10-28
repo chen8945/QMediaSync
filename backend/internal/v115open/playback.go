@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,30 @@ var playbackClientOnce sync.Once
 var playbackHTTPClient atomic.Pointer[resty.Client]
 
 type playbackOperationKey struct{}
+type preloadOperationKey struct{}
+
+// WithPreloadOperation 标记可信内部预加载用途；不得从客户端 Header 构造。
+func WithPreloadOperation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, preloadOperationKey{}, true)
+}
+
+func isPreloadOperation(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	preload, _ := ctx.Value(preloadOperationKey{}).(bool)
+	return preload
+}
+
+func playbackRedirect(req *http.Request, via []*http.Request) error {
+	if isPreloadOperation(req.Context()) {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
 
 // WithPlaybackOperation 将本次生成的操作标识附加到播放请求日志，不能传入凭据或 URL。
 func WithPlaybackOperation(ctx context.Context, operationID string) context.Context {
@@ -30,7 +55,8 @@ func WithPlaybackOperation(ctx context.Context, operationID string) context.Cont
 func NewPlaybackClient(accountID uint, appID, token, refreshToken string) *OpenClient {
 	playbackClientOnce.Do(func() {
 		// Open API 使用请求级 Authorization，共享连接池不能同时共享账号 Cookie。
-		playbackHTTPClient.Store(resty.New().SetCookieJar(nil).SetRetryCount(0))
+		playbackHTTPClient.Store(resty.New().SetCookieJar(nil).SetRetryCount(0).
+			SetRedirectPolicy(resty.RedirectPolicyFunc(playbackRedirect)))
 	})
 	client := &OpenClient{AccountId: accountID, client: playbackHTTPClient.Load(), playback: true}
 	client.credentials.Store(&clientCredentials{appID: appID, accessToken: token, refreshToken: refreshToken})
@@ -68,6 +94,9 @@ func (c *OpenClient) doPlaybackRequest(
 	defer cancel()
 	req.SetContext(ctx).SetTimeout(options.Timeout).SetRetryCount(0).
 		SetAuthToken(credentials.accessToken).SetResponseDoNotParse(true)
+	if isPreloadOperation(ctx) {
+		req.SetResponseBodyLimit(65536)
+	}
 	if req.Header.Get("User-Agent") == "" {
 		req.SetHeader("User-Agent", DEFAULTUA)
 	}
@@ -107,6 +136,10 @@ func (c *OpenClient) doPlaybackRequest(
 }
 
 func logPlaybackRequest(req *QueuedRequest, queueWait, httpDuration time.Duration, response *resty.Response, data *RespBaseBool[json.RawMessage], err error) {
+	// 后台持同键锁期间不写日志，由协调器在释放锁后输出脱敏终态。
+	if isPreloadOperation(req.Ctx) {
+		return
+	}
 	phase := "unknown"
 	if endpoint, parseErr := url.Parse(req.URL); parseErr == nil {
 		phase = endpoint.Path

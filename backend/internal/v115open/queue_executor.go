@@ -2,6 +2,7 @@ package v115open
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -299,6 +300,11 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 	}
 	httpStart := time.Now()
 	response, respData, respBytes, err := qe.executeRequest(req)
+	if req.Playback && response != nil {
+		if apiErr, ok := errors.AsType[*OpenAPIError](err); ok {
+			apiErr.RetryAfter = playbackRetryAfter(response.Header().Get("Retry-After"), time.Now())
+		}
+	}
 	if req.Playback {
 		logPlaybackRequest(req, httpStart.Sub(req.CreatedAt), time.Since(httpStart), response, respData, err)
 	}
@@ -309,11 +315,11 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 	isThrottled := false
 	if respData != nil && respData.Code == REQUEST_MAX_LIMIT_CODE {
 		isThrottled = true
-		qe.throttleManager.MarkThrottled(qe.stats)
+		qe.throttleManager.markThrottled(qe.stats, isPreloadOperation(req.Ctx))
 	}
 	if req.Playback && IsRateLimited(err) {
 		isThrottled = true
-		qe.throttleManager.MarkThrottled(qe.stats)
+		qe.throttleManager.markThrottled(qe.stats, isPreloadOperation(req.Ctx))
 	}
 
 	// 记录请求
@@ -346,7 +352,9 @@ func (qe *QueueExecutor) handleRequest(req *QueuedRequest) {
 		IsThrottled: isThrottled,
 	}:
 	default:
-		helpers.V115Log.Warnf("响应通道已关闭或已满，丢弃响应：%s %s", req.Method, req.URL)
+		if !isPreloadOperation(req.Ctx) {
+			helpers.V115Log.Warnf("响应通道已关闭或已满，丢弃响应：%s %s", req.Method, req.URL)
+		}
 	}
 
 	// 关闭响应通道
@@ -378,6 +386,13 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 
 	// 解析响应
 	defer response.Body.Close()
+	if isPreloadOperation(req.Ctx) && (response.StatusCode() < http.StatusOK || response.StatusCode() >= http.StatusMultipleChoices) {
+		// 保留业务拒绝码，禁止把 API 重定向响应当成一次签名成功。
+		resBytes, _ := io.ReadAll(response.Body)
+		data := &RespBaseBool[json.RawMessage]{}
+		_ = json.Unmarshal(resBytes, data)
+		return response, data, nil, playbackResponseError(response.StatusCode(), data)
+	}
 	if !req.Playback && response.StatusCode() == http.StatusUnauthorized {
 		return response, nil, nil, &OpenAPIError{HTTPStatus: http.StatusUnauthorized, Message: "115 账号授权失败"}
 	}
@@ -401,7 +416,9 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 			if req.Playback && response.StatusCode() >= http.StatusBadRequest {
 				return response, nil, resBytes, playbackResponseError(response.StatusCode(), nil)
 			}
-			helpers.V115Log.Errorf("解析响应失败：%s", bodyErr.Error())
+			if !isPreloadOperation(req.Ctx) {
+				helpers.V115Log.Errorf("解析响应失败：%s", bodyErr.Error())
+			}
 			return response, resp, resBytes, bodyErr
 		}
 		resp = &RespBaseBool[json.RawMessage]{
@@ -477,7 +494,9 @@ func (qe *QueueExecutor) EnqueueRequest(req *QueuedRequest) {
 	qe.Lock()
 	if !qe.running || qe.requestQueue == nil {
 		qe.Unlock()
-		helpers.V115Log.Error("队列执行器未启动")
+		if req == nil || !isPreloadOperation(req.Ctx) {
+			helpers.V115Log.Error("队列执行器未启动")
+		}
 		if req != nil && req.ResponseChan != nil {
 			replyRequestError(req, fmt.Errorf("队列执行器未启动"))
 		}

@@ -53,6 +53,7 @@ const mountSettings = async (initial = settings(), failLoad = false) => {
         component: { template: '<div />' },
         meta: { title: '飞牛影视', requiresAuth: false, page: { variant: 'settings' } },
       },
+      { path: '/settings/strm', component: { template: '<div />' } },
     ],
   })
   await router.push('/')
@@ -66,7 +67,7 @@ const mountSettings = async (initial = settings(), failLoad = false) => {
     await button(wrapper, '保存设置').trigger('click')
     await flushPromises()
   }
-  return { wrapper, read, write, adapter, save }
+  return { wrapper, read, write, adapter, save, router }
 }
 
 enableAutoUnmount(afterEach)
@@ -76,6 +77,20 @@ afterEach(() => {
 })
 
 describe('飞牛影视反代设置', () => {
+  it('预加载仅引导到 STRM 设置，不增加独立开关、请求或保存字段', async () => {
+    const { wrapper, router, adapter, write } = await mountSettings()
+    expect(wrapper.text()).toContain('想减少播放等待？可前往 STRM 设置开启预加载')
+    expect(wrapper.findAll('[role="switch"]')).toHaveLength(1)
+    const link = wrapper.get('a[href="/settings/strm"]')
+    expect(link.text()).toBe('STRM 设置')
+    expect(link.attributes('tabindex')).not.toBe('-1')
+    await link.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/settings/strm')
+    expect(adapter).toHaveBeenCalledTimes(1)
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('默认关闭且首次读取失败禁止编辑和保存，重试后可保存', async () => {
     const { wrapper, write, save } = await mountSettings(settings(), true)
     expect(button(wrapper, '保存设置').attributes('disabled')).toBeDefined()
