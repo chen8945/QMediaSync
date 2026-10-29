@@ -272,6 +272,61 @@ func TestPreloadSignatureRetryNeedsNewSignalAndRetainsBudget(t *testing.T) {
 	})
 }
 
+func TestPreloadQueuedSignatureRetryKeepsPreparedRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newTestPreloader(t)
+		metadata, signatures, replaced := 0, 0, 0
+		prepared := false
+		candidate := preloadCandidate("queued-retry", PreloadNext, func(ctx context.Context, task *PreloadTask) PreloadResult {
+			if !prepared {
+				for range 2 {
+					if err := task.Metadata(ctx, true, func(context.Context) (bool, error) { metadata++; return false, nil }); err != nil {
+						t.Error(err)
+					}
+				}
+				prepared = true
+			}
+			if task.BeginSignature(preloadTestAccount, "queued-retry") {
+				signatures++
+			}
+			return PreloadResult{Outcome: PreloadTransient}
+		})
+		candidate.Account = preloadTestAccount
+		p.Submit(candidate)
+		synctest.Wait()
+		time.Sleep(31 * time.Second)
+		entered, released := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(released) })
+		defer release()
+		busy := preloadCandidate("same-account", PreloadNext, func(context.Context, *PreloadTask) PreloadResult {
+			close(entered)
+			<-released
+			return PreloadResult{Outcome: PreloadSkipped}
+		})
+		busy.Scope, busy.Account = "other-device", preloadTestAccount
+		p.Submit(busy)
+		<-entered
+		candidate.Run = func(context.Context, *PreloadTask) PreloadResult {
+			replaced++
+			return PreloadResult{Outcome: PreloadSkipped}
+		}
+		if !p.Submit(candidate) {
+			t.Fatal("冷却后应允许原候选第二次机会入队")
+		}
+		synctest.Wait()
+		for range 100 {
+			if !p.Submit(candidate) {
+				t.Fatal("重复信号应合并到在队候选")
+			}
+		}
+		release()
+		synctest.Wait()
+		if signatures != 2 || metadata != 2 || replaced != 0 {
+			t.Fatalf("排队重复信号替换了已解析闭包：sign=%d metadata=%d replaced=%d", signatures, metadata, replaced)
+		}
+	})
+}
+
 func TestPreloadMetadataSafeRetryAndPlaybackInfoNoRetry(t *testing.T) {
 	for _, safe := range []bool{true, false} {
 		t.Run(fmt.Sprint(safe), func(t *testing.T) {

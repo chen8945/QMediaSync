@@ -26,10 +26,11 @@ import (
 const (
 	preloadObservationTTL = 15 * time.Minute
 	preloadAssociationTTL = 60 * time.Second
+	preloadEpisodeLimit   = 64
 )
 
 var (
-	preloadDetailRoute = regexp.MustCompile(`^/Users/([^/]+)/Items/([^/]+)$`)
+	preloadDetailRoute = regexp.MustCompile(`^(?:/Users/([^/]+))?/Items/([^/]+)$`)
 	preloadQueueRoute  = regexp.MustCompile(`^/Shows/([^/]+)/Episodes$`)
 )
 
@@ -42,6 +43,14 @@ type preloadItem struct {
 	resumable                bool
 	sources                  []Source
 	duration                 time.Duration
+	nextLookup               *preloadNextLookup
+}
+
+type preloadNextLookup struct {
+	epoch, detail, source, queue uint64
+	expiresAt                    time.Time
+	playing                      Source
+	session, ua, user            string
 }
 
 type nativePreloadInfo struct {
@@ -71,6 +80,7 @@ type preloadDevice struct {
 	source           preloadItem
 	sourceAt         time.Time
 	userID           string
+	verifyUser       bool
 	controlUA        string
 	controlSequence  uint64
 	playerUA         string
@@ -80,9 +90,13 @@ type preloadDevice struct {
 	queueAt          time.Time
 	queueUser        string
 	queueSeries      string
+	queueSeriesSeen  map[string]bool
 	playing          preloadItem
 	session          string
 	playingID        string
+	nextLookupEpoch  uint64
+	nextLookupActive bool
+	nextLookupRetry  preloadItem
 }
 
 type preloadState struct {
@@ -204,17 +218,24 @@ func (inst *instance) beginPreloadRequest(r *http.Request) {
 			}
 			device.controlUA, device.controlSequence = r.UserAgent(), sequence
 		}
+		lookup := device.nextLookupActive && device.nextLookupEpoch == device.playingEpoch
 		switch {
 		case player:
 			device.playerSequence, device.progressSequence = sequence, sequence
 			inst.service.options.Preloader.TakeoverScope(scope)
 			if !validRange || !compatiblePreloadRange(report, r.UserAgent(), *device) {
 				device.playerUA, device.playerEpoch = "", 0
+				if lookup {
+					inst.service.options.Preloader.CancelNext(scope)
+				}
 			}
 		case progress:
 			// 已知当前播放时，旧进度或停止不能抢占尚在途的实际取流关联。
 			if !startReport && (device.playingID != "" || device.playerUA != "") && (!validReport || !report.matchesPlayback(*device)) {
 				return
+			}
+			if lookup && (route == "/Sessions/Playing/Stopped" || !validReport || !startReport && report.IsPaused == nil) {
+				inst.service.options.Preloader.CancelNext(scope)
 			}
 			if validReport && (report.IsPaused != nil && *report.IsPaused || strings.EqualFold(report.PlayMethod, "Transcode")) {
 				inst.service.options.Preloader.CancelNext(scope)
@@ -237,13 +258,22 @@ func (inst *instance) beginPreloadRequest(r *http.Request) {
 			}
 			device.progressSequence = sequence
 		case source:
+			if lookup {
+				inst.service.options.Preloader.CancelNext(scope)
+			}
 			device.sourceSequence = sequence
 		case queue:
+			if lookup {
+				inst.service.options.Preloader.CancelNext(scope)
+			}
 			device.queueSequence = sequence
 		default:
 			if auxiliary {
 				parent, device.parentSequence = device.sequence, sequence
 				return
+			}
+			if lookup {
+				inst.service.options.Preloader.CancelNext(scope)
 			}
 			selected, _ := queryValue(r.URL.Query(), "MediaSourceId")
 			changed = device.requested != id || selected != "" && selected != device.detail.selected
@@ -565,6 +595,7 @@ func (inst *instance) revokePreloadDetail(scope string) {
 		return
 	}
 	device.detail, device.source, device.info = preloadItem{}, preloadItem{}, nativePreloadInfo{}
+	device.verifyUser = false
 	device.detailAt, device.sourceAt, device.infoAt = time.Time{}, time.Time{}, time.Time{}
 	device.detailResponded = 0
 	// 拒绝前开始的补源或列表不能恢复已撤销的详情关联。
@@ -572,6 +603,9 @@ func (inst *instance) revokePreloadDetail(scope string) {
 	device.queueSequence = max(device.queueSequence, device.sequence, device.parentSequence)
 	inst.preload.devices[scope] = device
 	inst.service.options.Preloader.CancelDetail(scope)
+	if device.nextLookupActive && device.nextLookupEpoch == device.playingEpoch {
+		inst.service.options.Preloader.CancelNext(scope)
+	}
 }
 
 func compatiblePreloadItem(payload map[string]any) (preloadItem, bool) {
@@ -605,17 +639,28 @@ func (inst *instance) observeCompatiblePreload(r *http.Request, scope, route str
 	generation := models.GetPlaybackSettingsSnapshot().Generation
 	if match := preloadDetailRoute.FindStringSubmatch(route); len(match) == 3 {
 		item, ok := compatiblePreloadItem(payload)
-		if !ok || item.id != match[2] || !safeIdentifier(match[1]) {
+		if !ok || item.id != match[2] || match[1] != "" && !safeIdentifier(match[1]) {
 			return
 		}
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		selected, valid := queryValue(query, "MediaSourceId")
-		if err != nil || !valid || !allowsDirectRequest(query) {
+		userID, validUser := queryValue(query, "UserId")
+		if err != nil || !valid || !validUser || userID != "" && !safeIdentifier(userID) ||
+			match[1] != "" && userID != "" && match[1] != userID || !allowsDirectRequest(query) {
 			return
 		}
+		if match[1] != "" {
+			userID = match[1]
+		}
+		verifyUser := match[1] == "" && userID != ""
 		item.selected = selected
 		changed := false
 		device, ok := inst.preload.update(scope, generation, func(device *preloadDevice) {
+			if userID == "" && !device.verifyUser {
+				userID = device.userID
+			}
+			item.enriched = device.userID != userID
+			changed = device.userID != "" && device.userID != userID
 			previous := device.detail
 			newerSource := device.source.id == item.id && device.sourceResponded > device.sequence
 			if device.source.id == item.id && device.sourceResponded > device.detailResponded {
@@ -637,7 +682,8 @@ func (inst *instance) observeCompatiblePreload(r *http.Request, scope, route str
 				changed = true
 			}
 			device.detailAt = time.Now()
-			device.detail, device.userID = item, match[1]
+			device.detail, device.userID = item, userID
+			device.verifyUser = verifyUser
 			device.detailResponded = device.sequence
 		})
 		if changed {
@@ -699,7 +745,15 @@ func (inst *instance) observeCompatiblePreload(r *http.Request, scope, route str
 		queue = nil
 	}
 	var previousNext, previousResume preloadItem
+	var previousUser string
 	device, ok := inst.preload.update(scope, generation, func(device *preloadDevice) {
+		previousUser = device.queueUser
+		if device.queueSeriesSeen == nil {
+			device.queueSeriesSeen = make(map[string]bool)
+		}
+		if len(device.queueSeriesSeen) < sourceCacheCapacity {
+			device.queueSeriesSeen[match[1]] = true
+		}
 		previousNext, _ = compatiblePreloadNext(*device)
 		previousResume, _ = compatiblePreloadResume(*device)
 		if device.source.id == previousResume.id && time.Since(device.sourceAt) <= preloadAssociationTTL && device.sourceResponded >= device.queueResponded {
@@ -717,11 +771,17 @@ func (inst *instance) observeCompatiblePreload(r *http.Request, scope, route str
 			}
 		}
 		device.queue, device.queueAt, device.queueUser = queue, time.Now(), userID
+		device.nextLookupActive = false
 		device.queueResponded = device.queueSequence
 		device.queueSeries = match[1]
 	})
 	if ok {
 		if (device.detail.kind == "Series" || device.detail.kind == "Season" && (seasonID == "" || seasonID == device.detail.id)) && device.detail.series == match[1] {
+			device.detail.enriched = device.userID == "" && previousUser != device.queueUser
+			if device.detail.enriched {
+				inst.service.options.Preloader.CancelDetail(scope)
+			}
+			inst.preload.devices[scope] = device
 			resume, valid := compatiblePreloadResume(device)
 			if !valid || previousResume.id != "" && previousResume.id != resume.id {
 				inst.service.options.Preloader.CancelDetail(scope)
@@ -741,7 +801,7 @@ func (inst *instance) observeCompatiblePreload(r *http.Request, scope, route str
 				}
 			}
 		}
-		if device.playing.kind == "Episode" && device.playing.series == match[1] && (userID == "" || userID == device.userID) {
+		if device.playing.kind == "Episode" && device.playing.series == match[1] && (userID == "" || device.userID == "" || userID == device.userID) {
 			if next, valid := compatiblePreloadNext(device); !valid {
 				inst.service.options.Preloader.CancelNext(scope)
 			} else {
@@ -949,18 +1009,28 @@ func (inst *instance) submitCompatibleDetail(r *http.Request, scope string, devi
 	if !valid {
 		return
 	}
+	item.enriched = item.enriched || device.detail.enriched
 	if device.source.id == item.id && time.Since(device.sourceAt) <= preloadAssociationTTL {
 		newer := device.sourceResponded >= revision
 		_, matches := selectPreloadSource(device.source.sources, item.selected)
 		if newer || len(item.sources) == 0 && matches {
 			authorized = true
-			item.enriched, item.sources, item.association = device.source.enriched, device.source.sources, device.source.association
+			item.enriched = item.enriched || device.source.enriched
+			item.sources, item.association = device.source.sources, device.source.association
 			if device.source.selected != "" && (newer || item.selected == "") {
 				item.selected = device.source.selected
 			}
 		}
 	}
-	inst.submitPreload(r, scope, item, device.userID, inst.preloadDetailUA(scope, device), playback.PreloadDetail, authorized, "", false, preloadTrigger(device.detail.kind, false))
+	userID := device.userID
+	if device.verifyUser {
+		authorized = false
+	}
+	if userID == "" && (device.detail.kind == "Series" || device.detail.kind == "Season") && device.queueUser != "" {
+		// 无用户路径时，列表的 UserId 仍须由当前会话核对，不能仅借用已授权的源。
+		userID, authorized = device.queueUser, false
+	}
+	inst.submitPreload(r, scope, item, userID, inst.preloadDetailUA(scope, device), playback.PreloadDetail, authorized, "", false, preloadTrigger(device.detail.kind, false))
 }
 
 func compatiblePreloadDetailItem(device preloadDevice) (preloadItem, uint64, bool) {
@@ -974,7 +1044,7 @@ func compatiblePreloadDetailItem(device preloadDevice) (preloadItem, uint64, boo
 
 func compatiblePreloadResume(device preloadDevice) (preloadItem, bool) {
 	item := device.detail
-	if device.queueSeries != item.series || time.Since(device.queueAt) > preloadAssociationTTL || device.queueUser != "" && device.queueUser != device.userID {
+	if device.queueSeries != item.series || time.Since(device.queueAt) > preloadAssociationTTL || device.queueUser != "" && device.userID != "" && device.queueUser != device.userID {
 		return preloadItem{}, false
 	}
 	var resume preloadItem
@@ -1135,14 +1205,14 @@ func selectPreloadSource(sources []Source, selected string) (Source, bool) {
 	return Source{}, false
 }
 
-func (inst *instance) submitPreload(r *http.Request, scope string, item preloadItem, userID, playerUA string, kind playback.PreloadKind, authorized bool, logicalID string, native bool, trigger string) {
+func (inst *instance) submitPreload(r *http.Request, scope string, item preloadItem, userID, playerUA string, kind playback.PreloadKind, authorized bool, logicalID string, native bool, trigger string) bool {
 	if !inst.preloadEnabled() || playerUA == "" && models.GetPlaybackSettingsSnapshot().LocalProxy != 1 {
-		return
+		return false
 	}
 	query, err := url.ParseQuery(r.URL.RawQuery)
 	selected, valid := queryValue(query, "MediaSourceId")
 	if err != nil || !valid || !allowsDirectRequest(query) {
-		return
+		return false
 	}
 	if !native && kind == playback.PreloadDetail {
 		selected = item.selected
@@ -1154,23 +1224,24 @@ func (inst *instance) submitPreload(r *http.Request, scope string, item preloadI
 	}
 	if len(item.sources) > 0 {
 		if _, ok := selectPreloadSource(item.sources, selected); !ok {
-			return
+			return false
 		}
 	}
 	headers, token, valid := preloadCredentials(r, native)
 	if !valid || token == "" {
-		return
+		return false
 	}
 	// 后台只保留不可变凭据副本；不保留原请求、响应或原生签名。
 	headers = playbackMetadataHeaders(headers)
 	key := fingerprint([]any{scope, item.id, item.kind, selected, playerUA, kind, logicalID, item.association})
+	candidateItem := item
 	var run func(context.Context, *playback.PreloadTask) playback.PreloadResult
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	if inst.stopped || inst.ctx.Err() != nil {
-		return
+		return false
 	}
-	inst.service.options.Preloader.Submit(playback.PreloadCandidate{Key: key, Scope: scope, Instance: inst.preloadID, Kind: kind, Enriched: item.enriched,
+	return inst.service.options.Preloader.Submit(playback.PreloadCandidate{Key: key, Scope: scope, Instance: inst.preloadID, Kind: kind, Enriched: item.enriched,
 		Log: playback.PreloadLogContext{Entry: "飞牛", Trigger: trigger, ItemID: item.id, Title: item.display.name},
 		Run: func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
 			ctx, cancel := context.WithCancel(ctx)
@@ -1186,6 +1257,9 @@ func (inst *instance) submitPreload(r *http.Request, scope string, item preloadI
 			}
 			defer release()
 			task.SetLogTarget(item.id, item.display.title())
+			if item.nextLookup != nil && !inst.currentPreloadNext(scope, item.nextLookup, task) {
+				return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "canceled"}
+			}
 			if run == nil {
 				if !authorized || userID == "" {
 					user, status, err := inst.preloadMetadata(ctx, task, headers, token, "/Users/Me")
@@ -1196,19 +1270,67 @@ func (inst *instance) submitPreload(r *http.Request, scope string, item preloadI
 						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "playback_denied"}
 					}
 					userID = stringField(user, "Id")
+					if !native {
+						inst.preload.mu.Lock()
+						device, found := inst.preload.devices[scope]
+						valid := found && task.Valid() && ctx.Err() == nil
+						denied := device.userID != "" && device.userID != userID
+						if valid && !denied {
+							device.userID, device.verifyUser = userID, false
+							inst.preload.devices[scope] = device
+						}
+						inst.preload.mu.Unlock()
+						if !valid {
+							return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "canceled"}
+						}
+						if denied {
+							return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "playback_denied"}
+						}
+					}
+				}
+				if item.nextLookup != nil {
+					lookup := item.nextLookup
+					if !inst.currentPreloadNext(scope, lookup, task) {
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "canceled"}
+					}
+					value, status, err := inst.preloadMetadataGET(ctx, task, headers, token, "/Shows/"+item.series+"/Episodes", url.Values{
+						"UserId": {userID}, "SeasonId": {item.season}, "Limit": {fmt.Sprint(preloadEpisodeLimit)},
+						"SortBy": {"IndexNumber"}, "SortOrder": {"Ascending"},
+					}, false)
+					if err != nil {
+						return preloadMetadataFailure(err, status)
+					}
+					next, valid := compatiblePreloadQueriedNext(value, item)
+					if !valid {
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "relation_unavailable"}
+					}
+					if !inst.currentPreloadNext(scope, lookup, task) {
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "canceled"}
+					}
+					item = next
+					item.nextLookup = lookup
 				}
 				if len(item.sources) == 0 {
-					value, status, err := inst.preloadMetadata(ctx, task, headers, token, "/Users/"+userID+"/Items/"+item.id)
+					value, status, err := inst.preloadMetadataGET(ctx, task, headers, token, "/Users/"+userID+"/Items/"+item.id, nil, item.nextLookup != nil)
 					if err != nil {
 						return preloadMetadataFailure(err, status)
 					}
 					if stringField(value, "Id") != item.id {
 						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "source_changed"}
 					}
+					if item.nextLookup != nil {
+						loaded, valid := compatiblePreloadItem(value)
+						if !valid || loaded.kind != "Episode" || loaded.series != item.series || loaded.season != item.season {
+							return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "source_changed"}
+						}
+					}
 					item.sources = itemSources(item.id, value)
 					if display := preloadDisplayFrom(value, false); display.name != "" {
 						item.display = display
 					}
+				}
+				if item.nextLookup != nil && !inst.currentPreloadNext(scope, item.nextLookup, task) {
+					return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "canceled"}
 				}
 				task.SetLogTarget(item.id, item.display.title())
 				source, ok := selectPreloadSource(item.sources, selected)
@@ -1234,7 +1356,18 @@ func (inst *instance) submitPreload(r *http.Request, scope string, item preloadI
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "provider_not_supported"}
 				}
 			}
-			return run(ctx, task)
+			result := run(ctx, task)
+			if result.Outcome == playback.PreloadTransient && candidateItem.nextLookup != nil {
+				inst.preload.mu.Lock()
+				device, found := inst.preload.devices[scope]
+				if found && task.Valid() && device.currentPreloadNext(candidateItem.nextLookup) {
+					// 只保留已进入提供方的原候选；冷却、次数和解析结果仍由协调器持有。
+					device.nextLookupRetry = candidateItem
+					inst.preload.devices[scope] = device
+				}
+				inst.preload.mu.Unlock()
+			}
+			return result
 		}})
 }
 
@@ -1249,13 +1382,21 @@ func playbackMetadataHeaders(original http.Header) http.Header {
 }
 
 func (inst *instance) preloadMetadata(ctx context.Context, task *playback.PreloadTask, headers http.Header, token, endpoint string) (map[string]any, int, error) {
+	return inst.preloadMetadataGET(ctx, task, headers, token, endpoint, nil, false)
+}
+
+func (inst *instance) preloadMetadataGET(ctx context.Context, task *playback.PreloadTask, headers http.Header, token, endpoint string, query url.Values, final bool) (map[string]any, int, error) {
 	var payload map[string]any
 	status := 0
-	err := task.Metadata(ctx, true, func(ctx context.Context) (bool, error) {
+	call := func(ctx context.Context) (bool, error) {
 		status = 0
 		target := *inst.upstream
 		target.Path, target.RawPath = endpoint, ""
-		target.RawQuery = url.Values{"api_key": {token}, "Fields": {"Path,MediaSources,SeriesId,SeasonId"}}.Encode()
+		values := url.Values{"api_key": {token}, "Fields": {"Path,MediaSources,SeriesId,SeasonId"}}
+		for name, value := range query {
+			values[name] = value
+		}
+		target.RawQuery = values.Encode()
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 		if err != nil {
 			return false, errors.New("元数据请求无效")
@@ -1280,7 +1421,14 @@ func (inst *instance) preloadMetadata(ctx context.Context, task *playback.Preloa
 			return false, errors.New("元数据格式不符")
 		}
 		return false, nil
-	})
+	}
+	var err error
+	if final {
+		err = task.FinalMetadataGET(ctx, call)
+	} else {
+		// 分集列表只补查一页一次，不用失败重试重复拉取。
+		err = task.Metadata(ctx, query == nil, call)
+	}
 	return payload, status, err
 }
 
@@ -1324,7 +1472,10 @@ func preloadDisplayFrom(payload map[string]any, native bool) preloadDisplay {
 	value := preloadDisplay{name: stringField(payload, "Name"), series: stringField(payload, "SeriesName")}
 	seasonKey, episodeKey := "ParentIndexNumber", "IndexNumber"
 	if native {
-		value.name, value.series = stringField(payload, "title"), stringField(payload, "series_title")
+		value.name, value.series = stringField(payload, "title"), stringField(payload, "tv_title")
+		if value.series == "" {
+			value.series = stringField(payload, "series_title")
+		}
 		if value.name == "" {
 			value.name = stringField(payload, "name")
 		}
@@ -1486,15 +1637,90 @@ func (inst *instance) observeCompatibleProgress(r *http.Request, route string, r
 	}
 	next, valid := compatiblePreloadNext(device)
 	if !valid {
-		inst.service.options.Preloader.CancelNext(scope)
-		return
+		if device.queueSeries == device.playing.series || device.queueSeriesSeen[device.playing.series] || len(device.queueSeriesSeen) >= sourceCacheCapacity {
+			inst.service.options.Preloader.CancelNext(scope)
+			return
+		}
+		if !confirmed || !safeIdentifier(device.userID) || !safeIdentifier(device.playing.series) || !safeIdentifier(device.playing.season) ||
+			device.queueSequence != device.queueResponded || device.sequence != device.detailResponded || device.sourceSequence != device.sourceResponded {
+			return
+		}
+		if device.nextLookupEpoch == device.playingEpoch {
+			next = device.nextLookupRetry
+			if next.nextLookup != nil && time.Now().Before(next.nextLookup.expiresAt) && device.currentPreloadNext(next.nextLookup) {
+				inst.submitPreload(r, scope, next, next.nextLookup.user, next.nextLookup.ua, playback.PreloadNext, false, "", false, preloadTrigger(next.kind, true))
+			}
+			return
+		}
+		next = device.playing
+		next.association = "missing-queue"
+		next.nextLookup = &preloadNextLookup{epoch: device.playingEpoch, detail: device.sequence, source: device.sourceSequence, queue: device.queueSequence,
+			expiresAt: time.Now().Add(playback.URLCacheTTL), playing: device.playerSource, session: device.session, ua: device.playerUA, user: device.userID}
 	}
 	next.association = fingerprint([]any{device.playingID, device.session, device.playing.sources[0].ID, device.playingEpoch, next.sources, next.selected, next.association})
 	userID := device.userID
 	if device.queueUser != "" {
 		userID = device.queueUser
 	}
-	inst.submitPreload(r, scope, next, userID, device.playerUA, playback.PreloadNext, false, "", false, preloadTrigger(next.kind, true))
+	if inst.submitPreload(r, scope, next, userID, device.playerUA, playback.PreloadNext, false, "", false, preloadTrigger(next.kind, true)) && next.nextLookup != nil {
+		// 当前持有观察锁，worker 的关联核验须等成功接收标记写入后才能继续。
+		device.nextLookupEpoch, device.nextLookupActive = device.playingEpoch, true
+		inst.preload.devices[scope] = device
+	}
+}
+
+func (inst *instance) currentPreloadNext(scope string, lookup *preloadNextLookup, task *playback.PreloadTask) bool {
+	inst.preload.mu.Lock()
+	defer inst.preload.mu.Unlock()
+	device, found := inst.preload.devices[scope]
+	return found && task.Valid() && device.currentPreloadNext(lookup)
+}
+
+func (device preloadDevice) currentPreloadNext(lookup *preloadNextLookup) bool {
+	return device.nextLookupActive && device.playingEpoch == lookup.epoch && device.playerEpoch == lookup.epoch &&
+		device.sequence == lookup.detail && device.sourceSequence == lookup.source && device.queueSequence == lookup.queue &&
+		device.playerSource == lookup.playing && device.playingID == lookup.playing.ItemID && len(device.playing.sources) == 1 && device.playing.sources[0] == lookup.playing &&
+		device.session == lookup.session && device.playerUA == lookup.ua && device.userID == lookup.user
+}
+
+func compatiblePreloadQueriedNext(payload map[string]any, playing preloadItem) (preloadItem, bool) {
+	values, valid := payload["Items"].([]any)
+	if !valid || len(values) >= preloadEpisodeLimit {
+		return preloadItem{}, false
+	}
+	if start, exists := payload["StartIndex"]; exists && start != float64(0) {
+		return preloadItem{}, false
+	}
+	if total, exists := payload["TotalRecordCount"]; exists {
+		count, valid := total.(float64)
+		if !valid || count != float64(len(values)) {
+			return preloadItem{}, false
+		}
+	}
+	queue := make([]preloadItem, 0, len(values))
+	seen, previous := make(map[string]bool, len(values)), float64(-1)
+	for _, raw := range values {
+		value, _ := raw.(map[string]any)
+		item, valid := compatiblePreloadItem(value)
+		index, numbered := value["IndexNumber"].(float64)
+		if !valid || item.kind != "Episode" || item.series != playing.series || item.season != playing.season || seen[item.id] ||
+			!numbered || index < 0 || index > 9999 || index != float64(int(index)) || index <= previous {
+			return preloadItem{}, false
+		}
+		if item.id == playing.id && len(item.sources) != 0 {
+			selected := ""
+			if len(playing.sources) == 1 {
+				selected = playing.sources[0].ID
+			}
+			source, valid := selectPreloadSource(item.sources, selected)
+			if !valid || len(playing.sources) != 1 || source != playing.sources[0] {
+				return preloadItem{}, false
+			}
+		}
+		seen[item.id], previous = true, index
+		queue = append(queue, item)
+	}
+	return compatiblePreloadNext(preloadDevice{playing: playing, playingID: playing.id, queue: queue, queueSeries: playing.series})
 }
 
 func compatiblePreloadNext(device preloadDevice) (preloadItem, bool) {

@@ -259,8 +259,10 @@ func (p *Preloader) Submit(candidate PreloadCandidate) bool {
 	if state != nil && state.job != nil {
 		if state.job.task == nil {
 			state.job.candidate = candidate
-			state.job.run = candidate.Run
-			state.run = candidate.Run
+			if state.attempts == 0 {
+				state.job.run = candidate.Run
+				state.run = candidate.Run
+			}
 		}
 		accepted = true
 	} else if state == nil || (!state.revoked && !now.Before(state.retryAt) && (!state.terminal || (candidate.Enriched && state.enrichable && state.attempts == 0))) {

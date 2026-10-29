@@ -245,6 +245,7 @@ func TestPreloadCompatibleDetailKeepsBytesAndUsesLatestSource(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "learn", "MediaSources": []any{map[string]any{"Id": "source", "Path": learn}}})
 		default:
 			id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
+			id = strings.TrimPrefix(id, "/Items/")
 			file, ok := files[id]
 			if !ok {
 				t.Errorf("额外接口：%s", r.URL.Path)
@@ -266,8 +267,8 @@ func TestPreloadCompatibleDetailKeepsBytesAndUsesLatestSource(t *testing.T) {
 	preloadTestRequest(t, base, http.MethodGet, "/emby/Videos/learn/stream?MediaSourceId=source", "", false)
 	roots.Store(0)
 	origins.Store(0)
-	for _, id := range []string{"a", "b", "c", "c", "c"} {
-		body := preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+id, "", false)
+	for _, endpoint := range []string{"/Items/a", "/emby/Items/b", "/emby/Users/user/Items/c", "/emby/Items/c", "/Items/c"} {
+		body := preloadTestRequest(t, base, http.MethodGet, endpoint, "", false)
 		if !bytes.HasPrefix(body, []byte(" \n")) || !bytes.Contains(body, []byte("9007199254740993")) {
 			t.Fatal("详情原始字节被改写")
 		}
@@ -748,8 +749,9 @@ func TestPreloadLifecycleCancelsInflightMetadata(t *testing.T) {
 }
 
 func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
-	for _, kind := range []string{"Series", "Season"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, entry := range []string{"Series/user", "Season/user", "Series/item", "Season/item", "Series/item-other-user"} {
+		t.Run(entry, func(t *testing.T) {
+			kind := strings.Split(entry, "/")[0]
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, season := stringField(items[0], "SeriesId"), stringField(items[0], "SeasonId")
@@ -765,7 +767,7 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 					_, _ = io.WriteString(w, `{"Id":"user"}`)
 				case "/Shows/" + series + "/Episodes":
 					_ = json.NewEncoder(w).Encode(queue)
-				case "/Users/user/Items/" + id:
+				case "/Users/user/Items/" + id, "/Items/" + id:
 					_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Type": kind, "SeriesId": series})
 				default:
 					t.Errorf("剧季页产生额外接口：%s", r.URL.Path)
@@ -776,10 +778,27 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 			options, signs := preloadTestOptions(t, root)
 			service, _, base := startService(t, upstream.URL, options)
 			preloadSeedPlayer(t, service.current, false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+id, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?SortBy=IndexNumber&SortOrder=Ascending", "", false)
+			detail, userID := "/emby/Users/user/Items/"+id, "user"
+			if strings.Contains(entry, "/item") {
+				detail = "/emby/Items/" + id
+			}
+			if strings.HasSuffix(entry, "other-user") {
+				userID = "other-user"
+			}
+			preloadTestRequest(t, base, http.MethodGet, detail, "", false)
+			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId="+userID+"&SortBy=IndexNumber&SortOrder=Ascending", "", false)
+			wantUsers := int64(1)
+			if userID != "user" {
+				time.Sleep(2200 * time.Millisecond)
+				waitPreloadWorker(t, options.Preloader)
+				if len(signs) != 0 || users.Load() != 1 {
+					t.Fatal("无用户路径的详情借用了其他用户的续播关系")
+				}
+				preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId=user&SortBy=IndexNumber&SortOrder=Ascending", "", false)
+				wantUsers = 2
+			}
 			sign := waitPreloadSign(t, signs)
-			if !strings.Contains(sign.url, "pickcode=next") || users.Load() != 1 {
+			if !strings.Contains(sign.url, "pickcode=next") || users.Load() != wantUsers {
 				t.Fatalf("没有采用真实样本中唯一未看完的 E2：%+v users=%d", sign, users.Load())
 			}
 		})
@@ -2379,10 +2398,11 @@ func TestPreloadStoppedDuringCurrentStream(t *testing.T) {
 }
 
 func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
-	for _, native := range []bool{false, true} {
+	for _, entry := range []string{"user", "item", "native"} {
+		native := entry == "native"
 		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 			for _, phase := range []string{"debounce", "signing"} {
-				t.Run(fmt.Sprintf("native=%t/status=%d/%s", native, status, phase), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/status=%d/%s", entry, status, phase), func(t *testing.T) {
 					root := t.TempDir()
 					file := preloadTestFile(t, root, "denied")
 					options, _ := preloadTestOptions(t, root)
@@ -2415,7 +2435,7 @@ func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
 						switch r.URL.Path {
 						case "/Users/Me":
 							_, _ = io.WriteString(w, `{"Id":"user"}`)
-						case "/Users/user/Items/file":
+						case "/Users/user/Items/file", "/Items/file":
 							_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
 						case "/Items/file/PlaybackInfo":
 							_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
@@ -2428,6 +2448,9 @@ func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
 						}
 					}))
 					detail, info, body := "/emby/Users/user/Items/file", "/emby/Items/file/PlaybackInfo", "{}"
+					if entry == "item" {
+						detail = "/emby/Items/file"
+					}
 					if native {
 						detail, info, body = "/v/api/v1/item/logical", "/v/api/v1/play/info", `{"item_guid":"logical"}`
 						preloadServeInstance(t, inst, http.MethodPost, info, body, native)
@@ -2715,8 +2738,9 @@ func TestPreloadLatestEpisodesSourceRevokesSigningNext(t *testing.T) {
 }
 
 func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
-	for _, native := range []bool{false, true} {
-		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) {
+	for _, entry := range []string{"user", "item", "native"} {
+		t.Run(entry, func(t *testing.T) {
+			native := entry == "native"
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "latest")
 			entered, release := make(chan struct{}), make(chan struct{})
@@ -2736,7 +2760,7 @@ func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					_, _ = io.WriteString(w, `{"Id":"user"}`)
-				case "/Users/user/Items/file":
+				case "/Users/user/Items/file", "/Items/file":
 					_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
 				case "/v/api/v1/item/logical":
 					_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","type":"Movie","can_play":1}}`)
@@ -2749,6 +2773,9 @@ func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 			proxy := httptest.NewServer(inst)
 			defer proxy.Close()
 			detail := "/emby/Users/user/Items/file"
+			if entry == "item" {
+				detail = "/emby/Items/file"
+			}
 			if native {
 				detail = "/v/api/v1/item/logical"
 				preloadServeInstance(t, inst, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
@@ -2833,13 +2860,18 @@ func TestPreloadSameItemFreshDetailRetainsRetryBudget(t *testing.T) {
 		case "/Users/Me":
 			users.Add(1)
 			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/file":
+		case "/Users/user/Items/file", "/Items/file":
 			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
 		default:
 			t.Errorf("意外接口：%s", r.URL.Path)
 		}
 	}))
-	detail := func() { preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/file", "", false) }
+	visits := 0
+	detail := func() {
+		endpoint := []string{"/emby/Items/file", "/emby/Users/user/Items/file"}[visits%2]
+		visits++
+		preloadServeInstance(t, inst, http.MethodGet, endpoint, "", false)
+	}
 	detail()
 	time.Sleep(2200 * time.Millisecond)
 	waitPreloadWorker(t, options.Preloader)
@@ -4374,11 +4406,151 @@ func TestPreloadRangeProgressKeepsConfirmedUA(t *testing.T) {
 	}
 }
 
+func TestPreloadCompatibleItemDetailChecksExplicitUser(t *testing.T) {
+	for _, kind := range []string{"Movie", "Episode"} {
+		for _, sourceFirst := range []bool{false, true} {
+			for _, userID := range []string{"user", "other-user"} {
+				t.Run(fmt.Sprintf("%s/sourceFirst=%t/user=%s", kind, sourceFirst, userID), func(t *testing.T) {
+					root := t.TempDir()
+					file := preloadTestFile(t, root, "identity")
+					media := []any{map[string]any{"Id": "logical", "Path": file}}
+					options, signs := preloadTestOptions(t, root)
+					inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						switch r.URL.Path {
+						case "/Users/Me":
+							_, _ = io.WriteString(w, `{"Id":"user"}`)
+						case "/Users/user/Items/file":
+							_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "MediaSources": media})
+						case "/Items/file":
+							_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": kind})
+						case "/Items/file/PlaybackInfo":
+							_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": media})
+						default:
+							t.Errorf("意外请求：%s", r.URL.Path)
+						}
+					}))
+					detail := func() { preloadServeInstance(t, inst, http.MethodGet, "/emby/Items/file?UserId="+userID, "", false) }
+					info := func() { preloadServeInstance(t, inst, http.MethodGet, "/emby/Items/file/PlaybackInfo", "", false) }
+					if sourceFirst {
+						info()
+						detail()
+					} else {
+						detail()
+						info()
+					}
+					if userID == "user" {
+						waitPreloadSign(t, signs)
+						return
+					}
+					time.Sleep(2200 * time.Millisecond)
+					waitPreloadWorker(t, options.Preloader)
+					if len(signs) != 0 {
+						t.Fatal("已授权的补源绕过了短详情的用户核对")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPreloadCompatibleItemUserChangeDuringAuthorization(t *testing.T) {
+	for _, userID := range []string{"user", "other-user"} {
+		t.Run(userID, func(t *testing.T) {
+			root := t.TempDir()
+			file := preloadTestFile(t, root, "pending-user")
+			options, _ := preloadTestOptions(t, root)
+			var factories atomic.Int32
+			options.NewPreload = func(string, string, bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+				factories.Add(1)
+				return "", nil, false
+			}
+			entered, release := make(chan struct{}, 1), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/Users/Me" {
+					entered <- struct{}{}
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
+					_, _ = io.WriteString(w, `{"Id":"user"}`)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
+			}))
+			preloadServeInstance(t, inst, http.MethodGet, "/Items/file", "", false)
+			select {
+			case <-entered:
+			case <-time.After(4 * time.Second):
+				t.Fatal("详情未进入当前用户核验")
+			}
+			preloadServeInstance(t, inst, http.MethodGet, "/Users/"+userID+"/Items/file", "", false)
+			unblock()
+			waitPreloadWorker(t, options.Preloader)
+			want := int32(0)
+			if userID == "user" {
+				want = 1
+			}
+			if factories.Load() != want {
+				t.Fatalf("迟到的用户核验没有尊重最新身份条件：factories=%d want=%d", factories.Load(), want)
+			}
+		})
+	}
+}
+
+func TestPreloadCompatibleItemUserChangeCancelsSigning(t *testing.T) {
+	root := t.TempDir()
+	file := preloadTestFile(t, root, "changing-user")
+	options, _ := preloadTestOptions(t, root)
+	entered, release, published := make(chan struct{}, 1), make(chan struct{}), make(chan bool, 1)
+	defer close(release)
+	options.NewPreload = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+		return raw, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+			if task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
+				entered <- struct{}{}
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				published <- task.Publish(func() {})
+			}
+			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+		}, true
+	}
+	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/Me" {
+			_, _ = io.WriteString(w, `{"Id":"user"}`)
+			return
+		}
+		if r.URL.Path != "/Items/file" {
+			t.Errorf("意外请求：%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
+	}))
+	preloadServeInstance(t, inst, http.MethodGet, "/Items/file", "", false)
+	select {
+	case <-entered:
+	case <-time.After(4 * time.Second):
+		t.Fatal("初始详情未进入签名")
+	}
+	preloadServeInstance(t, inst, http.MethodGet, "/Items/file?UserId=other-user", "", false)
+	select {
+	case ok := <-published:
+		if ok {
+			t.Fatal("详情用户变化后旧签名仍可发布")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("详情用户变化没有立即取消旧签名")
+	}
+}
+
 func TestPreloadDisplayDoesNotChangeSourceIdentity(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		payload := map[string]any{"Id": "episode", "Type": "Episode", "Name": "单集标题", "SeriesName": "测试剧名", "IndexNumber": float64(4), "ParentIndexNumber": float64(1), "MediaSources": []any{map[string]any{"Id": "source", "Path": "/fixtures/episode.strm"}}}
 		if native {
-			payload = map[string]any{"title": "单集标题", "series_title": "测试剧名", "season_number": float64(1), "episode_number": float64(4)}
+			payload = map[string]any{"title": "单集标题 S01E04", "tv_title": "测试剧名", "series_title": "旧字段", "season_number": float64(1), "episode_number": float64(4)}
 		}
 		if got := preloadDisplayFrom(payload, native).title(); got != "测试剧名 S01E04" {
 			t.Errorf("native=%v title=%q", native, got)

@@ -102,14 +102,18 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 			json.Unmarshal(quality["is_m3u8"], &isM3U8) != nil || isM3U8 == nil || *isM3U8 {
 			continue
 		}
+		sourceURL, ok := parseSTRMURL(rawURL)
+		if !ok {
+			continue
+		}
 		release, admitted := backup.AcquireRuntimeRequest()
 		if !admitted {
 			return nil
 		}
-		source := Source{ItemID: "native-" + file.GUID, ID: file.GUID, Path: file.Path, URL: rawURL}
+		source := Source{ItemID: "native-" + file.GUID, ID: file.GUID, Path: file.Path, URL: sourceURL}
 		resolved, resolvedOK := inst.resolveSource(ctx, request, source)
 		release()
-		if !resolvedOK || !sameSourceURL(rawURL, resolved.url) {
+		if !resolvedOK || !sameSourceURL(sourceURL, resolved.url) {
 			continue
 		}
 		playbackURL, ok := inst.nativePlaybackURL(request, resolved)

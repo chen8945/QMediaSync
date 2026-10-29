@@ -230,9 +230,8 @@ func strmURL(content string) (string, bool) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		parsed, err := url.Parse(line)
-		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" ||
-			(parsed.Scheme != "http" && parsed.Scheme != "https") || strings.ContainsAny(line, "\r\x00") {
+		line, ok := parseSTRMURL(line)
+		if !ok {
 			return "", false
 		}
 		if result != "" && result != line {
@@ -241,6 +240,18 @@ func strmURL(content string) (string, bool) {
 		result = line
 	}
 	return result, result != ""
+}
+
+func parseSTRMURL(raw string) (string, bool) {
+	if len(raw) >= 2 && strings.ContainsAny(raw[:1], "\"'`") && raw[0] == raw[len(raw)-1] {
+		raw = raw[1 : len(raw)-1]
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") || strings.ContainsAny(raw, "\r\n\x00") {
+		return "", false
+	}
+	return raw, true
 }
 
 func sameSourceURL(a, b string) bool {

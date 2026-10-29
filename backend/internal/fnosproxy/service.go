@@ -478,7 +478,8 @@ func (inst *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	playback, isPlayback := parsePlaybackRoute(r.URL.Path)
 	isMetadata := isPlayback && playback.kind == "info" && (r.Method == http.MethodGet || r.Method == http.MethodPost) ||
-		r.URL.Path == nativeStreamPath && r.Method == http.MethodPost
+		r.URL.Path == nativeStreamPath && r.Method == http.MethodPost ||
+		r.Method == http.MethodGet && compatibleItemMetadataRoute(upstreamPath(r.URL.Path))
 	if inst.preloadEnabled() {
 		route := upstreamPath(r.URL.Path)
 		isMetadata = isMetadata || r.Method == http.MethodGet && (preloadDetailRoute.MatchString(route) || preloadQueueRoute.MatchString(route) || preloadNativePath(route)) ||
@@ -596,6 +597,9 @@ func (inst *instance) modifyResponse(response *http.Response) error {
 	if ok && route.kind == "info" && response.StatusCode >= 200 && response.StatusCode < 300 &&
 		(response.Request.Method == http.MethodGet || response.Request.Method == http.MethodPost) {
 		return inst.rewritePlaybackInfo(response, route.itemID)
+	}
+	if response.Request.Method == http.MethodGet && response.StatusCode == http.StatusOK && compatibleItemMetadataRoute(upstreamPath(response.Request.URL.Path)) {
+		return rewriteCompatibleItemRuntime(response)
 	}
 	return nil
 }

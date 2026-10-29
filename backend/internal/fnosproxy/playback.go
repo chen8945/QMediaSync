@@ -440,6 +440,7 @@ func (inst *instance) rewritePlaybackInfo(response *http.Response, itemID string
 			value["DirectStreamUrl"] = "/Videos/" + itemID + "/stream?" + query.Encode()
 			value["SupportsDirectPlay"], value["SupportsDirectStream"], value["SupportsTranscoding"] = true, true, false
 			value["Protocol"], value["IsRemote"] = "Http", true
+			rewriteExternalSubtitles(value, itemID, requestToken(response.Request))
 			for _, field := range []string{"TranscodingUrl", "TranscodingSubProtocol", "TranscodingContainer"} {
 				delete(value, field)
 			}
@@ -454,15 +455,50 @@ func (inst *instance) rewritePlaybackInfo(response *http.Response, itemID string
 	if err != nil {
 		return nil
 	}
-	response.Body = io.NopCloser(bytes.NewReader(rewritten))
-	response.ContentLength = int64(len(rewritten))
-	response.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	setMetadataBody(response, rewritten)
+	return nil
+}
+
+func rewriteExternalSubtitles(source map[string]any, itemID, token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	streams, _ := source["MediaStreams"].([]any)
+	for _, raw := range streams {
+		stream, ok := raw.(map[string]any)
+		if !ok || stringField(stream, "Type") != "Subtitle" || stream["IsExternal"] != true || stringField(stream, "DeliveryUrl") != "" {
+			continue
+		}
+		index, valid := stream["Index"].(float64)
+		if !valid || !(index >= 0 && index <= 1<<31-1) || index != float64(int64(index)) {
+			continue
+		}
+		format, text := strings.ToLower(strings.TrimSpace(stringField(stream, "Codec"))), true
+		switch format {
+		case "subrip", "srt":
+			format = "srt"
+		case "webvtt", "vtt":
+			format = "vtt"
+		case "ass", "ssa":
+		case "pgssub", "pgs", "hdmv_pgs_subtitle", "sup":
+			format, text = "sup", false
+		default:
+			continue
+		}
+		stream["DeliveryUrl"] = "/Videos/" + itemID + "/" + stringField(source, "Id") + "/Subtitles/" + strconv.FormatInt(int64(index), 10) + "/0/Stream." + format + "?" + url.Values{"api_key": {token}}.Encode()
+		stream["DeliveryMethod"], stream["SupportsExternalStream"], stream["IsTextSubtitleStream"] = "External", true, text
+	}
+}
+
+func setMetadataBody(response *http.Response, body []byte) {
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	response.ContentLength = int64(len(body))
+	response.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	response.Header.Set("Content-Type", "application/json; charset=utf-8")
 	response.Header.Set("Cache-Control", "no-store, private")
 	for _, header := range []string{"Content-Encoding", "ETag", "Content-MD5", "Digest", "Accept-Ranges"} {
 		response.Header.Del(header)
 	}
-	return nil
 }
 
 type replayBody struct {

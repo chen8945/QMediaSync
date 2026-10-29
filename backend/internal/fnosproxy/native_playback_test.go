@@ -137,6 +137,68 @@ func TestNativeStreamUsesSuccessfulNativeAuthorizationAndInternalHandoff(t *test
 	}
 }
 
+func TestNativeStreamWrappedURL(t *testing.T) {
+	const sourceURL = nativeTestSTRM + "&sign=a%2Bb%27%22%60"
+	const playbackURL = "https://cdn.115cdn.net/video?sign=keep%2Braw"
+	for _, test := range []struct {
+		name      string
+		quote     string
+		automatic bool
+	}{
+		{name: "双引号", quote: "\""},
+		{name: "单引号", quote: "'"},
+		{name: "反引号", quote: "`"},
+		{name: "账本定位带引号", quote: "\"", automatic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			file := filepath.Join(root, "episode.strm")
+			wrapped := test.quote + sourceURL + test.quote
+			if err := os.WriteFile(file, []byte(wrapped), 0600); err != nil {
+				t.Fatal(err)
+			}
+			fnosPath := file
+			if test.automatic {
+				fnosPath = "/different/episode.strm"
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(nativeStreamPayload(fnosPath, wrapped))
+			}))
+			defer upstream.Close()
+			var handoffs atomic.Int64
+			_, _, base := startService(t, upstream.URL, Options{
+				OutputRoots:  func(context.Context) ([]string, error) { return []string{root}, nil },
+				KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://private-qms:12333"}, nil },
+				IdentityCandidates: func(context.Context, Source) ([]Candidate, error) {
+					return []Candidate{{Root: root, Path: file, URL: sourceURL}}, nil
+				},
+				MainHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					handoffs.Add(1)
+					_, query, _ := strings.Cut(sourceURL, "?")
+					if r.URL.RawQuery != query {
+						t.Error("去包裹后查询参数或签名被修改")
+					}
+					w.Header().Set("Location", playbackURL)
+					w.WriteHeader(http.StatusFound)
+				}),
+			})
+			response, err := noRedirectClient().Post(base+nativeStreamPath, "application/json", strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			var payload map[string]any
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			quality := payload["data"].(map[string]any)["direct_link_qualities"].([]any)[0].(map[string]any)
+			if quality["url"] != playbackURL || handoffs.Load() != 1 {
+				t.Fatal("已核验的带引号 STRM 未通过既有取链入口播放")
+			}
+		})
+	}
+}
+
 func TestNativeStreamUnverifiedOrUnsupportedResponseIsUnchanged(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "episode.strm")
@@ -162,6 +224,21 @@ func TestNativeStreamUnverifiedOrUnsupportedResponseIsUnchanged(t *testing.T) {
 		{name: "未确认直链类型", change: func(p map[string]any) { delete(p["direct_link_qualities"].([]any)[0].(map[string]any), "is_m3u8") }},
 		{name: "URL 与文件不符", change: func(p map[string]any) {
 			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = nativeTestSTRM + "&extra=untrusted"
+		}},
+		{name: "引号内 URL 与文件不符", change: func(p map[string]any) {
+			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = "\"" + nativeTestSTRM + "&extra=untrusted\""
+		}},
+		{name: "不匹配引号", change: func(p map[string]any) {
+			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = "\"" + nativeTestSTRM + "'"
+		}},
+		{name: "嵌套引号", change: func(p map[string]any) {
+			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = "\"'" + nativeTestSTRM + "'\""
+		}},
+		{name: "非 HTTP URL", change: func(p map[string]any) {
+			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = "'file:///etc/passwd'"
+		}},
+		{name: "单个 URL 不接受多行", change: func(p map[string]any) {
+			p["direct_link_qualities"].([]any)[0].(map[string]any)["url"] = nativeTestSTRM + "\n" + nativeTestSTRM
 		}},
 		{name: "根外路径", change: func(p map[string]any) {
 			p["file_stream"].(map[string]any)["path"] = filepath.Join(t.TempDir(), "private.strm")

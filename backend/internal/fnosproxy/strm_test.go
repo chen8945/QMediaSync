@@ -116,7 +116,7 @@ func TestSTRMAutomaticIdentityRequiresUniqueEvidence(t *testing.T) {
 	root := t.TempDir()
 	stable := "https://openlist.example/d/movie.mkv?sign=stable"
 	for _, name := range []string{"first.strm", "second.strm"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(stable), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("\""+stable+"\""), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -136,5 +136,45 @@ func TestSTRMAutomaticIdentityRequiresUniqueEvidence(t *testing.T) {
 	candidates = append(candidates, Candidate{Root: root, Path: filepath.Join(root, "second.strm"), URL: stable})
 	if _, ok := inst.resolveSource(t.Context(), request, source); ok {
 		t.Fatal("多个可靠候选仍选择第一条")
+	}
+}
+
+func TestSTRMWrappedURL(t *testing.T) {
+	signed := "https://example.com/a%2Fb?sign=a%2Bb+%27&sign=other&name=%22v%22#part"
+	internalQuotes := "https://example.com/file?sign=a'\"`b"
+	for _, test := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "普通签名原样", content: signed, want: signed},
+		{name: "双引号与BOM注释空行", content: "\ufeff\r\n# comment\r\n \"" + signed + "\" \r\n", want: signed},
+		{name: "单引号", content: "'" + signed + "'", want: signed},
+		{name: "反引号", content: "`" + signed + "`", want: signed},
+		{name: "链接内部引号保留", content: "\"" + internalQuotes + "\"", want: internalQuotes},
+		{name: "裸链接末尾双引号保留", content: signed + "\"", want: signed + "\""},
+		{name: "裸链接末尾单引号保留", content: signed + "'", want: signed + "'"},
+		{name: "裸链接末尾反引号保留", content: signed + "`", want: signed + "`"},
+		{name: "包裹内签名末尾引号保留", content: "'" + signed + "''", want: signed + "'"},
+		{name: "同一链接重复", content: signed + "\n\"" + signed + "\"", want: signed},
+		{name: "不匹配引号", content: "\"" + signed + "'"},
+		{name: "缺少末尾引号", content: "\"" + signed},
+		{name: "单个引号", content: "'"},
+		{name: "空包裹", content: "\"\""},
+		{name: "嵌套包裹", content: "\"'" + signed + "'\""},
+		{name: "包裹内空格", content: "\" " + signed + " \""},
+		{name: "包裹内换行", content: "\"" + signed + "\n\""},
+		{name: "包裹内回车", content: "\"" + signed + "\r\""},
+		{name: "包裹内NUL", content: "\"" + signed + "\x00\""},
+		{name: "包裹内凭据", content: "'https://user:password@example.com/file'"},
+		{name: "包裹内文件路径", content: "'file:///etc/passwd'"},
+		{name: "不同链接", content: "\"" + signed + "\"\n'https://other.example/file'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := strmURL(test.content)
+			if got != test.want || ok != (test.want != "") {
+				t.Fatalf("STRM 文本解析：%q %v，期望 %q", got, ok, test.want)
+			}
+		})
 	}
 }

@@ -189,7 +189,7 @@ describe('STRM 预加载设置', () => {
     expect(document.activeElement).toBe(selected.element)
     expect(item.text()).toContain('减少点击播放和接着看下一集时的等待')
     expect(item.text()).toContain('默认关闭，会增加少量网盘请求')
-    expect(item.text()).toContain('部分播放器无法提前准备，仍可正常点击播放')
+    expect(item.text()).toContain('部分播放器可能无法使用预加载功能')
     expect(item.text()).not.toMatch(/generation|配额|SQL|UA|锁/)
     await item.get('input[value="1"]').setValue(true)
     expect(item.get<HTMLInputElement>('input[value="1"]').element.checked).toBe(true)
