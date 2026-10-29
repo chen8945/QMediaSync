@@ -55,6 +55,7 @@ func setupStrmGenerationServiceTestDB(t *testing.T) (*models.Account, *models.Sy
 		MetaExtArr:        []string{".nfo"},
 		AddPath:           3,
 	}
+	models.SettingsGlobal.SettingStrm = *models.SettingsGlobal.SettingStrm.EncodeArr()
 	if err := db.Db.Create(models.SettingsGlobal).Error; err != nil {
 		t.Fatalf("创建测试设置失败: %v", err)
 	}
@@ -78,6 +79,7 @@ func setupStrmGenerationServiceTestDB(t *testing.T) (*models.Account, *models.Sy
 		MetaExtArr:   []string{".nfo"},
 		AddPath:      3,
 	}
+	syncPath.SettingStrm = *syncPath.SettingStrm.EncodeArr()
 	if err := db.Db.Create(syncPath).Error; err != nil {
 		t.Fatalf("创建同步目录失败: %v", err)
 	}
