@@ -22,6 +22,8 @@
 
 CI 另有 `release-scripts` job，在 Linux 运行安装、发版、fnpack 获取、FPK 打包与 fnOS 生命周期的 Python 隔离测试和 shell 语法检查；`windows-restart` job 在 Windows 原生运行首次配置重启、参数/工作目录与实例锁定向回归，不靠 Linux 交叉编译推断 Windows 行为。
 
+飞牛预加载测试在原有 `go test ./...` 中使用虚拟时间和内存 HTTP 网络执行防抖、账号间隔与重试冷却，保留真实网络的监听、HTTPS 和启停回归；不跳过慢测试或改变生产期限。夹具与重复运行要求见 [预加载验证](../engineering/verification.md#strm-预加载验证)。
+
 前后端测试共用 STRM 正则兼容性样例，并覆盖标签输入交互、四类列表的合并导入和清空、真实表单保存回读、全局空扩展名默认值回退、原文落库、迁移重试与各同步入口的排除行为。Vitest 在测试模式下通过 Vite 环境配置内联处理 Element Plus，确保真实表单校验的 CommonJS 互操作与浏览器构建一致；配置方式见 [前端命令](../engineering/verification.md#前端命令)。这些回归沿用上述命令，不增加依赖或单独的校验服务；覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
 局部加载遮罩的导航层级契约随 Vitest 执行；浏览器中的绘制、点击命中及模态层级按 [稳定回归验证](../engineering/verification.md#稳定回归验证) 复核。

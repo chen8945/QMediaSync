@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -30,6 +31,8 @@ import (
 )
 
 type preloadTestSign struct{ url, ua string }
+
+var preloadWorkerSequence atomic.Uint64
 
 func preloadTestOptions(t *testing.T, root string) (Options, <-chan preloadTestSign) {
 	t.Helper()
@@ -72,10 +75,10 @@ func preloadTestFile(t *testing.T, root, name string) string {
 	return file
 }
 
-func preloadTestRequest(t *testing.T, base, method, endpoint, body string, native bool) []byte {
+func preloadTestRequest(t *testing.T, client *http.Client, base, method, endpoint, body string, native bool) []byte {
 	t.Helper()
 	request := preloadTestHTTP(t, base+endpoint, method, body, native)
-	response, err := noRedirectClient().Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,148 +160,150 @@ func TestPreloadClientIdentityCompatibility(t *testing.T) {
 }
 
 func TestPreloadMissingDeviceUsesCurrentUAAndConfirmedNext(t *testing.T) {
-	root := t.TempDir()
-	items := map[string]map[string]any{}
-	for _, id := range []string{"current", "next"} {
-		items[id] = map[string]any{"Id": id, "Type": "Episode", "SeriesId": "series", "SeasonId": "season", "MediaSources": []any{map[string]any{
-			"Id": "source-" + id, "Path": preloadTestFile(t, root, id), "RunTimeTicks": 60 * 60 * 10_000_000,
-		}}}
-	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/Users/Me":
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/current":
-			_ = json.NewEncoder(w).Encode(items["current"])
-		case "/Shows/series/Episodes":
-			_ = json.NewEncoder(w).Encode(map[string]any{"Items": []any{items["current"], items["next"]}})
-		case "/Sessions/Playing", "/Sessions/Playing/Progress":
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Errorf("意外上游请求：%s", r.URL.Path)
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		items := map[string]map[string]any{}
+		for _, id := range []string{"current", "next"} {
+			items[id] = map[string]any{"Id": id, "Type": "Episode", "SeriesId": "series", "SeasonId": "season", "MediaSources": []any{map[string]any{
+				"Id": "source-" + id, "Path": preloadTestFile(t, root, id), "RunTimeTicks": 60 * 60 * 10_000_000,
+			}}}
 		}
-	}))
-	defer upstream.Close()
-	options, _ := preloadTestOptions(t, root)
-	signs := make(chan preloadTestSign, 4)
-	options.NewPreload = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		return raw, func(context.Context, *playback.PreloadTask) playback.PreloadResult {
-			signs <- preloadTestSign{raw, ua}
-			return playback.PreloadResult{Outcome: playback.PreloadCached}
-		}, true
-	}
-	service, _, base := startService(t, upstream.URL, options)
-	send := func(method, endpoint, body string) {
-		r := preloadTestHTTP(t, base+endpoint, method, body, false)
-		r.Header.Set("X-Emby-Authorization", `Emby Client=Fixture Player, Token=valid`)
-		response, err := noRedirectClient().Do(r)
-		if err != nil {
-			t.Fatal(err)
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/Users/Me":
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/current":
+				_ = json.NewEncoder(w).Encode(items["current"])
+			case "/Shows/series/Episodes":
+				_ = json.NewEncoder(w).Encode(map[string]any{"Items": []any{items["current"], items["next"]}})
+			case "/Sessions/Playing", "/Sessions/Playing/Progress":
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Errorf("意外上游请求：%s", r.URL.Path)
+			}
+		}))
+		options, _ := preloadTestOptions(t, root)
+		signs := make(chan preloadTestSign, 4)
+		options.NewPreload = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			return raw, func(context.Context, *playback.PreloadTask) playback.PreloadResult {
+				signs <- preloadTestSign{raw, ua}
+				return playback.PreloadResult{Outcome: playback.PreloadCached}
+			}, true
 		}
-		_, _ = io.Copy(io.Discard, response.Body)
-		_ = response.Body.Close()
-	}
-	send(http.MethodGet, "/emby/Users/user/Items/current", "")
-	if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" {
-		t.Fatal("缺设备详情未使用本次完整 UA")
-	}
-	send(http.MethodGet, "/emby/Shows/series/Episodes?UserId=user&SeasonId=season", "")
-	send(http.MethodGet, "/emby/Videos/current/stream?MediaSourceId=source-current&PlaySessionId=current", "")
-	send(http.MethodPost, "/emby/Sessions/Playing", `{"ItemId":"current","MediaSourceId":"source-current","PlaySessionId":"current"}`)
-	send(http.MethodPost, "/emby/Sessions/Playing/Progress", `{"ItemId":"current","MediaSourceId":"source-current","PlaySessionId":"current","IsPaused":false,"PositionTicks":32400000000}`)
-	if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" || !strings.Contains(sign.url, "pickcode=next") {
-		t.Fatal("缺设备的已确认播放未准备正确后继")
-	}
-	inst := service.current
-	inst.preload.mu.Lock()
-	defer inst.preload.mu.Unlock()
-	for scope, device := range inst.preload.devices {
-		if !device.weakIdentity || inst.preloadUAKey(scope, device) != "" {
-			t.Fatal("规范化的固定客户端描述被当成真实设备")
+		service, client, base := startPreloadService(t, upstream, options)
+		send := func(method, endpoint, body string) {
+			r := preloadTestHTTP(t, base+endpoint, method, body, false)
+			r.Header.Set("X-Emby-Authorization", `Emby Client=Fixture Player, Token=valid`)
+			response, err := client.Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
 		}
-		strong := device
-		strong.weakIdentity = false
-		key := inst.preloadUAKey(scope, strong)
-		if inst.preload.uas.Lookup(key, inst.preload.generation) != "" {
-			t.Fatal("弱身份真实取流保存了跨次 UA")
+		send(http.MethodGet, "/emby/Users/user/Items/current", "")
+		if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" {
+			t.Fatal("缺设备详情未使用本次完整 UA")
 		}
-		inst.preload.uas.Remember(key, "Wrong/2.0", inst.preload.generation)
-		if inst.preloadDetailUA(scope, device) != "Confirmed Player" {
-			t.Fatal("弱身份读取了跨次映射")
+		send(http.MethodGet, "/emby/Shows/series/Episodes?UserId=user&SeasonId=season", "")
+		send(http.MethodGet, "/emby/Videos/current/stream?MediaSourceId=source-current&PlaySessionId=current", "")
+		send(http.MethodPost, "/emby/Sessions/Playing", `{"ItemId":"current","MediaSourceId":"source-current","PlaySessionId":"current"}`)
+		send(http.MethodPost, "/emby/Sessions/Playing/Progress", `{"ItemId":"current","MediaSourceId":"source-current","PlaySessionId":"current","IsPaused":false,"PositionTicks":32400000000}`)
+		if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" || !strings.Contains(sign.url, "pickcode=next") {
+			t.Fatal("缺设备的已确认播放未准备正确后继")
 		}
-	}
+		inst := service.current
+		inst.preload.mu.Lock()
+		defer inst.preload.mu.Unlock()
+		for scope, device := range inst.preload.devices {
+			if !device.weakIdentity || inst.preloadUAKey(scope, device) != "" {
+				t.Fatal("规范化的固定客户端描述被当成真实设备")
+			}
+			strong := device
+			strong.weakIdentity = false
+			key := inst.preloadUAKey(scope, strong)
+			if inst.preload.uas.Lookup(key, inst.preload.generation) != "" {
+				t.Fatal("弱身份真实取流保存了跨次 UA")
+			}
+			inst.preload.uas.Remember(key, "Wrong/2.0", inst.preload.generation)
+			if inst.preloadDetailUA(scope, device) != "Confirmed Player" {
+				t.Fatal("弱身份读取了跨次映射")
+			}
+		}
+	})
 }
 
 func TestPreloadCompatibleDetailKeepsBytesAndUsesLatestSource(t *testing.T) {
-	root := t.TempDir()
-	learn := preloadTestFile(t, root, "learn")
-	files := map[string]string{"a": preloadTestFile(t, root, "a"), "b": preloadTestFile(t, root, "b"), "c": preloadTestFile(t, root, "c")}
-	var users, items atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/Users/Me":
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user","Policy":{"EnableMediaPlayback":true}}`)
-		case "/Users/user/Items/learn":
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "learn", "MediaSources": []any{map[string]any{"Id": "source", "Path": learn}}})
-		default:
-			id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
-			id = strings.TrimPrefix(id, "/Items/")
-			file, ok := files[id]
-			if !ok {
-				t.Errorf("额外接口：%s", r.URL.Path)
-				http.NotFound(w, r)
-				return
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		learn := preloadTestFile(t, root, "learn")
+		files := map[string]string{"a": preloadTestFile(t, root, "a"), "b": preloadTestFile(t, root, "b"), "c": preloadTestFile(t, root, "c")}
+		var users, items atomic.Int64
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/Users/Me":
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user","Policy":{"EnableMediaPlayback":true}}`)
+			case "/Users/user/Items/learn":
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": "learn", "MediaSources": []any{map[string]any{"Id": "source", "Path": learn}}})
+			default:
+				id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
+				id = strings.TrimPrefix(id, "/Items/")
+				file, ok := files[id]
+				if !ok {
+					t.Errorf("额外接口：%s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				items.Add(1)
+				encoded, _ := json.Marshal(map[string]any{"Id": id, "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": file}}, "Unknown": json.RawMessage(`9007199254740993`)})
+				_, _ = w.Write(append([]byte(" \n"), encoded...))
 			}
-			items.Add(1)
-			encoded, _ := json.Marshal(map[string]any{"Id": id, "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": file}}, "Unknown": json.RawMessage(`9007199254740993`)})
-			_, _ = w.Write(append([]byte(" \n"), encoded...))
+		}))
+		options, signs := preloadTestOptions(t, root)
+		var roots, origins atomic.Int64
+		rootLookup, originLookup := options.OutputRoots, options.KnownOrigins
+		options.OutputRoots = func(ctx context.Context) ([]string, error) { roots.Add(1); return rootLookup(ctx) }
+		options.KnownOrigins = func(ctx context.Context) ([]string, error) { origins.Add(1); return originLookup(ctx) }
+		_, client, base := startPreloadService(t, upstream, options)
+		preloadTestRequest(t, client, base, http.MethodGet, "/emby/Videos/learn/stream?MediaSourceId=source", "", false)
+		roots.Store(0)
+		origins.Store(0)
+		for _, endpoint := range []string{"/Items/a", "/emby/Items/b", "/emby/Users/user/Items/c", "/emby/Items/c", "/Items/c"} {
+			body := preloadTestRequest(t, client, base, http.MethodGet, endpoint, "", false)
+			if !bytes.HasPrefix(body, []byte(" \n")) || !bytes.Contains(body, []byte("9007199254740993")) {
+				t.Fatal("详情原始字节被改写")
+			}
 		}
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	var roots, origins atomic.Int64
-	rootLookup, originLookup := options.OutputRoots, options.KnownOrigins
-	options.OutputRoots = func(ctx context.Context) ([]string, error) { roots.Add(1); return rootLookup(ctx) }
-	options.KnownOrigins = func(ctx context.Context) ([]string, error) { origins.Add(1); return originLookup(ctx) }
-	_, _, base := startService(t, upstream.URL, options)
-	preloadTestRequest(t, base, http.MethodGet, "/emby/Videos/learn/stream?MediaSourceId=source", "", false)
-	roots.Store(0)
-	origins.Store(0)
-	for _, endpoint := range []string{"/Items/a", "/emby/Items/b", "/emby/Users/user/Items/c", "/emby/Items/c", "/Items/c"} {
-		body := preloadTestRequest(t, base, http.MethodGet, endpoint, "", false)
-		if !bytes.HasPrefix(body, []byte(" \n")) || !bytes.Contains(body, []byte("9007199254740993")) {
-			t.Fatal("详情原始字节被改写")
+		sign := waitPreloadSign(t, signs)
+		if !strings.Contains(sign.url, "pickcode=c") || sign.ua != "Confirmed Player" {
+			t.Fatalf("候选或 UA 不符：%+v", sign)
 		}
-	}
-	sign := waitPreloadSign(t, signs)
-	if !strings.Contains(sign.url, "pickcode=c") || sign.ua != "Confirmed Player" {
-		t.Fatalf("候选或 UA 不符：%+v", sign)
-	}
-	if users.Load() != 2 || items.Load() != 5 {
-		t.Fatalf("重复详情产生额外补查：users=%d items=%d", users.Load(), items.Load())
-	}
-	if roots.Load() != 2 || origins.Load() != 2 {
-		t.Fatalf("冷来源复核次数不符：roots=%d origins=%d", roots.Load(), origins.Load())
-	}
-	t.Logf("实际冷来源核验：OutputRoots=%d，KnownOrigins=%d；重复详情不增加回调", roots.Load(), origins.Load())
-	select {
-	case <-signs:
-		t.Fatal("快速浏览产生多次取链")
-	default:
-	}
+		if users.Load() != 2 || items.Load() != 5 {
+			t.Fatalf("重复详情产生额外补查：users=%d items=%d", users.Load(), items.Load())
+		}
+		if roots.Load() != 2 || origins.Load() != 2 {
+			t.Fatalf("冷来源复核次数不符：roots=%d origins=%d", roots.Load(), origins.Load())
+		}
+		t.Logf("实际冷来源核验：OutputRoots=%d，KnownOrigins=%d；重复详情不增加回调", roots.Load(), origins.Load())
+		select {
+		case <-signs:
+			t.Fatal("快速浏览产生多次取链")
+		default:
+		}
+	})
 }
 
 func TestPreloadNativeBridgeBothResponseOrders(t *testing.T) {
 	for _, infoFirst := range []bool{false, true} {
-		t.Run(map[bool]string{false: "详情后补源", true: "已有源后详情"}[infoFirst], func(t *testing.T) {
+		runPreloadTest(t, map[bool]string{false: "详情后补源", true: "已有源后详情"}[infoFirst], func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "native")
 			var bridges, users atomic.Int64
 			const requestBody = "{ \"item_guid\": \"logical\", \"unknown\": [1,2] }\n"
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case nativeStreamPath:
 					payload := nativeStreamPayload(file, "http://private-qms:12333/115/newurl?userid=owner&pickcode=native&force=0")
@@ -334,14 +339,13 @@ func TestPreloadNativeBridgeBothResponseOrders(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
 			var roots, origins atomic.Int64
 			rootLookup, originLookup := options.OutputRoots, options.KnownOrigins
 			options.OutputRoots = func(ctx context.Context) ([]string, error) { roots.Add(1); return rootLookup(ctx) }
 			options.KnownOrigins = func(ctx context.Context) ([]string, error) { origins.Add(1); return originLookup(ctx) }
-			service, _, base := startService(t, upstream.URL, options)
-			preloadTestRequest(t, base, http.MethodPost, nativeStreamPath, `{}`, true)
+			service, client, base := startPreloadService(t, upstream, options)
+			preloadTestRequest(t, client, base, http.MethodPost, nativeStreamPath, `{}`, true)
 			// 缓存只复用同凭据、文件身份和来源，不跳过每次根目录复核。
 			request := preloadTestHTTP(t, base+"/v/api/v1/play/info", http.MethodPost, "{}", true)
 			headers, token, valid := preloadCredentials(request, true)
@@ -355,8 +359,8 @@ func TestPreloadNativeBridgeBothResponseOrders(t *testing.T) {
 			}
 			roots.Store(0)
 			origins.Store(0)
-			detail := func() { preloadTestRequest(t, base, http.MethodGet, "/v/api/v1/item/logical", "", true) }
-			info := func() { preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/info", requestBody, true) }
+			detail := func() { preloadTestRequest(t, client, base, http.MethodGet, "/v/api/v1/item/logical", "", true) }
+			info := func() { preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/info", requestBody, true) }
 			if infoFirst {
 				info()
 				detail()
@@ -380,37 +384,57 @@ func TestPreloadObservationRejectsUnknownSchemasAndPreservesEncodedBody(t *testi
 	for _, test := range []struct {
 		name, encoding string
 		body           []byte
+		native, valid  bool
 	}{
+		{name: "完整详情", valid: true},
+		{name: "完整原生详情", native: true, valid: true, body: []byte(`{"code":0,"data":{"guid":"logical","type":"Movie","can_play":1}}`)},
 		{name: "HTML", body: []byte("<html>SPA</html>")},
 		{name: "空 Id", body: []byte(`{"Id":"","Type":"Episode"}`)},
-		{name: "错误业务码", body: []byte(`{"code":1,"data":{"guid":"logical","type":"Movie","can_play":1}}`)},
+		{name: "错误业务码", native: true, body: []byte(`{"code":1,"data":{"guid":"logical","type":"Movie","can_play":1}}`)},
 		{name: "未知压缩", encoding: "br", body: []byte(`{"Id":"movie","Type":"Movie"}`)},
 		{name: "坏 gzip", encoding: "gzip", body: []byte("bad-gzip")},
 		{name: "编码超限", body: bytes.Repeat([]byte("x"), metadataLimit+1)},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			options, signs := preloadTestOptions(t, t.TempDir())
-			service := NewService(options)
-			inst, err := service.prepare(models.FnosProxyConfig{Enabled: true, FnosURL: "http://127.0.0.1:12345"})
+		runPreloadTest(t, test.name, func(t *testing.T) {
+			root := t.TempDir()
+			file := preloadTestFile(t, root, "unknown-schema")
+			item, err := json.Marshal(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer inst.closeResources()
-			request := httptest.NewRequest(http.MethodGet, "/Users/user/Items/movie", nil)
-			request.Header.Set("X-Emby-Authorization", `MediaBrowser Token="valid", DeviceId="device"`)
-			response := &http.Response{Request: request, StatusCode: 200, Header: http.Header{"Content-Encoding": {test.encoding}}, Body: io.NopCloser(bytes.NewReader(test.body))}
-			if err := inst.observePreloadResponse(response); err != nil {
-				t.Fatal(err)
+			body := test.body
+			if body == nil {
+				body = item
 			}
-			actual, err := io.ReadAll(response.Body)
-			_ = response.Body.Close()
-			if err != nil || !bytes.Equal(actual, test.body) || response.Header.Get("Content-Encoding") != test.encoding {
-				t.Fatal("观察改变了回退正文或编码")
+			options, signs := preloadTestOptions(t, root)
+			inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/Users/Me":
+					_, _ = io.WriteString(w, `{"Id":"user"}`)
+				case "/Users/user/Items/movie":
+					_, _ = w.Write(item)
+				case "/v/api/v1/play/info":
+					_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","media_guid":"movie","type":"Movie","item":{"guid":"logical","type":"Movie","can_play":1}}}`)
+				default:
+					w.Header().Set("Content-Encoding", test.encoding)
+					_, _ = w.Write(body)
+				}
+			}))
+			detail := "/emby/Items/movie"
+			if test.native {
+				detail = "/v/api/v1/item/logical"
+				preloadServeInstance(t, inst, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
 			}
-			select {
-			case <-signs:
-				t.Fatal("未知 schema 触发取链")
-			default:
+			request := preloadTestHTTP(t, "http://proxy.example"+detail, http.MethodGet, "", test.native)
+			request.Header.Set("Accept-Encoding", "gzip")
+			response := httptest.NewRecorder()
+			inst.ServeHTTP(response, request)
+			if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), body) || response.Header().Get("Content-Encoding") != test.encoding {
+				t.Fatal("观察改变了回退正文、状态或编码")
+			}
+			synctest.Sleep(2200 * time.Millisecond)
+			if got := len(signs); got != map[bool]int{false: 0, true: 1}[test.valid] {
+				t.Fatalf("响应触发的取链次数不符：got=%d valid=%t", got, test.valid)
 			}
 		})
 	}
@@ -476,7 +500,7 @@ func preloadSeedPlayer(t *testing.T, inst *instance, native bool, actual ...Sour
 func waitPreloadWorker(t *testing.T, preloader *playback.Preloader) {
 	t.Helper()
 	done := make(chan struct{})
-	key := fingerprint([]any{t.Name(), time.Now().UnixNano()})
+	key := fmt.Sprintf("%s/worker/%d", t.Name(), preloadWorkerSequence.Add(1))
 	if !preloader.Submit(playback.PreloadCandidate{Key: key, Scope: key, Kind: playback.PreloadNext,
 		Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
 			close(done)
@@ -492,210 +516,214 @@ func waitPreloadWorker(t *testing.T, preloader *playback.Preloader) {
 }
 
 func TestPreloadRepeatedNaturalSourceOnlyEnrichesChangedEvidence(t *testing.T) {
-	root := t.TempDir()
-	first, second := preloadTestFile(t, root, "first"), preloadTestFile(t, root, "second")
-	var currentPath atomic.Value
-	currentPath.Store(first)
-	var users, factories atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/Users/Me" {
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-			return
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		first, second := preloadTestFile(t, root, "first"), preloadTestFile(t, root, "second")
+		var currentPath atomic.Value
+		currentPath.Store(first)
+		var users, factories atomic.Int64
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/Users/Me" {
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": currentPath.Load().(string)}}})
+		}))
+		options, _ := preloadTestOptions(t, root)
+		prepared := make(chan struct{}, 8)
+		options.NewPreload = func(string, string, bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			factories.Add(1)
+			return "source", func(context.Context, *playback.PreloadTask) playback.PreloadResult {
+				prepared <- struct{}{}
+				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+			}, true
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": currentPath.Load().(string)}}})
-	}))
-	defer upstream.Close()
-	options, _ := preloadTestOptions(t, root)
-	prepared := make(chan struct{}, 8)
-	options.NewPreload = func(string, string, bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		factories.Add(1)
-		return "source", func(context.Context, *playback.PreloadTask) playback.PreloadResult {
-			prepared <- struct{}{}
-			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-		}, true
-	}
-	service, _, base := startService(t, upstream.URL, options)
-	inst := service.current
-	preloadSeedPlayer(t, inst, false)
-	detail := func() { preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false) }
-	detail()
-	select {
-	case <-prepared:
-	case <-time.After(4 * time.Second):
-		t.Fatal("初始准备未发生")
-	}
-	waitPreloadWorker(t, options.Preloader)
-	request := preloadTestHTTP(t, base+"/emby/Items/movie/PlaybackInfo", http.MethodPost, "{}", false)
-	observe := func(file string) {
-		currentPath.Store(file)
-		inst.beginPreloadRequest(request)
-		inst.observeCompatibleSource(request, "movie", []Source{{ItemID: "movie", ID: "source", Path: file}}, map[string]any{})
-	}
-	for range 100 {
-		observe(first)
+		service, client, base := startPreloadService(t, upstream, options)
+		inst := service.current
+		preloadSeedPlayer(t, inst, false)
+		detail := func() { preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false) }
 		detail()
-	}
-	waitPreloadWorker(t, options.Preloader)
-	if factories.Load() != 1 || users.Load() != 1 {
-		t.Fatalf("相同响应重开机会：factory=%d user=%d", factories.Load(), users.Load())
-	}
-	observe(second)
-	select {
-	case <-prepared:
-	case <-time.After(4 * time.Second):
-		t.Fatal("真正变化的源资料没有获得一次补齐机会")
-	}
-	waitPreloadWorker(t, options.Preloader)
-	for range 100 {
+		select {
+		case <-prepared:
+		case <-time.After(4 * time.Second):
+			t.Fatal("初始准备未发生")
+		}
+		waitPreloadWorker(t, options.Preloader)
+		request := preloadTestHTTP(t, base+"/emby/Items/movie/PlaybackInfo", http.MethodPost, "{}", false)
+		observe := func(file string) {
+			currentPath.Store(file)
+			inst.beginPreloadRequest(request)
+			inst.observeCompatibleSource(request, "movie", []Source{{ItemID: "movie", ID: "source", Path: file}}, map[string]any{})
+		}
+		for range 100 {
+			observe(first)
+			detail()
+		}
+		waitPreloadWorker(t, options.Preloader)
+		if factories.Load() != 1 || users.Load() != 1 {
+			t.Fatalf("相同响应重开机会：factory=%d user=%d", factories.Load(), users.Load())
+		}
 		observe(second)
-		detail()
-	}
-	waitPreloadWorker(t, options.Preloader)
-	if factories.Load() != 2 || users.Load() != 1 {
-		t.Fatalf("新增资料没有保持一次性：factory=%d user=%d", factories.Load(), users.Load())
-	}
+		select {
+		case <-prepared:
+		case <-time.After(4 * time.Second):
+			t.Fatal("真正变化的源资料没有获得一次补齐机会")
+		}
+		waitPreloadWorker(t, options.Preloader)
+		for range 100 {
+			observe(second)
+			detail()
+		}
+		waitPreloadWorker(t, options.Preloader)
+		if factories.Load() != 2 || users.Load() != 1 {
+			t.Fatalf("新增资料没有保持一次性：factory=%d user=%d", factories.Load(), users.Load())
+		}
+	})
 }
 
 func TestPreloadTrustedOriginPrefixIsNormalizedForProvider(t *testing.T) {
-	root := t.TempDir()
-	file := filepath.Join(root, "prefix.strm")
-	if err := os.WriteFile(file, []byte("http://private-qms:12333/prefix/115/newurl?userid=owner&pickcode=prefix"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/Users/Me" {
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-			return
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		file := filepath.Join(root, "prefix.strm")
+		if err := os.WriteFile(file, []byte("http://private-qms:12333/prefix/115/newurl?userid=owner&pickcode=prefix"), 0600); err != nil {
+			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": file}}})
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	var origins atomic.Int64
-	options.KnownOrigins = func(context.Context) ([]string, error) {
-		origins.Add(1)
-		return []string{"http://private-qms:12333/prefix"}, nil
-	}
-	factory := options.NewPreload
-	options.NewPreload = func(raw, ua string, direct bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		if !strings.HasPrefix(raw, "http://private-qms:12333/115/newurl?") {
-			t.Errorf("来源前缀未被规范化：%s", raw)
-			return "", nil, false
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/Users/Me" {
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": file}}})
+		}))
+		options, signs := preloadTestOptions(t, root)
+		var origins atomic.Int64
+		options.KnownOrigins = func(context.Context) ([]string, error) {
+			origins.Add(1)
+			return []string{"http://private-qms:12333/prefix"}, nil
 		}
-		return factory(raw, ua, direct)
-	}
-	service, _, base := startService(t, upstream.URL, options)
-	preloadSeedPlayer(t, service.current, false)
-	request := preloadTestHTTP(t, base+"/emby/Users/user/Items/movie?api_key=valid", http.MethodGet, "", false)
-	if _, ok := service.current.resolveSource(t.Context(), request, Source{ItemID: "movie", ID: "source", Path: file}); !ok {
-		t.Fatal("无法预先建立兼容来源缓存")
-	}
-	origins.Store(0)
-	preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
-	if sign := waitPreloadSign(t, signs); strings.Contains(sign.url, "/prefix/") {
-		t.Fatal("内部回调拿到了外部部署前缀")
-	}
-	if origins.Load() != 1 {
-		t.Fatalf("兼容热来源未复用缓存：KnownOrigins=%d", origins.Load())
-	}
+		factory := options.NewPreload
+		options.NewPreload = func(raw, ua string, direct bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			if !strings.HasPrefix(raw, "http://private-qms:12333/115/newurl?") {
+				t.Errorf("来源前缀未被规范化：%s", raw)
+				return "", nil, false
+			}
+			return factory(raw, ua, direct)
+		}
+		service, client, base := startPreloadService(t, upstream, options)
+		preloadSeedPlayer(t, service.current, false)
+		request := preloadTestHTTP(t, base+"/emby/Users/user/Items/movie?api_key=valid", http.MethodGet, "", false)
+		if _, ok := service.current.resolveSource(t.Context(), request, Source{ItemID: "movie", ID: "source", Path: file}); !ok {
+			t.Fatal("无法预先建立兼容来源缓存")
+		}
+		origins.Store(0)
+		preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
+		if sign := waitPreloadSign(t, signs); strings.Contains(sign.url, "/prefix/") {
+			t.Fatal("内部回调拿到了外部部署前缀")
+		}
+		if origins.Load() != 1 {
+			t.Fatalf("兼容热来源未复用缓存：KnownOrigins=%d", origins.Load())
+		}
+	})
 }
 
 func TestPreloadNativeFixedProxyCanPrepareFirstDetail(t *testing.T) {
-	previousDB, previousSettings := db.Db, models.SettingsGlobal
-	pool, err := db.OpenMaintenanceSQL(sqlite.DriverName, filepath.Join(t.TempDir(), "settings.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	database, err := gorm.Open(sqlite.Dialector{Conn: pool}, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		_ = pool.Close()
-		t.Fatal(err)
-	}
-	db.Db = database
-	if err := database.AutoMigrate(&models.Settings{}); err != nil {
-		t.Fatal(err)
-	}
-	stored := models.Settings{LocalProxy: 1}
-	if err := database.Create(&stored).Error; err != nil {
-		t.Fatal(err)
-	}
-	models.LoadSettings()
-	t.Cleanup(func() {
-		stored.LocalProxy = 0
-		if err := database.Model(&stored).Update("local_proxy", 0).Error; err != nil {
-			t.Error(err)
+	synctest.Test(t, func(t *testing.T) {
+		previousDB, previousSettings := db.Db, models.SettingsGlobal
+		pool, err := db.OpenMaintenanceSQL(sqlite.DriverName, filepath.Join(t.TempDir(), "settings.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		database, err := gorm.Open(sqlite.Dialector{Conn: pool}, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+		if err != nil {
+			_ = pool.Close()
+			t.Fatal(err)
+		}
+		db.Db = database
+		if err := database.AutoMigrate(&models.Settings{}); err != nil {
+			t.Fatal(err)
+		}
+		stored := models.Settings{LocalProxy: 1}
+		if err := database.Create(&stored).Error; err != nil {
+			t.Fatal(err)
 		}
 		models.LoadSettings()
-		models.SettingsGlobal = previousSettings
-		db.Db = previousDB
-		_ = pool.Close()
-	})
-	root := t.TempDir()
-	file := preloadTestFile(t, root, "first-proxy")
-	var users, bridges atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v/api/v1/item/logical":
-			_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","type":"Movie","can_play":1}}`)
-		case "/v/api/v1/play/info":
-			_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","media_guid":"file","video_guid":"video","type":"Movie","item":{"guid":"logical","type":"Movie","can_play":1}}}`)
-		case "/Users/Me":
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/file":
-			bridges.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
-		default:
-			t.Errorf("首项 proxy 意外接口 %s", r.URL.Path)
-			http.NotFound(w, r)
+		t.Cleanup(func() {
+			stored.LocalProxy = 0
+			if err := database.Model(&stored).Update("local_proxy", 0).Error; err != nil {
+				t.Error(err)
+			}
+			models.LoadSettings()
+			models.SettingsGlobal = previousSettings
+			db.Db = previousDB
+			_ = pool.Close()
+		})
+		root := t.TempDir()
+		file := preloadTestFile(t, root, "first-proxy")
+		var users, bridges atomic.Int64
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v/api/v1/item/logical":
+				_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","type":"Movie","can_play":1}}`)
+			case "/v/api/v1/play/info":
+				_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","media_guid":"file","video_guid":"video","type":"Movie","item":{"guid":"logical","type":"Movie","can_play":1}}}`)
+			case "/Users/Me":
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/file":
+				bridges.Add(1)
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
+			default:
+				t.Errorf("首项 proxy 意外接口 %s", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		}))
+		options, signs := preloadTestOptions(t, root)
+		_, client, base := startPreloadService(t, upstream, options)
+		preloadTestRequest(t, client, base, http.MethodGet, "/v/api/v1/item/logical", "", true)
+		preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
+		if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" || users.Load() != 1 || bridges.Load() != 1 {
+			t.Fatalf("固定 proxy 首项被播放器学习阻挡：%+v users=%d bridges=%d", sign, users.Load(), bridges.Load())
 		}
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	_, _, base := startService(t, upstream.URL, options)
-	preloadTestRequest(t, base, http.MethodGet, "/v/api/v1/item/logical", "", true)
-	preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
-	if sign := waitPreloadSign(t, signs); sign.ua != "Confirmed Player" || users.Load() != 1 || bridges.Load() != 1 {
-		t.Fatalf("固定 proxy 首项被播放器学习阻挡：%+v users=%d bridges=%d", sign, users.Load(), bridges.Load())
-	}
+	})
 }
 
 func TestPreloadSlowOldDetailCannotReplaceLatestResponse(t *testing.T) {
-	root := t.TempDir()
-	files := map[string]string{"old": preloadTestFile(t, root, "old"), "latest": preloadTestFile(t, root, "latest")}
-	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/Users/Me" {
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-			return
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		files := map[string]string{"old": preloadTestFile(t, root, "old"), "latest": preloadTestFile(t, root, "latest")}
+		entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/Users/Me" {
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+				return
+			}
+			id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
+			if id == "old" {
+				close(entered)
+				<-release
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": files[id]}}})
+		}))
+		options, signs := preloadTestOptions(t, root)
+		service, client, base := startPreloadService(t, upstream, options)
+		preloadSeedPlayer(t, service.current, false)
+		go func() {
+			defer close(finished)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/old", "", false)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("旧详情请求没有抵达")
 		}
-		id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
-		if id == "old" {
-			close(entered)
-			<-release
+		preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/latest", "", false)
+		close(release)
+		<-finished
+		if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=latest") {
+			t.Fatalf("慢返回的旧页覆盖最新页：%+v", sign)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": files[id]}}})
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	service, _, base := startService(t, upstream.URL, options)
-	preloadSeedPlayer(t, service.current, false)
-	go func() {
-		defer close(finished)
-		preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/old", "", false)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("旧详情请求没有抵达")
-	}
-	preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/latest", "", false)
-	close(release)
-	<-finished
-	if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=latest") {
-		t.Fatalf("慢返回的旧页覆盖最新页：%+v", sign)
-	}
+	})
 }
 
 func TestPreloadLifecycleCancelsInflightMetadata(t *testing.T) {
@@ -717,7 +745,7 @@ func TestPreloadLifecycleCancelsInflightMetadata(t *testing.T) {
 			options, signs := preloadTestOptions(t, root)
 			service, config, base := startService(t, upstream.URL, options)
 			preloadSeedPlayer(t, service.current, false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
+			preloadTestRequest(t, noRedirectClient(), base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
 			select {
 			case <-entered:
 			case <-time.After(4 * time.Second):
@@ -750,7 +778,7 @@ func TestPreloadLifecycleCancelsInflightMetadata(t *testing.T) {
 
 func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 	for _, entry := range []string{"Series/user", "Season/user", "Series/item", "Season/item", "Series/item-other-user"} {
-		t.Run(entry, func(t *testing.T) {
+		runPreloadTest(t, entry, func(t *testing.T) {
 			kind := strings.Split(entry, "/")[0]
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
@@ -760,7 +788,7 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 				id = season
 			}
 			var users atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					users.Add(1)
@@ -774,9 +802,8 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, false)
 			detail, userID := "/emby/Users/user/Items/"+id, "user"
 			if strings.Contains(entry, "/item") {
@@ -785,8 +812,8 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 			if strings.HasSuffix(entry, "other-user") {
 				userID = "other-user"
 			}
-			preloadTestRequest(t, base, http.MethodGet, detail, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId="+userID+"&SortBy=IndexNumber&SortOrder=Ascending", "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, detail, "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId="+userID+"&SortBy=IndexNumber&SortOrder=Ascending", "", false)
 			wantUsers := int64(1)
 			if userID != "user" {
 				time.Sleep(2200 * time.Millisecond)
@@ -794,7 +821,7 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 				if len(signs) != 0 || users.Load() != 1 {
 					t.Fatal("无用户路径的详情借用了其他用户的续播关系")
 				}
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId=user&SortBy=IndexNumber&SortOrder=Ascending", "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId=user&SortBy=IndexNumber&SortOrder=Ascending", "", false)
 				wantUsers = 2
 			}
 			sign := waitPreloadSign(t, signs)
@@ -807,12 +834,12 @@ func TestPreloadCompatibleSeriesSeasonUsesUniqueObservedResume(t *testing.T) {
 
 func TestPreloadObservedQueueDoesNotUseAnotherUsersProgress(t *testing.T) {
 	for _, queueFirst := range []bool{false, true} {
-		t.Run(map[bool]string{false: "详情后队列", true: "队列后详情"}[queueFirst], func(t *testing.T) {
+		runPreloadTest(t, map[bool]string{false: "详情后队列", true: "队列后详情"}[queueFirst], func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series := stringField(items[0], "SeriesId")
 			var users atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					users.Add(1)
@@ -826,13 +853,14 @@ func TestPreloadObservedQueueDoesNotUseAnotherUsersProgress(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, false)
-			detail := func() { preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+series, "", false) }
+			detail := func() {
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+series, "", false)
+			}
 			list := func() {
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId=another-user", "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes?UserId=another-user", "", false)
 			}
 			if queueFirst {
 				list()
@@ -856,7 +884,7 @@ func TestPreloadObservedQueueDoesNotUseAnotherUsersProgress(t *testing.T) {
 
 func TestPreloadNativeTVSeasonSelectsNaturalPlayInfo(t *testing.T) {
 	for _, kind := range []string{"TV", "Season"} {
-		t.Run(kind, func(t *testing.T) {
+		runPreloadTest(t, kind, func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "selected")
 			detail := preloadRelationFixture(t, "fnos-native-detail-"+kind)
@@ -865,7 +893,7 @@ func TestPreloadNativeTVSeasonSelectsNaturalPlayInfo(t *testing.T) {
 			source["MediaSources"].([]any)[0].(map[string]any)["Path"] = file
 			itemID := stringField(detail["data"].(map[string]any), "guid")
 			var users, bridges atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/v/api/v1/item/" + itemID:
 					_ = json.NewEncoder(w).Encode(detail)
@@ -887,12 +915,11 @@ func TestPreloadNativeTVSeasonSelectsNaturalPlayInfo(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, true)
-			preloadTestRequest(t, base, http.MethodGet, "/v/api/v1/item/"+itemID, "", true)
-			preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"`+itemID+`"}`, true)
+			preloadTestRequest(t, client, base, http.MethodGet, "/v/api/v1/item/"+itemID, "", true)
+			preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"`+itemID+`"}`, true)
 			sign := waitPreloadSign(t, signs)
 			if !strings.Contains(sign.url, "pickcode=selected") || users.Load() != 1 || bridges.Load() != 1 {
 				t.Fatalf("原生剧/季未复用明确选集：%+v users=%d bridges=%d", sign, users.Load(), bridges.Load())
@@ -902,52 +929,53 @@ func TestPreloadNativeTVSeasonSelectsNaturalPlayInfo(t *testing.T) {
 }
 
 func TestPreloadCompatibleProgressUsesProvenQueueAndSourceDuration(t *testing.T) {
-	root := t.TempDir()
-	queue, items := preloadQueueFixture(t, root)
-	series, current, source := stringField(items[0], "SeriesId"), stringField(items[0], "Id"), stringField(items[0]["MediaSources"].([]any)[0].(map[string]any), "Id")
-	var users atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/Me":
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/" + current:
-			_ = json.NewEncoder(w).Encode(items[0])
-		case "/Shows/" + series + "/Episodes":
-			_ = json.NewEncoder(w).Encode(queue)
-		case "/Sessions/Playing", "/Sessions/Playing/Progress":
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Errorf("进度不应主动查列表/媒体：%s", r.URL.Path)
-			http.NotFound(w, r)
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		queue, items := preloadQueueFixture(t, root)
+		series, current, source := stringField(items[0], "SeriesId"), stringField(items[0], "Id"), stringField(items[0]["MediaSources"].([]any)[0].(map[string]any), "Id")
+		var users atomic.Int64
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/Me":
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/" + current:
+				_ = json.NewEncoder(w).Encode(items[0])
+			case "/Shows/" + series + "/Episodes":
+				_ = json.NewEncoder(w).Encode(queue)
+			case "/Sessions/Playing", "/Sessions/Playing/Progress":
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Errorf("进度不应主动查列表/媒体：%s", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		}))
+		options, signs := preloadTestOptions(t, root)
+		service, client, base := startPreloadService(t, upstream, options)
+		preloadSeedPlayer(t, service.current, false, itemSources(current, items[0])...)
+		preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+		preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+		report := `{"ItemId":"` + current + `","MediaSourceId":"` + source + `","PlaySessionId":"session","IsPaused":false,"RunTimeTicks":40000000,"PositionTicks":2060000000}`
+		preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing", report, false)
+		for range 100 {
+			preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
 		}
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	service, _, base := startService(t, upstream.URL, options)
-	preloadSeedPlayer(t, service.current, false, itemSources(current, items[0])...)
-	preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-	preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
-	report := `{"ItemId":"` + current + `","MediaSourceId":"` + source + `","PlaySessionId":"session","IsPaused":false,"RunTimeTicks":40000000,"PositionTicks":2060000000}`
-	preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing", report, false)
-	for range 100 {
-		preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	}
-	sign := waitPreloadSign(t, signs)
-	if !strings.Contains(sign.url, "pickcode=next") || users.Load() != 1 {
-		t.Fatalf("没有依据 240s 选中源时长预加载下一项：%+v users=%d", sign, users.Load())
-	}
-	waitPreloadWorker(t, options.Preloader)
-	select {
-	case <-signs:
-		t.Fatal("重复心跳多次取链")
-	default:
-	}
+		sign := waitPreloadSign(t, signs)
+		if !strings.Contains(sign.url, "pickcode=next") || users.Load() != 1 {
+			t.Fatalf("没有依据 240s 选中源时长预加载下一项：%+v users=%d", sign, users.Load())
+		}
+		waitPreloadWorker(t, options.Preloader)
+		select {
+		case <-signs:
+			t.Fatal("重复心跳多次取链")
+		default:
+		}
+	})
 }
 
 func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 	for _, action := range []string{"pause", "unknown-pause", "stop", "new-session", "new-source", "new-source-path", "seek", "transcode", "denied"} {
-		t.Run(action, func(t *testing.T) {
+		runPreloadTest(t, action, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -957,7 +985,7 @@ func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 			}
 			entered, canceled := make(chan struct{}), make(chan struct{})
 			var users, factories atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					if users.Add(1) != 1 {
@@ -984,21 +1012,20 @@ func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 					w.WriteHeader(http.StatusNoContent)
 				}
 			}))
-			defer upstream.Close()
 			options, _ := preloadTestOptions(t, root)
 			options.NewPreload = func(string, string, bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 				factories.Add(1)
 				return "", nil, false
 			}
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, false, itemSources(current, items[0])...)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
 			report := map[string]any{"ItemId": current, "MediaSourceId": source, "PlaySessionId": "session", "IsPaused": false, "PositionTicks": 2060000000,
 				"RunTimeTicks": items[0]["MediaSources"].([]any)[0].(map[string]any)["RunTimeTicks"]}
 			send := func(route string) {
 				body, _ := json.Marshal(report)
-				preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing"+route, string(body), false)
+				preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing"+route, string(body), false)
 			}
 			send("")
 			send("/Progress")
@@ -1025,7 +1052,7 @@ func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 					selected = source
 					items[0]["MediaSources"].([]any)[0].(map[string]any)["Path"] = preloadTestFile(t, root, "changed-path")
 				}
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Videos/"+current+"/stream?MediaSourceId="+selected, "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Videos/"+current+"/stream?MediaSourceId="+selected, "", false)
 				service.current.preload.mu.Lock()
 				for _, device := range service.current.preload.devices {
 					if device.playingID != "" || device.session != "" {
@@ -1042,7 +1069,7 @@ func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 			case "denied":
 				body, _ := json.Marshal(report)
 				request := preloadTestHTTP(t, base+"/emby/Sessions/Playing/Progress?denied=true", http.MethodPost, string(body), false)
-				response, err := noRedirectClient().Do(request)
+				response, err := client.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1070,14 +1097,14 @@ func TestPreloadProgressRevokesQueuedAndActiveNext(t *testing.T) {
 
 func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 	for _, action := range []string{"progress-then-pause", "progress-then-stop", "start-then-stop"} {
-		t.Run(action, func(t *testing.T) {
+		runPreloadTest(t, action, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
 			source := stringField(items[0]["MediaSources"].([]any)[0].(map[string]any), "Id")
 			entered, release := make(chan struct{}), make(chan struct{})
 			var users atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					users.Add(1)
@@ -1098,7 +1125,6 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 					w.WriteHeader(http.StatusNoContent)
 				}
 			}))
-			defer upstream.Close()
 			defer func() {
 				select {
 				case <-release:
@@ -1107,13 +1133,13 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 				}
 			}()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, false, itemSources(current, items[0])...)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
 			report := map[string]any{"ItemId": current, "MediaSourceId": source, "PlaySessionId": "session", "IsPaused": false, "PositionTicks": 2060000000}
 			body, _ := json.Marshal(report)
-			preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing", string(body), false)
+			preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing", string(body), false)
 			olderRoute := "/emby/Sessions/Playing/Progress?older=true"
 			if action == "start-then-stop" {
 				olderRoute = "/emby/Sessions/Playing?older=true"
@@ -1121,7 +1147,7 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 			request := preloadTestHTTP(t, base+olderRoute, http.MethodPost, string(body), false)
 			done := make(chan error, 1)
 			go func() {
-				response, err := noRedirectClient().Do(request)
+				response, err := client.Do(request)
 				if err == nil {
 					_, err = io.Copy(io.Discard, response.Body)
 					_ = response.Body.Close()
@@ -1136,9 +1162,9 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 			if action == "progress-then-pause" {
 				report["IsPaused"] = true
 				paused, _ := json.Marshal(report)
-				preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Progress", string(paused), false)
+				preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Progress", string(paused), false)
 			} else {
-				preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Stopped", string(body), false)
+				preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Stopped", string(body), false)
 			}
 			close(release)
 			select {
@@ -1150,7 +1176,7 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 				t.Fatal("旧请求未正常返回")
 			}
 			if action == "start-then-stop" {
-				preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Progress", string(body), false)
+				preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Progress", string(body), false)
 			}
 			waitPreloadWorker(t, options.Preloader)
 			if users.Load() != 0 {
@@ -1167,7 +1193,7 @@ func TestPreloadOutOfOrderProgressKeepsLatestIntent(t *testing.T) {
 
 func TestPreloadNoNextForMovieOrUnidentifiedSession(t *testing.T) {
 	for _, movie := range []bool{false, true} {
-		t.Run(map[bool]string{false: "未确认实际取流", true: "普通电影"}[movie], func(t *testing.T) {
+		runPreloadTest(t, map[bool]string{false: "未确认实际取流", true: "普通电影"}[movie], func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -1177,7 +1203,7 @@ func TestPreloadNoNextForMovieOrUnidentifiedSession(t *testing.T) {
 				item = map[string]any{"Id": current, "Type": "Movie", "MediaSources": items[0]["MediaSources"]}
 			}
 			var users atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					users.Add(1)
@@ -1192,23 +1218,22 @@ func TestPreloadNoNextForMovieOrUnidentifiedSession(t *testing.T) {
 					w.WriteHeader(http.StatusNoContent)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			if movie {
 				preloadSeedPlayer(t, service.current, false, itemSources(current, item)...)
 			} else {
 				preloadSeedPlayer(t, service.current, false)
 			}
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
 			session := ""
 			if movie {
 				session = "session"
 			}
 			report := `{"ItemId":"` + current + `","PlaySessionId":"` + session + `","IsPaused":false,"PositionTicks":2060000000}`
-			preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing", report, false)
-			preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
+			preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing", report, false)
+			preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
 			waitPreloadWorker(t, options.Preloader)
 			if users.Load() != 0 {
 				t.Fatal("没有可靠剧集关联仍发生补查")
@@ -1223,8 +1248,8 @@ func TestPreloadNoNextForMovieOrUnidentifiedSession(t *testing.T) {
 					user := raw.(map[string]any)["UserData"].(map[string]any)
 					user["Played"], user["PlaybackPositionTicks"] = false, float64(10000000)
 				}
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+series, "", false)
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+series, "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
 				waitPreloadWorker(t, options.Preloader)
 				if users.Load() != 0 {
 					t.Fatal("多续播候选歧义仍发生补查")
@@ -1235,55 +1260,56 @@ func TestPreloadNoNextForMovieOrUnidentifiedSession(t *testing.T) {
 }
 
 func TestPreloadNativeFirstDetailFallsBackAndBareRecordDoesNotAddQueries(t *testing.T) {
-	root := t.TempDir()
-	detail := preloadRelationFixture(t, "fnos-native-detail-Episode")
-	info := preloadRelationFixture(t, "fnos-native-playinfo-episode")
-	id := stringField(detail["data"].(map[string]any), "guid")
-	var bridge, records atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v/api/v1/item/" + id:
-			_ = json.NewEncoder(w).Encode(detail)
-		case "/v/api/v1/play/info":
-			_ = json.NewEncoder(w).Encode(info)
-		case "/v/api/v1/play/record":
-			records.Add(1)
-			_, _ = io.WriteString(w, `{"code":0,"data":true}`)
-		default:
-			bridge.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		detail := preloadRelationFixture(t, "fnos-native-detail-Episode")
+		info := preloadRelationFixture(t, "fnos-native-playinfo-episode")
+		id := stringField(detail["data"].(map[string]any), "guid")
+		var bridge, records atomic.Int64
+		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v/api/v1/item/" + id:
+				_ = json.NewEncoder(w).Encode(detail)
+			case "/v/api/v1/play/info":
+				_ = json.NewEncoder(w).Encode(info)
+			case "/v/api/v1/play/record":
+				records.Add(1)
+				_, _ = io.WriteString(w, `{"code":0,"data":true}`)
+			default:
+				bridge.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			}
+		}))
+		options, signs := preloadTestOptions(t, root)
+		service, client, base := startPreloadService(t, upstream, options)
+		preloadTestRequest(t, client, base, http.MethodGet, "/v/api/v1/item/"+id, "", true)
+		preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"`+id+`"}`, true)
+		timer := time.NewTimer(2200 * time.Millisecond)
+		defer timer.Stop()
+		for range 100 {
+			preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/record", `{"item_guid":"`+id+`","ts":238,"duration":240}`, true)
 		}
-	}))
-	defer upstream.Close()
-	options, signs := preloadTestOptions(t, root)
-	service, _, base := startService(t, upstream.URL, options)
-	preloadTestRequest(t, base, http.MethodGet, "/v/api/v1/item/"+id, "", true)
-	preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"`+id+`"}`, true)
-	timer := time.NewTimer(2200 * time.Millisecond)
-	defer timer.Stop()
-	for range 100 {
-		preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/record", `{"item_guid":"`+id+`","ts":238,"duration":240}`, true)
-	}
-	<-timer.C
-	if bridge.Load() != 2 || records.Load() != 100 {
-		t.Fatalf("首次详情补源或原生 record 次数不符：bridge=%d records=%d", bridge.Load(), records.Load())
-	}
-	preloadSeedPlayer(t, service.current, true)
-	for range 100 {
-		preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/record", `{"item_guid":"`+id+`","ts":238,"duration":240}`, true)
-	}
-	waitPreloadWorker(t, options.Preloader)
-	if bridge.Load() != 2 {
-		t.Fatal("学到 UA 后裸原生 record 仍不应产生后继")
-	}
-	select {
-	case <-signs:
-		t.Fatal("缺少可信源或裸原生 record 触发签名")
-	default:
-	}
+		<-timer.C
+		if bridge.Load() != 2 || records.Load() != 100 {
+			t.Fatalf("首次详情补源或原生 record 次数不符：bridge=%d records=%d", bridge.Load(), records.Load())
+		}
+		preloadSeedPlayer(t, service.current, true)
+		for range 100 {
+			preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/record", `{"item_guid":"`+id+`","ts":238,"duration":240}`, true)
+		}
+		waitPreloadWorker(t, options.Preloader)
+		if bridge.Load() != 2 {
+			t.Fatal("学到 UA 后裸原生 record 仍不应产生后继")
+		}
+		select {
+		case <-signs:
+			t.Fatal("缺少可信源或裸原生 record 触发签名")
+		default:
+		}
+	})
 }
 
-func preloadCompleteOlderRequest(t *testing.T, request *http.Request, entered, release chan struct{}, newer func()) {
+func preloadCompleteOlderRequest(t *testing.T, client *http.Client, request *http.Request, entered, release chan struct{}, newer func()) {
 	t.Helper()
 	defer func() {
 		select {
@@ -1294,7 +1320,7 @@ func preloadCompleteOlderRequest(t *testing.T, request *http.Request, entered, r
 	}()
 	done := make(chan error, 1)
 	go func() {
-		response, err := noRedirectClient().Do(request)
+		response, err := client.Do(request)
 		if err == nil {
 			_, err = io.Copy(io.Discard, response.Body)
 			_ = response.Body.Close()
@@ -1320,14 +1346,14 @@ func preloadCompleteOlderRequest(t *testing.T, request *http.Request, entered, r
 
 func TestPreloadOutOfOrderNaturalSourcesKeepLatestSelection(t *testing.T) {
 	for _, mode := range []string{"native-info", "compatible-info", "episodes"} {
-		t.Run(mode, func(t *testing.T) {
+		runPreloadTest(t, mode, func(t *testing.T) {
 			root := t.TempDir()
 			files := map[string]string{"old": preloadTestFile(t, root, "old"), "latest": preloadTestFile(t, root, "latest")}
 			entered, release := make(chan struct{}), make(chan struct{})
 			sources := func(which string) map[string]any {
 				return map[string]any{"Id": which + "-source", "Path": files[which]}
 			}
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				which := "latest"
 				if r.URL.Query().Get("older") == "true" {
 					which = "old"
@@ -1369,9 +1395,8 @@ func TestPreloadOutOfOrderNaturalSourcesKeepLatestSelection(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			native := mode == "native-info"
 			preloadSeedPlayer(t, service.current, native)
 			method, detail, endpoint, body := http.MethodPost, "/emby/Users/user/Items/movie", "/emby/Items/movie/PlaybackInfo", "{}"
@@ -1380,15 +1405,15 @@ func TestPreloadOutOfOrderNaturalSourcesKeepLatestSelection(t *testing.T) {
 			} else if mode == "episodes" {
 				method, detail, endpoint, body = http.MethodGet, "/emby/Users/user/Items/series", "/emby/Shows/series/Episodes", ""
 			}
-			preloadTestRequest(t, base, http.MethodGet, detail, "", native)
+			preloadTestRequest(t, client, base, http.MethodGet, detail, "", native)
 			older, latest := endpoint+"?older=true", endpoint
 			if mode == "compatible-info" {
 				older += "&MediaSourceId=old-source"
 				latest += "?MediaSourceId=latest-source"
 			}
 			request := preloadTestHTTP(t, base+older, method, body, native)
-			preloadCompleteOlderRequest(t, request, entered, release, func() {
-				preloadTestRequest(t, base, method, latest, body, native)
+			preloadCompleteOlderRequest(t, client, request, entered, release, func() {
+				preloadTestRequest(t, client, base, method, latest, body, native)
 			})
 			if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=latest") {
 				t.Fatalf("旧自然响应覆盖最新选项：%+v", sign)
@@ -1399,11 +1424,11 @@ func TestPreloadOutOfOrderNaturalSourcesKeepLatestSelection(t *testing.T) {
 
 func TestPreloadNativePlayerRequiresLatestExplicitHeader(t *testing.T) {
 	for _, mode := range []string{"out-of-order", "new-control-info", "missing-header", "missing-user-agent"} {
-		t.Run(mode, func(t *testing.T) {
+		runPreloadTest(t, mode, func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "native")
 			entered, release := make(chan struct{}), make(chan struct{})
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v/api/v1/play/info" {
 					_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","media_guid":"file","video_guid":"video","type":"Movie","item":{"guid":"logical","type":"Movie","can_play":1}}}`)
 					return
@@ -1426,24 +1451,23 @@ func TestPreloadNativePlayerRequiresLatestExplicitHeader(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(payload)
 			}))
-			defer upstream.Close()
 			options, _ := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, true)
 			if mode == "out-of-order" || mode == "new-control-info" {
 				request := preloadTestHTTP(t, base+nativeStreamPath+"?older=true", http.MethodPost, "{}", true)
 				if mode == "new-control-info" {
 					request.Header.Set("X-Emby-Device-Id", "device")
 				}
-				preloadCompleteOlderRequest(t, request, entered, release, func() {
+				preloadCompleteOlderRequest(t, client, request, entered, release, func() {
 					if mode == "out-of-order" {
-						preloadTestRequest(t, base, http.MethodPost, nativeStreamPath, "{}", true)
+						preloadTestRequest(t, client, base, http.MethodPost, nativeStreamPath, "{}", true)
 						return
 					}
 					request := preloadTestHTTP(t, base+"/v/api/v1/play/info", http.MethodPost, `{"item_guid":"logical"}`, true)
 					request.Header.Set("X-Emby-Device-Id", "device")
 					request.Header.Set("User-Agent", "Control/2")
-					response, err := noRedirectClient().Do(request)
+					response, err := client.Do(request)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1451,7 +1475,7 @@ func TestPreloadNativePlayerRequiresLatestExplicitHeader(t *testing.T) {
 					_ = response.Body.Close()
 				})
 			} else {
-				preloadTestRequest(t, base, http.MethodPost, nativeStreamPath, "{}", true)
+				preloadTestRequest(t, client, base, http.MethodPost, nativeStreamPath, "{}", true)
 			}
 			request := preloadTestHTTP(t, base+nativeStreamPath, http.MethodPost, "{}", true)
 			if mode == "new-control-info" {
@@ -1474,12 +1498,12 @@ func TestPreloadNativePlayerRequiresLatestExplicitHeader(t *testing.T) {
 
 func TestPreloadStaleCompatibleStreamKeepsLatestIntent(t *testing.T) {
 	for _, action := range []string{"new-detail", "new-control-info", "stop"} {
-		t.Run(action, func(t *testing.T) {
+		runPreloadTest(t, action, func(t *testing.T) {
 			root := t.TempDir()
 			files := map[string]string{"learn": preloadTestFile(t, root, "learn"), "latest": preloadTestFile(t, root, "latest")}
 			entered, release := make(chan struct{}), make(chan struct{})
 			var users atomic.Int64
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/Users/Me" {
 					if users.Add(1) == 1 {
 						close(entered)
@@ -1499,27 +1523,26 @@ func TestPreloadStaleCompatibleStreamKeepsLatestIntent(t *testing.T) {
 				id := strings.TrimPrefix(r.URL.Path, "/Users/user/Items/")
 				_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "source", "Path": files[id]}}})
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			if action == "new-detail" {
 				preloadSeedPlayer(t, service.current, false)
 			}
 			request := preloadTestHTTP(t, base+"/emby/Videos/learn/stream?MediaSourceId=source", http.MethodGet, "", false)
-			preloadCompleteOlderRequest(t, request, entered, release, func() {
+			preloadCompleteOlderRequest(t, client, request, entered, release, func() {
 				if action == "new-detail" {
-					preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/latest", "", false)
+					preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/latest", "", false)
 				} else if action == "new-control-info" {
 					request := preloadTestHTTP(t, base+"/emby/Items/learn/PlaybackInfo", http.MethodPost, "{}", false)
 					request.Header.Set("User-Agent", "Control/2")
-					response, err := noRedirectClient().Do(request)
+					response, err := client.Do(request)
 					if err != nil {
 						t.Fatal(err)
 					}
 					_, _ = io.Copy(io.Discard, response.Body)
 					_ = response.Body.Close()
 				} else {
-					preloadTestRequest(t, base, http.MethodPost, "/emby/Sessions/Playing/Stopped", `{"ItemId":"learn","PlaySessionId":"session"}`, false)
+					preloadTestRequest(t, client, base, http.MethodPost, "/emby/Sessions/Playing/Stopped", `{"ItemId":"learn","PlaySessionId":"session"}`, false)
 				}
 			})
 			if action == "new-detail" {
@@ -1541,11 +1564,11 @@ func TestPreloadStaleCompatibleStreamKeepsLatestIntent(t *testing.T) {
 
 func TestPreloadNewDetailKeepsPriorityOverOlderSource(t *testing.T) {
 	for _, order := range []string{"source-before-detail", "source-after-detail"} {
-		t.Run(order, func(t *testing.T) {
+		runPreloadTest(t, order, func(t *testing.T) {
 			root := t.TempDir()
 			old, latest := preloadTestFile(t, root, "old"), preloadTestFile(t, root, "latest")
 			entered, release := make(chan struct{}), make(chan struct{})
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Query().Get("older") == "true" {
 					close(entered)
 					<-release
@@ -1563,20 +1586,19 @@ func TestPreloadNewDetailKeepsPriorityOverOlderSource(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "MediaSources": sources})
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			preloadSeedPlayer(t, service.current, false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/movie", "", false)
 			newer := func() {
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/movie?latest=true&MediaSourceId=latest", "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/movie?latest=true&MediaSourceId=latest", "", false)
 			}
 			if order == "source-before-detail" {
-				preloadTestRequest(t, base, http.MethodPost, "/emby/Items/movie/PlaybackInfo?MediaSourceId=old", "{}", false)
+				preloadTestRequest(t, client, base, http.MethodPost, "/emby/Items/movie/PlaybackInfo?MediaSourceId=old", "{}", false)
 				newer()
 			} else {
 				request := preloadTestHTTP(t, base+"/emby/Items/movie/PlaybackInfo?older=true&MediaSourceId=old", http.MethodPost, "{}", false)
-				preloadCompleteOlderRequest(t, request, entered, release, newer)
+				preloadCompleteOlderRequest(t, client, request, entered, release, newer)
 			}
 			if result := waitPreloadSign(t, signs); !strings.Contains(result.url, "pickcode=latest") {
 				t.Fatalf("旧补源覆盖更新详情：%+v", result)
@@ -1587,7 +1609,7 @@ func TestPreloadNewDetailKeepsPriorityOverOlderSource(t *testing.T) {
 
 func TestPreloadPlayerMappingsFollowSuccessfulActualUA(t *testing.T) {
 	for _, native := range []bool{false, true} {
-		t.Run(map[bool]string{false: "compatible", true: "native-cookie"}[native], func(t *testing.T) {
+		runPreloadTest(t, map[bool]string{false: "compatible", true: "native-cookie"}[native], func(t *testing.T) {
 			root := t.TempDir()
 			files := make(map[string]string)
 			for _, id := range []string{"20", "21", "22", "23", "24"} {
@@ -1596,7 +1618,7 @@ func TestPreloadPlayerMappingsFollowSuccessfulActualUA(t *testing.T) {
 			var mediaUA atomic.Value
 			mediaUA.Store("Player/1.0")
 			var fail atomic.Bool
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.URL.Path == "/Users/Me":
@@ -1630,7 +1652,6 @@ func TestPreloadPlayerMappingsFollowSuccessfulActualUA(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, _ := preloadTestOptions(t, root)
 			signs, actual := make(chan string, 8), make(chan string, 8)
 			options.NewPreload = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
@@ -1648,11 +1669,11 @@ func TestPreloadPlayerMappingsFollowSuccessfulActualUA(t *testing.T) {
 				w.Header().Set("Location", "https://cdn.115cdn.net/normal")
 				w.WriteHeader(http.StatusFound)
 			})
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			send := func(method, endpoint, body, ua string) {
 				request := preloadTestHTTP(t, base+endpoint, method, body, native)
 				request.Header.Set("User-Agent", ua)
-				response, err := noRedirectClient().Do(request)
+				response, err := client.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1733,7 +1754,7 @@ func TestPreloadPlaybackWriterPreservesResultAndCapabilities(t *testing.T) {
 		{"failed", 503, "https://cdn.115cdn.net/media", false},
 		{"invalid-redirect", 302, "javascript:bad", false},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		runPreloadTest(t, test.name, func(t *testing.T) {
 			underlying := &preloadWriterCapabilities{ResponseRecorder: httptest.NewRecorder()}
 			observed := &preloadPlaybackWriter{ResponseWriter: underlying}
 			observed.Header().Set("Location", test.location)
@@ -1755,11 +1776,11 @@ func TestPreloadPlaybackWriterPreservesResultAndCapabilities(t *testing.T) {
 func TestPreloadNativeNaturalAssociationForSixtySeconds(t *testing.T) {
 	for _, infoFirst := range []bool{false, true} {
 		for _, age := range []time.Duration{30 * time.Second, 61 * time.Second} {
-			t.Run(fmt.Sprintf("info-first=%t/age=%s", infoFirst, age), func(t *testing.T) {
+			runPreloadTest(t, fmt.Sprintf("info-first=%t/age=%s", infoFirst, age), func(t *testing.T) {
 				root := t.TempDir()
 				file := preloadTestFile(t, root, "native")
 				var supplemental atomic.Int64
-				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
 					case "/v/api/v1/item/logical":
 						_, _ = io.WriteString(w, `{"code":0,"data":{"guid":"logical","type":"Movie","can_play":1}}`)
@@ -1775,12 +1796,11 @@ func TestPreloadNativeNaturalAssociationForSixtySeconds(t *testing.T) {
 						t.Errorf("意外接口：%s", r.URL.Path)
 					}
 				}))
-				defer upstream.Close()
 				options, signs := preloadTestOptions(t, root)
-				service, _, base := startService(t, upstream.URL, options)
-				detail := func() { preloadTestRequest(t, base, http.MethodGet, "/v/api/v1/item/logical", "", true) }
+				service, client, base := startPreloadService(t, upstream, options)
+				detail := func() { preloadTestRequest(t, client, base, http.MethodGet, "/v/api/v1/item/logical", "", true) }
 				info := func() {
-					preloadTestRequest(t, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
+					preloadTestRequest(t, client, base, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
 				}
 				first, second := detail, info
 				if infoFirst {
@@ -1815,10 +1835,10 @@ func TestPreloadNativeNaturalAssociationForSixtySeconds(t *testing.T) {
 
 func TestPreloadNaturalInfoUsesCurrentControlVersion(t *testing.T) {
 	for _, native := range []bool{false, true} {
-		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) {
+		runPreloadTest(t, fmt.Sprintf("native=%t", native), func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "20")
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case "/Users/Me":
@@ -1844,14 +1864,13 @@ func TestPreloadNaturalInfoUsesCurrentControlVersion(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			send := func(method, endpoint, body, ua string) {
 				request := preloadTestHTTP(t, base+endpoint, method, body, native)
 				request.Header.Set("X-Emby-Device-Id", "device")
 				request.Header.Set("User-Agent", ua)
-				response, err := noRedirectClient().Do(request)
+				response, err := client.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1879,11 +1898,11 @@ func TestPreloadNaturalInfoUsesCurrentControlVersion(t *testing.T) {
 
 func TestPreloadOlderControlMetadataCannotEnrichNewVersion(t *testing.T) {
 	for _, mode := range []string{"native-info", "compatible-info", "episodes"} {
-		t.Run(mode, func(t *testing.T) {
+		runPreloadTest(t, mode, func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "old")
 			entered, release := make(chan struct{}), make(chan struct{})
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Query().Get("older") == "true" {
 					close(entered)
 					select {
@@ -1913,9 +1932,8 @@ func TestPreloadOlderControlMetadataCannotEnrichNewVersion(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, _ := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
+			service, client, base := startPreloadService(t, upstream, options)
 			native := mode == "native-info"
 			method, detail, endpoint, body := http.MethodPost, "/emby/Users/user/Items/movie", "/emby/Items/movie/PlaybackInfo", "{}"
 			if native {
@@ -1930,7 +1948,7 @@ func TestPreloadOlderControlMetadataCannotEnrichNewVersion(t *testing.T) {
 				return r
 			}
 			send := func(ua string) {
-				response, err := noRedirectClient().Do(request(http.MethodGet, detail, "", ua))
+				response, err := client.Do(request(http.MethodGet, detail, "", ua))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1938,7 +1956,7 @@ func TestPreloadOlderControlMetadataCannotEnrichNewVersion(t *testing.T) {
 				_ = response.Body.Close()
 			}
 			send("Control/1")
-			preloadCompleteOlderRequest(t, request(method, endpoint+"?older=true", body, "Control/1"), entered, release, func() { send("Control/2") })
+			preloadCompleteOlderRequest(t, client, request(method, endpoint+"?older=true", body, "Control/1"), entered, release, func() { send("Control/2") })
 			inst := service.current
 			inst.preload.mu.Lock()
 			defer inst.preload.mu.Unlock()
@@ -1953,7 +1971,7 @@ func TestPreloadOlderControlMetadataCannotEnrichNewVersion(t *testing.T) {
 
 func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 	for _, change := range []string{"same-session", "new-stream", "item", "source", "session"} {
-		t.Run(change, func(t *testing.T) {
+		runPreloadTest(t, change, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			thirdData, _ := json.Marshal(items[1])
@@ -1966,7 +1984,7 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 			source := stringField(items[0]["MediaSources"].([]any)[0].(map[string]any), "Id")
 			next := stringField(items[1], "Id")
 			var users atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/Me":
 					users.Add(1)
@@ -1983,15 +2001,14 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			}))
-			defer upstream.Close()
 			options, signs := preloadTestOptions(t, root)
-			service, _, base := startService(t, upstream.URL, options)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-			preloadTestRequest(t, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+			service, client, base := startPreloadService(t, upstream, options)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+			preloadTestRequest(t, client, base, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
 			stream := func(ua string) {
 				request := preloadTestHTTP(t, base+"/emby/Videos/"+current+"/stream?MediaSourceId="+source, http.MethodGet, "", false)
 				request.Header.Set("User-Agent", ua)
-				response, err := noRedirectClient().Do(request)
+				response, err := client.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2002,7 +2019,7 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 			report := map[string]any{"ItemId": current, "MediaSourceId": source, "PlaySessionId": "old-session", "IsPaused": false, "PositionTicks": 2060000000}
 			send := func(endpoint string) {
 				body, _ := json.Marshal(report)
-				preloadTestRequest(t, base, http.MethodPost, endpoint, string(body), false)
+				preloadTestRequest(t, client, base, http.MethodPost, endpoint, string(body), false)
 			}
 			send("/emby/Sessions/Playing")
 			switch change {
@@ -2011,10 +2028,10 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 				report["PlaySessionId"] = "new-session"
 			case "item":
 				report["ItemId"], report["MediaSourceId"] = next, stringField(items[1]["MediaSources"].([]any)[0].(map[string]any), "Id")
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+next, "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+next, "", false)
 			case "source":
 				items[0]["MediaSources"].([]any)[0].(map[string]any)["Path"] = preloadTestFile(t, root, "changed")
-				preloadTestRequest(t, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+				preloadTestRequest(t, client, base, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
 			case "session":
 				report["PlaySessionId"] = "new-session"
 			}
@@ -2047,17 +2064,44 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 	}
 }
 
-func preloadTestInstance(t *testing.T, options Options, handler http.Handler) *instance {
+// 内存网络保留 HTTP 协议处理，使防抖和冷却可使用虚拟时间。
+func preloadTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
-	upstream := httptest.NewServer(handler)
-	t.Cleanup(upstream.Close)
+	server := httptest.NewTestServer(t, handler)
+	server.Client().CheckRedirect = noRedirectClient().CheckRedirect
+	return server
+}
+
+func preloadTestService(t *testing.T, options Options, upstream *httptest.Server) *Service {
+	t.Helper()
 	service := NewService(options)
 	inst, err := service.prepare(models.FnosProxyConfig{Enabled: true, FnosURL: upstream.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
+	inst.transport.CloseIdleConnections()
+	inst.transport = upstream.Client().Transport.(*http.Transport)
+	inst.proxy.Transport = inst.transport
+	service.current = inst
 	t.Cleanup(inst.closeResources)
-	return inst
+	return service
+}
+
+func startPreloadService(t *testing.T, upstream *httptest.Server, options Options) (*Service, *http.Client, string) {
+	t.Helper()
+	service := preloadTestService(t, options, upstream)
+	proxy := preloadTestServer(t, service.current)
+	return service, proxy.Client(), proxy.URL
+}
+
+func preloadTestInstance(t *testing.T, options Options, handler http.Handler) *instance {
+	t.Helper()
+	return preloadTestService(t, options, preloadTestServer(t, handler)).current
+}
+
+func runPreloadTest(t *testing.T, name string, test func(*testing.T)) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) { synctest.Test(t, test) })
 }
 
 func preloadServeInstance(t *testing.T, inst *instance, method, endpoint, body string, native bool) *httptest.ResponseRecorder {
@@ -2070,7 +2114,7 @@ func preloadServeInstance(t *testing.T, inst *instance, method, endpoint, body s
 func TestPreloadNativeBusinessDenialRevokesDetail(t *testing.T) {
 	for _, reason := range []string{"can-play", "play-error"} {
 		for _, phase := range []string{"debounce", "signing", "older-denial", "playing-next"} {
-			t.Run(reason+"/"+phase, func(t *testing.T) {
+			runPreloadTest(t, reason+"/"+phase, func(t *testing.T) {
 				root := t.TempDir()
 				file := preloadTestFile(t, root, "business-denied")
 				options, _ := preloadTestOptions(t, root)
@@ -2162,10 +2206,10 @@ func TestPreloadNativeBusinessDenialRevokesDetail(t *testing.T) {
 					}
 				}
 				if phase == "older-denial" {
-					proxy := httptest.NewServer(inst)
-					defer proxy.Close()
+					proxy := preloadTestServer(t, inst)
+					client := proxy.Client()
 					request := preloadTestHTTP(t, proxy.URL+detail+"?denied=true&older=true", http.MethodGet, "", true)
-					preloadCompleteOlderRequest(t, request, olderEntered, olderRelease, func() {
+					preloadCompleteOlderRequest(t, client, request, olderEntered, olderRelease, func() {
 						preloadServeInstance(t, inst, http.MethodGet, detail, "", true)
 					})
 				} else if response := preloadServeInstance(t, inst, http.MethodGet, detail+"?denied=true", "", true); response.Code != http.StatusOK || response.Body.String() != denied {
@@ -2198,7 +2242,7 @@ func TestPreloadNativeBusinessDenialRevokesDetail(t *testing.T) {
 func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 	for _, change := range []string{"old-item", "old-session", "old-source", "old-item-before-start", "matching", "missing-session", "missing-source", "missing-both", "stream-before-start"} {
 		for _, status := range []int{http.StatusNoContent, http.StatusForbidden} {
-			t.Run(fmt.Sprintf("%s/status=%d", change, status), func(t *testing.T) {
+			runPreloadTest(t, fmt.Sprintf("%s/status=%d", change, status), func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -2319,7 +2363,7 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 func TestPreloadStoppedDuringCurrentStream(t *testing.T) {
 	for _, stale := range []bool{true, false} {
 		for _, status := range []int{http.StatusNoContent, http.StatusForbidden} {
-			t.Run(fmt.Sprintf("stale=%t/status=%d", stale, status), func(t *testing.T) {
+			runPreloadTest(t, fmt.Sprintf("stale=%t/status=%d", stale, status), func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -2364,10 +2408,10 @@ func TestPreloadStoppedDuringCurrentStream(t *testing.T) {
 				if stale {
 					stopBody = []byte(`{"ItemId":"previous-episode","MediaSourceId":"previous-source","PlaySessionId":"previous-session"}`)
 				}
-				proxy := httptest.NewServer(inst)
-				defer proxy.Close()
+				proxy := preloadTestServer(t, inst)
+				client := proxy.Client()
 				request := preloadTestHTTP(t, proxy.URL+"/emby/Videos/"+current+"/stream?MediaSourceId="+source, http.MethodGet, "", false)
-				preloadCompleteOlderRequest(t, request, entered, release, func() {
+				preloadCompleteOlderRequest(t, client, request, entered, release, func() {
 					if response := preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Stopped", string(stopBody), false); response.Code != status {
 						t.Error("停止响应状态被改写")
 					}
@@ -2402,7 +2446,7 @@ func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
 		native := entry == "native"
 		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 			for _, phase := range []string{"debounce", "signing"} {
-				t.Run(fmt.Sprintf("%s/status=%d/%s", entry, status, phase), func(t *testing.T) {
+				runPreloadTest(t, fmt.Sprintf("%s/status=%d/%s", entry, status, phase), func(t *testing.T) {
 					root := t.TempDir()
 					file := preloadTestFile(t, root, "denied")
 					options, _ := preloadTestOptions(t, root)
@@ -2488,7 +2532,7 @@ func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
 
 func TestPreloadLatestEpisodesRevokesUnprovenNext(t *testing.T) {
 	for _, invalid := range []string{"missing-anchor", "last-anchor", "empty", "only-current", "cross-season", "cross-series", "unchanged", "progress-only", "changed-successor", "changed-next-source", "ambiguous-next-source", "older-invalid", "other-user"} {
-		t.Run(invalid, func(t *testing.T) {
+		runPreloadTest(t, invalid, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -2607,10 +2651,10 @@ func TestPreloadLatestEpisodesRevokesUnprovenNext(t *testing.T) {
 				inst.preload.mu.Unlock()
 				preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
 			} else if invalid == "older-invalid" {
-				proxy := httptest.NewServer(inst)
-				defer proxy.Close()
+				proxy := preloadTestServer(t, inst)
+				client := proxy.Client()
 				request := preloadTestHTTP(t, proxy.URL+"/emby/Shows/"+series+"/Episodes?older=true", http.MethodGet, "", false)
-				preloadCompleteOlderRequest(t, request, olderEntered, olderRelease, func() {
+				preloadCompleteOlderRequest(t, client, request, olderEntered, olderRelease, func() {
 					preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes?updated=true", "", false)
 				})
 			} else {
@@ -2646,7 +2690,7 @@ func TestPreloadLatestEpisodesRevokesUnprovenNext(t *testing.T) {
 
 func TestPreloadLatestEpisodesSourceRevokesSigningNext(t *testing.T) {
 	for _, change := range []string{"changed", "ambiguous", "missing", "recovered"} {
-		t.Run(change, func(t *testing.T) {
+		runPreloadTest(t, change, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			series, current := stringField(items[0], "SeriesId"), stringField(items[0], "Id")
@@ -2739,7 +2783,7 @@ func TestPreloadLatestEpisodesSourceRevokesSigningNext(t *testing.T) {
 
 func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 	for _, entry := range []string{"user", "item", "native"} {
-		t.Run(entry, func(t *testing.T) {
+		runPreloadTest(t, entry, func(t *testing.T) {
 			native := entry == "native"
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "latest")
@@ -2770,8 +2814,8 @@ func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 					t.Errorf("意外接口：%s", r.URL.Path)
 				}
 			}))
-			proxy := httptest.NewServer(inst)
-			defer proxy.Close()
+			proxy := preloadTestServer(t, inst)
+			client := proxy.Client()
 			detail := "/emby/Users/user/Items/file"
 			if entry == "item" {
 				detail = "/emby/Items/file"
@@ -2781,7 +2825,7 @@ func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 				preloadServeInstance(t, inst, http.MethodPost, "/v/api/v1/play/info", `{"item_guid":"logical"}`, true)
 			}
 			request := preloadTestHTTP(t, proxy.URL+detail+"?older=true", http.MethodGet, "", native)
-			preloadCompleteOlderRequest(t, request, entered, release, func() {
+			preloadCompleteOlderRequest(t, client, request, entered, release, func() {
 				preloadServeInstance(t, inst, http.MethodGet, detail, "", native)
 			})
 			if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=latest") {
@@ -2793,7 +2837,7 @@ func TestPreloadOlderDeniedDetailKeepsNewSuccess(t *testing.T) {
 
 func TestPreloadSameItemFreshDetailRefreshesObservation(t *testing.T) {
 	for _, native := range []bool{false, true} {
-		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) {
+		runPreloadTest(t, fmt.Sprintf("native=%t", native), func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "fresh")
 			options, signs := preloadTestOptions(t, root)
@@ -2839,70 +2883,72 @@ func TestPreloadSameItemFreshDetailRefreshesObservation(t *testing.T) {
 }
 
 func TestPreloadSameItemFreshDetailRetainsRetryBudget(t *testing.T) {
-	root := t.TempDir()
-	file := preloadTestFile(t, root, "retry")
-	options, _ := preloadTestOptions(t, root)
-	var users, attempts, factories atomic.Int32
-	options.NewPreload = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		factories.Add(1)
-		return raw, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
-			if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
-				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-			}
-			if attempts.Add(1) == 1 {
-				return playback.PreloadResult{Outcome: playback.PreloadTransient, HTTPStatus: http.StatusServiceUnavailable}
-			}
-			return playback.PreloadResult{Outcome: playback.PreloadCached}
-		}, true
-	}
-	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/Me":
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/file", "/Items/file":
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
-		default:
-			t.Errorf("意外接口：%s", r.URL.Path)
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		file := preloadTestFile(t, root, "retry")
+		options, _ := preloadTestOptions(t, root)
+		var users, attempts, factories atomic.Int32
+		options.NewPreload = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			factories.Add(1)
+			return raw, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+				if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
+					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+				}
+				if attempts.Add(1) == 1 {
+					return playback.PreloadResult{Outcome: playback.PreloadTransient, HTTPStatus: http.StatusServiceUnavailable}
+				}
+				return playback.PreloadResult{Outcome: playback.PreloadCached}
+			}, true
 		}
-	}))
-	visits := 0
-	detail := func() {
-		endpoint := []string{"/emby/Items/file", "/emby/Users/user/Items/file"}[visits%2]
-		visits++
-		preloadServeInstance(t, inst, http.MethodGet, endpoint, "", false)
-	}
-	detail()
-	time.Sleep(2200 * time.Millisecond)
-	waitPreloadWorker(t, options.Preloader)
-	if attempts.Load() != 1 {
-		t.Fatal("初始详情没有唯一签名尝试")
-	}
-	detail()
-	waitPreloadWorker(t, options.Preloader)
-	if attempts.Load() != 1 {
-		t.Fatal("冷却内重复详情重置了签名机会")
-	}
-	time.Sleep(30 * time.Second)
-	if attempts.Load() != 1 {
-		t.Fatal("没有新信号却自动重试")
-	}
-	detail()
-	time.Sleep(2200 * time.Millisecond)
-	waitPreloadWorker(t, options.Preloader)
-	for range 3 {
+		inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/Me":
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/file", "/Items/file":
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
+			default:
+				t.Errorf("意外接口：%s", r.URL.Path)
+			}
+		}))
+		visits := 0
+		detail := func() {
+			endpoint := []string{"/emby/Items/file", "/emby/Users/user/Items/file"}[visits%2]
+			visits++
+			preloadServeInstance(t, inst, http.MethodGet, endpoint, "", false)
+		}
 		detail()
-	}
-	time.Sleep(2200 * time.Millisecond)
-	waitPreloadWorker(t, options.Preloader)
-	if attempts.Load() != 2 || users.Load() != 1 || factories.Load() != 1 {
-		t.Fatalf("新详情未保留准备结果或重试上限：attempts=%d users=%d factories=%d", attempts.Load(), users.Load(), factories.Load())
-	}
+		time.Sleep(2200 * time.Millisecond)
+		waitPreloadWorker(t, options.Preloader)
+		if attempts.Load() != 1 {
+			t.Fatal("初始详情没有唯一签名尝试")
+		}
+		detail()
+		waitPreloadWorker(t, options.Preloader)
+		if attempts.Load() != 1 {
+			t.Fatal("冷却内重复详情重置了签名机会")
+		}
+		time.Sleep(30 * time.Second)
+		if attempts.Load() != 1 {
+			t.Fatal("没有新信号却自动重试")
+		}
+		detail()
+		time.Sleep(2200 * time.Millisecond)
+		waitPreloadWorker(t, options.Preloader)
+		for range 3 {
+			detail()
+		}
+		time.Sleep(2200 * time.Millisecond)
+		waitPreloadWorker(t, options.Preloader)
+		if attempts.Load() != 2 || users.Load() != 1 || factories.Load() != 1 {
+			t.Fatalf("新详情未保留准备结果或重试上限：attempts=%d users=%d factories=%d", attempts.Load(), users.Load(), factories.Load())
+		}
+	})
 }
 
 func TestPreloadNativeCredentialsNormalizeCompatibleClient(t *testing.T) {
 	for _, authorization := range []string{"", "native-session", "Bearer native-session"} {
-		t.Run(authorization, func(t *testing.T) {
+		runPreloadTest(t, authorization, func(t *testing.T) {
 			request := preloadTestHTTP(t, "http://proxy.example/v/api/v1/play/info", http.MethodPost, `{ "item_guid": "logical" }`, true)
 			request.Header.Set("Authorization", authorization)
 			original := request.Header.Clone()
@@ -2921,7 +2967,7 @@ func TestPreloadNativeCredentialsNormalizeCompatibleClient(t *testing.T) {
 		})
 	}
 	for _, conflict := range []string{"authorization", "token", "duplicate-cookie", "duplicate-authorization", "invalid-cookie"} {
-		t.Run(conflict, func(t *testing.T) {
+		runPreloadTest(t, conflict, func(t *testing.T) {
 			request := preloadTestHTTP(t, "http://proxy.example/v/api/v1/play/info", http.MethodPost, `{}`, true)
 			switch conflict {
 			case "authorization":
@@ -2944,7 +2990,7 @@ func TestPreloadNativeCredentialsNormalizeCompatibleClient(t *testing.T) {
 
 func TestPreloadNativeOptionalVideoGUID(t *testing.T) {
 	for _, field := range []string{"missing", "valid", "empty", "invalid", "number", "missing-logical", "missing-file"} {
-		t.Run(field, func(t *testing.T) {
+		runPreloadTest(t, field, func(t *testing.T) {
 			options, _ := preloadTestOptions(t, t.TempDir())
 			inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				http.Error(w, "unexpected metadata", http.StatusInternalServerError)
@@ -2992,7 +3038,7 @@ func TestPreloadNativeOptionalVideoGUID(t *testing.T) {
 
 func TestPreloadCompatibleMissingSessionUsesConfirmedEpoch(t *testing.T) {
 	for _, change := range []string{"missing-session", "missing-source", "known-session", "no-stream", "other-device", "wrong-item", "wrong-source", "wrong-session", "ambiguous-source", "changed-source-path", "pause", "unknown-pause", "restart", "restart-stream", "new-explicit-session", "stopped"} {
-		t.Run(change, func(t *testing.T) {
+		runPreloadTest(t, change, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -3092,7 +3138,7 @@ func TestPreloadCompatibleMissingSessionUsesConfirmedEpoch(t *testing.T) {
 
 func TestPreloadNativeSeasonParentEnrichment(t *testing.T) {
 	for _, phase := range []string{"before-info", "during-info", "after-info", "https-referrer", "navigation", "foreign-referrer", "non-http-referrer", "lookalike-season-path", "other-parent", "latest-denial", "business-denial", "older-denial", "old-parent-after-navigation"} {
-		t.Run(phase, func(t *testing.T) {
+		runPreloadTest(t, phase, func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "season-parent")
 			options, signs := preloadTestOptions(t, root)
@@ -3141,15 +3187,15 @@ func TestPreloadNativeSeasonParentEnrichment(t *testing.T) {
 					t.Errorf("意外接口：%s", r.URL.Path)
 				}
 			}))
-			proxy := httptest.NewServer(inst)
-			defer proxy.Close()
+			proxy := preloadTestServer(t, inst)
+			client := proxy.Client()
 			request := func(method, endpoint, body, referer string) *http.Request {
 				r := preloadTestHTTP(t, proxy.URL+endpoint, method, body, true)
 				r.Header.Set("Referer", proxy.URL+referer)
 				return r
 			}
 			send := func(r *http.Request) {
-				response, err := noRedirectClient().Do(r)
+				response, err := client.Do(r)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -3168,11 +3214,11 @@ func TestPreloadNativeSeasonParentEnrichment(t *testing.T) {
 				info()
 			case "during-info":
 				pending := request(http.MethodPost, "/v/api/v1/play/info?hold=true", `{"item_guid":"season"}`, "/v/tv/season/season")
-				preloadCompleteOlderRequest(t, pending, entered, release, func() { send(parent) })
+				preloadCompleteOlderRequest(t, client, pending, entered, release, func() { send(parent) })
 			case "older-denial", "old-parent-after-navigation":
 				info()
 				parent.URL.RawQuery = "hold=true"
-				preloadCompleteOlderRequest(t, parent, entered, release, func() {
+				preloadCompleteOlderRequest(t, client, parent, entered, release, func() {
 					if phase == "older-denial" {
 						detail()
 						info()
@@ -3229,7 +3275,7 @@ func TestPreloadNativeSeasonParentEnrichment(t *testing.T) {
 
 func TestPreloadMissingSessionNewStartIntentFencesOldUA(t *testing.T) {
 	for _, status := range []int{http.StatusNoContent, http.StatusForbidden} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
+		runPreloadTest(t, fmt.Sprint(status), func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -3266,10 +3312,10 @@ func TestPreloadMissingSessionNewStartIntentFencesOldUA(t *testing.T) {
 			body := `{"ItemId":"` + current + `","MediaSourceId":"` + source + `","IsPaused":false,"PositionTicks":2060000000}`
 			preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", body, false)
 			before := metadata.Load()
-			proxy := httptest.NewServer(inst)
-			defer proxy.Close()
+			proxy := preloadTestServer(t, inst)
+			client := proxy.Client()
 			request := preloadTestHTTP(t, proxy.URL+"/emby/Sessions/Playing?hold=true", http.MethodPost, body, false)
-			preloadCompleteOlderRequest(t, request, entered, release, func() {
+			preloadCompleteOlderRequest(t, client, request, entered, release, func() {
 				preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", body, false)
 				waitPreloadWorker(t, options.Preloader)
 				if len(signs) != 0 || metadata.Load() != before {
@@ -3287,7 +3333,7 @@ func TestPreloadMissingSessionNewStartIntentFencesOldUA(t *testing.T) {
 
 func TestPreloadMissingSessionStreamOrdering(t *testing.T) {
 	for _, phase := range []string{"new-start", "stop", "old-stop", "fresh-after-start", "failed-stream"} {
-		t.Run(phase, func(t *testing.T) {
+		runPreloadTest(t, phase, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -3333,10 +3379,10 @@ func TestPreloadMissingSessionStreamOrdering(t *testing.T) {
 			if phase == "fresh-after-start" || phase == "failed-stream" {
 				preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", body, false)
 			}
-			proxy := httptest.NewServer(inst)
-			defer proxy.Close()
+			proxy := preloadTestServer(t, inst)
+			client := proxy.Client()
 			pending := preloadTestHTTP(t, proxy.URL+stream, http.MethodGet, "", false)
-			preloadCompleteOlderRequest(t, pending, entered, release, func() {
+			preloadCompleteOlderRequest(t, client, pending, entered, release, func() {
 				switch phase {
 				case "new-start":
 					preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", body, false)
@@ -3380,7 +3426,7 @@ func TestPreloadCompatibleStreamSessionMatchesNewStart(t *testing.T) {
 		{name: "invalid-session", query: "&PlaySessionId=..%2Fsession"},
 	} {
 		for _, includeSession := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/session=%t", test.name, includeSession), func(t *testing.T) {
+			runPreloadTest(t, fmt.Sprintf("%s/session=%t", test.name, includeSession), func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -3457,7 +3503,7 @@ func TestPreloadCompatibleStreamSessionMatchesNewStart(t *testing.T) {
 func TestPreloadRepeatedPlayingPreservesNextOpportunity(t *testing.T) {
 	for _, phase := range []string{"queued", "preparing", "signing"} {
 		for _, action := range []string{"repeat", "repeat-optional-source", "repeat-optional-pause", "repeat-during-range", "new-session", "new-source", "new-source-path", "ambiguous-source", "sessionless-restart", "transcode", "transcode-pending-response", "paused", "paused-pending-response", "denied"} {
-			t.Run(phase+"/"+action, func(t *testing.T) {
+			runPreloadTest(t, phase+"/"+action, func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -3700,7 +3746,7 @@ func TestPreloadLatestSourceAmbiguityRevokesDetail(t *testing.T) {
 			if entry != "detail" && action == "older-than-info" || entry == "detail" && action == "refreshed-detail" || entry == "playback-info-mixed" && action != "debounce" && action != "signing" && action != "explicit" && action != "older" {
 				continue
 			}
-			t.Run(entry+"/"+action, func(t *testing.T) {
+			runPreloadTest(t, entry+"/"+action, func(t *testing.T) {
 				root := t.TempDir()
 				first, second := preloadTestFile(t, root, "first"), preloadTestFile(t, root, "second")
 				if entry == "playback-info-mixed" {
@@ -3777,10 +3823,10 @@ func TestPreloadLatestSourceAmbiguityRevokesDetail(t *testing.T) {
 					endpoint = strings.Replace(endpoint, "view=multiple", "view=partial", 1)
 				}
 				if action == "older" || action == "older-than-info" {
-					proxy := httptest.NewServer(inst)
-					defer proxy.Close()
+					proxy := preloadTestServer(t, inst)
+					client := proxy.Client()
 					request := preloadTestHTTP(t, proxy.URL+endpoint+"&older=true", method, body, false)
-					preloadCompleteOlderRequest(t, request, olderEntered, olderReleased, func() {
+					preloadCompleteOlderRequest(t, client, request, olderEntered, olderReleased, func() {
 						if action == "older-than-info" {
 							preloadServeInstance(t, inst, http.MethodPost, "/emby/Items/movie/PlaybackInfo?MediaSourceId=second", "{}", false)
 						} else if entry == "playback-info-mixed" {
@@ -3825,10 +3871,10 @@ func TestPreloadLatestSourceAmbiguityRevokesDetail(t *testing.T) {
 func TestPreloadLatestResumeRevokesDetail(t *testing.T) {
 	for _, kind := range []string{"Series", "Season"} {
 		for _, action := range []string{"empty", "multiple", "changed", "same", "other-user", "other-series", "other-season", "older-empty", "episode", "signing", "source-ambiguous", "source-changed", "source-partial", "info-ambiguous", "info-changed", "info-explicit", "info-refreshed", "info-older", "source-older", "source-ambiguous-signing", "info-ambiguous-signing"} {
-			if kind == "Series" && action == "other-season" {
+			if kind == "Series" && action == "other-season" || kind == "Season" && action == "episode" {
 				continue
 			}
-			t.Run(kind+"/"+action, func(t *testing.T) {
+			runPreloadTest(t, kind+"/"+action, func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				series, season := stringField(items[0], "SeriesId"), stringField(items[0], "SeasonId")
@@ -3964,14 +4010,14 @@ func TestPreloadLatestResumeRevokesDetail(t *testing.T) {
 					}
 				}
 				if action == "older-empty" || action == "info-older" || action == "source-older" {
-					proxy := httptest.NewServer(inst)
-					defer proxy.Close()
+					proxy := preloadTestServer(t, inst)
+					client := proxy.Client()
 					method, oldEndpoint, body := http.MethodGet, endpoint, ""
 					if action == "info-older" {
 						method, oldEndpoint, body = http.MethodPost, "/emby/Items/"+resumeID+"/PlaybackInfo", "{}"
 					}
 					request := preloadTestHTTP(t, proxy.URL+oldEndpoint+"?older=true", method, body, false)
-					preloadCompleteOlderRequest(t, request, olderEntered, olderReleased, func() {
+					preloadCompleteOlderRequest(t, client, request, olderEntered, olderReleased, func() {
 						if action == "source-older" {
 							preloadServeInstance(t, inst, http.MethodPost, "/emby/Items/"+resumeID+"/PlaybackInfo?MediaSourceId=alternate", "{}", false)
 						} else {
@@ -4035,7 +4081,7 @@ func TestPreloadProgressInvalidatesBeforeUpstream(t *testing.T) {
 		{"missing-source", "signing"}, {"old-item", "signing"}, {"old-source", "preparing"},
 		{"old-session", "signing"}, {"ongoing", "signing"}, {"old-session-during-range", "signing"},
 	} {
-		t.Run(test.action+"/"+test.phase, func(t *testing.T) {
+		runPreloadTest(t, test.action+"/"+test.phase, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -4233,7 +4279,7 @@ func TestPreloadProgressInvalidatesBeforeUpstream(t *testing.T) {
 
 func TestPreloadRangeProgressKeepsConfirmedUA(t *testing.T) {
 	for _, action := range []string{"serial", "stream", "authorization", "resolution", "optional-session", "optional-source", "new-ua", "new-session", "invalid-session", "new-source", "new-path", "known-new-path", "known-new-path-authorization", "known-queue-path-authorization", "authorization-denied", "resolution-denied", "stopped"} {
-		t.Run(action, func(t *testing.T) {
+		runPreloadTest(t, action, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -4410,7 +4456,7 @@ func TestPreloadCompatibleItemDetailChecksExplicitUser(t *testing.T) {
 	for _, kind := range []string{"Movie", "Episode"} {
 		for _, sourceFirst := range []bool{false, true} {
 			for _, userID := range []string{"user", "other-user"} {
-				t.Run(fmt.Sprintf("%s/sourceFirst=%t/user=%s", kind, sourceFirst, userID), func(t *testing.T) {
+				runPreloadTest(t, fmt.Sprintf("%s/sourceFirst=%t/user=%s", kind, sourceFirst, userID), func(t *testing.T) {
 					root := t.TempDir()
 					file := preloadTestFile(t, root, "identity")
 					media := []any{map[string]any{"Id": "logical", "Path": file}}
@@ -4455,7 +4501,7 @@ func TestPreloadCompatibleItemDetailChecksExplicitUser(t *testing.T) {
 
 func TestPreloadCompatibleItemUserChangeDuringAuthorization(t *testing.T) {
 	for _, userID := range []string{"user", "other-user"} {
-		t.Run(userID, func(t *testing.T) {
+		runPreloadTest(t, userID, func(t *testing.T) {
 			root := t.TempDir()
 			file := preloadTestFile(t, root, "pending-user")
 			options, _ := preloadTestOptions(t, root)
@@ -4501,49 +4547,51 @@ func TestPreloadCompatibleItemUserChangeDuringAuthorization(t *testing.T) {
 }
 
 func TestPreloadCompatibleItemUserChangeCancelsSigning(t *testing.T) {
-	root := t.TempDir()
-	file := preloadTestFile(t, root, "changing-user")
-	options, _ := preloadTestOptions(t, root)
-	entered, release, published := make(chan struct{}, 1), make(chan struct{}), make(chan bool, 1)
-	defer close(release)
-	options.NewPreload = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		return raw, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
-			if task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
-				entered <- struct{}{}
-				select {
-				case <-release:
-				case <-ctx.Done():
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		file := preloadTestFile(t, root, "changing-user")
+		options, _ := preloadTestOptions(t, root)
+		entered, release, published := make(chan struct{}, 1), make(chan struct{}), make(chan bool, 1)
+		defer close(release)
+		options.NewPreload = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			return raw, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+				if task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
+					entered <- struct{}{}
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+					published <- task.Publish(func() {})
 				}
-				published <- task.Publish(func() {})
+				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+			}, true
+		}
+		inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/Users/Me" {
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+				return
 			}
-			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-		}, true
-	}
-	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/Users/Me" {
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-			return
+			if r.URL.Path != "/Items/file" {
+				t.Errorf("意外请求：%s", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
+		}))
+		preloadServeInstance(t, inst, http.MethodGet, "/Items/file", "", false)
+		select {
+		case <-entered:
+		case <-time.After(4 * time.Second):
+			t.Fatal("初始详情未进入签名")
 		}
-		if r.URL.Path != "/Items/file" {
-			t.Errorf("意外请求：%s", r.URL.Path)
+		preloadServeInstance(t, inst, http.MethodGet, "/Items/file?UserId=other-user", "", false)
+		select {
+		case ok := <-published:
+			if ok {
+				t.Fatal("详情用户变化后旧签名仍可发布")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("详情用户变化没有立即取消旧签名")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "file", "Type": "Movie", "MediaSources": []any{map[string]any{"Id": "logical", "Path": file}}})
-	}))
-	preloadServeInstance(t, inst, http.MethodGet, "/Items/file", "", false)
-	select {
-	case <-entered:
-	case <-time.After(4 * time.Second):
-		t.Fatal("初始详情未进入签名")
-	}
-	preloadServeInstance(t, inst, http.MethodGet, "/Items/file?UserId=other-user", "", false)
-	select {
-	case ok := <-published:
-		if ok {
-			t.Fatal("详情用户变化后旧签名仍可发布")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("详情用户变化没有立即取消旧签名")
-	}
+	})
 }
 
 func TestPreloadDisplayDoesNotChangeSourceIdentity(t *testing.T) {

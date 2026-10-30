@@ -115,8 +115,10 @@ func AcquireRuntimeRequest() (func(), bool) {
 		restoreRequests.Lock()
 		defer restoreRequests.Unlock()
 		restoreRequests.active--
-		close(restoreRequests.changed)
-		restoreRequests.changed = make(chan struct{})
+		if restoreRequests.blocked {
+			close(restoreRequests.changed)
+			restoreRequests.changed = make(chan struct{})
+		}
 	}), true
 }
 

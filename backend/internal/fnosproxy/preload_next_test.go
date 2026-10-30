@@ -10,99 +10,101 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"qmediasync/internal/playback"
 )
 
 func TestPreloadMissingQueueAfterQueueSaturation(t *testing.T) {
-	root := t.TempDir()
-	queue, items := preloadQueueFixture(t, root)
-	current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
-	source := itemSources(current, items[0])[0]
-	var users, lists atomic.Int32
-	options, signs := preloadTestOptions(t, root)
-	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/Me":
-			users.Add(1)
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/" + current:
-			_ = json.NewEncoder(w).Encode(items[0])
-		case "/Shows/" + series + "/Episodes":
-			lists.Add(1)
-			_ = json.NewEncoder(w).Encode(queue)
-		default:
-			w.WriteHeader(http.StatusNoContent)
-		}
-	}))
-	preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-	preloadSeedPlayer(t, inst, false, source)
-	report := fmt.Sprintf(`{"ItemId":%q,"MediaSourceId":%q,"PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`, current, source.ID)
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
-	entered, released := make(chan struct{}), make(chan struct{})
-	release := sync.OnceFunc(func() { close(released) })
-	t.Cleanup(release)
-	if !options.Preloader.Submit(playback.PreloadCandidate{Key: "blocking", Scope: "blocking", Kind: playback.PreloadNext,
-		Run: func(ctx context.Context, _ *playback.PreloadTask) playback.PreloadResult {
-			close(entered)
-			select {
-			case <-released:
-			case <-ctx.Done():
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		queue, items := preloadQueueFixture(t, root)
+		current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
+		source := itemSources(current, items[0])[0]
+		var users, lists atomic.Int32
+		options, signs := preloadTestOptions(t, root)
+		inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/Me":
+				users.Add(1)
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/" + current:
+				_ = json.NewEncoder(w).Encode(items[0])
+			case "/Shows/" + series + "/Episodes":
+				lists.Add(1)
+				_ = json.NewEncoder(w).Encode(queue)
+			default:
+				w.WriteHeader(http.StatusNoContent)
 			}
-			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-		}}) {
-		t.Fatal("无法建立队列占用")
-	}
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("占用作业未开始")
-	}
-	drained := make(chan struct{}, 32)
-	for index := range 32 {
-		key := fmt.Sprintf("queued-%d", index)
-		if !options.Preloader.Submit(playback.PreloadCandidate{Key: key, Scope: key, Kind: playback.PreloadNext,
-			Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
-				drained <- struct{}{}
+		}))
+		preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+		preloadSeedPlayer(t, inst, false, source)
+		report := fmt.Sprintf(`{"ItemId":%q,"MediaSourceId":%q,"PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`, current, source.ID)
+		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
+		entered, released := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(released) })
+		t.Cleanup(release)
+		if !options.Preloader.Submit(playback.PreloadCandidate{Key: "blocking", Scope: "blocking", Kind: playback.PreloadNext,
+			Run: func(ctx context.Context, _ *playback.PreloadTask) playback.PreloadResult {
+				close(entered)
+				select {
+				case <-released:
+				case <-ctx.Done():
+				}
 				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 			}}) {
-			t.Fatalf("尚未填满 32 项队列：index=%d", index)
+			t.Fatal("无法建立队列占用")
 		}
-	}
-	if options.Preloader.Submit(playback.PreloadCandidate{Key: "overflow", Scope: "overflow", Kind: playback.PreloadNext,
-		Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult { return playback.PreloadResult{} }}) {
-		t.Fatal("32 项队列未拒绝额外候选")
-	}
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	release()
-	for range 32 {
 		select {
-		case <-drained:
+		case <-entered:
 		case <-time.After(3 * time.Second):
-			t.Fatal("队列未排空")
+			t.Fatal("占用作业未开始")
 		}
-	}
-	waitPreloadWorker(t, options.Preloader)
-	if users.Load() != 0 || lists.Load() != 0 || len(signs) != 0 {
-		t.Fatal("队列拒绝后无新进度仍自动补查")
-	}
-	for range 10 {
+		drained := make(chan struct{}, 32)
+		for index := range 32 {
+			key := fmt.Sprintf("queued-%d", index)
+			if !options.Preloader.Submit(playback.PreloadCandidate{Key: key, Scope: key, Kind: playback.PreloadNext,
+				Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
+					drained <- struct{}{}
+					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+				}}) {
+				t.Fatalf("尚未填满 32 项队列：index=%d", index)
+			}
+		}
+		if options.Preloader.Submit(playback.PreloadCandidate{Key: "overflow", Scope: "overflow", Kind: playback.PreloadNext,
+			Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult { return playback.PreloadResult{} }}) {
+			t.Fatal("32 项队列未拒绝额外候选")
+		}
 		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	}
-	waitPreloadWorker(t, options.Preloader)
-	if users.Load() != 1 || lists.Load() != 1 || len(signs) != 1 {
-		t.Fatalf("队列拒绝消耗补查机会或重复执行：users=%d lists=%d signs=%d", users.Load(), lists.Load(), len(signs))
-	}
-	if sign := <-signs; !strings.Contains(sign.url, "pickcode=next") || sign.ua != "Confirmed Player" {
-		t.Fatalf("排空后准备了错误后继：sign=%+v", sign)
-	}
+		release()
+		for range 32 {
+			select {
+			case <-drained:
+			case <-time.After(3 * time.Second):
+				t.Fatal("队列未排空")
+			}
+		}
+		waitPreloadWorker(t, options.Preloader)
+		if users.Load() != 0 || lists.Load() != 0 || len(signs) != 0 {
+			t.Fatal("队列拒绝后无新进度仍自动补查")
+		}
+		for range 10 {
+			preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
+		}
+		waitPreloadWorker(t, options.Preloader)
+		if users.Load() != 1 || lists.Load() != 1 || len(signs) != 1 {
+			t.Fatalf("队列拒绝消耗补查机会或重复执行：users=%d lists=%d signs=%d", users.Load(), lists.Load(), len(signs))
+		}
+		if sign := <-signs; !strings.Contains(sign.url, "pickcode=next") || sign.ua != "Confirmed Player" {
+			t.Fatalf("排空后准备了错误后继：sign=%+v", sign)
+		}
+	})
 }
 
 func TestPreloadMissingQueueSignatureRetry(t *testing.T) {
 	for _, action := range []string{"retry", "pause", "stop", "denied", "expired"} {
-		t.Run(action, func(t *testing.T) {
-			t.Parallel()
+		runPreloadTest(t, action, func(t *testing.T) {
 			root := t.TempDir()
 			_, items := preloadQueueFixture(t, root)
 			current, next := stringField(items[0], "Id"), stringField(items[1], "Id")
@@ -237,7 +239,7 @@ func TestPreloadMissingQueueSignatureRetry(t *testing.T) {
 
 func TestPreloadMissingQueueQueriesOnce(t *testing.T) {
 	for _, missingSource := range []bool{false, true} {
-		t.Run(map[bool]string{false: "complete", true: "final-detail"}[missingSource], func(t *testing.T) {
+		runPreloadTest(t, map[bool]string{false: "complete", true: "final-detail"}[missingSource], func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, next := stringField(items[0], "Id"), stringField(items[1], "Id")
@@ -312,7 +314,7 @@ func TestPreloadMissingQueueQueriesOnce(t *testing.T) {
 
 func TestPreloadQueriedNextRejectsUnprovenList(t *testing.T) {
 	for _, test := range []string{"valid", "gap", "empty", "last", "missing-anchor", "duplicate", "cross-series", "cross-season", "reverse", "same-index", "missing-index", "fractional-index", "wrong-kind", "changed-current-source", "partial", "start-offset", "unknown-schema", "at-limit", "too-many"} {
-		t.Run(test, func(t *testing.T) {
+		runPreloadTest(t, test, func(t *testing.T) {
 			queue, items := preloadQueueFixture(t, t.TempDir())
 			playing, _ := compatiblePreloadItem(items[0])
 			switch test {
@@ -379,7 +381,7 @@ func TestPreloadQueriedNextRejectsUnprovenList(t *testing.T) {
 func TestPreloadMissingQueueCanceledByNewEvidence(t *testing.T) {
 	for _, phase := range []string{"list", "signing"} {
 		for _, action := range []string{"pause", "stop", "new-session", "new-item", "detail", "source", "natural-list", "denied"} {
-			t.Run(phase+"/"+action, func(t *testing.T) {
+			runPreloadTest(t, phase+"/"+action, func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -486,7 +488,7 @@ func TestPreloadMissingQueueCanceledByNewEvidence(t *testing.T) {
 
 func TestPreloadMissingQueueHonorsLimits(t *testing.T) {
 	for _, test := range []string{"user-mismatch", "user-retry-budget", "list-empty", "list-last", "list-ambiguous", "list-wrong-season", "list-html", "list-unknown", "list-denied", "observed-empty", "observed-last", "observed-ambiguous", "missing-stream", "outside-window", "missing-season"} {
-		t.Run(test, func(t *testing.T) {
+		runPreloadTest(t, test, func(t *testing.T) {
 			root := t.TempDir()
 			queue, items := preloadQueueFixture(t, root)
 			current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
@@ -578,161 +580,165 @@ func TestPreloadMissingQueueHonorsLimits(t *testing.T) {
 }
 
 func TestPreloadMissingQueueKeepsNaturalRequestOrder(t *testing.T) {
-	root := t.TempDir()
-	queue, items := preloadQueueFixture(t, root)
-	current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
-	source := itemSources(current, items[0])[0]
-	lookupEntered, lookupCanceled := make(chan struct{}), make(chan struct{})
-	naturalEntered, naturalReleased := make(chan struct{}), make(chan struct{})
-	release := sync.OnceFunc(func() { close(naturalReleased) })
-	t.Cleanup(release)
-	var lists atomic.Int32
-	options, signs := preloadTestOptions(t, root)
-	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/Me":
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/" + current:
-			_ = json.NewEncoder(w).Encode(items[0])
-		case "/Shows/" + series + "/Episodes":
-			if r.URL.Query().Get("Limit") != "" {
-				lists.Add(1)
-				close(lookupEntered)
-				<-r.Context().Done()
-				close(lookupCanceled)
-				return
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		queue, items := preloadQueueFixture(t, root)
+		current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
+		source := itemSources(current, items[0])[0]
+		lookupEntered, lookupCanceled := make(chan struct{}), make(chan struct{})
+		naturalEntered, naturalReleased := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(naturalReleased) })
+		t.Cleanup(release)
+		var lists atomic.Int32
+		options, signs := preloadTestOptions(t, root)
+		inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/Me":
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/" + current:
+				_ = json.NewEncoder(w).Encode(items[0])
+			case "/Shows/" + series + "/Episodes":
+				if r.URL.Query().Get("Limit") != "" {
+					lists.Add(1)
+					close(lookupEntered)
+					<-r.Context().Done()
+					close(lookupCanceled)
+					return
+				}
+				if r.URL.Query().Get("older") != "" {
+					close(naturalEntered)
+					select {
+					case <-naturalReleased:
+					case <-r.Context().Done():
+						return
+					}
+					_ = json.NewEncoder(w).Encode(queue)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"Items": []any{}})
+			default:
+				w.WriteHeader(http.StatusNoContent)
 			}
-			if r.URL.Query().Get("older") != "" {
-				close(naturalEntered)
+		}))
+		preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+		preloadSeedPlayer(t, inst, false, source)
+		report := `{"ItemId":"` + current + `","MediaSourceId":"` + source.ID + `","PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`
+		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
+		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
+		select {
+		case <-lookupEntered:
+		case <-time.After(time.Second):
+			t.Fatal("补查没有开始")
+		}
+		done := make(chan struct{})
+		go func() {
+			preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes?older=true", "", false)
+			close(done)
+		}()
+		select {
+		case <-naturalEntered:
+		case <-time.After(time.Second):
+			t.Fatal("自然列表没有开始")
+		}
+		select {
+		case <-lookupCanceled:
+		case <-time.After(time.Second):
+			t.Fatal("自然列表仍在途时未取消旧补查")
+		}
+		preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes?updated=true", "", false)
+		release()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("旧自然响应没有结束")
+		}
+		for range 20 {
+			preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
+		}
+		waitPreloadWorker(t, options.Preloader)
+		inst.preload.mu.Lock()
+		for _, device := range inst.preload.devices {
+			if len(device.queue) != 0 || device.queueSeries != series {
+				t.Error("迟到自然响应覆盖了更新的空列表")
+			}
+		}
+		inst.preload.mu.Unlock()
+		if lists.Load() != 1 || len(signs) != 0 {
+			t.Fatalf("旧列表恢复补查或发布：lists=%d signs=%d", lists.Load(), len(signs))
+		}
+	})
+}
+
+func TestPreloadMissingQueueWaitsForNaturalList(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		queue, items := preloadQueueFixture(t, root)
+		current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
+		source := itemSources(current, items[0])[0]
+		entered, released := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(released) })
+		t.Cleanup(release)
+		var lookups atomic.Int32
+		options, signs := preloadTestOptions(t, root)
+		inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/Me":
+				_, _ = io.WriteString(w, `{"Id":"user"}`)
+			case "/Users/user/Items/" + current:
+				_ = json.NewEncoder(w).Encode(items[0])
+			case "/Shows/" + series + "/Episodes":
+				if r.URL.Query().Get("Limit") != "" {
+					lookups.Add(1)
+					_ = json.NewEncoder(w).Encode(queue)
+					return
+				}
+				close(entered)
 				select {
-				case <-naturalReleased:
+				case <-released:
 				case <-r.Context().Done():
 					return
 				}
 				_ = json.NewEncoder(w).Encode(queue)
-				return
+			default:
+				w.WriteHeader(http.StatusNoContent)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"Items": []any{}})
-		default:
-			w.WriteHeader(http.StatusNoContent)
+		}))
+		preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
+		preloadSeedPlayer(t, inst, false, source)
+		report := `{"ItemId":"` + current + `","MediaSourceId":"` + source.ID + `","PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`
+		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
+		done := make(chan struct{})
+		go func() {
+			preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
+			close(done)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("自然列表请求未开始")
 		}
-	}))
-	preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-	preloadSeedPlayer(t, inst, false, source)
-	report := `{"ItemId":"` + current + `","MediaSourceId":"` + source.ID + `","PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	select {
-	case <-lookupEntered:
-	case <-time.After(time.Second):
-		t.Fatal("补查没有开始")
-	}
-	done := make(chan struct{})
-	go func() {
-		preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes?older=true", "", false)
-		close(done)
-	}()
-	select {
-	case <-naturalEntered:
-	case <-time.After(time.Second):
-		t.Fatal("自然列表没有开始")
-	}
-	select {
-	case <-lookupCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("自然列表仍在途时未取消旧补查")
-	}
-	preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes?updated=true", "", false)
-	release()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("旧自然响应没有结束")
-	}
-	for range 20 {
 		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	}
-	waitPreloadWorker(t, options.Preloader)
-	inst.preload.mu.Lock()
-	for _, device := range inst.preload.devices {
-		if len(device.queue) != 0 || device.queueSeries != series {
-			t.Error("迟到自然响应覆盖了更新的空列表")
+		waitPreloadWorker(t, options.Preloader)
+		if lookups.Load() != 0 || len(signs) != 0 {
+			t.Fatal("自然列表未返回时重复补查")
 		}
-	}
-	inst.preload.mu.Unlock()
-	if lists.Load() != 1 || len(signs) != 0 {
-		t.Fatalf("旧列表恢复补查或发布：lists=%d signs=%d", lists.Load(), len(signs))
-	}
-}
-
-func TestPreloadMissingQueueWaitsForNaturalList(t *testing.T) {
-	root := t.TempDir()
-	queue, items := preloadQueueFixture(t, root)
-	current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")
-	source := itemSources(current, items[0])[0]
-	entered, released := make(chan struct{}), make(chan struct{})
-	release := sync.OnceFunc(func() { close(released) })
-	t.Cleanup(release)
-	var lookups atomic.Int32
-	options, signs := preloadTestOptions(t, root)
-	inst := preloadTestInstance(t, options, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/Me":
-			_, _ = io.WriteString(w, `{"Id":"user"}`)
-		case "/Users/user/Items/" + current:
-			_ = json.NewEncoder(w).Encode(items[0])
-		case "/Shows/" + series + "/Episodes":
-			if r.URL.Query().Get("Limit") != "" {
-				lookups.Add(1)
-				_ = json.NewEncoder(w).Encode(queue)
-				return
-			}
-			close(entered)
-			select {
-			case <-released:
-			case <-r.Context().Done():
-				return
-			}
-			_ = json.NewEncoder(w).Encode(queue)
-		default:
-			w.WriteHeader(http.StatusNoContent)
+		release()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("自然列表请求未结束")
 		}
-	}))
-	preloadServeInstance(t, inst, http.MethodGet, "/emby/Users/user/Items/"+current, "", false)
-	preloadSeedPlayer(t, inst, false, source)
-	report := `{"ItemId":"` + current + `","MediaSourceId":"` + source.ID + `","PlaySessionId":"session","IsPaused":false,"PositionTicks":2060000000}`
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing", report, false)
-	done := make(chan struct{})
-	go func() {
-		preloadServeInstance(t, inst, http.MethodGet, "/emby/Shows/"+series+"/Episodes", "", false)
-		close(done)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("自然列表请求未开始")
-	}
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	waitPreloadWorker(t, options.Preloader)
-	if lookups.Load() != 0 || len(signs) != 0 {
-		t.Fatal("自然列表未返回时重复补查")
-	}
-	release()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("自然列表请求未结束")
-	}
-	preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
-	if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=next") || lookups.Load() != 0 {
-		t.Fatalf("自然列表完成后未复用原规则：sign=%+v lookups=%d", sign, lookups.Load())
-	}
+		preloadServeInstance(t, inst, http.MethodPost, "/emby/Sessions/Playing/Progress", report, false)
+		if sign := waitPreloadSign(t, signs); !strings.Contains(sign.url, "pickcode=next") || lookups.Load() != 0 {
+			t.Fatalf("自然列表完成后未复用原规则：sign=%+v lookups=%d", sign, lookups.Load())
+		}
+	})
 }
 
 func TestPreloadMissingQueueRemembersNaturalSeries(t *testing.T) {
 	for _, timing := range []string{"before-playing", "while-playing"} {
 		for _, observed := range []string{"empty", "last", "ambiguous", "only-other-series", "history-full"} {
-			t.Run(timing+"/"+observed, func(t *testing.T) {
+			runPreloadTest(t, timing+"/"+observed, func(t *testing.T) {
 				root := t.TempDir()
 				queue, items := preloadQueueFixture(t, root)
 				current, series := stringField(items[0], "Id"), stringField(items[0], "SeriesId")

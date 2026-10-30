@@ -204,6 +204,11 @@ func TestRestoreMaintenanceWaitsForAcceptedRequests(t *testing.T) {
 		t.Fatal("request was unexpectedly rejected")
 	}
 	defer release()
+	releaseLast, ok := AcquireRuntimeRequest()
+	if !ok {
+		t.Fatal("second request was unexpectedly rejected")
+	}
+	defer releaseLast()
 	archive := restoreMaintenanceArchive(t)
 	finished := make(chan error, 1)
 	go func() { finished <- Restore(archive) }()
@@ -225,6 +230,13 @@ func TestRestoreMaintenanceWaitsForAcceptedRequests(t *testing.T) {
 		t.Fatalf("item=%+v err=%v", item, err)
 	}
 	release()
+	release()
+	select {
+	case <-finished:
+		t.Fatal("restore did not wait for the last accepted request")
+	default:
+	}
+	releaseLast()
 	if err := <-finished; err != nil {
 		t.Fatal(err)
 	}

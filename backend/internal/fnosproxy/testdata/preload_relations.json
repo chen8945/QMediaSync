@@ -162,16 +162,5 @@
       "logic_type": 0,
       "media_stream": {}
     }
-  },
-  "fnos-native-record-paused-repeat-1": {
-    "item_guid": "afe97260011dd43c53e20037290c58bb",
-    "media_guid": "647857b858949339a873483e48a80b44",
-    "video_guid": "31dd2a6ad5e90753a7f11c22849478ca",
-    "audio_guid": "",
-    "subtitle_guid": "",
-    "resolution": "原画",
-    "bitrate": 0,
-    "ts": 206,
-    "duration": 240
   }
 }

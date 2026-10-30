@@ -145,6 +145,8 @@ GitHub 私有连接池回收运行 `go test -race ./internal/github -run '^TestM
 
 ## STRM 预加载验证
 
+飞牛预加载的定时与协议场景使用 `testing/synctest` 和 `httptest.NewTestServer` 的内存网络，客户端、反代及后台元数据请求共用测试服务的 transport；2 秒防抖、10 秒账号间隔与 30 秒重试冷却按虚拟时间执行，不缩短生产期限。每个表格子项使用独立时钟，worker 同步键不依赖当前时间；停服／配置替换、监听端口、HTTPS 和连接生命周期仍由真实网络回归覆盖。未知响应回退通过实际 handler 核对状态、编码和原始正文，配合有效详情正例及跨越防抖后的取链次数，避免请求提前被拒绝或立即断言导致假通过。定时夹具调整后运行 `go test -count=3 -shuffle=on ./internal/fnosproxy`、该包的 race 和 vet；HTTP 维护准入的改动同时运行 `internal/backup` 的普通、race 和 vet，覆盖多个在途请求及重复释放后仍等待最后一个请求。
+
 飞牛兼容响应调整运行 `go test -count=1 ./internal/fnosproxy`、`go test -race -count=1 ./internal/fnosproxy` 和 `go vet ./internal/fnosproxy`（工作目录 `backend/`）。`TestPlaybackInfoExternalSubtitles` 经真实反代请求核对外挂字幕路径、独立条目／源 ID、Token 编码、文本／图形标记及已有地址／内嵌／未接管源保留；`TestCompatibleItemRuntimeResponses` 核对预加载关闭时的详情／列表时长对齐、未知大整数精度、gzip 与超限／歧义／未探测回退。短详情 `/Items/{id}` 与带用户路径共用原始字节、用户身份、剧季续播、最新拒绝及旧拒绝响应回归；原生展示使用 `tv_title`，不改变来源身份。仅调整飞牛适配器时，无须重复未改动的 Emby 或前端验证；HTTP 替身不代表物理播放器验收。
 
 以同样的授权源、UA、模式和缓存状态对照关闭／开启，区分元数据 HTTP、实际网盘签名、缓存 HEAD、CDN、复制／删除和 SQL。关闭、重复信号、未到窗口、冷却、已知普通电影进度或关联不明时新增后台查询为零；有效预加载命中后，普通播放少一次签名，实际播放原有探活与回退单独计数。快切详情只保留最新项，并验证已知源缺 codec、时长或 PlaySessionId 仍能成功，不能以全部跳过验收。
