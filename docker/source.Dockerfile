@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags=nomsgpack -ldflags "-s -w -X main.Version=${VERSION} -X 'main.PublishDate=${BUILD_DATE}' -X main.FANART_API_KEY=${FANART_API_KEY} -X main.OAuthRelayEncryptionKey=${OAUTH_RELAY_ENCRYPTION_KEY} -X main.TMDB_ACCESS_TOKEN=${TMDB_ACCESS_TOKEN} -X main.TMDB_API_KEY=${TMDB_API_KEY} -X main.SC_API_KEY=${SC_API_KEY}" -o QMediaSync .
 
-FROM alpine:3.20
+FROM alpine:3.24
 ENV TZ=Asia/Shanghai \
     PATH=/app:$PATH
 
