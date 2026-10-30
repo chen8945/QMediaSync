@@ -6,7 +6,7 @@
 >
 > 修改时机：修改聚合路由、请求字段、默认值、验证、幂等、响应、错误码或事务边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/sync_config.go`、`backend/internal/requests/sync.go`、`backend/internal/syncconfig/`、`backend/internal/models/syncpath.go`、`backend/internal/models/directory_upload.go`、`backend/internal/controllers/sync_directory_upload_test.go`。
+> 相关代码：`backend/internal/controllers/sync_config.go`、`backend/internal/requests/sync.go`、`backend/internal/strm/config/`、`backend/internal/models/syncpath.go`、`backend/internal/models/directory_upload.go`、`backend/internal/controllers/sync_directory_upload_test.go`。
 
 同步目录基础配置、目录监控上传总开关和最终规则集合通过同一个聚合接口保存。旧的同步目录创建 / 更新和规则独立写接口不再提供。
 
@@ -182,6 +182,6 @@
 ## 验证方式
 
 - 修改接口或聚合保存逻辑后，运行 `(cd backend && go test ./internal/controllers/ -run 'Test(Create|Update)SyncPathAggregate')`。
-- 修改事务、幂等或规则归属后，运行 `(cd backend && go test ./internal/syncconfig/)` 与 `(cd backend && go test ./internal/models/ -run TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey)`。
+- 修改事务、幂等或规则归属后，运行 `(cd backend && go test ./internal/strm/config/)` 与 `(cd backend && go test ./internal/models/ -run TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey)`。
 - 修改前端表单或字段定位后，运行 `(cd frontend && pnpm run type-check)`。
 - 前端 API、保存流程和组件回归随 `(cd frontend && pnpm run test)` 执行，覆盖 HTTP 成功但业务失败、来源／CSRF、字段定位、成功警告、失败保留输入、幂等键复用，以及详情或关联读取失败不提交默认空值。

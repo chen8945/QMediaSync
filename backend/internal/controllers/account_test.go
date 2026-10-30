@@ -10,8 +10,8 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115auth"
-	"qmediasync/internal/v115open"
+	v115auth "qmediasync/internal/v115/auth"
+	v115open "qmediasync/internal/v115/openapi"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"

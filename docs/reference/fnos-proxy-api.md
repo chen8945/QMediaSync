@@ -6,7 +6,7 @@
 >
 > 修改时机：修改配置字段、状态语义、鉴权、接管路由、来源缓存或内部转交规则时必须同步更新。
 >
-> 相关代码：`backend/internal/controllers/fnos_proxy.go`、`backend/internal/requests/fnos_proxy.go`、`backend/internal/models/fnos_proxy_config.go`、`backend/internal/fnosproxy/`、`backend/main.go`、`frontend/src/api/fnosProxy.ts`。
+> 相关代码：`backend/internal/controllers/fnos_proxy.go`、`backend/internal/requests/fnos_proxy.go`、`backend/internal/models/fnos_proxy_config.go`、`backend/internal/fnosproxy/`、`backend/internal/app/proxies.go`、`frontend/src/api/fnosProxy.ts`。
 
 ## 管理入口和鉴权
 
@@ -201,7 +201,7 @@ STRM 预加载由全局 `settings.strm_preload_enabled` 控制，飞牛配置不
 
 ## 不变量
 
-- 默认关闭不改变既有 Emby302、同步、刮削和取链行为；不迁移 `backend/emby302/`。
+- 默认关闭不改变既有 Emby302、同步、刮削和取链行为；两套代理分别由应用组装，Emby302 源码位于 `backend/internal/emby302/`。
 - 设置使用 QMediaSync 身份，播放使用当前用户的飞牛身份；不保存管理员万能凭据，不用缓存绕过权限。
 - QMediaSync 的认证与 CSRF Cookie 不送往飞牛，飞牛响应不能覆盖这些保留 Cookie；升级与普通响应遵循相同边界。
 - 飞牛回源使用实例独有直连传输，默认验证上游 HTTPS 证书，不继承系统代理或 Emby 的跳过证书验证选项。
@@ -211,7 +211,7 @@ STRM 预加载由全局 `settings.strm_preload_enabled` 控制，飞牛配置不
 
 ## 验证方式
 
-- 后端运行 `(cd backend && go test . ./internal/fnosproxy ./internal/requests ./internal/models ./internal/controllers ./internal/backup)`，并对新模块和受影响并发路径运行 `-race`。覆盖代理透传、前缀、不同条目／媒体源 ID、禁播与下载策略、POST SPA 回退、内部转交、HEAD／Range、取消、缓存隔离与失效、维护和停止。应用入口回归在独立测试进程中保持 115、百度视频流打开，执行临时 SQLite 的真实恢复并验证完成后仍拒绝新转发；百度回归经真实取链控制器和 SDK 观察期限、取消、迟到结果与锁等待，并验证原生播放停止能结束在途百度请求。
+- 后端运行 `(cd backend && go test . ./internal/app ./internal/fnosproxy ./internal/requests ./internal/models ./internal/controllers ./internal/backup)`，并对新模块和受影响并发路径运行 `-race`。覆盖代理透传、前缀、不同条目／媒体源 ID、禁播与下载策略、POST SPA 回退、内部转交、HEAD／Range、取消、缓存隔离与失效、维护和停止。应用入口回归在独立测试进程中保持 115、百度视频流打开，执行临时 SQLite 的真实恢复并验证完成后仍拒绝新转发；百度回归经真实取链控制器和 SDK 观察期限、取消、迟到结果与锁等待，并验证原生播放停止能结束在途百度请求。
 - `TestPlaybackInfoExternalSubtitles` 经实际 HTTP 反代核对独立条目／源 ID、字幕路径中的 `/0/`、Token 编码、文本／图形标记，以及已有地址、内嵌、未知格式、非法索引、缺 Token 和未接管源的保留。`TestCompatibleItemRuntimeResponses` 覆盖详情／列表、预加载关闭、gzip、未知大整数精度和不校正的响应原样回放。
 - PlaybackInfo 回归经实际 HTTP 反代核对 GET／POST 查询禁用、歧义标记与 POST JSON 保留转码响应，取流入口使用同一约束，原始 POST 字节透传且正常直播放仍接管；GET 请求头 Token 和 POST 改写结果均禁止公共缓存，回退响应保持上游缓存策略。电视剧 Seasons／Episodes 核对带 `/emby` 和不带前缀时的准确上游路径与完整查询串。
 - 115 缓存 HEAD 回归使用真实控制器和受控慢响应，核对取消及期限、不删除有效缓存、不重新取链或跳转，并经原生内部转交验证单次 Apply 能取消旧请求并启动新实例；该替身验证不能当作真实 CDN 故障或全部客户端覆盖。

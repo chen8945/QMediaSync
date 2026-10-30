@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/openai"
 	"qmediasync/internal/openlist"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/robfig/cron/v3"
 )

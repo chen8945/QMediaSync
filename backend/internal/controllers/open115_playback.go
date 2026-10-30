@@ -10,7 +10,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 	"qmediasync/internal/validation"
 )
 

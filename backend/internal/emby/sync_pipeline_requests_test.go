@@ -21,10 +21,10 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
+	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 type pipelineSQLCounter struct {

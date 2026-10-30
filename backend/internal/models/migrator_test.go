@@ -18,7 +18,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func TestResetSequenceReturnsMaxIDQueryFailure(t *testing.T) {

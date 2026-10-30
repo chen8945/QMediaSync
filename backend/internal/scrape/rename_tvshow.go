@@ -10,7 +10,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/scrape/rename"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 重命名电视剧文件

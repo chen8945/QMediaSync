@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/gin-gonic/gin"
 )

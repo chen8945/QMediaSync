@@ -11,7 +11,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 // selectGenerationTasks 先排除仍有依赖的任务，再凑足一批，避免队头挡住独立文件。

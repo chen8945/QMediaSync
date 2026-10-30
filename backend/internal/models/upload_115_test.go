@@ -14,7 +14,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"gorm.io/gorm"

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"golang.org/x/time/rate"
 	"resty.dev/v3"

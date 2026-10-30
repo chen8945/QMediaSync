@@ -271,7 +271,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 - 用户会话撤销使用 `session_id` 路径参数，当前直接从 `c.Param("session_id")` 读取。
 - 同步记录、同步任务详情 HTTP 查询、同步路径列表查询仍在 `controllers/sync.go` 使用控制器内局部 Request 结构；同步任务详情实时流在 `controllers/event_stream.go` 使用 `ParsePositiveIDRequest` 解析路径 `id`，不新增 DTO。
 - 备份上传恢复在解析 multipart 前限制请求体，并单独限制实际文件大小；超限返回 HTTP `413`、顶层 `error_code=BACKUP_ARCHIVE_LIMIT`，清理 multipart 和本轮上传临时文件。文件读取、扩展名和暂存处理保留在控制器中，具体限额见[数据库运维](../operations/database.md#恢复与风险边界)。
-- 首次数据库配置服务 `backend/main.go` 使用独立的启动期接口和私有请求结构，不纳入常规 API DTO 目录。
+- 首次数据库配置服务 `backend/internal/app/setup.go` 使用独立的启动期接口和私有请求结构，不纳入常规 API DTO 目录。
 - 部分只读或触发型接口没有外部参数，或只做运行状态检查，不需要 DTO。
 
 新增或改造接口时，不应继续扩大这些例外；如果改动触及上述接口，可以顺手迁移到 `backend/internal/requests`，但要保持外部响应兼容。

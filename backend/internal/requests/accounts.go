@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115auth"
+	v115auth "qmediasync/internal/v115/auth"
 	"qmediasync/internal/validation"
 )
 

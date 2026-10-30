@@ -6,7 +6,7 @@
 >
 > 修改时机：修改同步入口、Cron 注册、队列路由、去重、取消、`sync` 状态或同步完成后的下游触发时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/sync.go`、`backend/internal/syncconfig/`、`backend/internal/synccron/`、`backend/internal/syncstrm/`、`backend/internal/models/sync.go`、`backend/internal/models/syncpath.go`。
+> 相关代码：`backend/internal/controllers/sync.go`、`backend/internal/strm/config/`、`backend/internal/synccron/`、`backend/internal/syncstrm/`、`backend/internal/models/sync.go`、`backend/internal/models/syncpath.go`。
 
 ## 范围和对象
 
@@ -200,6 +200,6 @@ PostgreSQL 的同步目录删除及文件账本批量写事务，还会与 [Emby
 - 旧 ID 查询返回 `430004` 后，父目录列表返回授权失效或 HTTP `401`，必须保留认证错误并停止本地核对，后续兄弟目录的 STRM 不得继续删除；普通补查失败仍只保护受影响范围。
 - 排除回归覆盖完整名称、正则、祖先目录、单个元数据文件、源视频名称与当前／旧输出位置的本地 STRM 名称，验证本地 STRM、元数据、空目录和旧账本保留，独立兄弟继续处理，跳过不使同步失败。真实 115 驱动和 HTTP 替身验证目录及文件排除在缓存有无时都不触发上传补查、建目录或上传任务；新一轮远端扫描不为排除项生成 STRM 或下载任务。
 - 已存在附属目录的回归分别使用路径详情和本轮确认信息，验证直接复用 ID、零创建请求；非排除路径继续验证缺少目录证据时拒绝创建，以及宿主存在时正常补建缺失附件目录。
-- 修改 Cron 注册或同步目录聚合保存时，运行 `(cd backend && go test ./internal/syncconfig/)` 与相关控制器测试；在测试环境检查修改 `enable_cron` 或 `cron` 后旧计划已停止、新计划仅注册一次。
+- 修改 Cron 注册或同步目录聚合保存时，运行 `(cd backend && go test ./internal/strm/config/)` 与相关控制器测试；在测试环境检查修改 `enable_cron` 或 `cron` 后旧计划已停止、新计划仅注册一次。
 - 配置失效路径回归运行 `models`、`syncconfig` 中的 `TestDeleteSyncPathWithUnresolvableOldLocation`、`TestSaveSyncPathWithUnresolvableOldLocation`，覆盖旧根及旧账本断链、全局等待、取消保留记录、删除保留本地文件和新路径严格校验；同时运行 `syncstrm` 的 `TestGenerationFinalizingScopeFailureRetry` 与符号链接范围测试，确认文件操作仍拒绝失效或越界路径。
 - 修改排除规则时运行 `(cd backend && go test ./internal/syncstrm/ -run 'Test(ValidFileHonorsNameAndParentExclusions|RegexExclusionMatching|NewSyncStrmRejectsInvalidRegex)')`，验证完整匹配兼容、正则大小写及父路径排除。

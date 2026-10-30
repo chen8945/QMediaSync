@@ -12,7 +12,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 
 	"gorm.io/gorm"
 )

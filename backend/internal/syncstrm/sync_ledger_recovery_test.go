@@ -25,8 +25,8 @@ import (
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/syncscope"
-	"qmediasync/internal/v115open"
+	syncscope "qmediasync/internal/strm/scope"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 使用与应用相同的 SQLite 设置，取消事务后仍能重新打开已提交的数据。

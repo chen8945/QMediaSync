@@ -8,7 +8,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // SyncFileCache 完整缓存结构（主要用于 115 网盘）

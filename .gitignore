@@ -18,8 +18,8 @@ skills-lock.json
 
 # Logs and temporary files
 logs/
-!backend/emby302/util/logs/
-!backend/emby302/util/logs/*.go
+!backend/internal/emby302/util/logs/
+!backend/internal/emby302/util/logs/*.go
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -69,6 +69,14 @@ backend/q115strm_test.exe
 backend/q115strm.exe
 backend/web_statics/
 
+# Backend config packages contain source files
+!backend/internal/emby302/config/
+backend/internal/emby302/config/*
+!backend/internal/emby302/config/*.go
+!backend/internal/strm/config/
+backend/internal/strm/config/*
+!backend/internal/strm/config/*.go
+
 # Backend local experiments, local-only tests, and generated docs
 docs/superpowers/
 backend/test/
@@ -86,15 +94,15 @@ postgres/
 backend/postgres/
 
 # fnOS platform declarations are source files
-!backend/fnos/qmediasync-*/config/
-!backend/fnos/qmediasync-*/config/privilege
-!backend/fnos/qmediasync-*/config/resource
+!packaging/fnos/qmediasync-*/config/
+!packaging/fnos/qmediasync-*/config/privilege
+!packaging/fnos/qmediasync-*/config/resource
 
 # fnOS packaging outputs
-backend/fnos/qmediasync-arm64/app/QMediaSync
-backend/fnos/qmediasync-arm64/app/web_statics/
-backend/fnos/qmediasync-amd64/app/QMediaSync
-backend/fnos/qmediasync-amd64/app/web_statics/
+packaging/fnos/qmediasync-arm64/app/QMediaSync
+packaging/fnos/qmediasync-arm64/app/web_statics/
+packaging/fnos/qmediasync-amd64/app/QMediaSync
+packaging/fnos/qmediasync-amd64/app/web_statics/
 
 # Frontend dependencies and build outputs
 node_modules/

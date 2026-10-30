@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/openlist"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func embyProviderBatchFiles(source SourceType) []EmbyFrozenFile {

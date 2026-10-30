@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
+	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 
 	"gorm.io/gorm"
 )

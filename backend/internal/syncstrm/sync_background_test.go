@@ -22,8 +22,8 @@ import (
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/syncscope"
-	"qmediasync/internal/v115open"
+	syncscope "qmediasync/internal/strm/scope"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func newBackgroundTestSync(t *testing.T) *SyncStrm {

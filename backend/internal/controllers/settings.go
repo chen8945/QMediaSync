@@ -11,7 +11,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"

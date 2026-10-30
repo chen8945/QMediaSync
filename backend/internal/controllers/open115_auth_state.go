@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 type open115AuthState struct {

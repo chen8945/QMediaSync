@@ -17,7 +17,7 @@ class BetaMetadataTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         for arch in ("amd64", "arm64"):
-            manifest = self.root / f"backend/fnos/qmediasync-{arch}/manifest"
+            manifest = self.root / f"packaging/fnos/qmediasync-{arch}/manifest"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("appname = qmediasync\nversion = 1.2.3\n")
 
@@ -58,7 +58,7 @@ class BetaMetadataTest(unittest.TestCase):
         self.assertEqual({path: path.read_bytes() for path in before}, before)
 
     def test_missing_duplicate_invalid_or_mismatched_source_version_rejected(self):
-        manifest = self.root / "backend/fnos/qmediasync-arm64/manifest"
+        manifest = self.root / "packaging/fnos/qmediasync-arm64/manifest"
         for content in (None, "version = 1.2.2\n", "version = bad\n", "version = 1.2.3\nversion = 1.2.3\n"):
             with self.subTest(content=content):
                 if content is None:

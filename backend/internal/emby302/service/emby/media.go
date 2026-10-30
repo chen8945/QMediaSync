@@ -1,0 +1,578 @@
+package emby
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"qmediasync/internal/emby302/config"
+	"qmediasync/internal/emby302/service/openlist"
+	"qmediasync/internal/emby302/service/path"
+	"qmediasync/internal/emby302/util/https"
+	"qmediasync/internal/emby302/util/jsons"
+	"qmediasync/internal/emby302/util/logs"
+
+	"qmediasync/internal/emby302/util/randoms"
+	"qmediasync/internal/emby302/util/strs"
+	"qmediasync/internal/emby302/util/urls"
+
+	"github.com/gin-gonic/gin"
+)
+
+// MediaSourceIdSegment 自定义 MediaSourceId 的分隔符
+const MediaSourceIdSegment = "[[_]]"
+
+// getEmbyFileLocalPath 获取 Emby 指定媒体的 Path 参数
+//
+// URI 中必须有查询参数 MediaSourceId。
+// 如果没有携带该参数, 可能会请求到多个媒体, 默认返回第一个媒体的本地路径。
+func getEmbyFileLocalPath(itemInfo ItemInfo) (string, error) {
+	var header http.Header
+	switch itemInfo.ApiKeyType {
+	case Header:
+		// 通过请求头携带 API key
+		header = http.Header{itemInfo.ApiKeyName: []string{itemInfo.ApiKey}}
+	case Query:
+		// 如果是 query 格式的 API key, 则往请求头中补充信息
+		header = http.Header{HeaderFullAuthName: []string{"Token=" + itemInfo.ApiKey}}
+	}
+
+	innerRequest := func(method string) (*http.Response, error) {
+		resp, err := https.Request(method, config.C.Emby.Host+itemInfo.PlaybackInfoUri).Header(header).Do()
+		if err != nil {
+			return nil, fmt.Errorf("请求 Emby 接口失败, 错误: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("请求 Emby 接口失败, 状态: %s", resp.Status)
+		}
+		contentType := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(contentType, "application/json") {
+			resp.Body.Close()
+			return nil, fmt.Errorf("请求 Emby 接口失败, 非 JSON 响应, Content-Type: %s", contentType)
+		}
+		return resp, nil
+	}
+
+	// 优先尝试 POST 请求, 响应速度快
+	resp, err := innerRequest(http.MethodPost)
+	if err != nil {
+		resp, err = innerRequest(http.MethodGet)
+		if err != nil {
+			return "", err
+		}
+	}
+	defer resp.Body.Close()
+
+	type MediaSourcesHolder struct {
+		MediaSources []struct {
+			Path string
+			Id   string
+		}
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取 Emby 响应失败, 错误: %v", err)
+	}
+	var holder MediaSourcesHolder
+	if err = json.Unmarshal(bodyBytes, &holder); err != nil {
+		return "", fmt.Errorf("解析 Emby 响应失败, 错误: %v, 原始响应: %s", err, string(bodyBytes))
+	}
+
+	if len(holder.MediaSources) == 0 {
+		return "", fmt.Errorf("获取不到 MediaSources, 原始响应: %v", string(bodyBytes))
+	}
+
+	var path string
+	var defaultPath string
+
+	reqId := itemInfo.MsInfo.OriginId
+	// 获取指定 MediaSourceId 的 Path
+	for _, value := range holder.MediaSources {
+		if strs.AnyEmpty(defaultPath) {
+			// 默认选择第一个路径
+			defaultPath = value.Path
+		}
+		if itemInfo.MsInfo.Empty {
+			// 如果没有传递 MediaSourceId, 就使用默认的 Path
+			break
+		}
+		if value.Id == reqId {
+			path = value.Path
+			break
+		}
+	}
+
+	if strs.AllNotEmpty(path) {
+		return path, nil
+	}
+	if strs.AllNotEmpty(defaultPath) {
+		return defaultPath, nil
+	}
+	return "", fmt.Errorf("获取不到 Path 参数, 原始响应: %v", string(bodyBytes))
+}
+
+// findVideoPreviewInfos 查找 source 的所有转码资源
+//
+// 传入 resChan 进行异步查询, 调用方通过监听 resChan 获取结果
+func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan []*jsons.Item) {
+	if resChan == nil {
+		return
+	}
+	defer close(resChan)
+
+	if source == nil || source.Type() != jsons.JsonTypeObj {
+		resChan <- nil
+		return
+	}
+
+	// 未启用配置
+	cfg := config.C.VideoPreview
+	srcContainer, _ := source.Attr("Container").String()
+	if !cfg.Enable || !cfg.ContainerValid(srcContainer) {
+		resChan <- nil
+		return
+	}
+
+	// 转换 OpenList 绝对路径
+	openlistPathRes := path.Emby2Openlist(source.Attr("Path").Val().(string))
+	var transcodingList []openlist.TranscodingVideoInfo
+	var subtitleList []openlist.TranscodingSubtitleInfo
+	firstFetchSuccess := false
+	if openlistPathRes.Success {
+		res := openlist.FetchFsOther(openlistPathRes.Path, nil)
+
+		if res.Code == http.StatusOK {
+			firstFetchSuccess = true
+			transcodingList = res.Data.VideoPreviewPlayInfo.LiveTranscodingTaskList
+			subtitleList = res.Data.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList
+		}
+
+		if res.Code == http.StatusForbidden {
+			resChan <- nil
+			return
+		}
+	}
+
+	// 首次请求失败时, 遍历 OpenList 所有根目录重新请求
+	if !firstFetchSuccess {
+		paths, err := openlistPathRes.Range()
+		if err != nil {
+			logs.Error("转换 OpenList 路径失败: %v", err)
+			resChan <- nil
+			return
+		}
+
+		for _, path := range paths {
+			res := openlist.FetchFsOther(path, nil)
+			if res.Code == http.StatusOK {
+				transcodingList = res.Data.VideoPreviewPlayInfo.LiveTranscodingTaskList
+				subtitleList = res.Data.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList
+				break
+			}
+		}
+	}
+
+	if len(transcodingList) == 0 {
+		resChan <- nil
+		return
+	}
+
+	res := make([]*jsons.Item, len(transcodingList))
+	wg := sync.WaitGroup{}
+	itemId, _ := source.Attr("ItemId").String()
+	originName, _ := source.Attr("Name").String()
+	for idx, transcode := range transcodingList {
+		wg.Go(func() {
+			if config.C.VideoPreview.IsTemplateIgnore(transcode.TemplateId) {
+				// 当前清晰度被忽略
+				return
+			}
+
+			copySource := jsons.FromValue(source.Struct())
+			format := fmt.Sprintf("%dx%d", transcode.TemplateWidth, transcode.TemplateHeight)
+			copySource.Attr("Name").Set(fmt.Sprintf("(%s_%s) %s", transcode.TemplateId, format, originName))
+
+			// 这里的 ID 必须不同于原始 ID, 同时要能反推出原始 ID。
+			newId := fmt.Sprintf(
+				"%s%s%s%s%s%s%s",
+				source.Attr("Id").Val(), MediaSourceIdSegment,
+				transcode.TemplateId, MediaSourceIdSegment,
+				format, MediaSourceIdSegment,
+				openlist.PathEncode(openlistPathRes.Path),
+			)
+			copySource.Attr("Id").Set(newId)
+
+			// 设置转码代理播放链接
+			tu, _ := url.Parse(strings.ReplaceAll(MasterM3U8UrlTemplate, "${itemId}", itemId))
+			q := tu.Query()
+			q.Set("openlist_path", openlist.PathEncode(openlistPathRes.Path))
+			q.Set("template_id", transcode.TemplateId)
+			q.Set(QueryApiKeyName, clientApiKey)
+			tu.RawQuery = q.Encode()
+
+			// 标记转码资源使用转码容器
+			copySource.Put("SupportsTranscoding", jsons.FromValue(true))
+			copySource.Put("TranscodingContainer", jsons.FromValue("ts"))
+			copySource.Put("TranscodingSubProtocol", jsons.FromValue("hls"))
+			copySource.Put("TranscodingUrl", jsons.FromValue(tu.String()))
+			copySource.DelKey("DirectStreamUrl")
+			copySource.Put("SupportsDirectPlay", jsons.FromValue(false))
+			copySource.Put("SupportsDirectStream", jsons.FromValue(false))
+
+			// 设置转码字幕
+			addSubtitles2MediaStreams(copySource, subtitleList, openlistPathRes.Path, transcode.TemplateId, clientApiKey)
+
+			res[idx] = copySource
+		})
+	}
+	wg.Wait()
+
+	// 移除 res 中的空值项
+	nonNil := res[:0]
+	for _, v := range res {
+		if v == nil {
+			continue
+		}
+		nonNil = append(nonNil, v)
+	}
+	resChan <- nonNil
+}
+
+// addSubtitles2MediaStreams 添加转码字幕到 PlaybackInfo 的 MediaStreams 项中
+//
+// subtitleList 是请求 OpenList 转码信息接口获取到的字幕列表
+func addSubtitles2MediaStreams(source *jsons.Item, subtitleList []openlist.TranscodingSubtitleInfo, openlistPath, templateId, clientApiKey string) {
+	// 1 JSON 参数类型校验
+	if source == nil || len(subtitleList) == 0 {
+		return
+	}
+	mediaStreams, ok := source.Attr("MediaStreams").Done()
+	if !ok || mediaStreams.Type() != jsons.JsonTypeArr {
+		return
+	}
+
+	// 2 去除原始的字幕信息
+	mediaStreams = mediaStreams.Filter(func(val *jsons.Item) bool {
+		return val != nil && val.Attr("Type").Val() != "Subtitle"
+	})
+	source.Put("MediaStreams", mediaStreams)
+
+	// 3 生成 MediaStream
+	itemId, _ := source.Attr("ItemId").String()
+	curMediaStreamsSize := mediaStreams.Len()
+	fakeId := randoms.RandomHex(32)
+	for index, sub := range subtitleList {
+		subStream, _ := jsons.New(`{"AttachmentSize":0,"Codec":"vtt","DeliveryMethod":"External","DeliveryUrl":"/Videos/6066/4ce9f37fe8567a3898e66517b92cf2af/Subtitles/14/0/Stream.vtt?api_key=964a56845f6a4c4a8ba42204ec6f775c","DisplayTitle":"(VTT)","ExtendedVideoSubType":"None","ExtendedVideoSubTypeDescription":"None","ExtendedVideoType":"None","Index":14,"IsDefault":false,"IsExternal":true,"IsExternalUrl":false,"IsForced":false,"IsHearingImpaired":false,"IsInterlaced":false,"IsTextSubtitleStream":true,"Protocol":"File","SupportsExternalStream":true,"Type":"Subtitle"}`)
+
+		lang := jsons.FromValue(sub.Lang)
+		subStream.Put("DisplayLanguage", lang)
+		subStream.Put("Language", lang)
+
+		subName := urls.ResolveResourceName(sub.Url)
+		subStream.Put("DisplayTitle", jsons.FromValue(openlist.SubLangDisplayName(sub.Lang)))
+		subStream.Put("Title", jsons.FromValue(fmt.Sprintf("(%s) %s", sub.Lang, subName)))
+
+		idx := curMediaStreamsSize + index
+		subStream.Put("Index", jsons.FromValue(idx))
+
+		u, _ := url.Parse(fmt.Sprintf("/Videos/%s/%s/Subtitles/%d/0/Stream.vtt", itemId, fakeId, idx))
+		q := u.Query()
+		q.Set("openlist_path", openlist.PathEncode(openlistPath))
+		q.Set("template_id", templateId)
+		q.Set("sub_name", subName)
+		q.Set(QueryApiKeyName, clientApiKey)
+		u.RawQuery = q.Encode()
+		subStream.Put("DeliveryUrl", jsons.FromValue(u.String()))
+
+		mediaStreams.Append(subStream)
+	}
+}
+
+// tryGetVideoStreamInfo 尝试获取 MediaSource 中的视频流信息
+func tryGetVideoStreamInfo(source *jsons.Item) (*jsons.Item, bool) {
+	if source == nil || source.Type() != jsons.JsonTypeObj {
+		return nil, false
+	}
+
+	mediaStreams, ok := source.Attr("MediaStreams").Done()
+	if !ok || mediaStreams.Type() != jsons.JsonTypeArr {
+		return nil, false
+	}
+
+	var res *jsons.Item
+	mediaStreams.RangeArr(func(_ int, value *jsons.Item) error {
+		if value.Attr("Type").Val() == "Video" {
+			res = value
+			return jsons.ErrBreakRange
+		}
+		return nil
+	})
+
+	if res == nil {
+		return nil, false
+	}
+	return res, true
+}
+
+// detectVirtualVideoDisplayTitle 检测虚拟视频媒体的显示名称
+func detectVirtualVideoDisplayTitle(source *jsons.Item) {
+	if source == nil || source.Type() != jsons.JsonTypeObj {
+		return
+	}
+
+	vs, ok := tryGetVideoStreamInfo(source)
+	if !ok {
+		return
+	}
+
+	displayTitle, _ := vs.Attr("DisplayTitle").String()
+	if displayTitle == "" {
+		vs.Put("DisplayTitle", jsons.FromValue("虚拟媒体"))
+	}
+}
+
+// detectSubtitleStreamsDeliveryUrl 将外挂字幕改为 Emby 可直接请求的 DeliveryUrl。
+func detectSubtitleStreamsDeliveryUrl(source *jsons.Item, apiKey string) {
+	if source == nil || source.Type() != jsons.JsonTypeObj || strings.TrimSpace(apiKey) == "" {
+		return
+	}
+
+	mediaSourceID, ok := source.Attr("Id").String()
+	if !ok || mediaSourceID == "" {
+		return
+	}
+	itemID, ok := source.Attr("ItemId").String()
+	if !ok || itemID == "" {
+		return
+	}
+
+	mediaStreams, ok := source.Attr("MediaStreams").Done()
+	if !ok || mediaStreams.Type() != jsons.JsonTypeArr {
+		return
+	}
+
+	mediaStreams.RangeArr(func(_ int, stream *jsons.Item) error {
+		if stream.Attr("Type").Val() != "Subtitle" {
+			return nil
+		}
+
+		isExternal, _ := stream.Attr("IsExternal").Bool()
+		if !isExternal {
+			return nil
+		}
+
+		deliveryMethod, _ := stream.Attr("DeliveryMethod").String()
+		if deliveryMethod == "External" {
+			return nil
+		}
+
+		subtitleIndex, ok := stream.Attr("Index").Int()
+		if !ok {
+			return nil
+		}
+
+		codec, _ := stream.Attr("Codec").String()
+		u := url.URL{
+			Path: fmt.Sprintf(
+				"/Videos/%s/%s/Subtitles/%d/0/Stream.%s",
+				itemID,
+				mediaSourceID,
+				subtitleIndex,
+				subtitleDeliveryFormat(codec),
+			),
+		}
+		query := u.Query()
+		query.Set(QueryApiKeyName, apiKey)
+		u.RawQuery = query.Encode()
+
+		stream.Put("DeliveryMethod", jsons.FromValue("External"))
+		stream.Put("DeliveryUrl", jsons.FromValue(u.String()))
+		return nil
+	})
+}
+
+func subtitleDeliveryFormat(codec string) string {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	switch codec {
+	case "pgssub", "pgs", "hdmv_pgs_subtitle", "sup":
+		return "sup"
+	case "":
+		return "vtt"
+	}
+
+	for _, character := range codec {
+		isASCIIAlpha := character >= 'a' && character <= 'z'
+		isASCIIDigit := character >= '0' && character <= '9'
+		if !isASCIIAlpha && !isASCIIDigit {
+			return "vtt"
+		}
+	}
+	return codec
+}
+
+// simplifyMediaName 简化 MediaSource 中的视频名称, 如 '1080p HEVC'
+func simplifyMediaName(source *jsons.Item) {
+	if source == nil || source.Type() != jsons.JsonTypeObj {
+		return
+	}
+	originName, _ := source.Attr("Name").String()
+	source.Put("Name", jsons.FromValue(originName))
+
+	// vs, ok := tryGetVideoStreamInfo(source)
+	// if !ok {
+	// 	return
+	// }
+
+	// displayTitle, _ := vs.Attr("DisplayTitle").String()
+	// if displayTitle != "" {
+	// 	source.Put("Name", jsons.FromValue(displayTitle))
+	// 	return
+	// }
+
+	// reg := regexp.MustCompile(`(?i)S\d+(E\d+)?`)
+	// if reg.MatchString(originName) {
+	// 	loc := reg.FindStringIndex(originName)
+	// 	if len(loc) > 0 {
+	// 		newName := originName[loc[0]:]
+	// 		source.Put("Name", jsons.FromValue(newName))
+	// 	}
+	// }
+}
+
+// resolveItemInfo 解析 Emby 资源 Item 信息
+func resolveItemInfo(c *gin.Context, routeType RouteType) (ItemInfo, error) {
+	if c == nil {
+		return ItemInfo{}, errors.New("参数 c 不能为空")
+	}
+
+	// 匹配 Item ID
+	uri := c.Request.URL.Path
+	itemInfo := ItemInfo{RouteType: routeType}
+	switch routeType {
+	case RouteItems:
+		itemInfo.Id = filepath.Base(uri)
+	case RoutePlaybackInfo, RouteStream, RouteSyncDownload, RouteTranscode, RouteOriginal:
+		itemInfo.Id = filepath.Base(filepath.Dir(uri))
+	default:
+		return ItemInfo{}, fmt.Errorf("不支持的 RouteType: %s", routeType)
+	}
+
+	// 获取客户端请求中的 api_key
+	itemInfo.ApiKeyType, itemInfo.ApiKeyName, itemInfo.ApiKey = getApiKey(c)
+
+	// 解析请求的媒体信息
+	msInfo, err := resolveMediaSourceId(getRequestMediaSourceId(c))
+	if err != nil {
+		return ItemInfo{}, fmt.Errorf("解析 MediaSource 失败, URI: %s, 错误: %v", uri, err)
+	}
+	itemInfo.MsInfo = msInfo
+
+	u, err := url.Parse(fmt.Sprintf("/Items/%s/PlaybackInfo", itemInfo.Id))
+	if err != nil {
+		return ItemInfo{}, fmt.Errorf("构建 PlaybackInfo URI 失败, 错误: %v", err)
+	}
+	q := u.Query()
+	// 默认只携带 query 形式的 API key
+	if itemInfo.ApiKeyType == Query {
+		q.Set(itemInfo.ApiKeyName, itemInfo.ApiKey)
+	}
+	q.Set("reqformat", "json")
+	q.Set("IsPlayback", "false")
+	q.Set("AutoOpenLiveStream", "false")
+	if !msInfo.Empty {
+		q.Set("MediaSourceId", msInfo.OriginId)
+	}
+	u.RawQuery = q.Encode()
+	itemInfo.PlaybackInfoUri = u.String()
+
+	return itemInfo, nil
+}
+
+// getRequestMediaSourceId 尝试从请求参数或请求体中获取 MediaSourceId 信息
+//
+// 优先返回请求参数中的值, 如果两者都获取不到, 就返回空字符串
+func getRequestMediaSourceId(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+
+	// 1 从请求参数中获取
+	q := c.Query("MediaSourceId")
+	if strs.AllNotEmpty(q) {
+		return q
+	}
+
+	// 2 从请求体中获取
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return ""
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	var BodyHolder struct {
+		MediaSourceId string
+	}
+	json.Unmarshal(bodyBytes, &BodyHolder)
+	return BodyHolder.MediaSourceId
+}
+
+// resolveMediaSourceId 解析 MediaSourceId
+func resolveMediaSourceId(id string) (MsInfo, error) {
+	res := MsInfo{Empty: true, RawId: id}
+
+	if id == "" {
+		return res, nil
+	}
+	res.Empty = false
+
+	if len(id) <= 32 {
+		res.OriginId = id
+		return res, nil
+	}
+
+	segments := strings.Split(id, MediaSourceIdSegment)
+
+	if len(segments) == 2 {
+		res.Transcode = true
+		res.OriginId = segments[0]
+		res.TemplateId = segments[1]
+		return res, nil
+	}
+
+	if len(segments) == 4 {
+		res.Transcode = true
+		res.OriginId = segments[0]
+		res.TemplateId = segments[1]
+		res.Format = segments[2]
+		res.OpenlistPath = segments[3]
+		res.SourceNamePrefix = fmt.Sprintf("%s_%s", res.TemplateId, res.Format)
+		return res, nil
+	}
+
+	return MsInfo{}, errors.New("MediaSourceId 格式错误: " + id)
+}
+
+// getAllPreviewTemplateIds 获取所有转码格式
+//
+// 在配置文件中忽略的格式不会返回
+func getAllPreviewTemplateIds() []string {
+	allIds := []string{"LD", "SD", "HD", "FHD", "QHD"}
+
+	res := make([]string, 0, len(allIds))
+	for _, id := range allIds {
+		if config.C.VideoPreview.IsTemplateIgnore(id) {
+			continue
+		}
+		res = append(res, id)
+	}
+	return res
+}

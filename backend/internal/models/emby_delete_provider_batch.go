@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"qmediasync/internal/baidupan"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 这是本地请求预算，不是供应商声明的最大值；不能据此假定批处理原子性。

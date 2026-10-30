@@ -16,7 +16,7 @@ import (
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/openlist"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 通过真实 provider 的清单、共同删除与原 ID 确认，保留 115 和账本的路径表示差异。

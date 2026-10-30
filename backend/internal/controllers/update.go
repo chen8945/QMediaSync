@@ -24,7 +24,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/updater"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/gin-gonic/gin"
 )

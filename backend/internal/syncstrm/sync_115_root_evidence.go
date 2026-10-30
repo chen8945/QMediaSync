@@ -11,7 +11,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // observe115RootPaths 只复用正常扫描已返回的父链，不读取远端，也不纳管根外目录。

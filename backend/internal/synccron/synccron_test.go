@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // TestMain 在所有测试前一次性初始化全局数据库和日志。

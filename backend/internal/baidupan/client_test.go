@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	openapiclient "qmediasync/openxpanapi"
+	openapiclient "qmediasync/internal/baidupan/internal/openxpanapi"
 )
 
 func TestFileManagerChecksItemErrors(t *testing.T) {
@@ -254,7 +254,7 @@ func TestUploadReadsTokenForEachRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := client.Upload(t.Context(), localPath, "/upload.nfo")
-	if err != nil || result == nil || result.GetFsId() != 123 {
+	if err != nil || result == nil || result.FsId == nil || *result.FsId != 123 {
 		t.Fatalf("更新 Token 后上传结果 = %+v，错误 = %v", result, err)
 	}
 	if requests.Load() != 3 {

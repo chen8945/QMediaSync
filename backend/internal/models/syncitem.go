@@ -2,7 +2,7 @@ package models
 
 import (
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 type SyncTreeItemMetaAction int

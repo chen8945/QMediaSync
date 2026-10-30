@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func testRecycleEntry(serial int) v115open.RecycleEntry {

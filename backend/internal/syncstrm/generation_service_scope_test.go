@@ -15,8 +15,8 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
-	"qmediasync/internal/v115open"
+	syncscope "qmediasync/internal/strm/scope"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func generationScopeTask(account *models.Account, syncPath *models.SyncPath) *models.StrmGenerationTask {

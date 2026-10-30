@@ -14,8 +14,8 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/syncscope"
-	"qmediasync/internal/v115open"
+	syncscope "qmediasync/internal/strm/scope"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"gorm.io/gorm"
 )

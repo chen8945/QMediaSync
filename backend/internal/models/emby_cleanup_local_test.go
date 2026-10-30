@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func localEpisodeSnapshot(file SyncFile) (EmbyItemSnapshot, []EmbyMediaDirectory) {

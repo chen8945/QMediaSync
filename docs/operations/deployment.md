@@ -6,7 +6,7 @@
 >
 > 修改时机：修改 Dockerfile、容器入口脚本、管理员恢复入口、二进制运行目录、飞牛安装流程、运行端口或持久化目录时必须更新本文档。
 >
-> 相关代码：`docker/`、`backend/main.go`、`backend/admin_recovery.go`、`backend/fnos/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
+> 相关代码：`docker/`、`backend/main.go`、`backend/internal/app/admin_recovery.go`、`packaging/fnos/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
 
 ## 部署选择与持久化边界
 
@@ -131,7 +131,7 @@ Docker 的 `QMS_DOCKER_RESTART=1` 由支持此机制的入口脚本声明，不�
 
 ## 飞牛 FPK
 
-fnOS FPK 由发布流程生成，源码位于 `backend/fnos/`。平台安装向导只说明使用步骤；数据库选择、连接测试和配置保存统一使用 QMS 网页，不在安装钩子维护第二套 YAML。全新安装启动后访问 HTTP `12333`，选择 SQLite 或已有 PostgreSQL，保存后自动启动正式服务。已有主配置（含旧 `config.yml`）直接沿用。
+fnOS FPK 由发布流程生成，源码位于 `packaging/fnos/`。平台安装向导只说明使用步骤；数据库选择、连接测试和配置保存统一使用 QMS 网页，不在安装钩子维护第二套 YAML。全新安装启动后访问 HTTP `12333`，选择 SQLite 或已有 PostgreSQL，保存后自动启动正式服务。已有主配置（含旧 `config.yml`）直接沿用。
 
 平台注入 `TRIM_APPDEST`、`TRIM_PKGETC`、`TRIM_PKGVAR`、`TRIM_DATA_SHARE_PATHS` 等路径。共享目录下的 `config/` 是主配置、SQLite、日志和本机密钥的持久化目录。旧平台配置仅向空共享配置目录迁移；共享主配置已存在时继续使用它并保留旧目录，其他数据冲突时停止迁移并报告路径，不能覆盖或混合实例。迁移失败不能回退为空实例。Windows 旧目录迁移保持原行为。
 

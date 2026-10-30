@@ -11,7 +11,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // confirm115LocalUploadParent 在 Walk 进入目录时按需确认上传父目录。

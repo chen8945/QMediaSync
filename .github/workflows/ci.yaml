@@ -88,8 +88,8 @@ jobs:
       - name: Test release and fnOS scripts
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-          bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/package-release-asset.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
-          for script in backend/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
+          bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/package-release-asset.sh scripts/release/install-fnpack.sh packaging/fnos/common/service.sh
+          for script in packaging/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
 
   windows-restart:
     runs-on: windows-latest

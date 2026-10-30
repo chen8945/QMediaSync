@@ -14,8 +14,8 @@ import (
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/playback"
-	"qmediasync/internal/v115auth"
-	"qmediasync/internal/v115open"
+	v115auth "qmediasync/internal/v115/auth"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

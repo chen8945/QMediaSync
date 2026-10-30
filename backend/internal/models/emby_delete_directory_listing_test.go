@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func TestEmbyDirectoryListingSharesProviderCacheAndFinalGuard(t *testing.T) {

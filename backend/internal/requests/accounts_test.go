@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115auth"
+	v115auth "qmediasync/internal/v115/auth"
 )
 
 func TestAccountRequestValidate(t *testing.T) {

@@ -2,6 +2,26 @@ package baidupan
 
 import "fmt"
 
+// UserInfo 保留百度网盘用户信息中实际使用的可选字段。
+type UserInfo struct {
+	Uk        *int64
+	BaiduName *string
+	VipType   *int32
+}
+
+// Quota 表示百度网盘已用和总容量，缺失字段保留为 nil。
+type Quota struct {
+	Used  *int64
+	Total *int64
+}
+
+// UploadResult 保留百度上传返回的可选远端身份与修改时间。
+type UploadResult struct {
+	FsId  *int64
+	Md5   *string
+	Mtime *int32
+}
+
 // 错误码	描述	排查方向
 // -1	权益已过期	权益已过期
 // -3	文件不存在	文件不存在

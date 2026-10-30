@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 func TestRestoreSuccessInvalidatesSyncPositions(t *testing.T) {

@@ -6,7 +6,7 @@
 >
 > 修改时机：修改配置字段、默认值、密钥来源、日志行为、Emby 302 运行选项或运行时监控指标时必须更新本文档和 `docs/examples/config.yaml`。
 >
-> 相关代码：`backend/internal/helpers/config.go`、`backend/internal/helpers/logger.go`、`backend/internal/models/settings.go`、`backend/internal/models/syncpath.go`、`backend/main.go`、`backend/emby302.yaml`、`docs/examples/config.yaml`。
+> 相关代码：`backend/internal/helpers/config.go`、`backend/internal/helpers/logger.go`、`backend/internal/models/settings.go`、`backend/internal/models/syncpath.go`、`backend/main.go`、`backend/internal/app/bootstrap.go`、`backend/assets/emby302.yaml`、`docs/examples/config.yaml`。
 
 ## 配置文件与默认端口
 
@@ -149,7 +149,7 @@ QMediaSync 在 Emby 条目同步时自动确认 STRM 的路径对应。QMS 生�
 
 ## Emby 302 缓存
 
-内置缓存开关取自编译嵌入的 `backend/emby302.yaml`，`cache.enable` 默认 `false`；修改该模板需重新构建。它独立于主配置 `config.yaml` 中的 `emby302.insecure_skip_verify`，当前没有对应的运行时开关。
+内置缓存开关取自编译嵌入的 `backend/assets/emby302.yaml`，`cache.enable` 默认 `false`；修改该模板需重新构建。它独立于主配置 `config.yaml` 中的 `emby302.insecure_skip_verify`，当前没有对应的运行时开关。
 
 开启缓存后，通用响应使用 `cache.expired`，直链响应最多缓存 10 分钟。115 直链还受签名提前 5 分钟的安全期限约束，期限无法确认或取链失败时不缓存；命中不会延长期限。UA 隔离、失败回退和到期边界见 [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)。
 
@@ -251,7 +251,7 @@ STRM 预加载沿用主程序日志和全局等级：`INFO` 记录开关变化�
 
 `GET /setting/notification/channels/telegram/{id}` 回传的 `config.proxy_url` 同样脱敏：该字段由历史迁移从 `settings.http_proxy` 复制而来，可能带凭据。凡是把含 `proxy_url` 的配置结构体整体写进响应的接口都要先脱敏。
 
-`QMS_UNSAFE_SENSITIVE_LOG=1` 只在本地调试时临时启用 `SensitiveDebug` 日志；它可能写出 API Key、Token、Cookie 或密码，不能在生产环境长期使用或分享相关日志。`backend/emby302.yaml` 默认关闭 ANSI 颜色，避免控制字符进入日志。
+`QMS_UNSAFE_SENSITIVE_LOG=1` 只在本地调试时临时启用 `SensitiveDebug` 日志；它可能写出 API Key、Token、Cookie 或密码，不能在生产环境长期使用或分享相关日志。`backend/assets/emby302.yaml` 默认关闭 ANSI 颜色，避免控制字符进入日志。
 
 管理员恢复结果写入现有应用日志，成功记录不受日志等级过滤；新密码始终直接交付给终端或 Windows 系统窗口，不进入应用日志。Compose 恢复脚本还会关闭临时容器的 Docker 日志驱动。完整凭据交付契约见 [认证会话](../architecture/authentication-sessions.md#本地管理员恢复)。
 

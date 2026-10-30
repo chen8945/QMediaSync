@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 
 	"gorm.io/gorm"
 )

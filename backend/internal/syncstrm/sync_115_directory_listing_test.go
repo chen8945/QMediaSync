@@ -12,7 +12,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 目录列表必须保留过滤前的完整事实；这些响应校验不代表服务端提供事务快照。

@@ -34,7 +34,7 @@ fi
 BINARY_PATH="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$3")"
 WEB_STATICS_DIR="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$4")"
 OUT_DIR="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$5")"
-FNOS_ROOT="$ROOT/backend/fnos"
+FNOS_ROOT="$ROOT/packaging/fnos"
 FNOS_VERSION="${TAG#v}"
 
 python3 - "$FNOS_ROOT" "$FNOS_VERSION" "$BINARY_PATH" "$WEB_STATICS_DIR" "$TARGET_ARCH" <<'PY_INPUT'

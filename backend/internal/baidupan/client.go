@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	openapiclient "qmediasync/internal/baidupan/internal/openxpanapi"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/validation"
-	openapiclient "qmediasync/openxpanapi"
 )
 
 // Client 按请求读取 Token 快照；首次使用后不得复制。
@@ -313,22 +313,29 @@ func (c *Client) handleError(err error, resp *http.Response, respData any) error
 	return nil
 }
 
-func (c *Client) GetUserInfo(ctx context.Context) (*openapiclient.Uinforesponse, error) {
+func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 	resp, r, err := c.client.UserinfoApi.Xpannasuinfo(ctx).AccessToken(c.getAccessToken()).Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return &UserInfo{
+		Uk:        resp.Uk,
+		BaiduName: resp.BaiduName,
+		VipType:   resp.VipType,
+	}, nil
 }
 
-func (c *Client) GetQuota(ctx context.Context) (*openapiclient.Quotaresponse, error) {
+func (c *Client) GetQuota(ctx context.Context) (*Quota, error) {
 	resp, r, err := c.client.UserinfoApi.Apiquota(ctx).AccessToken(c.getAccessToken()).Execute()
 	// 统一处理错误
 	if c.handleError(err, r, resp) != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return &Quota{
+		Used:  resp.Used,
+		Total: resp.Total,
+	}, nil
 }
 
 func (c *Client) GetFileList(ctx context.Context, parentPath string, onlyDir int, showEmby int32, start int32, limit int32) ([]*FileInfo, error) {
@@ -662,7 +669,7 @@ func CalculateChunkSizeByFileSize(fileSize int64) int64 {
 }
 
 // 预上传
-func (c *Client) PreCreate(ctx context.Context, localPath string, remotePath string) (*openapiclient.Fileprecreateresponse, *helpers.FileChunkMD5Result, error) {
+func (c *Client) preCreate(ctx context.Context, localPath string, remotePath string) (*openapiclient.Fileprecreateresponse, *helpers.FileChunkMD5Result, error) {
 	stat, err := os.Stat(localPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("本地文件不存在")
@@ -694,9 +701,9 @@ func (c *Client) PreCreate(ctx context.Context, localPath string, remotePath str
 }
 
 // 上传文件
-func (c *Client) Upload(ctx context.Context, localPath string, remotePath string) (*openapiclient.Filecreateresponse, error) {
+func (c *Client) Upload(ctx context.Context, localPath string, remotePath string) (*UploadResult, error) {
 	// 预上传
-	preResp, chunkMD5, err := c.PreCreate(ctx, localPath, remotePath)
+	preResp, chunkMD5, err := c.preCreate(ctx, localPath, remotePath)
 	if err != nil {
 		return nil, fmt.Errorf("预上传失败：%w", err)
 	}
@@ -729,7 +736,11 @@ func (c *Client) Upload(ctx context.Context, localPath string, remotePath string
 	if c.handleError(err, r, resp) != nil {
 		return nil, fmt.Errorf("创建文件失败：%w", err)
 	}
-	return &resp, nil
+	return &UploadResult{
+		FsId:  resp.FsId,
+		Md5:   resp.Md5,
+		Mtime: resp.Mtime,
+	}, nil
 }
 
 // 路径是否存在

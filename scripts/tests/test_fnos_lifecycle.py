@@ -15,7 +15,7 @@ import urllib.parse
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FNOS = ROOT / 'backend/fnos'
+FNOS = ROOT / 'packaging/fnos'
 CHILD = r'''#!/usr/bin/env python3
 import json, os, signal, time
 from pathlib import Path

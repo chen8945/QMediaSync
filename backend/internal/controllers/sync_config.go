@@ -8,7 +8,7 @@ import (
 
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
-	"qmediasync/internal/syncconfig"
+	syncconfig "qmediasync/internal/strm/config"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"

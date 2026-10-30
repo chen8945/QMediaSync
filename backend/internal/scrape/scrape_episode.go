@@ -18,7 +18,7 @@ import (
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 处理集的刮削任务，启动 N 个协程

@@ -11,7 +11,7 @@ REMOTE="origin"
 MAIN_BRANCH="main"
 DEV_BRANCH="dev"
 CHANGELOG_FILE="CHANGELOG.md"
-FNOS_MANIFESTS=(backend/fnos/qmediasync-amd64/manifest backend/fnos/qmediasync-arm64/manifest)
+FNOS_MANIFESTS=(packaging/fnos/qmediasync-amd64/manifest packaging/fnos/qmediasync-arm64/manifest)
 
 RELEASE_INPUT=""
 TAG=""

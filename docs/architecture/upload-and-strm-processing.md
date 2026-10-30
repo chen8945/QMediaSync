@@ -6,7 +6,7 @@
 >
 > 修改时机：修改上传队列并发、上传协议、目录监控规则、上传任务状态、STRM 生成与直链解析、源文件清理、幂等策略、上传后刷新或 115 多端播放链路时必须更新本文档。
 >
-> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/fnosproxy/`、`backend/internal/v115open/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115.go`、`backend/internal/controllers/open115_playback.go`、`backend/emby302/service/emby/`。
+> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/fnosproxy/`、`backend/internal/v115/openapi/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115.go`、`backend/internal/controllers/open115_playback.go`、`backend/internal/emby302/service/emby/`。
 
 ## 上传队列执行
 
@@ -312,14 +312,14 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 
 ## 验证方式
 
-- 115 STRM 直链解析及日志运行 `go test ./emby302/service/emby ./emby302/web/cache ./emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`。使用本地 HTTP 替身确认自有接口解析不访问 CDN、UA 和签名地址完整传递、异常响应回退、第三方多级解析及播放器 `307` 响应；日志回归覆盖首次取链、刷新、副本来源、隔离失败停止降级、连续缓存命中不重复长地址、HEAD 检查和副本身份字段。
+- 115 STRM 直链解析及日志运行 `go test ./internal/emby302/service/emby ./internal/emby302/web/cache ./internal/emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`。使用本地 HTTP 替身确认自有接口解析不访问 CDN、UA 和签名地址完整传递、异常响应回退、第三方多级解析及播放器 `307` 响应；日志回归覆盖首次取链、刷新、副本来源、隔离失败停止降级、连续缓存命中不重复长地址、HEAD 检查和副本身份字段。
 - 115 缓存 HEAD 的控制器回归覆盖客户端取消、截止时间、有效缓存保留和取消后不重新取链／跳转；飞牛原生内部转交另用受控慢 HEAD 验证单次配置切换完成。相关路径运行 `-race`，本地替身或 NAS 上运行测试二进制均不替代真实 CDN 播放验证。
-- 缓存联调运行 `go test -race ./emby302/service/emby ./emby302/web/cache`，启用实际缓存中间件，验证冲突 UA 分离、请求不改写、六分钟签名只缓存约一分钟、到期立即重新解析、无效期限与失败回退不缓存；底层覆盖绝对毫秒期限、排队期间过期、普通与空间缓存即时判期和命中不续期。
-- 多端播放运行 `go test ./internal/playback ./internal/controllers ./internal/v115open ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；对副本隔离、在途预留、10 秒预算、取消清理、定时补偿、TTL、排序及临时目录过滤相关测试运行 `-race`。修改设置交互时另验证本地代理置灰、保留值、恢复编辑与保存失败。
+- 缓存联调运行 `go test -race ./internal/emby302/service/emby ./internal/emby302/web/cache`，启用实际缓存中间件，验证冲突 UA 分离、请求不改写、六分钟签名只缓存约一分钟、到期立即重新解析、无效期限与失败回退不缓存；底层覆盖绝对毫秒期限、排队期间过期、普通与空间缓存即时判期和命中不续期。
+- 多端播放运行 `go test ./internal/playback ./internal/controllers ./internal/v115/openapi ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；对副本隔离、在途预留、10 秒预算、取消清理、定时补偿、TTL、排序及临时目录过滤相关测试运行 `-race`。修改设置交互时另验证本地代理置灰、保留值、恢复编辑与保存失败。
 - 副本失败回归须覆盖真实控制器无 CDN Location、原文件取链零调用、旧链接和槽位保持、当前预留释放及延迟清理；验证一次取链重试、仅明确缺失时重建一次、重建前身份核验、两轮独立清理和共享总预算。
 - Copy 列表补救须覆盖复制已成功但响应丢失或损坏、短暂空列表后恢复、持续空列表、歧义或身份不符拒绝，以及明确失败、取消和预算耗尽时停止补救；队列测试须覆盖剩余预算不足以排队但 context 尚有效，HTTP 替身须覆盖明确拒绝状态伴随响应体截断。同时确认不重复复制、正常成功路径不增加请求，且补救失败仍清理操作目录。
 - 根目录移动回归须覆盖缓存命中不增加写前查询、列表发现移动后停止本次取链、下一次按固定路径复用或重建，以及清理详情发现移动后失效旧缓存。已知操作随根目录移动仍可删除，自身改名或换父仍拒删；扫描发现的目录不能绕过路径和时间校验。失败记录须覆盖固定根缺失时仍可重试、账号 UID 隔离、并发抢占、取消与预算耗尽后保留，以及成功后不再重复清理。
-- 回收站回归运行 `go test -race ./internal/playback ./internal/v115open ./internal/synccron`，覆盖真实响应形态和大 ID 精度、空 ID 零请求、还原结果校验、分页完整性、批次上限、根目录变化、活跃操作及无关/还原中条目过滤、共享预算、取消和下一轮重试。已删除目录须覆盖 `231011`、`430004` 释放失败记录且不重复报错，授权与未知错误仍保留。
+- 回收站回归运行 `go test -race ./internal/playback ./internal/v115/openapi ./internal/synccron`，覆盖真实响应形态和大 ID 精度、空 ID 零请求、还原结果校验、分页完整性、批次上限、根目录变化、活跃操作及无关/还原中条目过滤、共享预算、取消和下一轮重试。已删除目录须覆盖 `231011`、`430004` 释放失败记录且不重复报错，授权与未知错误仍保留。
 - 真机验收使用测试账号和不同 UA 的两台设备同时直链播放同一文件，确认后到槽位使用副本、直接删除整个操作目录后链接仍可播放，并验证实际队列压力、失败残留回收、实际代理跳过及 `force=1` 保留值。真实网盘复制、删除只在取得对应测试账号授权后执行，mock 测试不代替该验收。
 
 - 上传并发测试须覆盖在途任务下增减并发、暂停后修改并恢复、快速暂停恢复、重复领取和已清空任务；运行相关 `models` 测试及 `-race` 检查，配置保存与迁移同时验证失败不生效和旧配置兼容。

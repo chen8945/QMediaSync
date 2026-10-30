@@ -3,7 +3,7 @@ package controllers
 import (
 	"testing"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 保护网盘文件管理手动生成 STRM 的入口路径：115 详情的 paths 只有父目录链，

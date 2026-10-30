@@ -13,7 +13,7 @@ import (
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/openlist"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 const embyDeleteListPageSize = 1000

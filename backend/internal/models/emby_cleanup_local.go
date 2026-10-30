@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // embyLocalDirectoryView 只在本次准备期间复用；节点冲突保留标记，不能任选一份。

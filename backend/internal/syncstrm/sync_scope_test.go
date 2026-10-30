@@ -16,7 +16,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 func newScopeTestSync(t *testing.T) *SyncStrm {

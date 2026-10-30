@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/realtime"
-	openapiclient "qmediasync/openxpanapi"
 
 	"gorm.io/gorm"
 )
@@ -723,7 +723,7 @@ func (task *DbUploadTask) UploadBaiduPanFile() bool {
 
 // applyBaiduUploadResponse 只保存百度创建文件响应明确返回的远端身份与正数修改时间。
 // 响应字段均为可选值；缺失或零值时间保留已有身份，但不尝试同步本地修改时间。
-func (task *DbUploadTask) applyBaiduUploadResponse(response *openapiclient.Filecreateresponse) (mtime int64, hasUsableMtime bool) {
+func (task *DbUploadTask) applyBaiduUploadResponse(response *baidupan.UploadResult) (mtime int64, hasUsableMtime bool) {
 	if task == nil || response == nil {
 		return 0, false
 	}

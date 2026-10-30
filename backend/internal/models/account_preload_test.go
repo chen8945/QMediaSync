@@ -10,7 +10,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/playback"
-	"qmediasync/internal/v115auth"
+	v115auth "qmediasync/internal/v115/auth"
 )
 
 // 保持一个即将发布的旧身份作业，检查提交通知与发布门禁的真实配合。

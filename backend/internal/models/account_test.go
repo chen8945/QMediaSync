@@ -14,7 +14,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115auth"
+	v115auth "qmediasync/internal/v115/auth"
 )
 
 func setupOpenListAccountTest(t *testing.T) {

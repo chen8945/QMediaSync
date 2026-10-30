@@ -15,7 +15,7 @@ import (
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func TestEmbyDeleteProviderListingAttemptScope(t *testing.T) {

@@ -6,7 +6,7 @@
 >
 > 修改时机：修改发布脚本、tag 规则、CI 工作流、镜像标签、changelog 或 FPK 打包时必须更新本文档。
 >
-> 相关代码：`scripts/release/`、`.github/workflows/beta.yaml`、`.github/workflows/release.yaml`、`cliff.toml`、`backend/fnos/`。
+> 相关代码：`scripts/release/`、`.github/workflows/beta.yaml`、`.github/workflows/release.yaml`、`cliff.toml`、`packaging/fnos/`。
 
 更新日志由 [git-cliff](https://git-cliff.org/) 从 git 提交记录自动生成，因此提交信息需遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 
@@ -120,7 +120,7 @@ scripts/release/release.sh --simulate patch
 - 同步 `main`，并把本地 `dev` 快进合入 `main`。
 - 读取上一个 `v*` 标签至今的提交，按类型分组生成 `.changes/v0.xx.xx.md`，作为 GitHub Release 正文；把本版本段落插入 `CHANGELOG.md` 顶部，保留历史内容。
 - 拒绝重复版本：如果本地已存在同名 git tag、`.changes/<tag>.md`，或 `CHANGELOG.md` 已包含该版本段落，命令会直接失败。
-- 将 `backend/fnos/qmediasync-amd64/manifest` 和 `qmediasync-arm64/manifest` 的唯一 `version` 更新为 tag 去掉 `v`；两者与 changelog、发布说明一起进入同一个 release 提交，tag 指向此提交，并随原流程快进回 `dev`。
+- 将 `packaging/fnos/qmediasync-amd64/manifest` 和 `qmediasync-arm64/manifest` 的唯一 `version` 更新为 tag 去掉 `v`；两者与 changelog、发布说明一起进入同一个 release 提交，tag 指向此提交，并随原流程快进回 `dev`。
 - 展示 `CHANGELOG.md`、`.changes/<tag>.md` 与两份 manifest 的 diff 进入审查菜单：输入 `e` 编辑发布说明（优先 `VISUAL` / `EDITOR`，缺省回退 `GIT_EDITOR` / `core.editor`，最后探测 vi / nano / vim）并自动同步回 `CHANGELOG.md`；推导模式下输入 `v` 可返回重新选择版本；最终确认输入 `b` 可返回审查。
 - 在 `main` 上提交 `chore: release <tag>`，创建 annotated tag：`git tag -a <tag> -m "Release <tag>"`，推送 `main` 和 tag 触发 release workflow，最后将 release commit 快进同步回 `dev` 并推送 `dev`。
 - 重选版本时还原两份 manifest 后按新 tag 生成，只编辑发布说明时保持当前版本；准备任一 manifest 失败时恢复两份，不留下半更新。
@@ -163,7 +163,7 @@ FPK 的正式发布版本在 `scripts/release/release.sh` 的 `chore: release vX
 
 Beta 打包使用不带 `v` 的完整 Beta 版本，先校验两份源码 manifest 与该版本的基础版本一致，再仅在临时打包副本中写入 Beta manifest 版本，保留 `appname=qmediasync` 和现有数据目录。源码 manifest 始终不回写、不提交、不推送；工作流打包后另用 `git diff --exit-code` 确认两份源码 manifest 未变化。成品 manifest 必须匹配本次二进制构建记录的完整 Beta 版本，不能用基础版本代替。
 
-`package-fnos.sh <tag或Beta版本> <amd64|arm64> <binary> <web_statics> <out_dir>` 在独立临时目录复制 `backend/fnos/` 模板、二进制、前端和共享运行脚本，再执行 `fnpack build`。输入和输出路径支持从不同工作目录调用；正式版两架构顺序构建，Beta 使用架构矩阵。同一构建步骤为 Linux 二进制生成 `<binary>.build.json`，记录 tag、Go 平台/架构和二进制 SHA-256，随内部 artifact 传给打包阶段；它不进入 FPK 或对外附件。脚本核对这份记录与实际输入的哈希及 tag，防止混用旧程序或错误架构，并核对新归档、版本、平台、二进制架构与内容、全部前端文件、平台权限/UI/钩子/向导及公共脚本，工具返回 0 但未正确产包也失败。构建不回写源码、不携带旧业务配置样例。Go 的 `-trimpath` 构建不在 BuildInfo 保留 ldflags，因此这份记录证明同次构建来源，不声称独立读取程序变量；程序版本仍由同一构建命令的 `-X main.Version=${TAG}` 注入。手工打包也需在该构建命令成功后生成同格式记录。
+`package-fnos.sh <tag或Beta版本> <amd64|arm64> <binary> <web_statics> <out_dir>` 在独立临时目录复制 `packaging/fnos/` 模板、二进制、前端和共享运行脚本，再执行 `fnpack build`。输入和输出路径支持从不同工作目录调用；正式版两架构顺序构建，Beta 使用架构矩阵。同一构建步骤为 Linux 二进制生成 `<binary>.build.json`，记录 tag、Go 平台/架构和二进制 SHA-256，随内部 artifact 传给打包阶段；它不进入 FPK 或对外附件。脚本核对这份记录与实际输入的哈希及 tag，防止混用旧程序或错误架构，并核对新归档、版本、平台、二进制架构与内容、全部前端文件、平台权限/UI/钩子/向导及公共脚本，工具返回 0 但未正确产包也失败。构建不回写源码、不携带旧业务配置样例。Go 的 `-trimpath` 构建不在 BuildInfo 保留 ldflags，因此这份记录证明同次构建来源，不声称独立读取程序变量；程序版本仍由同一构建命令的 `-X main.Version=${TAG}` 注入。手工打包也需在该构建命令成功后生成同格式记录。
 
 | 发布平台 | x86-64 | ARM64 |
 | --- | --- | --- |
@@ -173,7 +173,7 @@ Beta 打包使用不带 `v` 的完整 Beta 版本，先校验两份源码 manife
 
 内部 Go 架构仍为 `amd64`，模板仍为 `qmediasync-amd64`；manifest 的 `platform=x86` / `arm` 遵循 fnOS 格式。附件名变化不改变 `appname=qmediasync` 或数据目录。作者与发布者均为 `chen8945`，链接为本仓库，显示名称为 QMediaSync。
 
-正式 workflow 设置 `REQUIRE_FNPACK=1`，要求两个 FPK 都生成；缺工具或缺产物使发布失败。手工脚本保留缺工具可选跳过模式，需要严格验证时也设置该变量。临时文件不放入源码模板，局部职责见 [原生包说明](../../backend/fnos/README.md)。
+正式 workflow 设置 `REQUIRE_FNPACK=1`，要求两个 FPK 都生成；缺工具或缺产物使发布失败。手工脚本保留缺工具可选跳过模式，需要严格验证时也设置该变量。临时文件不放入源码模板，局部职责见 [原生包说明](../../packaging/fnos/README.md)。
 
 FPK 与其余附件统一写入 `checksums.txt`，用户可手工核对 SHA-256。QMS 网页不在原生 fnOS 下载或安装更新；平台更新使用自身生命周期，不读取这份 GitHub 清单。构建成功不代表应用商店已提供该版本，实际平台安装、升级与保留数据重装另行验收。脚本和平台验证入口见 [验证说明](../engineering/verification.md#数据库启动与部署验证)。
 调整 changelog 的分组、过滤规则可编辑仓库根目录的 `cliff.toml`。

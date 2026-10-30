@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"golang.org/x/sync/errgroup"
 )

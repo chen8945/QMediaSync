@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncconfig"
+	syncconfig "qmediasync/internal/strm/config"
 
 	"github.com/gin-gonic/gin"
 )

@@ -22,7 +22,7 @@ import (
 	"qmediasync/internal/fnosproxy"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/coocood/freecache"
 	"github.com/gin-gonic/gin"

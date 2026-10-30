@@ -21,7 +21,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func setupSyncLedgerPostgres(t *testing.T) string {

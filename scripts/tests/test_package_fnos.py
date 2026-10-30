@@ -60,7 +60,7 @@ class PackageFnosTest(unittest.TestCase):
         self.script = self.root / "scripts/release/package-fnos.sh"
         self.script.parent.mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/release/package-fnos.sh", self.script)
-        self.fnos = self.root / "backend/fnos"
+        self.fnos = self.root / "packaging/fnos"
         for arch, platform in (("amd64", "x86"), ("arm64", "arm")):
             template = self.fnos / f"qmediasync-{arch}"
             for name in (

@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 func TestDeleteSyncPathNotifiesPreloadOriginsAfterCommit(t *testing.T) {

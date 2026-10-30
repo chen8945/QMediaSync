@@ -28,7 +28,7 @@
 | Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
 | Emby 目录清理与共同批删 | `models`、`emby`、`embyclient-rest-go`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
 | STRM 分页、账本批删与进度并发 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/synccron ./internal/realtime`；相关并发回归加 `-race` | [同步调度与任务记录](../architecture/sync-orchestration.md)、[实时事件](../architecture/realtime-events.md) |
-| STRM 扫描完整性与失败范围 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/openlist ./internal/v115open ./internal/synccron ./internal/realtime`；详情流另跑控制器流测试，并对相关并发运行 `-race`；模型事务与迁移同时验证 SQLite / PostgreSQL | [同步编排](../architecture/sync-orchestration.md)、[数据库 schema](../reference/database-schema.md) |
+| STRM 扫描完整性与失败范围 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/openlist ./internal/v115/openapi ./internal/synccron ./internal/realtime`；详情流另跑控制器流测试，并对相关并发运行 `-race`；模型事务与迁移同时验证 SQLite / PostgreSQL | [同步编排](../architecture/sync-orchestration.md)、[数据库 schema](../reference/database-schema.md) |
 | 百度保存目录路径兼容 | `syncstrm` 的 `TestBaiduSavedPathIncrementalScope` 和 `TestMovedUnreadableDirectoryKeepsOldSubtree`，运行普通/race；经真实目录保存与构造验证前导斜杠、空根、空格、越界拒绝、旧子树保留与独立兄弟清理 | [同步编排](../architecture/sync-orchestration.md) |
 | STRM 后台结果、通知与生命周期 | `syncstrm`、`models`、`realtime`、`helpers` 对应测试及 race；控制器同步流、应用编译；SQLite/PostgreSQL 迁移与条件更新，前端详情/列表与 SSE/HTTP 降级 | [生成结果与后台账本](../architecture/sync-orchestration.md#生成结果与后台账本)、[实时事件](../architecture/realtime-events.md) |
 | STRM 相关操作排队 | `syncscope`、`syncstrm`、`models`、`syncconfig`、`scrape` 相关普通测试、race 和 vet；目录管理控制器测试及应用编译；SQLite/PostgreSQL 验证范围读取、修改和删除，检查多页查询不重复叠加条件且末页旧位置仍受保护。路径规范化由 `TestStrmGenerationScopeValidatesRemotePaths`、`TestStrmGenerationScopeDirectoryScanPreservesSpaces` 和 `TestStrmRemotePathWithinRoot` 保护，覆盖真实生成、空根兼容、目录展开、名称空格保留与越界拒绝 | [相互影响的操作如何排队](../architecture/sync-orchestration.md#相互影响的操作如何排队) |
@@ -49,19 +49,19 @@
 | 115 本轮目录关系复用 | `syncstrm` 的 `Test115VerifiedRelationsReuseAndUnknown`、`Test115FullSyncOldDirectoryLocationMustBeConfirmed`、`Test115InFlightConflictPreservesUnresolvedFiles`、`Test115FailedAndCanceledDetailsDoNotTeachRelations`、`Test115PreloadedRootConflictAndRuleChange` 和 `Test115RelationRequestSamples`，以及现有 115 扫描/排除回归；运行相关普通/race/vet，核对真实文件页、请求数、冲突后不生成和清理保护 | [扫描完整性与失败保护](../architecture/sync-orchestration.md) |
 | 同步文件查询索引 | `models`、`backup` 相关普通测试、race 和 vet；SQLite/PostgreSQL 验证新库、64→65、失败重试、修复与备份恢复，保留长路径和原记录；检查文件 ID 查询与同目录查询的结果、不同同步目录隔离，以及 Emby 候选的最新 50 条和排除自身 | [`sync_files`](../reference/database-schema.md#sync_files)、[刷新目标解析](../architecture/emby-library-sync.md#刷新目标解析) |
 | 配置、密钥或数据库迁移 | `helpers`、`models`、`db` 或相关控制器包测试 | 配置、数据库 schema 与运维 |
-| 飞牛影视反代 | `cd backend && go test . ./internal/fnosproxy ./internal/requests ./internal/models ./internal/controllers ./internal/backup`，新模块与相关并发路径加 `-race`；前端运行相关 Vitest、类型检查和构建。验证固定端口、缺证书仅 HTTP、HTTPS 故障保留 HTTP、保存与应用结果分离、健康同配置不中断、变化重建与缓存清理、恢复门禁；应用入口独立进程保持 115／百度视频流期间完成真实临时库恢复，维护后拒绝新转发；百度真实取链控制器与 SDK 验证期限／取消、锁等待、迟到结果不缓存，以及原生播放 Stop；SQLite／隔离 PostgreSQL 验证 68→69、旧包适配与默认关闭；实机客户端与播放边界另验 | [接口与验证边界](../reference/fnos-proxy-api.md#验证方式)、[部署与排障](../operations/fnos-proxy.md) |
+| 飞牛影视反代 | `cd backend && go test . ./internal/app ./internal/fnosproxy ./internal/requests ./internal/models ./internal/controllers ./internal/backup`，新模块与相关并发路径加 `-race`；前端运行相关 Vitest、类型检查和构建。验证固定端口、缺证书仅 HTTP、HTTPS 故障保留 HTTP、保存与应用结果分离、健康同配置不中断、变化重建与缓存清理、恢复门禁；应用入口独立进程保持 115／百度视频流期间完成真实临时库恢复，维护后拒绝新转发；百度真实取链控制器与 SDK 验证期限／取消、锁等待、迟到结果不缓存，以及原生播放 Stop；SQLite／隔离 PostgreSQL 验证 68→69、旧包适配与默认关闭；实机客户端与播放边界另验 | [接口与验证边界](../reference/fnos-proxy-api.md#验证方式)、[部署与排障](../operations/fnos-proxy.md) |
 | 数据库启动、首次配置或部署模板 | 本文“数据库启动与部署验证”的 Go、镜像和脚本检查 | 数据库运维、部署、发布流程 |
 | 本地管理员恢复与 Compose 脚本 | 本文“管理员恢复验证”的 Go、脚本和 PostgreSQL 检查；涉及 Windows 展示时交叉构建并人工确认窗口 | 认证会话、部署 |
 | Vue 组件、组合式函数或 HTTP 客户端 | `pnpm run test`、`pnpm lint`、`pnpm format:check`、`pnpm run type-check` | AI 协作说明、请求校验 |
-| 账号授权更换跨端流程 | `cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/models ./internal/controllers ./internal/db`；`cd frontend && pnpm run test -- test/components/cloud-auth test/composables/useV115DeviceAuthorization.test.ts`、`pnpm run type-check`、`pnpm run build` | [账号授权与更换](../reference/account-authorization.md) |
-| 115 共享客户端凭据 | `cd backend && go test -race ./internal/v115open`；`cd backend && go test ./internal/models ./internal/controllers ./internal/synccron` | [账号授权与更换](../reference/account-authorization.md#访问凭证定时刷新与失效) |
+| 账号授权更换跨端流程 | `cd backend && go test ./internal/requests ./internal/v115/auth ./internal/v115/openapi ./internal/models ./internal/controllers ./internal/db`；`cd frontend && pnpm run test -- test/components/cloud-auth test/composables/useV115DeviceAuthorization.test.ts`、`pnpm run type-check`、`pnpm run build` | [账号授权与更换](../reference/account-authorization.md) |
+| 115 共享客户端凭据 | `cd backend && go test -race ./internal/v115/openapi`；`cd backend && go test ./internal/models ./internal/controllers ./internal/synccron` | [账号授权与更换](../reference/account-authorization.md#访问凭证定时刷新与失效) |
 | 下载代理 Cookie 隔离 | `cd backend && go test -race ./internal/controllers -run '^TestProxy115'`；覆盖 115/百度首跳与重定向、Range/Referer/UA 保留 | [认证与浏览器会话](../architecture/authentication-sessions.md#api-key可信来源与下载代理) |
-| 115 STRM 直链解析与播放日志 | `cd backend && go test ./emby302/service/emby ./emby302/web/cache ./emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`；缓存联调运行 `go test -race ./emby302/service/emby ./emby302/web/cache`，覆盖 UA 分离、请求保真、签名安全期限、排队过期及失败回退不缓存 | [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)、[日志行为与脱敏](../operations/configuration.md#日志行为与脱敏) |
-| Emby 302 回源、共享路径和 Web 兼容性 | `cd backend && go test -race ./emby302/config ./emby302/service/emby ./emby302/util/https ./emby302/web/cache ./emby302/util/jsons ./internal/helpers`；覆盖 HTTP 取消及不完整响应不缓存、完整字幕仍可命中缓存、WebSocket 直连及消息收发、本地 / SMB 路径、原图默认裁剪与增强显式关闭、主配置读写；脚本执行验证需要 Node.js | [Emby 302 回源连接](../operations/configuration.md#emby-302-回源连接)、[图片与自定义脚本](../operations/configuration.md#emby-302-图片与自定义脚本) |
-| Emby 302 随机列表缓存 | `cd backend && go test -race ./emby302/service/emby ./emby302/web/cache`；覆盖上游读取失败、下游写入失败、失败后重新回源、完整响应与随机重排缓存复用，以及关闭缓存的兼容性 | [Emby 302 缓存](../operations/configuration.md#emby-302-缓存) |
-| 115 多端播放 | `cd backend && go test ./internal/playback ./internal/controllers ./internal/v115open ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；相关播放、目录与回收站定时清理和过滤测试加 `-race`；涉及设置页交互时再运行前端检查 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
-| 多端副本失败保护与有限重试 | `cd backend && go test -race ./internal/controllers ./internal/playback ./internal/v115open`；覆盖原文件零取链、旧槽位保留、当前预留释放、一次取链重试、确认缺失后一次重建、共享预算与独立清理 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
-| 公共授权随机串 | `cd backend && go test -race ./internal/helpers ./internal/v115open`；`cd backend && go test ./internal/v115auth ./internal/controllers` | [账号授权与更换](../reference/account-authorization.md#授权流程传递) |
+| 115 STRM 直链解析与播放日志 | `cd backend && go test ./internal/emby302/service/emby ./internal/emby302/web/cache ./internal/emby302/util/https ./internal/controllers ./internal/playback ./internal/helpers`；缓存联调运行 `go test -race ./internal/emby302/service/emby ./internal/emby302/web/cache`，覆盖 UA 分离、请求保真、签名安全期限、排队过期及失败回退不缓存 | [115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)、[日志行为与脱敏](../operations/configuration.md#日志行为与脱敏) |
+| Emby 302 回源、共享路径和 Web 兼容性 | `cd backend && go test -race ./internal/emby302/config ./internal/emby302/service/emby ./internal/emby302/util/https ./internal/emby302/web/cache ./internal/emby302/util/jsons ./internal/helpers`；覆盖 HTTP 取消及不完整响应不缓存、完整字幕仍可命中缓存、WebSocket 直连及消息收发、本地 / SMB 路径、原图默认裁剪与增强显式关闭、主配置读写；脚本执行验证需要 Node.js | [Emby 302 回源连接](../operations/configuration.md#emby-302-回源连接)、[图片与自定义脚本](../operations/configuration.md#emby-302-图片与自定义脚本) |
+| Emby 302 随机列表缓存 | `cd backend && go test -race ./internal/emby302/service/emby ./internal/emby302/web/cache`；覆盖上游读取失败、下游写入失败、失败后重新回源、完整响应与随机重排缓存复用，以及关闭缓存的兼容性 | [Emby 302 缓存](../operations/configuration.md#emby-302-缓存) |
+| 115 多端播放 | `cd backend && go test ./internal/playback ./internal/controllers ./internal/v115/openapi ./internal/synccron ./internal/models ./internal/requests ./internal/helpers ./internal/syncstrm ./internal/scrape/scan`；相关播放、目录与回收站定时清理和过滤测试加 `-race`；涉及设置页交互时再运行前端检查 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
+| 多端副本失败保护与有限重试 | `cd backend && go test -race ./internal/controllers ./internal/playback ./internal/v115/openapi`；覆盖原文件零取链、旧槽位保留、当前预留释放、一次取链重试、确认缺失后一次重建、共享预算与独立清理 | [多端播放链路](../architecture/upload-and-strm-processing.md#115-多端播放链路) |
+| 公共授权随机串 | `cd backend && go test -race ./internal/helpers ./internal/v115/openapi`；`cd backend && go test ./internal/v115/auth ./internal/controllers` | [账号授权与更换](../reference/account-authorization.md#授权流程传递) |
 | 前端生产集成 | `pnpm run test`、`pnpm run build`、`pnpm run check:build` | 本地开发、发布流程 |
 | 后端可执行文件或发布配置 | `go build` 或发布文档中的对应构建命令 | 发布流程 |
 | 正式 Markdown 文档 | `git diff --check`、相对链接检查；改动 AI 入口时确认兼容入口内容一致 | 文档治理 |
@@ -74,7 +74,7 @@
 
 文件操作安全回归运行 `(cd backend && go test ./internal/requests ./internal/controllers ./internal/openlist ./internal/baidupan)`，覆盖路径空白保真、跨目录整批拒绝且不访问上游、重命名同名保护与旧刮削接口兼容，以及写入成功或失败后的父目录 / 子树失效和旧请求不能回写。百度客户端测试覆盖文件管理顶层与逐项错误、凭据错误分类、旧响应兼容，以及其他接口的 `info` 语义隔离。前端批量操作测试覆盖删除 / 移动 / 复制失败后的强制刷新、取消不刷新、上下文切换保护、刷新再次失败及不自动重发写入；桌面 / 移动表格验证单项操作后保留有效选择、移除消失条目并在手动刷新时清空。移动 / 复制使用真实弹窗验证提交期间关闭按钮、Esc 和取消均被拦截，成功或失败后仍反馈结果、清理选择并刷新；提交前仍可正常关闭。OpenList 客户端同时验证响应丢失不重发、一次认证恢复，以及认证恢复后响应丢失不再重发。重命名使用真实输入弹窗验证名称冲突 / 网络失败后的输入保留与重试、重复确认和关闭保护，以及取消不提交；统一随 Vitest 执行。上述上游交互通过本地 HTTP 替身验证；真实 OpenList 存储驱动的并发重命名保护，以及异步任务完成后的手动刷新须在实际环境复核。
 
-目录浏览排序运行 `(cd backend && go test . ./internal/requests ./internal/controllers ./internal/v115open ./internal/openlist ./internal/baidupan)`，覆盖能力与参数映射、跟随网盘兼容、置顶缓存身份、115 当前层分页和原始 offset、系统目录计数、百度目录分页、OpenList 原生目录刷新及取消、本地可选修改时间。OpenList 公共取消／共享认证和缓存并发变化额外运行相应包的定向 `-race` 测试。
+目录浏览排序运行 `(cd backend && go test . ./internal/app ./internal/requests ./internal/controllers ./internal/v115/openapi ./internal/openlist ./internal/baidupan)`，覆盖能力与参数映射、跟随网盘兼容、置顶缓存身份、115 当前层分页和原始 offset、系统目录计数、百度目录分页、OpenList 原生目录刷新及取消、本地可选修改时间。OpenList 公共取消／共享认证和缓存并发变化额外运行相应包的定向 `-race` 测试。
 
 共享浏览缓存回归同时覆盖 180 秒绝对过期且命中不续期、115 文件／目录双向命中且原始顺序与元数据保留、百度与 OpenList 不同列表语义隔离、刷新使所有排序／视图失效、115 祖先目录改名／移动后的路径失效、失败不缓存及失效代次阻止旧结果回填。并发测试覆盖同一批次合并、取消一个等待者不影响另一位、刷新后不加入旧请求；使用本地上游替身计数，不调用真实网盘。
 
@@ -84,7 +84,7 @@
 
 Emby 删除修复回归包含：未知存活来源的跨目录引用、百度历史 fsid 缺失／替换及独立真实父目录、收件重试造成的观察顺序倒置（含同时间戳、无效状态候选及 PostgreSQL）、首次父目录缺失与临时列表／详情故障、移动或替换对象保护、初始缺失结果原子保存和重启恢复。`TestWebhookCleanupSourceVerificationCountsBaiduHTTP` 使用真实 provider／SDK 和本地 HTTP 替身，分别断言列表、详情、删除及 Emby 请求数；单页夹具的计数不代表线上固定成本。提取回归验证完整音视频流不重复入队，字幕不计入流数量。`TestAppWebhookStartup` 通过子进程验证恢复失败时非零退出、队列停止与资源释放，以及成功恢复；Windows 构建验证不能替代真实桌面的托盘验收。
 
-删除诊断回归运行 `cd backend && go test ./internal/v115open ./internal/emby`。`TestDeletionFailureDiagnostics` 使用本地 HTTP 传输替身覆盖业务拒绝、限流、HTTP 错误、响应损坏、网络失败、超时、取消和发送前拒绝，检查数值诊断、不泄露上游原文及单次删除不重放；`TestWebhookCleanupPartialBatchRecoversOnlyUnfinishedVideo` 同时验证通知与文件／父目录 ID、处理轮次和发送次数关联，已完成目标不输出失败诊断，恢复不重发已成功目标。真实 115 的具体失败原因仍需用运行日志确认。
+删除诊断回归运行 `cd backend && go test ./internal/v115/openapi ./internal/emby`。`TestDeletionFailureDiagnostics` 使用本地 HTTP 传输替身覆盖业务拒绝、限流、HTTP 错误、响应损坏、网络失败、超时、取消和发送前拒绝，检查数值诊断、不泄露上游原文及单次删除不重放；`TestWebhookCleanupPartialBatchRecoversOnlyUnfinishedVideo` 同时验证通知与文件／父目录 ID、处理轮次和发送次数关联，已完成目标不输出失败诊断，恢复不重发已成功目标。真实 115 的具体失败原因仍需用运行日志确认。
 
 来源反查另覆盖 115／百度真实客户端 HTTP：账本命中不反查、未知存活来源查明在目录外后整删、目录内来源和异常查询回退、缺失或冲突账号／URL、同来源跨核验阶段去重，以及陌生 TXT／图片不逐项查归属。115 使用独立账号客户端并在首次请求前设置测试传输；不得改运行中共享实例。缓存回归覆盖读开始时间、失败复用、取消、过期、账号／地址配置改变和长读取后拒绝。已移出成员的回归通过真实收件事务验证最新有效观察可排除旧 state 归属，排除项无 owner、目标及删除屏障；无效观察、未知归属、直接删除和其他真实成员保持原行为，并在 SQLite／隔离 PostgreSQL 验证。
 
@@ -106,13 +106,13 @@ Go 工具链或直接依赖升级须运行全部后端测试、`go vet ./...`、
 
 Emby 入库通知时间回归运行 `go test -race ./internal/controllers -run '^TestEmbyNotification'`，覆盖 UTC 跨日、小数秒与时区偏移、创建时间 → 事件时间 → 接收时间回退、本批单集最大时间、缺失或查询失败的单集、分批查询、取消及并发缓冲合并。使用本地 Emby HTTP 替身，不代表真实通知渠道联调；时间来源见 [入库通知时间](../architecture/emby-library-sync.md#入库通知时间)。
 
-YAML 配置变更运行 `go test ./internal/helpers ./emby302/config ./internal/controllers .`，覆盖统一 v3 后的布尔字段、八进制、锚点合并、主配置保存回读和非法合并键返回错误；顶层与嵌套重复键必须报错，原文件保持不变，不能因解析失败退回旧 `config.yml`。同时保留首次配置、管理员恢复、JWT 自动保存、日志设置和可信来源配置回归；格式与兼容边界见 [配置文件](../operations/configuration.md#配置文件与默认端口)。反射转换回归运行 `go test ./emby302/util/jsons ./emby302/service/emby`，覆盖导出字段、嵌套对象、空值、指针和 map 键类型边界。
+YAML 配置变更运行 `go test ./internal/helpers ./internal/emby302/config ./internal/controllers . ./internal/app`，覆盖统一 v3 后的布尔字段、八进制、锚点合并、主配置保存回读和非法合并键返回错误；顶层与嵌套重复键必须报错，原文件保持不变，不能因解析失败退回旧 `config.yml`。同时保留首次配置、管理员恢复、JWT 自动保存、日志设置和可信来源配置回归；格式与兼容边界见 [配置文件](../operations/configuration.md#配置文件与默认端口)。反射转换回归运行 `go test ./internal/emby302/util/jsons ./internal/emby302/service/emby`，覆盖导出字段、嵌套对象、空值、指针和 map 键类型边界。
 
-性能比较使用同一工具链、CPU 和 GC 参数，至少重复 6 次并用 `benchstat` 比较：`go test ./emby302/util/jsons ./internal/helpers -run '^$' -bench 'Benchmark(FromObject|ConfigYAML)$' -benchmem -benchtime=200ms -count=6 -cpu=1`。以改动前工作区为对照，同时报告耗时与分配；无显著差异不得宣称提速，依赖维护收益与运行时性能收益分开记录。
+性能比较使用同一工具链、CPU 和 GC 参数，至少重复 6 次并用 `benchstat` 比较：`go test ./internal/emby302/util/jsons ./internal/helpers -run '^$' -bench 'Benchmark(FromObject|ConfigYAML)$' -benchmem -benchtime=200ms -count=6 -cpu=1`。以改动前工作区为对照，同时报告耗时与分配；无显著差异不得宣称提速，依赖维护收益与运行时性能收益分开记录。
 
-备份压缩回归通过 `go test ./internal/helpers ./internal/backup` 验证 Deflate 输出、备份恢复往返和旧版 Store 包兼容。性能测量可运行 `go test ./internal/helpers ./internal/embyclient-rest-go -run '^$' -bench 'Benchmark(ZipDir|FetchMediaItemsPage)$' -benchmem`；使用合成 JSON 数据，ZIP 结果包括文件 I/O，不代表真实数据库导出总耗时。
+备份压缩回归通过 `go test ./internal/helpers ./internal/backup` 验证 Deflate 输出、备份恢复往返和旧版 Store 包兼容。性能测量可运行 `go test ./internal/helpers ./internal/emby/client -run '^$' -bench 'Benchmark(ZipDir|FetchMediaItemsPage)$' -benchmem`；使用合成 JSON 数据，ZIP 结果包括文件 I/O，不代表真实数据库导出总耗时。
 
-网络升级回归覆盖非法百度 STRM 地址与转码 Host、WebSocket 原始请求语义，以及私有 HTTP transport 在成功、错误和重定向后的连接释放；运行 `go test -race ./internal/helpers ./internal/syncstrm ./emby302/service/emby`。密码与 NFO 的 Unicode 分类随工具链升级，分别由 `requests` 和 `helpers` 包测试保护；Windows 证书环境变量须按 [出站证书信任](../operations/configuration.md#emby-302-出站-https) 在目标机器验收。
+网络升级回归覆盖非法百度 STRM 地址与转码 Host、WebSocket 原始请求语义，以及私有 HTTP transport 在成功、错误和重定向后的连接释放；运行 `go test -race ./internal/helpers ./internal/syncstrm ./internal/emby302/service/emby`。密码与 NFO 的 Unicode 分类随工具链升级，分别由 `requests` 和 `helpers` 包测试保护；Windows 证书环境变量须按 [出站证书信任](../operations/configuration.md#emby-302-出站-https) 在目标机器验收。
 
 Pongo2 升级运行 `go test ./internal/models -run 'Test(NewSyntax|OldSyntax|BackwardCompatibility|SyntaxDetection|GenerateNameByTemplateOrKeep)'`，并对模型包运行 `-race`。覆盖普通变量转义、显式 `safe`、父块字面量与变量的原生继承输出，以及 `removetags` 正则元字符、无 `else` 的 `ifchanged` 不发生 panic；文件名契约见 [模板渲染流程](../reference/scrape-rename-templates.md#模板渲染流程)。
 
@@ -199,9 +199,9 @@ UA 用有界内存和真实播放观察验证：首次、重启、映射过期�
 
 ```sh
 cd backend
-go test . ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/...
-go test -race . ./internal/playback ./internal/controllers ./internal/models ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/service/emby
-go vet . ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/syncconfig ./internal/fnosproxy ./internal/v115open ./internal/baidupan ./emby302/...
+go test . ./internal/app ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/strm/config ./internal/fnosproxy ./internal/v115/openapi ./internal/baidupan ./internal/emby302/...
+go test -race . ./internal/app ./internal/playback ./internal/controllers ./internal/models ./internal/backup ./internal/strm/config ./internal/fnosproxy ./internal/v115/openapi ./internal/baidupan ./internal/emby302/service/emby
+go vet . ./internal/app ./internal/playback ./internal/controllers ./internal/models ./internal/requests ./internal/backup ./internal/strm/config ./internal/fnosproxy ./internal/v115/openapi ./internal/baidupan ./internal/emby302/...
 go test -tags=integration ./internal/models ./internal/backup ./internal/db
 ```
 
@@ -215,8 +215,8 @@ go test -tags=integration ./internal/models ./internal/backup ./internal/db
 
 ```bash
 cd backend
-go test -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/embyclient-rest-go ./internal/v115open ./internal/baidupan ./internal/openlist .
-go vet -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/embyclient-rest-go ./internal/v115open ./internal/baidupan ./internal/openlist .
+go test -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/emby/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
+go vet -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/emby/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
 go test -p 1 -race ./internal/syncstrm ./internal/emby ./internal/models ./internal/backup
 ```
 
@@ -259,11 +259,11 @@ GOMAXPROCS=2 GOMEMLIMIT=300MiB QMS_STRM_PERFORMANCE=1 QMS_TEST_POSTGRES_DSN='pos
 
 ```bash
 # 配置读写、首次配置、旧状态拒绝、数据库连接和 schema 升级
-(cd backend && go test ./internal/helpers ./internal/db/... ./internal/models .)
+(cd backend && go test ./internal/helpers ./internal/db/... ./internal/models . ./internal/app)
 
 # 安装入口语法
 bash -n scripts/install/linux-init.sh
-bash -n backend/fnos/qmediasync-amd64/cmd/install_callback backend/fnos/qmediasync-arm64/cmd/install_callback
+bash -n packaging/fnos/qmediasync-amd64/cmd/install_callback packaging/fnos/qmediasync-arm64/cmd/install_callback
 
 # 本地源码镜像；正式发布镜像按发布流程准备独立构建上下文
 docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
@@ -273,7 +273,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
 
 空库初始化改动须分别验证 SQLite 单连接和隔离 PostgreSQL：完整建表与默认数据、后段 DDL／必要索引／默认数据／最终版本写入失败、事务回滚、关闭重开连接后重试，以及重复启动保留已配置值。失败时不得留下本次创建的版本表、业务表和默认记录，也不得记录初始化成功；启动入口须返回初始化错误并停止后续步骤。保留无默认管理员、默认分类顺序和既有数据库修复行为；已有库的历史迁移保证按对应版本测试验收。
 
-定向回归可运行 `cd backend && go test -tags=integration ./internal/models . -run 'TestMigrateFresh|TestStartDatabaseRejectsInitializationFailure'`；PostgreSQL 用例要求 `QMS_TEST_POSTGRES_DSN` 指向可丢弃测试库，缺少 DSN 的跳过不算通过。驱动变更另运行 `go test -tags=integration ./internal/db/...`，验证 pgx 的 SQLSTATE 错误链、维护门禁下的预编译语句和重复 AutoMigrate，以及已有库恢复的单连接、缺库不创建和取消行为。
+定向回归可运行 `cd backend && go test -tags=integration ./internal/models . ./internal/app -run 'TestMigrateFresh|TestStartDatabaseRejectsInitializationFailure'`；PostgreSQL 用例要求 `QMS_TEST_POSTGRES_DSN` 指向可丢弃测试库，缺少 DSN 的跳过不算通过。驱动变更另运行 `go test -tags=integration ./internal/db/...`，验证 pgx 的 SQLSTATE 错误链、维护门禁下的预编译语句和重复 AutoMigrate，以及已有库恢复的单连接、缺库不创建和取消行为。
 
 镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。fnOS 两架构验证模板不生成业务配置，数据库生成复用 QMS 网页；真实系统分别验证 SQLite 和独立 PostgreSQL 保存后进入正式服务；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
 
@@ -281,10 +281,10 @@ fnOS / Windows 首次配置和打包变更还运行：
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/package-release-asset.sh scripts/release/install-fnpack.sh backend/fnos/common/service.sh
-for script in backend/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
-(cd backend && go test ./internal/helpers .)
-(cd backend && go vet ./internal/helpers .)
+bash -n scripts/release/release.sh scripts/release/package-fnos.sh scripts/release/package-release-asset.sh scripts/release/install-fnpack.sh packaging/fnos/common/service.sh
+for script in packaging/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
+(cd backend && go test ./internal/helpers . ./internal/app)
+(cd backend && go vet ./internal/helpers . ./internal/app)
 (cd frontend && pnpm exec vitest run test/components/DirectorySelector.test.ts test/components/DbConfigPage.test.ts test/components/AppUpdate.errors.test.ts)
 ```
 
@@ -309,7 +309,7 @@ systemd 在线更新中“进程退出后由 systemd 用新版本拉起”只能
 
 ```bash
 # 命令参数、已有数据库连接、进程锁、认证事务与应用日志
-(cd backend && go test ./internal/helpers ./internal/db ./internal/models . -run 'Test(AcquireInstanceLock|OpenExisting|RecoverAdmin|ParseAdminRecoveryOptions|PerformAdminRecovery|AdminRecoveryConfigDir|StartupConfigMigrationLock)')
+(cd backend && go test ./internal/helpers ./internal/db ./internal/models . ./internal/app -run 'Test(AcquireInstanceLock|OpenExisting|RecoverAdmin|ParseAdminRecoveryOptions|PerformAdminRecovery|AdminRecoveryConfigDir|StartupConfigMigrationLock)')
 
 # Docker 命令替身覆盖脚本边界，不操作真实部署；只依赖 Python 3 标准库
 python3 scripts/tests/test_recover_admin.py
@@ -389,15 +389,15 @@ Beta 元数据与打包改动沿用 `python3 -m unittest discover -s scripts/tes
 - 设置领域请求回归覆盖 Emby 轮询失败去重与成功后复位、配置和媒体库读取分离、Cron 字段错误及旧预览失效、代理凭据保留和脱敏回读、通知 `code=0` 的历史成功语义、STRM 安全校验提示、Emby 保存、提取与启动同步在途时互相禁用、通知规则切换渠道或关闭后重开同一渠道时旧规则与晚到结果失效，以及当前用户、两步验证和设备撤销失败不执行成功动作。保存失败保留输入、取消／已处理认证错误静默、回读失败不得被成功说明覆盖，错误与日志不含敏感载荷；均随 Vitest 执行。提取媒体信息同一时间只运行一轮由 `(cd backend && go test -race ./internal/emby)` 验证。
 - 设置页内联提示的可见性运行 `(cd frontend && pnpm exec vitest run test/composables/useFeedbackScroll.test.ts)`，并回归接入设置页的组件测试。覆盖提示已可见时不滚动、超出内容区与窗口交集时就近滚入、同一结果不重复处理、等待渲染期间状态替换／清空或卸载后不滚动，以及不转移焦点。保存与连接测试结果显式触发，首次读取和后台轮询不触发；原提示文案、清除计时与 API 行为继续由组件回归保护，交互契约见 [前端开发约定](frontend-development.md#api-响应与请求错误)。
 - 同步目录与队列请求回归覆盖聚合保存的字段定位、成功警告和幂等键复用、详情与关联读取失败保护，以及队列操作成功后刷新失败只提示一次、取消／已处理认证错误静默。请求参数、分页统计、刷新合并和生命周期保护仍由 API、composable 与组件测试共同验证；原始版本对象另有 API 契约测试。
-- 剩余领域请求回归覆盖文件与目录操作、同步记录、API Key、分类、备份恢复、更新和后台统计的业务成功校验与输入保护。日志及任务 HTTP 快照测试同时验证错误状态保留、HTML 响应、JSON 解析异常与传输故障区分、取消静默和旧结果失效；原生 SSE 错误不额外探测 HTTP 错误原因；任务流进入 CLOSED 时允许读取任务快照降级，明确认证／来源／CSRF 拒绝或 HTTP `401`、`403`、`404` 会停止轮询，包含首次请求失败的场景。备份下载额外验证 JSON 错误不生成下载文件，更新取消失败继续保留进度状态，页面只在下载中显示取消，重启导致任务状态丢失时须核对目标版本后才提示成功，版本不匹配时仅提示一次“更新未生效”并结束轮询；后端 `controllers` 测试同时验证已结束的更新任务不能被取消改写、进入安装与取消互斥且安装后拒绝取消、不支持的运行方式拒绝在线更新，以及 systemd 在线更新的启用条件、安装目录不可写或运行中程序不在安装目录时下载前拒绝、更新包 SHA-256 校验、发布包替换与中途失败回滚。`go test . ./internal/controllers ./internal/helpers` 同时覆盖 Windows / Docker 更新包准备与交付失败、残留临时文件、正常发布包结构，以及 Linux 下 Docker 入口脚本的成功、损坏包和替换失败回滚；Windows 更新入口还运行 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /tmp/qms-update-verification.exe .` 验证编译。
+- 剩余领域请求回归覆盖文件与目录操作、同步记录、API Key、分类、备份恢复、更新和后台统计的业务成功校验与输入保护。日志及任务 HTTP 快照测试同时验证错误状态保留、HTML 响应、JSON 解析异常与传输故障区分、取消静默和旧结果失效；原生 SSE 错误不额外探测 HTTP 错误原因；任务流进入 CLOSED 时允许读取任务快照降级，明确认证／来源／CSRF 拒绝或 HTTP `401`、`403`、`404` 会停止轮询，包含首次请求失败的场景。备份下载额外验证 JSON 错误不生成下载文件，更新取消失败继续保留进度状态，页面只在下载中显示取消，重启导致任务状态丢失时须核对目标版本后才提示成功，版本不匹配时仅提示一次“更新未生效”并结束轮询；后端 `controllers` 测试同时验证已结束的更新任务不能被取消改写、进入安装与取消互斥且安装后拒绝取消、不支持的运行方式拒绝在线更新，以及 systemd 在线更新的启用条件、安装目录不可写或运行中程序不在安装目录时下载前拒绝、更新包 SHA-256 校验、发布包替换与中途失败回滚。`go test . ./internal/app ./internal/controllers ./internal/helpers` 同时覆盖 Windows / Docker 更新包准备与交付失败、残留临时文件、正常发布包结构，以及 Linux 下 Docker 入口脚本的成功、损坏包和替换失败回滚；Windows 更新入口还运行 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /tmp/qms-update-verification.exe .` 验证编译。
 
 - 请求失败后的连续交互也必须验证：APP ID 新关键词失败后不能混用旧分页；同步与刮削目录的双向关联窗口在候选或已有绑定加载失败时不能保存，关闭／重开或切换目录后旧读取与保存结果失效；刮削编辑、AI、TMDB、代理、Emby、线程、日志及 STRM 首次读取失败时禁止默认配置写回，关闭提示仍不能保存，重试成功恢复保存；更新启动与取消 POST 在途时切换页面可见性，仍处理该次写入的真实结果。以上均纳入组件和 composable 的 Vitest 回归。
 - 备份与恢复运行 `(cd backend && go test -race ./internal/db ./internal/backup ./internal/controllers)`，覆盖持久化隐藏字段、零值／NULL／大整数、字段自动纳入、跨表快照、清单及全文件校验、应用版本写入与缺字段／不同应用版本兼容、最后一表失败时整库回滚、用户与 API Key 外键、会话排除、派生索引及旧包版本边界；旧包扫描结果须覆盖对象、空对象、`null` 和省略字段，验证单层 JSON 文本与 SQL `NULL`；旧下载任务 ZIP 须逐项验证执行地址、本地源路径、Emby 条目 ID、两个去重摘要、替换基线和已发布内容摘要，确认 7 个隐藏字段均能通过通用旧格式路径恢复。数据库连接门禁需用真实事务、未关闭结果集和预编译语句验证等待、拒绝晚到 SQL、超时后保持维护和单连接恢复许可，不能只模拟暂停函数。运行 `(cd backend && go test -tags=integration ./internal/backup ./internal/models ./internal/db)` 并提供独立 `QMS_TEST_POSTGRES_DSN`，验证 SQLite ↔ PostgreSQL 完整 ZIP 双向恢复、生产 pgx 时间精度（PG 来源按实存时间精确往返，SQLite 来源仍验证微秒舍入）、文本放宽迁移、完整索引和序列并发／回滚；无 DSN 的跳过不算 PostgreSQL 验证。
 - 备份格式和运行收尾继续使用上述普通／race 验证：真实 ZIP 覆盖格式 2 的根清单与 `tables/`、无清单旧包兼容、不支持的格式版本和错误表路径拒绝；SQLite 文件库在导出事务中通过同一业务单连接池完成并发读写，核对跨表快照、只读限制、专用连接关闭及共用维护门禁。权限验证覆盖既有目录收紧、ZIP 和上传文件 `0600`、符号链接拒绝和已有 ZIP 不覆盖；旧包依赖检查须覆盖预检后目标结构变化。两个单表兼容辅助入口仅置于测试文件。
-- 备份可靠性补强运行 `go test ./internal/backup ./internal/controllers ./internal/requests ./internal/helpers ./internal/synccron ./internal/models .`，对备份／恢复、上传／Cron 和文件发布边界运行相应普通、race、vet 检查：导出前清理、数量预留一份、同秒按 ID 保留最新、列出候选后并发删除不影响后续清理与新备份完成、手动删除缺失记录仍报错、真实清理错误停止导出、后续失败不恢复已删除旧包、目录外历史路径仅清记录且保留两处同名文件、真实配置目录迁移后连续手动／自动备份成功、符号链接仍拒绝删除、未纳管 ZIP 保留、并发发布不覆盖、启动临时清理不跟随符号链接且保留正式文件。归档测试用小型限额验证压缩／展开／目录解析／清单／单条记录及条目数，保留 17 MiB 大记录往返；覆盖重复和额外文件、CRC 损坏、实际读入超限，以及超限上传的 `413`、multipart／暂存清理和恰好上限。
+- 备份可靠性补强运行 `go test ./internal/backup ./internal/controllers ./internal/requests ./internal/helpers ./internal/synccron ./internal/models . ./internal/app`，对备份／恢复、上传／Cron 和文件发布边界运行相应普通、race、vet 检查：导出前清理、数量预留一份、同秒按 ID 保留最新、列出候选后并发删除不影响后续清理与新备份完成、手动删除缺失记录仍报错、真实清理错误停止导出、后续失败不恢复已删除旧包、目录外历史路径仅清记录且保留两处同名文件、真实配置目录迁移后连续手动／自动备份成功、符号链接仍拒绝删除、未纳管 ZIP 保留、并发发布不覆盖、启动临时清理不跟随符号链接且保留正式文件。归档测试用小型限额验证压缩／展开／目录解析／清单／单条记录及条目数，保留 17 MiB 大记录往返；覆盖重复和额外文件、CRC 损坏、实际读入超限，以及超限上传的 `413`、multipart／暂存清理和恰好上限。
 - 备份历史保留须通过真实新包与无清单旧包验证：目标 `backup_record` 的行、状态和序列保持不变，来源历史不导入，但来源记录内容仍校验；其他业务表及 `backup_config` 正常恢复，恢复事务失败回滚。启动中断处理覆盖 `pending`／`running` 转 `unconfirmed`、不补完成时间、已有终态保留，且在后台任务和 Cron 启动前执行。文件接口验证根层 ZIP、空目录、损坏包仍可列出、元数据读取不校验内容、目录与符号链接排除、缺失／不可访问区别，以及 `record_id`／`file_name` 互斥和路径越界拒绝。上传须覆盖完整预检后发布、同名不覆盖、预检失败清理、数据库恢复失败仍保留正式文件，并以保留的文件再次恢复及重新校验。
 - TOTP 预检覆盖正确／错误／未加载密钥、生效和待确认密文、无密文库及无清单旧包；不得为测试导出重置运行时密钥的入口。恢复结果测试注入事务失败、panic、提交／回滚异常和提交后收尾失败，验证明确回滚与结果不确定的区别，日志和公开错误不含敏感值。前端备份 store、API 及恢复组件回归覆盖安全原因和数据库结果、旧响应保守回退、重启保留结果、`413` 保留选择且不清认证。Windows 文件发布至少交叉编译，实际 Windows 文件系统行为仍需平台验证。
-- 恢复后重启运行 `cd backend && go test -race ./internal/backup ./internal/controllers ./internal/helpers .`，覆盖本轮回执、明确终态、可信来源、准备失败重试、并发重复只触发一次以及恢复结果不变。平台测试通过隔离子进程与入口脚本替身验证 Docker 普通退出／纯重启／陈旧信号／错误 PID、既有更新路径、延迟退出和能力判断，不重启开发实例。Windows 使用发布标签交叉编译：`CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags=nomsgpack -o /tmp/qms-restart-verification.exe .`；这不能替代实际 Windows 托盘、systemd 和容器托管重启验收。
+- 恢复后重启运行 `cd backend && go test -race ./internal/backup ./internal/controllers ./internal/helpers . ./internal/app`，覆盖本轮回执、明确终态、可信来源、准备失败重试、并发重复只触发一次以及恢复结果不变。平台测试通过隔离子进程与入口脚本替身验证 Docker 普通退出／纯重启／陈旧信号／错误 PID、既有更新路径、延迟退出和能力判断，不重启开发实例。Windows 使用发布标签交叉编译：`CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags=nomsgpack -o /tmp/qms-restart-verification.exe .`；这不能替代实际 Windows 托盘、systemd 和容器托管重启验收。
 - 前端恢复验证运行 `cd frontend && pnpm exec vitest run test/stores/backup.test.ts test/unit/backup-update-api.test.ts test/components/Backup.errors.test.ts test/components/AppBackupRestore.test.ts`，并执行类型检查与改动文件 lint。覆盖启动回执仅经请求头传递、会话清空后的查询、明确成功／失败／旧响应未知结果、重启能力与按钮、请求失败保留结果、重复点击、响应丢失及代理错误先只读核验、页面隐藏与恢复、等待超时后重新检查。点击“检查服务状态”不得直接刷新；只有 `401` 加 `RESTORE_RECEIPT_INVALID` 后，会话查询也成功才能引导重新登录，普通代理 `401` 或仍在维护不能误判就绪。服务器文件列表须覆盖加载失败和重试、文件选择及恢复参数；历史状态与文件状态分别展示，`unconfirmed` 不补猜成功。登录与普通请求的 `DATABASE_MAINTENANCE` 使用专门维护提示。另在部署环境核验恢复后重启、重新登录及原验证器继续使用；数据库测试不替代真实网盘、断电或进程管理器验收。契约见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
 - 下载、上传队列的统计由 `frontend/test/components/QueueTotals.test.ts` 覆盖全局“剩余 / 排队 / 处理中”、分页和筛选不改变统计口径、快照刷新与空队列归零；下载预取和上传完成处理均沿用后端 `processing` 口径。相关组件测试随 `pnpm run test` 执行。
 - 上传并发由 `frontend/test/components/AppThreadSettings.upload-concurrency.test.ts` 覆盖默认值、保存回读、整数范围及保存失败提示；后端 `requests`、`controllers` 和 `models` 测试覆盖旧请求兼容、写库失败不生效、默认设置和迁移重试。队列测试使用受控在途任务验证增减并发、暂停后保存与恢复、重复领取及清空后的旧任务，并额外运行相关 `models` 测试的 `-race` 检查。百度网盘和 OpenList 还须通过真实队列与本地 HTTP 替身验证驱动共享状态的并发安全，覆盖范围与命令见[上传和 STRM 处理的验证方式](../architecture/upload-and-strm-processing.md#验证方式)。

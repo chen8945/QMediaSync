@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func setupEmbyDirectoryObservation(t *testing.T) (EmbyIndexToken, SyncFile, EmbyDirectoryEvidenceCollector) {

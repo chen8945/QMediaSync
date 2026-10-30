@@ -18,10 +18,10 @@ import (
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 type movieScrapeImpl struct {

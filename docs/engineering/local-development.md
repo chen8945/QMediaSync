@@ -6,7 +6,7 @@
 >
 > 修改时机：修改开发服务、Vite 代理、开发依赖版本或调试入口时必须更新本文档。
 >
-> 相关代码：`backend/main.go`、`frontend/vite.config.ts`、`frontend/package.json`。
+> 相关代码：`backend/main.go`、`backend/internal/app/`、`frontend/vite.config.ts`、`frontend/package.json`。
 
 ## 后端启动
 

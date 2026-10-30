@@ -6,7 +6,7 @@
 >
 > 修改时机：修改账号授权入口、`authorization_id` 传递、授权来源兼容性、确认提示、原子更新、访问凭证刷新策略或失败回滚边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115auth/`、`backend/internal/v115open/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
+> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115/auth/`、`backend/internal/v115/openapi/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
 
 ## 账号关联语义
 
@@ -185,12 +185,12 @@ OpenList 登录使用请求开始时的地址、用户名、密码和 Token 快�
 
 ## 验证方式
 
-- 授权随机串：`cd backend && go test -race ./internal/helpers ./internal/v115open`，验证长度、字符集与并发生成；二维码回归让多个请求同时生成 PKCE 校验码，并与共享客户端凭据更新交错。OAuth 和 Webhook 调用方同时运行 `v115auth`、`controllers` 包测试。
-- 115 客户端：`cd backend && go test -race ./internal/v115open`，并运行相关 `models`、`controllers` 与 `synccron` 测试。覆盖真实请求队列与凭据更新并发、完整凭据快照、过时条件更新拒绝、临时客户端隔离、旧账号快照不回退凭据，以及清空与恢复后的请求行为。
+- 授权随机串：`cd backend && go test -race ./internal/helpers ./internal/v115/openapi`，验证长度、字符集与并发生成；二维码回归让多个请求同时生成 PKCE 校验码，并与共享客户端凭据更新交错。OAuth 和 Webhook 调用方同时运行 `v115auth`、`controllers` 包测试。
+- 115 客户端：`cd backend && go test -race ./internal/v115/openapi`，并运行相关 `models`、`controllers` 与 `synccron` 测试。覆盖真实请求队列与凭据更新并发、完整凭据快照、过时条件更新拒绝、临时客户端隔离、旧账号快照不回退凭据，以及清空与恢复后的请求行为。
 - 百度客户端：`cd backend && go test -race ./internal/baidupan`，覆盖所有 Token 写入入口与请求并发、过时刷新结果拒绝、条件清空与恢复，以及长上传后续请求读取新 Token；真实上传队列回归见[上传和 STRM 处理](../architecture/upload-and-strm-processing.md#验证方式)。
 - OpenList：`cd backend && go test -race ./internal/openlist`，并运行相关 `models` 与 `controllers` 测试。覆盖登录在途和保存回调在途时的配置更换、Token 相同但地址或密码改变、正常刷新落库、候选凭据验证或保存失败、并发编辑与临时客户端隔离，以及并发刷新去重与回调重入。回归位于 `backend/internal/openlist/auth_test.go`、`backend/internal/openlist/client_test.go`、`backend/internal/models/account_openlist_test.go` 和 `backend/internal/models/account_openlist_commit_test.go`。
-- 后端：`cd backend && go test ./internal/requests ./internal/v115auth ./internal/v115open ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
+- 后端：`cd backend && go test ./internal/requests ./internal/v115/auth ./internal/v115/openapi ./internal/baidupan ./internal/models ./internal/controllers ./internal/db`。
 - 前端：`cd frontend && pnpm run test`、`pnpm run type-check`、`pnpm run build`、`pnpm run check:build`。
-- 契约测试位置：`backend/internal/v115auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115open/client_test.go`、`backend/internal/v115open/auth_test.go`、`backend/internal/baidupan/refresh_test.go`、`backend/internal/baidupan/errors_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
+- 契约测试位置：`backend/internal/v115/auth/authorization_state_test.go`、`backend/internal/controllers/account_test.go`、`backend/internal/controllers/open115_auth_state_test.go`、`backend/internal/models/account_test.go`、`backend/internal/v115/openapi/client_test.go`、`backend/internal/v115/openapi/auth_test.go`、`backend/internal/baidupan/refresh_test.go`、`backend/internal/baidupan/errors_test.go`、`backend/internal/synccron/synccron_test.go`、`backend/internal/db/db_test.go`、`frontend/test/components/cloud-auth/V115AuthorizationChangeDialog.test.ts`、`frontend/test/composables/useV115DeviceAuthorization.test.ts`、`frontend/test/utils/v115AuthorizationSession.test.ts`。
 - 前端授权生命周期回归：`frontend/test/regression/account-dialog-responsive.test.ts` 覆盖新入口取消旧流程和 OAuth 隐藏页面暂停约定。
 - 真实 115 二维码、第三方 OAuth 和跨用户远端路径有效性需要人工使用可撤销测试账号验证；自动化测试不访问真实云盘，也不能证明新用户下旧远端 ID 仍然存在。

@@ -630,9 +630,9 @@ Web 设置页的配置、媒体库、提取和同步请求由 `api/emby.ts` 封�
 后端：
 
 ```bash
-(cd backend && go test . ./internal/emby ./internal/embyclient-rest-go ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/v115open ./internal/openlist ./internal/baidupan)
+(cd backend && go test . ./internal/app ./internal/emby ./internal/emby/client ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/v115/openapi ./internal/openlist ./internal/baidupan)
 (cd backend && go test -race ./internal/emby ./internal/models ./internal/controllers ./internal/backup -run 'Emby|Webhook')
-(cd backend && go vet . ./internal/emby ./internal/embyclient-rest-go ./internal/models ./internal/controllers ./internal/requests ./internal/backup)
+(cd backend && go vet . ./internal/app ./internal/emby ./internal/emby/client ./internal/models ./internal/controllers ./internal/requests ./internal/backup)
 ```
 
 前端：

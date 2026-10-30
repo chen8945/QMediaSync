@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func (m *Manager) cleanupRecycle(ctx context.Context, source SourceKey, rootID string, api copyCalls) error {

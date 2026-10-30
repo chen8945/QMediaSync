@@ -18,7 +18,7 @@ def main():
 
     versions = []
     for arch in ("amd64", "arm64"):
-        path = Path(f"backend/fnos/qmediasync-{arch}/manifest")
+        path = Path(f"packaging/fnos/qmediasync-{arch}/manifest")
         values = re.findall(r"(?m)^[ \t]*version[ \t]*=[ \t]*([^\r\n]*)", path.read_text(encoding="utf-8"))
         if len(values) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", values[0].strip()):
             raise ValueError(f"manifest 必须包含一个正式版本号：{path}")

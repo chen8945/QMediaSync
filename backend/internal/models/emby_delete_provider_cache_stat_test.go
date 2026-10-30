@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 type embyDeleteStatCache115Client struct {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
-	openapiclient "qmediasync/openxpanapi"
 )
 
 func TestApplyBaiduUploadResponseOnlyUsesAvailableRemoteFields(t *testing.T) {
@@ -14,7 +14,7 @@ func TestApplyBaiduUploadResponseOnlyUsesAvailableRemoteFields(t *testing.T) {
 	md5 := "remote-md5"
 	mtime := int32(1_700_000_000)
 	task := &DbUploadTask{}
-	gotMtime, hasMtime := task.applyBaiduUploadResponse(&openapiclient.Filecreateresponse{
+	gotMtime, hasMtime := task.applyBaiduUploadResponse(&baidupan.UploadResult{
 		FsId:  &fsID,
 		Md5:   &md5,
 		Mtime: &mtime,
@@ -27,7 +27,7 @@ func TestApplyBaiduUploadResponseOnlyUsesAvailableRemoteFields(t *testing.T) {
 	zeroFsID := int64(654321)
 	zeroMD5 := "zero-mtime-md5"
 	task = &DbUploadTask{}
-	gotMtime, hasMtime = task.applyBaiduUploadResponse(&openapiclient.Filecreateresponse{
+	gotMtime, hasMtime = task.applyBaiduUploadResponse(&baidupan.UploadResult{
 		FsId:  &zeroFsID,
 		Md5:   &zeroMD5,
 		Mtime: &zeroMtime,
@@ -37,7 +37,7 @@ func TestApplyBaiduUploadResponseOnlyUsesAvailableRemoteFields(t *testing.T) {
 	}
 
 	task = &DbUploadTask{RemoteFileId: "known-id", RemoteMd5: "known-md5"}
-	gotMtime, hasMtime = task.applyBaiduUploadResponse(&openapiclient.Filecreateresponse{})
+	gotMtime, hasMtime = task.applyBaiduUploadResponse(&baidupan.UploadResult{})
 	if task.RemoteFileId != "known-id" || task.RemoteMd5 != "known-md5" || hasMtime || gotMtime != 0 {
 		t.Fatalf("缺少可选字段时不应覆盖已有身份或伪造修改时间: task=%+v mtime=%d hasMtime=%t", task, gotMtime, hasMtime)
 	}

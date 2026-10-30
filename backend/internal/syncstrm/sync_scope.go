@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 func (s *SyncStrm) acquireScope() error {

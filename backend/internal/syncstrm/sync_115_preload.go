@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"golang.org/x/sync/errgroup"
 )

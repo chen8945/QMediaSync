@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
+	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/models"
 )
 

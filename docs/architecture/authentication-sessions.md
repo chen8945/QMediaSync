@@ -6,7 +6,7 @@
 >
 > 修改时机：修改管理员恢复、登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
 >
-> 相关代码：`backend/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`frontend/src/stores/auth.ts`。
+> 相关代码：`backend/internal/app/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`frontend/src/stores/auth.ts`。
 
 ## 首次管理员
 

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func staleTestDirectory(id string, serial int) v115open.File {

@@ -14,7 +14,7 @@ import (
 	"qmediasync/internal/scrape/scan"
 	"qmediasync/internal/syncstrm"
 	"qmediasync/internal/tmdb"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 刮削入口

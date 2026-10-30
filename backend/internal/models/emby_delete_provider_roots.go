@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"qmediasync/internal/baidupan"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // EmbyDirectoryLocator 按原 ID 定位已知保护目录，排除同步根已移动进删除子树的情况。

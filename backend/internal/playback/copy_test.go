@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func testCloudFile(id, parentID string) v115open.File {

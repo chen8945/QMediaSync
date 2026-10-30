@@ -24,11 +24,11 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/emby"
-	embyclientrestgo "qmediasync/internal/embyclient-rest-go"
+	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // 使用真正的 HTTP server；客户端请求只改目的地址，路径、方法和编码仍走生产实现。

@@ -187,7 +187,7 @@ jobs:
           REQUIRE_FNPACK: "1"
         run: |
           scripts/release/package-fnos.sh "$VERSION" "$GOARCH" "temp_build/QMediaSync_linux_${GOARCH}_exe" backend/web_statics beta-assets
-          git diff --exit-code -- backend/fnos/qmediasync-amd64/manifest backend/fnos/qmediasync-arm64/manifest
+          git diff --exit-code -- packaging/fnos/qmediasync-amd64/manifest packaging/fnos/qmediasync-arm64/manifest
 
       - uses: actions/upload-artifact@v7
         with:

@@ -26,7 +26,7 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Docker安装.md` | [部署](../operations/deployment.md)、[配置](../operations/configuration.md)、[容器脚本](../../docker/) | 镜像、挂载、数据库网络、运行身份、初始化 |
 | `Linux-安装使用.md` | [部署](../operations/deployment.md)、[发布](../operations/release.md)、[安装脚本](../../scripts/install/) | 发布包目录、启动、systemd、自启、日志 |
 | `Windows-安装使用.md` | [部署](../operations/deployment.md)、[发布](../operations/release.md)、[程序入口](../../backend/main.go)、[重启实现](../../backend/internal/helpers/restart.go) | 架构选择、解压运行、托盘、首次配置后自动启动与失败重试、初始化码 |
-| `飞牛安装.md` | [部署](../operations/deployment.md)、[配置](../operations/configuration.md)、[发布](../operations/release.md)、[fnOS 模板](../../backend/fnos/)、[程序入口](../../backend/main.go) | FPK 架构与附件名、网页数据库配置、自动启动与初始化码、目录授权、数据保留和手动重启边界 |
+| `飞牛安装.md` | [部署](../operations/deployment.md)、[配置](../operations/configuration.md)、[发布](../operations/release.md)、[fnOS 模板](../../packaging/fnos/)、[程序入口](../../backend/main.go) | FPK 架构与附件名、网页数据库配置、自动启动与初始化码、目录授权、数据保留和手动重启边界 |
 | `数据库的选择.md` | [数据库运维](../operations/database.md)、[数据库实现](../../backend/internal/db/) | SQLite / PostgreSQL 的适用条件与切换方式 |
 | `配置文件.md` | [配置](../operations/configuration.md)、[示例](../examples/config.yaml)、[加载实现](../../backend/internal/helpers/config.go) | 文件与网页设置的分工、实际生效值、端口与密钥 |
 | `备份与恢复.md` | [数据库运维](../operations/database.md)、[schema 与备份格式](../reference/database-schema.md)、[备份实现](../../backend/internal/backup/) | 备份范围、保留策略、跨引擎恢复、密钥、维护状态与重启 |
@@ -44,9 +44,9 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `Emby-媒体信息提取.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 实现](../../backend/internal/emby/) | 手动与通知触发、API Key、插件配合与结果检查 |
 | `Emby-通知配置.md` | [Emby 同步](../architecture/emby-library-sync.md)、[认证会话](../architecture/authentication-sessions.md) | Webhook 地址、鉴权、事件选择和通知转发 |
 | `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[路径映射配置](../operations/configuration.md#emby-外部-strm-路径映射)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 开启步骤、支持来源、STRM 存放与挂载要求、删除范围、结果查看与排障 |
-| `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、预加载入口、客户端和网络排障 |
+| `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/internal/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、预加载入口、客户端和网络排障 |
 | `飞牛影视反代.md` | [飞牛影视反代运维](../operations/fnos-proxy.md)、[飞牛影视反代 API](../reference/fnos-proxy-api.md)、[飞牛配置页面](../../frontend/src/components/AppFnosProxySettings.vue)、[反代实现](../../backend/internal/fnosproxy/) | 「飞牛影视」入口、默认关闭、保存立即应用、根目录对应、容器端口映射、恢复重启边界、共用 STRM 预加载开关及支持限制、客户端排障；不另写飞牛 HTTPS 教程 |
-| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../backend/fnos/)、[目录选择器](../../frontend/src/components/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
+| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../packaging/fnos/)、[目录选择器](../../frontend/src/components/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
 | `常见问题.md` | 本表中对应专题的权威资料与 Wiki 操作页 | 按现象提供排查步骤和处理方法；专题页保留操作流程与页内检查表 |
 
 ## 常见问题页与专题页的分工

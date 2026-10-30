@@ -17,7 +17,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/syncscope"
+	syncscope "qmediasync/internal/strm/scope"
 )
 
 func TestProcessStrmFileReleasesTargetBeforeEmby(t *testing.T) {

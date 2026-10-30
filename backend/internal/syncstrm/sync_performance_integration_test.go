@@ -31,7 +31,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/realtime"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 const (

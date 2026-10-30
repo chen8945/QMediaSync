@@ -15,7 +15,7 @@ import (
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/scrape"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/robfig/cron/v3"
 )

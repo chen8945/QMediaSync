@@ -13,7 +13,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func newMetadataUploadSync(t *testing.T, sourceType models.SourceType, remoteRoot string) *SyncStrm {

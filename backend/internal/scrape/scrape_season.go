@@ -11,7 +11,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/tmdb"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 func (t tvShowScrapeImpl) GetSeasonUploadFiles(seasonMediaFile *models.ScrapeMediaFile) []uploadFile {

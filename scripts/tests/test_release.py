@@ -11,7 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_SRC = REPO_ROOT / "scripts" / "release"
-MANIFESTS = [f"backend/fnos/qmediasync-{arch}/manifest" for arch in ("amd64", "arm64")]
+MANIFESTS = [f"packaging/fnos/qmediasync-{arch}/manifest" for arch in ("amd64", "arm64")]
 
 CLIFF_STUB = r"""#!/usr/bin/env bash
 # 测试替身：忽略 cliff.toml，输出确定性的发布说明段落

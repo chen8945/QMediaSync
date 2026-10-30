@@ -15,8 +15,8 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
-	"qmediasync/internal/v115auth"
-	"qmediasync/internal/v115open"
+	v115auth "qmediasync/internal/v115/auth"
+	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/gin-gonic/gin"
 )

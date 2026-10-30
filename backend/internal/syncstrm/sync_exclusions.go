@@ -6,7 +6,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // prepareSyncExclusions 在生成和本地核对前冻结旧记录的排除保护，不逐文件查询账本。

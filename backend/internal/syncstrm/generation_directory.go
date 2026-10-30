@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // generationDirectory 保留本项列表，并按需复用当前小批的元数据列表。

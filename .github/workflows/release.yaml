@@ -53,7 +53,7 @@ jobs:
           if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
               raise SystemExit("Invalid release tag")
           for arch in ("amd64", "arm64"):
-              path = pathlib.Path(f"backend/fnos/qmediasync-{arch}/manifest")
+              path = pathlib.Path(f"packaging/fnos/qmediasync-{arch}/manifest")
               versions = re.findall(r"^version\s*=\s*(.*?)\s*$", path.read_text(), re.M)
               if versions != [tag[1:]]:
                   raise SystemExit(f"{path}: version must equal {tag[1:]}")

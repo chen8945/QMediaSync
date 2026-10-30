@@ -10,7 +10,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
-	"qmediasync/internal/v115open"
+	v115open "qmediasync/internal/v115/openapi"
 )
 
 // StartBaiduPanSync 优先完成当日本地自然日的全量核对，其余轮次按原水位增量扫描。
