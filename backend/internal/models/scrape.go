@@ -336,7 +336,7 @@ type ScrapePathCategory struct {
 	BaseModel
 	ScrapePathId uint   `json:"scrape_path_id"` // 刮削目录 ID
 	CategoryId   uint   `json:"category_id"`    // 分类 ID
-	FileId       string `json:"file_id"`        // 文件 ID，115 文件 ID、123 文件夹 ID；local 和 OpenList 则为相对路径
+	FileId       string `json:"file_id"`        // 文件 ID，local 和 OpenList 使用相对路径
 }
 
 // 查询电影分类列表，不分页

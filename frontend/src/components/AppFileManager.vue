@@ -477,7 +477,7 @@ interface NetdiskAccount {
   name: string
   username: string
   user_id: string
-  source_type: '115' | '123' | 'openlist' | 'baidupan'
+  source_type: '115' | 'openlist' | 'baidupan'
   authorized: boolean
   created_at: number
   base_url?: string
@@ -972,8 +972,6 @@ function getAccountTypeName(sourceType: string): string {
   switch (sourceType) {
     case '115':
       return '115 网盘'
-    case '123':
-      return '123 网盘'
     case 'openlist':
       return 'OpenList'
     case 'baidupan':

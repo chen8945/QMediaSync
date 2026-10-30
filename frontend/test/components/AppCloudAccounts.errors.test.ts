@@ -552,8 +552,10 @@ describe('网盘状态请求和列表生命周期', () => {
 })
 
 describe('云盘 OAuth 请求和生命周期', () => {
-  it.each(['123', 'openlist'] as const)('%s 账号不显示授权按钮', async (source_type) => {
-    const wrapper = await mountPage(createHTTP(undefined, [{ ...account, source_type }]))
+  it('OpenList 账号不显示授权按钮', async () => {
+    const wrapper = await mountPage(
+      createHTTP(undefined, [{ ...account, source_type: 'openlist' }]),
+    )
     expect(wrapper.findAll('button').map((button) => button.text())).not.toContain('授权')
   })
 

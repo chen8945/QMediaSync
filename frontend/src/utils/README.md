@@ -197,7 +197,7 @@ OAuth 回调参数收集：
 
 当前启用的来源类型包括 `115`、`baidupan`、`openlist`、`local`。
 
-`123` 的展示配置仍以注释形式保留，当前不在选项、标签或名称映射中启用。完整存储来源类型和任务队列的展示差异见 [任务来源](../../../docs/reference/task-sources.md)。
+完整存储来源类型和任务队列的展示差异见 [任务来源](../../../docs/reference/task-sources.md)。
 
 ## strmRegex.ts
 

@@ -60,7 +60,7 @@
 
 | 字段 | 必填 | 规则 |
 | --- | --- | --- |
-| `source_type` | 是 | 仅允许 `115`、`local`、`123`、`openlist`、`baidupan`。 |
+| `source_type` | 是 | 仅允许 `115`、`local`、`openlist`、`baidupan`。 |
 | `account_id` | 非本地来源必填 | 必须指向同一 `source_type` 的已有账号；本地来源不需要。 |
 | `base_cid` | 是 | 同步源根目录 ID，不能为空。 |
 | `local_path` | 是 | STRM / 元数据输出根目录，不能为空。 |

@@ -605,7 +605,6 @@ func validateSourceType(sourceType models.SourceType) error {
 	return validation.OneOfString("source_type", string(sourceType), []string{
 		string(models.SourceTypeLocal),
 		string(models.SourceType115),
-		string(models.SourceType123),
 		string(models.SourceTypeOpenList),
 		string(models.SourceTypeBaiduPan),
 	})

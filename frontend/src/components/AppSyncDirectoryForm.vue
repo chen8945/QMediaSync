@@ -40,7 +40,6 @@
               部署时尤其需要），然后选择该目录
             </div>
             <div v-if="form.source_type === '115'">需要先添加用于同步的 115 账号并授权</div>
-            <div v-if="form.source_type === '123'">需要先添加用于同步的 123 账号并授权</div>
           </div>
         </el-form-item>
         <el-form-item
@@ -639,7 +638,6 @@
               部署时尤其需要），然后选择该目录
             </div>
             <div v-if="form.source_type === '115'">需要先添加用于同步的 115 账号并授权</div>
-            <div v-if="form.source_type === '123'">需要先添加用于同步的 123 账号并授权</div>
           </div>
         </el-form-item>
         <el-form-item

@@ -120,7 +120,6 @@ func (r SyncPathRequest) Validate() error {
 	allowedSources := []string{
 		string(models.SourceTypeLocal),
 		string(models.SourceType115),
-		string(models.SourceType123),
 		string(models.SourceTypeOpenList),
 		string(models.SourceTypeBaiduPan),
 	}

@@ -47,5 +47,4 @@
 
 ## 代码内文档
 
-- [123 云盘客户端接口](../backend/internal/open123/README.md)：`open123` 包当前导出的客户端能力和限制。
 - [前端工具函数目录](../frontend/src/utils/README.md)：`frontend/src/utils` 下跨组件复用工具的说明。

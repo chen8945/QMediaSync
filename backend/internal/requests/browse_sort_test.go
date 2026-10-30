@@ -53,7 +53,7 @@ func TestBrowseSortRejectsUnsupportedCombinations(t *testing.T) {
 		scope, field, order string
 		first               *bool
 	}{
-		{name: "未知来源", source: "123", scope: "files"},
+		{name: "未知来源", source: "unknown", scope: "files"},
 		{name: "未知场景", source: models.SourceType115, scope: "tree"},
 		{name: "本地文件入口", source: models.SourceTypeLocal, scope: "files"},
 		{name: "目录大小", source: models.SourceType115, scope: "directories", field: "size"},

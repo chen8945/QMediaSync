@@ -75,7 +75,7 @@ func TestCleanup115PlaybackDirectoriesFiltersAccountsAndMergesRuns(t *testing.T)
 		{Name: "playback-valid-b", SourceType: models.SourceType115, UserId: "playback-uid-b", AppId: "app-b", Token: "token-b", RefreshToken: "refresh-b"},
 		{Name: "playback-no-token", SourceType: models.SourceType115, UserId: "playback-uid-c"},
 		{Name: "playback-no-uid", SourceType: models.SourceType115, Token: "token"},
-		{Name: "playback-other-provider", SourceType: models.SourceType123, UserId: "playback-uid-d", Token: "token"},
+		{Name: "playback-other-provider", SourceType: models.SourceTypeBaiduPan, UserId: "playback-uid-d", Token: "token"},
 	}
 	for i := range accounts {
 		if err := db.Db.Create(&accounts[i]).Error; err != nil {

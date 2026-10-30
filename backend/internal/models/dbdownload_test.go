@@ -140,18 +140,18 @@ func TestAddDownloadTaskFromSyncFileSeparatesRemoteIdentity(t *testing.T) {
 			name: "不支持来源不伪造 115 PickCode 或 SHA1",
 			file: SyncFile{
 				BaseModel:     BaseModel{ID: 5},
-				SourceType:    SourceType123,
-				FileId:        "123-file-id",
+				SourceType:    SourceType("unknown"),
+				FileId:        "unknown-file-id",
 				PickCode:      "not-a-115-pick-code",
 				Sha1:          "unverified-hash",
-				Path:          "/remote/123",
+				Path:          "/remote/unknown",
 				FileName:      "movie.mkv",
 				SyncPath:      &SyncPath{},
 				LocalFilePath: "/library/movie.mkv",
 			},
 			check: func(t *testing.T, task DbDownloadTask) {
 				t.Helper()
-				if task.RemoteFileId != "123-file-id" || task.RemotePickCode != "" || task.RemoteSha1 != "" || task.RemoteMd5 != "" {
+				if task.RemoteFileId != "unknown-file-id" || task.RemotePickCode != "" || task.RemoteSha1 != "" || task.RemoteMd5 != "" {
 					t.Fatalf("不支持来源下载任务不应写入 115 身份或哈希字段: %+v", task)
 				}
 			},

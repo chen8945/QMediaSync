@@ -8,7 +8,7 @@ import type { APIResponse } from './types'
 
 export interface CloudAccount {
   id: number
-  source_type: '115' | '123' | 'openlist' | 'baidupan'
+  source_type: '115' | 'openlist' | 'baidupan'
   name: string
   user_id: string
   username: string

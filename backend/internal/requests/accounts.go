@@ -55,7 +55,6 @@ func (r PrepareAccountAuthorizationRequest) Validate() error {
 	}
 	if err := validation.OneOfString("source_type", string(r.SourceType), []string{
 		string(models.SourceType115),
-		string(models.SourceType123),
 		string(models.SourceTypeBaiduPan),
 		string(models.SourceTypeOpenList),
 	}); err != nil {

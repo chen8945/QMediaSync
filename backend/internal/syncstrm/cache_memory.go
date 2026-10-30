@@ -57,8 +57,6 @@ func (sfc *SyncFileCache) GetPath() string {
 		return sfc.ParentId
 	case models.SourceTypeLocal:
 		return sfc.ParentId
-	case models.SourceType123:
-		return sfc.Path
 	case models.SourceTypeBaiduPan:
 		return sfc.Path
 	default:
@@ -75,8 +73,6 @@ func (sfc *SyncFileCache) GetFileId() string {
 		return filePath
 	case models.SourceTypeLocal:
 		return filePath
-	case models.SourceType123:
-		return sfc.FileId
 	}
 	return sfc.FileId
 }
@@ -90,8 +86,6 @@ func (sfc *SyncFileCache) GetPickCode(openlistBaseUrl string) string {
 		return helpers.MakeOpenListUrl(openlistBaseUrl, sfc.OpenlistSign, sfc.GetFileId())
 	case models.SourceTypeLocal:
 		return sfc.GetFileId()
-	case models.SourceType123:
-		return sfc.PickCode
 	}
 	return sfc.PickCode
 }
@@ -104,8 +98,6 @@ func (sfc *SyncFileCache) GetFullRemotePath() string {
 		return filepath.ToSlash(filepath.Join(sfc.ParentId, sfc.FileName))
 	case models.SourceTypeLocal:
 		return filepath.ToSlash(filepath.Join(sfc.ParentId, sfc.FileName))
-	case models.SourceType123:
-		return filepath.ToSlash(filepath.Join(sfc.Path, sfc.FileName))
 	}
 	return filepath.ToSlash(filepath.Join(sfc.Path, sfc.FileName))
 }

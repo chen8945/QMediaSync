@@ -21,7 +21,6 @@ const taskSourceTypeNameMap: Record<string, string> = {
   baidupan: '百度网盘',
   openlist: 'OpenList',
   local: '本地文件',
-  '123': '123 网盘',
   emby_media: 'Emby 媒体信息提取',
 }
 
@@ -30,7 +29,6 @@ const taskSourceTypeTagTypeMap: Record<string, string> = {
   baidupan: 'danger',
   openlist: 'success',
   local: 'warning',
-  '123': 'info',
   emby_media: 'info',
 }
 

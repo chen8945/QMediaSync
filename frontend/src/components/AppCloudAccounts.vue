@@ -1060,7 +1060,7 @@ const handleUpdateAccount = async () => {
   }
 }
 
-// 只有 115 和百度网盘有授权流程；123 网盘已下线，仅保留历史账号。
+// 只有 115 和百度网盘有授权流程。
 const isAuthorizableSource = (sourceType: CloudAccount['source_type']) =>
   sourceType === '115' || sourceType === 'baidupan'
 

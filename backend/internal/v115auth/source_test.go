@@ -87,8 +87,25 @@ func TestSearchBuiltInAppIDSourcesFindsPinnedApp(t *testing.T) {
 	}
 }
 
+func TestBuiltInAppIDWith123InName(t *testing.T) {
+	want := Source{SourceType: SourceTypeBuiltInAppID, Provider: ProviderOfficialPKCE, AppID: "100197723", AppName: "tgto123", DisplayName: "tgto123"}
+	for _, keyword := range []string{want.AppID, want.AppName} {
+		result := SearchBuiltInAppIDSources(keyword, 0, 50)
+		if result.Total != 1 || len(result.Items) != 1 || result.Items[0] != want {
+			t.Fatalf("搜索 115 应用 %q 返回了异常结果: %#v", keyword, result)
+		}
+	}
+	source, err := SourceFromCreateRequest(SourceTypeBuiltInAppID, ProviderOfficialPKCE, want.AppID, "", "")
+	if err != nil || source != want {
+		t.Fatalf("创建 115 应用授权失败: source=%#v, err=%v", source, err)
+	}
+	if source := ResolveAccountSource(want.AppID, ""); source != want {
+		t.Fatalf("115 账号未识别为内置官方应用: %#v", source)
+	}
+}
+
 func TestSearchBuiltInAppIDSourcesExcludesDeprecatedApps(t *testing.T) {
-	for _, keyword := range []string{"Q115-STRM", "MQ的媒体库"} {
+	for _, keyword := range []string{"Q115-STRM", "MQ的媒体库", "115to123", "100197419"} {
 		result := SearchBuiltInAppIDSources(keyword, 0, 50)
 		if result.Total != 0 || len(result.Items) != 0 {
 			t.Fatalf("搜索已移除应用 %q 返回了结果: %#v", keyword, result)
@@ -97,7 +114,7 @@ func TestSearchBuiltInAppIDSourcesExcludesDeprecatedApps(t *testing.T) {
 }
 
 func TestSourceFromCreateRequestRejectsDeprecatedBuiltInAppIDs(t *testing.T) {
-	for _, appID := range []string{"100197665", "100197503"} {
+	for _, appID := range []string{"100197665", "100197503", "100197419"} {
 		if _, err := SourceFromCreateRequest(SourceTypeBuiltInAppID, ProviderOfficialPKCE, appID, "", ""); err == nil {
 			t.Fatalf("弃用的内置 APP ID %s 不应允许新建账号", appID)
 		}
@@ -122,7 +139,7 @@ func TestLegacyCreateRequestKeepsDeprecatedRelayParsing(t *testing.T) {
 }
 
 func TestResolveAccountSourceKeepsDeprecatedBuiltInAppIDForHistory(t *testing.T) {
-	for _, appID := range []string{"100197665", "100197503"} {
+	for _, appID := range []string{"100197665", "100197503", "100197419"} {
 		source := ResolveAccountSource(appID, "")
 		if source.AppID != appID || !source.Deprecated {
 			t.Fatalf("历史账号 APP ID %s 未保留弃用来源信息: %#v", appID, source)

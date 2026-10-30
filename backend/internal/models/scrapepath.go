@@ -402,7 +402,6 @@ func (sp *ScrapePath) GetDownloadUrl(videoPathOrUrl string) string {
 		videoPathOrUrl = sp.V115Client.GetDownloadUrl(context.Background(), videoPathOrUrl, v115open.DEFAULTUA, false)
 	case SourceTypeOpenList:
 		videoPathOrUrl = sp.OpenListClient.GetRawUrl(videoPathOrUrl)
-	case SourceType123:
 	}
 	return videoPathOrUrl
 }
@@ -555,7 +554,6 @@ func (sp *ScrapePath) GenerateCategory() {
 			}
 			fileId = categoryPath
 			os.MkdirAll(fileId, 0777)
-		case SourceType123:
 		case SourceTypeBaiduPan:
 			fileId = sp.DestPathId + "/" + categoryName
 			// 先查询是否存在

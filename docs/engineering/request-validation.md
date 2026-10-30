@@ -75,6 +75,8 @@ DTO 负责：
 - 将外部字段转换为模型输入，例如 `ToModel()`、`StrmSettingModel()`、`NormalizedIDs()`。
 - 与请求兼容性相关的规范化，例如 OpenList URL 自动补全协议、分页默认值、旧字段映射。
 
+来源枚举只接受对应接口当前支持的值。
+
 当校验规则内部做了规范化（例如 `TrimSpace`）时，DTO 必须暴露对应的 `NormalizedXxx()` 方法，控制器落库和调用外部依赖只使用该方法的返回值。直接使用原始字段会让「校验通过但实际取值非法」成为可能，例如 `NormalizedHTTPProxy()` 之于带首尾空白的代理地址。
 
 控制器仍负责：

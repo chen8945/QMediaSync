@@ -1,10 +1,5 @@
 package openlist
 
-var (
-	// API 常量
-	OPEN_BASE_URL = "https://open-api.123pan.com"
-)
-
 const (
 	// 重试配置
 	DEFAULT_MAX_RETRIES = 3

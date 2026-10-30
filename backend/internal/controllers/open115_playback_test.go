@@ -458,7 +458,7 @@ func TestCopy115URLRequiresAccountScoped115FileIdentity(t *testing.T) {
 	account := &models.Account{ID: 1, UserId: "uid-1"}
 	for _, file := range []models.SyncFile{
 		{AccountId: 2, SourceType: models.SourceType115, PickCode: "same-pick", FileId: "other-account"},
-		{AccountId: 1, SourceType: models.SourceType123, PickCode: "same-pick", FileId: "other-provider"},
+		{AccountId: 1, SourceType: models.SourceTypeBaiduPan, PickCode: "same-pick", FileId: "other-provider"},
 	} {
 		if err := db.Db.Create(&file).Error; err != nil {
 			t.Fatal(err)

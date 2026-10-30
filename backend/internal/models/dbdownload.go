@@ -237,7 +237,6 @@ func (task *DbDownloadTask) Download() {
 			task.DownloadOpenListFile()
 		case SourceTypeBaiduPan:
 			task.DownloadBaiduPanFile()
-		case SourceType123:
 		}
 	case DownloadSourceEmbyMedia:
 		// Emby 媒体信息提取，从 Emby 下载

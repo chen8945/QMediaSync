@@ -149,7 +149,7 @@
 
 | 字段 | 存储值 |
 | --- | --- |
-| `source_type` | `115`、`local`、`123`、`openlist`、`baidupan`、`emby_media` |
+| `source_type` | `115`、`local`、`openlist`、`baidupan`、`emby_media` |
 | `media_type` | `movie`、`tvshow`、`other` |
 | `scrape_type` | `only_scrape`、`scrape_and_rename`、`only_rename` |
 | `rename_type` | `hard_symlink`、`soft_symlink`、`move`、`copy`、`same` |
@@ -226,7 +226,7 @@
 
 - `id`：本地账号稳定主键；同步目录、刮削目录、任务历史和同步文件通过该 ID 关联。
 - `name`：账号备注，便于人工识别；非空值唯一，未完成授权的临时账号允许为空。
-- `source_type`：账号来源类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
+- `source_type`：账号来源类型，`115`、`local`、`openlist`、`baidupan` 或 `emby_media`。
 - `app_id`：115 开放平台 APP ID。
 - `app_id_name`：自定义应用显示名。
 - `auth_source_type`：115 授权来源类型。
@@ -344,10 +344,10 @@ STRM 相关字段：
 额外字段：
 
 - `custom_config`：是否使用自定义配置。
-- `base_cid`：同步源目录 ID，115 / 123 需要。
+- `base_cid`：同步源目录 ID。
 - `local_path`：本地 STRM / 元数据输出目录。
 - `remote_path`：同步源路径。
-- `source_type`：来源类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
+- `source_type`：来源类型，`115`、`local`、`openlist`、`baidupan` 或 `emby_media`。
 - `account_id`：对应账号 ID。
 - `enable_cron`：是否启用定时同步。
 - `directory_upload_enabled`：目录监控上传同步目录总开关；运行时只有该字段为 `true` 且规则自身 `enabled=true` 的目录监控规则会生效。关闭总开关不会改写规则表的 `enabled`。
@@ -596,7 +596,6 @@ SQLite 的 Emby 旁车和目录查询另使用以下非唯一索引，由 `Ensur
 说明：
 
 - 115 场景下是文件 ID。
-- 123 场景下是文件夹 ID。
 - 本地和 OpenList 场景下是相对路径。
 
 ### `scrape_media_files`
@@ -934,7 +933,7 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `account_id`：账号 ID。
 - `sync_file_id`：对应同步文件 ID。
 - `sync_path_id`：STRM 同步下载任务所属同步目录 ID，用于 Emby 刷新任务判断对应目录是否仍有未完成下载；旧数据可能为 `0` 或 `NULL`，系统会回退到 `sync_file_id` 关联 `sync_files` 判断。
-- `source_type`：任务来源账号类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
+- `source_type`：任务来源账号类型，`115`、`local`、`openlist`、`baidupan` 或 `emby_media`。
 - `remote_file_id`：远端服务实际返回的稳定文件 ID。115 为文件 ID，OpenList 仅在 API 返回非空对象 ID 时填写，百度为 `fs_id`；不支持或不可得时为空。
 - `file_name`：文件名。
 - `remote_path`：远端目录路径，不含文件名。
@@ -975,7 +974,7 @@ Emby 刷新任务表。旧媒体库刷新和 STRM 更新后的 item 定向刷新
 - `sync_file_id`：同步文件 ID。
 - `scrape_media_file_id`：刮削文件 ID。
 - `sync_path_id`：同步目录 ID，目录监控上传和后续 STRM 生成使用。
-- `source_type`：任务来源账号类型，`115`、`local`、`123`、`openlist`、`baidupan` 或 `emby_media`。
+- `source_type`：任务来源账号类型，`115`、`local`、`openlist`、`baidupan` 或 `emby_media`。
 - `local_full_path`：本地完整路径。
 - `relative_path`：目录监控源文件相对监控根目录的路径。
 - `source_fingerprint`：目录监控源文件 fingerprint，格式为 `v1:size:mtime_ns`，不包含 ctime、inode 或文件内容 hash。
