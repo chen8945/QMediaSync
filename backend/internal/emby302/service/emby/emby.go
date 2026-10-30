@@ -2,6 +2,8 @@ package emby
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -112,7 +114,11 @@ func ProxyOrigin(c *gin.Context) {
 
 	if err := https.ProxyPass(c.Request, c.Writer, origin); err != nil {
 		c.Header(cache.HeaderKeyExpired, "-1")
-		logs.Error("代理异常: %v", err)
+		if errors.Is(err, context.Canceled) && errors.Is(c.Request.Context().Err(), context.Canceled) {
+			logs.Debug("代理请求已取消: %v", err)
+		} else {
+			logs.Error("代理异常: %v", err)
+		}
 	}
 }
 

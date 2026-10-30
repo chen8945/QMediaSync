@@ -11,6 +11,7 @@ Thumbs.db
 
 # Local AI agent configuration and lock files
 .agents/
+.skillshare/
 .claude/
 .codex/
 .trellis/

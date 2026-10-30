@@ -102,7 +102,7 @@ func ProxyPass(r *http.Request, w http.ResponseWriter, remote string) error {
 	// 1 代理请求
 	resp, err := ProxyRequest(r, remote)
 	if err != nil {
-		return fmt.Errorf("代理请求失败: %v", err)
+		return fmt.Errorf("代理请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 

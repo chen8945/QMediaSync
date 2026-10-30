@@ -483,7 +483,11 @@ func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int, 
 	settingsMu.Unlock()
 	notifyPlaybackSettingsChanged(snapshot)
 	if previousPreload != updated.StrmPreloadEnabled {
-		helpers.AppLogger.Infof("STRM 预加载设置已更新：启用=%t", updated.StrmPreloadEnabled == 1)
+		if updated.StrmPreloadEnabled == 1 {
+			helpers.AppLogger.Infof("STRM 预加载已开启")
+		} else {
+			helpers.AppLogger.Infof("STRM 预加载已关闭")
+		}
 	}
 	return true
 }

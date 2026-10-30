@@ -1,12 +1,23 @@
 package https
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestProxyPassPreservesCancellationError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/image", nil)
+	err := ProxyPass(req, httptest.NewRecorder(), "http://127.0.0.1:1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("proxy error = %v, want wrapped context.Canceled", err)
+	}
+}
 
 func TestProxyPassReturnsResponseCopyErrors(t *testing.T) {
 	writeErr := errors.New("client write failed")

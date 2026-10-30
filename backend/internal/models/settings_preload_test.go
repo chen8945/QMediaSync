@@ -1,13 +1,17 @@
 package models
 
 import (
+	"bytes"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
 )
 
 func setupPreloadSettings(t *testing.T) {
@@ -37,7 +41,20 @@ func initializePreloadSettings(t *testing.T) {
 
 func TestPreloadSettingsDefaultAndAtomicPublication(t *testing.T) {
 	setupPreloadSettings(t)
+	var output bytes.Buffer
+	previousLogger, previousLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		helpers.AppLogger = previousLogger
+		helpers.SetGlobalLogLevel(previousLevel)
+	})
 	testPreloadSettingsAtomicPublication(t)
+	for _, message := range []string{"[INFO] STRM 预加载已开启", "[INFO] STRM 预加载已关闭"} {
+		if got := strings.Count(output.String(), message); got != 1 {
+			t.Fatalf("log count for %q = %d, want 1 after successful state changes: %s", message, got, output.String())
+		}
+	}
 }
 
 func testPreloadSettingsAtomicPublication(t *testing.T) {
