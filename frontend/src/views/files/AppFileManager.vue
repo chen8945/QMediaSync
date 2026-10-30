@@ -434,7 +434,7 @@ import {
   type TableInstance,
 } from 'element-plus'
 import { Back, Files, FolderAdd, InfoFilled, Refresh } from '@element-plus/icons-vue'
-import type { FileSystemItem, FileOperationType, DirInfo } from '@/typing'
+import type { FileSystemItem, FileOperationType, DirInfo } from '@/types/files'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
 import { browseSortQuery, useBrowseSort } from '@/composables/useBrowseSort'
@@ -468,9 +468,9 @@ import {
 } from '@/api/files'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
-import DirectorySelector from './DirectorySelector.vue'
-import BrowseSortControl from './BrowseSortControl.vue'
-import FileOperationMenu from './FileOperationMenu.vue'
+import DirectorySelector from '@/components/files/DirectorySelector.vue'
+import BrowseSortControl from '@/components/files/BrowseSortControl.vue'
+import FileOperationMenu from '@/components/files/FileOperationMenu.vue'
 
 interface NetdiskAccount {
   id: number

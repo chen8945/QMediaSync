@@ -21,7 +21,7 @@ const expectRecordTableContract = (source, pageKey, rowKey, columns, actions) =>
 
 describe('记录与文件页的公共状态契约', () => {
   it('同步记录通过响应式记录表公开稳定行键、展开状态和失败详情', () => {
-    const source = readSource('src/components/AppSyncRecords.vue')
+    const source = readSource('src/views/sync/AppSyncRecords.vue')
 
     expectRecordTableContract(
       source,
@@ -40,7 +40,7 @@ describe('记录与文件页的公共状态契约', () => {
   })
 
   it('刮削记录通过响应式记录表保留筛选、展开和请求上下文', () => {
-    const source = readSource('src/components/AppScrapeRecords.vue')
+    const source = readSource('src/views/scrape/AppScrapeRecords.vue')
 
     expectRecordTableContract(
       source,
@@ -56,7 +56,7 @@ describe('记录与文件页的公共状态契约', () => {
   })
 
   it('文件管理器保留受控展开、页面状态和失活时的请求取消', () => {
-    const source = readSource('src/components/AppFileManager.vue')
+    const source = readSource('src/views/files/AppFileManager.vue')
 
     expect(source).toMatch(/getPageState\s*\(\s*['"]file-manager['"]/)
     expect(source).toMatch(/createActiveRequestGate/)

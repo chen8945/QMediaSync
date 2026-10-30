@@ -169,8 +169,8 @@ test('keep-alive 页面在激活、停用和卸载时正确收敛资源', () => 
   )
 
   for (const queuePage of [
-    'src/components/AppUploadQueue.vue',
-    'src/components/AppDownloadQueue.vue',
+    'src/views/queues/AppUploadQueue.vue',
+    'src/views/queues/AppDownloadQueue.vue',
   ]) {
     const source = readSource(queuePage)
     const deactivateBody = getLocalFunctionBody(source, 'deactivateQueuePage')
@@ -278,20 +278,20 @@ test('keep-alive 页面在激活、停用和卸载时正确收敛资源', () => 
   }
 
   assertRecordPageLifecycle({
-    page: 'src/components/AppSyncRecords.vue',
+    page: 'src/views/sync/AppSyncRecords.vue',
     loadFunction: 'loadSyncRecords',
     activateFunction: 'activateSyncRecordsPage',
     deactivateFunction: 'deactivateSyncRecordsPage',
   })
 
   assertRecordPageLifecycle({
-    page: 'src/components/AppScrapeRecords.vue',
+    page: 'src/views/scrape/AppScrapeRecords.vue',
     loadFunction: 'loadRecords',
     activateFunction: 'activateScrapeRecordsPage',
     deactivateFunction: 'deactivateScrapeRecordsPage',
   })
 
-  const fileManagerSource = readSource('src/components/AppFileManager.vue')
+  const fileManagerSource = readSource('src/views/files/AppFileManager.vue')
   const activateFileManagerBody = getLocalFunctionBody(fileManagerSource, 'activateFileManagerPage')
   const deactivateFileManagerBody = getLocalFunctionBody(
     fileManagerSource,
@@ -353,6 +353,6 @@ test('keep-alive 页面在激活、停用和卸载时正确收敛资源', () => 
     'AppFileManager should use the shared deactivation path from onDeactivated',
   )
 
-  const syncDirectoryFormSource = readSource('src/components/AppSyncDirectoryForm.vue')
+  const syncDirectoryFormSource = readSource('src/views/sync/AppSyncDirectoryForm.vue')
   assertImportsIcons(syncDirectoryFormSource, ['ArrowLeft'], 'AppSyncDirectoryForm.vue')
 })

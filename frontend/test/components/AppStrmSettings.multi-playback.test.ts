@@ -2,7 +2,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElFormItem } from 'element-plus'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import AppStrmSettings from '@/components/AppStrmSettings.vue'
+import AppStrmSettings from '@/views/sync/AppStrmSettings.vue'
 import { httpKey } from '@/http/client'
 
 const wrappers: VueWrapper[] = []

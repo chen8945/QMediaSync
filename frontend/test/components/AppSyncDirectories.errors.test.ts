@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox, ElOption, ElSelect, type MessageBoxData } from
 import { defineComponent } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppSyncDirectories from '@/components/AppSyncDirectories.vue'
+import AppSyncDirectories from '@/views/sync/AppSyncDirectories.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { APIResponse } from '@/api/types'

@@ -10,11 +10,11 @@ const backupNotice =
 describe('备份页面风险提示', () => {
   it('在设置、记录和恢复页面显示同一提示', () => {
     for (const component of [
-      'AppBackupSettings.vue',
-      'AppBackupRecords.vue',
-      'AppBackupRestore.vue',
+      'views/backup/AppBackupSettings.vue',
+      'views/backup/AppBackupRecords.vue',
+      'views/backup/AppBackupRestore.vue',
     ]) {
-      const source = readFileSync(resolve(process.cwd(), `src/components/${component}`), 'utf8')
+      const source = readFileSync(resolve(process.cwd(), `src/${component}`), 'utf8')
       expect(source).toContain(backupNotice)
     }
   })

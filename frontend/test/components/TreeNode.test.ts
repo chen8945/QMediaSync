@@ -2,7 +2,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import TreeNode from '@/components/TreeNode.vue'
+import TreeNode from '@/components/files/TreeNode.vue'
 
 const node = {
   id: 'movies',

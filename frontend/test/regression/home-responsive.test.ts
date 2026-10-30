@@ -8,7 +8,7 @@ const readSource = (path: string) => readFileSync(resolve(path), 'utf8')
 
 describe('首页移动端头部布局', () => {
   it('AppHome 只在首页移动端恢复页面身份并保留运行日志操作', () => {
-    const source = readSource('src/components/AppHome.vue')
+    const source = readSource('src/views/dashboard/AppHome.vue')
     const mobileStyles = extractMediaBlock(source, '@media (max-width: 768px)')
     const routerSource = readSource('src/router/index.ts')
 

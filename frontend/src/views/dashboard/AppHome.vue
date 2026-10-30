@@ -2,12 +2,14 @@
 import { defineAsyncComponent, ref, useTemplateRef } from 'vue'
 import { Document } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
-import VersionManager from './VersionManager.vue'
-import QueueStatsCard from './QueueStatsCard.vue'
-import AnnouncementCard from './AnnouncementCard.vue'
+import VersionManager from '@/components/dashboard/VersionManager.vue'
+import QueueStatsCard from '@/components/queue/QueueStatsCard.vue'
+import AnnouncementCard from '@/components/dashboard/AnnouncementCard.vue'
 
-const HourlyStatsChart = defineAsyncComponent(() => import('./HourlyStatsChart.vue'))
-const AppLogViewer = defineAsyncComponent(() => import('./AppLogViewer.vue'))
+const HourlyStatsChart = defineAsyncComponent(
+  () => import('@/components/dashboard/HourlyStatsChart.vue'),
+)
+const AppLogViewer = defineAsyncComponent(() => import('@/components/log/AppLogViewer.vue'))
 
 const showLogDialog = ref(false)
 const logViewerRef = useTemplateRef<{ disconnect?: () => void }>('logViewerRef')

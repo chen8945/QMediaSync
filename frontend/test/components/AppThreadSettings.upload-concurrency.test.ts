@@ -1,7 +1,7 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import AppThreadSettings from '@/components/AppThreadSettings.vue'
+import AppThreadSettings from '@/views/settings/AppThreadSettings.vue'
 import { SERVER_URL } from '@/const'
 import { httpKey } from '@/http/client'
 

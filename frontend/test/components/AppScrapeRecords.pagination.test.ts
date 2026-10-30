@@ -3,7 +3,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppScrapeRecords from '@/components/AppScrapeRecords.vue'
+import AppScrapeRecords from '@/views/scrape/AppScrapeRecords.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 

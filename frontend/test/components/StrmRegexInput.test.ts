@@ -2,7 +2,7 @@
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import StrmRegexInput from '@/components/StrmRegexInput.vue'
+import StrmRegexInput from '@/components/sync/StrmRegexInput.vue'
 
 enableAutoUnmount(afterEach)
 

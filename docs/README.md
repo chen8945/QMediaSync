@@ -18,7 +18,7 @@
 - [文档治理](engineering/documentation-governance.md)：正式文档职责、命名、唯一权威来源和迁移规则。
 - [Wiki 用户手册维护](engineering/wiki-maintenance.md)：用户手册的内容与文风、页面分工、来源映射及发布检查。
 - [本地开发](engineering/local-development.md)：本地后端、前端启动和调试入口。
-- [前端开发约定](engineering/frontend-development.md)：HTTP 客户端、状态刷新、路由、响应式布局和交互反馈。
+- [前端开发约定](engineering/frontend-development.md)：页面、组件与类型归属，HTTP 客户端、状态刷新、路由、响应式布局和交互反馈。
 - [仓库结构](engineering/repository-structure.md)：顶层目录和构建产物职责。
 - [请求校验约定](engineering/request-validation.md)：Request DTO、`Validate()`、绑定和前后端校验边界。
 - [注释规范](engineering/comment-guidelines.md)：Go、Vue、Swagger 和验证代码的注释边界。

@@ -1,4 +1,4 @@
-import type { DirectoryUploadRule } from '@/typing'
+import type { DirectoryUploadRule } from '@/types/directoryUpload'
 
 export const groupDirectoryUploadRulesBySyncPath = <T extends DirectoryUploadRule>(
   rules: T[],

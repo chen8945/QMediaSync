@@ -507,7 +507,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
 
   for (const queuePage of [
     {
-      path: 'src/components/AppUploadQueue.vue',
+      path: 'src/views/queues/AppUploadQueue.vue',
       key: 'upload-queue',
       rowType: 'UploadTask',
       counterField: 'uploading',
@@ -522,7 +522,7 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
       ],
     },
     {
-      path: 'src/components/AppDownloadQueue.vue',
+      path: 'src/views/queues/AppDownloadQueue.vue',
       key: 'download-queue',
       rowType: 'DownloadTask',
       counterField: 'downloading',
@@ -599,8 +599,8 @@ test('队列页在刷新、查询切换和停用时保持页面状态一致', ()
     assertQueueMutationsUseContext(source, queuePage.mutationFunctions, messagePrefix)
   }
 
-  const uploadSource = readSource('src/components/AppUploadQueue.vue')
-  const downloadSource = readSource('src/components/AppDownloadQueue.vue')
+  const uploadSource = readSource('src/views/queues/AppUploadQueue.vue')
+  const downloadSource = readSource('src/views/queues/AppDownloadQueue.vue')
   const queueTaskDetailUtilsSource = readSource('src/utils/queueTaskDetailUtils.ts')
   const expandButtonSource = readSource('src/components/queue/QueueTaskExpandButton.vue')
 

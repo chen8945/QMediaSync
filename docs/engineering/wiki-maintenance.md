@@ -33,20 +33,20 @@ Wiki 可以依据权威资料完整解释用户需要的事实，包括字段含
 | `管理员与密码恢复.md` | [认证会话](../architecture/authentication-sessions.md)、[管理员恢复](../operations/deployment.md#管理员恢复)、[恢复脚本](../../scripts/recover-admin.sh) | 初始化、密码与两步验证、恢复命令及影响 |
 | `更新与旧版迁移.md` | [部署](../operations/deployment.md)、[旧内嵌数据库](../operations/database.md#旧内嵌数据库)、[发布](../operations/release.md) | 各部署方式的更新、fnOS 应用中心与手动 FPK、校验文件用途、版本兼容、旧库迁出与回退准备 |
 | `反向代理配置.md` | [反向代理](../operations/reverse-proxy.md)、[认证会话](../architecture/authentication-sessions.md) | Nginx / Caddy、HTTPS、可信来源、SSE、转发与验证 |
-| `账号管理.md` | [账号授权与更换](../reference/account-authorization.md)、[认证会话](../architecture/authentication-sessions.md)、[账号页面](../../frontend/src/components/) | 添加账号、授权失效、重新授权与更换账号的区别 |
+| `账号管理.md` | [账号授权与更换](../reference/account-authorization.md)、[认证会话](../architecture/authentication-sessions.md)、[账号页面](../../frontend/src/views/accounts/AppCloudAccounts.vue) | 添加账号、授权失效、重新授权与更换账号的区别 |
 | `生成-STRM.md` | [同步调度](../architecture/sync-orchestration.md)、[同步目录 API](../reference/sync-path-api.md)、[配置](../operations/configuration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md) | 来源差异、路径、全量 / 增量、定时、过滤、关联刮削；预加载的全局开关、触发时机与支持范围 |
 | `目录监控上传.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[同步目录 API](../reference/sync-path-api.md)、[目录监控实现](../../backend/internal/directoryupload/) | 支持来源、监控规则、上传后生成、同名处理与源文件清理 |
 | `STRM-Webhook.md` | [STRM Webhook](../reference/strm-webhook.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[认证会话](../architecture/authentication-sessions.md) | 测试阶段入口、API Key、请求示例、路径、幂等、异步结果与错误处理 |
 | `任务与通知.md` | [任务来源](../reference/task-sources.md)、[同步调度](../architecture/sync-orchestration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[通知实现](../../backend/internal/notification/) | 任务状态、生成与后台处理、队列操作、通知渠道及规则 |
 | `刮削指南.md` | [模板与 NFO](../reference/scrape-rename-templates.md)、[同步调度](../architecture/sync-orchestration.md)、[刮削实现](../../backend/internal/scrape/) | 模式、目录、定时、线程、重新识别与重新整理 |
 | `整理文件（夹）模板可用变量.md` | [模板与 NFO](../reference/scrape-rename-templates.md)、[模板变量实现](../../backend/internal/models/scrapemedia.go)及相邻测试 | 可用变量、两种语法、空值、补零、转义和命名示例 |
-| `Emby-媒体库同步.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 设置](../../frontend/src/components/AppEmbySettings.vue) | 扫描媒体库、条目同步、选库、定时与进度的区别 |
+| `Emby-媒体库同步.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 设置](../../frontend/src/views/settings/AppEmbySettings.vue) | 扫描媒体库、条目同步、选库、定时与进度的区别 |
 | `Emby-媒体信息提取.md` | [Emby 同步](../architecture/emby-library-sync.md)、[Emby 实现](../../backend/internal/emby/) | 手动与通知触发、API Key、插件配合与结果检查 |
 | `Emby-通知配置.md` | [Emby 同步](../architecture/emby-library-sync.md)、[认证会话](../architecture/authentication-sessions.md) | Webhook 地址、鉴权、事件选择和通知转发 |
 | `Emby-联动删除网盘文件.md` | [Emby 同步](../architecture/emby-library-sync.md)、[路径映射配置](../operations/configuration.md#emby-外部-strm-路径映射)、[上传与 STRM](../architecture/upload-and-strm-processing.md)、[Emby 实现](../../backend/internal/emby/)及相邻测试 | 开启步骤、支持来源、STRM 存放与挂载要求、删除范围、结果查看与排障 |
 | `Emby外网302.md`、`Emby-无法播放问题的排查步骤.md` | [上传与 STRM](../architecture/upload-and-strm-processing.md)、[配置](../operations/configuration.md)、[302 代理](../../backend/internal/emby302/)、[控制器](../../backend/internal/controllers/) | 三类地址、来源差异、代理与直链、预加载入口、客户端和网络排障 |
-| `飞牛影视反代.md` | [飞牛影视反代运维](../operations/fnos-proxy.md)、[飞牛影视反代 API](../reference/fnos-proxy-api.md)、[飞牛配置页面](../../frontend/src/components/AppFnosProxySettings.vue)、[反代实现](../../backend/internal/fnosproxy/) | 「飞牛影视」入口、默认关闭、保存立即应用、根目录对应、容器端口映射、恢复重启边界、共用 STRM 预加载开关及支持限制、客户端排障；不另写飞牛 HTTPS 教程 |
-| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../packaging/fnos/)、[目录选择器](../../frontend/src/components/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
+| `飞牛影视反代.md` | [飞牛影视反代运维](../operations/fnos-proxy.md)、[飞牛影视反代 API](../reference/fnos-proxy-api.md)、[飞牛配置页面](../../frontend/src/views/settings/AppFnosProxySettings.vue)、[反代实现](../../backend/internal/fnosproxy/) | 「飞牛影视」入口、默认关闭、保存立即应用、根目录对应、容器端口映射、恢复重启边界、共用 STRM 预加载开关及支持限制、客户端排障；不另写飞牛 HTTPS 教程 |
+| `文件权限相关问题.md` | [部署](../operations/deployment.md)、[容器入口](../../docker/entrypoint.sh)、[安装脚本](../../scripts/install/)、[fnOS 模板](../../packaging/fnos/)、[目录选择器](../../frontend/src/components/files/DirectorySelector.vue) | 实际运行身份、目录读写、容器挂载、原生 fnOS 授权与 Docker 区别、密钥保护 |
 | `常见问题.md` | 本表中对应专题的权威资料与 Wiki 操作页 | 按现象提供排查步骤和处理方法；专题页保留操作流程与页内检查表 |
 
 ## 常见问题页与专题页的分工

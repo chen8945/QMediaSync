@@ -7,14 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia } from 'pinia'
 import { browseSortOptions } from '../support/browseSort'
 
-import DirectorySelector from '@/components/DirectorySelector.vue'
-import BrowseSortControl from '@/components/BrowseSortControl.vue'
+import DirectorySelector from '@/components/files/DirectorySelector.vue'
+import BrowseSortControl from '@/components/files/BrowseSortControl.vue'
 import { ElMessage } from 'element-plus'
 import { httpKey } from '@/http/client'
 import { HttpResponseError } from '@/http/errors'
 
 const directorySelectorSource = readFileSync(
-  resolve(__dirname, '../../src/components/DirectorySelector.vue'),
+  resolve(__dirname, '../../src/components/files/DirectorySelector.vue'),
   'utf-8',
 )
 

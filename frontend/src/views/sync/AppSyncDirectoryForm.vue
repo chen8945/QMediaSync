@@ -1256,16 +1256,16 @@ import {
   type SaveSyncPathPayload,
 } from '@/api/syncPaths'
 import { useSyncDirectorySave } from '@/composables/useSyncDirectorySave'
-import MetadataExtInput from './MetadataExtInput.vue'
-import StrmRegexInput from './StrmRegexInput.vue'
+import MetadataExtInput from '@/components/common/MetadataExtInput.vue'
+import StrmRegexInput from '@/components/sync/StrmRegexInput.vue'
 import { strmRegexListError } from '@/utils/strmRegex'
-import DirectorySelector from './DirectorySelector.vue'
+import DirectorySelector from '@/components/files/DirectorySelector.vue'
+import type { DirInfo } from '@/types/files'
 import type {
-  DirInfo,
   DirectoryUploadOverwriteMode,
   DirectoryUploadRule,
   DirectoryUploadWatchMode,
-} from '@/typing'
+} from '@/types/directoryUpload'
 
 interface CloudAccount {
   id: number

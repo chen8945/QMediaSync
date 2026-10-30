@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('AppUpdate 更新完成弹窗响应式样式', () => {
-  const source = readFileSync(resolve(__dirname, '../../src/components/AppUpdate.vue'), 'utf-8')
+  const source = readFileSync(resolve(__dirname, '../../src/views/system/AppUpdate.vue'), 'utf-8')
 
   it('通过 Element Plus width prop 控制倒计时弹窗宽度', () => {
     const dialogStyleBlock = source.match(

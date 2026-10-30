@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 
 import { extractMediaBlock, extractRule } from '../support/css'
 
-const source = readFileSync(resolve('src/components/AppSyncDirectories.vue'), 'utf8')
+const source = readFileSync(resolve('src/views/sync/AppSyncDirectories.vue'), 'utf8')
 
 describe('AppSyncDirectories 信息行对齐', () => {
   test('桌面端信息行内容按 32px 图标高度垂直居中', () => {

@@ -1,6 +1,6 @@
 import { shallowMount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
-import BrowseSortControl from '@/components/BrowseSortControl.vue'
+import BrowseSortControl from '@/components/files/BrowseSortControl.vue'
 import { browseSortOptions } from '../support/browseSort'
 
 describe('共享排序控件', () => {

@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-const sourcePath = resolve(process.cwd(), 'src/components/AppSyncDirectoryForm.vue')
+const sourcePath = resolve(process.cwd(), 'src/views/sync/AppSyncDirectoryForm.vue')
 const source = readFileSync(sourcePath, 'utf8')
 
 const getFunctionBody = (functionName: string) => {

@@ -1,6 +1,6 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import type { DirInfo, FileSystemItem } from '@/typing'
+import type { DirInfo, FileSystemItem } from '@/types/files'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 

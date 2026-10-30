@@ -7,40 +7,40 @@ import router from '@/router'
 const readSource = (path: string) => readFileSync(resolve(path), 'utf8')
 
 const routeViewFiles = [
-  'AppHome.vue',
-  'AppCloudAccounts.vue',
-  'AppSyncDirectories.vue',
-  'AppSyncDirectoryForm.vue',
-  'AppSyncRecords.vue',
-  'AppSyncTaskDetail.vue',
-  'AppScrapePathes.vue',
-  'AppScrapePathForm.vue',
-  'AppScrapeRecords.vue',
-  'AppTmdbSettings.vue',
-  'AppAiSettings.vue',
-  'AppCategoryStrategy.vue',
-  'AppUploadQueue.vue',
-  'AppDownloadQueue.vue',
-  'AppFileManager.vue',
-  'AppBackupSettings.vue',
-  'AppBackupRecords.vue',
-  'AppBackupRestore.vue',
-  'AppDatabaseRepair.vue',
-  'AppUserSettings.vue',
-  'AppApiKeys.vue',
-  'AppNotificationChannels.vue',
-  'AppEmbySettings.vue',
-  'AppThreadSettings.vue',
-  'AppLogSettings.vue',
-  'AppProxySettings.vue',
-  'AppUpdate.vue',
-  'user-settings/LoginSessions.vue',
+  'views/dashboard/AppHome.vue',
+  'views/accounts/AppCloudAccounts.vue',
+  'views/sync/AppSyncDirectories.vue',
+  'views/sync/AppSyncDirectoryForm.vue',
+  'views/sync/AppSyncRecords.vue',
+  'views/sync/AppSyncTaskDetail.vue',
+  'views/scrape/AppScrapePathes.vue',
+  'views/scrape/AppScrapePathForm.vue',
+  'views/scrape/AppScrapeRecords.vue',
+  'views/scrape/AppTmdbSettings.vue',
+  'views/scrape/AppAiSettings.vue',
+  'views/scrape/AppCategoryStrategy.vue',
+  'views/queues/AppUploadQueue.vue',
+  'views/queues/AppDownloadQueue.vue',
+  'views/files/AppFileManager.vue',
+  'views/backup/AppBackupSettings.vue',
+  'views/backup/AppBackupRecords.vue',
+  'views/backup/AppBackupRestore.vue',
+  'views/system/AppDatabaseRepair.vue',
+  'views/settings/AppUserSettings.vue',
+  'views/settings/AppApiKeys.vue',
+  'views/settings/AppNotificationChannels.vue',
+  'views/settings/AppEmbySettings.vue',
+  'views/settings/AppThreadSettings.vue',
+  'views/settings/AppLogSettings.vue',
+  'views/settings/AppProxySettings.vue',
+  'views/system/AppUpdate.vue',
+  'views/settings/LoginSessions.vue',
 ]
 
 describe('页面头部统一契约', () => {
   it('所有业务路由视图都接入共享 PageHeader', () => {
     for (const file of routeViewFiles) {
-      const source = readSource(`src/components/${file}`)
+      const source = readSource(`src/${file}`)
       expect(source, file).toContain('PageHeader')
     }
   })
@@ -53,16 +53,16 @@ describe('页面头部统一契约', () => {
     expect(pageHeaderSource).not.toContain('background: var(--el-color-primary-light-9')
 
     for (const [file, selector] of [
-      ['AppCloudAccounts.vue', '\\.cloud-accounts-page'],
-      ['AppScrapePathes.vue', '\\.scrape-pathes-page'],
-      ['AppSyncDirectories.vue', '\\.sync-directories-page'],
+      ['views/accounts/AppCloudAccounts.vue', '\\.cloud-accounts-page'],
+      ['views/scrape/AppScrapePathes.vue', '\\.scrape-pathes-page'],
+      ['views/sync/AppSyncDirectories.vue', '\\.sync-directories-page'],
     ]) {
-      expect(readSource(`src/components/${file}`), file).not.toMatch(
+      expect(readSource(`src/${file}`), file).not.toMatch(
         new RegExp(`${selector}\\s*\\{[^}]*background\\s*:`),
       )
     }
 
-    const embySource = readSource('src/components/AppEmbySettings.vue')
+    const embySource = readSource('src/views/settings/AppEmbySettings.vue')
     expect(embySource).toContain('background: transparent;')
     expect(embySource).not.toContain('linear-gradient(135deg, #f5f7fa 0%, #e4e7ed 100%)')
   })
@@ -78,7 +78,7 @@ describe('页面头部统一契约', () => {
   })
 
   it('Emby 保留页面级 h1、内容级 h2/h3 和静止卡片边界', () => {
-    const source = readSource('src/components/AppEmbySettings.vue')
+    const source = readSource('src/views/settings/AppEmbySettings.vue')
 
     expect(source).toContain('<PageHeader />')
     expect(source).toContain('<h2 class="card-title">Emby 服务器配置</h2>')
@@ -93,7 +93,7 @@ describe('页面头部统一契约', () => {
   })
 
   it('数据库修复使用共享页面头部，并保留完整内容卡片', () => {
-    const source = readSource('src/components/AppDatabaseRepair.vue')
+    const source = readSource('src/views/system/AppDatabaseRepair.vue')
 
     expect(source).toContain('<PageHeader />')
     expect(source).toContain('<div class="section-card">')
@@ -102,7 +102,7 @@ describe('页面头部统一契约', () => {
   })
 
   it('文件管理器只保留共享页面身份，账号标题仍属于内容分区', () => {
-    const source = readSource('src/components/AppFileManager.vue')
+    const source = readSource('src/views/files/AppFileManager.vue')
 
     expect(source).toContain('<PageHeader />')
     expect(source).not.toContain('<h2 class="card-title hide-on-mobile">')
@@ -111,11 +111,11 @@ describe('页面头部统一契约', () => {
 
   it('页面级 API、备份和登录设备操作通过头部 actions slot 提供', () => {
     for (const file of [
-      'AppApiKeys.vue',
-      'AppBackupRecords.vue',
-      'user-settings/LoginSessions.vue',
+      'views/settings/AppApiKeys.vue',
+      'views/backup/AppBackupRecords.vue',
+      'views/settings/LoginSessions.vue',
     ]) {
-      expect(readSource(`src/components/${file}`), file).toContain('<template #actions>')
+      expect(readSource(`src/${file}`), file).toContain('<template #actions>')
     }
   })
 
@@ -131,15 +131,15 @@ describe('页面头部统一契约', () => {
 
   it('页面级移动端重复标题结构已从迁移页面移除', () => {
     for (const file of [
-      'AppUploadQueue.vue',
-      'AppDownloadQueue.vue',
-      'AppSyncRecords.vue',
-      'AppScrapeRecords.vue',
-      'AppSyncDirectoryForm.vue',
-      'AppScrapePathForm.vue',
+      'views/queues/AppUploadQueue.vue',
+      'views/queues/AppDownloadQueue.vue',
+      'views/sync/AppSyncRecords.vue',
+      'views/scrape/AppScrapeRecords.vue',
+      'views/sync/AppSyncDirectoryForm.vue',
+      'views/scrape/AppScrapePathForm.vue',
     ]) {
-      expect(readSource(`src/components/${file}`), file).not.toContain('hide-on-mobile')
-      expect(readSource(`src/components/${file}`), file).not.toContain('mobile-form-header')
+      expect(readSource(`src/${file}`), file).not.toContain('hide-on-mobile')
+      expect(readSource(`src/${file}`), file).not.toContain('mobile-form-header')
     }
   })
 })

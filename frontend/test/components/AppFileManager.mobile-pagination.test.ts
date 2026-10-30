@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 describe('AppFileManager 移动端分页', () => {
   it('使用公共响应式分页并避免 header 额外页大小控件挤占空间', () => {
-    const source = readFileSync(resolve('src/components/AppFileManager.vue'), 'utf8')
+    const source = readFileSync(resolve('src/views/files/AppFileManager.vue'), 'utf8')
 
     expect(source).toContain(
       "import ResponsivePagination from '@/components/common/ResponsivePagination.vue'",

@@ -408,7 +408,7 @@ import {
   getEnabledDirectoryUploadRules,
   groupDirectoryUploadRulesBySyncPath,
 } from '@/utils/directoryUploadRules'
-import type { DirectoryUploadRule } from '@/typing'
+import type { DirectoryUploadRule } from '@/types/directoryUpload'
 import type { SyncLedgerState } from '@/types/syncTaskStream'
 
 interface SyncDirectory extends SyncPath {

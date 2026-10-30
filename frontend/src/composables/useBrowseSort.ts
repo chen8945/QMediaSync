@@ -7,7 +7,7 @@ import {
   type BrowseSortOptions,
   type BrowseSortValue,
 } from '@/api/files'
-import type { DirInfo } from '@/typing'
+import type { DirInfo } from '@/types/files'
 
 const capabilityRequests = new WeakMap<AxiosInstance, Map<string, Promise<BrowseSortOptions>>>()
 const memoryPreferences = new Map<string, BrowseSortValue>()

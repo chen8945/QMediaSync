@@ -6,14 +6,14 @@ import { extractMediaBlock, extractRule } from '../support/css'
 
 const pages = [
   {
-    file: 'AppSyncDirectories.vue',
+    file: 'views/sync/AppSyncDirectories.vue',
     rootClass: 'sync-directories-page',
     contentClass: 'directories-content',
     gridClass: 'directories-grid',
     cardClass: 'directory-card',
   },
   {
-    file: 'AppScrapePathes.vue',
+    file: 'views/scrape/AppScrapePathes.vue',
     rootClass: 'scrape-pathes-page',
     contentClass: 'pathes-content',
     gridClass: 'pathes-grid',
@@ -22,11 +22,11 @@ const pages = [
 ] as const
 
 const managementPages = [
-  'AppCloudAccounts.vue',
-  'AppSyncDirectories.vue',
-  'AppScrapePathes.vue',
-  'AppApiKeys.vue',
-  'user-settings/LoginSessions.vue',
+  'views/accounts/AppCloudAccounts.vue',
+  'views/sync/AppSyncDirectories.vue',
+  'views/scrape/AppScrapePathes.vue',
+  'views/settings/AppApiKeys.vue',
+  'views/settings/LoginSessions.vue',
 ] as const
 
 const getPageHeaderOpenTag = (source: string) => {
@@ -38,7 +38,7 @@ const getPageHeaderOpenTag = (source: string) => {
 describe('管理列表页布局', () => {
   for (const page of pages) {
     it(`${page.file} 将统计信息放在内容左侧并在移动端显示`, () => {
-      const source = readFileSync(resolve(`src/components/${page.file}`), 'utf8')
+      const source = readFileSync(resolve(`src/${page.file}`), 'utf8')
       expect(source).not.toContain('management-page-header')
       expect(source).toContain('<template #actions>')
       expect(source).not.toContain('mobile-hidden')
@@ -68,7 +68,7 @@ describe('管理列表页布局', () => {
         '总目录数',
         '运行中',
         '等待中',
-        page.file === 'AppSyncDirectories.vue' ? '定时同步' : '定时任务',
+        page.file === 'views/sync/AppSyncDirectories.vue' ? '定时同步' : '定时任务',
       ]
       const statPositions = statLabels.map((label) => source.indexOf(`label: '${label}'`))
       expect(statPositions.every((position) => position >= 0)).toBe(true)
@@ -92,7 +92,7 @@ describe('管理列表页布局', () => {
   }
 
   it('AppCloudAccounts.vue 在移动端保留统计信息并使用共享头部 actions', () => {
-    const source = readFileSync(resolve('src/components/AppCloudAccounts.vue'), 'utf8')
+    const source = readFileSync(resolve('src/views/accounts/AppCloudAccounts.vue'), 'utf8')
     expect(source).not.toContain('management-page-header')
     expect(source).toContain('<template #actions>')
     expect(source).toContain('<template #stats>')
@@ -140,7 +140,7 @@ describe('管理列表页布局', () => {
 
   it('五个目标页移除 management-page-header 并保留共享 actions', () => {
     for (const file of managementPages) {
-      const source = readFileSync(resolve(`src/components/${file}`), 'utf8')
+      const source = readFileSync(resolve(`src/${file}`), 'utf8')
       const pageHeaderOpenTag = getPageHeaderOpenTag(source)
       expect(source, file).not.toContain('management-page-header')
       expect(source, file).toContain('<template #actions>')
@@ -173,8 +173,8 @@ describe('管理列表页布局', () => {
   })
 
   it('AppApiKeys 和 LoginSessions 的 action-bar 保留 gap 并清除相邻按钮默认左边距', () => {
-    for (const file of ['AppApiKeys.vue', 'user-settings/LoginSessions.vue']) {
-      const source = readFileSync(resolve(`src/components/${file}`), 'utf8')
+    for (const file of ['views/settings/AppApiKeys.vue', 'views/settings/LoginSessions.vue']) {
+      const source = readFileSync(resolve(`src/${file}`), 'utf8')
 
       expect(extractRule(source, '.action-bar'), file).toMatch(/gap:\s*\d+px;/)
       expect(extractRule(source, '.action-bar :deep(.el-button + .el-button)'), file).toContain(

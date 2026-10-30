@@ -6,7 +6,7 @@
 >
 > 修改时机：修改页面入口、启用方式、证书路径、监听、保存生效时机或排障流程时必须同步更新。
 >
-> 相关代码：`backend/internal/app/proxies.go`、`backend/internal/fnosproxy/`、`frontend/src/components/AppFnosProxySettings.vue`、`frontend/src/components/fnos-proxy/FnosPathMappings.vue`。
+> 相关代码：`backend/internal/app/proxies.go`、`backend/internal/fnosproxy/`、`frontend/src/views/settings/AppFnosProxySettings.vue`、`frontend/src/components/fnos-proxy/FnosPathMappings.vue`。
 
 ## 范围与默认行为
 

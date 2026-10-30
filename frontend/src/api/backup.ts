@@ -1,7 +1,7 @@
 import { isAxiosError, type AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError, type HttpErrorResponse } from '@/http/errors'
-import type { BackupConfig, BackupRecordsResponse } from '@/typing'
+import type { BackupConfig, BackupRecordsResponse } from '@/types/backup'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 

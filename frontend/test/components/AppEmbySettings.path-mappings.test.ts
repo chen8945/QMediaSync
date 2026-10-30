@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppEmbySettings from '@/components/AppEmbySettings.vue'
+import AppEmbySettings from '@/views/settings/AppEmbySettings.vue'
 import type { EmbyPathMapping } from '@/api/emby'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'

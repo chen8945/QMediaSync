@@ -77,7 +77,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     throw new Error(`${functionName} body should close`)
   }
 
-  const embySource = readSource('src/components/AppEmbySettings.vue')
+  const embySource = readSource('src/views/settings/AppEmbySettings.vue')
   const saveEmbyConfigBody = getLocalFunctionBody(embySource, 'saveEmbyConfig')
 
   assert.doesNotMatch(
@@ -86,7 +86,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppEmbySettings.vue save success should use the inline status instead of a duplicate toast',
   )
 
-  const userSource = readSource('src/components/AppUserSettings.vue')
+  const userSource = readSource('src/views/settings/AppUserSettings.vue')
   const saveSettingsBody = getLocalFunctionBody(userSource, 'saveSettings')
 
   assert.doesNotMatch(
@@ -107,7 +107,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppUserSettings.vue save button should match the green large settings-page save style',
   )
 
-  const backupSettingsSource = readSource('src/components/AppBackupSettings.vue')
+  const backupSettingsSource = readSource('src/views/backup/AppBackupSettings.vue')
 
   assert.match(
     backupSettingsSource,
@@ -122,7 +122,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppBackupSettings.vue save button should match the green large settings-page save style',
   )
 
-  const proxySource = readSource('src/components/AppProxySettings.vue')
+  const proxySource = readSource('src/views/settings/AppProxySettings.vue')
 
   assertButtonMatches(
     proxySource,
@@ -139,8 +139,8 @@ test('设置页操作反馈和按钮语义保持一致', () => {
   )
 
   for (const queuePage of [
-    'src/components/AppUploadQueue.vue',
-    'src/components/AppDownloadQueue.vue',
+    'src/views/queues/AppUploadQueue.vue',
+    'src/views/queues/AppDownloadQueue.vue',
   ]) {
     const source = readSource(queuePage)
 
@@ -159,7 +159,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     )
   }
 
-  const backupRestoreSource = readSource('src/components/AppBackupRestore.vue')
+  const backupRestoreSource = readSource('src/views/backup/AppBackupRestore.vue')
 
   assertButtonMatches(
     backupRestoreSource,
@@ -168,7 +168,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppBackupRestore.vue restore button should use warning semantics',
   )
 
-  const databaseRepairSource = readSource('src/components/AppDatabaseRepair.vue')
+  const databaseRepairSource = readSource('src/views/system/AppDatabaseRepair.vue')
 
   assertButtonMatches(
     databaseRepairSource,
@@ -177,7 +177,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppDatabaseRepair.vue repair button should use warning semantics',
   )
 
-  const notificationChannelsSource = readSource('src/components/AppNotificationChannels.vue')
+  const notificationChannelsSource = readSource('src/views/settings/AppNotificationChannels.vue')
 
   assertButtonMatches(
     notificationChannelsSource,
@@ -186,7 +186,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'AppNotificationChannels.vue channel test button should not use success before the test result is known',
   )
 
-  const updateSource = readSource('src/components/AppUpdate.vue')
+  const updateSource = readSource('src/views/system/AppUpdate.vue')
 
   assert.match(
     updateSource,
@@ -246,7 +246,7 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     'TwoFactorSettings.vue disable button should match the large icon button rhythm',
   )
 
-  const backupRestoreSourceForIcon = readSource('src/components/AppBackupRestore.vue')
+  const backupRestoreSourceForIcon = readSource('src/views/backup/AppBackupRestore.vue')
 
   assertButtonMatches(
     backupRestoreSourceForIcon,

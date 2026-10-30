@@ -6,9 +6,9 @@
 >
 > 修改时机：修改 Emby 刷新入口、条目同步、刷新任务状态、目标解析、去抖或 Webhook 行为时必须更新本文档。
 >
-> 相关代码：`backend/internal/emby/`、`backend/internal/models/emby_*.go`、`backend/internal/synccron/`、`backend/internal/controllers/emby*.go`、`frontend/src/components/AppEmbySettings.vue`。
+> 相关代码：`backend/internal/emby/`、`backend/internal/models/emby_*.go`、`backend/internal/synccron/`、`backend/internal/controllers/emby*.go`、`frontend/src/views/settings/AppEmbySettings.vue`。
 
-实现细节以 `backend/internal/emby`、`backend/internal/models`、`backend/internal/synccron` 和 `frontend/src/components/AppEmbySettings.vue` 为准。
+实现细节以 `backend/internal/emby`、`backend/internal/models`、`backend/internal/synccron` 和 `frontend/src/views/settings/AppEmbySettings.vue` 为准。
 
 ## 两条链路
 

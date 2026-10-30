@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 describe('AppSyncTaskDetail stream mode', () => {
   it('uses the dedicated stream source and task log panel', () => {
     const source = readFileSync(
-      resolve(__dirname, '../../src/components/AppSyncTaskDetail.vue'),
+      resolve(__dirname, '../../src/views/sync/AppSyncTaskDetail.vue'),
       'utf-8',
     )
 
@@ -20,7 +20,7 @@ describe('AppSyncTaskDetail stream mode', () => {
 
   it('keeps the shared header inside the detail card and visible on mobile', () => {
     const source = readFileSync(
-      resolve(__dirname, '../../src/components/AppSyncTaskDetail.vue'),
+      resolve(__dirname, '../../src/views/sync/AppSyncTaskDetail.vue'),
       'utf-8',
     )
 

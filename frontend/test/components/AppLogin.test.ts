@@ -8,7 +8,7 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
-import AppLogin from '@/components/AppLogin.vue'
+import AppLogin from '@/views/auth/AppLogin.vue'
 import LoginForm from '@/components/auth/LoginForm.vue'
 import { httpKey } from '@/http/client'
 import { ElMessage } from 'element-plus'

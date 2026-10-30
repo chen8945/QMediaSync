@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import MetadataExtInput from '@/components/MetadataExtInput.vue'
+import MetadataExtInput from '@/components/common/MetadataExtInput.vue'
 
 enableAutoUnmount(afterEach)
 

@@ -6,7 +6,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { ElMessage } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import AppProxySettings from '@/components/AppProxySettings.vue'
+import AppProxySettings from '@/views/settings/AppProxySettings.vue'
 import {
   PROXY_CREDENTIALS_MASKED_HINT,
   PROXY_SCHEMES,
@@ -200,7 +200,7 @@ describe('AppProxySettings 脱敏凭据意图', () => {
 
 describe('代理协议白名单单一来源', () => {
   const componentSource = readFileSync(
-    resolve(__dirname, '../../src/components/AppProxySettings.vue'),
+    resolve(__dirname, '../../src/views/settings/AppProxySettings.vue'),
     'utf8',
   )
 

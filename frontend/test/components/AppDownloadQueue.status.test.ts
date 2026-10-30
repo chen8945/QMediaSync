@@ -6,11 +6,11 @@ import { describe, expect, it } from 'vitest'
 import { getDownloadStatusTagType, getDownloadStatusText } from '@/utils/queueTaskDetailUtils'
 
 const source = readFileSync(
-  resolve(__dirname, '../../src/components/AppDownloadQueue.vue'),
+  resolve(__dirname, '../../src/views/queues/AppDownloadQueue.vue'),
   'utf-8',
 )
 const threadSettingsSource = readFileSync(
-  resolve(__dirname, '../../src/components/AppThreadSettings.vue'),
+  resolve(__dirname, '../../src/views/settings/AppThreadSettings.vue'),
   'utf-8',
 )
 

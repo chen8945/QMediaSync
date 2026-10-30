@@ -3,7 +3,7 @@ import { defineComponent, nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import CronSelector from '@/components/CronSelector.vue'
+import CronSelector from '@/components/common/CronSelector.vue'
 
 const globalStubs = {
   ElSelect: {

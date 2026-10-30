@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 describe('AppBackupRecords responsive layout', () => {
   it('uses the shared responsive record table without a fixed table height', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRecords.vue'),
       'utf8',
     )
 
@@ -21,7 +21,7 @@ describe('AppBackupRecords responsive layout', () => {
 
   it('keeps the manual-backup action visually unboxed in the shared header', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRecords.vue'),
       'utf8',
     )
 
@@ -33,7 +33,7 @@ describe('AppBackupRecords responsive layout', () => {
 
   it('formats a zero-second backup duration instead of treating it as missing', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRecords.vue'),
       'utf8',
     )
 
@@ -42,7 +42,7 @@ describe('AppBackupRecords responsive layout', () => {
 
   it('orders expanded details with six compact fields before full-width path and reason', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRecords.vue'),
       'utf8',
     )
 
@@ -67,7 +67,7 @@ describe('AppBackupRecords responsive layout', () => {
 
   it('keeps the file path stretchable on desktop while mobile retains full record columns', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRecords.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRecords.vue'),
       'utf8',
     )
 

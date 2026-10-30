@@ -8,26 +8,32 @@ const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const readSource = (path: string) => readFileSync(resolve(frontendRoot, path), 'utf8')
 
 test('AppHome lazily imports heavy chart and log components', () => {
-  const source = readSource('src/components/AppHome.vue')
+  const source = readSource('src/views/dashboard/AppHome.vue')
 
   assert.match(
     source,
     /import\s*\{\s*defineAsyncComponent\s*,\s*ref\s*,\s*useTemplateRef\s*\}\s*from ['"]vue['"]/,
   )
-  assert.doesNotMatch(source, /import\s+HourlyStatsChart\s+from ['"]\.\/HourlyStatsChart\.vue['"]/)
-  assert.doesNotMatch(source, /import\s+AppLogViewer\s+from ['"]\.\/AppLogViewer\.vue['"]/)
-  assert.match(
+  assert.doesNotMatch(
     source,
-    /const\s+HourlyStatsChart\s*=\s*defineAsyncComponent\(\(\)\s*=>\s*import\(['"]\.\/HourlyStatsChart\.vue['"]\)\)/,
+    /import\s+HourlyStatsChart\s+from ['"]@\/components\/dashboard\/HourlyStatsChart\.vue['"]/,
+  )
+  assert.doesNotMatch(
+    source,
+    /import\s+AppLogViewer\s+from ['"]@\/components\/log\/AppLogViewer\.vue['"]/,
   )
   assert.match(
     source,
-    /const\s+AppLogViewer\s*=\s*defineAsyncComponent\(\(\)\s*=>\s*import\(['"]\.\/AppLogViewer\.vue['"]\)\)/,
+    /const\s+HourlyStatsChart\s*=\s*defineAsyncComponent\(\s*\(\)\s*=>\s*import\(['"]@\/components\/dashboard\/HourlyStatsChart\.vue['"]\),?\s*\)/,
+  )
+  assert.match(
+    source,
+    /const\s+AppLogViewer\s*=\s*defineAsyncComponent\(\s*\(\)\s*=>\s*import\(['"]@\/components\/log\/AppLogViewer\.vue['"]\),?\s*\)/,
   )
 })
 
 test('AppHome only mounts log viewer while dialog is open and disconnects safely', () => {
-  const source = readSource('src/components/AppHome.vue')
+  const source = readSource('src/views/dashboard/AppHome.vue')
 
   assert.match(
     source,
@@ -82,7 +88,7 @@ test('hourly stats polling keeps existing chart data after first successful load
 })
 
 test('update collapse items use version as stable identity', () => {
-  const source = readSource('src/components/AppUpdate.vue')
+  const source = readSource('src/views/system/AppUpdate.vue')
 
   assert.match(
     source,
@@ -94,7 +100,7 @@ test('update collapse items use version as stable identity', () => {
 })
 
 test('update collapse starts empty instead of using stale index identity', () => {
-  const source = readSource('src/components/AppUpdate.vue')
+  const source = readSource('src/views/system/AppUpdate.vue')
 
   assert.doesNotMatch(
     source,
@@ -104,7 +110,7 @@ test('update collapse starts empty instead of using stale index identity', () =>
 })
 
 test('update collapse initializes first version once without overriding user state', () => {
-  const source = readSource('src/components/AppUpdate.vue')
+  const source = readSource('src/views/system/AppUpdate.vue')
 
   assert.match(source, /import\s*\{\s*[^}]*\bwatch\b[^}]*\}\s*from ['"]vue['"]/)
   assert.match(source, /const\s+hasInitializedActiveNames\s*=\s*ref\(false\)/)

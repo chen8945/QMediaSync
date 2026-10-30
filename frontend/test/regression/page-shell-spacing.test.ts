@@ -51,8 +51,8 @@ describe('页面 shell 与用户管理页间距契约', () => {
   })
 
   it('二级分类设置和版本更新页面跟随共享页面标题顶部留白', () => {
-    const categorySource = readSource('src/components/AppCategoryStrategy.vue')
-    const updateSource = readSource('src/components/AppUpdate.vue')
+    const categorySource = readSource('src/views/scrape/AppCategoryStrategy.vue')
+    const updateSource = readSource('src/views/system/AppUpdate.vue')
 
     expect(
       extractRule(categorySource, '.category-strategy-container.full-width-container'),
@@ -116,7 +116,7 @@ describe('页面 shell 与用户管理页间距契约', () => {
   })
 
   it('仅在桌面端移除用户管理表单上方的额外间距并保留操作区位置规则', () => {
-    const source = readSource('src/components/AppUserSettings.vue')
+    const source = readSource('src/views/settings/AppUserSettings.vue')
 
     expect(extractRule(source, '.user-form')).toContain('margin-top: 0;')
     expect(extractRule(source, '.form-actions')).toContain('margin-top: 20px;')

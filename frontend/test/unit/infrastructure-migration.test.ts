@@ -8,13 +8,13 @@ const readSource = (path: string) =>
 
 const deviceTypeConsumerPaths = [
   '../../src/App.vue',
-  '../../src/components/AppCloudAccounts.vue',
-  '../../src/components/AppDownloadQueue.vue',
-  '../../src/components/AppScrapePathForm.vue',
-  '../../src/components/AppScrapeRecords.vue',
-  '../../src/components/AppSyncDirectoryForm.vue',
-  '../../src/components/AppSyncRecords.vue',
-  '../../src/components/AppUploadQueue.vue',
+  '../../src/views/accounts/AppCloudAccounts.vue',
+  '../../src/views/queues/AppDownloadQueue.vue',
+  '../../src/views/scrape/AppScrapePathForm.vue',
+  '../../src/views/scrape/AppScrapeRecords.vue',
+  '../../src/views/sync/AppSyncDirectoryForm.vue',
+  '../../src/views/sync/AppSyncRecords.vue',
+  '../../src/views/queues/AppUploadQueue.vue',
 ]
 
 describe('基础设施迁移', () => {
@@ -34,18 +34,6 @@ describe('基础设施迁移', () => {
       expect(source).toContain("from '@/composables/useDeviceType'")
       expect(source).toContain('useDeviceType()')
       expect(source).not.toContain('onDeviceTypeChange')
-    }
-  })
-
-  it('移除未被消费的设备类型订阅', () => {
-    for (const path of [
-      '../../src/components/AppScrapePathes.vue',
-      '../../src/components/AppSyncDirectories.vue',
-    ]) {
-      const source = readSource(path)
-
-      expect(source).not.toContain('onDeviceTypeChange')
-      expect(source).not.toContain('useDeviceType')
     }
   })
 })

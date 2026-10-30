@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { AxiosError, CanceledError } from 'axios'
 import { ElMessage } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppDatabaseRepair from '@/components/AppDatabaseRepair.vue'
+import AppDatabaseRepair from '@/views/system/AppDatabaseRepair.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 

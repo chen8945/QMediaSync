@@ -6,7 +6,7 @@
 >
 > 修改时机：修改账号授权入口、`authorization_id` 传递、授权来源兼容性、确认提示、原子更新、访问凭证刷新策略或失败回滚边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115/auth/`、`backend/internal/v115/openapi/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/components/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
+> 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115/auth/`、`backend/internal/v115/openapi/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/views/accounts/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
 
 ## 账号关联语义
 

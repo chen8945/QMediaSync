@@ -7,7 +7,7 @@ import { extractMediaBlock, extractRule } from '../support/css'
 const readSource = (path: string) => readFileSync(resolve(path), 'utf8')
 
 describe('账号弹窗响应式布局', () => {
-  const cloudAccountsSource = readSource('src/components/AppCloudAccounts.vue')
+  const cloudAccountsSource = readSource('src/views/accounts/AppCloudAccounts.vue')
 
   test('新增和编辑账号在移动端使用一致的垂直居中表单布局', () => {
     expect(cloudAccountsSource.match(/class="account-dialog"/g) ?? []).toHaveLength(2)
@@ -41,7 +41,7 @@ describe('账号弹窗响应式布局', () => {
 })
 
 describe('网盘状态图标', () => {
-  const cloudAccountsSource = readSource('src/components/AppCloudAccounts.vue')
+  const cloudAccountsSource = readSource('src/views/accounts/AppCloudAccounts.vue')
   const statusStart = cloudAccountsSource.indexOf('<template v-if="account.status">')
   const statusEnd = cloudAccountsSource.indexOf('\n              </template>', statusStart)
   const statusSource = cloudAccountsSource.slice(statusStart, statusEnd)
@@ -138,7 +138,7 @@ describe('115 二维码授权画布边框', () => {
 })
 
 describe('115 授权流程生命周期', () => {
-  const cloudAccountsSource = readSource('src/components/AppCloudAccounts.vue')
+  const cloudAccountsSource = readSource('src/views/accounts/AppCloudAccounts.vue')
 
   test('新授权入口会取消已有流程并暂停隐藏页面的 OAuth 轮询', () => {
     expect(cloudAccountsSource).toContain('const cancelActiveAuthorizationFlow = async () =>')
@@ -185,7 +185,7 @@ describe('115 授权流程生命周期', () => {
 })
 
 describe('首页操作区样式隔离', () => {
-  const homeSource = readSource('src/components/AppHome.vue')
+  const homeSource = readSource('src/views/dashboard/AppHome.vue')
 
   test('运行日志操作区不再使用全局 header-actions 类', () => {
     expect(homeSource).toContain('class="home-header__actions"')

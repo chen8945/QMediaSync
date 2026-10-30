@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { CanceledError } from 'axios'
 import { ElMessage } from 'element-plus'
 
-import AppLogin from '@/components/AppLogin.vue'
+import AppLogin from '@/views/auth/AppLogin.vue'
 import { httpKey } from '@/http/client'
 
 const router = {

@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const source = readFileSync(
-  resolve(__dirname, '../../src/components/AppSyncDirectoryForm.vue'),
+  resolve(__dirname, '../../src/views/sync/AppSyncDirectoryForm.vue'),
   'utf-8',
 )
 

@@ -4,7 +4,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import AppFileManager from '@/components/AppFileManager.vue'
+import AppFileManager from '@/views/files/AppFileManager.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 

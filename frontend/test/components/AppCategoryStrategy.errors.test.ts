@@ -9,7 +9,7 @@ import {
   type MessageBoxData,
 } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppCategoryStrategy from '@/components/AppCategoryStrategy.vue'
+import AppCategoryStrategy from '@/views/scrape/AppCategoryStrategy.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 

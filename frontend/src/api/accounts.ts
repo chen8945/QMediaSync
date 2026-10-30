@@ -1,8 +1,12 @@
 import type { AxiosInstance, AxiosResponse } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
-import type { V115AuthProvider, V115AuthSourceType } from '@/components/cloud-auth/v115AuthSources'
-import type { V115QrCodePayload, V115QrCodeStatusPayload } from '@/types/v115Auth'
+import type {
+  V115AuthProvider,
+  V115AuthSourceType,
+  V115QrCodePayload,
+  V115QrCodeStatusPayload,
+} from '@/types/v115Auth'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 

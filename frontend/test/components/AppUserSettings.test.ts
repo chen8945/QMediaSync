@@ -4,7 +4,7 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it } from 'vitest'
 
-import AppUserSettings from '@/components/AppUserSettings.vue'
+import AppUserSettings from '@/views/settings/AppUserSettings.vue'
 import { httpKey } from '@/http/client'
 import { useAuthStore } from '@/stores/auth'
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 describe('AppEmbySettings 移动端操作和媒体库图标', () => {
   it('使用响应式操作栏并定义媒体库图标背景', () => {
-    const source = readFileSync(resolve('src/components/AppEmbySettings.vue'), 'utf8')
+    const source = readFileSync(resolve('src/views/settings/AppEmbySettings.vue'), 'utf8')
 
     expect(source).toContain(
       "import ResponsiveActionBar from '@/components/common/ResponsiveActionBar.vue'",
@@ -16,7 +16,7 @@ describe('AppEmbySettings 移动端操作和媒体库图标', () => {
   })
 
   it('保留内容卡片标题层级并让静止状态的卡片边界可见', () => {
-    const source = readFileSync(resolve('src/components/AppEmbySettings.vue'), 'utf8')
+    const source = readFileSync(resolve('src/views/settings/AppEmbySettings.vue'), 'utf8')
 
     expect(source).toContain('<h2 class="card-title">Emby 服务器配置</h2>')
     expect(source).not.toContain('<h1 class="card-title">')

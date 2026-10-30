@@ -25,7 +25,7 @@ describe('router history behavior', () => {
 
   it('登录态跳转使用 replace，不把登录页和失效页留在历史栈里', () => {
     const mainSource = readSource('src/main.ts')
-    const loginSource = readSource('src/components/AppLogin.vue')
+    const loginSource = readSource('src/views/auth/AppLogin.vue')
     const routerSource = readSource('src/router/index.ts')
     const appSource = readSource('src/App.vue')
 
@@ -66,9 +66,9 @@ describe('router history behavior', () => {
   })
 
   it('详情和表单页取消返回使用回退兜底，保存成功使用 replace 回列表', () => {
-    const syncTaskDetailSource = readSource('src/components/AppSyncTaskDetail.vue')
-    const syncDirectoryFormSource = readSource('src/components/AppSyncDirectoryForm.vue')
-    const scrapePathFormSource = readSource('src/components/AppScrapePathForm.vue')
+    const syncTaskDetailSource = readSource('src/views/sync/AppSyncTaskDetail.vue')
+    const syncDirectoryFormSource = readSource('src/views/sync/AppSyncDirectoryForm.vue')
+    const scrapePathFormSource = readSource('src/views/scrape/AppScrapePathForm.vue')
 
     expect(syncTaskDetailSource).toContain('navigateBackOrReplace')
     expect(syncTaskDetailSource).not.toContain("router.push({ name: 'sync-records' })")

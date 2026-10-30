@@ -1,10 +1,6 @@
+import type { V115AuthProvider, V115AuthSourceType } from '@/types/v115Auth'
+
 export type V115AuthMode = 'qr' | 'oauth'
-
-export type V115AuthSourceType =
-  'built_in_appid' | 'built_in_relay' | 'third_party_service' | 'custom_appid'
-
-export type V115AuthProvider =
-  'official_pkce' | 'mqfamily' | 'qmediasync' | 'moviepilot' | 'clouddrive'
 
 export interface V115SelectedQrApp {
   appId: string

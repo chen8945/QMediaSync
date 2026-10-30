@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, shallowRef, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { AxiosInstance } from 'axios'
-import type { BackupTaskType, BackupProgress } from '@/typing'
+import type { BackupTaskType, BackupProgress } from '@/types/backup'
 import {
   fetchBackupStatus,
   getBackupTaskStatus,

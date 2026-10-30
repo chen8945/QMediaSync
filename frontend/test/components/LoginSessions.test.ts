@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import LoginSessions from '../../src/components/user-settings/LoginSessions.vue'
+import LoginSessions from '../../src/views/settings/LoginSessions.vue'
 import { httpKey } from '@/http/client'
 
 describe('LoginSessions', () => {

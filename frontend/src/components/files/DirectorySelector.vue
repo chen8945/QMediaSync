@@ -113,7 +113,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } fro
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useHttpClient } from '@/http/client'
-import type { DirInfo } from '@/typing'
+import type { DirInfo } from '@/types/files'
 import TreeNode from './TreeNode.vue'
 import {
   createDirectory,

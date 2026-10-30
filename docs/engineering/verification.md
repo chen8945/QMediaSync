@@ -53,6 +53,7 @@
 | 数据库启动、首次配置或部署模板 | 本文“数据库启动与部署验证”的 Go、镜像和脚本检查 | 数据库运维、部署、发布流程 |
 | 本地管理员恢复与 Compose 脚本 | 本文“管理员恢复验证”的 Go、脚本和 PostgreSQL 检查；涉及 Windows 展示时交叉构建并人工确认窗口 | 认证会话、部署 |
 | Vue 组件、组合式函数或 HTTP 客户端 | `pnpm run test`、`pnpm lint`、`pnpm format:check`、`pnpm run type-check` | AI 协作说明、请求校验 |
+| 前端页面、组件或共享类型迁移 | 同步消费方、mock 和源码契约路径，运行上述前端检查、生产构建与 `check:build`；浏览器复核登录、路由导航、缓存页面状态、首页图表／日志和受影响控件。保留有效行为断言，不新增仅证明目录移动的测试 | [目录与类型归属](frontend-development.md#目录与类型归属) |
 | 账号授权更换跨端流程 | `cd backend && go test ./internal/requests ./internal/v115/auth ./internal/v115/openapi ./internal/models ./internal/controllers ./internal/db`；`cd frontend && pnpm run test -- test/components/cloud-auth test/composables/useV115DeviceAuthorization.test.ts`、`pnpm run type-check`、`pnpm run build` | [账号授权与更换](../reference/account-authorization.md) |
 | 115 共享客户端凭据 | `cd backend && go test -race ./internal/v115/openapi`；`cd backend && go test ./internal/models ./internal/controllers ./internal/synccron` | [账号授权与更换](../reference/account-authorization.md#访问凭证定时刷新与失效) |
 | 下载代理 Cookie 隔离 | `cd backend && go test -race ./internal/controllers -run '^TestProxy115'`；覆盖 115/百度首跳与重定向、Range/Referer/UA 保留 | [认证与浏览器会话](../architecture/authentication-sessions.md#api-key可信来源与下载代理) |

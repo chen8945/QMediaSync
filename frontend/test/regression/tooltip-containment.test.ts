@@ -31,11 +31,11 @@ describe('长文本 Tooltip 容器约束', () => {
   })
 
   it('页面动态说明使用稳定的 Tooltip 挂载目标', () => {
-    const cloudSource = readSource('src/components/AppCloudAccounts.vue')
-    const downloadSource = readSource('src/components/AppDownloadQueue.vue')
-    const uploadSource = readSource('src/components/AppUploadQueue.vue')
-    const scrapeSource = readSource('src/components/AppScrapeRecords.vue')
-    const syncSource = readSource('src/components/AppSyncDirectories.vue')
+    const cloudSource = readSource('src/views/accounts/AppCloudAccounts.vue')
+    const downloadSource = readSource('src/views/queues/AppDownloadQueue.vue')
+    const uploadSource = readSource('src/views/queues/AppUploadQueue.vue')
+    const scrapeSource = readSource('src/views/scrape/AppScrapeRecords.vue')
+    const syncSource = readSource('src/views/sync/AppSyncDirectories.vue')
 
     for (const source of [cloudSource, downloadSource, uploadSource, syncSource]) {
       expect(source).toContain('popper-class="qms-contained-tooltip"')
@@ -55,7 +55,7 @@ describe('长文本 Tooltip 容器约束', () => {
   })
 
   it('登录设备 UA 复用容器内的表格 Tooltip', () => {
-    const source = readSource('src/components/user-settings/LoginSessions.vue')
+    const source = readSource('src/views/settings/LoginSessions.vue')
 
     expect(source).toContain(
       ":show-overflow-tooltip=\"{ popperClass: 'qms-contained-tooltip', strategy: 'fixed' }\"",
@@ -63,8 +63,8 @@ describe('长文本 Tooltip 容器约束', () => {
   })
 
   it('目录选择器和文件管理选择不添加路径 Tooltip', () => {
-    const treeSource = readSource('src/components/TreeNode.vue')
-    const selectorSource = readSource('src/components/DirectorySelector.vue')
+    const treeSource = readSource('src/components/files/TreeNode.vue')
+    const selectorSource = readSource('src/components/files/DirectorySelector.vue')
 
     expect(treeSource).not.toContain('<el-tooltip')
     expect(treeSource).not.toContain('qms-contained-tooltip')

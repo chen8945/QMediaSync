@@ -38,7 +38,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 - 后端：Gin、GORM，模块名为 `qmediasync`，位于 `backend/`。
 - 应用入口：根 `main.go` 保留构建变量与 embed 声明，`internal/app` 负责现有启动、生命周期、路由和代理组装；构建仍在 backend 根执行，不将业务实现堆入 app。
 - 数据库：SQLite 或 PostgreSQL，默认 PostgreSQL；不包含内嵌 PostgreSQL 和旧库自动迁移能力。
-- 前端：Vue 3、Vite、TypeScript，位于 `frontend/`；本地生产构建输出 `frontend/dist`，发布流程将其复制为 `backend/web_statics`，运行目录使用 `web_statics`。
+- 前端：Vue 3、Vite、TypeScript，位于 `frontend/`；路由页面在 `src/views/`，复用组件在 `src/components/`，共享类型按领域放在 `src/types/`，归属边界见 [前端开发约定](frontend-development.md#目录与类型归属)。本地生产构建输出 `frontend/dist`，发布流程将其复制为 `backend/web_statics`，运行目录使用 `web_statics`。
 - 其他目录：`backend/internal/emby302/` 是嵌入的 Emby 302 代理，`backend/internal/baidupan/internal/openxpanapi/` 是自动生成的百度网盘 OpenAPI 客户端，`docker/` 存放容器脚本，`scripts/` 存放安装和发布辅助脚本。
 
 完整目录职责见 [仓库结构](repository-structure.md)。

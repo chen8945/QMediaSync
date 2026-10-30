@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, toRaw, watch } from 'vue'
 import type { FnosPathMapping } from '@/api/fnosProxy'
-import type { DirInfo } from '@/typing'
-import DirectorySelector from '@/components/DirectorySelector.vue'
+import type { DirInfo } from '@/types/files'
+import DirectorySelector from '@/components/files/DirectorySelector.vue'
 
 const mappings = defineModel<FnosPathMapping[]>({ required: true })
 const props = defineProps<{ disabled?: boolean }>()

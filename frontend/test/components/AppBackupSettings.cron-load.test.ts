@@ -3,7 +3,7 @@ import type { AxiosInstance } from 'axios'
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import AppBackupSettings from '@/components/AppBackupSettings.vue'
+import AppBackupSettings from '@/views/backup/AppBackupSettings.vue'
 import { httpKey } from '@/http/client'
 
 describe('AppBackupSettings', () => {

@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElMessage } from 'element-plus'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppScrapePathForm from '@/components/AppScrapePathForm.vue'
+import AppScrapePathForm from '@/views/scrape/AppScrapePathForm.vue'
 import { httpKey } from '@/http/client'
 
 const wrappers: VueWrapper[] = []

@@ -4,7 +4,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ElDialog, ElMessage } from 'element-plus'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import AppNotificationChannels from '@/components/AppNotificationChannels.vue'
+import AppNotificationChannels from '@/views/settings/AppNotificationChannels.vue'
 import { httpKey } from '@/http/client'
 
 enableAutoUnmount(afterEach)

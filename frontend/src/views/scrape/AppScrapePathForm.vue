@@ -811,9 +811,9 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { useDeviceType } from '@/composables/useDeviceType'
 import { navigateBackOrReplace } from '@/utils/navigation'
 import { sourceTypeOptions } from '@/utils/sourceTypeUtils'
-import MetadataExtInput from './MetadataExtInput.vue'
-import DirectorySelector from './DirectorySelector.vue'
-import type { DirInfo } from '@/typing'
+import MetadataExtInput from '@/components/common/MetadataExtInput.vue'
+import DirectorySelector from '@/components/files/DirectorySelector.vue'
+import type { DirInfo } from '@/types/files'
 
 interface CloudAccount {
   id: number

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowDown } from '@element-plus/icons-vue'
-import type { FileOperationType, FileSystemItem } from '@/typing'
+import type { FileOperationType, FileSystemItem } from '@/types/files'
 
 defineProps<{ row: FileSystemItem }>()
 const emit = defineEmits<{

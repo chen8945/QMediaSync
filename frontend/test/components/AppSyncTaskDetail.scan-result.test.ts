@@ -3,7 +3,7 @@
 import { shallowMount } from '@vue/test-utils'
 import { nextTick, shallowRef } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
-import AppSyncTaskDetail from '@/components/AppSyncTaskDetail.vue'
+import AppSyncTaskDetail from '@/views/sync/AppSyncTaskDetail.vue'
 import type { SyncLedgerState, SyncTask, SyncTaskStatus } from '@/types/syncTaskStream'
 
 const task = shallowRef<SyncTask>()

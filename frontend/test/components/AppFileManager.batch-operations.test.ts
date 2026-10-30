@@ -12,7 +12,7 @@ import { ElDropdown, ElMessage, ElMessageBox, type MessageBoxData } from 'elemen
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import AppFileManager from '@/components/AppFileManager.vue'
+import AppFileManager from '@/views/files/AppFileManager.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'

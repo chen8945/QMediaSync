@@ -6,7 +6,7 @@ import { extractMediaBlock, extractRule } from '../support/css'
 
 describe('版本更新页移动端布局', () => {
   it('当前版本图标与文字保持水平，版本标志不受标题换行影响', () => {
-    const source = readFileSync(resolve('src/components/AppUpdate.vue'), 'utf8')
+    const source = readFileSync(resolve('src/views/system/AppUpdate.vue'), 'utf8')
     const mobileStyles = extractMediaBlock(source, '@media (max-width: 768px)')
 
     expect(source).toContain('<div class="section-header section-header--current">')

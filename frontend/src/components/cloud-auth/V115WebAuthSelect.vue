@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { webAuthProviders, type V115AuthProvider } from './v115AuthSources'
+import { webAuthProviders } from './v115AuthSources'
+import type { V115AuthProvider } from '@/types/v115Auth'
 
 const selectedWebProvider = defineModel<V115AuthProvider>('selectedWebProvider', {
   required: true,

@@ -1,7 +1,7 @@
 import { SERVER_URL } from '@/const'
 import type { AxiosInstance } from 'axios'
 import { HttpResponseError, type ParsedHttpError } from '@/http/errors'
-import type { DirectoryUploadRule } from '@/typing'
+import type { DirectoryUploadRule } from '@/types/directoryUpload'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 

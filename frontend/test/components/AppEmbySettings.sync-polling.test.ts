@@ -1,7 +1,7 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import AppEmbySettings from '@/components/AppEmbySettings.vue'
+import AppEmbySettings from '@/views/settings/AppEmbySettings.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 

@@ -4,11 +4,21 @@
 >
 > 权威范围：本文档维护前端实现与协作边界；请求字段和校验见 [请求校验约定](request-validation.md)，SSE 协议见 [实时事件](../architecture/realtime-events.md)，上传和 STRM 状态机见 [上传与 STRM 处理](../architecture/upload-and-strm-processing.md)。
 >
-> 修改时机：修改 HTTP 客户端注入、实时刷新策略、路由表结构、路由历史、侧边栏菜单、通用响应式组件、通知渠道热刷新或全局交互约定时必须更新本文档。
+> 修改时机：修改页面与类型归属、HTTP 客户端注入、实时刷新策略、路由表结构、路由历史、侧边栏菜单、通用响应式组件、通知渠道热刷新或全局交互约定时必须更新本文档。
 >
-> 相关代码：`frontend/src/http/`、`frontend/src/api/`、`frontend/src/composables/`、`frontend/src/router/`、`frontend/src/App.vue`、`frontend/src/components/common/`、`frontend/src/utils/`、`backend/internal/controllers/notification.go`、`backend/internal/notificationmanager/`。
+> 相关代码：`frontend/src/views/`、`frontend/src/components/`、`frontend/src/types/`、`frontend/src/http/`、`frontend/src/api/`、`frontend/src/composables/`、`frontend/src/router/`、`frontend/src/App.vue`、`frontend/src/utils/`、`backend/internal/controllers/notification.go`、`backend/internal/notificationmanager/`。
 
 完整同步记录的列表、详情、全局事件和 HTTP 降级复用同一结果类型，覆盖部分完成、扫描不完整及取消。目录是否可启动按生成终态判断，旧任务后台更新与历史删除不能覆盖新任务的运行态；详情连接／轮询则等待生成终态且后台不再处于 pending/running。列表状态列及展开行使用“状态”，独立详情页使用“任务状态”，结束时间统一使用“结束时间”；这些文案仍对应生成阶段的状态和结束时间。未展开时只在状态列显示主任务状态，不附加后台更新状态；状态列宽为 112px，保留通用单元格边距，桌面和移动端都应完整容纳“扫描不完整”标签。固定生成耗时、文件记录更新结果及总耗时保留在展开行和详情中，后台状态及错误字段分别显示为“文件记录更新”和“文件记录更新原因”。历史未记录和中断的未知终点不推算。历史缺少扫描明细时在展开行和详情中显示“未记录”，不按总数倒推成功／失败数量；业务状态与清理资格见 [同步编排](../architecture/sync-orchestration.md)，实时收敛见 [实时事件](../architecture/realtime-events.md)。
+
+## 目录与类型归属
+
+- 路由页面位于 `src/views/`，按 auth、dashboard、accounts、files、sync、scrape、queues、backup、settings、system 归组。`router/index.ts` 显式懒加载页面；同步包装组件名、路由身份和 KeepAlive 缓存键共同保持页面状态，不能仅因移动文件而改名或改为直接挂载异步组件。
+- 复用组件位于 `src/components/` 的现有领域目录；`common/` 放不含领域请求和状态的共享控件，例如 Cron 和扩展名输入。跨目录引用沿用 `@/` 别名，不建立兼容副本或仅转发的桶导出。首页图表和日志查看器继续按需加载；文件名、递归组件名和 scoped 样式保持对应。
+- `types/` 只放跨层共享的领域类型：文件浏览、备份、目录监控规则和 115 授权分别使用 `files.ts`、`backup.ts`、`directoryUpload.ts`、`v115Auth.ts`；其他已有流和记录类型保留。API 专用响应类型就近放在 `api/`；展示配置和控件专用类型留在对应组件旁。API 不从 `components/` 导入共享授权类型。
+- 页面内部的表单、弹窗和局部状态仍由当前页面协调；App.vue 仍承担应用接线、布局及全局进度展示。新增页面遵循上述归属，职责提取按实际消费和状态边界决定，不预建空目录或为每个函数增加 composable。
+- `test/` 按现有测试分类维护，不必镜像页面目录。移动源码时同步 import、mock 和源码契约读取路径，保留行为断言；不新增只检查迁移完成或旧路径不存在的测试。
+
+实际目录树见 [仓库结构](repository-structure.md)。
 
 ## 组件和请求边界
 

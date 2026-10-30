@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
-import StrmResultsDialog from '@/components/StrmResultsDialog.vue'
+import StrmResultsDialog from '@/components/sync/StrmResultsDialog.vue'
 
 const get = vi.fn()
 vi.mock('@/http/client', () => ({ useHttpClient: () => ({ get }) }))

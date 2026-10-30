@@ -6,7 +6,7 @@ import { extractMediaBlock, extractRule } from '../support/css'
 
 const appVue = readFileSync(resolve(__dirname, '../../src/App.vue'), 'utf8')
 const fileManagerVue = readFileSync(
-  resolve(__dirname, '../../src/components/AppFileManager.vue'),
+  resolve(__dirname, '../../src/views/files/AppFileManager.vue'),
   'utf8',
 )
 

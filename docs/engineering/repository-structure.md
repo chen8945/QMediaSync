@@ -37,6 +37,31 @@ qmediasync/
 ├── packaging/
 │   └── fnos/                        # FPK 模板、两架构资产及共享生命周期脚本
 ├── frontend/
+│   ├── src/
+│   │   ├── main.ts                  # 启动、认证 bootstrap 和 HTTP 注入
+│   │   ├── App.vue                  # 应用接线、布局和全局进度展示
+│   │   ├── views/                   # 路由页面，按领域归组
+│   │   │   ├── auth/
+│   │   │   ├── dashboard/
+│   │   │   ├── accounts/
+│   │   │   ├── files/
+│   │   │   ├── sync/
+│   │   │   ├── scrape/
+│   │   │   ├── queues/
+│   │   │   ├── backup/
+│   │   │   ├── settings/
+│   │   │   └── system/
+│   │   ├── components/              # common 与各领域复用组件
+│   │   ├── api/                     # 领域请求、响应和 API 专用类型
+│   │   ├── http/                    # 唯一客户端、认证和错误解析
+│   │   ├── composables/             # 复用状态和生命周期
+│   │   ├── stores/                  # auth、backup 和 pageState
+│   │   ├── types/                   # 文件、备份、目录监控、授权等共享类型
+│   │   ├── router/                  # 路由表、历史和同步懒加载壳
+│   │   ├── utils/
+│   │   ├── constants/
+│   │   ├── const.ts                 # SERVER_URL 等现有常量入口
+│   │   └── assets/
 │   ├── test/                        # Vitest 测试和构建后检查
 │   └── dist/                        # 前端生产构建输出（生成且忽略）
 ├── docker/                          # Dockerfile、容器入口和更新脚本
@@ -55,6 +80,8 @@ qmediasync/
 fnOS 模板和生命周期脚本的局部约束见 [原生包说明](../../packaging/fnos/README.md)，二进制与前端只在临时目录组包。
 
 前端生产构建会输出到 `frontend/dist`。发布包、Docker 镜像和运行目录仍使用 `web_statics` 作为 Web UI 静态资源目录，后端从程序根目录下的 `web_statics` 提供 Web UI。
+
+前端页面、组件和类型的归属及引用边界见 [前端开发约定](frontend-development.md#目录与类型归属)。
 
 `config/`、`data/`、`logs/`、`backend/config/`、`backend/update/` 和上述生成目录属于运行时、本地构建或发布产物，均不作为源码或正式文档入口。
 

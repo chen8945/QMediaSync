@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { AxiosError, CanceledError, type InternalAxiosRequestConfig } from 'axios'
 import { ElDialog, ElMessage, ElMessageBox, type MessageBoxData } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppApiKeys from '@/components/AppApiKeys.vue'
+import AppApiKeys from '@/views/settings/AppApiKeys.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 

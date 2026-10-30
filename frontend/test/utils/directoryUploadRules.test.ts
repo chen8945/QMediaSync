@@ -6,7 +6,7 @@ import {
   getEnabledDirectoryUploadRules,
   groupDirectoryUploadRulesBySyncPath,
 } from '@/utils/directoryUploadRules'
-import type { DirectoryUploadRule } from '@/typing'
+import type { DirectoryUploadRule } from '@/types/directoryUpload'
 
 const makeRule = (partial: Partial<DirectoryUploadRule>): DirectoryUploadRule => ({
   id: partial.id ?? 1,

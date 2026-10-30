@@ -4,7 +4,7 @@ import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/t
 import { afterEach, describe, expect, it } from 'vitest'
 import FnosPathMappings from '@/components/fnos-proxy/FnosPathMappings.vue'
 import type { FnosPathMapping } from '@/api/fnosProxy'
-import type { DirInfo } from '@/typing'
+import type { DirInfo } from '@/types/files'
 
 const DirectorySelectorStub = defineComponent({
   name: 'DirectorySelector',

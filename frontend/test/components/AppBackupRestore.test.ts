@@ -17,7 +17,7 @@ import * as authAPI from '@/api/auth'
 describe('AppBackupRestore', () => {
   it('仅接受 ZIP 备份，并提示恢复后重启服务', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'src/components/AppBackupRestore.vue'),
+      resolve(process.cwd(), 'src/views/backup/AppBackupRestore.vue'),
       'utf8',
     )
 

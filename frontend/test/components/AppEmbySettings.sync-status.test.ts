@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('AppEmbySettings 同步状态展示', () => {
-  const source = readFileSync(resolve('src/components/AppEmbySettings.vue'), 'utf8')
+  const source = readFileSync(resolve('src/views/settings/AppEmbySettings.vue'), 'utf8')
 
   it('区分 Emby 刷新媒体库和条目同步状态文案', () => {
     expect(source).toContain("refresh_library: '刷新 Emby 媒体库'")

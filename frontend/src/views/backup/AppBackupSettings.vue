@@ -76,7 +76,7 @@ import { fetchCronTimes, systemSettingsPublicMessages } from '@/api/systemSettin
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { useDeviceType } from '@/composables/useDeviceType'
 import PageHeader from '@/components/common/PageHeader.vue'
-import CronSelector from './CronSelector.vue'
+import CronSelector from '@/components/common/CronSelector.vue'
 
 const http = useHttpClient()
 const { isMobile } = useDeviceType()

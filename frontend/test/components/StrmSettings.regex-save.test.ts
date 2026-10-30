@@ -2,8 +2,8 @@
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElFormItem, ElMessage } from 'element-plus'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import AppStrmSettings from '@/components/AppStrmSettings.vue'
-import AppSyncDirectoryForm from '@/components/AppSyncDirectoryForm.vue'
+import AppStrmSettings from '@/views/sync/AppStrmSettings.vue'
+import AppSyncDirectoryForm from '@/views/sync/AppSyncDirectoryForm.vue'
 import { httpKey } from '@/http/client'
 
 vi.mock('vue-router', () => ({

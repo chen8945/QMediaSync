@@ -6,7 +6,7 @@ vi.mock('@/const', () => ({
   SERVER_URL: 'https://api.example.test/api',
 }))
 
-import AppLogViewer from '@/components/AppLogViewer.vue'
+import AppLogViewer from '@/components/log/AppLogViewer.vue'
 
 type Listener = (event: MessageEvent<string>) => void
 

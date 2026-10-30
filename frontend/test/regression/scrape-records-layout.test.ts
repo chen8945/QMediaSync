@@ -8,7 +8,7 @@ const readSource = (path: string) => readFileSync(resolve(process.cwd(), path), 
 
 describe('刮削记录页面布局与 Tooltip', () => {
   it('使用共享页面头部，并把批量操作放在页面头部之后', () => {
-    const source = readSource('src/components/AppScrapeRecords.vue')
+    const source = readSource('src/views/scrape/AppScrapeRecords.vue')
     const pageHeaderStart = source.indexOf('<PageHeader')
     const topActionsStart = source.indexOf('class="top-actions"')
 
@@ -27,7 +27,7 @@ describe('刮削记录页面布局与 Tooltip', () => {
   })
 
   it('路径 Tooltip 显式保留“到”关系词，并为缺失路径使用占位符', () => {
-    const source = readSource('src/components/AppScrapeRecords.vue')
+    const source = readSource('src/views/scrape/AppScrapeRecords.vue')
     const pathTooltipStart = source.indexOf('const getPathTooltip')
     const nextHelperStart = source.indexOf('// 获取类型标签类型', pathTooltipStart)
     const pathTooltipSource = source.slice(pathTooltipStart, nextHelperStart)
@@ -42,7 +42,7 @@ describe('刮削记录页面布局与 Tooltip', () => {
   })
 
   it('文件状态列使用固定宽度并统一居中，所有状态复用同一个渲染分支', () => {
-    const source = readSource('src/components/AppScrapeRecords.vue')
+    const source = readSource('src/views/scrape/AppScrapeRecords.vue')
     const statusTemplateStart = source.indexOf('<template #cell-status')
     const nextTemplateStart = source.indexOf('<template #cell-type', statusTemplateStart)
     const statusTemplateSource = source.slice(statusTemplateStart, nextTemplateStart)

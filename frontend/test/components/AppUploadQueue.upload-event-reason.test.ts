@@ -3,7 +3,10 @@ import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-const source = readFileSync(resolve(__dirname, '../../src/components/AppUploadQueue.vue'), 'utf-8')
+const source = readFileSync(
+  resolve(__dirname, '../../src/views/queues/AppUploadQueue.vue'),
+  'utf-8',
+)
 const queueTaskDetailUtilsSource = readFileSync(
   resolve(__dirname, '../../src/utils/queueTaskDetailUtils.ts'),
   'utf-8',

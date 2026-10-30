@@ -1,4 +1,4 @@
-import type { FileType } from '@/typing'
+import type { FileType } from '@/types/files'
 import type { Component } from 'vue'
 import { getIconComponent } from '@/components/common/iconRegistry'
 
