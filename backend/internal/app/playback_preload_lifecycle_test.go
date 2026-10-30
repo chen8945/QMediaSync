@@ -22,7 +22,10 @@ func TestPreloadOriginKey(t *testing.T) {
 	for _, test := range []struct{ raw, want string }{
 		{"http://QMS.invalid/path?token=private", "http://qms.invalid:80"},
 		{"http://qms.invalid:80/other", "http://qms.invalid:80"},
+		{"http://qms.invalid:080/other", "http://qms.invalid:80"},
 		{"https://qms.invalid/", "https://qms.invalid:443"},
+		{"https://qms.invalid:00443/", "https://qms.invalid:443"},
+		{"http://qms.invalid:000/", "http://qms.invalid:0"},
 		{"http://[::1]:12333/115/url", "http://[::1]:12333"},
 		{"http://user:password@qms.invalid/115/url", ""},
 		{"file:///115/url", ""},
@@ -62,6 +65,7 @@ func TestPlaybackPreloadConfiguredPrefixes(t *testing.T) {
 	}
 	for _, base := range []string{
 		"https://global.invalid/qms/nested/", "http://directory.invalid:12333/media", "https://global.invalid/other",
+		"http://default-http.invalid/qms",
 		"https://invalid-query.invalid/qms?x=1", "https://invalid-fragment.invalid/qms#hidden",
 		"https://invalid-encoded.invalid/%71ms", "https://invalid-traversal.invalid/qms/../other",
 		"https://private@invalid-userinfo.invalid/qms",
@@ -91,6 +95,8 @@ func TestPlaybackPreloadConfiguredPrefixes(t *testing.T) {
 		{"overlapping-prefix", "https://global.invalid/qms/nested/115/newurl?" + query, "/115/newurl"},
 		{"multiple-prefixes", "https://global.invalid/other/115/newurl?" + query, "/115/newurl"},
 		{"canonical-origin", "https://GLOBAL.invalid:443/qms/115/newurl?" + query, "/115/newurl"},
+		{"padded-https-port", "https://global.invalid:00443/qms/115/newurl?" + query, "/115/newurl"},
+		{"padded-http-port", "http://default-http.invalid:080/qms/115/newurl?" + query, "/115/newurl"},
 		{"root-115", "https://global.invalid/115/newurl?" + query, "/115/newurl"},
 		{"root-baidu", "http://directory.invalid:12333/baidupan/url/movie.mkv?" + query, "/baidupan/url/movie.mkv"},
 		{"unknown-host", "https://unknown.invalid/qms/115/newurl?" + query, ""},
@@ -129,13 +135,34 @@ func TestPlaybackPreloadConfiguredPrefixes(t *testing.T) {
 		{"unsupported-openlist", "https://global.invalid/qms/openlist/url?" + query, ""},
 		{"unsupported-endpoint", "https://global.invalid/qms/api/setting/strm-config?" + query, ""},
 		{"empty-filename", "https://global.invalid/qms/115/url/?" + query, ""},
+		{"empty-root-115", "https://global.invalid/115/url?" + query, ""},
+		{"empty-prefixed-115", "https://global.invalid/qms/115/url?" + query, ""},
+		{"empty-root-baidu", "https://global.invalid/baidupan/url?" + query, ""},
+		{"empty-prefixed-baidu", "https://global.invalid/qms/baidupan/url?" + query, ""},
+		{"empty-padded-http-port", "http://default-http.invalid:080/qms/115/url?" + query, ""},
+		{"empty-padded-https-port", "https://global.invalid:00443/qms/baidupan/url?" + query, ""},
+		{"docker-third-party", "http://moviepilot:3000/api/v1/plugin/P115StrmHelper/redirect_url?file_name=movie%2Bmkv&x=1&x=2", ""},
+		{"encoded-third-party", "https://external.invalid/folder%2Fmovie?a=%2fb+z&a=second", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity, run, ok := resolve(test.target, "Player/1.2", true)
 			gotAccount := account(test.target)
 			if test.endpoint == "" {
-				if ok || run != nil || identity != "" || gotAccount != (playback.PreloadAccount{}) {
-					t.Fatalf("不可信或无效来源被接纳：ok=%t account=%+v", ok, gotAccount)
+				external := false
+				switch test.name {
+				case "unknown-host", "unknown-root-host", "invalid-config-query", "invalid-config-fragment", "invalid-config-encoded", "invalid-config-traversal", "invalid-config-userinfo",
+					"wrong-scheme", "wrong-port", "similar-prefix", "missing-boundary", "unconfigured-prefix", "prefix-at-other-origin", "unsupported-openlist", "unsupported-endpoint", "docker-third-party", "encoded-third-party":
+					external = true
+				}
+				if external {
+					if !ok || run == nil || identity != playback.ExternalLinkIdentity(test.target, "Player/1.2") || gotAccount != playback.ExternalPreloadAccount(test.target) {
+						t.Fatalf("第三方来源被套用自有参数规则：ok=%t account=%+v", ok, gotAccount)
+					}
+					if _, current := app.normalizePreloadSource(test.target); current != nil {
+						t.Fatal("第三方来源被按 QMS 规范化")
+					}
+				} else if ok || run != nil || identity != "" || gotAccount != (playback.PreloadAccount{}) {
+					t.Fatalf("自有无效来源被接纳：ok=%t account=%+v", ok, gotAccount)
 				}
 				return
 			}
@@ -258,10 +285,13 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if !playback.DefaultPreloader.Enabled() {
 		t.Fatal("已保存的启用状态未生效")
 	}
-	assertTrusted("https://global.invalid:443/115/url", true)
-	assertTrusted("http://directory.invalid:12333/baidupan/url", true)
-	assertTrusted("https://global.invalid.evil.test/115/url", false)
-	assertTrusted("http://global.invalid/115/url", false)
+	assertTrusted("https://global.invalid:443/115/newurl", true)
+	assertTrusted("https://global.invalid/qms/115/newurl", true)
+	assertTrusted("https://global.invalid/moviepilot/redirect", false)
+	assertTrusted("https://global.invalid/openlist/d/movie.mkv", false)
+	assertTrusted("http://directory.invalid:12333/baidupan/url/movie.mkv", true)
+	assertTrusted("https://global.invalid.evil.test/115/newurl", false)
+	assertTrusted("http://global.invalid/115/newurl", false)
 	assertPrepared("https://global.invalid/qms/115/newurl", true)
 	assertPrepared("http://directory.invalid:12333/qms/baidupan/url/movie.mkv", true)
 
@@ -270,7 +300,7 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 100 {
-		assertTrusted("https://global.invalid/115/url", true)
+		assertTrusted("https://global.invalid/115/newurl", true)
 		assertPrepared("https://global.invalid/qms/115/newurl", true)
 	}
 	if queries.Load() != 0 {
@@ -287,8 +317,8 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if models.SettingsGlobal.UpdateStrm(strm, multi) {
 		t.Fatal("失败保存被接受")
 	}
-	assertTrusted("https://global.invalid/115/url", true)
-	assertTrusted("https://failed.invalid/115/url", false)
+	assertTrusted("https://global.invalid/115/newurl", true)
+	assertTrusted("https://failed.invalid/115/newurl", false)
 	assertPrepared("https://global.invalid/qms/115/newurl", true)
 	if err := db.Db.Callback().Update().Remove("test:preload_failed_save"); err != nil {
 		t.Fatal(err)
@@ -297,17 +327,17 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if !models.SettingsGlobal.UpdateStrm(strm, multi) {
 		t.Fatal("来源更新失败")
 	}
-	assertTrusted("https://global.invalid/115/url", false)
-	assertTrusted("https://updated.invalid/115/url", true)
-	assertPrepared("https://global.invalid/qms/115/newurl", false)
+	assertTrusted("https://global.invalid/115/newurl", false)
+	assertTrusted("https://updated.invalid/115/newurl", true)
+	assertPrepared("https://global.invalid/qms/115/newurl", true)
 	assertPrepared("https://updated.invalid/115/newurl", true)
 	if err := db.Db.Model(path).Update("strm_base_url", "http://new-directory.invalid:12333").Error; err != nil {
 		t.Fatal(err)
 	}
 	models.NotifyStrmOriginsChanged()
-	assertTrusted("http://directory.invalid:12333/115/url", false)
-	assertTrusted("http://new-directory.invalid:12333/115/url", true)
-	assertPrepared("http://directory.invalid:12333/qms/115/newurl", false)
+	assertTrusted("http://directory.invalid:12333/115/newurl", false)
+	assertTrusted("http://new-directory.invalid:12333/115/newurl", true)
+	assertPrepared("http://directory.invalid:12333/qms/115/newurl", true)
 	assertPrepared("http://new-directory.invalid:12333/115/newurl", true)
 
 	if err := db.Db.Callback().Query().Before("gorm:query").Register("test:preload_failed_origins", func(tx *gorm.DB) {
@@ -318,13 +348,13 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	models.NotifyStrmOriginsChanged()
-	assertTrusted("https://updated.invalid/115/url", false)
+	assertTrusted("https://updated.invalid/115/newurl", false)
 	assertPrepared("https://updated.invalid/115/newurl", false)
 	if err := db.Db.Callback().Query().Remove("test:preload_failed_origins"); err != nil {
 		t.Fatal(err)
 	}
 	models.NotifyStrmOriginsChanged()
-	assertTrusted("https://updated.invalid/115/url", true)
+	assertTrusted("https://updated.invalid/115/newurl", true)
 	assertPrepared("https://updated.invalid/115/newurl", true)
 
 	// 旧查询已完成读库但迟到返回时，不能覆盖新来源配置。
@@ -355,8 +385,8 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if err := db.Db.Callback().Query().Remove("test:preload_old_origins"); err != nil {
 		t.Fatal(err)
 	}
-	assertTrusted("https://updated.invalid/115/url", false)
-	assertTrusted("https://latest.invalid/115/url", true)
+	assertTrusted("https://updated.invalid/115/newurl", false)
+	assertTrusted("https://latest.invalid/115/newurl", true)
 	assertPrepared("https://latest.invalid/115/newurl", true)
 	strm.LocalProxy = 1
 	if !models.SettingsGlobal.UpdateStrm(strm, multi) {
@@ -367,13 +397,13 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if !models.SettingsGlobal.UpdateStrm(strm, multi, &disabled) || playback.DefaultPreloader.Enabled() {
 		t.Fatal("关闭设置未停止准入")
 	}
-	assertTrusted("https://latest.invalid/115/url", false)
+	assertTrusted("https://latest.invalid/115/newurl", false)
 	assertPrepared("https://latest.invalid/115/newurl", false)
 	enabled := 1
 	if !models.SettingsGlobal.UpdateStrm(strm, multi, &enabled) {
 		t.Fatal("重新启用失败")
 	}
-	assertTrusted("https://latest.invalid/115/url", true)
+	assertTrusted("https://latest.invalid/115/newurl", true)
 	assertPrepared("https://latest.invalid/115/newurl", true)
 
 	started := make(chan *playback.PreloadTask, 1)
@@ -403,7 +433,7 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 	if !adapterStopped || !<-stopped || playback.DefaultPreloader.Enabled() {
 		t.Fatal("关闭未停止适配器、排空后台作业或阻止迟到发布")
 	}
-	assertTrusted("https://latest.invalid/115/url", false)
+	assertTrusted("https://latest.invalid/115/newurl", false)
 }
 
 func TestPlaybackPreloadSourceChangesRevokeAllAdapters(t *testing.T) {

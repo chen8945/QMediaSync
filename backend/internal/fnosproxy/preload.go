@@ -1347,11 +1347,15 @@ func (inst *instance) submitPreload(r *http.Request, scope string, item preloadI
 				if !ok {
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "source_unavailable"}
 				}
-				target, ok := inst.internalURL(ctx, resolved.url)
-				if !ok {
-					return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "source_origin_unknown"}
+				target, internal := inst.classifyInternalURL(ctx, resolved.url)
+				if internal {
+					if target == nil {
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "source_unavailable"}
+					}
+					_, run, ok = inst.service.options.NewPreload(target.String(), playerUA, false)
+				} else {
+					_, run, ok = playback.NewExternalPreload(resolved.url, playerUA, inst.transport)
 				}
-				_, run, ok = inst.service.options.NewPreload(target.String(), playerUA, false)
 				if !ok || run == nil {
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "provider_not_supported"}
 				}

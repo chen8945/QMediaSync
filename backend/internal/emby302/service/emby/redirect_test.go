@@ -2,6 +2,7 @@ package emby
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -244,7 +245,7 @@ func TestGetFinalRedirectLinkClosesQMSResponseBody(t *testing.T) {
 			}))
 			defer resolver.Close()
 			defer close(release)
-			getFinalRedirectLink(resolver.URL+"/115/newurl?pickcode=test", make(http.Header))
+			getFinalRedirectLink(context.Background(), resolver.URL+"/115/newurl?pickcode=test", make(http.Header))
 			select {
 			case <-closed:
 			case <-time.After(3 * time.Second):

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 )
 
 const strmLimit = 64 << 10
@@ -50,6 +51,19 @@ func (inst *instance) roots(ctx context.Context) ([]string, error) {
 }
 
 func (inst *instance) resolveSource(ctx context.Context, r *http.Request, source Source) (sourceRecord, bool) {
+	if ctx.Err() != nil || inst.ctx.Err() != nil {
+		return sourceRecord{}, false
+	}
+	raw := source.URL
+	if raw == "" {
+		raw = source.Path
+	}
+	if playback.ValidExternalURL(raw) {
+		if _, internal := inst.classifyInternalURL(ctx, raw); !internal {
+			// 第三方地址来自本次已授权的准确源，不要求它另有本地挂载。
+			return sourceRecord{source: source, url: raw}, true
+		}
+	}
 	if !strings.EqualFold(filepath.Ext(strings.ReplaceAll(source.Path, `\`, "/")), ".strm") {
 		return sourceRecord{}, false
 	}

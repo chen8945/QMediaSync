@@ -90,9 +90,17 @@ func preloadReasonText(reason string) string {
 	case "warm_playbackinfo_already_tried":
 		return "本候选已查询过播放源资料"
 	case "source_origin_unknown":
-		return "播放源不属于已配置的取链地址"
+		return "尚未取得可预加载的 HTTP(S) 播放地址"
 	case "provider_not_supported":
 		return "该播放源暂不支持预加载"
+	case "external_unavailable":
+		return "本轮暂不能请求第三方取链服务"
+	case "external_invalid_link":
+		return "第三方返回的链接无效或已过期"
+	case "external_failed":
+		return "第三方未能返回可用播放地址"
+	case "external_limited":
+		return "第三方取链服务拒绝请求或暂时受限"
 	case "runtime_maintenance":
 		return "系统正在维护，暂不预加载"
 	case "playback_denied":
@@ -182,11 +190,23 @@ func (event preloadEvent) message() string {
 		message += "，网盘=115"
 	case "baidupan":
 		message += "，网盘=百度网盘"
+	case "http":
+		message += "，来源=第三方 STRM"
 	}
 	if event.level != helpers.LogLevelInfo {
 		reason := preloadReasonText(event.reason)
 		if event.reason == "transient_retry" && event.result.Reason != "" {
 			reason = preloadReasonText(event.result.Reason) + "，至少30秒后收到新信号时再试一次"
+		}
+		if event.provider == "http" {
+			switch event.reason {
+			case "risk", "unauthorized":
+				reason = preloadReasonText("external_limited")
+			case "account_interval":
+				reason = "同一第三方来源的请求间隔未到"
+			case "account_busy":
+				reason = "同一第三方来源正在处理其他预加载"
+			}
 		}
 		message += "，原因=" + reason
 		if event.level == helpers.LogLevelDebug {
@@ -199,7 +219,7 @@ func (event preloadEvent) message() string {
 			message += fmt.Sprintf("，账号=%d", event.account)
 		}
 		source := event.result.StatusSource
-		if source == "Emby" || source == "飞牛" || source == "网盘" {
+		if source == "Emby" || source == "飞牛" || source == "网盘" || source == "第三方" {
 			if code := event.result.HTTPStatus; code >= 100 && code <= 599 {
 				message += fmt.Sprintf("，%s HTTP=%d", source, code)
 			}
@@ -211,7 +231,11 @@ func (event preloadEvent) message() string {
 	message += fmt.Sprintf("，耗时=%dms", event.elapsed.Milliseconds())
 	if event.level == helpers.LogLevelWarn {
 		if event.cooldown > 0 {
-			message += fmt.Sprintf("；暂停该账号预加载至少%d分钟", (event.cooldown+time.Minute-1)/time.Minute)
+			target := "账号"
+			if event.provider == "http" {
+				target = "来源"
+			}
+			message += fmt.Sprintf("；暂停该%s预加载至少%d分钟", target, (event.cooldown+time.Minute-1)/time.Minute)
 		}
 		message += "；播放时仍按正常流程取链"
 	}

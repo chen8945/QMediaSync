@@ -11,6 +11,7 @@ import (
 
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
+	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
@@ -27,11 +28,22 @@ func newPlaybackPreload(rawURL, ua string, forceDirect bool) (string, func(conte
 }
 
 func (app *App) newEmbyPlaybackPreload(rawURL, ua string, forceDirect bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-	normalized, origins := app.normalizePreloadSource(rawURL)
+	origins := app.currentPreloadOrigins()
 	if origins == nil {
 		return "", nil, false
 	}
-	identity, run, ok := newPlaybackPreload(normalized, ua, forceDirect)
+	var identity string
+	var run func(context.Context, *playback.PreloadTask) playback.PreloadResult
+	var ok bool
+	if qmsPreloadSource(rawURL, origins) {
+		normalized, current := app.normalizePreloadSource(rawURL)
+		if current != origins {
+			return "", nil, false
+		}
+		identity, run, ok = newPlaybackPreload(normalized, ua, forceDirect)
+	} else {
+		identity, run, ok = playback.NewExternalPreload(rawURL, ua, https.Transport())
+	}
 	if !ok {
 		return "", nil, false
 	}
@@ -45,11 +57,53 @@ func (app *App) newEmbyPlaybackPreload(rawURL, ua string, forceDirect bool) (str
 }
 
 func (app *App) playbackPreloadAccount(rawURL string) playback.PreloadAccount {
-	normalized, origins := app.normalizePreloadSource(rawURL)
+	origins := app.currentPreloadOrigins()
 	if origins == nil {
 		return playback.PreloadAccount{}
 	}
-	return controllers.PlaybackPreloadAccount(normalized)
+	if qmsPreloadSource(rawURL, origins) {
+		normalized, current := app.normalizePreloadSource(rawURL)
+		if current != origins {
+			return playback.PreloadAccount{}
+		}
+		return controllers.PlaybackPreloadAccount(normalized)
+	}
+	return playback.ExternalPreloadAccount(rawURL)
+}
+
+func (app *App) currentPreloadOrigins() *trustedPreloadOrigins {
+	current := app.preloadOrigins.Load()
+	settings := models.GetPlaybackSettingsSnapshot()
+	if current == nil || current.origins == nil || !settings.PreloadEnabled || current.generation != settings.Generation || current.baseURL != settings.StrmBaseURL {
+		return nil
+	}
+	return current
+}
+
+func qmsPreloadSource(rawURL string, origins *trustedPreloadOrigins) bool {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	prefixes, known := origins.origins[preloadOriginKey(target)]
+	if !known {
+		return false
+	}
+	isEndpoint := func(endpoint string) bool {
+		return preloadEndpoint(endpoint) || endpoint == "/115/url" || endpoint == "/115/url/" || endpoint == "/baidupan/url" || endpoint == "/baidupan/url/"
+	}
+	// 自有端点即使带编码、穿越或重复参数，也必须通过原有严格校验。
+	for _, candidate := range []string{target.Path, path.Clean(target.Path)} {
+		if isEndpoint(candidate) {
+			return true
+		}
+		for _, prefix := range prefixes {
+			if endpoint, matched := strings.CutPrefix(candidate, prefix); matched && isEndpoint(endpoint) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (app *App) normalizePreloadSource(rawURL string) (string, *trustedPreloadOrigins) {
@@ -181,13 +235,11 @@ func (app *App) refreshPreloadOrigins(ctx context.Context) {
 }
 
 func (app *App) isTrustedPreloadOrigin(target *url.URL) bool {
-	current := app.preloadOrigins.Load()
-	settings := models.GetPlaybackSettingsSnapshot()
-	if current == nil || !settings.PreloadEnabled || current.generation != settings.Generation || current.baseURL != settings.StrmBaseURL {
+	current := app.currentPreloadOrigins()
+	if current == nil || target == nil {
 		return false
 	}
-	_, found := current.origins[preloadOriginKey(target)]
-	return found
+	return qmsPreloadSource(target.String(), current)
 }
 
 func preloadOriginKey(target *url.URL) string {
@@ -199,6 +251,11 @@ func preloadOriginKey(target *url.URL) string {
 		port = "80"
 		if target.Scheme == "https" {
 			port = "443"
+		}
+	} else {
+		port = strings.TrimLeft(port, "0")
+		if port == "" {
+			port = "0"
 		}
 	}
 	return target.Scheme + "://" + net.JoinHostPort(strings.ToLower(target.Hostname()), port)

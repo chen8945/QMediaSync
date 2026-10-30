@@ -76,7 +76,7 @@ func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
 	stop := ConfigurePreloading(PreloadOptions{
 		Instance: t.Name(), Coordinator: h.core,
 		Enabled:       func() (bool, uint64) { return h.enabled.Load(), h.generation.Load() },
-		TrustedOrigin: func(u *url.URL) bool { return u.Scheme == "http" && u.Host == "qms.invalid" },
+		TrustedOrigin: func(u *url.URL) bool { return u.Scheme == "http" && u.Host == "qms.invalid" && u.Path == "/115/newurl" },
 		Resolve: func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 			u, err := url.Parse(raw)
 			if err != nil || u.Path != "/115/newurl" {

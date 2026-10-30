@@ -34,7 +34,8 @@ const (
 
 // PreloadOptions 由应用组合层注入可信源解析，不从公网参数开启后台用途。
 type PreloadOptions struct {
-	Instance      string
+	Instance string
+	// TrustedOrigin 仅识别自有接口的失败跳转，不限制第三方候选来源。
 	TrustedOrigin func(*url.URL) bool
 	Resolve       func(string, string, bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool)
 	Account       func(string) playback.PreloadAccount
@@ -207,7 +208,7 @@ func (p *embyPreloader) stop() {
 func PreloadObserver() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := activeEmbyPreloader.Load()
-		if p == nil || p.stopped.Load() || p.options.Resolve == nil || p.options.TrustedOrigin == nil {
+		if p == nil || p.stopped.Load() || p.options.Resolve == nil {
 			return
 		}
 		enabled, generation := p.options.Enabled()
@@ -317,9 +318,12 @@ func PreloadObserver() gin.HandlerFunc {
 				p.observeSeasonMembers(request, c.Request.URL.Query(), data)
 			}
 		case "stream":
+			if resolved, exists := c.Get(strmResolvedKey); exists && resolved == false {
+				return
+			}
 			status := c.Writer.Status()
 			location, err := url.Parse(c.Writer.Header().Get("Location"))
-			redirect := status == http.StatusTemporaryRedirect && err == nil && location.User == nil && location.Fragment == "" && location.Host != "" && (location.Scheme == "http" || location.Scheme == "https") && !p.trustedSource(location.String())
+			redirect := status == http.StatusTemporaryRedirect && err == nil && playback.ValidExternalURL(location.String()) && (p.options.TrustedOrigin == nil || !p.options.TrustedOrigin(location))
 			if status == http.StatusOK || status == http.StatusPartialContent || redirect {
 				p.observeStream(request)
 			}
@@ -770,7 +774,7 @@ func (p *embyPreloader) observeActualPlayback(request preloadRequest, session st
 		ua = current.UA
 	}
 	p.mu.Unlock()
-	if !ok || stream && ua == "" || !p.trustedSource(source.Path) {
+	if !ok || stream && ua == "" || !playback.ValidExternalURL(source.Path) {
 		return
 	}
 	identity := ""

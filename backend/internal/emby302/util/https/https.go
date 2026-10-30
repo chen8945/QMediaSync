@@ -38,6 +38,9 @@ func ConfigureClient(options ClientOptions) {
 	client = newHTTPClient(options)
 }
 
+// Transport 复用 Emby 出站连接与 TLS 配置，不改变调用方的重定向策略。
+func Transport() http.RoundTripper { return client.Transport }
+
 func newHTTPClient(options ClientOptions) *http.Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{

@@ -54,7 +54,7 @@ func (p *embyPreloader) submit(request preloadRequest, item preloadItem, ua stri
 		job.nextID = nextID[0]
 	}
 	if kind == playback.PreloadDetail && (item.Type == "Movie" || item.Type == "Episode") {
-		if source, ok := selectPreloadSource(item, request.selected); ok && p.trustedSource(source.Path) {
+		if source, ok := selectPreloadSource(item, request.selected); ok && playback.ValidExternalURL(source.Path) {
 			job.identity, job.resolve, job.prepared = p.options.Resolve(source.Path, ua, true)
 			if p.options.Account != nil {
 				account = p.options.Account(source.Path)
@@ -77,11 +77,6 @@ func (p *embyPreloader) submit(request preloadRequest, item preloadItem, ua stri
 		return
 	}
 	p.options.Coordinator.Submit(candidate)
-}
-
-func (p *embyPreloader) trustedSource(raw string) bool {
-	value, err := url.Parse(raw)
-	return err == nil && (value.Scheme == "http" || value.Scheme == "https") && value.Host != "" && value.User == nil && value.Fragment == "" && p.options.TrustedOrigin(value)
 }
 
 func (j *embyPreloadJob) run(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
@@ -142,7 +137,7 @@ func (j *embyPreloadJob) run(ctx context.Context, task *playback.PreloadTask) pl
 				return j.skipped(nil, "source_changed")
 			}
 		}
-		if !j.owner.trustedSource(source.Path) {
+		if !playback.ValidExternalURL(source.Path) {
 			return j.skipped(nil, "source_origin_unknown")
 		}
 		j.identity, j.resolve, j.prepared = j.owner.options.Resolve(source.Path, j.ua, true)
@@ -260,7 +255,7 @@ func (j *embyPreloadJob) pendingEpisode(ctx context.Context, task *playback.Prel
 		query = url.Values{"UserId": {j.request.user}, "SeasonId": {parent.ID}, "StartItemId": {value.ID}, "Limit": {"1"}, "Fields": {preloadItemFields}}
 		var scoped preloadItems
 		source, known := selectPreloadSource(value, "")
-		final := known && j.owner.trustedSource(source.Path)
+		final := known && playback.ValidExternalURL(source.Path)
 		if err := j.fetch(ctx, task, "/Shows/"+series+"/Episodes", query, true, &scoped, final); err != nil {
 			return preloadItem{}, err
 		}

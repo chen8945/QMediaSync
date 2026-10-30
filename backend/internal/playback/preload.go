@@ -552,13 +552,20 @@ func (t *PreloadTask) bindSourceLocked(account PreloadAccount, source string) bo
 
 // BeginSignature 必须紧邻唯一提供方请求；延迟只回到原队列，不占住 worker。
 func (t *PreloadTask) BeginSignature(account PreloadAccount, source string) bool {
+	if account.AccountID == 0 {
+		return false
+	}
+	return t.beginSource(account, source)
+}
+
+func (t *PreloadTask) beginSource(account PreloadAccount, source string) bool {
 	p := t.owner
 	p.mu.Lock()
 	defer func() {
 		p.mu.Unlock()
 		p.signal()
 	}()
-	if account.AccountID == 0 || t.signing || !t.bindSourceLocked(account, source) || t.job.state.revoked || t.job.state.attempts >= 2 {
+	if t.signing || !t.bindSourceLocked(account, source) || t.job.state.revoked || t.job.state.attempts >= 2 {
 		return false
 	}
 	now := time.Now()
@@ -862,7 +869,7 @@ func (p *Preloader) finish(job *preloadJob, result PreloadResult, started time.T
 		if result.Outcome == PreloadUnauthorized {
 			event.reason = "unauthorized"
 		}
-		if state.account.AccountID != 0 {
+		if state.account.AccountID != 0 || state.account.Provider == "http" && state.account.UserID != "" {
 			key := preloadAccountKey(state.account)
 			account, exists := p.accounts[key]
 			if account.cooldown.After(now) {

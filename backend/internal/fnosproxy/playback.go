@@ -507,30 +507,54 @@ type replayBody struct {
 }
 
 func (inst *instance) internalURL(ctx context.Context, raw string) (*url.URL, bool) {
+	target, _ := inst.classifyInternalURL(ctx, raw)
+	return target, target != nil
+}
+
+// 已配置的自有端点即使参数不合法，也不能降级到第三方取链。
+func (inst *instance) classifyInternalURL(ctx context.Context, raw string) (*url.URL, bool) {
 	target, err := url.Parse(raw)
-	if err != nil || target.User != nil || target.Opaque != "" || target.Fragment != "" || target.RawPath != "" ||
+	if err != nil || target.User != nil || target.Opaque != "" || target.Fragment != "" ||
 		(target.Scheme != "http" && target.Scheme != "https") || inst.service.options.KnownOrigins == nil {
 		return nil, false
 	}
 	origins, err := inst.service.options.KnownOrigins(ctx)
 	if err != nil {
-		return nil, false
+		return nil, true
 	}
+	targetOrigin := playback.ExternalPreloadAccount(raw)
 	for _, rawOrigin := range origins {
 		origin, err := url.Parse(rawOrigin)
-		if err != nil || origin.User != nil || origin.Scheme != target.Scheme || !strings.EqualFold(origin.Host, target.Host) {
+		if err != nil || targetOrigin.Provider == "" || playback.ExternalPreloadAccount(rawOrigin) != targetOrigin {
 			continue
 		}
-		prefix := strings.TrimRight(origin.Path, "/")
-		endpoint, matched := strings.CutPrefix(target.Path, prefix)
-		if !matched || !validInternalEndpoint(endpoint, target.RawQuery) {
-			continue
+		for _, prefix := range []string{strings.TrimRight(origin.Path, "/"), ""} {
+			owned := false
+			for _, candidate := range []string{target.Path, path.Clean(target.Path)} {
+				endpoint, matched := strings.CutPrefix(candidate, prefix)
+				if matched && internalEndpointPath(path.Clean(endpoint)) {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				continue
+			}
+			endpoint, matched := strings.CutPrefix(target.Path, prefix)
+			if !matched || target.RawPath != "" || !validInternalEndpoint(endpoint, target.RawQuery) {
+				return nil, true
+			}
+			copy := *target
+			copy.Path, copy.RawPath = endpoint, ""
+			return &copy, true
 		}
-		copy := *target
-		copy.Path, copy.RawPath = endpoint, ""
-		return &copy, true
 	}
 	return nil, false
+}
+
+func internalEndpointPath(endpoint string) bool {
+	return endpoint == "/openlist/url" || endpoint == "/115/newurl" || endpoint == "/115/url" || endpoint == "/baidupan/url" ||
+		strings.HasPrefix(endpoint, "/115/url/") || strings.HasPrefix(endpoint, "/baidupan/url/")
 }
 
 func validInternalEndpoint(endpoint, rawQuery string) bool {
@@ -571,7 +595,8 @@ func validInternalEndpoint(endpoint, rawQuery string) bool {
 }
 
 func (inst *instance) serveResolved(w http.ResponseWriter, r *http.Request, resolved sourceRecord) {
-	if target, ok := inst.internalURL(r.Context(), resolved.url); ok && inst.service.options.MainHandler != nil {
+	target, internal := inst.classifyInternalURL(r.Context(), resolved.url)
+	if target != nil && inst.service.options.MainHandler != nil {
 		cloned := r.Clone(r.Context())
 		cloned.URL = target
 		cloned.RequestURI = target.RequestURI()
@@ -586,8 +611,21 @@ func (inst *instance) serveResolved(w http.ResponseWriter, r *http.Request, reso
 		}
 		return
 	}
-	w.Header().Set("Location", resolved.url)
+	location := resolved.url
+	if !internal {
+		inst.takeoverExternal(resolved.url, r.UserAgent())
+		if cached, ok := playback.WaitExternalLink(r.Context(), resolved.url, r.UserAgent()); ok {
+			location = cached.URL
+		}
+	}
+	w.Header().Set("Location", location)
 	w.WriteHeader(http.StatusTemporaryRedirect)
+}
+
+func (inst *instance) takeoverExternal(raw, ua string) {
+	if inst.service.options.Preloader != nil {
+		inst.service.options.Preloader.Takeover(playback.ExternalLinkIdentity(raw, ua))
+	}
 }
 
 func playbackHeaders(source http.Header) http.Header {

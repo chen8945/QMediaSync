@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/backup"
+	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 )
 
@@ -63,6 +64,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 	}
 	if json.Unmarshal(data["file_stream"], &file) != nil || json.Unmarshal(data["video_stream"], &video) != nil ||
 		json.Unmarshal(data["cloud_storage_info"], &storage) != nil || !safeIdentifier(file.GUID) ||
+		!strings.HasSuffix(strings.ToLower(file.Path), ".strm") ||
 		video.MediaGUID != file.GUID || video.CodecType != "video" || file.Type != 1 || file.CanPlay != 1 ||
 		file.PlayError != "" || storage.Valid == nil || !*storage.Valid || storage.Disabled == nil || *storage.Disabled ||
 		storage.CloudStorageType != 9001 {
@@ -117,10 +119,13 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 			continue
 		}
 		playbackURL, ok := inst.nativePlaybackURL(request, resolved)
-		if !ok || playbackURL == rawURL {
+		if !ok {
 			continue
 		}
 		inst.rememberNativePlayer(response.Request, playerUA, file.GUID)
+		if playbackURL == rawURL || playbackURL == resolved.url {
+			continue
+		}
 		quality["url"], err = json.Marshal(playbackURL)
 		if err != nil {
 			return nil
@@ -154,7 +159,16 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 }
 
 func (inst *instance) nativePlaybackURL(r *http.Request, resolved sourceRecord) (string, bool) {
-	if _, ok := inst.internalURL(r.Context(), resolved.url); !ok || inst.service.options.MainHandler == nil {
+	target, internal := inst.classifyInternalURL(r.Context(), resolved.url)
+	if !internal {
+		inst.takeoverExternal(resolved.url, r.UserAgent())
+		cached, ok := playback.WaitExternalLink(r.Context(), resolved.url, r.UserAgent())
+		if ok {
+			return cached.URL, r.Context().Err() == nil && inst.ctx.Err() == nil
+		}
+		return resolved.url, r.Context().Err() == nil && inst.ctx.Err() == nil
+	}
+	if target == nil || inst.service.options.MainHandler == nil {
 		return "", false
 	}
 	// 原生入口是 POST 元数据请求，既有取链入口仍须按 GET 调用；不跟随最终 CDN。
