@@ -90,3 +90,12 @@ func Unescape(rawUrl string) string {
 
 	return dc
 }
+
+// UnescapeMediaPath 仅解码文件路径，保留 HTTP(S) 地址中的签名路径和查询串。
+func UnescapeMediaPath(path string) string {
+	u, err := url.Parse(path)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return path
+	}
+	return Unescape(path)
+}

@@ -117,9 +117,9 @@ func TransferPlaybackInfo(c *gin.Context) {
 		}
 		var path string
 		var ok bool
-		// path 解码
+		// 仅解码文件路径，HTTP 地址保留原始编码。
 		if path, ok = source.Attr("Path").String(); ok {
-			source.Attr("Path").Set(urls.Unescape(path))
+			source.Attr("Path").Set(urls.UnescapeMediaPath(path))
 		}
 		// logs.Info("Path 解码后: %s", path)
 		// 转换直链链接
@@ -401,9 +401,9 @@ func LoadCacheItems(c *gin.Context) {
 	}
 	resJson := res.Data
 
-	// Path 参数解码
+	// 仅解码文件路径，HTTP 地址保留原始编码。
 	if path, jok := resJson.Attr("Path").String(); jok {
-		resJson.Attr("Path").Set(urls.Unescape(path))
+		resJson.Attr("Path").Set(urls.UnescapeMediaPath(path))
 	}
 
 	defer func() {

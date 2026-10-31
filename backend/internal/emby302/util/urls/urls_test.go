@@ -64,3 +64,21 @@ func TestUnescape(t *testing.T) {
 		})
 	}
 }
+
+func TestUnescapeMediaPath(t *testing.T) {
+	for _, tt := range []struct{ name, path, want string }{
+		{"HTTP", "http://moviepilot/redirect?name=movie%2001%26%23.mkv", "http://moviepilot/redirect?name=movie%2001%26%23.mkv"},
+		{"HTTPS 大小写", "HtTpS://litepan/play/movie%3B01.mkv?sign=a%2fb+z", "HtTpS://litepan/play/movie%3B01.mkv?sign=a%2fb+z"},
+		{"Linux", "/media/movie%2001.mkv", "/media/movie 01.mkv"},
+		{"Windows", `D:\media\movie%2001.mkv`, `D:\media\movie 01.mkv`},
+		{"相对路径", "media/movie%2001.mkv", "media/movie 01.mkv"},
+		{"SMB", "smb://nas/media/movie%2001.mkv", "smb://nas/media/movie 01.mkv"},
+		{"无效转义", "/media/movie%xx.mkv", "/media/movie%xx.mkv"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := urls.UnescapeMediaPath(tt.path); got != tt.want {
+				t.Fatalf("UnescapeMediaPath(%q)=%q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}

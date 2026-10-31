@@ -16,7 +16,7 @@ const (
 	preloadWorkers    = 2
 	preloadDetailWait = 2 * time.Second
 	preloadWaitLimit  = 15 * time.Second
-	preloadRunLimit   = 3 * time.Second
+	preloadRunLimit   = 6 * time.Second
 	preloadAccountGap = 10 * time.Second
 	preloadRetryWait  = 30 * time.Second
 	preloadRiskWait   = 10 * time.Minute

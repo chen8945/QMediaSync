@@ -42,6 +42,45 @@ func ValidExternalURL(raw string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil && u.Opaque == "" && u.Fragment == ""
 }
 
+// NormalizeExternalURL 补齐路径和查询串的必要编码，保留原有转义及参数语义。
+func NormalizeExternalURL(raw string) (string, bool) {
+	if !ValidExternalURL(raw) {
+		return "", false
+	}
+	u, _ := url.Parse(raw)
+	u.RawPath = escapeExternalURLPath(u.RawPath)
+	u.RawQuery = escapeExternalURLText(u.RawQuery)
+	normalized := u.String()
+	return normalized, len(normalized) <= 16<<10
+}
+
+var externalPathEscapes = strings.NewReplacer(
+	"%25", "%", "%21", "!", "%27", "'", "%28", "(", "%29", ")",
+	"%2A", "*", "%5B", "[", "%5D", "]",
+)
+
+func escapeExternalURLPath(raw string) string {
+	encoded := (&url.URL{Path: raw}).EscapedPath()
+	// RawPath 已通过 url.Parse 校验；单轮还原 validEncoded 允许的字面字符，不能再次解码原 %HH。
+	return externalPathEscapes.Replace(encoded)
+}
+
+func escapeExternalURLText(raw string) string {
+	const hex = "0123456789ABCDEF"
+	var encoded strings.Builder
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == ' ' || c >= 128 {
+			encoded.WriteByte('%')
+			encoded.WriteByte(hex[c>>4])
+			encoded.WriteByte(hex[c&15])
+		} else {
+			encoded.WriteByte(c)
+		}
+	}
+	return encoded.String()
+}
+
 // ExternalPreloadAccount 以来源 origin 限制后台请求，不伪造本地网盘账号。
 func ExternalPreloadAccount(raw string) PreloadAccount {
 	if !ValidExternalURL(raw) {
@@ -65,11 +104,14 @@ func ExternalPreloadAccount(raw string) PreloadAccount {
 
 // ExternalLinkIdentity 同时用于后台候选、正常播放接手和共享缓存。
 func ExternalLinkIdentity(raw, ua string) string {
+	if normalized, ok := NormalizeExternalURL(raw); ok {
+		raw = normalized
+	}
 	encoded, _ := json.Marshal([]string{raw, ua})
 	return fmt.Sprintf("external-link:%x", sha256.Sum256(encoded))
 }
 
-// CachedExternalLink 只返回同一原始地址与完整 UA 的有效结果。
+// CachedExternalLink 只返回同一规范化源地址与完整 UA 的有效结果。
 func CachedExternalLink(raw, ua string) (ExternalLink, bool) {
 	var link ExternalLink
 	if db.Cache.CacheInstance == nil || json.Unmarshal(db.Cache.Get(ExternalLinkIdentity(raw, ua)), &link) != nil ||
@@ -109,7 +151,8 @@ func cacheExternalLink(raw, ua string, link ExternalLink) {
 
 // NewExternalPreload 复用有界协调器与正式播放的解析结果，不在构造时发请求。
 func NewExternalPreload(raw, ua string, transport http.RoundTripper) (string, func(context.Context, *PreloadTask) PreloadResult, bool) {
-	if !ValidExternalURL(raw) || strings.TrimSpace(ua) == "" || len(ua) > 4096 || strings.ContainsFunc(ua, func(r rune) bool { return r < ' ' || r == 127 }) {
+	raw, ok := NormalizeExternalURL(raw)
+	if !ok || strings.TrimSpace(ua) == "" || len(ua) > 4096 || strings.ContainsFunc(ua, func(r rune) bool { return r < ' ' || r == 127 }) {
 		return "", nil, false
 	}
 	identity, account := ExternalLinkIdentity(raw, ua), ExternalPreloadAccount(raw)
@@ -225,7 +268,8 @@ func (e externalStatusError) Error() string {
 }
 
 func resolveExternalLink(ctx context.Context, raw string, headers http.Header, transport http.RoundTripper) (ExternalLink, error) {
-	if !ValidExternalURL(raw) {
+	raw, ok := NormalizeExternalURL(raw)
+	if !ok {
 		return ExternalLink{}, errors.New("第三方取链地址无效")
 	}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -253,11 +297,17 @@ func resolveExternalLink(ctx context.Context, raw string, headers http.Header, t
 			if location == "" || redirects >= 10 {
 				return ExternalLink{}, errors.New("第三方跳转缺少地址或次数过多")
 			}
-			target, err := request.URL.Parse(location)
-			if err != nil || !ValidExternalURL(target.String()) {
+			target, err := url.Parse(location)
+			if err != nil {
 				return ExternalLink{}, errors.New("第三方跳转地址无效")
 			}
-			raw = target.String()
+			target.RawPath = escapeExternalURLPath(target.RawPath)
+			target.RawQuery = escapeExternalURLText(target.RawQuery)
+			target = request.URL.ResolveReference(target)
+			raw, ok = NormalizeExternalURL(target.String())
+			if !ok {
+				return ExternalLink{}, errors.New("第三方跳转地址无效")
+			}
 			continue
 		case http.StatusOK, http.StatusPartialContent:
 			contentType := strings.TrimSpace(strings.ToLower(strings.SplitN(response.Header.Get("Content-Type"), ";", 2)[0]))

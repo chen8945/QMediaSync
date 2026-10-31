@@ -536,7 +536,7 @@ func TestExternalPreloadTakeoverSharesInflightRemainingBudget(t *testing.T) {
 				calls := 0
 				transport := externalTestTransport(func(r *http.Request) (*http.Response, error) {
 					calls++
-					if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) != 3*time.Second {
+					if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) != preloadRunLimit {
 						t.Errorf("background request deadline = %v, present=%t", deadline, ok)
 					}
 					select {
@@ -550,7 +550,7 @@ func TestExternalPreloadTakeoverSharesInflightRemainingBudget(t *testing.T) {
 					t.Fatal("preload rejected")
 				}
 				synctest.Wait()
-				time.Sleep(2 * time.Second)
+				time.Sleep(3500 * time.Millisecond)
 				result := make(chan error, 1)
 				go func() {
 					_, err := ResolveExternalLink(t.Context(), raw, http.Header{"User-Agent": {ua}}, transport)
@@ -564,7 +564,7 @@ func TestExternalPreloadTakeoverSharesInflightRemainingBudget(t *testing.T) {
 					time.Sleep(500 * time.Millisecond)
 					close(release)
 				} else {
-					time.Sleep(time.Second)
+					time.Sleep(preloadRunLimit - 3500*time.Millisecond)
 				}
 				synctest.Wait()
 				if len(result) != 1 {
@@ -682,7 +682,7 @@ func TestWaitExternalLinkOnlyWaitsForExistingWork(t *testing.T) {
 	})
 }
 
-func TestWaitExternalLinkHasThreeSecondLimit(t *testing.T) {
+func TestWaitExternalLinkHasSixSecondLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		setupExternalLinkTest(t)
 		const raw, ua = "http://moviepilot/video", "Player/1.0"
@@ -705,7 +705,7 @@ func TestWaitExternalLinkHasThreeSecondLimit(t *testing.T) {
 			waited <- ok
 		}()
 		synctest.Wait()
-		time.Sleep(3*time.Second - time.Millisecond)
+		time.Sleep(preloadRunLimit - time.Millisecond)
 		synctest.Wait()
 		if len(waited) != 0 {
 			t.Fatal("passive waiter returned before its budget expired")
@@ -713,7 +713,7 @@ func TestWaitExternalLinkHasThreeSecondLimit(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
 		if len(waited) != 1 || <-waited || calls != 1 {
-			t.Fatalf("passive wait exceeded three seconds or started another request: calls=%d", calls)
+			t.Fatalf("passive wait exceeded six seconds or started another request: calls=%d", calls)
 		}
 		close(release)
 		synctest.Wait()

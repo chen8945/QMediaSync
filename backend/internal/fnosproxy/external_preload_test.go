@@ -159,7 +159,7 @@ func TestExternalPreloadSharedByCompatibleAndNativePlayback(t *testing.T) {
 		const final = "http://cdn.example.com/video%2Fpart.mkv?token=keep%2Braw&x=1&x=2"
 		resolver := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			resolverCalls.Add(1)
-			if r.RequestURI != "/resolve/a%2Fb?token=a%2Bb+z&x=1&x=2" {
+			if r.RequestURI != "/resolve/a%2Fb?token=a%2Bb+z&file_name=%E7%94%B5%E5%BD%B1%2001.mkv&x=1&x=2" {
 				t.Errorf("第三方签名被改写：%s", r.RequestURI)
 			}
 			for _, name := range []string{"Authorization", "Cookie", "Authx", "X-Emby-Token", "X-Emby-Authorization"} {
@@ -170,11 +170,11 @@ func TestExternalPreloadSharedByCompatibleAndNativePlayback(t *testing.T) {
 			w.Header().Set("Location", final)
 			w.WriteHeader(http.StatusSeeOther)
 		}))
-		const raw = "http://moviepilot:3000/resolve/a%2Fb?token=a%2Bb+z&x=1&x=2"
-		item := map[string]any{"Id": "movie", "Type": "Movie", "Path": "/unmounted/movie.strm",
-			"MediaSources": []any{map[string]any{"Id": "source", "Path": raw}}}
-		var nativeUA atomic.Value
+		const raw = "http://moviepilot:3000/resolve/a%2Fb?token=a%2Bb+z&file_name=%E7%94%B5%E5%BD%B1%2001.mkv&x=1&x=2"
+		const unescapedName = "http://moviepilot:3000/resolve/a%2Fb?token=a%2Bb+z&file_name=电影 01.mkv&x=1&x=2"
+		var nativeUA, sourceURL atomic.Value
 		nativeUA.Store("Confirmed Player")
+		sourceURL.Store(raw)
 		upstream := preloadTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch r.URL.Path {
@@ -186,10 +186,11 @@ func TestExternalPreloadSharedByCompatibleAndNativePlayback(t *testing.T) {
 						map[string]any{"Id": "source", "Path": raw}, map[string]any{"Id": "other", "Path": raw + "&version=2"},
 					}})
 				} else {
-					_ = json.NewEncoder(w).Encode(item)
+					_ = json.NewEncoder(w).Encode(map[string]any{"Id": "movie", "Type": "Movie", "Path": "/unmounted/movie.strm",
+						"MediaSources": []any{map[string]any{"Id": "source", "Path": sourceURL.Load().(string)}}})
 				}
 			case nativeStreamPath:
-				payload := nativeStreamPayload("/unmounted/movie.strm", raw)
+				payload := nativeStreamPayload("/unmounted/movie.strm", sourceURL.Load().(string))
 				payload["data"].(map[string]any)["header"] = map[string]any{"User-Agent": []string{nativeUA.Load().(string)}}
 				_ = json.NewEncoder(w).Encode(payload)
 			default:
@@ -228,6 +229,7 @@ func TestExternalPreloadSharedByCompatibleAndNativePlayback(t *testing.T) {
 		if cached, ok := playback.CachedExternalLink(raw, "Confirmed Player"); !ok || cached.URL != final {
 			t.Fatalf("第三方详情没有完成共享缓存发布：%+v ok=%t resolver=%d CDN=%d", cached, ok, resolverCalls.Load(), cdnCalls.Load())
 		}
+		sourceURL.Store(unescapedName)
 		for _, ua := range []string{"Confirmed Player", "Another Player"} {
 			request := preloadTestHTTP(t, base+"/emby/Videos/movie/stream?MediaSourceId=source", http.MethodGet, "", false)
 			request.Header.Set("User-Agent", ua)
@@ -236,7 +238,7 @@ func TestExternalPreloadSharedByCompatibleAndNativePlayback(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = response.Body.Close()
-			want := raw
+			want := unescapedName
 			if ua == "Confirmed Player" {
 				want = final
 			}
@@ -314,7 +316,8 @@ func TestExternalPlaybackWaitsForExistingPreload(t *testing.T) {
 				w.WriteHeader(http.StatusPartialContent)
 			}))
 			const ua = "Actual Player"
-			raw := upstream.URL + "/start"
+			raw := upstream.URL + "/start?file_name=%E7%94%B5%E5%BD%B1%2001.mkv&x=2&x=1"
+			unescapedName := upstream.URL + "/start?file_name=电影 01.mkv&x=2&x=1"
 			identity, run, ok := playback.NewExternalPreload(raw, ua, upstream.Client().Transport)
 			if !ok {
 				t.Fatal("第三方候选无法构造")
@@ -332,7 +335,7 @@ func TestExternalPlaybackWaitsForExistingPreload(t *testing.T) {
 			request.Header.Set("User-Agent", ua)
 			result := make(chan string, 1)
 			go func() {
-				resolved := sourceRecord{url: raw}
+				resolved := sourceRecord{url: unescapedName}
 				if mode == "native" {
 					location, _ := inst.nativePlaybackURL(request, resolved)
 					result <- location

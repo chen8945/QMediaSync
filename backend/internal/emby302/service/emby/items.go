@@ -221,7 +221,7 @@ func ProxyAddItemsPreviewInfo(c *gin.Context) {
 			simplifyMediaName(ms)
 
 			if path, ok := ms.Attr("Path").String(); ok {
-				ms.Attr("Path").Set(urls.Unescape(path))
+				ms.Attr("Path").Set(urls.UnescapeMediaPath(path))
 			}
 
 			// 检查用户是否启用了转码版本获取
@@ -288,7 +288,7 @@ func ProxyLatestItems(c *gin.Context) {
 		jsons.OkResp(c.Writer, resJson)
 	}()
 
-	// 遍历 MediaSources 并解码 Path
+	// 遍历 MediaSources，仅解码文件路径。
 	if resJson.Type() != jsons.JsonTypeArr {
 		return
 	}
@@ -299,7 +299,7 @@ func ProxyLatestItems(c *gin.Context) {
 		}
 		mediaSources.RangeArr(func(_ int, ms *jsons.Item) error {
 			if path, ok := ms.Attr("Path").String(); ok {
-				ms.Attr("Path").Set(urls.Unescape(path))
+				ms.Attr("Path").Set(urls.UnescapeMediaPath(path))
 			}
 			return nil
 		})

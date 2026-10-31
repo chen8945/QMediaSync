@@ -606,7 +606,7 @@ func TestPreloadGenerationTimeoutAndCredentialCommit(t *testing.T) {
 				case "instance":
 					p.CancelInstance("instance")
 				case "timeout":
-					time.Sleep(3 * time.Second)
+					time.Sleep(preloadRunLimit)
 				}
 				synctest.Wait()
 				_, _, active := preloadSize(p)
@@ -822,7 +822,7 @@ func TestPreloadQueueAgePriorityAndCombinedStateLimit(t *testing.T) {
 		time.Sleep(16 * time.Second)
 		synctest.Wait()
 		_, queued, _ := preloadSize(p)
-		if started != 5 || queued != 0 {
+		if started != 3 || queued != 0 {
 			t.Fatalf("过期队列不能继续执行：started=%d queue=%d", started, queued)
 		}
 	})
@@ -876,15 +876,15 @@ func TestPreloadMetadataRetryRespectsRemainingRunBudget(t *testing.T) {
 			started := time.Now()
 			err := task.Metadata(ctx, true, func(context.Context) (bool, error) {
 				calls++
-				time.Sleep(2700 * time.Millisecond)
+				time.Sleep(preloadRunLimit - 300*time.Millisecond)
 				return true, errors.New("temporary connection failure")
 			})
-			if err == nil || time.Since(started) != 2700*time.Millisecond {
+			if err == nil || time.Since(started) != preloadRunLimit-300*time.Millisecond {
 				t.Error("不足 400ms 时应直接结束")
 			}
 			return PreloadResult{Outcome: PreloadSkipped}
 		}))
-		time.Sleep(3 * time.Second)
+		time.Sleep(preloadRunLimit)
 		synctest.Wait()
 		if calls != 1 {
 			t.Fatal("剩余预算不足仍重试了元数据")
