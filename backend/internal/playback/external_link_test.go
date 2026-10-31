@@ -534,9 +534,10 @@ func TestExternalPreloadTakeoverSharesInflightRemainingBudget(t *testing.T) {
 				const raw, ua = "http://moviepilot/video", "Player/1.0"
 				release := make(chan struct{})
 				calls := 0
+				started := time.Now()
 				transport := externalTestTransport(func(r *http.Request) (*http.Response, error) {
 					calls++
-					if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) != preloadRunLimit {
+					if deadline, ok := r.Context().Deadline(); !ok || !deadline.Equal(started.Add(10*time.Second)) {
 						t.Errorf("background request deadline = %v, present=%t", deadline, ok)
 					}
 					select {
@@ -560,11 +561,20 @@ func TestExternalPreloadTakeoverSharesInflightRemainingBudget(t *testing.T) {
 				if calls != 1 || len(result) != 0 {
 					t.Fatalf("takeover did not join in-flight request: calls=%d completed=%d", calls, len(result))
 				}
+				time.Sleep(3500 * time.Millisecond)
+				synctest.Wait()
+				if len(result) != 0 {
+					t.Fatal("takeover stopped before the original ten-second deadline")
+				}
 				if mode == "completes" {
-					time.Sleep(500 * time.Millisecond)
 					close(release)
 				} else {
-					time.Sleep(preloadRunLimit - 3500*time.Millisecond)
+					time.Sleep(3*time.Second - time.Millisecond)
+					synctest.Wait()
+					if len(result) != 0 {
+						t.Fatal("takeover expired before the original deadline")
+					}
+					time.Sleep(time.Millisecond)
 				}
 				synctest.Wait()
 				if len(result) != 1 {
@@ -682,11 +692,12 @@ func TestWaitExternalLinkOnlyWaitsForExistingWork(t *testing.T) {
 	})
 }
 
-func TestWaitExternalLinkHasSixSecondLimit(t *testing.T) {
+func TestWaitExternalLinkHasTenSecondLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		setupExternalLinkTest(t)
 		const raw, ua = "http://moviepilot/video", "Player/1.0"
-		release := make(chan struct{})
+		release := make(chan struct{}, 1)
+		defer close(release)
 		calls := 0
 		transport := externalTestTransport(func(*http.Request) (*http.Response, error) {
 			calls++
@@ -705,7 +716,12 @@ func TestWaitExternalLinkHasSixSecondLimit(t *testing.T) {
 			waited <- ok
 		}()
 		synctest.Wait()
-		time.Sleep(preloadRunLimit - time.Millisecond)
+		time.Sleep(7 * time.Second)
+		synctest.Wait()
+		if len(waited) != 0 {
+			t.Fatal("passive wait expired before ten seconds")
+		}
+		time.Sleep(3*time.Second - time.Millisecond)
 		synctest.Wait()
 		if len(waited) != 0 {
 			t.Fatal("passive waiter returned before its budget expired")
@@ -713,9 +729,9 @@ func TestWaitExternalLinkHasSixSecondLimit(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
 		if len(waited) != 1 || <-waited || calls != 1 {
-			t.Fatalf("passive wait exceeded six seconds or started another request: calls=%d", calls)
+			t.Fatalf("passive wait exceeded ten seconds or started another request: calls=%d", calls)
 		}
-		close(release)
+		release <- struct{}{}
 		synctest.Wait()
 		if len(resolved) != 1 || <-resolved != nil {
 			t.Fatal("passive timeout canceled the ordinary leader")

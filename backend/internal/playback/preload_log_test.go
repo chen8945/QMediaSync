@@ -59,7 +59,22 @@ func TestPreloadLogReasonsAndStatusOrigins(t *testing.T) {
 		{
 			name:  "metadata_origin",
 			event: preloadEvent{level: helpers.LogLevelDebug, reason: "metadata_request_failed", result: PreloadResult{HTTPStatus: 503, StatusSource: "Emby"}},
-			want:  []string{"媒体资料查询失败", "Emby HTTP=503"}, absent: []string{"网盘 HTTP", "业务码=0"},
+			want:  []string{"未能从媒体服务器获取资料", "Emby HTTP=503"}, absent: []string{"网盘 HTTP", "业务码=0"},
+		},
+		{
+			name:  "no_pending_episode",
+			event: preloadEvent{level: helpers.LogLevelDebug, reason: "pending_empty"},
+			want:  []string{"没有查到待播单集"}, absent: []string{"查询失败", "HTTP="},
+		},
+		{
+			name:  "unusable_metadata_response",
+			event: preloadEvent{level: helpers.LogLevelDebug, reason: "metadata_request_failed", result: PreloadResult{HTTPStatus: 200, StatusSource: "Emby"}},
+			want:  []string{"媒体服务器返回的资料无法使用", "Emby HTTP=200"}, absent: []string{"没有查到待播单集"},
+		},
+		{
+			name:  "pending_episode_scope",
+			event: preloadEvent{level: helpers.LogLevelDebug, reason: "pending_scope_unknown"},
+			want:  []string{"无法确认待播单集属于当前剧集或季"}, absent: []string{"没有查到", "HTTP="},
 		},
 		{
 			name:  "known_provider_warning",
@@ -69,7 +84,7 @@ func TestPreloadLogReasonsAndStatusOrigins(t *testing.T) {
 		{
 			name:  "arbitrary_diagnostics_not_echoed",
 			event: preloadEvent{level: helpers.LogLevelDebug, reason: "https://secret.invalid?token=unsafe", result: PreloadResult{HTTPStatus: 503, StatusSource: "external-secret"}},
-			want:  []string{"尚未满足提前取链条件"}, absent: []string{"secret", "HTTP="},
+			want:  []string{"暂时没有足够信息提前获取播放地址"}, absent: []string{"secret", "HTTP="},
 		},
 		{
 			name:  "cache_reuse_is_debug",

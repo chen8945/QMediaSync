@@ -80,21 +80,27 @@ func (t *PreloadTask) SetLogTarget(itemID, title string) {
 func preloadReasonText(reason string) string {
 	switch reason {
 	case "metadata_budget":
-		return "本轮资料查询额度已用完"
+		return "本次预加载的资料查询次数已用完"
 	case "metadata_request_failed":
-		return "媒体资料查询失败"
+		return "未能从媒体服务器获取资料"
 	case "relation_unavailable":
-		return "未能确定待播放的单集或分段"
+		return "暂时无法确定要播放哪一集或哪一段"
+	case "pending_empty":
+		return "没有查到待播单集"
+	case "pending_scope_unknown":
+		return "无法确认待播单集属于当前剧集或季"
+	case "pending_invalid":
+		return "待播列表中的单集资料暂时无法使用"
 	case "candidate_unknown":
-		return "尚未确定可播放的影片或单集"
+		return "暂时无法确定要播放的影片或单集"
 	case "warm_playbackinfo_already_tried":
-		return "本候选已查询过播放源资料"
+		return "已尝试获取播放地址，本次不再重复查询"
 	case "source_origin_unknown":
-		return "尚未取得可预加载的 HTTP(S) 播放地址"
+		return "还没有可用的 HTTP(S) 播放地址"
 	case "provider_not_supported":
 		return "该播放源暂不支持预加载"
 	case "external_unavailable":
-		return "本轮暂不能请求第三方取链服务"
+		return "暂时无法请求第三方取链服务"
 	case "external_invalid_link":
 		return "第三方返回的链接无效或已过期"
 	case "external_failed":
@@ -106,13 +112,13 @@ func preloadReasonText(reason string) string {
 	case "playback_denied":
 		return "当前账号暂不能播放该条目"
 	case "source_unavailable":
-		return "尚未取得可预加载的播放源"
+		return "暂时无法获取播放地址"
 	case "source_ambiguous":
 		return "有多个播放源，尚未确定使用哪个"
 	case "source_changed":
 		return "播放源已变化"
 	case "ua_unavailable":
-		return "尚未取得可用于取链的播放器资料"
+		return "缺少播放器请求标识（UA）"
 	case "account_unavailable":
 		return "网盘账号不存在或授权暂不可用"
 	case "account_lookup_failed":
@@ -128,15 +134,15 @@ func preloadReasonText(reason string) string {
 	case "cached":
 		return "已有可用缓存"
 	case "candidate_changed":
-		return "当前候选已变化"
+		return "待播放内容已变化"
 	case "playback_started":
 		return "用户已开始播放，交由正常播放流程处理"
 	case "canceled":
-		return "当前详情或播放关联已失效"
+		return "页面或播放状态已变化"
 	case "timeout":
-		return "本轮后台执行时间已用完"
+		return "本次预加载超时"
 	case "transient_retry":
-		return "网盘临时不可用，至少30秒后收到新信号时再试一次"
+		return "暂时无法取链，至少等待 30 秒，下次触发预加载时再试"
 	case "timeout_provider":
 		return "网盘连接超时"
 	case "connection_failed":
@@ -150,7 +156,7 @@ func preloadReasonText(reason string) string {
 	case "provider_failed":
 		return "网盘未能返回可用链接"
 	default:
-		return "尚未满足提前取链条件"
+		return "暂时没有足够信息提前获取播放地址"
 	}
 }
 
@@ -195,8 +201,11 @@ func (event preloadEvent) message() string {
 	}
 	if event.level != helpers.LogLevelInfo {
 		reason := preloadReasonText(event.reason)
+		if event.reason == "metadata_request_failed" && event.result.HTTPStatus == 200 {
+			reason = "媒体服务器返回的资料无法使用"
+		}
 		if event.reason == "transient_retry" && event.result.Reason != "" {
-			reason = preloadReasonText(event.result.Reason) + "，至少30秒后收到新信号时再试一次"
+			reason = preloadReasonText(event.result.Reason) + "，至少等待 30 秒，下次触发预加载时再试"
 		}
 		if event.provider == "http" {
 			switch event.reason {

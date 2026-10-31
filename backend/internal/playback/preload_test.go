@@ -578,19 +578,29 @@ func TestPreloadGenerationTimeoutAndCredentialCommit(t *testing.T) {
 		t.Run(cancel, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newTestPreloader(t)
-				var elapsed time.Duration
+				completed := make(chan time.Duration, 1)
 				published, signatures := 0, 0
 				p.Submit(preloadCandidate("lifecycle", PreloadNext, func(ctx context.Context, task *PreloadTask) PreloadResult {
 					if !task.BindSource(PreloadAccount{Provider: "115"}, "lifecycle") {
 						t.Error("旧格式源应能在凭据 SQL 前登记提供方")
 					}
+					if cancel == "timeout" {
+						if !task.BeginSignature(preloadTestAccount, "lifecycle") {
+							t.Error("有效期限内未能开始签名")
+						}
+						signatures++
+					}
 					start := time.Now()
 					<-ctx.Done()
-					elapsed = time.Since(start)
+					elapsed := time.Since(start)
+					if cancel == "timeout" && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						t.Errorf("十秒期限没有取消作业：%v", ctx.Err())
+					}
 					if task.BindSource(preloadTestAccount, "lifecycle") && task.BeginSignature(preloadTestAccount, "lifecycle") {
 						signatures++
 					}
 					task.Publish(func() { published++ })
+					completed <- elapsed
 					return PreloadResult{Outcome: PreloadPublished}
 				}))
 				synctest.Wait()
@@ -606,14 +616,24 @@ func TestPreloadGenerationTimeoutAndCredentialCommit(t *testing.T) {
 				case "instance":
 					p.CancelInstance("instance")
 				case "timeout":
-					time.Sleep(preloadRunLimit)
+					time.Sleep(10*time.Second - time.Millisecond)
+					synctest.Wait()
+					if len(completed) != 0 {
+						t.Fatalf("十秒期限前作业已结束：%v", <-completed)
+					}
+					time.Sleep(time.Millisecond)
 				}
 				synctest.Wait()
+				elapsed := <-completed
 				_, _, active := preloadSize(p)
-				if signatures != 0 || published != 0 || active {
+				wantSignatures := 0
+				if cancel == "timeout" {
+					wantSignatures = 1
+				}
+				if signatures != wantSignatures || published != 0 || active {
 					t.Fatalf("失效后不应签名或发布：sign=%d pub=%d", signatures, published)
 				}
-				if cancel == "timeout" && elapsed != preloadRunLimit {
+				if cancel == "timeout" && elapsed != 10*time.Second {
 					t.Fatalf("执行预算=%v", elapsed)
 				}
 				p.Stop()
@@ -809,22 +829,37 @@ func TestPreloadQueueAgePriorityAndCombinedStateLimit(t *testing.T) {
 	})
 	synctest.Test(t, func(t *testing.T) {
 		p := newTestPreloader(t)
-		started := 0
+		var started atomic.Int32
+		enqueuedAt := time.Now()
 		for i := range 20 {
 			candidate := preloadCandidate(fmt.Sprint(i), PreloadNext, func(ctx context.Context, _ *PreloadTask) PreloadResult {
-				started++
+				started.Add(1)
 				<-ctx.Done()
 				return PreloadResult{Outcome: PreloadSkipped}
 			})
 			candidate.Scope = candidate.Key
 			p.Submit(candidate)
 		}
-		time.Sleep(16 * time.Second)
-		synctest.Wait()
-		_, queued, _ := preloadSize(p)
-		if started != 3 || queued != 0 {
-			t.Fatalf("过期队列不能继续执行：started=%d queue=%d", started, queued)
+		assertState := func(wantStarted, wantQueued int, wantActive bool) {
+			t.Helper()
+			synctest.Wait()
+			_, queued, active := preloadSize(p)
+			gotStarted := int(started.Load())
+			if gotStarted != wantStarted || queued != wantQueued || active != wantActive {
+				t.Fatalf("未知账号队列在 %v 的状态：started=%d queue=%d active=%t，期望 %d/%d/%t", time.Since(enqueuedAt), gotStarted, queued, active, wantStarted, wantQueued, wantActive)
+			}
 		}
+		assertState(1, 19, true)
+		time.Sleep(10*time.Second - time.Millisecond)
+		assertState(1, 19, true)
+		time.Sleep(time.Millisecond)
+		assertState(2, 18, true)
+		time.Sleep(5*time.Second - time.Millisecond)
+		assertState(2, 18, true)
+		time.Sleep(time.Millisecond)
+		assertState(2, 0, true)
+		time.Sleep(5 * time.Second)
+		assertState(2, 0, false)
 	})
 }
 

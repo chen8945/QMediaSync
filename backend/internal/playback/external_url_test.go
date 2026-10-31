@@ -280,37 +280,56 @@ func TestResolveExternalLinkPreservesLitePanPathSignature(t *testing.T) {
 	}
 }
 
-func TestExternalPreloadSixSecondBudget(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		setupExternalLinkTest(t)
-		p := newTestPreloader(t)
-		DefaultPreloader = p
-		started := time.Now()
-		finished := make(chan time.Duration, 1)
-		transport := externalTestTransport(func(r *http.Request) (*http.Response, error) {
-			started = time.Now()
-			<-r.Context().Done()
-			finished <- time.Since(started)
-			return nil, r.Context().Err()
+func TestExternalPreloadTenSecondBudget(t *testing.T) {
+	for _, mode := range []string{"completes", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setupExternalLinkTest(t)
+				p := newTestPreloader(t)
+				DefaultPreloader = p
+				const raw, ua = "http://source/video", "Player/1.0"
+				release := make(chan struct{})
+				finished := make(chan time.Duration, 1)
+				calls := 0
+				transport := externalTestTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					started := time.Now()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+					finished <- time.Since(started)
+					return &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: http.NoBody}, nil
+				})
+				if !p.Submit(externalTestCandidate(t, raw, ua, transport)) {
+					t.Fatal("preload rejected")
+				}
+				synctest.Wait()
+				time.Sleep(7 * time.Second)
+				synctest.Wait()
+				if len(finished) != 0 {
+					t.Fatal("preload expired before its ten-second deadline")
+				}
+				wantElapsed := 7 * time.Second
+				if mode == "completes" {
+					close(release)
+				} else {
+					time.Sleep(3*time.Second - time.Millisecond)
+					synctest.Wait()
+					if len(finished) != 0 {
+						t.Fatal("preload expired before ten seconds")
+					}
+					time.Sleep(time.Millisecond)
+					wantElapsed = 10 * time.Second
+				}
+				synctest.Wait()
+				if len(finished) != 1 || <-finished != wantElapsed || calls != 1 {
+					t.Fatalf("preload did not keep its execution budget: mode=%s calls=%d", mode, calls)
+				}
+				if _, cached := CachedExternalLink(raw, ua); cached != (mode == "completes") {
+					t.Fatalf("late successful response publication: cached=%t mode=%s", cached, mode)
+				}
+			})
 		})
-		if !p.Submit(externalTestCandidate(t, "http://source/video", "Player/1.0", transport)) {
-			t.Fatal("preload rejected")
-		}
-		synctest.Wait()
-		time.Sleep(3 * time.Second)
-		synctest.Wait()
-		if len(finished) != 0 {
-			t.Fatal("preload still expired at three seconds")
-		}
-		time.Sleep(3*time.Second - time.Millisecond)
-		synctest.Wait()
-		if len(finished) != 0 {
-			t.Fatal("preload expired before six seconds")
-		}
-		time.Sleep(time.Millisecond)
-		synctest.Wait()
-		if len(finished) != 1 || <-finished != 6*time.Second {
-			t.Fatal("preload did not expire at six seconds")
-		}
-	})
+	}
 }

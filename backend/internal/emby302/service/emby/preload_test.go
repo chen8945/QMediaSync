@@ -387,6 +387,11 @@ func TestPreloadProgressThresholdPauseAndCrossSeason(t *testing.T) {
 }
 
 func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
+	warm := preloadTestItem("20", "Movie")
+	warm.MediaSources[0].Path = ""
+	warm.MediaSources[0].Container = "mkv"
+	warm.MediaSources[0].RunTimeTicks = 1000
+	warm.MediaSources[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
 	for _, test := range []struct {
 		name      string
 		item      preloadItem
@@ -397,7 +402,7 @@ func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
 		serve     func(*testing.T, http.ResponseWriter, *http.Request)
 	}{
 		{"series_resume", preloadItem{ID: "90", Type: "Series"}, "", playback.PreloadDetail, 1, "20", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Get("Filters") != "IsResumable" || r.URL.Query().Get("ParentId") != "90" {
+			if r.URL.Path != "/Users/10/Items/Resume" || r.URL.Query().Get("ParentId") != "90" {
 				t.Error("resume query lost scope")
 			}
 			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{preloadTestItem("20", "Episode")}})
@@ -409,7 +414,7 @@ func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(preloadItems{Items: items})
 		}},
-		{"season_compiled_special", preloadItem{ID: "91", Type: "Season", SeriesID: "90"}, "", playback.PreloadDetail, 2, "20", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+		{"season_compiled_special", preloadItem{ID: "91", Type: "Season", SeriesID: "90"}, "", playback.PreloadDetail, 1, "20", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
 			item := preloadTestItem("20", "Episode")
 			item.SeasonID = "specials"
 			item.ParentID = "specials"
@@ -434,25 +439,34 @@ func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
 			one.ParentID, two.ParentID = "20", "20"
 			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{one, two}, TotalRecordCount: 2})
 		}},
-		{"warm_missing_path", func() preloadItem {
-			i := preloadTestItem("20", "Movie")
-			i.MediaSources[0].Path = ""
-			i.MediaSources[0].Container = "mkv"
-			i.MediaSources[0].RunTimeTicks = 1000
-			i.MediaSources[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
-			return i
-		}(), "", playback.PreloadDetail, 1, "20", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+		{"warm_missing_path", warm, "", playback.PreloadDetail, 1, "20", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/Items/20/PlaybackInfo" || r.URL.Query().Get("IsPlayback") != "false" || r.URL.Query().Get("AutoOpenLiveStream") != "false" {
 				t.Error("warm PI semantics lost")
 			}
 			_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: preloadTestItem("20", "Movie").MediaSources})
+		}},
+		{"warm_empty_playbackinfo", warm, "", playback.PreloadDetail, 1, "", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: []preloadSource{}})
+		}},
+		{"warm_changed_source", warm, "", playback.PreloadDetail, 1, "", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+			source := preloadTestItem("20", "Movie").MediaSources[0]
+			source.ID += "-new"
+			_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: []preloadSource{source}})
 		}},
 		{"cold_missing_path", func() preloadItem {
 			i := preloadTestItem("20", "Movie")
 			i.MediaSources[0].Path = ""
 			i.MediaSources[0].Container = "strm"
 			return i
-		}(), "", playback.PreloadDetail, 0, "", nil},
+		}(), "", playback.PreloadDetail, 1, "", func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/Users/10/Items/20" {
+				t.Errorf("cold source was probed: %s", r.URL.Path)
+			}
+			item := preloadTestItem("20", "Movie")
+			item.MediaSources[0].Path = ""
+			item.MediaSources[0].Container = "strm"
+			_ = json.NewEncoder(w).Encode(item)
+		}},
 		{"ordinary_movie", preloadTestItem("20", "Movie"), "", playback.PreloadNext, 0, "", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -839,7 +853,7 @@ func TestPreloadRecordedEmbyRelations(t *testing.T) {
 		pending              bool
 		calls                int32
 	}{
-		{"resume", "emby-resumable-filter", "1000", preloadItem{ID: "1003", Type: "Series"}, true, 1},
+		{"retained_resumable", "emby-resumable-filter", "1000", preloadItem{ID: "1003", Type: "Series"}, true, 1},
 		{"season_resume", "emby-resumable-filter", "1000", preloadItem{ID: "1002", Type: "Season", SeriesID: "1003"}, true, 1},
 		{"successor", "emby-episodes-start", "1005", item("emby-item-episode"), false, 1},
 		{"cross_season", "emby-cross-season-cursor", "1011", preloadItem{ID: "1007", Type: "Episode", SeriesID: "1009"}, false, 1},
@@ -849,6 +863,9 @@ func TestPreloadRecordedEmbyRelations(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := newEmbyPreloadHarness(t)
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
+				if test.name == "retained_resumable" && (r.URL.Path != "/Users/10/Items" || r.URL.Query().Get("Filters") != "IsResumable" || r.URL.Query().Get("ParentId") != "1003") {
+					t.Errorf("retained resume scope changed: %s", r.URL.String())
+				}
 				payload := payloads[test.response]
 				if r.URL.Path == "/Users/10/Items/1014" {
 					payload = payloads["emby-item-movie"]
@@ -861,7 +878,13 @@ func TestPreloadRecordedEmbyRelations(t *testing.T) {
 			h.core.Submit(playback.PreloadCandidate{Key: t.Name(), Scope: request.scope, Kind: playback.PreloadNext, Run: func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
 				var value preloadItem
 				var err error
-				if test.pending {
+				if test.name == "retained_resumable" {
+					var result preloadItems
+					result, err = job.resumableItems(ctx, task, test.current.ID)
+					if len(result.Items) == 1 {
+						value = result.Items[0]
+					}
+				} else if test.pending {
 					value, err = job.pendingEpisode(ctx, task)
 				} else {
 					value, err = job.successor(ctx, task)
@@ -1758,7 +1781,7 @@ func TestPreloadNaturalResponsesAssociateForSixtySeconds(t *testing.T) {
 }
 
 func TestPreloadPendingEpisodeFinalThirdGET(t *testing.T) {
-	for _, mode := range []string{"final-source", "final-season-membership"} {
+	for _, mode := range []string{"final-source", "final-season-membership", "season-source-omitted"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newEmbyPreloadHarness(t)
 			parent := preloadItem{ID: "90", Type: "Series"}
@@ -1768,14 +1791,22 @@ func TestPreloadPendingEpisodeFinalThirdGET(t *testing.T) {
 			} else {
 				parent = preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
 				candidate.SeasonID, candidate.ParentID = "special", "special"
+				if mode == "season-source-omitted" {
+					candidate.SeasonID, candidate.ParentID = "", ""
+				}
 			}
 			h.nodes[parent.ID] = parent
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/Users/10/Items":
+				case "/Users/10/Items/Resume":
 					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{}})
 				case "/Shows/NextUp", "/Shows/90/Episodes":
-					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{candidate}})
+					value := candidate
+					if mode == "season-source-omitted" && r.URL.Path == "/Shows/90/Episodes" {
+						value.MediaSources = append([]preloadSource(nil), candidate.MediaSources...)
+						value.MediaSources[0].Path = ""
+					}
+					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{value}})
 				case "/Users/10/Items/21":
 					_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
 				default:
@@ -1813,7 +1844,7 @@ func TestPreloadPendingEpisodeDoesNotSpendThirdGETOnUnknownOrPlaybackInfo(t *tes
 			observed := make(chan struct{})
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/Users/10/Items":
+				case "/Users/10/Items/Resume":
 					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{}})
 				case "/Shows/NextUp":
 					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{candidate}})
@@ -2708,7 +2739,7 @@ func TestPreloadLogsKeepFinalTargetAndMetadataFailure(t *testing.T) {
 			if result == "query-failed" {
 				want = "Emby HTTP=503"
 			} else if result == "no-relation" {
-				want = "未能确定待播放的单集或分段"
+				want = "没有查到待播单集"
 			}
 			deadline := time.NewTimer(4 * time.Second)
 			defer deadline.Stop()
@@ -2750,5 +2781,138 @@ func TestPreloadDisplayFieldsDoNotRestrictSource(t *testing.T) {
 	}
 	if _, valid := selectPreloadSource(item, ""); !valid {
 		t.Fatal("optional display fields made the existing unique source ambiguous")
+	}
+}
+
+func TestPreloadControlChangeDropsTopLevelPath(t *testing.T) {
+	for _, change := range []struct{ name, client, ua string }{
+		{"ua", "Fixture App", "Control/2"},
+		{"client", "Fixture App/2", "Control/1"},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			h := newEmbyPreloadHarness(t)
+			oldPath := preloadTestItem("20", "Movie").MediaSources[0].Path
+			fresh := preloadTestItem("20", "Movie")
+			fresh.MediaSources[0].Path += "-fresh"
+			h.router = gin.New()
+			h.router.Use(PreloadObserver())
+			h.router.Any("/*path", func(c *gin.Context) {
+				if c.Request.Method == http.MethodPost {
+					c.JSON(http.StatusOK, gin.H{})
+				} else {
+					c.JSON(http.StatusOK, preloadItem{ID: "20", Type: "Movie", Path: oldPath})
+				}
+			})
+			h.upstream = func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/Users/10/Items/20" || r.UserAgent() != change.ua {
+					t.Errorf("new-control source request=%s UA=%q", r.URL.Path, r.UserAgent())
+				}
+				_ = json.NewEncoder(w).Encode(fresh)
+			}
+			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+			if change.name == "ua" {
+				h.waitResolved()
+			}
+			h.request("POST", "/Items/20/PlaybackInfo", "device", change.client, change.ua, nil)
+			if got := h.waitResolved(); got.path != fresh.MediaSources[0].Path || got.ua != change.ua || h.metadata.Load() != 1 {
+				t.Fatalf("new control inherited an unverified top-level URL: result=%+v metadata=%d", got, h.metadata.Load())
+			}
+		})
+	}
+}
+
+func TestPreloadDirectSourceRefreshRevokesOnlyRemovedURL(t *testing.T) {
+	for _, mode := range []string{"incomplete-replacement", "same-source-omitted-path", "omitted-sources"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newEmbyPreloadHarness(t)
+			old := preloadTestItem("20", "Movie")
+			oldPath := old.MediaSources[0].Path
+			if mode != "same-source-omitted-path" {
+				old.Path, old.MediaSources = oldPath, nil
+			}
+			fresh := preloadTestItem("20", "Movie")
+			fresh.MediaSources[0].ID = "replacement"
+			fresh.MediaSources[0].Path += "-fresh"
+			entered, release := make(chan string, 4), make(chan struct{}, 1)
+			replacementResolved := make(chan string, 1)
+			published := make(chan struct {
+				path    string
+				allowed bool
+			}, 4)
+			t.Cleanup(func() { close(release) })
+			h.adapter.options.Resolve = func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+				if raw != oldPath {
+					replacementResolved <- raw
+				}
+				identity := preloadHash(raw, ua)
+				return identity, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+					if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "fixture"}, identity) {
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+					}
+					entered <- raw
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+					published <- struct {
+						path    string
+						allowed bool
+					}{raw, task.Publish(func() {})}
+					return playback.PreloadResult{Outcome: playback.PreloadCached}
+				}, true
+			}
+			h.router = gin.New()
+			h.router.Use(PreloadObserver())
+			h.router.Any("/*path", func(c *gin.Context) {
+				if c.Query("refresh") == "" {
+					c.JSON(http.StatusOK, old)
+					return
+				}
+				value := gin.H{"Id": "20", "Type": "Movie"}
+				if mode == "incomplete-replacement" {
+					value["MediaSources"] = []gin.H{{"Id": "replacement"}}
+				} else if mode == "same-source-omitted-path" {
+					value["MediaSources"] = []gin.H{{"Id": "source-20"}}
+				}
+				c.JSON(http.StatusOK, value)
+			})
+			h.upstream = func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/Users/10/Items/20" {
+					t.Errorf("unexpected source request=%s", r.URL.Path)
+				}
+				_ = json.NewEncoder(w).Encode(fresh)
+			}
+			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+			select {
+			case path := <-entered:
+				if path != oldPath {
+					t.Fatalf("initial signature source=%q", path)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("initial source did not start signing")
+			}
+			h.request("GET", "/Users/10/Items/20?refresh=1", "device", "Fixture App", "Control/1", nil)
+			release <- struct{}{}
+			select {
+			case result := <-published:
+				if result.path != oldPath || result.allowed != (mode != "incomplete-replacement") {
+					t.Fatalf("old source publication after %s: %+v", mode, result)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("old source did not finish")
+			}
+			if mode == "incomplete-replacement" {
+				select {
+				case path := <-replacementResolved:
+					if path != fresh.MediaSources[0].Path || h.metadata.Load() != 1 {
+						t.Fatalf("replacement source=%q metadata=%d", path, h.metadata.Load())
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("replacement was deduplicated instead of completing its missing URL")
+				}
+			} else if h.metadata.Load() != 0 || len(entered) != 0 {
+				t.Fatalf("benign omission restarted source work: metadata=%d signatures=%d", h.metadata.Load(), len(entered))
+			}
+		})
 	}
 }
