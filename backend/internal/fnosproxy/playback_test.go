@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/coocood/freecache"
+
+	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
+	"qmediasync/internal/playback"
 )
 
 func TestPlaybackAuthorizationCacheAndInternalHandoff(t *testing.T) {
@@ -665,5 +673,82 @@ func TestPlaybackFnos098RequiresActualItemAndCanonicalSource(t *testing.T) {
 	_ = response.Body.Close()
 	if string(body) != "<html>fnOS SPA</html>" {
 		t.Fatal("不支持的 POST 未保留上游响应")
+	}
+}
+
+func playbackCacheLog(t *testing.T, raw, ua, final string) *bytes.Buffer {
+	t.Helper()
+	var output bytes.Buffer
+	oldCache, oldLogger, oldLevel := db.Cache, helpers.AppLogger, helpers.ConfiguredLogLevel()
+	db.Cache = db.CacheGlobal{CacheInstance: freecache.NewCache(1 << 20)}
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		db.Cache, helpers.AppLogger = oldCache, oldLogger
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	if final != "" {
+		encoded, err := json.Marshal(playback.ExternalLink{URL: final, Status: http.StatusPartialContent, ExpiresAt: time.Now().Add(time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.Cache.Set(playback.ExternalLinkIdentity(raw, ua), encoded, 60)
+	}
+	return &output
+}
+
+func TestCompatiblePlaybackCacheHitLog(t *testing.T) {
+	const raw = "http://resolver.invalid/resolve?api_key=secret"
+	const final = "https://cdn.example/movie.mkv?k=signature"
+	const ua = "Compatible Player"
+	for _, mode := range []string{"hit", "miss", "canceled", "stopped", "internal"} {
+		t.Run(mode, func(t *testing.T) {
+			cachedURL := final
+			if mode == "miss" {
+				cachedURL = ""
+			}
+			output := playbackCacheLog(t, raw, ua, cachedURL)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			instCtx, stop := context.WithCancel(t.Context())
+			defer stop()
+			handoffs := 0
+			inst := &instance{ctx: instCtx, service: NewService(Options{
+				KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms.local"}, nil },
+				MainHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					handoffs++
+					w.Header().Set("Location", final)
+					w.WriteHeader(http.StatusFound)
+				}),
+			})}
+			resolved := sourceRecord{url: raw}
+			if mode == "internal" {
+				resolved.url = "http://qms.local/115/newurl?userid=owner&pickcode=abc"
+			}
+			if mode == "canceled" {
+				cancel()
+			}
+			if mode == "stopped" {
+				stop()
+			}
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/Videos/movie/stream", nil)
+			request.Header.Set("User-Agent", ua)
+			response := httptest.NewRecorder()
+			inst.serveResolved(response, request, resolved)
+			wantCount := 0
+			if mode == "hit" {
+				wantCount = 1
+				if response.Header().Get("Location") != final {
+					t.Fatal("cache hit did not use the final URL")
+				}
+			}
+			if got := output.String(); strings.Count(got, "播放请求命中缓存") != wantCount ||
+				wantCount == 1 && !strings.Contains(got, "入口=飞牛，缓存=第三方直链") {
+				t.Fatalf("unexpected compatible cache log: %s", got)
+			}
+			if mode == "miss" && response.Header().Get("Location") != raw || (mode == "internal") != (handoffs == 1) {
+				t.Fatal("cache logging changed ordinary miss/internal delegation")
+			}
+		})
 	}
 }

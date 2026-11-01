@@ -337,7 +337,7 @@ func TestExternalPlaybackWaitsForExistingPreload(t *testing.T) {
 			go func() {
 				resolved := sourceRecord{url: unescapedName}
 				if mode == "native" {
-					location, _ := inst.nativePlaybackURL(request, resolved)
+					location, _, _ := inst.nativePlaybackURL(request, resolved)
 					result <- location
 				} else {
 					response := httptest.NewRecorder()

@@ -38,10 +38,12 @@ type embyPreloadJob struct {
 	key            string
 	piTried        bool
 	prepared       bool
+	pendingFirst   bool
 	identity       string
 	resolve        func(context.Context, *playback.PreloadTask) playback.PreloadResult
 	metadataFailed bool
 	metadataHTTP   int
+	fetchedItems   map[string]preloadItem
 }
 
 func (p *embyPreloader) submit(request preloadRequest, item preloadItem, ua string, revision uint64, kind playback.PreloadKind, association string, members map[string]bool, enriched bool, nextID ...string) {
@@ -66,6 +68,9 @@ func (p *embyPreloader) submit(request preloadRequest, item preloadItem, ua stri
 	candidate := playback.PreloadCandidate{
 		Key: key, Scope: request.scope, Instance: p.options.Instance, Source: job.identity, Account: account, Kind: kind, Enriched: enriched, Run: job.run,
 		Log: playback.PreloadLogContext{Entry: "Emby", Trigger: preloadTrigger(item, kind), ItemID: item.ID, Title: preloadItemTitle(item)},
+	}
+	if kind == playback.PreloadDetail && (item.Type == "Series" || item.Type == "Season") {
+		candidate.MetadataLimit = 7
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -103,15 +108,18 @@ func (j *embyPreloadJob) run(ctx context.Context, task *playback.PreloadTask) pl
 		if j.item.Type != "Movie" && j.item.Type != "Episode" && !(j.kind == playback.PreloadNext && j.item.Type == "Video") {
 			return j.skipped(nil, "candidate_unknown")
 		}
+		j.mergeCachedItem()
 		selected := j.request.selected
 		if j.kind == playback.PreloadNext {
 			selected = ""
 		}
 		source, ok := selectPreloadLinkSource(j.item, selected)
-		if !ok && len(j.item.MediaSources) == 0 || ok && source.Path == "" && !completePreloadSource(source) {
+		_, fetched := j.fetchedItems[j.item.ID]
+		fetched = fetched || j.key != "" && j.item.fetchedKey == j.key
+		if !fetched && (!ok && len(j.item.MediaSources) == 0 || ok && source.Path == "" && !completePreloadSource(source)) {
 			var value preloadItem
-			sequence = j.owner.serial.Add(1)
 			err := j.getItem(ctx, task, j.item.ID, &value, true)
+			sequence = value.sourceSequence
 			sourceChanged := err == nil && (value.Type != j.item.Type || value.SeriesID != "" && j.item.SeriesID != "" && value.SeriesID != j.item.SeriesID)
 			if err == nil && !sourceChanged {
 				if value.MediaSources == nil && value.Path == "" {
@@ -180,8 +188,19 @@ func (j *embyPreloadJob) run(ctx context.Context, task *playback.PreloadTask) pl
 				return j.skipped(nil, "source_changed")
 			}
 		}
+		j.mergeCachedItem()
+		if j.kind == playback.PreloadDetail {
+			selected = j.request.selected
+		}
+		source, ok = selectPreloadLinkSource(j.item, selected)
+		if !ok {
+			return j.skipped(nil, "source_changed")
+		}
 		if !playback.ValidExternalURL(source.Path) {
 			return j.skipped(nil, "source_origin_unknown")
+		}
+		if data := j.item.UserData; j.pendingFirst && data != nil && data.Played != nil && *data.Played {
+			return j.skipped(nil, "pending_invalid")
 		}
 		j.identity, j.resolve, j.prepared = j.owner.options.Resolve(source.Path, j.ua, true)
 		if !j.prepared || j.resolve == nil {
@@ -216,6 +235,7 @@ func (j *embyPreloadJob) mergePendingMetadata(task *playback.PreloadTask, parent
 			j.item = mergePreloadItem(current, j.item)
 			j.request.selected = device.selected
 		} else {
+			j.item = mergePreloadItem(j.item, device.detail)
 			device.detailSourceSequence = sequence
 		}
 		device.detail, device.selected = j.item, j.request.selected
@@ -227,6 +247,7 @@ func (j *embyPreloadJob) mergePendingMetadata(task *playback.PreloadTask, parent
 	if device.detail.ID != parentID || device.pendingParent != parentID || device.pendingTarget.ID != j.item.ID {
 		return false
 	}
+	j.pendingFirst = device.pendingFirst
 	newer := device.pendingTarget.sourceSequence > sequence
 	j.item.sourceSequence = sequence
 	if newer {
@@ -234,6 +255,8 @@ func (j *embyPreloadJob) mergePendingMetadata(task *playback.PreloadTask, parent
 		current.MediaSources = fillPreloadSources(current.MediaSources, j.item.MediaSources, current.ID)
 		j.item = mergePreloadItem(current, j.item)
 		j.request.selected = device.pendingTargetSelected
+	} else {
+		j.item = mergePreloadItem(j.item, device.pendingTarget)
 	}
 	device.pendingTarget, device.pendingTargetSelected = j.item, j.request.selected
 	metadata := &preloadPendingList{items: []preloadItem{j.item}}
@@ -318,11 +341,9 @@ func (j *embyPreloadJob) successor(ctx context.Context, task *playback.PreloadTa
 	current := j.item
 	if current.Type == "" {
 		var value preloadItem
-		sequence := j.owner.serial.Add(1)
 		if err := j.getItem(ctx, task, current.ID, &value); err != nil {
 			return preloadItem{}, err
 		}
-		value = sequencePreloadItem(value, sequence)
 		value.MediaSources = fillPreloadSources(value.MediaSources, current.MediaSources, value.ID)
 		previous, known := selectPreloadSource(current, j.request.selected)
 		source, valid := selectPreloadSource(value, j.request.selected)
@@ -336,24 +357,37 @@ func (j *embyPreloadJob) successor(ctx context.Context, task *playback.PreloadTa
 			return preloadItem{}, errors.New("missing_series")
 		}
 		if j.nextID != "" && j.nextID != current.ID {
-			var value preloadItem
-			if err := j.getItem(ctx, task, j.nextID, &value); err != nil {
-				return preloadItem{}, err
+			value, _ := j.cachedItem(j.nextID)
+			if value.ID != "" && value.Type == "" {
+				known := value
+				known.Type = "Episode"
+				if !validPreloadItem(known) || value.SeriesID != "" && value.SeriesID != current.SeriesID {
+					return preloadItem{}, errors.New("queue_mismatch")
+				}
 			}
-			if value.Type != "Episode" || value.SeriesID != current.SeriesID {
+			if value.ID == "" || value.SeriesID == "" || value.Type == "" {
+				if err := j.getItem(ctx, task, j.nextID, &value); err != nil {
+					return preloadItem{}, err
+				}
+			}
+			if value.Type != "Episode" || value.SeriesID != current.SeriesID || !validPreloadItem(value) {
 				return preloadItem{}, errors.New("queue_mismatch")
 			}
 			return value, nil
 		}
+		if value, ok := j.cachedSuccessor(current); ok {
+			return value, nil
+		}
 		query := url.Values{"UserId": {j.request.user}, "StartItemId": {current.ID}, "Limit": {"2"}, "Fields": {preloadItemFields}}
 		var result preloadItems
+		sequence := j.owner.serial.Add(1)
 		if err := j.fetch(ctx, task, "/Shows/"+current.SeriesID+"/Episodes", query, true, &result); err != nil {
 			return preloadItem{}, err
 		}
 		if len(result.Items) != 2 || result.Items[0].ID != current.ID || result.Items[1].ID == current.ID || result.Items[0].SeriesID != current.SeriesID || result.Items[1].SeriesID != current.SeriesID || result.Items[1].Type != "Episode" || !validPreloadItem(result.Items[1]) {
 			return preloadItem{}, errors.New("successor_ambiguous")
 		}
-		return result.Items[1], nil
+		return sequencePreloadItem(result.Items[1], sequence), nil
 	}
 	parent := current
 	if current.Type == "Video" && validPreloadID(current.ParentID) {
@@ -366,6 +400,7 @@ func (j *embyPreloadJob) successor(ctx context.Context, task *playback.PreloadTa
 	}
 	query := url.Values{"UserId": {j.request.user}, "Fields": {preloadItemFields}}
 	var result preloadItems
+	sequence := j.owner.serial.Add(1)
 	if err := j.fetch(ctx, task, "/Videos/"+parent.ID+"/AdditionalParts", query, true, &result); err != nil {
 		return preloadItem{}, err
 	}
@@ -382,7 +417,7 @@ func (j *embyPreloadJob) successor(ctx context.Context, task *playback.PreloadTa
 	}
 	for index, value := range chain {
 		if value.ID == current.ID && index+1 < len(chain) {
-			return chain[index+1], nil
+			return sequencePreloadItem(chain[index+1], sequence), nil
 		}
 	}
 	return preloadItem{}, errors.New("no_next_part")
@@ -392,7 +427,16 @@ func (j *embyPreloadJob) getItem(ctx context.Context, task *playback.PreloadTask
 	if !validPreloadID(id) {
 		return errors.New("invalid_item")
 	}
+	if cached, ok := j.fetchedItems[id]; ok {
+		*value = cached
+		return nil
+	}
+	if cached, _ := j.cachedItem(id); j.key != "" && cached.fetchedKey == j.key && validPreloadItem(cached) {
+		*value = cached
+		return nil
+	}
 	query := url.Values{"Fields": {preloadItemFields}}
+	sequence := j.owner.serial.Add(1)
 	if err := j.fetch(ctx, task, "/Users/"+j.request.user+"/Items/"+id, query, true, value, final...); err != nil {
 		return err
 	}
@@ -402,6 +446,12 @@ func (j *embyPreloadJob) getItem(ctx context.Context, task *playback.PreloadTask
 	if value.ID != id || !validPreloadItem(*value) {
 		return errors.New("invalid_item")
 	}
+	*value = sequencePreloadItem(*value, sequence)
+	value.fetchedKey = j.key
+	if j.fetchedItems == nil {
+		j.fetchedItems = make(map[string]preloadItem)
+	}
+	j.fetchedItems[id] = *value
 	return nil
 }
 
@@ -453,9 +503,14 @@ func (j *embyPreloadJob) fetch(ctx context.Context, task *playback.PreloadTask, 
 		return false, nil
 	}
 	if safeGET && len(final) == 1 && final[0] {
-		return task.FinalMetadataGET(ctx, call)
+		err = task.FinalMetadataGET(ctx, call)
+	} else {
+		err = task.Metadata(ctx, safeGET, call)
 	}
-	return task.Metadata(ctx, safeGET, call)
+	if err == nil && !task.Valid() {
+		return playback.ErrPreloadCanceled
+	}
+	return err
 }
 
 func decodePreloadJSON(raw []byte, header http.Header) ([]byte, error) {
@@ -487,8 +542,26 @@ func decodePreloadJSON(raw []byte, header http.Header) ([]byte, error) {
 }
 
 func (p *embyPreloader) observeSeasonMembers(request preloadRequest, query url.Values, data []byte) {
+	if len(preloadValues(query, "ParentId")) > 0 {
+		p.mu.Lock()
+		device := p.devices[request.scope]
+		if device == nil || device.detail.ID != request.item || device.detail.Type != "Series" && device.detail.Type != "Season" {
+			p.mu.Unlock()
+			return
+		}
+		if device.detail.Type == "Season" {
+			query = maps.Clone(query)
+			deletePreloadValues(query, "ParentId")
+			query.Set("SeasonId", device.detail.ID)
+			request.item = device.detail.SeriesID
+			if request.item == "" {
+				request.item = device.detail.ParentID
+			}
+		}
+		p.mu.Unlock()
+	}
 	season, ok := preloadUnique(preloadValues(query, "SeasonId"))
-	if !ok || !validPreloadID(season) {
+	if !ok || season != "" && !validPreloadID(season) {
 		return
 	}
 	var result preloadItems
@@ -509,13 +582,27 @@ func (p *embyPreloader) observeSeasonMembers(request preloadRequest, query url.V
 	device := p.deviceLocked(request)
 	var detail preloadItem
 	if device != nil && request.sequence == device.episodesStarted && request.controlVersion == device.controlVersion && preloadControlMatches(device, request) {
+		if request.sequence < device.selectionInvalidated {
+			for i := range result.Items {
+				result.Items[i].UserData = nil
+				result.Items[i].userDataSequence = device.selectionInvalidated
+			}
+			for i := range items {
+				items[i].UserData = nil
+				items[i].userDataSequence = device.selectionInvalidated
+			}
+		}
+		p.cacheEpisodeListLocked(device, request, query, result)
 		changed := device.season != season || !maps.Equal(device.members, members)
 		metadata := &preloadPendingList{items: items}
 		if time.Since(device.membersAt) <= preloadAssociationTTL {
 			metadata = metadata.mergeMetadata(&preloadPendingList{items: device.memberItems})
 		}
 		if time.Since(device.detailAt) <= preloadAssociationTTL {
-			metadata = metadata.mergeMetadata(&preloadPendingList{items: []preloadItem{device.detail, device.pendingTarget}})
+			metadata = metadata.mergeMetadata(&preloadPendingList{items: []preloadItem{device.detail}})
+		}
+		if time.Since(device.pendingTarget.metadataAt) <= preloadAssociationTTL {
+			metadata = metadata.mergeMetadata(&preloadPendingList{items: []preloadItem{device.pendingTarget}})
 		}
 		device.season, device.members, device.membersAt = season, members, time.Now()
 		device.memberItems = metadata.items
@@ -536,15 +623,67 @@ func (p *embyPreloader) observeSeasonMembers(request preloadRequest, query url.V
 				continue
 			}
 			old := device.pendingTarget
-			current := mergePreloadPendingItem(item, old)
-			if validPreloadItem(old) != validPreloadItem(current) || pendingSourceChanged(old, current, device.pendingTargetSelected, device.pendingTargetSelected) {
+			current := item
+			if time.Since(old.metadataAt) <= preloadAssociationTTL {
+				current = mergePreloadPendingItem(item, old)
+			}
+			watchChanged := false
+			if before, after := old.UserData, current.UserData; device.pendingFirst && after != nil {
+				watchChanged = after.Played != nil && *after.Played && (before == nil || before.Played == nil || !*before.Played) ||
+					after.PlayCount != nil && *after.PlayCount > 0 && (before == nil || before.PlayCount == nil || *before.PlayCount != *after.PlayCount) ||
+					after.PlaybackPositionTicks != nil && *after.PlaybackPositionTicks > 0 && (before == nil || before.PlaybackPositionTicks == nil || *before.PlaybackPositionTicks != *after.PlaybackPositionTicks)
+			}
+			if validPreloadItem(old) != validPreloadItem(current) || pendingSourceChanged(old, current, device.pendingTargetSelected, device.pendingTargetSelected) || watchChanged {
 				device.revision++
 				p.options.Coordinator.CancelDetail(request.scope)
 				changed = true
 			}
+			if watchChanged {
+				device.pendingLists = [2]*preloadPendingList{}
+				device.pendingFirst = false
+				device.selectionInvalidated = max(device.selectionInvalidated, request.sequence)
+			}
 			device.pendingTarget = current
 		}
-		if changed && (device.detail.Type == "Series" && device.detail.ID == request.item || device.detail.Type == "Season" && device.detail.ID == season) {
+		firstChanged := false
+		if list := device.episodeList; device.pendingFirst && list != nil && list.sequence == request.sequence && list.first {
+			parent := device.detail
+			series, selectedSeason := parent.SeriesID, parent
+			if parent.Type == "Series" {
+				series = parent.ID
+				selectedSeason = preloadItem{ID: device.pendingTarget.SeasonID, IndexNumber: device.pendingTarget.ParentIndexNumber}
+			} else if series == "" {
+				series = parent.ParentID
+			}
+			var candidate preloadItem
+			known := false
+			if list.series == series {
+				if parent.Type == "Series" && list.season == "" && list.seasonNumber < 0 {
+					candidate, known = firstPreloadEpisode(list, preloadItem{}, true)
+					if number, ok := preloadIndex(device.pendingTarget.ParentIndexNumber); ok && number == 0 && candidate.ID == "" {
+						known = len(list.items) == 0 || list.complete
+						for _, item := range list.items {
+							if item.ID == device.pendingTarget.ID {
+								known = false
+								break
+							}
+						}
+					}
+				} else if validPreloadID(selectedSeason.ID) && list.matchesSeason(selectedSeason) {
+					candidate, known = firstPreloadEpisode(list, selectedSeason, false)
+				}
+			}
+			if known && candidate.ID != device.pendingTarget.ID {
+				// 可靠起点已改变；筛选掉的旧首集可能不会再出现在响应里。
+				device.pendingLists = [2]*preloadPendingList{}
+				device.pendingFirst = false
+				device.selectionInvalidated = max(device.selectionInvalidated, request.sequence)
+				device.revision++
+				p.options.Coordinator.CancelDetail(request.scope)
+				changed, firstChanged = true, true
+			}
+		}
+		if changed && (firstChanged || device.detail.Type == "Series" && device.detail.ID == request.item || device.detail.Type == "Season" && device.detail.ID == season) {
 			detail = device.detail
 			request.user, request.selected = device.user, device.selected
 			request.detailSequence = device.detailStarted

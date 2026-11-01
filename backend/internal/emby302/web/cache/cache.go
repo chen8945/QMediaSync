@@ -14,6 +14,7 @@ import (
 	"qmediasync/internal/emby302/util/encrypts"
 	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/util/logs"
+	"qmediasync/internal/helpers"
 
 	"github.com/gin-gonic/gin"
 )
@@ -67,6 +68,8 @@ func CacheableRouteMarker() gin.HandlerFunc {
 
 // RequestCacher 请求缓存中间件
 func RequestCacher() gin.HandlerFunc {
+	streamRoute := regexp.MustCompile(constant.Reg_ResourceStream + "$")
+	subtitleRoute := regexp.MustCompile(constant.Reg_VideoSubtitles)
 	return func(c *gin.Context) {
 		// 1 判断请求是否需要缓存
 		if c.Writer.Header().Get(HeaderKeyExpired) == "-1" {
@@ -89,6 +92,10 @@ func RequestCacher() gin.HandlerFunc {
 			body := append([]byte(nil), rc.body...)
 			rc.mu.RUnlock()
 			if https.IsRedirectCode(code) {
+				if c.Request.Context().Err() == nil && streamRoute.MatchString(c.Request.URL.Path) &&
+					!subtitleRoute.MatchString(c.Request.URL.Path) && header.Get("Location") != "" {
+					helpers.LogPlaybackCacheHit("Emby", "播放跳转", header.Get("Location"), c.Request.UserAgent())
+				}
 				// 适配重定向请求
 				c.Redirect(code, header.Get("Location"))
 			} else {

@@ -63,6 +63,124 @@ func TestPreloadPendingNaturalLists(t *testing.T) {
 	}
 }
 
+func TestPreloadPendingFirstEpisodeRechecksPlayedStateAfterMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name, list, explicitLater                                         string
+		played, omitPlayed, playbackInfo, omitSource, newerUnplayed, want bool
+	}{
+		{name: "first-played", list: "episodes", played: true},
+		{name: "first-unplayed", list: "episodes", want: true},
+		{name: "first-watch-state-omitted", list: "episodes", omitPlayed: true, want: true},
+		{name: "first-played-after-playbackinfo", list: "episodes", played: true, playbackInfo: true},
+		{name: "first-unplayed-after-playbackinfo", list: "episodes", playbackInfo: true, want: true},
+		{name: "first-watch-state-omitted-after-playbackinfo", list: "episodes", omitPlayed: true, playbackInfo: true, want: true},
+		{name: "first-played-with-source-omitted-detail", list: "episodes", played: true, playbackInfo: true, omitSource: true},
+		{name: "first-unplayed-with-source-omitted-detail", list: "episodes", playbackInfo: true, omitSource: true, want: true},
+		{name: "first-newer-unplayed", list: "episodes", played: true, playbackInfo: true, newerUnplayed: true, want: true},
+		{name: "resume-played", list: "resume", played: true, want: true},
+		{name: "nextup-played", list: "nextup", played: true, want: true},
+		{name: "resume-played-after-playbackinfo", list: "resume", played: true, playbackInfo: true, want: true},
+		{name: "nextup-played-after-playbackinfo", list: "nextup", played: true, playbackInfo: true, want: true},
+		{name: "first-became-explicit-nextup", list: "episodes", played: true, explicitLater: "nextup", want: true},
+		{name: "first-became-explicit-resume-after-playbackinfo", list: "episodes", played: true, playbackInfo: true, explicitLater: "resume", want: true},
+		{name: "first-became-explicit-nextup-after-playbackinfo", list: "episodes", played: true, playbackInfo: true, explicitLater: "nextup", want: true},
+	} {
+		runEmbyPreloadCase(t, test.name, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
+			unplayed, count, position := false, 0, int64(0)
+			item := preloadTestItem("20", "Episode")
+			item.ParentIndexNumber, item.IndexNumber = 1, 1
+			item.MediaSources = nil
+			item.UserData = &preloadUserData{Played: &unplayed, PlayCount: &count, PlaybackPositionTicks: &position}
+			h.nodes["90"] = preloadItem{ID: "90", Type: "Series"}
+			path, listPath := "/Shows/90/Episodes?UserId=10", "/Shows/90/Episodes"
+			if test.list == "resume" {
+				path, listPath = "/Users/10/Items/Resume?ParentId=90", "/Users/10/Items/Resume"
+			} else if test.list == "nextup" {
+				path, listPath = "/Shows/NextUp?SeriesId=90&UserId=10", "/Shows/NextUp"
+			}
+			h.lists[listPath] = preloadItems{Items: []preloadItem{item}, TotalRecordCount: 1}
+			fetched := preloadTestItem("20", "Episode")
+			fetched.ParentIndexNumber, fetched.IndexNumber = 1, 1
+			if !test.omitPlayed {
+				fetched.UserData = &preloadUserData{Played: &test.played}
+			}
+			freshSources := preloadTestItem("20", "Episode").MediaSources
+			freshSources[0].Path += "&fresh=1"
+			h.infos["20"] = preloadPlaybackInfo{MediaSources: freshSources}
+			if test.omitSource {
+				fetched.MediaSources = nil
+			}
+			entered, finished := make(chan struct{}), make(chan struct{})
+			release := make(chan struct{}, 1)
+			t.Cleanup(func() { close(release) })
+			h.upstream = func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/Users/10/Items/20" {
+					t.Errorf("unexpected metadata request %s", r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				close(entered)
+				defer close(finished)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				_ = json.NewEncoder(w).Encode(fetched)
+			}
+			h.request("GET", path, "device", "Fixture App", "Control/1", nil)
+			h.request("GET", "/Users/10/Items/90", "device", "Fixture App", "Control/1", nil)
+			select {
+			case <-entered:
+			case <-time.After(4 * time.Second):
+				t.Fatal("source completion did not start")
+			}
+			if test.explicitLater != "" {
+				current := item
+				current.UserData = fetched.UserData
+				path, listPath := "/Shows/NextUp?SeriesId=90&UserId=10", "/Shows/NextUp"
+				if test.explicitLater == "resume" {
+					path, listPath = "/Users/10/Items/Resume?ParentId=90", "/Users/10/Items/Resume"
+				}
+				h.lists[listPath] = preloadItems{Items: []preloadItem{current}}
+				h.request("GET", path, "device", "Fixture App", "Control/1", nil)
+			}
+			if test.playbackInfo {
+				h.request("POST", "/Items/20/PlaybackInfo?UserId=10&MediaSourceId=source-20", "device", "Fixture App", "Control/1", nil)
+			}
+			if test.newerUnplayed {
+				current := item
+				current.UserData = &preloadUserData{Played: &unplayed}
+				h.lists["/Shows/90/Episodes"] = preloadItems{Items: []preloadItem{current}, TotalRecordCount: 1}
+				h.request("GET", "/Shows/90/Episodes?UserId=10", "device", "Fixture App", "Control/1", nil)
+			}
+			release <- struct{}{}
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("source completion did not finish")
+			}
+			waitPreloadPendingJobs(t, h, playback.PreloadDetail)
+			if got := len(h.resolved) != 0; got != test.want {
+				t.Fatalf("resolved=%v want=%v after metadata Played=%v", got, test.want, test.played)
+			}
+			if test.want {
+				want := fetched.MediaSources
+				if test.playbackInfo {
+					want = freshSources
+				}
+				if got := h.waitResolved(); got.path != want[0].Path || got.ua != "Control/1" || !got.force {
+					t.Fatalf("resolved wrong source %q", got.path)
+				}
+			}
+			if got := h.metadata.Load(); got != 1 {
+				t.Fatalf("source completion metadata=%d, want=1", got)
+			}
+		})
+	}
+}
+
 func TestPreloadEmptyPendingQueryScope(t *testing.T) {
 	for _, test := range []struct {
 		query   string
@@ -591,7 +709,7 @@ func TestPreloadPendingQueriesAndSourceCompletion(t *testing.T) {
 }
 
 func TestPreloadLinkSourceUsesAvailableData(t *testing.T) {
-	for _, mode := range []string{"missing-id", "unrelated-source", "id-only-source", "mixed-local", "mixed-local-selected", "top-level-path", "selected-absent", "ambiguous"} {
+	for _, mode := range []string{"missing-id", "unrelated-source", "id-only-source", "mixed-local", "mixed-local-selected", "top-level-path", "selected-absent", "ambiguous", "merged-version", "merged-selected-current", "merged-selected-other"} {
 		t.Run(mode, func(t *testing.T) {
 			item := preloadTestItem("20", "Episode")
 			selected := ""
@@ -622,6 +740,15 @@ func TestPreloadLinkSourceUsesAvailableData(t *testing.T) {
 				other.Path += "-other"
 				item.MediaSources = append(item.MediaSources, other)
 				want = false
+			case "merged-version", "merged-selected-current", "merged-selected-other":
+				other := preloadTestItem("21", "Episode").MediaSources[0]
+				item.MediaSources = append(item.MediaSources, other)
+				want = mode == "merged-selected-current"
+				if mode == "merged-selected-current" {
+					selected = item.MediaSources[0].ID
+				} else if mode == "merged-selected-other" {
+					selected = other.ID
+				}
 			}
 			_, ok := selectPreloadLinkSource(item, selected)
 			if ok != want {
@@ -808,6 +935,139 @@ func TestPreloadPendingListScope(t *testing.T) {
 	}
 }
 
+func TestPreloadEmptyPendingListRespectsExplicitParent(t *testing.T) {
+	parent := preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
+	for _, test := range []struct {
+		name, parent string
+		want         bool
+	}{
+		{"same season", "91", true},
+		{"other season", "92", false},
+		{"whole series", "", true},
+		{"series parent", "90", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			list := &preloadPendingList{parent: test.parent, series: "90", items: []preloadItem{}}
+			if got := list.scoped(parent); got != test.want {
+				t.Fatalf("scoped=%v, want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPreloadOtherSeasonEmptyKeepsPendingPreparation(t *testing.T) {
+	h := newEmbyPreloadHarness(t)
+	h.nodes["91"] = preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
+	item := preloadTestItem("20", "Episode")
+	h.lists["/Users/10/Items/Resume"] = preloadItems{Items: []preloadItem{item}}
+	h.lists["/Shows/NextUp"] = preloadItems{Items: []preloadItem{}}
+	entered, release := make(chan *playback.PreloadTask, 1), make(chan struct{}, 1)
+	t.Cleanup(func() { close(release) })
+	resolve := h.adapter.options.Resolve
+	h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+		key, run, supported := resolve(raw, ua, force)
+		return key, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+			if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "fixture"}, key) {
+				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+			}
+			entered <- task
+			select {
+			case <-ctx.Done():
+			case <-release:
+				task.Publish(func() { run(ctx, task) })
+			}
+			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+		}, supported
+	}
+	h.request("GET", "/Users/10/Items/Resume?ParentId=91", "device", "Fixture App", "Control/1", nil)
+	h.request("GET", "/Users/10/Items/91", "device", "Fixture App", "Control/1", nil)
+	var original *playback.PreloadTask
+	select {
+	case original = <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("season candidate did not enter signing")
+	}
+	h.request("GET", "/Shows/NextUp?ParentId=92&SeriesId=90&UserId=10", "device", "Fixture App", "Control/1", nil)
+	if !original.Valid() {
+		t.Fatal("another season's empty result canceled the current season's preparation")
+	}
+	release <- struct{}{}
+	if got := h.waitResolved(); got.path != item.MediaSources[0].Path || h.metadata.Load() != 0 {
+		t.Fatalf("another season's empty result replaced the current candidate: %+v; metadata=%d", got, h.metadata.Load())
+	}
+}
+
+func TestPreloadPendingLookupDoesNotRenewExpiredSource(t *testing.T) {
+	h := newEmbyPreloadHarness(t)
+	h.nodes["90"] = preloadItem{ID: "90", Type: "Series"}
+	item := preloadTestItem("20", "Episode")
+	h.lists["/Shows/NextUp"] = preloadItems{Items: []preloadItem{item}}
+	h.request("GET", "/Shows/NextUp?SeriesId=90&UserId=10", "device", "Fixture App", "Control/1", nil)
+	h.adapter.mu.Lock()
+	for _, device := range h.adapter.devices {
+		device.pendingLists[1].at = time.Now().Add(-preloadAssociationTTL - time.Second)
+	}
+	h.adapter.mu.Unlock()
+	current := preloadTestItem("20", "Episode")
+	current.MediaSources[0].Path += "-new"
+	h.upstream = func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Users/10/Items/Resume":
+			value := item
+			value.MediaSources = nil
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{value}})
+		case "/Users/10/Items/20":
+			_ = json.NewEncoder(w).Encode(current)
+		default:
+			t.Errorf("unexpected metadata: %s", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}
+	h.request("GET", "/Users/10/Items/90", "device", "Fixture App", "Control/1", nil)
+	if got := h.waitResolved(); got.path != current.MediaSources[0].Path {
+		t.Fatalf("expired NextUp source was revived: %q", got.path)
+	}
+	if h.metadata.Load() != 2 {
+		t.Fatalf("source was not refreshed within the original budget: calls=%d", h.metadata.Load())
+	}
+}
+
+func TestPreloadPendingSeasonSourceChangeUsesRemainingBudget(t *testing.T) {
+	h := newEmbyPreloadHarness(t)
+	h.nodes["91"] = preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
+	item := preloadTestItem("20", "Episode")
+	item.SeasonID = ""
+	current := preloadTestItem("20", "Episode")
+	current.MediaSources[0].ID, current.MediaSources[0].Path = "new-source", current.MediaSources[0].Path+"-new"
+	h.upstream = func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Users/10/Items/Resume":
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{}})
+		case "/Shows/NextUp":
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{item}})
+		case "/Shows/90/Episodes":
+			if r.URL.Query().Get("SeasonId") != "91" || r.URL.Query().Get("StartItemId") != "20" {
+				t.Error("membership verification lost its season or candidate")
+			}
+			value := current
+			value.MediaSources = []preloadSource{{ID: "new-source", ItemID: "20"}}
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{value}})
+		case "/Users/10/Items/20":
+			_ = json.NewEncoder(w).Encode(current)
+		default:
+			t.Errorf("unexpected metadata: %s", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}
+	h.request("GET", "/Users/10/Items/91", "device", "Fixture App", "Control/1", nil)
+	if got := h.waitResolved(); got.path != current.MediaSources[0].Path {
+		t.Fatalf("source change did not use the new source: %q", got.path)
+	}
+	if h.metadata.Load() != 4 {
+		t.Fatalf("final GET truncated the seven-request budget: calls=%d", h.metadata.Load())
+	}
+}
+
 func TestPreloadPendingKeepsNewerNaturalData(t *testing.T) {
 	for _, mode := range []string{"candidate-during-resume", "denial-during-resume", "denial-during-nextup", "source-during-item-get", "list-source-during-item-get", "list-source-during-season-check", "list-source-during-season-check-empty", "later-source-during-season-check"} {
 		t.Run(mode, func(t *testing.T) {
@@ -980,16 +1240,20 @@ func TestPreloadPendingGlobalDenialBeforeDetail(t *testing.T) {
 	}
 }
 
-func waitPreloadPendingJobs(t *testing.T, h *embyPreloadHarness) {
+func waitPreloadPendingJobs(t *testing.T, h *embyPreloadHarness, kinds ...playback.PreloadKind) {
 	t.Helper()
+	kind, timeout := playback.PreloadNext, time.Second
+	if len(kinds) == 1 {
+		kind, timeout = kinds[0], 5*time.Second
+	}
 	finished := make(chan struct{})
-	h.core.Submit(playback.PreloadCandidate{Key: "barrier", Scope: "barrier", Kind: playback.PreloadNext, Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
+	h.core.Submit(playback.PreloadCandidate{Key: "barrier", Scope: "barrier", Kind: kind, Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
 		close(finished)
 		return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 	}})
 	select {
 	case <-finished:
-	case <-time.After(time.Second):
+	case <-time.After(timeout):
 		t.Fatal("pending preparation did not finish")
 	}
 }

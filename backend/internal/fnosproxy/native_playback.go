@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/backup"
+	"qmediasync/internal/helpers"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 )
@@ -97,6 +98,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 		}
 	}
 	changed := false
+	cachedPlaybackURL := ""
 	for _, quality := range qualities {
 		var rawURL string
 		var isM3U8 *bool
@@ -118,7 +120,7 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 		if !resolvedOK || !sameSourceURL(sourceURL, resolved.url) {
 			continue
 		}
-		playbackURL, ok := inst.nativePlaybackURL(request, resolved)
+		playbackURL, cached, ok := inst.nativePlaybackURL(request, resolved)
 		if !ok {
 			continue
 		}
@@ -131,6 +133,9 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 			return nil
 		}
 		changed = true
+		if cached && cachedPlaybackURL == "" {
+			cachedPlaybackURL = playbackURL
+		}
 	}
 	if !changed || ctx.Err() != nil || inst.ctx.Err() != nil {
 		return nil
@@ -155,21 +160,24 @@ func (inst *instance) rewriteNativeStream(response *http.Response) error {
 	for _, header := range []string{"Content-Encoding", "ETag", "Content-MD5", "Digest", "Accept-Ranges"} {
 		response.Header.Del(header)
 	}
+	if cachedPlaybackURL != "" {
+		helpers.LogPlaybackCacheHit("飞牛", "第三方直链", cachedPlaybackURL, request.UserAgent())
+	}
 	return nil
 }
 
-func (inst *instance) nativePlaybackURL(r *http.Request, resolved sourceRecord) (string, bool) {
+func (inst *instance) nativePlaybackURL(r *http.Request, resolved sourceRecord) (link string, cached, ok bool) {
 	target, internal := inst.classifyInternalURL(r.Context(), resolved.url)
 	if !internal {
 		inst.takeoverExternal(resolved.url, r.UserAgent())
 		cached, ok := playback.WaitExternalLink(r.Context(), resolved.url, r.UserAgent())
 		if ok {
-			return cached.URL, r.Context().Err() == nil && inst.ctx.Err() == nil
+			return cached.URL, true, r.Context().Err() == nil && inst.ctx.Err() == nil
 		}
-		return resolved.url, r.Context().Err() == nil && inst.ctx.Err() == nil
+		return resolved.url, false, r.Context().Err() == nil && inst.ctx.Err() == nil
 	}
 	if target == nil || inst.service.options.MainHandler == nil {
-		return "", false
+		return "", false, false
 	}
 	// 原生入口是 POST 元数据请求，既有取链入口仍须按 GET 调用；不跟随最终 CDN。
 	request := r.Clone(r.Context())
@@ -177,27 +185,27 @@ func (inst *instance) nativePlaybackURL(r *http.Request, resolved sourceRecord) 
 	capture := &redirectCapture{header: make(http.Header)}
 	inst.serveResolved(capture, request, resolved)
 	if r.Context().Err() != nil || inst.ctx.Err() != nil {
-		return "", false
+		return "", false, false
 	}
 	switch capture.status {
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 	default:
-		return "", false
+		return "", false, false
 	}
 	location := capture.header.Get("Location")
 	target, err := url.Parse(location)
 	if err != nil || target.User != nil || target.Opaque != "" || target.Fragment != "" || strings.ContainsAny(location, "\r\n\x00") {
-		return "", false
+		return "", false, false
 	}
 	if target.Host != "" && (target.Scheme == "http" || target.Scheme == "https") {
-		return location, true
+		return location, false, true
 	}
 	if target.IsAbs() || target.Host != "" || target.Path != "/proxy-115" || target.RawPath != "" {
-		return "", false
+		return "", false, false
 	}
 	query, err := url.ParseQuery(target.RawQuery)
 	proxyRequest := requests.Proxy115Request{URL: query.Get("url"), BaiduPan: query.Get("baidupan")}
-	return location, err == nil && len(query["url"]) == 1 && len(query["baidupan"]) <= 1 && proxyRequest.Validate() == nil
+	return location, false, err == nil && len(query["url"]) == 1 && len(query["baidupan"]) <= 1 && proxyRequest.Validate() == nil
 }
 
 type redirectCapture struct {

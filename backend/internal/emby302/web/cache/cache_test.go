@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"qmediasync/internal/helpers"
 
 	"github.com/gin-gonic/gin"
 )
@@ -161,4 +165,69 @@ func keyForRequest(t *testing.T, req *http.Request) string {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func TestRequestCacherLogsOnlyPlaybackRedirectHits(t *testing.T) {
+	var output bytes.Buffer
+	oldLogger, oldLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		helpers.AppLogger = oldLogger
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	for _, test := range []struct {
+		name, path, location string
+		status               int
+		canceled, want       bool
+	}{
+		{"video", "/Videos/movie/stream", "https://cdn.example/movie.mkv?k=signature", 307, false, true},
+		{"audio", "/emby/Audio/music/universal.mp3", "https://cdn.example/music.mp3?k=signature", 307, false, true},
+		{"metadata", "/Items/movie/PlaybackInfo", "https://cdn.example/movie.mkv", 307, false, false},
+		{"subtitle", "/Videos/movie/Subtitles/0/0/Stream.srt", "https://cdn.example/movie.srt", 307, false, false},
+		{"list", "/Users/user/Items/with_limit?SortBy=Random", "https://cdn.example/list", 307, false, false},
+		{"download", "/Items/123/Download", "https://cdn.example/movie.mkv", 307, false, false},
+		{"nonredirect", "/Videos/movie/stream", "", 200, false, false},
+		{"missing location", "/Videos/movie/stream", "", 307, false, false},
+		{"canceled", "/Videos/movie/stream", "https://cdn.example/movie.mkv", 307, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, test.path, nil)
+			request.Header.Set("User-Agent", "Cache Player")
+			key := keyForRequest(t, request)
+			putCache(key, test.status, []byte("cached body"), respHeader{
+				expired: Duration(time.Minute), header: http.Header{"Location": {test.location}},
+			})
+			WaitingForHandleChan()
+			t.Cleanup(func() { cacheMap.Delete(key) })
+			if _, ok := getCache(key); !ok {
+				t.Fatal("test response was not cached")
+			}
+			if test.canceled {
+				cancel()
+			}
+			router := gin.New()
+			router.Use(CacheableRouteMarker(), RequestCacher())
+			router.NoRoute(func(*gin.Context) { t.Error("cached response reached handler") })
+			output.Reset()
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			got := output.String()
+			wantCount := 0
+			if test.want {
+				wantCount = 1
+			}
+			if strings.Count(got, "播放请求命中缓存") != wantCount || response.Code != test.status {
+				t.Fatalf("unexpected cached response/log: code=%d log=%s", response.Code, got)
+			}
+			if test.want && (!strings.Contains(got, "入口=Emby，缓存=播放跳转") || !strings.Contains(got, `UA="Cache Player"`)) {
+				t.Fatalf("missing cache context: %s", got)
+			}
+			if strings.Contains(got, "signature") || strings.Contains(got, "https://") {
+				t.Fatal("cached redirect log exposed signed URL")
+			}
+		})
+	}
 }

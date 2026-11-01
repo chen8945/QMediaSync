@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"qmediasync/internal/db"
 	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/web/cache"
 	"qmediasync/internal/helpers"
 
+	"github.com/coocood/freecache"
 	"github.com/gin-gonic/gin"
 )
 
@@ -245,7 +247,7 @@ func TestGetFinalRedirectLinkClosesQMSResponseBody(t *testing.T) {
 			}))
 			defer resolver.Close()
 			defer close(release)
-			getFinalRedirectLink(context.Background(), resolver.URL+"/115/newurl?pickcode=test", make(http.Header))
+			getFinalRedirectLink(context.Background(), resolver.URL+"/115/newurl?pickcode=test", make(http.Header), "")
 			select {
 			case <-closed:
 			case <-time.After(3 * time.Second):
@@ -461,5 +463,117 @@ func TestRedirect2TranscodeMalformedHost(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "api_key=secret") {
 		t.Fatal("logged credentials")
+	}
+}
+
+func TestSTRMPlaybackLogsSharedAndResponseCacheHits(t *testing.T) {
+	oldCache, oldLevel := db.Cache, helpers.ConfiguredLogLevel()
+	db.Cache = db.CacheGlobal{CacheInstance: freecache.NewCache(1 << 20)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		db.Cache = oldCache
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	var calls atomic.Int32
+	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer resolver.Close()
+	const ua = "Cached Player"
+	raw := resolver.URL + "/movie.mkv?k=signature"
+	router, output := newSTRMRedirectTestRouter(t, raw, true)
+	header := http.Header{"User-Agent": {ua}}
+	if _, _, _, ok := getFinalRedirectLink(t.Context(), raw, header, ""); !ok || calls.Load() != 1 {
+		t.Fatal("cache miss did not resolve the source once")
+	}
+	if strings.Contains(output.String(), "播放请求命中缓存") {
+		t.Fatal("cache miss was logged as a cache hit")
+	}
+	cacheID := t.TempDir()
+	output.Reset()
+	first := serveCachedSTRMRedirect(t, router, cacheID, ua)
+	if first.Code != http.StatusTemporaryRedirect || first.Header().Get("Location") != raw || calls.Load() != 1 {
+		t.Fatal("shared cache hit did not reuse the resolved address")
+	}
+	if got := output.String(); strings.Count(got, "播放请求命中缓存") != 1 ||
+		!strings.Contains(got, "入口=Emby，缓存=第三方直链") || !strings.Contains(got, "Emby STRM 跳转") {
+		t.Fatalf("missing or duplicate shared-cache INFO: %s", got)
+	}
+	output.Reset()
+	second := serveCachedSTRMRedirect(t, router, cacheID, ua)
+	if second.Code != first.Code || second.Header().Get("Location") != raw || calls.Load() != 1 {
+		t.Fatal("response cache did not replay the redirect")
+	}
+	if got := output.String(); strings.Count(got, "播放请求命中缓存") != 1 ||
+		!strings.Contains(got, "入口=Emby，缓存=播放跳转") || strings.Contains(got, "Emby STRM 跳转") {
+		t.Fatalf("outer hit entered the inner handler or omitted its INFO: %s", got)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	output.Reset()
+	getFinalRedirectLink(ctx, raw, header, "/Videos/movie/stream")
+	if strings.Contains(output.String(), "播放请求命中缓存") || calls.Load() != 1 {
+		t.Fatal("canceled cache read emitted playback INFO or made a request")
+	}
+}
+
+func TestSTRMCacheHitLogsOnlyMediaStreams(t *testing.T) {
+	oldCache, oldLevel := db.Cache, helpers.ConfiguredLogLevel()
+	db.Cache = db.CacheGlobal{CacheInstance: freecache.NewCache(1 << 20)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		db.Cache = oldCache
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	var calls atomic.Int32
+	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer resolver.Close()
+	const ua = "Cached Player"
+	raw := resolver.URL + "/movie.mkv?k=signature"
+	router, output := newSTRMRedirectTestRouter(t, raw, false)
+	serve := func(path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, path+"?MediaSourceId=ms&api_key=test", nil)
+		request.Header.Set("User-Agent", ua)
+		request.Header.Set("Range", "bytes=0-1023")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	first := serve("/Videos/movie/stream")
+	if first.Code != http.StatusTemporaryRedirect || first.Header().Get("Location") != raw || calls.Load() != 1 {
+		t.Fatal("cache miss did not resolve the source once")
+	}
+	if strings.Contains(output.String(), "播放请求命中缓存") {
+		t.Fatal("cache miss was logged as a playback cache hit")
+	}
+	for _, test := range []struct {
+		name, path string
+		want       int
+	}{
+		{"video", "/Videos/movie/stream", 1},
+		{"prefixed video", "/emby/Videos/movie/stream.mp4", 1},
+		{"audio", "/emby/Audio/music/universal.mp3", 1},
+		{"download", "/Items/123/Download", 0},
+		{"prefixed download", "/Emby/Items/123/download", 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.path != "/Videos/movie/stream" {
+				router.GET(test.path, Redirect2OpenlistLink)
+			}
+			output.Reset()
+			response := serve(test.path)
+			if response.Code != http.StatusTemporaryRedirect || response.Header().Get("Location") != raw || calls.Load() != 1 {
+				t.Fatal("cached address was not adopted without another resolver request")
+			}
+			if got := strings.Count(output.String(), "播放请求命中缓存"); got != test.want {
+				t.Fatalf("playback cache-hit INFO count = %d, want %d: %s", got, test.want, output.String())
+			}
+		})
 	}
 }

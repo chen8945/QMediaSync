@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"qmediasync/internal/emby302/config"
@@ -45,15 +46,26 @@ type embyPreloadHarness struct {
 	mu         sync.Mutex
 	nodes      map[string]preloadItem
 	infos      map[string]preloadPlaybackInfo
+	lists      map[string]preloadItems
 	upstream   func(http.ResponseWriter, *http.Request)
 }
 
 func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
 	t.Helper()
-	h := &embyPreloadHarness{t: t, core: playback.NewPreloader(), resolved: make(chan preloadResolved, 128), nodes: make(map[string]preloadItem), infos: make(map[string]preloadPlaybackInfo)}
+	return newEmbyPreloadHarnessWithNetwork(t, false)
+}
+
+func newEmbyPreloadTestHarness(t *testing.T) *embyPreloadHarness {
+	t.Helper()
+	return newEmbyPreloadHarnessWithNetwork(t, true)
+}
+
+func newEmbyPreloadHarnessWithNetwork(t *testing.T, memory bool) *embyPreloadHarness {
+	t.Helper()
+	h := &embyPreloadHarness{t: t, core: playback.NewPreloader(), resolved: make(chan preloadResolved, 128), nodes: make(map[string]preloadItem), infos: make(map[string]preloadPlaybackInfo), lists: make(map[string]preloadItems)}
 	h.enabled.Store(true)
 	h.generation.Store(1)
-	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.metadata.Add(1)
 		if r.Header.Get("X-Emby-Token") != "user-token" || r.Header.Get("Accept") != "application/json" || r.Header.Get("Cookie") != "" {
 			t.Errorf("background auth/headers=%v", r.Header)
@@ -68,7 +80,26 @@ func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
 		}
 		t.Errorf("unexpected metadata request %s", r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
-	}))
+	})
+	if memory {
+		h.server = httptest.NewTestServer(t, handler)
+		network := h.server.Client().Transport.(*http.Transport)
+		previous := https.Transport().(*http.Transport)
+		options := https.ClientOptions{}
+		if previous.TLSClientConfig != nil {
+			options.InsecureSkipVerify = previous.TLSClientConfig.InsecureSkipVerify
+		}
+		previous.CloseIdleConnections()
+		https.ConfigureClient(options)
+		transport := https.Transport().(*http.Transport)
+		transport.DialContext, transport.DialTLSContext = network.DialContext, network.DialTLSContext
+		t.Cleanup(func() {
+			transport.CloseIdleConnections()
+			https.ConfigureClient(options)
+		})
+	} else {
+		h.server = httptest.NewServer(handler)
+	}
 	old := config.C
 	config.C = &config.Config{Emby: &config.Emby{Host: h.server.URL}}
 	h.core.Start(t.Context())
@@ -99,6 +130,7 @@ func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
 		h.mu.Lock()
 		node := h.nodes[item]
 		info := h.infos[item]
+		list, hasList := h.lists[c.Request.URL.Path]
 		h.mu.Unlock()
 		switch kind {
 		case "detail":
@@ -107,12 +139,28 @@ func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
 			c.JSON(http.StatusOK, info)
 		case "stream":
 			c.Redirect(http.StatusTemporaryRedirect, "http://download.invalid/video")
+		case "episodes", "seasons", "items", "resume", "nextup":
+			if hasList {
+				c.JSON(http.StatusOK, list)
+			} else {
+				c.Status(http.StatusNoContent)
+			}
 		default:
 			c.Status(http.StatusNoContent)
 		}
 	})
 	t.Cleanup(func() { stop(); h.core.Stop(); h.server.Close(); config.C = old })
 	return h
+}
+
+func runEmbyPreloadTest(t *testing.T, test func(*testing.T)) {
+	t.Helper()
+	synctest.Test(t, test)
+}
+
+func runEmbyPreloadCase(t *testing.T, name string, test func(*testing.T)) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) { runEmbyPreloadTest(t, test) })
 }
 
 func (h *embyPreloadHarness) request(method, path, device, client, ua string, body any) *httptest.ResponseRecorder {
@@ -145,12 +193,55 @@ func preloadTestItem(id, kind string) preloadItem {
 	return preloadItem{ID: id, Type: kind, SeriesID: "90", SeasonID: "91", MediaSources: []preloadSource{{ID: "source-" + id, ItemID: id, Path: "http://qms.invalid/115/newurl?pickcode=" + id + "&userid=115-user"}}}
 }
 
+func TestPreloadVirtualClockPreservesDebounceAndRealNetwork(t *testing.T) {
+	previous := https.Transport().(*http.Transport)
+	options := https.ClientOptions{}
+	if previous.TLSClientConfig != nil {
+		options.InsecureSkipVerify = previous.TLSClientConfig.InsecureSkipVerify
+	}
+	https.ConfigureClient(https.ClientOptions{InsecureSkipVerify: true})
+	t.Cleanup(func() { https.ConfigureClient(options) })
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.nodes["20"] = preloadTestItem("20", "Episode")
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+		synctest.Sleep(2*time.Second - time.Nanosecond)
+		if len(h.resolved) != 0 {
+			t.Fatal("virtual clock shortened detail debounce")
+		}
+		synctest.Sleep(time.Nanosecond)
+		if got := h.waitResolved(); got.path != h.nodes["20"].MediaSources[0].Path {
+			t.Fatalf("virtual detail resolved wrong source %q", got.path)
+		}
+	})
+	if transport := https.Transport().(*http.Transport); transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("virtual metadata transport did not restore the prior TLS option")
+	}
+	h := newEmbyPreloadHarness(t)
+	h.upstream = func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(preloadTestItem("20", "Episode"))
+	}
+	response, err := https.Get(h.server.URL + "/Users/10/Items/20?UserId=10").Header(http.Header{
+		"X-Emby-Token": {"user-token"}, "Accept": {"application/json"},
+	}).Context(t.Context()).DoSingle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || h.metadata.Load() != 1 {
+		t.Fatalf("real metadata request after virtual clock: status=%d calls=%d", response.StatusCode, h.metadata.Load())
+	}
+}
+
 func TestPreloadRoutesAndCredentialScope(t *testing.T) {
 	for _, test := range []struct{ name, method, path, want string }{
 		{"movie", "GET", "/emby/Users/10/Items/20", "detail"},
 		{"plain", "GET", "/Items/20", "detail"},
 		{"guid", "GET", "/Users/12345678-1234-1234-1234-123456789abc/Items/0123456789abcdef0123456789abcdef", "detail"},
-		{"list", "GET", "/Users/10/Items", ""},
+		{"list", "GET", "/Users/10/Items", "items"},
 		{"image", "GET", "/Items/20/Images/Primary", ""},
 		{"nested", "GET", "/other/Users/10/Items/20", ""},
 		{"unknown_id", "GET", "/Items/guess", ""},
@@ -1825,7 +1916,7 @@ func TestPreloadPendingEpisodeFinalThirdGET(t *testing.T) {
 	}
 }
 
-func TestPreloadPendingEpisodeDoesNotSpendThirdGETOnUnknownOrPlaybackInfo(t *testing.T) {
+func TestPreloadPendingCompletesRelationsAndWarmSource(t *testing.T) {
 	for _, mode := range []string{"membership-and-source-missing", "playbackinfo-missing"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newEmbyPreloadHarness(t)
@@ -1841,37 +1932,41 @@ func TestPreloadPendingEpisodeDoesNotSpendThirdGETOnUnknownOrPlaybackInfo(t *tes
 				candidate.MediaSources[0].MediaStreams = []preloadStream{{Type: "Video", Codec: "h264"}, {Type: "Audio", Codec: "aac"}}
 			}
 			h.nodes[parent.ID] = parent
-			observed := make(chan struct{})
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/Users/10/Items/Resume":
 					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{}})
 				case "/Shows/NextUp":
 					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{candidate}})
-					close(observed)
+				case "/Shows/90/Episodes":
+					if r.URL.Query().Get("SeasonId") != parent.ID || r.URL.Query().Get("StartItemId") != candidate.ID {
+						t.Error("season membership query lost its candidate")
+					}
+					value := candidate
+					value.SeasonID, value.ParentID = parent.ID, parent.ID
+					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{value}})
+				case "/Users/10/Items/21":
+					_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
+				case "/Items/21/PlaybackInfo":
+					if r.URL.Query().Get("IsPlayback") != "false" || r.URL.Query().Get("AutoOpenLiveStream") != "false" {
+						t.Error("warm source lookup opened playback")
+					}
+					_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: preloadTestItem("21", "Episode").MediaSources})
 				default:
-					t.Errorf("第三次用于未知分支或PlaybackInfo：%s", r.URL.Path)
+					t.Errorf("unexpected candidate lookup: %s", r.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
 				}
 			}
 			h.request("GET", "/Users/10/Items/"+parent.ID, "device", "Fixture App", "Control/1", nil)
-			select {
-			case <-observed:
-			case <-time.After(4 * time.Second):
-				t.Fatal("正常前两次关系GET未执行")
+			if got := h.waitResolved(); got.path != preloadTestItem("21", "Episode").MediaSources[0].Path {
+				t.Fatalf("resolved wrong candidate: %+v", got)
 			}
-			finished := make(chan struct{})
-			h.core.Submit(playback.PreloadCandidate{Key: "barrier", Scope: "barrier", Kind: playback.PreloadNext, Run: func(context.Context, *playback.PreloadTask) playback.PreloadResult {
-				close(finished)
-				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-			}})
-			select {
-			case <-finished:
-			case <-time.After(time.Second):
-				t.Fatal("缺资料作业没有释放worker")
+			want := int32(3)
+			if mode == "membership-and-source-missing" {
+				want = 4
 			}
-			if h.metadata.Load() != 2 || len(h.resolved) != 0 {
-				t.Fatalf("不合格最终分支突破额度：HTTP=%d resolved=%d", h.metadata.Load(), len(h.resolved))
+			if h.metadata.Load() != want {
+				t.Fatalf("metadata=%d want=%d", h.metadata.Load(), want)
 			}
 		})
 	}
@@ -2764,8 +2859,9 @@ func TestPreloadLogsKeepFinalTargetAndMetadataFailure(t *testing.T) {
 			if result == "query-failed" && strings.Contains(got, "未能确定待播放") || result == "no-relation" && strings.Contains(got, "HTTP=") {
 				t.Errorf("query failure confused with missing relation: %s", got)
 			}
-			if h.metadata.Load() != 1 && result == "success" || h.metadata.Load() != 2 && result != "success" {
-				t.Errorf("logging changed metadata budget: %d", h.metadata.Load())
+			wantCalls := map[string]int32{"success": 1, "query-failed": 2, "no-relation": 4}[result]
+			if got := h.metadata.Load(); got != wantCalls {
+				t.Errorf("metadata calls=%d want=%d", got, wantCalls)
 			}
 		})
 	}

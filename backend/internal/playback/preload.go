@@ -77,7 +77,9 @@ type PreloadCandidate struct {
 	Kind     PreloadKind
 	Log      PreloadLogContext
 	Enriched bool
-	Run      func(context.Context, *PreloadTask) PreloadResult
+	// MetadataLimit 仅供长链路适配器声明七次上限；零值保留普通额度。
+	MetadataLimit uint8
+	Run           func(context.Context, *PreloadTask) PreloadResult
 }
 
 type preloadSettings struct {
@@ -87,6 +89,8 @@ type preloadSettings struct {
 
 type preloadState struct {
 	metadata          uint8
+	metadataLimit     uint8
+	metadataRetried   bool
 	metadataSucceeded uint8
 	finalMetadata     bool
 	attempts          uint8
@@ -236,7 +240,8 @@ func (p *Preloader) Stop() {
 
 // Submit 先在短临界区去重，再异步处理；同项补资料不重置详情防抖。
 func (p *Preloader) Submit(candidate PreloadCandidate) bool {
-	if !p.Enabled() || candidate.Key == "" || candidate.Scope == "" || candidate.Run == nil || candidate.Kind > PreloadNext {
+	if !p.Enabled() || candidate.Key == "" || candidate.Scope == "" || candidate.Run == nil || candidate.Kind > PreloadNext ||
+		(candidate.MetadataLimit != 0 && candidate.MetadataLimit != 7) {
 		return false
 	}
 	candidate.Log = candidate.Log.bounded()
@@ -273,7 +278,7 @@ func (p *Preloader) Submit(candidate PreloadCandidate) bool {
 		cooldown := p.accounts[preloadAccountKey(account)].cooldown
 		if !cooldown.After(now) && !p.takeovers[candidate.Source].After(now) && len(p.queue) < preloadQueueLimit {
 			if state == nil && p.reserveStateLocked(now) {
-				state = &preloadState{expiresAt: now.Add(URLCacheTTL)}
+				state = &preloadState{expiresAt: now.Add(URLCacheTTL), metadataLimit: candidate.MetadataLimit}
 				p.states[candidate.Key] = state
 			}
 			if state != nil {
@@ -449,13 +454,13 @@ func (t *PreloadTask) Valid() bool {
 	return !t.invalid.Load() && t.ctx.Err() == nil && settings.enabled && settings.generation == t.job.generation
 }
 
-// Metadata 在两次机会间共享最多两次 HTTP；安全 GET 仅有一次 400ms 退避重试。
+// Metadata 在候选各次执行间共享 HTTP 额度；七次预算仅有一次全流程安全 GET 重试。
 // call 返回的 retryable 必须已排除授权、风控、业务拒绝和错误 schema。
 func (t *PreloadTask) Metadata(ctx context.Context, safeGET bool, call func(context.Context) (retryable bool, err error)) error {
 	return t.metadata(ctx, safeGET, false, call)
 }
 
-// FinalMetadataGET 仅用于已经明确的最后一层普通 GET；第三次不重试，也不补偿之前的失败。
+// FinalMetadataGET 在普通预算内只允许一次最终普通 GET；七次预算按安全 GET 计数，不扩容。
 func (t *PreloadTask) FinalMetadataGET(ctx context.Context, call func(context.Context) (retryable bool, err error)) error {
 	return t.metadata(ctx, true, true, call)
 }
@@ -469,7 +474,10 @@ func (t *PreloadTask) metadata(ctx context.Context, safeGET, finalGET bool, call
 		}
 		state := t.job.state
 		limit := uint8(2)
-		if finalGET && attempt == 0 {
+		if state.metadataLimit == 7 {
+			limit = 7
+		}
+		if finalGET && attempt == 0 && limit == 2 {
 			if state.finalMetadata || state.metadata > 2 || (state.metadata == 2 && state.metadataSucceeded != 2) {
 				t.owner.mu.Unlock()
 				return ErrPreloadMetadataBudget
@@ -494,10 +502,19 @@ func (t *PreloadTask) metadata(ctx context.Context, safeGET, finalGET bool, call
 		if err == nil || !safeGET || !retryable || attempt != 0 || !t.Valid() {
 			return err
 		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= 400*time.Millisecond {
+			return err
+		}
 		t.owner.mu.Lock()
-		remaining := t.job.state.metadata < 2
+		remaining := state.metadata < 2
+		if state.metadataLimit == 7 {
+			remaining = state.metadata < 7 && !state.metadataRetried
+			if remaining {
+				state.metadataRetried = true
+			}
+		}
 		t.owner.mu.Unlock()
-		if deadline, ok := ctx.Deadline(); !remaining || (ok && time.Until(deadline) <= 400*time.Millisecond) {
+		if !remaining {
 			return err
 		}
 		helpers.AppLogger.Debugf("预加载元数据临时失败，将在本轮额度内重试：任务=%d", t.job.sequence)

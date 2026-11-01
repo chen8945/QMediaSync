@@ -1579,6 +1579,7 @@ func TestPreloadMetadataBudgetSurvivesCanceledOrTimedOutPreparation(t *testing.T
 				}
 				synctest.Wait()
 				candidate.Enriched = true
+				candidate.MetadataLimit = 7
 				if !p.Submit(candidate) {
 					t.Fatal("新正常资料应能补齐未签名的准备任务")
 				}
@@ -1626,4 +1627,242 @@ func TestPreloadFinalGETNeedsCompletedSuccessfulMetadata(t *testing.T) {
 			t.Fatalf("最终 GET 的成功前提或次数错误：%d", calls.Load())
 		}
 	})
+}
+
+func TestPreloadRejectsUnknownMetadataLimit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newTestPreloader(t)
+		calls := 0
+		candidate := preloadCandidate("invalid-limit", PreloadDetail, func(context.Context, *PreloadTask) PreloadResult {
+			calls++
+			return PreloadResult{Outcome: PreloadCached}
+		})
+		for _, limit := range []uint8{1, 2, 3, 6, 8, 255} {
+			candidate.MetadataLimit = limit
+			if p.Submit(candidate) {
+				t.Errorf("不能声明任意元数据预算：%d", limit)
+			}
+		}
+		time.Sleep(preloadDetailWait)
+		synctest.Wait()
+		if calls != 0 {
+			t.Fatalf("非法预算触发了工作回调：%d", calls)
+		}
+	})
+}
+
+func TestPreloadExtendedMetadataLimitIncludesFinalGETAndFailures(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		finalAt   int
+		allFinal  bool
+		fails     bool
+		retryLast bool
+	}{
+		{name: "seven ordinary calls", finalAt: -1},
+		{name: "final GET is seventh", finalAt: 6},
+		{name: "early final GET uses same cap", finalAt: 0},
+		{name: "repeated final GETs use same cap", allFinal: true},
+		{name: "failed calls consume budget", finalAt: 6, fails: true},
+		{name: "seventh call cannot retry", finalAt: 6, retryLast: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p := newTestPreloader(t)
+				calls := 0
+				failure := errors.New("metadata failure")
+				candidate := preloadCandidate("extended-limit", PreloadDetail, func(ctx context.Context, task *PreloadTask) PreloadResult {
+					call := func(context.Context) (bool, error) {
+						calls++
+						if test.retryLast && calls == 7 {
+							return true, failure
+						}
+						if test.fails {
+							return false, failure
+						}
+						return false, nil
+					}
+					started := time.Now()
+					for i := range 7 {
+						var err error
+						if test.allFinal || i == test.finalAt {
+							err = task.FinalMetadataGET(ctx, call)
+						} else {
+							err = task.Metadata(ctx, true, call)
+						}
+						failed := test.fails || test.retryLast && i == 6
+						if failed && !errors.Is(err, failure) || !failed && err != nil {
+							t.Errorf("第 %d 次请求未沿用七次预算：%v", i+1, err)
+						}
+					}
+					if test.retryLast && time.Since(started) != 0 {
+						t.Error("额度耗尽后不应继续等待重试")
+					}
+					if err := task.Metadata(ctx, true, call); !errors.Is(err, ErrPreloadMetadataBudget) {
+						t.Errorf("普通第八次请求未被拒绝：%v", err)
+					}
+					if err := task.FinalMetadataGET(ctx, call); !errors.Is(err, ErrPreloadMetadataBudget) {
+						t.Errorf("最终 GET 不能获得第八次额度：%v", err)
+					}
+					return PreloadResult{Outcome: PreloadCached}
+				})
+				candidate.MetadataLimit = 7
+				p.Submit(candidate)
+				time.Sleep(preloadDetailWait)
+				synctest.Wait()
+				if calls != 7 {
+					t.Fatalf("七次预算的实际请求数=%d", calls)
+				}
+			})
+		})
+	}
+}
+
+func TestPreloadExtendedMetadataRetryIsSharedAcrossCallsAndOpportunities(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		firstSafe bool
+	}{
+		{name: "safe GET uses the only retry", firstSafe: true},
+		{name: "PlaybackInfo leaves retry for safe GET"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p := newTestPreloader(t)
+				calls, rounds := 0, 0
+				failure := errors.New("temporary failure")
+				candidate := preloadCandidate("extended-retry", PreloadDetail, func(ctx context.Context, task *PreloadTask) PreloadResult {
+					rounds++
+					if rounds == 1 {
+						started := time.Now()
+						for stage := range 2 {
+							stageCalls := 0
+							safe := stage != 0 || test.firstSafe
+							err := task.Metadata(ctx, safe, func(context.Context) (bool, error) {
+								calls++
+								stageCalls++
+								if stageCalls == 1 {
+									return true, failure
+								}
+								return false, nil
+							})
+							want := 1
+							if stage == 0 && test.firstSafe || stage == 1 && !test.firstSafe {
+								want = 2
+							}
+							if stageCalls != want || want == 1 && !errors.Is(err, failure) || want == 2 && err != nil {
+								t.Errorf("阶段 %d 的重试次数=%d，期望 %d：%v", stage, stageCalls, want, err)
+							}
+						}
+						if time.Since(started) != 400*time.Millisecond {
+							t.Error("全流程应只有一次 400ms 退避")
+						}
+					} else {
+						started, before := time.Now(), calls
+						err := task.Metadata(ctx, true, func(context.Context) (bool, error) { calls++; return true, failure })
+						if !errors.Is(err, failure) || calls != before+1 || time.Since(started) != 0 {
+							t.Error("第二轮机会重置了全流程重试额度")
+						}
+						call := func(context.Context) (bool, error) { calls++; return false, nil }
+						for calls < 6 {
+							if err := task.Metadata(ctx, true, call); err != nil {
+								t.Error(err)
+								return PreloadResult{Outcome: PreloadSkipped}
+							}
+						}
+						if err := task.FinalMetadataGET(ctx, call); err != nil {
+							t.Error(err)
+						}
+						if err := task.Metadata(ctx, true, call); !errors.Is(err, ErrPreloadMetadataBudget) {
+							t.Errorf("第二轮机会重置了请求预算：%v", err)
+						}
+					}
+					if !task.BeginSignature(preloadTestAccount, "extended-retry") {
+						t.Error("原有签名机会应保留")
+					}
+					return PreloadResult{Outcome: PreloadTransient}
+				})
+				candidate.MetadataLimit = 7
+				p.Submit(candidate)
+				time.Sleep(preloadDetailWait + time.Second)
+				synctest.Wait()
+				time.Sleep(preloadRetryWait)
+				if !p.Submit(candidate) {
+					t.Fatal("后续信号应允许原有第二轮机会")
+				}
+				time.Sleep(preloadDetailWait)
+				synctest.Wait()
+				if calls != 7 || rounds != 2 {
+					t.Fatalf("跨轮次额度错误：requests=%d rounds=%d", calls, rounds)
+				}
+			})
+		})
+	}
+}
+
+func TestPreloadExtendedMetadataBudgetSurvivesPreparationCancellation(t *testing.T) {
+	for _, operation := range []string{"canceled", "timed out"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p := newTestPreloader(t)
+				prepared := make(chan struct{})
+				calls, rounds := 0, 0
+				failure := errors.New("temporary failure")
+				candidate := preloadCandidate("extended-preparation", PreloadDetail, func(ctx context.Context, task *PreloadTask) PreloadResult {
+					rounds++
+					if rounds == 1 {
+						if err := task.Metadata(ctx, true, func(context.Context) (bool, error) {
+							calls++
+							if calls == 1 {
+								return true, failure
+							}
+							return false, nil
+						}); err != nil {
+							t.Error(err)
+						}
+						close(prepared)
+						<-ctx.Done()
+						return PreloadResult{Outcome: PreloadSkipped}
+					}
+					before := calls
+					if err := task.Metadata(ctx, true, func(context.Context) (bool, error) { calls++; return true, failure }); !errors.Is(err, failure) || calls != before+1 {
+						t.Error("准备取消或超时后重置了重试额度")
+					}
+					call := func(context.Context) (bool, error) { calls++; return false, nil }
+					for calls < 6 {
+						if err := task.Metadata(ctx, true, call); err != nil {
+							t.Error(err)
+							return PreloadResult{Outcome: PreloadSkipped}
+						}
+					}
+					if err := task.FinalMetadataGET(ctx, call); err != nil {
+						t.Error(err)
+					}
+					if err := task.Metadata(ctx, true, call); !errors.Is(err, ErrPreloadMetadataBudget) {
+						t.Errorf("补资料重置了累计额度：%v", err)
+					}
+					return PreloadResult{Outcome: PreloadCached}
+				})
+				candidate.MetadataLimit = 7
+				p.Submit(candidate)
+				<-prepared
+				if operation == "canceled" {
+					p.CancelScope(candidate.Scope)
+				} else {
+					time.Sleep(preloadRunLimit)
+				}
+				synctest.Wait()
+				candidate.Enriched = true
+				candidate.MetadataLimit = 0
+				if !p.Submit(candidate) {
+					t.Fatal("更新资料应能补齐未签名的准备")
+				}
+				time.Sleep(preloadDetailWait)
+				synctest.Wait()
+				if calls != 7 || rounds != 2 {
+					t.Fatalf("准备重入或声明变更影响了原预算：requests=%d rounds=%d", calls, rounds)
+				}
+			})
+		})
+	}
 }

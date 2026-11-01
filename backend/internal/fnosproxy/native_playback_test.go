@@ -437,3 +437,67 @@ func TestNativeStreamStopCancelsInternalResolution(t *testing.T) {
 		t.Fatal("停止后保留了原生来源缓存")
 	}
 }
+
+func TestNativePlaybackCacheHitLogOnlyWhenResponseIsRewritten(t *testing.T) {
+	const raw = "http://resolver.invalid/resolve?api_key=secret"
+	const final = "https://cdn.example/movie.mkv?k=signature"
+	for _, mode := range []string{"hit", "miss", "unchanged", "canceled", "stopped"} {
+		t.Run(mode, func(t *testing.T) {
+			cachedURL := final
+			if mode == "miss" {
+				cachedURL = ""
+			} else if mode == "unchanged" {
+				cachedURL = raw
+			}
+			output := playbackCacheLog(t, raw, "Native Player", cachedURL)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			instCtx, stop := context.WithCancel(t.Context())
+			defer stop()
+			inst := &instance{ctx: instCtx, service: NewService(Options{})}
+			payload := nativeStreamPayload("/unmounted/movie.strm", `"`+raw+`"`)
+			data := payload["data"].(map[string]any)
+			data["direct_link_qualities"] = []any{
+				map[string]any{"url": raw, "is_m3u8": false},
+				map[string]any{"url": raw, "is_m3u8": false},
+			}
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequestWithContext(ctx, http.MethodPost, nativeStreamPath, nil)
+			request.Header.Set("User-Agent", "Control Player")
+			response := &http.Response{Request: request, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(encoded))}
+			response.Header.Set("ETag", "original")
+			if mode == "canceled" {
+				cancel()
+			} else if mode == "stopped" {
+				stop()
+			}
+			if err := inst.rewriteNativeStream(response); err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 0
+			if mode == "hit" {
+				wantCount = 1
+				if bytes.Equal(body, encoded) || response.Header.Get("ETag") != "" || response.Header.Get("Cache-Control") != "no-store, private" {
+					t.Fatal("accepted cached URL did not enter rewritten response")
+				}
+			} else if !bytes.Equal(body, encoded) || response.Header.Get("ETag") != "original" {
+				t.Fatal("unaccepted cache result changed the original response")
+			}
+			got := output.String()
+			if strings.Count(got, "播放请求命中缓存") != wantCount || wantCount == 1 &&
+				(!strings.Contains(got, "入口=飞牛，缓存=第三方直链") || !strings.Contains(got, `UA="Native Player"`)) {
+				t.Fatalf("unexpected native cache log: %s", got)
+			}
+			if strings.Contains(got, "https://") || strings.Contains(got, "signature") || strings.Contains(got, "secret") {
+				t.Fatal("native cache log exposed source credentials or URL")
+			}
+		})
+	}
+}

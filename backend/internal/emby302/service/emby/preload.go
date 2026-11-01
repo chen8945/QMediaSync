@@ -86,12 +86,17 @@ type preloadDevice struct {
 	playbackRequested     string
 	progressStarted       uint64
 	episodesStarted       uint64
+	seasonsStarted        uint64
+	episodeList           *preloadEpisodeList
+	seasonList            *preloadEpisodeList
+	selectionInvalidated  uint64
 	pendingStarted        [2]uint64
 	pendingLists          [2]*preloadPendingList
 	pendingTarget         preloadItem
 	pendingParent         string
 	pendingTargetSequence uint64 // 选集顺序；补源顺序随条目资料独立记录。
 	pendingTargetSelected string
+	pendingFirst          bool
 }
 
 type preloadRequest struct {
@@ -109,6 +114,8 @@ type preloadRequest struct {
 	generation     uint64
 	fromPlayback   bool
 	fromEpisodes   bool
+	fromSeasons    bool
+	fromItems      bool
 	enriched       bool
 	sequence       uint64
 	detailSequence uint64
@@ -137,8 +144,18 @@ type preloadItem struct {
 	PlayAccess        string
 	IsLive            bool
 	IsInfiniteStream  bool
+	UserData          *preloadUserData
+	metadataAt        time.Time
 	sourceSequence    uint64
 	pathSequence      uint64
+	userDataSequence  uint64
+	fetchedKey        string
+}
+
+type preloadUserData struct {
+	Played                *bool
+	PlayCount             *int
+	PlaybackPositionTicks *int64
 }
 
 type preloadSource struct {
@@ -244,6 +261,22 @@ func PreloadObserver() gin.HandlerFunc {
 			return
 		}
 		request.item = item
+		if kind == "items" {
+			request.fromItems = true
+			query := c.Request.URL.Query()
+			parent, parentOK := preloadUnique(preloadValues(query, "ParentId"))
+			types, typesOK := preloadUnique(preloadValues(query, "IncludeItemTypes"))
+			if !parentOK || !typesOK || !validPreloadID(parent) {
+				return
+			}
+			if strings.EqualFold(types, "Season") {
+				kind, item, request.item = "seasons", parent, parent
+			} else if strings.EqualFold(types, "Episode") {
+				kind, item, request.item = "episodes", parent, parent
+			} else {
+				return
+			}
+		}
 		if kind == "resume" || kind == "nextup" {
 			query := c.Request.URL.Query()
 			var parentOK, seriesOK bool
@@ -286,7 +319,7 @@ func PreloadObserver() gin.HandlerFunc {
 			}
 			c.Request.Body = body
 		}
-		writer := &preloadResponseWriter{ResponseWriter: c.Writer, capture: kind == "detail" || kind == "playback" || kind == "episodes" || request.pendingKind != ""}
+		writer := &preloadResponseWriter{ResponseWriter: c.Writer, capture: kind == "detail" || kind == "playback" || kind == "episodes" || kind == "seasons" || request.pendingKind != ""}
 		c.Writer = writer
 		c.Next()
 		if !p.valid(request) || writer.failed {
@@ -322,7 +355,7 @@ func PreloadObserver() gin.HandlerFunc {
 			return
 		}
 		switch kind {
-		case "detail", "playback", "episodes", "resume", "nextup":
+		case "detail", "playback", "episodes", "seasons", "resume", "nextup":
 			if c.Writer.Status() != http.StatusOK || writer.overflow {
 				return
 			}
@@ -345,6 +378,8 @@ func PreloadObserver() gin.HandlerFunc {
 				if json.Unmarshal(data, &value) == nil && len(value.MediaSources) <= 32 {
 					p.observePlayback(request, value)
 				}
+			case "seasons":
+				p.observeSeasons(request, c.Request.URL.Query(), data)
 			case "episodes":
 				p.observeSeasonMembers(request, c.Request.URL.Query(), data)
 			case "resume", "nextup":
@@ -385,6 +420,15 @@ func preloadRoute(method, path string) (kind, item, user, prefix string) {
 		prefix, parts = "/emby", parts[1:]
 	}
 	if method == http.MethodGet {
+		if len(parts) == 3 && strings.EqualFold(parts[0], "Shows") && strings.EqualFold(parts[2], "Seasons") && validPreloadID(parts[1]) {
+			return "seasons", parts[1], "", prefix
+		}
+		if len(parts) == 1 && strings.EqualFold(parts[0], "Items") {
+			return "items", "", "", prefix
+		}
+		if len(parts) == 3 && strings.EqualFold(parts[0], "Users") && strings.EqualFold(parts[2], "Items") && validPreloadID(parts[1]) {
+			return "items", "", parts[1], prefix
+		}
 		if len(parts) == 4 && strings.EqualFold(parts[0], "Users") && strings.EqualFold(parts[2], "Items") && strings.EqualFold(parts[3], "Resume") && validPreloadID(parts[1]) {
 			return "resume", "", parts[1], prefix
 		}
@@ -442,6 +486,14 @@ func preloadValues(query url.Values, names ...string) []string {
 		}
 	}
 	return result
+}
+
+func deletePreloadValues(query url.Values, name string) {
+	for key := range query {
+		if strings.EqualFold(key, name) {
+			delete(query, key)
+		}
+	}
 }
 
 func newPreloadRequest(request *http.Request, instance, pathUser, prefix string, generation uint64) (preloadRequest, bool) {
@@ -549,7 +601,7 @@ func (p *embyPreloader) beginObservation(request *preloadRequest, kind string, r
 	if !request.weakIdentity && request.ua == device.controlUA && device.user != "" {
 		p.uas.Lookup(preloadUAKey(*request, device), request.generation)
 	}
-	if kind == "detail" || kind == "playback" || kind == "episodes" || request.pendingKind != "" {
+	if kind == "detail" || kind == "playback" || kind == "episodes" || kind == "seasons" || request.pendingKind != "" {
 		if request.sequence < device.controlStarted {
 			return false
 		}
@@ -561,7 +613,9 @@ func (p *embyPreloader) beginObservation(request *preloadRequest, kind string, r
 			device.members, device.season = nil, ""
 			device.memberItems = nil
 			device.pendingLists = [2]*preloadPendingList{}
+			device.episodeList, device.seasonList = nil, nil
 			device.pendingTarget, device.pendingParent = preloadItem{}, ""
+			device.pendingFirst = false
 			device.detail.Path, device.detail.MediaSources, device.selected = "", nil, ""
 			device.playing.Active = false
 			device.playing.Epoch++
@@ -594,6 +648,11 @@ func (p *embyPreloader) beginObservation(request *preloadRequest, kind string, r
 			return false
 		}
 		device.playbackStarted, device.playbackRequested = request.sequence, request.item
+	} else if kind == "seasons" {
+		if request.sequence < device.seasonsStarted {
+			return false
+		}
+		device.seasonsStarted = request.sequence
 	} else if kind == "episodes" {
 		if request.sequence < device.episodesStarted {
 			return false
@@ -633,6 +692,9 @@ func currentPreloadObservation(device *preloadDevice, request preloadRequest, it
 		if request.pendingKind != "" {
 			return device.detailResponded == device.detailStarted && request.sequence == device.pendingStarted[pendingListIndex(request.pendingKind)]
 		}
+		if request.fromSeasons {
+			return device.detailResponded == device.detailStarted && request.sequence == device.seasonsStarted
+		}
 		if request.fromEpisodes {
 			return device.detailResponded == device.detailStarted && request.sequence == device.episodesStarted
 		}
@@ -656,6 +718,11 @@ func (p *embyPreloader) observeDetail(request preloadRequest, item preloadItem) 
 		p.mu.Unlock()
 		return
 	}
+	if request.sequence < device.selectionInvalidated {
+		item.UserData = nil
+		item.userDataSequence = device.selectionInvalidated
+	}
+	watch := item.UserData
 	changed := device.detail.ID != item.ID
 	previous := device.detail
 	previousSelected := device.selected
@@ -672,6 +739,7 @@ func (p *embyPreloader) observeDetail(request preloadRequest, item preloadItem) 
 		device.revision++
 		device.selected = ""
 		device.pendingTarget, device.pendingParent = preloadItem{}, ""
+		device.pendingFirst = false
 	}
 	if !changed {
 		if request.sequence < device.detailSourceSequence {
@@ -723,6 +791,16 @@ func (p *embyPreloader) observeDetail(request preloadRequest, item preloadItem) 
 		device.playing.Active = false
 		device.playing.Epoch++
 	}
+	if !request.fromPlayback && item.Type == "Season" && watch != nil && watch.Played != nil && *watch.Played {
+		series := item.SeriesID
+		if series == "" {
+			series = item.ParentID
+		}
+		season := item
+		season.UserData = watch
+		list := &preloadEpisodeList{series: series, items: []preloadItem{season}, at: time.Now(), sequence: request.sequence}
+		invalidate = device.observeSeasonSelection(list, item) || invalidate
+	}
 	item.sourceSequence = device.detailSourceSequence
 	device.detail = item
 	metadata := &preloadPendingList{items: []preloadItem{item}}
@@ -760,6 +838,7 @@ func (p *embyPreloader) invalidateDetail(request preloadRequest, permission bool
 	device.pendingID, device.pendingSelected, device.selected = "", "", ""
 	device.revision++
 	if permission {
+		device.episodeList, device.seasonList = nil, nil
 		if device.playbackRequested == request.item {
 			device.playbackStarted = max(device.playbackStarted, request.sequence)
 		}
@@ -822,8 +901,13 @@ func (p *embyPreloader) observePlayback(request preloadRequest, info preloadPlay
 		if request.sequence >= old.sourceSequence {
 			nextSelected = request.selected
 			current.Path = ""
+			current.metadataAt = device.pendingAt
 			current.sourceSequence = request.sequence
-			current.MediaSources = fillPreloadSources(info.MediaSources, old.MediaSources, current.ID)
+			additions := old.MediaSources
+			if time.Since(old.metadataAt) > preloadAssociationTTL {
+				additions = nil
+			}
+			current.MediaSources = fillPreloadSources(info.MediaSources, additions, current.ID)
 		} else {
 			current.MediaSources = fillPreloadSources(old.MediaSources, info.MediaSources, current.ID)
 		}
@@ -832,8 +916,10 @@ func (p *embyPreloader) observePlayback(request preloadRequest, info preloadPlay
 			p.options.Coordinator.CancelDetail(request.scope)
 		}
 		device.pendingTarget, device.pendingTargetSelected = current, nextSelected
-		metadata := &preloadPendingList{items: []preloadItem{current}}
-		device.mergePreloadMetadata(metadata)
+		if time.Since(current.metadataAt) <= preloadAssociationTTL {
+			metadata := &preloadPendingList{items: []preloadItem{current}}
+			device.mergePreloadMetadata(metadata)
+		}
 		parent := device.detail
 		request.item, request.selected, request.detailSequence = parent.ID, "", device.detailStarted
 		request.fromPlayback, request.enriched = true, true
@@ -959,6 +1045,7 @@ func (p *embyPreloader) observeActualPlayback(request preloadRequest, session st
 	}
 	device.playing = current
 	if changed {
+		device.invalidatePreloadSelection(request.sequence)
 		p.options.Coordinator.TakeoverNext(request.scope)
 	}
 	p.options.Coordinator.Takeover(identity)
@@ -997,6 +1084,9 @@ func (p *embyPreloader) observeProgress(request preloadRequest, progress preload
 	if kind == "stop" && !progress.matchesPlayback(device.playing) {
 		p.mu.Unlock()
 		return
+	}
+	if kind == "stop" {
+		device.invalidatePreloadSelection(request.sequence)
 	}
 	if denied && (device.detail.ID == progress.ItemID || device.playing.Item.ID == progress.ItemID) && (device.playing.Session == "" || progress.PlaySessionID == "" || device.playing.Session == progress.PlaySessionID) {
 		device.playing.Active = false
@@ -1105,6 +1195,12 @@ func mergePreloadDisplay(value, old preloadItem) preloadItem {
 
 func mergePreloadItem(value, old preloadItem) preloadItem {
 	value = mergePreloadDisplay(value, old)
+	if value.metadataAt.IsZero() {
+		value.metadataAt = old.metadataAt
+	}
+	if value.Type == "" {
+		value.Type = old.Type
+	}
 	if value.MediaSources == nil && (value.Path == "" || old.pathSequence > value.pathSequence) {
 		value.Path = old.Path
 		value.pathSequence = old.pathSequence
@@ -1117,6 +1213,13 @@ func mergePreloadItem(value, old preloadItem) preloadItem {
 	}
 	if value.ParentID == "" {
 		value.ParentID = old.ParentID
+	}
+	if old.userDataSequence > value.userDataSequence || value.UserData == nil && old.userDataSequence == value.userDataSequence {
+		value.UserData = old.UserData
+		value.userDataSequence = old.userDataSequence
+	}
+	if value.fetchedKey == "" {
+		value.fetchedKey = old.fetchedKey
 	}
 	if value.PartCount == 0 {
 		value.PartCount = old.PartCount

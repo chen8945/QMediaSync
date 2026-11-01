@@ -338,6 +338,15 @@ func (q *QLogger) RequiredWarnf(format string, args ...any) {
 	q.logfUnfiltered(LogLevelWarn, format, args...)
 }
 
+// LogPlaybackCacheHit 只记录已使用的缓存结果，不回显签名地址或推断缓存来源。
+func LogPlaybackCacheHit(entry, cache, rawURL, ua string) {
+	if name := URLFileName(rawURL); name != "" {
+		AppLogger.Infof("播放请求命中缓存：入口=%s，缓存=%s，文件=%q，UA=%q", entry, cache, name, ua)
+		return
+	}
+	AppLogger.Infof("播放请求命中缓存：入口=%s，缓存=%s，UA=%q", entry, cache, ua)
+}
+
 func configuredLogRotation() (maxSize int, maxBackups int, maxAge int) {
 	logConfig := LogConfigSnapshot()
 	maxSize = logConfig.MaxSizeMB

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"qmediasync/internal/backup"
+	"qmediasync/internal/helpers"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 )
@@ -616,6 +617,9 @@ func (inst *instance) serveResolved(w http.ResponseWriter, r *http.Request, reso
 		inst.takeoverExternal(resolved.url, r.UserAgent())
 		if cached, ok := playback.WaitExternalLink(r.Context(), resolved.url, r.UserAgent()); ok {
 			location = cached.URL
+			if r.Context().Err() == nil && inst.ctx.Err() == nil {
+				helpers.LogPlaybackCacheHit("飞牛", "第三方直链", cached.URL, r.UserAgent())
+			}
 		}
 	}
 	w.Header().Set("Location", location)

@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"qmediasync/internal/emby302/config"
+	"qmediasync/internal/emby302/constant"
 	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/util/logs"
 	"qmediasync/internal/emby302/util/strs"
@@ -26,6 +28,8 @@ import (
 )
 
 const strmResolvedKey = "qms.strmResolved"
+
+var strmStreamRoute = regexp.MustCompile(constant.Reg_ResourceStream + "$")
 
 // Redirect2Transcode 将 master 请求重定向到本地 TS 代理
 func Redirect2Transcode(c *gin.Context) {
@@ -123,7 +127,7 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	isProxyUrl := ""
 	// 4 如果是远程地址 (STRM) 且不包含 QMediaSync 的本地代理播放链接, 则重定向处理。
 	if !isLocalMedia && (urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:")) {
-		finalPath, resolverStatus, expiresAt, resolved := getFinalRedirectLink(c.Request.Context(), strmUrl, c.Request.Header.Clone())
+		finalPath, resolverStatus, expiresAt, resolved := getFinalRedirectLink(c.Request.Context(), strmUrl, c.Request.Header.Clone(), c.Request.URL.Path)
 		c.Set(strmResolvedKey, resolved)
 		if !strings.Contains(finalPath, "/proxy-115") {
 			targetHost := ""
@@ -262,9 +266,12 @@ func checkErr(c *gin.Context, err error) bool {
 // getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址、取链响应状态、缓存截止时间和解析是否成功。
 //
 // 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败回退不缓存，未取得响应时状态为 0。
-func getFinalRedirectLink(ctx context.Context, originLink string, header http.Header) (string, int, time.Time, bool) {
+func getFinalRedirectLink(ctx context.Context, originLink string, header http.Header, requestPath string) (string, int, time.Time, bool) {
 	if cached, ok := playback.CachedExternalLink(originLink, header.Get("User-Agent")); ok {
 		playback.DefaultPreloader.Takeover(playback.ExternalLinkIdentity(originLink, header.Get("User-Agent")))
+		if ctx.Err() == nil && strmStreamRoute.MatchString(requestPath) {
+			helpers.LogPlaybackCacheHit("Emby", "第三方直链", cached.URL, header.Get("User-Agent"))
+		}
 		return cached.URL, cached.Status, cached.ExpiresAt, true
 	}
 	if origin, err := url.Parse(originLink); err == nil && origin.Host != "" &&
