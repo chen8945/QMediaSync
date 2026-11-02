@@ -1396,14 +1396,14 @@ func (w *preloadResponseWriter) WriteString(value string) (int, error) { return 
 
 func preloadItemTitle(item preloadItem) string {
 	title, _ := item.Name.(string)
-	season, hasSeason := item.ParentIndexNumber.(float64)
-	episode, hasEpisode := item.IndexNumber.(float64)
-	if item.Type == "Episode" && hasSeason && hasEpisode && season >= 0 && season <= 9999 && episode >= 0 && episode <= 9999 && season == float64(int(season)) && episode == float64(int(episode)) {
+	season, hasSeason := preloadIndex(item.ParentIndexNumber)
+	episode, hasEpisode := preloadIndex(item.IndexNumber)
+	if item.Type == "Episode" && hasSeason && hasEpisode && season <= 9999 && episode <= 9999 {
 		if series, _ := item.SeriesName.(string); series != "" {
 			title = series
 		}
 		if title != "" {
-			return fmt.Sprintf("%s S%02dE%02d", title, int(season), int(episode))
+			return fmt.Sprintf("%s S%02dE%02d", title, season, episode)
 		}
 	}
 	return title

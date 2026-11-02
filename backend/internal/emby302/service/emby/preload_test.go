@@ -2917,6 +2917,50 @@ func TestPreloadLogsKeepFinalTargetAndMetadataFailure(t *testing.T) {
 	}
 }
 
+func TestPreloadEpisodeTitleUsesConsistentIndices(t *testing.T) {
+	var item preloadItem
+	if err := json.Unmarshal([]byte(`{"Id":"20","Type":"Episode","Name":"九龙拉棺","SeriesName":"遮天","IndexNumber":1,"ParentIndexNumber":1,"SeriesId":"90","SeasonId":"91"}`), &item); err != nil {
+		t.Fatal(err)
+	}
+	list := newPreloadEpisodeList(
+		preloadRequest{item: "90"},
+		url.Values{"SeasonId": {"91"}, "ParentIndexNumber": {"1"}},
+		preloadItems{Items: []preloadItem{item}},
+		false,
+	)
+	if list == nil || len(list.items) != 1 {
+		t.Fatal("单集列表未能保留测试条目")
+	}
+	for _, test := range []struct {
+		name            string
+		season, episode any
+		want            string
+	}{
+		{"detail", item.ParentIndexNumber, item.IndexNumber, "遮天 S01E01"},
+		{"episode-list", list.items[0].ParentIndexNumber, list.items[0].IndexNumber, "遮天 S01E01"},
+		{"integer-indices", 1, 1, "遮天 S01E01"},
+		{"special", 0, 1, "遮天 S00E01"},
+		{"maximum", float64(9999), 9999, "遮天 S9999E9999"},
+		{"season-too-large", 10000, float64(1), "九龙拉棺"},
+		{"episode-too-large", float64(1), float64(10000), "九龙拉棺"},
+		{"fractional-season", 1.5, float64(1), "九龙拉棺"},
+		{"fractional-episode", float64(1), 1.5, "九龙拉棺"},
+		{"negative-season", -1, 1, "九龙拉棺"},
+		{"negative-episode", float64(1), float64(-1), "九龙拉棺"},
+		{"missing-season", nil, 1, "九龙拉棺"},
+		{"missing-episode", 1, nil, "九龙拉棺"},
+		{"invalid-type", "1", float64(1), "九龙拉棺"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := item
+			value.ParentIndexNumber, value.IndexNumber = test.season, test.episode
+			if got := preloadItemTitle(value); got != test.want {
+				t.Errorf("预加载目标=%q，期望 %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPreloadDisplayFieldsDoNotRestrictSource(t *testing.T) {
 	var item preloadItem
 	if err := json.Unmarshal([]byte(`{"Id":"20","Type":"Episode","Name":123,"SeriesName":{"unknown":true},"IndexNumber":1.5,"ParentIndexNumber":1,"MediaSources":[{"Id":"source","Path":"http://qms.invalid/115/newurl?pickcode=fixture"}]}`), &item); err != nil {
