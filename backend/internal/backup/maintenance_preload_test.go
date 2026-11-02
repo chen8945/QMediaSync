@@ -42,7 +42,7 @@ func TestRestoreStopsPreloadAfterHTTPAdmissionBeforeSQLDrain(t *testing.T) {
 			if admitted {
 				release()
 			}
-			observed <- !admitted && !db.IsMaintenance(database) && !task.Publish(func() {})
+			observed <- !admitted && !db.IsMaintenance(database) && !task.Publish(func() bool { return true })
 			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 		},
 	}) {

@@ -709,7 +709,10 @@ func TestPreloadFirstEpisodeSeasonsRefresh(t *testing.T) {
 					select {
 					case <-ctx.Done():
 					case <-release:
-						task.Publish(func() { run(ctx, task) })
+						task.Publish(func() bool {
+							run(ctx, task)
+							return true
+						})
 					}
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 				}, supported

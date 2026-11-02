@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,6 +127,9 @@ func RequestCacher() gin.HandlerFunc {
 			space:    header.Get(HeaderKeySpace),
 			spaceKey: header.Get(HeaderKeySpaceKey),
 			header:   header.Clone(),
+		}
+		if respHeader.header.Get("Content-Length") != "" {
+			respHeader.header.Set("Content-Length", strconv.Itoa(customWriter.body.Len()))
 		}
 		defer header.Del(HeaderKeyExpired)
 		defer header.Del(HeaderKeySpace)

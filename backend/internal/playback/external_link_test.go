@@ -1,6 +1,7 @@
 package playback
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -259,7 +260,8 @@ func TestExternalLinkCacheDoesNotRenewExpiry(t *testing.T) {
 		}
 		time.Sleep(30 * time.Second)
 		hit, err := ResolveExternalLink(t.Context(), raw, http.Header{"User-Agent": {ua}}, transport)
-		if err != nil || hit != first || calls != 1 {
+		if err != nil || hit.URL != first.URL || hit.Status != first.Status ||
+			!hit.ExpiresAt.Equal(first.ExpiresAt) || calls != 1 {
 			t.Fatalf("cache hit renewed expiry or fetched again: %+v %v calls=%d", hit, err, calls)
 		}
 		time.Sleep(30 * time.Second)
@@ -315,6 +317,90 @@ func TestExternalPreloadPublishesSharedCacheByFullUA(t *testing.T) {
 			t.Fatalf("different UA did not resolve independently: calls=%d err=%v", calls, err)
 		}
 	})
+}
+
+func TestExternalPreloadRequiresSuccessfulCacheWrite(t *testing.T) {
+	for _, state := range []string{"unavailable", "unavailable_before", "expired", "subsecond", "write_failed"} {
+		t.Run(state, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setupExternalLinkTest(t)
+				var output bytes.Buffer
+				preloadLogger(t, &output, helpers.LogLevelDebug)
+				p := newTestPreloader(t)
+				time.Sleep(500 * time.Millisecond)
+				raw := "http://moviepilot/video"
+				wantReason := "cache_" + state
+				wantOutcome, wantCalls := PreloadFailed, 1
+				switch state {
+				case "unavailable_before":
+					db.Cache.CacheInstance = nil
+					wantReason, wantOutcome, wantCalls = "cache_unavailable", PreloadSkipped, 0
+				case "expired", "subsecond":
+					expires := time.Now().Unix() + 300
+					if state == "subsecond" {
+						expires++
+					}
+					raw = "https://a.115cdn.net/video?t=" + strconv.FormatInt(expires, 10)
+					wantReason = "cache_expired"
+				case "write_failed":
+					raw += "?padding=" + strings.Repeat("x", 2048)
+				}
+				calls := 0
+				transport := externalTestTransport(func(*http.Request) (*http.Response, error) {
+					calls++
+					if state == "unavailable" {
+						db.Cache.CacheInstance = nil
+					}
+					return &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: http.NoBody}, nil
+				})
+				candidate := externalTestCandidate(t, raw, "Player/1.0", transport)
+				run := candidate.Run
+				results := make(chan PreloadResult, 1)
+				candidate.Run = func(ctx context.Context, task *PreloadTask) PreloadResult {
+					result := run(ctx, task)
+					results <- result
+					return result
+				}
+				if !p.Submit(candidate) {
+					t.Fatal("preload rejected")
+				}
+				synctest.Wait()
+				result := <-results
+				if result.Outcome != wantOutcome || result.Reason != wantReason || calls != wantCalls {
+					t.Fatalf("failed cache write reported success or wrong cause: result=%+v calls=%d", result, calls)
+				}
+				if _, cached := CachedExternalLink(raw, "Player/1.0"); cached || strings.Contains(output.String(), "预加载完成") {
+					t.Fatalf("unwritten cache was published: cached=%t log=%s", cached, output.String())
+				}
+			})
+		})
+	}
+}
+
+func TestResolveExternalLinkKeepsValidURLWhenCacheWriteFails(t *testing.T) {
+	for _, state := range []string{"unavailable", "write_failed"} {
+		t.Run(state, func(t *testing.T) {
+			setupExternalLinkTest(t)
+			raw := "http://moviepilot/video"
+			if state == "unavailable" {
+				db.Cache.CacheInstance = nil
+			} else {
+				raw += "?padding=" + strings.Repeat("x", 2048)
+			}
+			calls := 0
+			transport := externalTestTransport(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: http.NoBody}, nil
+			})
+			link, err := ResolveExternalLink(t.Context(), raw, http.Header{"User-Agent": {"Player/1.0"}}, transport)
+			if err != nil || link.URL != raw || link.Status != http.StatusPartialContent || calls != 1 {
+				t.Fatalf("valid playback result depended on caching: link=%+v err=%v calls=%d", link, err, calls)
+			}
+			if _, cached := CachedExternalLink(raw, "Player/1.0"); cached {
+				t.Fatal("failed write was cached")
+			}
+		})
+	}
 }
 
 func TestResolveExternalLinkSharedCancellation(t *testing.T) {
@@ -386,7 +472,8 @@ func TestResolveExternalLinkSharedCancellation(t *testing.T) {
 				if !errors.Is(canceled.err, context.Canceled) || live.err != nil || live.link.URL != finalURL || calls != wantCalls {
 					t.Fatalf("one cancellation affected the live request: live=%+v canceled=%v calls=%d", live, canceled.err, calls)
 				}
-				if cached, ok := CachedExternalLink(raw, ua); !ok || cached != live.link {
+				if cached, ok := CachedExternalLink(raw, ua); !ok || cached.URL != live.link.URL ||
+					cached.Status != live.link.Status || !cached.ExpiresAt.Equal(live.link.ExpiresAt) {
 					t.Fatalf("live request did not publish the shared result: %+v %t", cached, ok)
 				}
 			})

@@ -57,7 +57,10 @@ func preloadTestOptions(t *testing.T, root string) (Options, <-chan preloadTestS
 				if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "owner"}, raw) {
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 				}
-				if !task.Publish(func() { signs <- preloadTestSign{raw, ua} }) {
+				if !task.Publish(func() bool {
+					signs <- preloadTestSign{raw, ua}
+					return true
+				}) {
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 				}
 				return playback.PreloadResult{Outcome: playback.PreloadPublished}
@@ -2131,7 +2134,10 @@ func TestPreloadNativeBusinessDenialRevokesDetail(t *testing.T) {
 								case <-ctx.Done():
 								}
 							}
-							task.Publish(func() { published.Add(1) })
+							task.Publish(func() bool {
+								published.Add(1)
+								return true
+							})
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}, true
@@ -2187,7 +2193,10 @@ func TestPreloadNativeBusinessDenialRevokesDetail(t *testing.T) {
 							case <-release:
 							case <-ctx.Done():
 							}
-							task.Publish(func() { nextPublished.Add(1) })
+							task.Publish(func() bool {
+								nextPublished.Add(1)
+								return true
+							})
 							return playback.PreloadResult{Outcome: playback.PreloadPublished}
 						}}) {
 						t.Fatal("无法建立独立的当前播放后继")
@@ -2259,7 +2268,10 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 							case <-release:
 							case <-ctx.Done():
 							}
-							task.Publish(func() { published.Add(1) })
+							task.Publish(func() bool {
+								published.Add(1)
+								return true
+							})
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}, true
@@ -2464,7 +2476,10 @@ func TestPreloadLatestDeniedDetailRevokesPreparation(t *testing.T) {
 									case <-ctx.Done():
 									}
 								}
-								task.Publish(func() { signs <- preloadTestSign{raw, ua} })
+								task.Publish(func() bool {
+									signs <- preloadTestSign{raw, ua}
+									return true
+								})
 							}
 							return playback.PreloadResult{Outcome: playback.PreloadPublished}
 						}, true
@@ -2731,7 +2746,10 @@ func TestPreloadLatestEpisodesSourceRevokesSigningNext(t *testing.T) {
 					}
 					close(entered)
 					<-blocked
-					task.Publish(func() { published.Store(true) })
+					task.Publish(func() bool {
+						published.Store(true)
+						return true
+					})
 					return playback.PreloadResult{Outcome: playback.PreloadPublished}
 				}, true
 			}
@@ -3531,7 +3549,10 @@ func TestPreloadRepeatedPlayingPreservesNextOpportunity(t *testing.T) {
 						if ua != "Confirmed Player" || !strings.Contains(raw, "pickcode=next") {
 							t.Errorf("wrong actual UA or successor: ua=%q", ua)
 						}
-						if !task.Publish(func() { published.Add(1) }) {
+						if !task.Publish(func() bool {
+							published.Add(1)
+							return true
+						}) {
 							return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
@@ -3772,7 +3793,10 @@ func TestPreloadLatestSourceAmbiguityRevokesDetail(t *testing.T) {
 							case <-ctx.Done():
 							}
 						}
-						task.Publish(func() { published <- raw })
+						task.Publish(func() bool {
+							published <- raw
+							return true
+						})
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}, true
 				}
@@ -3936,7 +3960,10 @@ func TestPreloadLatestResumeRevokesDetail(t *testing.T) {
 								case <-ctx.Done():
 								}
 							}
-							task.Publish(func() { published <- raw })
+							task.Publish(func() bool {
+								published <- raw
+								return true
+							})
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}, true
@@ -3990,7 +4017,10 @@ func TestPreloadLatestResumeRevokesDetail(t *testing.T) {
 								case <-released:
 								case <-ctx.Done():
 								}
-								task.Publish(func() { independentPublications.Add(1) })
+								task.Publish(func() bool {
+									independentPublications.Add(1)
+									return true
+								})
 							}
 							return playback.PreloadResult{Outcome: playback.PreloadPublished}
 						}}) {
@@ -4111,7 +4141,10 @@ func TestPreloadProgressInvalidatesBeforeUpstream(t *testing.T) {
 						case <-ctx.Done():
 						}
 					}
-					task.Publish(func() { publications.Add(1) })
+					task.Publish(func() bool {
+						publications.Add(1)
+						return true
+					})
 					return playback.PreloadResult{Outcome: playback.PreloadPublished}
 				}, true
 			}
@@ -4294,7 +4327,10 @@ func TestPreloadRangeProgressKeepsConfirmedUA(t *testing.T) {
 						return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 					}
 					signatures.Add(1)
-					task.Publish(func() { signs <- preloadTestSign{raw, ua} })
+					task.Publish(func() bool {
+						signs <- preloadTestSign{raw, ua}
+						return true
+					})
 					return playback.PreloadResult{Outcome: playback.PreloadPublished}
 				}, true
 			}
@@ -4561,7 +4597,7 @@ func TestPreloadCompatibleItemUserChangeCancelsSigning(t *testing.T) {
 					case <-release:
 					case <-ctx.Done():
 					}
-					published <- task.Publish(func() {})
+					published <- task.Publish(func() bool { return true })
 				}
 				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 			}, true

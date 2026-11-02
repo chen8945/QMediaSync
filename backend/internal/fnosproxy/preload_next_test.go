@@ -404,7 +404,10 @@ func TestPreloadMissingQueueCanceledByNewEvidence(t *testing.T) {
 								canceled <- struct{}{}
 							}
 						}
-						task.Publish(func() { published.Add(1) })
+						task.Publish(func() bool {
+							published.Add(1)
+							return true
+						})
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}, true
 				}

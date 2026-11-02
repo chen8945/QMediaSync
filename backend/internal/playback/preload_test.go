@@ -120,7 +120,10 @@ func TestPreloadConcurrentDuplicatesAndQueueBound(t *testing.T) {
 		p := newTestPreloader(t)
 		var calls atomic.Int32
 		candidate := preloadCandidate("same", PreloadDetail, func(_ context.Context, task *PreloadTask) PreloadResult {
-			if !task.BeginSignature(preloadTestAccount, "same") || !task.Publish(func() { calls.Add(1) }) {
+			if !task.BeginSignature(preloadTestAccount, "same") || !task.Publish(func() bool {
+				calls.Add(1)
+				return true
+			}) {
 				t.Error("唯一签名未获准")
 			}
 			return PreloadResult{Outcome: PreloadPublished}
@@ -187,7 +190,7 @@ func TestPreloadAccountWaitRetainsPreparationAndDoesNotBlockOtherAccounts(t *tes
 					return PreloadResult{Outcome: PreloadSkipped}
 				}
 				starts = append(starts, time.Now())
-				task.Publish(func() {})
+				task.Publish(func() bool { return true })
 				return PreloadResult{Outcome: PreloadPublished}
 			})
 		}
@@ -205,7 +208,7 @@ func TestPreloadAccountWaitRetainsPreparationAndDoesNotBlockOtherAccounts(t *tes
 			account.UserID = "other-user"
 			if task.BeginSignature(account, "other") {
 				other++
-				task.Publish(func() {})
+				task.Publish(func() bool { return true })
 			}
 			return PreloadResult{Outcome: PreloadPublished}
 		})
@@ -381,7 +384,10 @@ func TestPreloadTakeoverNextKeepsSigningLeaderAndCancelsPendingRetry(t *testing.
 			case <-ctx.Done():
 				t.Error("切集接手不能取消已开始的共享签名")
 			}
-			task.Publish(func() { published++ })
+			task.Publish(func() bool {
+				published++
+				return true
+			})
 			return PreloadResult{Outcome: PreloadPublished}
 		})
 		p.Submit(candidate)
@@ -421,7 +427,10 @@ func TestPreloadTakeoverAndScopeCancellation(t *testing.T) {
 					if phase != "signing" && task.BeginSignature(preloadTestAccount, "takeover") {
 						signatures++
 					}
-					task.Publish(func() { published++ })
+					task.Publish(func() bool {
+						published++
+						return true
+					})
 					return PreloadResult{Outcome: PreloadPublished}
 				})
 				p.Submit(candidate)
@@ -461,7 +470,10 @@ func TestPreloadCancelNextStopsSignatureAndKeepsCurrentDetail(t *testing.T) {
 			}
 			close(started)
 			<-ctx.Done()
-			if task.Publish(func() { published++ }) {
+			if task.Publish(func() bool {
+				published++
+				return true
+			}) {
 				t.Error("撤销进度后不能发布迟到签名")
 			}
 			return PreloadResult{Outcome: PreloadPublished}
@@ -531,7 +543,10 @@ func TestPreloadCancelAllPreservesAccountLimits(t *testing.T) {
 			}
 			signatures.Add(1)
 			<-ctx.Done()
-			task.Publish(func() { published.Add(1) })
+			task.Publish(func() bool {
+				published.Add(1)
+				return true
+			})
 			return PreloadResult{Outcome: PreloadTransient}
 		})
 		p.Submit(old)
@@ -552,7 +567,10 @@ func TestPreloadCancelAllPreservesAccountLimits(t *testing.T) {
 		fresh := preloadCandidate("fresh", PreloadNext, func(_ context.Context, task *PreloadTask) PreloadResult {
 			if task.BeginSignature(preloadTestAccount, "fresh") {
 				signatures.Add(1)
-				task.Publish(func() { published.Add(1) })
+				task.Publish(func() bool {
+					published.Add(1)
+					return true
+				})
 			}
 			return PreloadResult{Outcome: PreloadPublished}
 		})
@@ -599,7 +617,10 @@ func TestPreloadGenerationTimeoutAndCredentialCommit(t *testing.T) {
 					if task.BindSource(preloadTestAccount, "lifecycle") && task.BeginSignature(preloadTestAccount, "lifecycle") {
 						signatures++
 					}
-					task.Publish(func() { published++ })
+					task.Publish(func() bool {
+						published++
+						return true
+					})
 					completed <- elapsed
 					return PreloadResult{Outcome: PreloadPublished}
 				}))
@@ -737,7 +758,7 @@ func TestPreloadBlockingLoggerDoesNotHoldCoordinatorOrPublicationLocks(t *testin
 		p.Submit(preloadCandidate("logging", PreloadNext, func(_ context.Context, current *PreloadTask) PreloadResult {
 			task = current
 			current.BeginSignature(preloadTestAccount, "logging")
-			current.Publish(func() {})
+			current.Publish(func() bool { return true })
 			return PreloadResult{Outcome: PreloadPublished}
 		}))
 		<-writer.entered
@@ -814,7 +835,7 @@ func TestPreloadQueueAgePriorityAndCombinedStateLimit(t *testing.T) {
 				account := preloadTestAccount
 				account.AccountID = uint(i + 10)
 				if task.BeginSignature(account, key) {
-					task.Publish(func() {})
+					task.Publish(func() bool { return true })
 				}
 				return PreloadResult{Outcome: PreloadPublished}
 			})
@@ -872,12 +893,16 @@ func TestPreloadPublicationAndSettingsAreLinearizedOutsideQueueLock(t *testing.T
 		p.Submit(preloadCandidate("publish", PreloadNext, func(ctx context.Context, task *PreloadTask) PreloadResult {
 			canceled = ctx.Done()
 			task.BeginSignature(preloadTestAccount, "publish")
-			task.Publish(func() {
+			task.Publish(func() bool {
 				close(inPublish)
 				<-release
 				published++
+				return true
 			})
-			if task.Publish(func() { published++ }) {
+			if task.Publish(func() bool {
+				published++
+				return true
+			}) {
 				t.Error("关闭设置后不能再次发布")
 			}
 			return PreloadResult{Outcome: PreloadPublished}
@@ -1113,7 +1138,7 @@ func TestPreloadAliasUsesSameSignatureGap(t *testing.T) {
 					t.Error("已知账号应在配额到期后开始签名")
 				}
 				starts <- time.Now()
-				task.Publish(func() {})
+				task.Publish(func() bool { return true })
 				return PreloadResult{Outcome: PreloadPublished}
 			})
 			candidate.Account, candidate.Scope = account, key
@@ -1152,7 +1177,10 @@ func TestPreloadTwoWorkersCancelAndTakeover(t *testing.T) {
 						case <-release:
 						case <-ctx.Done():
 						}
-						task.Publish(func() { published.Add(1) })
+						task.Publish(func() bool {
+							published.Add(1)
+							return true
+						})
 						return PreloadResult{Outcome: PreloadPublished}
 					})
 					candidate.Account, candidate.Scope = account, key
@@ -1209,7 +1237,10 @@ func TestPreloadStopWaitsForBothWorkersAndPreventsLatePublication(t *testing.T) 
 				task.BeginSignature(account, key)
 				entered <- struct{}{}
 				<-release
-				task.Publish(func() { published.Add(1) })
+				task.Publish(func() bool {
+					published.Add(1)
+					return true
+				})
 				exited <- struct{}{}
 				return PreloadResult{Outcome: PreloadPublished}
 			})
@@ -1491,7 +1522,10 @@ func TestPreloadRootCancelOrInternalFailureDrainsBothWorkers(t *testing.T) {
 						} else {
 							<-ctx.Done()
 						}
-						task.Publish(func() { published.Add(1) })
+						task.Publish(func() bool {
+							published.Add(1)
+							return true
+						})
 						return PreloadResult{Outcome: PreloadPublished}
 					})
 					candidate.Account, candidate.Scope = account, key
@@ -1531,7 +1565,7 @@ func TestPreloadSourceBindingValidatesHintAndPreservesKnownIdentity(t *testing.T
 			if !task.BindSource(preloadTestAccount, "hint") || !task.BindSource(PreloadAccount{Provider: "115"}, "hint") || !task.BeginSignature(preloadTestAccount, "hint") {
 				t.Error("正常细化或重复部分绑定不应丢失已确认身份")
 			}
-			task.Publish(func() {})
+			task.Publish(func() bool { return true })
 			close(checked)
 			return PreloadResult{Outcome: PreloadPublished}
 		})

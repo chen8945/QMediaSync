@@ -96,7 +96,10 @@ func TestPreloadSeasonDetailRevokesFirstSignature(t *testing.T) {
 					case <-ctx.Done():
 					case <-release:
 					}
-					published <- task.Publish(func() { run(ctx, task) })
+					published <- task.Publish(func() bool {
+						run(ctx, task)
+						return true
+					})
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 				}, supported
 			}

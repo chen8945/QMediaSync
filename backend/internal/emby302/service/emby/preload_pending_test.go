@@ -853,7 +853,7 @@ func TestPreloadPendingRefreshKeepsSource(t *testing.T) {
 						case <-release:
 						case <-ctx.Done():
 						}
-						published <- task.Publish(func() {})
+						published <- task.Publish(func() bool { return true })
 						return playback.PreloadResult{Outcome: playback.PreloadCached}
 					}, true
 				}
@@ -974,7 +974,10 @@ func TestPreloadOtherSeasonEmptyKeepsPendingPreparation(t *testing.T) {
 			select {
 			case <-ctx.Done():
 			case <-release:
-				task.Publish(func() { run(ctx, task) })
+				task.Publish(func() bool {
+					run(ctx, task)
+					return true
+				})
 			}
 			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 		}, supported
@@ -1450,7 +1453,7 @@ func TestPreloadPartialSourceChangesCancelOldPublish(t *testing.T) {
 				return preloadHash(raw, ua), func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
 					entered <- struct{}{}
 					<-ctx.Done()
-					published <- task.Publish(func() {})
+					published <- task.Publish(func() bool { return true })
 					return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 				}, true
 			}
@@ -1723,7 +1726,7 @@ func TestPreloadPendingSelectionIgnoresSourceMetadataOrder(t *testing.T) {
 					case <-signatureRelease:
 					case <-ctx.Done():
 					}
-					published <- task.Publish(func() {})
+					published <- task.Publish(func() bool { return true })
 					return playback.PreloadResult{Outcome: playback.PreloadCached}
 				}, true
 			}
@@ -2033,7 +2036,7 @@ func TestPreloadPendingMatchingOldListsKeepSelection(t *testing.T) {
 			case <-signatureRelease:
 			case <-ctx.Done():
 			}
-			published <- task.Publish(func() {})
+			published <- task.Publish(func() bool { return true })
 			return playback.PreloadResult{Outcome: playback.PreloadCached}
 		}, true
 	}

@@ -1,6 +1,8 @@
 package db
 
 import (
+	"errors"
+
 	"qmediasync/internal/helpers"
 
 	"github.com/coocood/freecache"
@@ -14,6 +16,9 @@ type CacheGlobal struct {
 var Cache CacheGlobal
 var DefaultExpire = 300 // 默认 5 分钟过期
 
+// ErrCacheUnavailable 表示内存缓存尚未初始化。
+var ErrCacheUnavailable = errors.New("内存缓存未初始化")
+
 // 初始化缓存
 func InitCache() {
 	cacheSize := helpers.GlobalConfig.CacheSize
@@ -24,14 +29,17 @@ func InitCache() {
 	helpers.AppLogger.Info("成功初始化内存缓存组件")
 }
 
-// expire 设置为 -1 则代表取默认值
-func (c *CacheGlobal) Set(key string, value []byte, expire int) {
+// Set 写入内存缓存；expire 设置为 -1 时使用默认期限。
+func (c *CacheGlobal) Set(key string, value []byte, expire int) error {
+	if c == nil || c.CacheInstance == nil {
+		return ErrCacheUnavailable
+	}
 	keyHash := helpers.MD5Hash(key)
 	keyBytes := []byte(keyHash)
 	if expire == -1 {
 		expire = DefaultExpire
 	}
-	c.CacheInstance.Set(keyBytes, value, expire)
+	return c.CacheInstance.Set(keyBytes, value, expire)
 }
 
 func (c *CacheGlobal) Get(key string) []byte {

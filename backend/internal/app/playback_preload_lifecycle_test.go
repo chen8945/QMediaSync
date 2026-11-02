@@ -416,7 +416,7 @@ func TestPlaybackPreloadLifecycle(t *testing.T) {
 			}
 			started <- task
 			<-ctx.Done()
-			stopped <- !task.Publish(func() {})
+			stopped <- !task.Publish(func() bool { return true })
 			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 		},
 	}) {
@@ -484,7 +484,7 @@ func TestPlaybackPreloadSourceChangesRevokeAllAdapters(t *testing.T) {
 							case <-release:
 							case <-ctx.Done():
 							}
-							if task.Publish(func() {}) {
+							if task.Publish(func() bool { return true }) {
 								completed <- instance
 							} else {
 								completed <- ""
@@ -548,7 +548,10 @@ func TestPlaybackPreloadSourceChangesRevokeAllAdapters(t *testing.T) {
 				if !playback.DefaultPreloader.Submit(playback.PreloadCandidate{Key: "fresh", Scope: "fresh", Instance: "fnos:source-change", Kind: playback.PreloadNext,
 					Run: func(_ context.Context, task *playback.PreloadTask) playback.PreloadResult {
 						if task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 99, UserID: "fresh-owner"}, "fresh") {
-							task.Publish(func() { close(fresh) })
+							task.Publish(func() bool {
+								close(fresh)
+								return true
+							})
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}}) {

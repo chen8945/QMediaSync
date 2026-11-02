@@ -36,7 +36,7 @@ func activeAccountPreload(t *testing.T, account *Account) (*playback.PreloadTask
 			case <-finish:
 			case <-ctx.Done():
 			}
-			published <- task.Publish(func() {})
+			published <- task.Publish(func() bool { return true })
 			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 		},
 	}) {

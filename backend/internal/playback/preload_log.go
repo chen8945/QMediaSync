@@ -133,6 +133,12 @@ func preloadReasonText(reason string) string {
 		return "本轮暂不能开始网盘取链"
 	case "cached":
 		return "已有可用缓存"
+	case "cache_unavailable":
+		return "内存缓存不可用"
+	case "cache_expired":
+		return "播放地址剩余缓存期限不足一秒"
+	case "cache_write_failed":
+		return "播放地址未能写入缓存"
 	case "candidate_changed":
 		return "待播放内容已变化"
 	case "playback_started":

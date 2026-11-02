@@ -29,6 +29,7 @@ type ExternalLink struct {
 var externalLinkFlights singleflight.Group
 
 var errExternalLeaderCanceled = fmt.Errorf("共享取链请求已取消: %w", context.Canceled)
+var errExternalCacheExpired = errors.New("播放地址剩余缓存期限不足一秒")
 
 // 只登记已经开始解析的 leader，供原本不主动取链的飞牛入口等待现有结果。
 var activeExternalLinks sync.Map
@@ -140,13 +141,19 @@ func WaitExternalLink(ctx context.Context, raw, ua string) (ExternalLink, bool) 
 	}
 }
 
-func cacheExternalLink(raw, ua string, link ExternalLink) {
-	seconds := int(time.Until(link.ExpiresAt).Seconds())
-	if db.Cache.CacheInstance == nil || seconds <= 0 {
-		return
+func cacheExternalLink(raw, ua string, link ExternalLink) error {
+	if db.Cache.CacheInstance == nil {
+		return db.ErrCacheUnavailable
 	}
-	encoded, _ := json.Marshal(link)
-	db.Cache.Set(ExternalLinkIdentity(raw, ua), encoded, seconds)
+	encoded, err := json.Marshal(link)
+	if err != nil {
+		return err
+	}
+	seconds := int(time.Until(link.ExpiresAt) / time.Second)
+	if seconds <= 0 {
+		return errExternalCacheExpired
+	}
+	return db.Cache.Set(ExternalLinkIdentity(raw, ua), encoded, seconds)
 }
 
 // NewExternalPreload 复用有界协调器与正式播放的解析结果，不在构造时发请求。
@@ -160,6 +167,9 @@ func NewExternalPreload(raw, ua string, transport http.RoundTripper) (string, fu
 		if ctx.Err() != nil || !task.Valid() {
 			return PreloadResult{Outcome: PreloadSkipped, Reason: "canceled"}
 		}
+		if db.Cache.CacheInstance == nil {
+			return PreloadResult{Outcome: PreloadSkipped, Reason: "cache_unavailable"}
+		}
 		if !task.BindSource(account, identity) {
 			return PreloadResult{Outcome: PreloadSkipped, Reason: "source_unavailable"}
 		}
@@ -170,12 +180,24 @@ func NewExternalPreload(raw, ua string, transport http.RoundTripper) (string, fu
 			return PreloadResult{Outcome: PreloadSkipped, Reason: "external_unavailable"}
 		}
 		headers := http.Header{"User-Agent": {ua}, "Range": {"bytes=0-0"}}
-		published := false
+		var published, attempted bool
+		failure := PreloadResult{Outcome: PreloadSkipped, Reason: "canceled"}
 		publish := func(link ExternalLink) {
-			if !link.ExpiresAt.After(time.Now()) {
-				return
-			}
-			published = task.Publish(func() { cacheExternalLink(raw, ua, link) })
+			attempted = true
+			published = task.Publish(func() bool {
+				err := cacheExternalLink(raw, ua, link)
+				if err == nil {
+					return true
+				}
+				failure = PreloadResult{Outcome: PreloadFailed, Reason: "cache_write_failed"}
+				switch {
+				case errors.Is(err, db.ErrCacheUnavailable):
+					failure.Reason = "cache_unavailable"
+				case errors.Is(err, errExternalCacheExpired):
+					failure.Reason = "cache_expired"
+				}
+				return false
+			})
 		}
 		link, err := externalLink(ctx, raw, headers, transport, publish)
 		if ctx.Err() != nil || !task.Valid() {
@@ -184,11 +206,12 @@ func NewExternalPreload(raw, ua string, transport http.RoundTripper) (string, fu
 		if err != nil {
 			return externalPreloadFailure(err)
 		}
-		if !published {
+		// leader 已尝试发布时不重试缓存；等待者仍需通过自己的发布门。
+		if !attempted {
 			publish(link)
 		}
 		if !published {
-			return PreloadResult{Outcome: PreloadFailed, Reason: "external_invalid_link"}
+			return failure
 		}
 		return PreloadResult{Outcome: PreloadPublished}
 	}

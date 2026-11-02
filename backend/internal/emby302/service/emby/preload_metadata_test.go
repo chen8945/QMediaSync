@@ -241,7 +241,7 @@ func TestPreloadNaturalEpisodesDenialRevokesOnlyMatchingSignature(t *testing.T) 
 					case <-release:
 					case <-ctx.Done():
 					}
-					published <- task.Publish(func() {})
+					published <- task.Publish(func() bool { return true })
 					return playback.PreloadResult{Outcome: playback.PreloadCached}
 				}, true
 			}
@@ -428,7 +428,7 @@ func TestPreloadListOmissionUsesCompletedSeasonMetadata(t *testing.T) {
 			case <-release:
 			case <-ctx.Done():
 			}
-			published <- task.Publish(func() {})
+			published <- task.Publish(func() bool { return true })
 			return playback.PreloadResult{Outcome: playback.PreloadCached}
 		}, true
 	}

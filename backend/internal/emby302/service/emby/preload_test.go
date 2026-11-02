@@ -1275,7 +1275,10 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 							close(entered)
 							<-blocked
 						}
-						task.Publish(func() { published.Store(true) })
+						task.Publish(func() bool {
+							published.Store(true)
+							return true
+						})
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}}) {
 						t.Fatal("current successor rejected")
@@ -2313,7 +2316,10 @@ func TestPreloadActualStreamSessionMatchesStart(t *testing.T) {
 				h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 					return preloadHash(raw, ua), func(_ context.Context, task *playback.PreloadTask) playback.PreloadResult {
 						if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "fixture"}, raw) ||
-							!task.Publish(func() { h.resolved <- preloadResolved{raw, ua, force} }) {
+							!task.Publish(func() bool {
+								h.resolved <- preloadResolved{raw, ua, force}
+								return true
+							}) {
 							return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 						}
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
@@ -2438,9 +2444,10 @@ func TestPreloadCompleteReportInvalidatesBeforeUpstream(t *testing.T) {
 						close(entered)
 						<-released
 					}
-					task.Publish(func() {
+					task.Publish(func() bool {
 						publications.Add(1)
 						h.resolved <- preloadResolved{path: raw, ua: ua}
+						return true
 					})
 					return playback.PreloadResult{Outcome: playback.PreloadPublished}
 				}, true
@@ -2723,7 +2730,10 @@ func TestPreloadLateOrdinaryProgressKeepsCurrentPlayback(t *testing.T) {
 							close(entered)
 							<-blocked
 						}
-						task.Publish(func() { published.Store(true) })
+						task.Publish(func() bool {
+							published.Store(true)
+							return true
+						})
 						return playback.PreloadResult{Outcome: playback.PreloadPublished}
 					}}) {
 						t.Fatal("current successor rejected")
@@ -2822,7 +2832,7 @@ func TestPreloadLogsKeepFinalTargetAndMetadataFailure(t *testing.T) {
 			}
 			h.adapter.options.Resolve = func(raw, _ string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 				return raw, func(_ context.Context, task *playback.PreloadTask) playback.PreloadResult {
-					if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "fixture"}, raw) || !task.Publish(func() {}) {
+					if !task.BeginSignature(playback.PreloadAccount{Provider: "115", AccountID: 1, UserID: "fixture"}, raw) || !task.Publish(func() bool { return true }) {
 						return playback.PreloadResult{Outcome: playback.PreloadSkipped}
 					}
 					return playback.PreloadResult{Outcome: playback.PreloadPublished}
@@ -2953,7 +2963,7 @@ func TestPreloadDirectSourceRefreshRevokesOnlyRemovedURL(t *testing.T) {
 					published <- struct {
 						path    string
 						allowed bool
-					}{raw, task.Publish(func() {})}
+					}{raw, task.Publish(func() bool { return true })}
 					return playback.PreloadResult{Outcome: playback.PreloadCached}
 				}, true
 			}

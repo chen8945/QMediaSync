@@ -58,7 +58,6 @@ func TransferPlaybackInfo(c *gin.Context) {
 	}
 
 	// 如果是指定 MediaSourceId 的 PlaybackInfo 信息, 就从缓存空间中获取
-	msInfo := itemInfo.MsInfo
 	if useCacheSpacePlaybackInfo(c, itemInfo) {
 		c.Header(cache.HeaderKeyExpired, "-1")
 		return
@@ -87,9 +86,21 @@ func TransferPlaybackInfo(c *gin.Context) {
 		return
 	}
 
-	var haveReturned = errors.New("have returned")
+	if rewritePlaybackInfo(itemInfo, mediaSources) {
+		c.Request.Body = originRequestBody
+		ProxyOrigin(c)
+		return
+	}
+
+	https.CloneHeader(c.Writer, respHeader)
+	jsons.OkResp(c.Writer, resJson)
+}
+
+func rewritePlaybackInfo(itemInfo ItemInfo, mediaSources *jsons.Item) bool {
+	msInfo := itemInfo.MsInfo
+	proxyOrigin := false
 	resChans := make([]chan []*jsons.Item, 0, mediaSources.Len())
-	err = mediaSources.RangeArr(func(_ int, source *jsons.Item) error {
+	mediaSources.RangeArr(func(_ int, source *jsons.Item) error {
 		simplifyMediaName(source)
 
 		detectVirtualVideoDisplayTitle(source)
@@ -105,9 +116,8 @@ func TransferPlaybackInfo(c *gin.Context) {
 		// 默认无限流为电视直播, 代理到源服务器
 		iis, _ := source.Attr("IsInfiniteStream").Bool()
 		if iis {
-			c.Request.Body = originRequestBody
-			ProxyOrigin(c)
-			return haveReturned
+			proxyOrigin = true
+			return jsons.ErrBreakRange
 		}
 
 		// 如果是本地媒体, 不处理
@@ -168,17 +178,9 @@ func TransferPlaybackInfo(c *gin.Context) {
 		return nil
 	})
 
-	if err == haveReturned {
-		return
+	if proxyOrigin {
+		return true
 	}
-
-	// defer func() {
-	// 	// 缓存 12h
-	// 	c.Header(cache.HeaderKeyExpired, cache.Duration(time.Hour*12))
-	// 	// 将请求结果缓存到指定缓存空间下
-	// 	c.Header(cache.HeaderKeySpace, PlaybackCacheSpace)
-	// 	c.Header(cache.HeaderKeySpaceKey, calcPlaybackInfoSpaceCacheKey(itemInfo))
-	// }()
 
 	// 收集异步请求的转码资源信息
 	for _, resChan := range resChans {
@@ -188,8 +190,7 @@ func TransferPlaybackInfo(c *gin.Context) {
 		}
 	}
 
-	https.CloneHeader(c.Writer, respHeader)
-	jsons.OkResp(c.Writer, resJson)
+	return false
 }
 
 // handleSpecialPlayback 判断 PlaybackInfo 是否属于特殊类型, 是则直接代理回源服务
@@ -242,7 +243,7 @@ func handleSpecialPlayback(c *gin.Context, itemInfo ItemInfo) bool {
 //
 // ① 请求携带 MediaSourceId:
 //
-//	从缓存空间的全量缓存中匹配 MediaSourceId, 没有全量缓存或匹配失败时直接返回 500 错误
+//	从全量缓存中匹配 MediaSourceId；缺失时补取一次，匹配失败返回 500 错误
 //
 // ② 请求不携带 MediaSourceId:
 //
@@ -312,6 +313,9 @@ func useCacheSpacePlaybackInfo(c *gin.Context, itemInfo ItemInfo) bool {
 		})
 		jsonBody.Put("MediaSources", newMediaSources)
 
+		if spaceCache == nil {
+			return
+		}
 		// 更新缓存
 		newBody := []byte(jsonBody.String())
 		newHeader := spaceCache.Headers()
@@ -321,21 +325,15 @@ func useCacheSpacePlaybackInfo(c *gin.Context, itemInfo ItemInfo) bool {
 
 	// findMediaSourceAndReturn 从全量 PlaybackInfo 信息中查询指定 MediaSourceId 信息
 	// 处理成功返回 true
-	findMediaSourceAndReturn := func(spaceCache cache.RespCache) bool {
-		jsonBody, err := spaceCache.JsonBody()
-		if err != nil {
-			logs.Error("解析缓存响应体失败: %v", err)
-			return false
-		}
-
+	findMediaSourceAndReturn := func(jsonBody *jsons.Item, spaceCache cache.RespCache) bool {
 		mediaSources, ok := jsonBody.Attr("MediaSources").Done()
 		if !ok || mediaSources.Type() != jsons.JsonTypeArr || mediaSources.Empty() {
 			return false
 		}
 		newMediaSources := jsons.NewEmptyArr()
 		mediaSources.RangeArr(func(index int, value *jsons.Item) error {
-			cacheId := value.Attr("Id").Val().(string)
-			if err == nil && cacheId == reqId {
+			cacheId, validID := value.Attr("Id").String()
+			if validID && cacheId == reqId {
 				newMediaSources.Append(value)
 				updateCache(spaceCache, jsonBody, index)
 				return jsons.ErrBreakRange
@@ -347,8 +345,11 @@ func useCacheSpacePlaybackInfo(c *gin.Context, itemInfo ItemInfo) bool {
 		}
 
 		jsonBody.Put("MediaSources", newMediaSources)
-		respHeader := spaceCache.Headers()
-		https.CloneHeader(c.Writer, respHeader)
+		if spaceCache != nil {
+			https.CloneHeader(c.Writer, spaceCache.Headers())
+		} else {
+			c.Header("Content-Type", "application/json")
+		}
 		jsons.OkResp(c.Writer, jsonBody)
 		return true
 	}
@@ -367,7 +368,10 @@ func useCacheSpacePlaybackInfo(c *gin.Context, itemInfo ItemInfo) bool {
 			return true
 		}
 		// 尝试从缓存中匹配指定的 MediaSourceId 信息
-		if findMediaSourceAndReturn(spaceCache) {
+		jsonBody, err := spaceCache.JsonBody()
+		if err != nil {
+			logs.Error("解析缓存响应体失败: %v", err)
+		} else if findMediaSourceAndReturn(jsonBody, spaceCache) {
 			return true
 		}
 	}
@@ -378,13 +382,18 @@ func useCacheSpacePlaybackInfo(c *gin.Context, itemInfo ItemInfo) bool {
 	}
 
 	// 如果是单个查询, 则手动请求一次全量
-	if _, err := fetchFullPlaybackInfo(itemInfo); err != nil {
+	jsonBody, err := fetchFullPlaybackInfo(itemInfo)
+	if err != nil {
 		logs.Error("更新缓存空间 PlaybackInfo 信息失败: %v", err)
 		c.String(http.StatusInternalServerError, "未找到缓存, 请稍后重新播放")
 		return true
 	}
 
-	return useCacheSpacePlaybackInfo(c, itemInfo)
+	if findMediaSourceAndReturn(jsonBody, nil) {
+		return true
+	}
+	c.String(http.StatusInternalServerError, "未找到缓存, 请稍后重新播放")
+	return true
 }
 
 // LoadCacheItems 拦截并代理 Items 接口
@@ -464,9 +473,9 @@ func LoadCacheItems(c *gin.Context) {
 	coverMediaSources(bodyJson)
 }
 
-// fetchFullPlaybackInfo 请求全量的 PlaybackInfo 信息
+// fetchFullPlaybackInfo 复用响应处理和缓存取得原始 Path，不从客户端展示响应反推地址。
 func fetchFullPlaybackInfo(itemInfo ItemInfo) (*jsons.Item, error) {
-	u, err := url.Parse(config.ServerInternalRequestHost() + itemInfo.PlaybackInfoUri)
+	u, err := url.Parse(itemInfo.PlaybackInfoUri)
 	if err != nil {
 		return nil, fmt.Errorf("PlaybackInfo 地址异常: %v, URI: %s", err, itemInfo.PlaybackInfoUri)
 	}
@@ -474,27 +483,45 @@ func fetchFullPlaybackInfo(itemInfo ItemInfo) (*jsons.Item, error) {
 	q.Del("MediaSourceId")
 	u.RawQuery = q.Encode()
 
-	reqBody := io.NopCloser(bytes.NewBufferString(PlaybackCommonPayload))
-	header := make(http.Header)
-	header.Set("Content-Type", "text/plain")
-	if itemInfo.ApiKeyType == Header {
-		header.Set(itemInfo.ApiKeyName, itemInfo.ApiKey)
-	}
-	resp, err := https.Post(u.String()).Header(header).Body(reqBody).Do()
+	request, err := http.NewRequest(http.MethodPost, u.String(), strings.NewReader(PlaybackCommonPayload))
 	if err != nil {
-		return nil, fmt.Errorf("获取全量 PlaybackInfo 失败: %v", err)
+		return nil, fmt.Errorf("创建全量 PlaybackInfo 请求失败: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("获取全量 PlaybackInfo 失败, 状态码: %d", resp.StatusCode)
+	request.Header.Set("Content-Type", "text/plain")
+	request.Header.Set("Content-Length", strconv.Itoa(len(PlaybackCommonPayload)))
+	request.Header.Set("User-Agent", "Go-http-client/1.1")
+	if itemInfo.ApiKeyType == Header {
+		request.Header.Set(itemInfo.ApiKeyName, itemInfo.ApiKey)
+	}
+	if config.C.Cache.Enable {
+		if response, ok := cache.GetRequestCache(request); ok {
+			return response.JsonBody()
+		}
 	}
 
-	bodyJson, err := jsons.Read(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("获取全量 PlaybackInfo 失败: %v", err)
+	res, header := RawFetch(u.String(), http.MethodPost, request.Header.Clone(), request.Body)
+	if res.Code != http.StatusOK {
+		return nil, fmt.Errorf("获取全量 PlaybackInfo 失败: %s", res.Msg)
 	}
-	// logs.Success("获取全量 PlaybackInfo 成功, PlaybackInfo: %+v", bodyJson)
-	return bodyJson, nil
+	mediaSources, ok := res.Data.Attr("MediaSources").Done()
+	if !ok || mediaSources.Type() != jsons.JsonTypeArr {
+		return nil, errors.New("获取不到 MediaSources 属性")
+	}
+	itemInfo.MsInfo = MsInfo{Empty: true}
+	if rewritePlaybackInfo(itemInfo, mediaSources) {
+		res, _ = RawFetch(u.String(), http.MethodPost, request.Header.Clone(), io.NopCloser(strings.NewReader(PlaybackCommonPayload)))
+		if res.Code != http.StatusOK {
+			return nil, fmt.Errorf("获取全量 PlaybackInfo 失败: %s", res.Msg)
+		}
+		return res.Data, nil
+	}
+	if config.C.Cache.Enable {
+		request.Body, _ = request.GetBody()
+		body := res.Data.Bytes()
+		header.Set("Content-Length", strconv.Itoa(len(body)))
+		cache.PutRequestCache(request, http.StatusOK, body, header)
+	}
+	return res.Data, nil
 }
 
 // calcPlaybackInfoSpaceCacheKey 根据请求的 Item 信息计算 PlaybackInfo 在缓存空间中的 key

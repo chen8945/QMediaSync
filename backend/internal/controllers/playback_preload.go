@@ -169,6 +169,9 @@ func warmPlaybackPreload(ctx context.Context, task *playback.PreloadTask, prepar
 	if ctx.Err() != nil || !task.Valid() {
 		return skipped
 	}
+	if db.Cache.CacheInstance == nil {
+		return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "cache_unavailable"}
+	}
 	if prepared.account.TokenExpiriesTime > 0 && prepared.account.TokenExpiriesTime <= time.Now().Unix() {
 		return playback.PreloadResult{Outcome: playback.PreloadSkipped, Reason: "account_unavailable"}
 	}
@@ -225,18 +228,28 @@ func warmPlaybackPreload(ctx context.Context, task *playback.PreloadTask, prepar
 	if reserved {
 		deadline = playback.URLExpiresAt(value, now)
 	}
-	ttl := int(deadline.Unix() - now.Unix())
-	if ttl <= 0 {
-		return playback.PreloadResult{Outcome: playback.PreloadFailed, Reason: "invalid_link"}
-	}
-	if !task.Publish(func() {
-		db.Cache.Set(prepared.cacheKey, []byte(value), ttl)
+	failure := skipped
+	if !task.Publish(func() bool {
+		failure = playback.PreloadResult{Outcome: playback.PreloadFailed, Reason: "cache_write_failed"}
+		now := time.Now()
+		if deadline.Sub(now) < time.Second {
+			failure.Reason = "cache_expired"
+			return false
+		}
+		ttl := int(deadline.Unix() - now.Unix())
+		if err := db.Cache.Set(prepared.cacheKey, []byte(value), ttl); err != nil {
+			if errors.Is(err, db.ErrCacheUnavailable) {
+				failure.Reason = "cache_unavailable"
+			}
+			return false
+		}
 		if reserved {
 			v115Playback.Finish(prepared.source, prepared.slot, time.Unix(deadline.Unix(), 0))
 			finished = true
 		}
+		return true
 	}) {
-		return skipped
+		return failure
 	}
 	return playback.PreloadResult{Outcome: playback.PreloadPublished}
 }

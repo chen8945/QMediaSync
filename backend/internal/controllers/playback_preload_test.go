@@ -119,6 +119,73 @@ func TestPlaybackPreloadKeepsExistingCacheAndSlotContracts(t *testing.T) {
 	}
 }
 
+func TestPlaybackPreloadRequiresSuccessfulCacheWrite(t *testing.T) {
+	for _, state := range []string{
+		"115_write_failed", "baidu_write_failed", "115_subsecond", "115_expired",
+		"115_unavailable_before", "baidu_unavailable_before", "115_unavailable_after", "baidu_unavailable_after",
+	} {
+		t.Run(state, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p, prepared := setupPreloadProvider(t)
+				cache := db.Cache
+				time.Sleep(500 * time.Millisecond)
+				value := fmt.Sprintf("https://a.115cdn.net/video?t=%d&padding=%s", time.Now().Add(15*time.Minute).Unix(), strings.Repeat("x", 2048))
+				wantReason := "cache_write_failed"
+				wantOutcome, wantCalls := playback.PreloadFailed, 1
+				if state == "115_subsecond" || state == "115_expired" {
+					expires := time.Now().Unix() + 300
+					if state == "115_subsecond" {
+						expires++
+					}
+					value = fmt.Sprintf("https://a.115cdn.net/video?t=%d", expires)
+					wantReason = "cache_expired"
+				}
+				if strings.Contains(state, "unavailable") {
+					wantReason = "cache_unavailable"
+					value = fmt.Sprintf("https://a.115cdn.net/video?t=%d", time.Now().Add(15*time.Minute).Unix())
+					if strings.HasSuffix(state, "before") {
+						db.Cache.CacheInstance = nil
+						wantOutcome, wantCalls = playback.PreloadSkipped, 0
+					}
+				}
+				calls := 0
+				sign := func() string {
+					calls++
+					if strings.HasSuffix(state, "unavailable_after") {
+						db.Cache.CacheInstance = nil
+					}
+					return value
+				}
+				prepared.sign115 = func(context.Context) (*v115open.DownloadUrlResult, error) {
+					return &v115open.DownloadUrlResult{URL: sign()}, nil
+				}
+				if strings.HasPrefix(state, "baidu") {
+					prepared.account.SourceType = models.SourceTypeBaiduPan
+					prepared.cacheKey = baiduURLCacheKey("123", prepared.slot.UA)
+					prepared.identity = playbackPreloadIdentity(string(models.SourceTypeBaiduPan), prepared.cacheKey)
+					value = strings.Replace(value, "https://a.115cdn.net", "https://d.pcs.baidu.com", 1)
+					prepared.sign115 = nil
+					prepared.signBaidu = func(context.Context) (string, error) { return sign(), nil }
+				}
+				results := make(chan playback.PreloadResult, 1)
+				submitPreloadProvider(t, p, prepared, func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+					result := warmPlaybackPreload(ctx, task, prepared)
+					results <- result
+					return result
+				})
+				synctest.Wait()
+				result := <-results
+				if result.Outcome != wantOutcome || result.Reason != wantReason || calls != wantCalls {
+					t.Fatalf("缓存未写入却报告成功或原因不符：result=%+v calls=%d", result, calls)
+				}
+				if len(cache.Get(prepared.cacheKey)) != 0 || v115Playback.HasOther(prepared.source, playback.Slot{UA: "other"}, time.Now()) {
+					t.Fatal("失败写入保留了缓存或成功槽位")
+				}
+			})
+		})
+	}
+}
+
 func TestPlaybackPreloadOrdinaryTakeoverReusesActiveSignature(t *testing.T) {
 	setupControllerTestDB(t, &models.Account{})
 	synctest.Test(t, func(t *testing.T) {

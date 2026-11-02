@@ -19,7 +19,7 @@ func TestPreloadLogSuccessUsesFinalTargetWithoutDiagnostics(t *testing.T) {
 		p := newTestPreloader(t)
 		candidate := preloadCandidate("resolved-target", PreloadNext, func(_ context.Context, task *PreloadTask) PreloadResult {
 			task.SetLogTarget("episode-4", "剧名 S01E04")
-			if !task.BeginSignature(preloadTestAccount, "resolved-target") || !task.Publish(func() {}) {
+			if !task.BeginSignature(preloadTestAccount, "resolved-target") || !task.Publish(func() bool { return true }) {
 				t.Error("测试候选未发布")
 			}
 			return PreloadResult{Outcome: PreloadPublished, HTTPStatus: 200, BusinessCode: 1, StatusSource: "网盘"}
@@ -40,6 +40,29 @@ func TestPreloadLogSuccessUsesFinalTargetWithoutDiagnostics(t *testing.T) {
 		}
 		if strings.Count(got, "\n") != 1 {
 			t.Fatalf("成功应只有一条日志：%s", got)
+		}
+	})
+}
+
+func TestPreloadFailedPublicationDoesNotReportCompletion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var output bytes.Buffer
+		preloadLogger(t, &output, helpers.LogLevelDebug)
+		p := newTestPreloader(t)
+		calls := 0
+		p.Submit(preloadCandidate("write-failed", PreloadNext, func(_ context.Context, task *PreloadTask) PreloadResult {
+			if !task.BeginSignature(preloadTestAccount, "write-failed") {
+				t.Error("测试候选未获准签名")
+			}
+			if task.Publish(func() bool { calls++; return false }) {
+				t.Error("失败回调不能报告发布成功")
+			}
+			return PreloadResult{Outcome: PreloadFailed, Reason: "cache_write_failed"}
+		}))
+		synctest.Wait()
+		got := output.String()
+		if calls != 1 || strings.Contains(got, "预加载完成") || !strings.Contains(got, "播放地址未能写入缓存") {
+			t.Fatalf("失败回调被报告为完成：calls=%d log=%s", calls, got)
 		}
 	})
 }
@@ -91,6 +114,16 @@ func TestPreloadLogReasonsAndStatusOrigins(t *testing.T) {
 			event: preloadEvent{level: helpers.LogLevelDebug, reason: "cached"},
 			want:  []string{"无需重新取链", "已有可用缓存"}, absent: []string{"预加载完成"},
 		},
+		{
+			name:  "cache_unavailable",
+			event: preloadEvent{level: helpers.LogLevelDebug, reason: "cache_unavailable"},
+			want:  []string{"内存缓存不可用"}, absent: []string{"已取消", "预加载完成"},
+		},
+		{
+			name:  "cache_expired",
+			event: preloadEvent{level: helpers.LogLevelWarn, reason: "cache_expired"},
+			want:  []string{"播放地址剩余缓存期限不足一秒"}, absent: []string{"已取消", "地址无效", "预加载完成"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			message := tc.event.message()
@@ -128,7 +161,7 @@ func TestPreloadLogTargetSanitizationDoesNotChangeAdmission(t *testing.T) {
 				p := newTestPreloader(t)
 				candidate := preloadCandidate(tc.name, PreloadNext, func(_ context.Context, task *PreloadTask) PreloadResult {
 					task.BeginSignature(preloadTestAccount, tc.name)
-					task.Publish(func() {})
+					task.Publish(func() bool { return true })
 					return PreloadResult{Outcome: PreloadPublished}
 				})
 				candidate.Log = PreloadLogContext{Entry: "飞牛", Trigger: "单集详情", ItemID: "episode-1", Title: tc.title}

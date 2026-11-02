@@ -604,8 +604,8 @@ func (t *PreloadTask) beginSource(account PreloadAccount, source string) bool {
 	return true
 }
 
-// Publish 只执行缓存 / 槽位内存写入；回调不得做日志、SQL、文件或网络 I/O。
-func (t *PreloadTask) Publish(publish func()) bool {
+// Publish 仅在缓存 / 槽位内存写入成功时标记完成；回调不得做日志、SQL、文件或网络 I/O。
+func (t *PreloadTask) Publish(publish func() bool) bool {
 	t.gate.Lock()
 	defer t.gate.Unlock()
 	t.owner.mu.Lock()
@@ -614,7 +614,9 @@ func (t *PreloadTask) Publish(publish func()) bool {
 	if publish == nil || !allowed || !t.Valid() {
 		return false
 	}
-	publish()
+	if !publish() {
+		return false
+	}
 	t.owner.mu.Lock()
 	t.published = true
 	t.owner.mu.Unlock()
