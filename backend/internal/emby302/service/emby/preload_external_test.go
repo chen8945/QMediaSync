@@ -51,7 +51,7 @@ func TestExternalPreloadSharedWithEmbyPlayback(t *testing.T) {
 			}))
 			defer source.Close()
 			raw := source.URL + path
-			h := newEmbyPreloadHarness(t)
+			h := newEmbyPreloadRealNetworkHarness(t)
 			h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 				return playback.NewExternalPreload(raw, ua, https.Transport())
 			}
@@ -105,7 +105,7 @@ func TestExternalPreloadLearnsActualPlaybackUA(t *testing.T) {
 				w.WriteHeader(http.StatusForbidden)
 			}))
 			defer failed.Close()
-			h := newEmbyPreloadHarness(t)
+			h := newEmbyPreloadRealNetworkHarness(t)
 			defer h.core.Stop()
 			h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 				if !playback.ValidExternalURL(raw) {
@@ -189,7 +189,7 @@ func TestExternalPreloadSuccessfulResolutionLearnsUA(t *testing.T) {
 			}))
 			defer source.Close()
 			raw := source.URL + test.path
-			h := newEmbyPreloadHarness(t)
+			h := newEmbyPreloadRealNetworkHarness(t)
 			defer h.core.Stop()
 			h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
 				return playback.ExternalLinkIdentity(raw, ua), func(context.Context, *playback.PreloadTask) playback.PreloadResult {
@@ -246,50 +246,52 @@ func TestExternalPreloadSuccessfulResolutionLearnsUA(t *testing.T) {
 }
 
 func TestExternalPreloadSameOriginStreamSupportsUAAndNext(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		if !playback.ValidExternalURL(raw) {
-			return "", nil, false
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			if !playback.ValidExternalURL(raw) {
+				return "", nil, false
+			}
+			return playback.ExternalLinkIdentity(raw, ua), func(context.Context, *playback.PreloadTask) playback.PreloadResult {
+				h.resolved <- preloadResolved{raw, ua, force}
+				return playback.PreloadResult{Outcome: playback.PreloadCached}
+			}, true
 		}
-		return playback.ExternalLinkIdentity(raw, ua), func(context.Context, *playback.PreloadTask) playback.PreloadResult {
-			h.resolved <- preloadResolved{raw, ua, force}
-			return playback.PreloadResult{Outcome: playback.PreloadCached}
-		}, true
-	}
-	for _, id := range []string{"20", "21", "22"} {
-		item := preloadTestItem(id, "Episode")
-		item.MediaSources[0].Path = "http://qms.invalid/moviepilot/redirect?id=" + id
-		item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
-		h.nodes[id] = item
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
-	if result := h.waitResolved(); result.ua != "Control/1.0" {
-		t.Fatalf("首次详情 UA = %q", result.ua)
-	}
-	previousRouter := h.router
-	h.router = gin.New()
-	h.router.Use(PreloadObserver())
-	h.router.GET("/Videos/20/stream", func(c *gin.Context) {
-		c.Redirect(http.StatusTemporaryRedirect, "http://qms.invalid/openlist/d/movie.mkv")
-	})
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Actual Player/2.0", nil)
-	h.router = previousRouter
-	h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1.0", nil)
-	if result := h.waitResolved(); result.ua != "Actual Player/2.0" {
-		t.Fatalf("同域第三方最终地址未更新实际 UA：%q", result.ua)
-	}
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/Users/10/Items/22" {
-			t.Errorf("非预期后继查询：%s", r.URL.Path)
+		for _, id := range []string{"20", "21", "22"} {
+			item := preloadTestItem(id, "Episode")
+			item.MediaSources[0].Path = "http://qms.invalid/moviepilot/redirect?id=" + id
+			item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
+			h.nodes[id] = item
 		}
-		_ = json.NewEncoder(w).Encode(h.nodes["22"])
-	}
-	h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1.0", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Fixture App", "Control/1.0", map[string]any{
-		"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
-		"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "22"}},
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
+		if result := h.waitResolved(); result.ua != "Control/1.0" {
+			t.Fatalf("首次详情 UA = %q", result.ua)
+		}
+		previousRouter := h.router
+		h.router = gin.New()
+		h.router.Use(PreloadObserver())
+		h.router.GET("/Videos/20/stream", func(c *gin.Context) {
+			c.Redirect(http.StatusTemporaryRedirect, "http://qms.invalid/openlist/d/movie.mkv")
+		})
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Actual Player/2.0", nil)
+		h.router = previousRouter
+		h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1.0", nil)
+		if result := h.waitResolved(); result.ua != "Actual Player/2.0" {
+			t.Fatalf("同域第三方最终地址未更新实际 UA：%q", result.ua)
+		}
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/Users/10/Items/22" {
+				t.Errorf("非预期后继查询：%s", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(h.nodes["22"])
+		}
+		h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1.0", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
+		h.request("POST", "/Sessions/Playing/Progress", "device", "Fixture App", "Control/1.0", map[string]any{
+			"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
+			"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "22"}},
+		})
+		if result := h.waitResolved(); result.path != h.nodes["22"].MediaSources[0].Path || result.ua != "Actual Player/2.0" {
+			t.Fatalf("同域成功取流未建立后继资格：%+v", result)
+		}
 	})
-	if result := h.waitResolved(); result.path != h.nodes["22"].MediaSources[0].Path || result.ua != "Actual Player/2.0" {
-		t.Fatalf("同域成功取流未建立后继资格：%+v", result)
-	}
 }

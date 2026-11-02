@@ -50,7 +50,7 @@ type embyPreloadHarness struct {
 	upstream   func(http.ResponseWriter, *http.Request)
 }
 
-func newEmbyPreloadHarness(t *testing.T) *embyPreloadHarness {
+func newEmbyPreloadRealNetworkHarness(t *testing.T) *embyPreloadHarness {
 	t.Helper()
 	return newEmbyPreloadHarnessWithNetwork(t, false)
 }
@@ -217,7 +217,7 @@ func TestPreloadVirtualClockPreservesDebounceAndRealNetwork(t *testing.T) {
 	if transport := https.Transport().(*http.Transport); transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("virtual metadata transport did not restore the prior TLS option")
 	}
-	h := newEmbyPreloadHarness(t)
+	h := newEmbyPreloadRealNetworkHarness(t)
 	h.upstream = func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(preloadTestItem("20", "Episode"))
 	}
@@ -284,197 +284,205 @@ func TestPreloadRoutesAndCredentialScope(t *testing.T) {
 }
 
 func TestPreloadClientIdentityCompatibility(t *testing.T) {
-	newEmbyPreloadHarness(t)
-	for _, description := range []string{
-		`Emby UserId=10,Client=Yamby,Device=Android Phone,DeviceId=opaque-device,Version=2.1.1.0`,
-		`Emby Client="Hills", Device="Phone", DeviceId="opaque-device", Version="1.10.1"`,
-		`MediaBrowser DEVICEID = opaque-device, Client = Custom Player`,
-	} {
-		r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20", nil)
-		r.Header.Set(HeaderFullAuthName, description)
-		r.Header.Set("X-Emby-Token", "user-token")
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		newEmbyPreloadTestHarness(t)
+		for _, description := range []string{
+			`Emby UserId=10,Client=Yamby,Device=Android Phone,DeviceId=opaque-device,Version=2.1.1.0`,
+			`Emby Client="Hills", Device="Phone", DeviceId="opaque-device", Version="1.10.1"`,
+			`MediaBrowser DEVICEID = opaque-device, Client = Custom Player`,
+		} {
+			r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20", nil)
+			r.Header.Set(HeaderFullAuthName, description)
+			r.Header.Set("X-Emby-Token", "user-token")
+			r.Header.Set("User-Agent", "Player/1.0")
+			parsed, ok := newPreloadRequest(r, "fixture", "10", "", 1)
+			if !ok || parsed.weakIdentity || parsed.ua != "Player/1.0" {
+				t.Fatal("合法播放器描述未被识别")
+			}
+			r.Header.Set("X-Emby-Device-Id", "different")
+			if _, ok := newPreloadRequest(r, "fixture", "10", "", 1); ok {
+				t.Fatal("设备冲突被当成缺失后降级")
+			}
+		}
+		r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20?api_key=user-token", nil)
 		r.Header.Set("User-Agent", "Player/1.0")
-		parsed, ok := newPreloadRequest(r, "fixture", "10", "", 1)
-		if !ok || parsed.weakIdentity || parsed.ua != "Player/1.0" {
-			t.Fatal("合法播放器描述未被识别")
+		weak, ok := newPreloadRequest(r, "fixture", "10", "", 1)
+		if !ok || !weak.weakIdentity {
+			t.Fatal("缺少设备标识未降级")
 		}
-		r.Header.Set("X-Emby-Device-Id", "different")
-		if _, ok := newPreloadRequest(r, "fixture", "10", "", 1); ok {
-			t.Fatal("设备冲突被当成缺失后降级")
+		r.Header.Set("User-Agent", "Player/1.1")
+		changed, _ := newPreloadRequest(r, "fixture", "10", "", 1)
+		r.Header.Set("User-Agent", "Player/1.0")
+		r.Header.Set("X-Emby-Device-Id", "Player/1.0")
+		strong, _ := newPreloadRequest(r, "fixture", "10", "", 1)
+		if weak.scope == changed.scope || weak.scope == strong.scope {
+			t.Fatal("UA 版本或显式设备身份发生作用域碰撞")
 		}
-	}
-	r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20?api_key=user-token", nil)
-	r.Header.Set("User-Agent", "Player/1.0")
-	weak, ok := newPreloadRequest(r, "fixture", "10", "", 1)
-	if !ok || !weak.weakIdentity {
-		t.Fatal("缺少设备标识未降级")
-	}
-	r.Header.Set("User-Agent", "Player/1.1")
-	changed, _ := newPreloadRequest(r, "fixture", "10", "", 1)
-	r.Header.Set("User-Agent", "Player/1.0")
-	r.Header.Set("X-Emby-Device-Id", "Player/1.0")
-	strong, _ := newPreloadRequest(r, "fixture", "10", "", 1)
-	if weak.scope == changed.scope || weak.scope == strong.scope {
-		t.Fatal("UA 版本或显式设备身份发生作用域碰撞")
-	}
+	})
 }
 
 func TestPreloadMissingDeviceUsesCurrentUAAndConfirmedNext(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.nodes["20"] = preloadTestItem("20", "Episode")
-	h.nodes["20"].MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
-	}
-	send := func(method, path string, body any) {
-		var data []byte
-		if body != nil {
-			data, _ = json.Marshal(body)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.nodes["20"] = preloadTestItem("20", "Episode")
+		h.nodes["20"].MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
 		}
-		r := httptest.NewRequest(method, path, bytes.NewReader(data))
-		r.Header.Set(HeaderFullAuthName, `Emby Client=Fixture Player, Token=user-token`)
-		r.Header.Set("User-Agent", "Player/1.0")
-		h.router.ServeHTTP(httptest.NewRecorder(), r)
-	}
-	send(http.MethodGet, "/Users/10/Items/20", nil)
-	if result := h.waitResolved(); result.ua != "Player/1.0" {
-		t.Fatal("无设备详情未使用本次完整 UA")
-	}
-	send(http.MethodGet, "/Videos/20/stream?MediaSourceId=source-20&PlaySessionId=current", nil)
-	send(http.MethodPost, "/Sessions/Playing", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "current"})
-	send(http.MethodPost, "/Sessions/Playing/Progress", map[string]any{
-		"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "current", "IsPaused": false,
-		"PositionTicks": 54 * 60 * 10_000_000, "NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}},
+		send := func(method, path string, body any) {
+			var data []byte
+			if body != nil {
+				data, _ = json.Marshal(body)
+			}
+			r := httptest.NewRequest(method, path, bytes.NewReader(data))
+			r.Header.Set(HeaderFullAuthName, `Emby Client=Fixture Player, Token=user-token`)
+			r.Header.Set("User-Agent", "Player/1.0")
+			h.router.ServeHTTP(httptest.NewRecorder(), r)
+		}
+		send(http.MethodGet, "/Users/10/Items/20", nil)
+		if result := h.waitResolved(); result.ua != "Player/1.0" {
+			t.Fatal("无设备详情未使用本次完整 UA")
+		}
+		send(http.MethodGet, "/Videos/20/stream?MediaSourceId=source-20&PlaySessionId=current", nil)
+		send(http.MethodPost, "/Sessions/Playing", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "current"})
+		send(http.MethodPost, "/Sessions/Playing/Progress", map[string]any{
+			"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "current", "IsPaused": false,
+			"PositionTicks": 54 * 60 * 10_000_000, "NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}},
+		})
+		if result := h.waitResolved(); result.ua != "Player/1.0" || !strings.Contains(result.path, "pickcode=21") {
+			t.Fatal("无设备的已确认播放未准备正确后继")
+		}
+		h.adapter.mu.Lock()
+		defer h.adapter.mu.Unlock()
+		for scope, device := range h.adapter.devices {
+			request := preloadRequest{scope: scope, weakIdentity: true, generation: 1}
+			if preloadUAKey(request, device) != "" {
+				t.Fatal("弱身份允许跨次 UA 映射")
+			}
+			strong := request
+			strong.weakIdentity = false
+			key := preloadUAKey(strong, device)
+			if h.adapter.uas.Lookup(key, 1) != "" {
+				t.Fatal("弱身份真实取流保存了跨次 UA")
+			}
+			h.adapter.uas.Remember(key, "Wrong/2.0", 1)
+			if h.adapter.preloadPlayerUA(request, device) != "Player/1.0" {
+				t.Fatal("弱身份读取了跨次映射")
+			}
+		}
 	})
-	if result := h.waitResolved(); result.ua != "Player/1.0" || !strings.Contains(result.path, "pickcode=21") {
-		t.Fatal("无设备的已确认播放未准备正确后继")
-	}
-	h.adapter.mu.Lock()
-	defer h.adapter.mu.Unlock()
-	for scope, device := range h.adapter.devices {
-		request := preloadRequest{scope: scope, weakIdentity: true, generation: 1}
-		if preloadUAKey(request, device) != "" {
-			t.Fatal("弱身份允许跨次 UA 映射")
-		}
-		strong := request
-		strong.weakIdentity = false
-		key := preloadUAKey(strong, device)
-		if h.adapter.uas.Lookup(key, 1) != "" {
-			t.Fatal("弱身份真实取流保存了跨次 UA")
-		}
-		h.adapter.uas.Remember(key, "Wrong/2.0", 1)
-		if h.adapter.preloadPlayerUA(request, device) != "Player/1.0" {
-			t.Fatal("弱身份读取了跨次映射")
-		}
-	}
 }
 
 func TestPreloadDetailsReuseNaturalResponsesAndLatestSelection(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	const browser = "Mozilla/5.0 Fixture"
-	for _, id := range []string{"20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30"} {
-		h.nodes[id] = preloadTestItem(id, "Movie")
-	}
-	h.nodes["21"] = preloadTestItem("21", "Episode")
-	// Two natural PlaybackInfo/detail arrival orders use their source without metadata or cold probing.
-	for _, id := range []string{"22", "23"} {
-		value := h.nodes[id]
-		h.infos[id] = preloadPlaybackInfo{MediaSources: value.MediaSources}
-		value.MediaSources = nil
-		h.nodes[id] = value
-	}
-	h.request("POST", "/Items/22/PlaybackInfo", "before", "Emby Web", browser, map[string]any{})
-	h.request("GET", "/Users/10/Items/22", "before", "Emby Web", browser, nil)
-	h.request("GET", "/Users/10/Items/23", "after", "Emby Web", browser, nil)
-	h.request("POST", "/Items/23/PlaybackInfo", "after", "Emby Web", browser, map[string]any{})
-	h.request("GET", "/Users/10/Items/20", "movie", "Emby Web", browser, nil)
-	h.request("GET", "/Users/10/Items/21", "episode", "Emby Web", browser, nil)
-	value := h.nodes["24"]
-	value.MediaSources = append(value.MediaSources, preloadSource{ID: "selected", ItemID: "24", Path: "http://qms.invalid/115/newurl?pickcode=selected&userid=115-user"})
-	h.nodes["24"] = value
-	h.request("GET", "/Users/10/Items/24?MediaSourceId=selected", "versions", "Emby Web", browser, nil)
-	for _, id := range []string{"25", "26", "27"} {
-		h.request("GET", "/Users/10/Items/"+id, "fast", "Emby Web", browser, nil)
-	}
-	// Actual stream UA can differ from the control client's UA and is reused for a later item.
-	h.request("GET", "/Users/10/Items/28", "learned", "Fixture App", "Control/1", nil)
-	h.request("GET", "/Videos/28/stream?MediaSourceId=source-28", "learned", "Fixture App", "Player/1", nil)
-	h.request("GET", "/Users/10/Items/29", "learned", "Fixture App", "Control/1", nil)
-	// PlaybackInfo alone creates no work; a first detail uses its current UA without learning.
-	h.infos["30"] = preloadPlaybackInfo{MediaSources: h.nodes["30"].MediaSources}
-	h.request("POST", "/Items/30/PlaybackInfo", "alone", "Emby Web", browser, map[string]any{})
-	h.request("GET", "/Users/10/Items/30", "unknown", "Fixture App", "Control/1", nil)
-	seen := make(map[string]preloadResolved)
-	for range 8 {
-		result := h.waitResolved()
-		value, _ := url.Parse(result.path)
-		seen[value.Query().Get("pickcode")] = result
-		if !result.force {
-			t.Fatal("Emby must request direct mode")
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		const browser = "Mozilla/5.0 Fixture"
+		for _, id := range []string{"20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30"} {
+			h.nodes[id] = preloadTestItem(id, "Movie")
 		}
-	}
-	for _, id := range []string{"20", "21", "22", "23", "selected", "27", "29", "30"} {
-		if _, ok := seen[id]; !ok {
-			t.Errorf("missing expected preload %s; got=%v", id, seen)
+		h.nodes["21"] = preloadTestItem("21", "Episode")
+		// Two natural PlaybackInfo/detail arrival orders use their source without metadata or cold probing.
+		for _, id := range []string{"22", "23"} {
+			value := h.nodes[id]
+			h.infos[id] = preloadPlaybackInfo{MediaSources: value.MediaSources}
+			value.MediaSources = nil
+			h.nodes[id] = value
 		}
-	}
-	if seen["29"].ua != "Player/1" {
-		t.Errorf("learned UA=%q", seen["29"].ua)
-	}
-	if seen["30"].ua != "Control/1" {
-		t.Errorf("first detail fallback UA=%q", seen["30"].ua)
-	}
-	if h.metadata.Load() != 0 {
-		t.Errorf("natural source reuse made %d extra HTTP", h.metadata.Load())
-	}
-	h.core.Stop()
-	if len(h.resolved) != 0 {
-		t.Fatalf("unexpected extra candidates=%d", len(h.resolved))
-	}
+		h.request("POST", "/Items/22/PlaybackInfo", "before", "Emby Web", browser, map[string]any{})
+		h.request("GET", "/Users/10/Items/22", "before", "Emby Web", browser, nil)
+		h.request("GET", "/Users/10/Items/23", "after", "Emby Web", browser, nil)
+		h.request("POST", "/Items/23/PlaybackInfo", "after", "Emby Web", browser, map[string]any{})
+		h.request("GET", "/Users/10/Items/20", "movie", "Emby Web", browser, nil)
+		h.request("GET", "/Users/10/Items/21", "episode", "Emby Web", browser, nil)
+		value := h.nodes["24"]
+		value.MediaSources = append(value.MediaSources, preloadSource{ID: "selected", ItemID: "24", Path: "http://qms.invalid/115/newurl?pickcode=selected&userid=115-user"})
+		h.nodes["24"] = value
+		h.request("GET", "/Users/10/Items/24?MediaSourceId=selected", "versions", "Emby Web", browser, nil)
+		for _, id := range []string{"25", "26", "27"} {
+			h.request("GET", "/Users/10/Items/"+id, "fast", "Emby Web", browser, nil)
+		}
+		// Actual stream UA can differ from the control client's UA and is reused for a later item.
+		h.request("GET", "/Users/10/Items/28", "learned", "Fixture App", "Control/1", nil)
+		h.request("GET", "/Videos/28/stream?MediaSourceId=source-28", "learned", "Fixture App", "Player/1", nil)
+		h.request("GET", "/Users/10/Items/29", "learned", "Fixture App", "Control/1", nil)
+		// PlaybackInfo alone creates no work; a first detail uses its current UA without learning.
+		h.infos["30"] = preloadPlaybackInfo{MediaSources: h.nodes["30"].MediaSources}
+		h.request("POST", "/Items/30/PlaybackInfo", "alone", "Emby Web", browser, map[string]any{})
+		h.request("GET", "/Users/10/Items/30", "unknown", "Fixture App", "Control/1", nil)
+		seen := make(map[string]preloadResolved)
+		for range 8 {
+			result := h.waitResolved()
+			value, _ := url.Parse(result.path)
+			seen[value.Query().Get("pickcode")] = result
+			if !result.force {
+				t.Fatal("Emby must request direct mode")
+			}
+		}
+		for _, id := range []string{"20", "21", "22", "23", "selected", "27", "29", "30"} {
+			if _, ok := seen[id]; !ok {
+				t.Errorf("missing expected preload %s; got=%v", id, seen)
+			}
+		}
+		if seen["29"].ua != "Player/1" {
+			t.Errorf("learned UA=%q", seen["29"].ua)
+		}
+		if seen["30"].ua != "Control/1" {
+			t.Errorf("first detail fallback UA=%q", seen["30"].ua)
+		}
+		if h.metadata.Load() != 0 {
+			t.Errorf("natural source reuse made %d extra HTTP", h.metadata.Load())
+		}
+		h.core.Stop()
+		if len(h.resolved) != 0 {
+			t.Fatalf("unexpected extra candidates=%d", len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadProgressThresholdPauseAndCrossSeason(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Episode")
-	item.MediaSources[0].RunTimeTicks = 90 * 60 * 10_000_000
-	h.nodes["20"] = item
-	next := preloadTestItem("21", "Episode")
-	next.SeasonID = "92"
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/Shows/90/Episodes" || r.URL.Query().Get("StartItemId") != "20" || r.URL.Query().Get("Limit") != "2" || r.URL.Query().Get("SeasonId") != "" {
-			t.Errorf("successor query %s", r.URL)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Episode")
+		item.MediaSources[0].RunTimeTicks = 90 * 60 * 10_000_000
+		h.nodes["20"] = item
+		next := preloadTestItem("21", "Episode")
+		next.SeasonID = "92"
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/Shows/90/Episodes" || r.URL.Query().Get("StartItemId") != "20" || r.URL.Query().Get("Limit") != "2" || r.URL.Query().Get("SeasonId") != "" {
+				t.Errorf("successor query %s", r.URL)
+			}
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{item, next}, TotalRecordCount: 2})
 		}
-		_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{item, next}, TotalRecordCount: 2})
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
-	h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", map[string]any{"ItemId": "20", "MediaSourceId": "source-20"})
-	progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PositionTicks": 72 * 60 * 10_000_000, "IsPaused": false}
-	for range 100 {
+		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
+		h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", map[string]any{"ItemId": "20", "MediaSourceId": "source-20"})
+		progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PositionTicks": 72 * 60 * 10_000_000, "IsPaused": false}
+		for range 100 {
+			h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
+		}
+		if h.metadata.Load() != 0 {
+			t.Fatal("80% of long content queried too early")
+		}
+		progress["PositionTicks"] = 81 * 60 * 10_000_000
+		progress["IsPaused"] = true
 		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	}
-	if h.metadata.Load() != 0 {
-		t.Fatal("80% of long content queried too early")
-	}
-	progress["PositionTicks"] = 81 * 60 * 10_000_000
-	progress["IsPaused"] = true
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	if h.metadata.Load() != 0 {
-		t.Fatal("paused progress queried successor")
-	}
-	progress["IsPaused"] = false
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	result := h.waitResolved()
-	if !strings.Contains(result.path, "pickcode=21&") {
-		t.Fatalf("successor=%s", result.path)
-	}
-	for range 100 {
+		if h.metadata.Load() != 0 {
+			t.Fatal("paused progress queried successor")
+		}
+		progress["IsPaused"] = false
 		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	}
-	h.core.Stop()
-	if h.metadata.Load() != 1 || len(h.resolved) != 0 {
-		t.Errorf("duplicates: metadata=%d resolves=%d", h.metadata.Load(), len(h.resolved))
-	}
+		result := h.waitResolved()
+		if !strings.Contains(result.path, "pickcode=21&") {
+			t.Fatalf("successor=%s", result.path)
+		}
+		for range 100 {
+			h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
+		}
+		h.core.Stop()
+		if h.metadata.Load() != 1 || len(h.resolved) != 0 {
+			t.Errorf("duplicates: metadata=%d resolves=%d", h.metadata.Load(), len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
@@ -560,8 +568,8 @@ func TestPreloadMetadataRelationsAndWarmPlaybackInfo(t *testing.T) {
 		}},
 		{"ordinary_movie", preloadTestItem("20", "Movie"), "", playback.PreloadNext, 0, "", nil},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, test.name, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			if test.serve != nil {
 				h.upstream = func(w http.ResponseWriter, r *http.Request) { test.serve(t, w, r) }
 			}
@@ -628,289 +636,301 @@ func TestPreloadMetadataResponseBounds(t *testing.T) {
 }
 
 func TestPreloadObserverPreservesBytesAndDisabledPath(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.enabled.Store(false)
-	router := gin.New()
-	router.Use(PreloadObserver())
-	const requestBody = `{"ItemId":"20","PositionTicks":12345,"IsPaused":false,"extra":"unchanged"}`
-	response := []byte("raw response bytes\x00\n")
-	router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
-		body, _ := io.ReadAll(c.Request.Body)
-		if string(body) != requestBody {
-			t.Error("request bytes changed")
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.enabled.Store(false)
+		router := gin.New()
+		router.Use(PreloadObserver())
+		const requestBody = `{"ItemId":"20","PositionTicks":12345,"IsPaused":false,"extra":"unchanged"}`
+		response := []byte("raw response bytes\x00\n")
+		router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
+			body, _ := io.ReadAll(c.Request.Body)
+			if string(body) != requestBody {
+				t.Error("request bytes changed")
+			}
+			c.Header("X-Test", "preserved")
+			c.Data(http.StatusOK, "application/octet-stream", response)
+		})
+		req := httptest.NewRequest("POST", "/Sessions/Playing/Progress?DeviceId=device&api_key=user-token", strings.NewReader(requestBody))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("X-Test") != "preserved" || !bytes.Equal(rec.Body.Bytes(), response) {
+			t.Fatal("response changed")
 		}
-		c.Header("X-Test", "preserved")
-		c.Data(http.StatusOK, "application/octet-stream", response)
+		if h.metadata.Load() != 0 || len(h.resolved) != 0 || len(h.adapter.devices) != 0 {
+			t.Fatal("disabled observer did work")
+		}
 	})
-	req := httptest.NewRequest("POST", "/Sessions/Playing/Progress?DeviceId=device&api_key=user-token", strings.NewReader(requestBody))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("X-Test") != "preserved" || !bytes.Equal(rec.Body.Bytes(), response) {
-		t.Fatal("response changed")
-	}
-	if h.metadata.Load() != 0 || len(h.resolved) != 0 || len(h.adapter.devices) != 0 {
-		t.Fatal("disabled observer did work")
-	}
 }
 
 func TestPreloadRepeatedNaturalResponsesDoNotResetMetadataBudget(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Movie")
-	item.MediaSources = nil
-	h.nodes["20"] = item
-	metadata := make(chan struct{}, 4)
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		defer func() { metadata <- struct{}{} }()
-		value := preloadTestItem("20", "Movie")
-		if strings.Contains(r.URL.Path, "PlaybackInfo") {
-			_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: value.MediaSources})
-			return
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Movie")
+		item.MediaSources = nil
+		h.nodes["20"] = item
+		metadata := make(chan struct{}, 4)
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			defer func() { metadata <- struct{}{} }()
+			value := preloadTestItem("20", "Movie")
+			if strings.Contains(r.URL.Path, "PlaybackInfo") {
+				_ = json.NewEncoder(w).Encode(preloadPlaybackInfo{MediaSources: value.MediaSources})
+				return
+			}
+			value.MediaSources[0].Path = ""
+			value.MediaSources[0].Container = "strm"
+			_ = json.NewEncoder(w).Encode(value)
 		}
-		value.MediaSources[0].Path = ""
-		value.MediaSources[0].Container = "strm"
-		_ = json.NewEncoder(w).Encode(value)
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
-	select {
-	case <-metadata:
-	case <-time.After(4 * time.Second):
-		t.Fatal("initial source query did not run")
-	}
-	// An equivalent observed response must not reopen the completed metadata-only skip.
-	for range 100 {
 		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+		select {
+		case <-metadata:
+		case <-time.After(4 * time.Second):
+			t.Fatal("initial source query did not run")
+		}
+		// An equivalent observed response must not reopen the completed metadata-only skip.
+		for range 100 {
+			h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+			h.request("POST", "/Items/20/PlaybackInfo", "device", "Emby Web", "Mozilla/test", map[string]any{})
+		}
+		time.Sleep(2100 * time.Millisecond)
+		if h.metadata.Load() != 1 || len(h.resolved) != 0 {
+			t.Fatalf("identical responses reopened preparation: HTTP=%d resolved=%d", h.metadata.Load(), len(h.resolved))
+		}
+		// A real normal response supplies new warm fields. It may spend the one remaining HTTP call.
+		warm := preloadTestItem("20", "Movie").MediaSources
+		warm[0].Path, warm[0].Container, warm[0].RunTimeTicks = "", "mkv", 1000
+		warm[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
+		h.mu.Lock()
+		h.infos["20"] = preloadPlaybackInfo{MediaSources: warm}
+		h.mu.Unlock()
 		h.request("POST", "/Items/20/PlaybackInfo", "device", "Emby Web", "Mozilla/test", map[string]any{})
-	}
-	time.Sleep(2100 * time.Millisecond)
-	if h.metadata.Load() != 1 || len(h.resolved) != 0 {
-		t.Fatalf("identical responses reopened preparation: HTTP=%d resolved=%d", h.metadata.Load(), len(h.resolved))
-	}
-	// A real normal response supplies new warm fields. It may spend the one remaining HTTP call.
-	warm := preloadTestItem("20", "Movie").MediaSources
-	warm[0].Path, warm[0].Container, warm[0].RunTimeTicks = "", "mkv", 1000
-	warm[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
-	h.mu.Lock()
-	h.infos["20"] = preloadPlaybackInfo{MediaSources: warm}
-	h.mu.Unlock()
-	h.request("POST", "/Items/20/PlaybackInfo", "device", "Emby Web", "Mozilla/test", map[string]any{})
-	h.waitResolved()
-	for range 100 {
-		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
-		h.request("POST", "/Items/20/PlaybackInfo", "device", "Emby Web", "Mozilla/test", map[string]any{})
-	}
-	h.core.Stop()
-	if h.metadata.Load() != 2 || len(h.resolved) != 0 {
-		t.Fatalf("metadata budget was reset: HTTP=%d resolved=%d", h.metadata.Load(), len(h.resolved))
-	}
+		h.waitResolved()
+		for range 100 {
+			h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+			h.request("POST", "/Items/20/PlaybackInfo", "device", "Emby Web", "Mozilla/test", map[string]any{})
+		}
+		h.core.Stop()
+		if h.metadata.Load() != 2 || len(h.resolved) != 0 {
+			t.Fatalf("metadata budget was reset: HTTP=%d resolved=%d", h.metadata.Load(), len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadPermissionAndSourceChangesRevokeOlderDetails(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	const ua = "Mozilla/test"
-	for _, id := range []string{"20", "21", "22", "23", "24", "26", "27", "28"} {
-		h.nodes[id] = preloadTestItem(id, "Movie")
-	}
-	for _, id := range []string{"20", "21", "22", "23", "24", "28"} {
-		h.request("GET", "/Users/10/Items/"+id, id, "Emby Web", ua, nil)
-	}
-	value := h.nodes["20"]
-	value.PlayAccess = "None"
-	h.nodes["20"] = value
-	value = h.nodes["21"]
-	value.IsLive = true
-	h.nodes["21"] = value
-	value = h.nodes["22"]
-	value.Type = "Audio"
-	h.nodes["22"] = value
-	value = h.nodes["23"]
-	value.MediaSources = append([]preloadSource(nil), value.MediaSources...)
-	value.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=fresh23&userid=115-user"
-	h.nodes["23"] = value
-	value = h.nodes["24"]
-	value.MediaSources = append(value.MediaSources, preloadSource{ID: "second", Path: "http://qms.invalid/115/newurl?pickcode=second&userid=115-user"})
-	h.nodes["24"] = value
-	value = h.nodes["28"]
-	value.MediaSources = append([]preloadSource(nil), value.MediaSources...)
-	denied := false
-	value.MediaSources[0].SupportsDirectPlay, value.MediaSources[0].SupportsDirectStream = &denied, &denied
-	h.nodes["28"] = value
-	for _, id := range []string{"20", "21", "22", "23", "24", "28"} {
-		h.request("GET", "/Users/10/Items/"+id, id, "Emby Web", ua, nil)
-	}
-	// A virtual transcoding source does not disqualify the single original source.
-	value = h.nodes["26"]
-	value.MediaSources = append(value.MediaSources, preloadSource{ID: "source" + MediaSourceIdSegment + "transcode"})
-	h.nodes["26"] = value
-	h.request("GET", "/Users/10/Items/26", "26", "Emby Web", ua, nil)
-	// Earlier PI fills missing fields, but cannot overwrite a newer concrete detail path.
-	old := preloadTestItem("27", "Movie")
-	old.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=stale27&userid=115-user"
-	h.infos["27"] = preloadPlaybackInfo{MediaSources: old.MediaSources}
-	h.request("POST", "/Items/27/PlaybackInfo", "27", "Emby Web", ua, map[string]any{})
-	h.request("GET", "/Users/10/Items/27", "27", "Emby Web", ua, nil)
-	seen := make(map[string]bool)
-	for range 3 {
-		value, _ := url.Parse(h.waitResolved().path)
-		seen[value.Query().Get("pickcode")] = true
-	}
-	h.core.Stop()
-	if !seen["fresh23"] || !seen["26"] || !seen["27"] || h.metadata.Load() != 0 || len(h.resolved) != 0 {
-		t.Fatalf("wrong surviving candidates=%v HTTP=%d extra=%d", seen, h.metadata.Load(), len(h.resolved))
-	}
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		const ua = "Mozilla/test"
+		for _, id := range []string{"20", "21", "22", "23", "24", "26", "27", "28"} {
+			h.nodes[id] = preloadTestItem(id, "Movie")
+		}
+		for _, id := range []string{"20", "21", "22", "23", "24", "28"} {
+			h.request("GET", "/Users/10/Items/"+id, id, "Emby Web", ua, nil)
+		}
+		value := h.nodes["20"]
+		value.PlayAccess = "None"
+		h.nodes["20"] = value
+		value = h.nodes["21"]
+		value.IsLive = true
+		h.nodes["21"] = value
+		value = h.nodes["22"]
+		value.Type = "Audio"
+		h.nodes["22"] = value
+		value = h.nodes["23"]
+		value.MediaSources = append([]preloadSource(nil), value.MediaSources...)
+		value.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=fresh23&userid=115-user"
+		h.nodes["23"] = value
+		value = h.nodes["24"]
+		value.MediaSources = append(value.MediaSources, preloadSource{ID: "second", Path: "http://qms.invalid/115/newurl?pickcode=second&userid=115-user"})
+		h.nodes["24"] = value
+		value = h.nodes["28"]
+		value.MediaSources = append([]preloadSource(nil), value.MediaSources...)
+		denied := false
+		value.MediaSources[0].SupportsDirectPlay, value.MediaSources[0].SupportsDirectStream = &denied, &denied
+		h.nodes["28"] = value
+		for _, id := range []string{"20", "21", "22", "23", "24", "28"} {
+			h.request("GET", "/Users/10/Items/"+id, id, "Emby Web", ua, nil)
+		}
+		// A virtual transcoding source does not disqualify the single original source.
+		value = h.nodes["26"]
+		value.MediaSources = append(value.MediaSources, preloadSource{ID: "source" + MediaSourceIdSegment + "transcode"})
+		h.nodes["26"] = value
+		h.request("GET", "/Users/10/Items/26", "26", "Emby Web", ua, nil)
+		// Earlier PI fills missing fields, but cannot overwrite a newer concrete detail path.
+		old := preloadTestItem("27", "Movie")
+		old.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=stale27&userid=115-user"
+		h.infos["27"] = preloadPlaybackInfo{MediaSources: old.MediaSources}
+		h.request("POST", "/Items/27/PlaybackInfo", "27", "Emby Web", ua, map[string]any{})
+		h.request("GET", "/Users/10/Items/27", "27", "Emby Web", ua, nil)
+		seen := make(map[string]bool)
+		for range 3 {
+			value, _ := url.Parse(h.waitResolved().path)
+			seen[value.Query().Get("pickcode")] = true
+		}
+		h.core.Stop()
+		if !seen["fresh23"] || !seen["26"] || !seen["27"] || h.metadata.Load() != 0 || len(h.resolved) != 0 {
+			t.Fatalf("wrong surviving candidates=%v HTTP=%d extra=%d", seen, h.metadata.Load(), len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadCurrentCacheHitDoesNotConsumeSuccessorEligibility(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Episode")
-	item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
-	h.nodes["20"] = item
-	next := preloadTestItem("21", "Episode")
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{item, next}})
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
-	if !strings.Contains(h.waitResolved().path, "pickcode=20&") {
-		t.Fatal("current detail did not use the cache result")
-	}
-	start := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"}
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
-	h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", start)
-	progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false}
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	if !strings.Contains(h.waitResolved().path, "pickcode=21&") {
-		t.Fatal("current cache hit suppressed next item")
-	}
-	for range 100 {
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Episode")
+		item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
+		h.nodes["20"] = item
+		next := preloadTestItem("21", "Episode")
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{item, next}})
+		}
+		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+		if !strings.Contains(h.waitResolved().path, "pickcode=20&") {
+			t.Fatal("current detail did not use the cache result")
+		}
+		start := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"}
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
 		h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", start)
+		progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false}
 		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	}
-	h.core.Stop()
-	if h.metadata.Load() != 1 || len(h.resolved) != 0 {
-		t.Fatalf("duplicate starts renewed next eligibility: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
-	}
+		if !strings.Contains(h.waitResolved().path, "pickcode=21&") {
+			t.Fatal("current cache hit suppressed next item")
+		}
+		for range 100 {
+			h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", start)
+			h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
+		}
+		h.core.Stop()
+		if h.metadata.Load() != 1 || len(h.resolved) != 0 {
+			t.Fatalf("duplicate starts renewed next eligibility: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadObserverPreservesGzipAndActiveRequestBytes(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Movie")
-	data, _ := json.Marshal(item)
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	_, _ = writer.Write(data)
-	_ = writer.Close()
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.GET("/Users/10/Items/20", func(c *gin.Context) {
-		c.Header("Content-Encoding", "gzip")
-		c.Header("X-Original", "preserved")
-		c.Data(http.StatusOK, "application/json", compressed.Bytes())
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Movie")
+		data, _ := json.Marshal(item)
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		_, _ = writer.Write(data)
+		_ = writer.Close()
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.GET("/Users/10/Items/20", func(c *gin.Context) {
+			c.Header("Content-Encoding", "gzip")
+			c.Header("X-Original", "preserved")
+			c.Data(http.StatusOK, "application/json", compressed.Bytes())
+		})
+		router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
+			body, _ := io.ReadAll(c.Request.Body)
+			c.Data(http.StatusOK, "application/json", body)
+		})
+		request := httptest.NewRequest("GET", "/Users/10/Items/20?api_key=user-token&DeviceId=device&X-Emby-Client=Emby+Web", nil)
+		request.Header.Set("User-Agent", "Mozilla/test")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Encoding") != "gzip" || response.Header().Get("X-Original") != "preserved" || !bytes.Equal(response.Body.Bytes(), compressed.Bytes()) {
+			t.Fatal("observer changed compressed response")
+		}
+		h.waitResolved()
+		const body = "{\n  \"ItemId\":\"20\",\"PositionTicks\":0,\"IsPaused\":false,\"unknown\":\"original\"\n}\n"
+		request = httptest.NewRequest("POST", "/Sessions/Playing/Progress?api_key=user-token&DeviceId=device", strings.NewReader(body))
+		response = httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Body.String() != body || h.metadata.Load() != 0 {
+			t.Fatal("active observer changed request bytes or queried unknown playback")
+		}
 	})
-	router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
-		body, _ := io.ReadAll(c.Request.Body)
-		c.Data(http.StatusOK, "application/json", body)
-	})
-	request := httptest.NewRequest("GET", "/Users/10/Items/20?api_key=user-token&DeviceId=device&X-Emby-Client=Emby+Web", nil)
-	request.Header.Set("User-Agent", "Mozilla/test")
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Header().Get("Content-Encoding") != "gzip" || response.Header().Get("X-Original") != "preserved" || !bytes.Equal(response.Body.Bytes(), compressed.Bytes()) {
-		t.Fatal("observer changed compressed response")
-	}
-	h.waitResolved()
-	const body = "{\n  \"ItemId\":\"20\",\"PositionTicks\":0,\"IsPaused\":false,\"unknown\":\"original\"\n}\n"
-	request = httptest.NewRequest("POST", "/Sessions/Playing/Progress?api_key=user-token&DeviceId=device", strings.NewReader(body))
-	response = httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	if response.Body.String() != body || h.metadata.Load() != 0 {
-		t.Fatal("active observer changed request bytes or queried unknown playback")
-	}
 }
 
 func TestPreloadOutOfOrderDetailAndPlaybackInfoKeepLatestIntent(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	type gate struct{ entered, release, done chan struct{} }
-	gates := make(map[string]gate)
-	for _, name := range []string{"different", "same", "playback", "before_detail"} {
-		gates[name] = gate{make(chan struct{}), make(chan struct{}), make(chan struct{})}
-	}
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.Any("/*path", func(c *gin.Context) {
-		kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
-		if c.Request.Body != nil {
-			_, _ = io.ReadAll(c.Request.Body)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		type gate struct{ entered, release, done chan struct{} }
+		gates := make(map[string]gate)
+		for _, name := range []string{"different", "same", "playback", "before_detail"} {
+			gates[name] = gate{make(chan struct{}), make(chan struct{}), make(chan struct{})}
 		}
-		name, old := c.Query("case"), c.Query("order") == "old"
-		if old {
-			close(gates[name].entered)
-			<-gates[name].release
-		}
-		item := preloadTestItem(id, "Movie")
-		if old {
-			item.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=stale" + id + "&userid=115-user"
-		}
-		if kind == "playback" {
-			if !old {
-				item.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=fresh" + id + "&userid=115-user"
-				if name == "same" {
-					item.MediaSources[0].Path = ""
-					item.MediaSources[0].Container, item.MediaSources[0].RunTimeTicks = "mkv", 1000
-					item.MediaSources[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
-				}
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.Any("/*path", func(c *gin.Context) {
+			kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
+			if c.Request.Body != nil {
+				_, _ = io.ReadAll(c.Request.Body)
 			}
-			c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: item.MediaSources})
-		} else {
-			c.JSON(http.StatusOK, item)
+			name, old := c.Query("case"), c.Query("order") == "old"
+			if old {
+				close(gates[name].entered)
+				<-gates[name].release
+			}
+			item := preloadTestItem(id, "Movie")
+			if old {
+				item.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=stale" + id + "&userid=115-user"
+			}
+			if kind == "playback" {
+				if !old {
+					item.MediaSources[0].Path = "http://qms.invalid/115/newurl?pickcode=fresh" + id + "&userid=115-user"
+					if name == "same" {
+						item.MediaSources[0].Path = ""
+						item.MediaSources[0].Container, item.MediaSources[0].RunTimeTicks = "mkv", 1000
+						item.MediaSources[0].MediaStreams = []preloadStream{{"Video", "h264"}, {"Audio", "aac"}}
+					}
+				}
+				c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: item.MediaSources})
+			} else {
+				c.JSON(http.StatusOK, item)
+			}
+		})
+		h.router = router
+		startOld := func(name, method, path string) {
+			go func() {
+				defer close(gates[name].done)
+				h.request(method, path+"?case="+name+"&order=old", name, "Emby Web", "Mozilla/test", map[string]any{})
+			}()
+			<-gates[name].entered
+		}
+		finishOld := func(name string) { close(gates[name].release); <-gates[name].done }
+		startOld("different", "GET", "/Users/10/Items/40")
+		h.request("GET", "/Users/10/Items/41?case=different", "different", "Emby Web", "Mozilla/test", nil)
+		finishOld("different")
+		startOld("same", "GET", "/Users/10/Items/42")
+		h.request("GET", "/Users/10/Items/42?case=same", "same", "Emby Web", "Mozilla/test", nil)
+		sameScope := preloadHash(t.Name(), config.C.Emby.Host, "user-token", "same")
+		h.adapter.mu.Lock()
+		revision := h.adapter.devices[sameScope].revision
+		h.adapter.mu.Unlock()
+		h.request("POST", "/Items/42/PlaybackInfo?case=same", "same", "Emby Web", "Mozilla/test", map[string]any{})
+		finishOld("same")
+		h.adapter.mu.Lock()
+		if h.adapter.devices[sameScope].revision != revision {
+			t.Error("same-item enrichment changed the debounce key")
+		}
+		h.adapter.mu.Unlock()
+		// A late older PI cannot replace a newer PI's source or selected identity.
+		h.request("GET", "/Users/10/Items/43?case=playback", "playback", "Emby Web", "Mozilla/test", nil)
+		startOld("playback", "POST", "/Items/43/PlaybackInfo")
+		h.request("POST", "/Items/43/PlaybackInfo?case=playback", "playback", "Emby Web", "Mozilla/test", map[string]any{})
+		finishOld("playback")
+		// A PI which began before a newer detail may fill missing fields, not overwrite its path.
+		startOld("before_detail", "POST", "/Items/44/PlaybackInfo")
+		h.request("GET", "/Users/10/Items/44?case=before_detail", "before_detail", "Emby Web", "Mozilla/test", nil)
+		finishOld("before_detail")
+		seen := make(map[string]bool)
+		for range 4 {
+			value, _ := url.Parse(h.waitResolved().path)
+			seen[value.Query().Get("pickcode")] = true
+		}
+		h.core.Stop()
+		for _, want := range []string{"41", "42", "fresh43", "44"} {
+			if !seen[want] {
+				t.Errorf("latest target %s missing; got %v", want, seen)
+			}
+		}
+		if h.metadata.Load() != 0 || len(h.resolved) != 0 {
+			t.Errorf("stale responses caused extra work: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
 		}
 	})
-	h.router = router
-	startOld := func(name, method, path string) {
-		go func() {
-			defer close(gates[name].done)
-			h.request(method, path+"?case="+name+"&order=old", name, "Emby Web", "Mozilla/test", map[string]any{})
-		}()
-		<-gates[name].entered
-	}
-	finishOld := func(name string) { close(gates[name].release); <-gates[name].done }
-	startOld("different", "GET", "/Users/10/Items/40")
-	h.request("GET", "/Users/10/Items/41?case=different", "different", "Emby Web", "Mozilla/test", nil)
-	finishOld("different")
-	startOld("same", "GET", "/Users/10/Items/42")
-	h.request("GET", "/Users/10/Items/42?case=same", "same", "Emby Web", "Mozilla/test", nil)
-	sameScope := preloadHash(t.Name(), config.C.Emby.Host, "user-token", "same")
-	h.adapter.mu.Lock()
-	revision := h.adapter.devices[sameScope].revision
-	h.adapter.mu.Unlock()
-	h.request("POST", "/Items/42/PlaybackInfo?case=same", "same", "Emby Web", "Mozilla/test", map[string]any{})
-	finishOld("same")
-	h.adapter.mu.Lock()
-	if h.adapter.devices[sameScope].revision != revision {
-		t.Error("same-item enrichment changed the debounce key")
-	}
-	h.adapter.mu.Unlock()
-	// A late older PI cannot replace a newer PI's source or selected identity.
-	h.request("GET", "/Users/10/Items/43?case=playback", "playback", "Emby Web", "Mozilla/test", nil)
-	startOld("playback", "POST", "/Items/43/PlaybackInfo")
-	h.request("POST", "/Items/43/PlaybackInfo?case=playback", "playback", "Emby Web", "Mozilla/test", map[string]any{})
-	finishOld("playback")
-	// A PI which began before a newer detail may fill missing fields, not overwrite its path.
-	startOld("before_detail", "POST", "/Items/44/PlaybackInfo")
-	h.request("GET", "/Users/10/Items/44?case=before_detail", "before_detail", "Emby Web", "Mozilla/test", nil)
-	finishOld("before_detail")
-	seen := make(map[string]bool)
-	for range 4 {
-		value, _ := url.Parse(h.waitResolved().path)
-		seen[value.Query().Get("pickcode")] = true
-	}
-	h.core.Stop()
-	for _, want := range []string{"41", "42", "fresh43", "44"} {
-		if !seen[want] {
-			t.Errorf("latest target %s missing; got %v", want, seen)
-		}
-	}
-	if h.metadata.Load() != 0 || len(h.resolved) != 0 {
-		t.Errorf("stale responses caused extra work: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
-	}
 }
 
 func TestPreloadRecordedEmbyRelations(t *testing.T) {
@@ -951,8 +971,8 @@ func TestPreloadRecordedEmbyRelations(t *testing.T) {
 		{"movie_part", "emby-parts-movie", "1017", item("emby-item-movie"), false, 1},
 		{"video_part", "emby-parts-movie", "1019", item("emby-part-detail"), false, 2},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, test.name, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
 				if test.name == "retained_resumable" && (r.URL.Path != "/Users/10/Items" || r.URL.Query().Get("Filters") != "IsResumable" || r.URL.Query().Get("ParentId") != "1003") {
 					t.Errorf("retained resume scope changed: %s", r.URL.String())
@@ -1000,8 +1020,8 @@ func TestPreloadRecordedEmbyRelations(t *testing.T) {
 
 func TestPreloadInvalidProgressCancelsInFlightSuccessor(t *testing.T) {
 	for _, reason := range []string{"seek", "unknown_pause", "source_change", "session_change", "forbidden"} {
-		t.Run(reason, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, reason, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			item := preloadTestItem("20", "Episode")
 			item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 			if reason == "source_change" {
@@ -1061,92 +1081,96 @@ func TestPreloadInvalidProgressCancelsInFlightSuccessor(t *testing.T) {
 }
 
 func TestPreloadChangedPlaybackQueueCancelsPreviousSuccessor(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Episode")
-	item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
-	h.nodes["20"] = item
-	entered, canceled := make(chan struct{}), make(chan struct{})
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/Users/10/Items/21":
-			close(entered)
-			<-r.Context().Done()
-			close(canceled)
-		case "/Users/10/Items/22":
-			_ = json.NewEncoder(w).Encode(preloadTestItem("22", "Episode"))
-		default:
-			t.Errorf("unexpected successor request %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Episode")
+		item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
+		h.nodes["20"] = item
+		entered, canceled := make(chan struct{}), make(chan struct{})
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/Users/10/Items/21":
+				close(entered)
+				<-r.Context().Done()
+				close(canceled)
+			case "/Users/10/Items/22":
+				_ = json.NewEncoder(w).Encode(preloadTestItem("22", "Episode"))
+			default:
+				t.Errorf("unexpected successor request %s", r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+			}
 		}
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
-	h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
-	progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
-		"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}}}
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("original successor query did not start")
-	}
-	progress["NowPlayingQueue"] = []map[string]string{{"Id": "20"}, {"Id": "22"}}
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
-	select {
-	case <-canceled:
-	case <-time.After(time.Second):
-		t.Fatal("changed playback queue retained previous successor")
-	}
-	if resolved := h.waitResolved(); !strings.Contains(resolved.path, "pickcode=22&") {
-		t.Fatalf("changed queue resolved %s", resolved.path)
-	}
-	h.core.Stop()
-	if h.metadata.Load() != 2 || len(h.resolved) != 0 {
-		t.Fatalf("changed queue signed stale or repeated successor: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
-	}
+		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/test", nil)
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
+		h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/test", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
+		progress := map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
+			"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}}}
+		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("original successor query did not start")
+		}
+		progress["NowPlayingQueue"] = []map[string]string{{"Id": "20"}, {"Id": "22"}}
+		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/test", progress)
+		select {
+		case <-canceled:
+		case <-time.After(time.Second):
+			t.Fatal("changed playback queue retained previous successor")
+		}
+		if resolved := h.waitResolved(); !strings.Contains(resolved.path, "pickcode=22&") {
+			t.Fatalf("changed queue resolved %s", resolved.path)
+		}
+		h.core.Stop()
+		if h.metadata.Load() != 2 || len(h.resolved) != 0 {
+			t.Fatalf("changed queue signed stale or repeated successor: HTTP=%d extra=%d", h.metadata.Load(), len(h.resolved))
+		}
+	})
 }
 
 func TestPreloadControlChangeCancelsBeforeNewDetailResponds(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.nodes["20"] = preloadTestItem("20", "Movie")
-	h.nodes["21"] = preloadTestItem("21", "Movie")
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1", nil)
-	h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1", nil)
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.GET("/Users/10/Items/21", func(c *gin.Context) {
-		close(entered)
-		<-release
-		c.JSON(http.StatusOK, preloadTestItem("21", "Movie"))
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.nodes["20"] = preloadTestItem("20", "Movie")
+		h.nodes["21"] = preloadTestItem("21", "Movie")
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1", nil)
+		h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1", nil)
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.GET("/Users/10/Items/21", func(c *gin.Context) {
+			close(entered)
+			<-release
+			c.JSON(http.StatusOK, preloadTestItem("21", "Movie"))
+		})
+		h.router = router
+		go func() {
+			defer close(done)
+			h.request("GET", "/Users/10/Items/21", "device", "Another App", "Control/2", nil)
+		}()
+		<-entered
+		// Let the earlier candidate's original debounce pass while the new detail is blocked.
+		time.Sleep(2100 * time.Millisecond)
+		if len(h.resolved) != 0 || h.metadata.Load() != 0 {
+			t.Error("old playback UA remained eligible during control change")
+		}
+		close(release)
+		<-done
+		if result := h.waitResolved(); result.ua != "Control/2" {
+			t.Fatalf("更新控制端没有回退到自身完整UA：%q", result.ua)
+		}
+		h.core.Stop()
+		if len(h.resolved) != 0 {
+			t.Fatal("控制端更新后仍准备了旧UA")
+		}
 	})
-	h.router = router
-	go func() {
-		defer close(done)
-		h.request("GET", "/Users/10/Items/21", "device", "Another App", "Control/2", nil)
-	}()
-	<-entered
-	// Let the earlier candidate's original debounce pass while the new detail is blocked.
-	time.Sleep(2100 * time.Millisecond)
-	if len(h.resolved) != 0 || h.metadata.Load() != 0 {
-		t.Error("old playback UA remained eligible during control change")
-	}
-	close(release)
-	<-done
-	if result := h.waitResolved(); result.ua != "Control/2" {
-		t.Fatalf("更新控制端没有回退到自身完整UA：%q", result.ua)
-	}
-	h.core.Stop()
-	if len(h.resolved) != 0 {
-		t.Fatal("控制端更新后仍准备了旧UA")
-	}
 }
 
 func TestPreloadStalePlaybackResponsesDoNotRestoreIntent(t *testing.T) {
 	for _, action := range []string{"stream-then-stop", "stream-then-control-change", "stream-then-control-playback", "start-then-new-detail", "playback-info-then-control-change"} {
-		t.Run(action, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, action, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			h.nodes["20"], h.nodes["21"] = preloadTestItem("20", "Movie"), preloadTestItem("21", "Movie")
 			client, ua := "Fixture App", "Control/1"
 			if action == "start-then-new-detail" || action == "playback-info-then-control-change" {
@@ -1240,8 +1264,8 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 	for _, phase := range []string{"queued", "signing"} {
 		for _, status := range []int{http.StatusNoContent, http.StatusUnauthorized, http.StatusForbidden} {
 			for _, change := range []string{"item", "source", "session", "transcode_session", "internal_source", "current", "current_optional_fields"} {
-				t.Run(fmt.Sprintf("%s/%d/%s", phase, status, change), func(t *testing.T) {
-					h := newEmbyPreloadHarness(t)
+				runEmbyPreloadCase(t, fmt.Sprintf("%s/%d/%s", phase, status, change), func(t *testing.T) {
+					h := newEmbyPreloadTestHarness(t)
 					h.nodes["20"] = preloadTestItem("20", "Episode")
 					h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 					h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1", nil)
@@ -1366,8 +1390,8 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 func TestPreloadStoppedDuringCurrentStream(t *testing.T) {
 	for _, status := range []int{http.StatusNoContent, http.StatusForbidden} {
 		for _, change := range []string{"item", "source", "session", "transcode_session", "current", "current_optional_fields", "unknown_current"} {
-			t.Run(fmt.Sprintf("%d/%s", status, change), func(t *testing.T) {
-				h := newEmbyPreloadHarness(t)
+			runEmbyPreloadCase(t, fmt.Sprintf("%d/%s", status, change), func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
 				item := preloadTestItem("20", "Episode")
 				item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 				h.nodes["20"] = item
@@ -1475,8 +1499,8 @@ func (b *preloadStoppedTestBody) Close() error {
 
 func TestPreloadStoppedBodyObservationPreservesOriginalReads(t *testing.T) {
 	for _, mode := range []string{"unread", "partial", "error", "malformed", "exact_limit", "overflow", "empty"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, mode, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			h.nodes["20"] = preloadTestItem("20", "Episode")
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 			h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/current", nil)
@@ -1556,8 +1580,8 @@ func TestPreloadStoppedBodyObservationPreservesOriginalReads(t *testing.T) {
 func TestPreloadStoppedRechecksPlaybackAfterSlowBodyOrResponse(t *testing.T) {
 	for _, phase := range []string{"body", "response"} {
 		for _, status := range []int{http.StatusNoContent, http.StatusForbidden} {
-			t.Run(fmt.Sprintf("%s/%d", phase, status), func(t *testing.T) {
-				h := newEmbyPreloadHarness(t)
+			runEmbyPreloadCase(t, fmt.Sprintf("%s/%d", phase, status), func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
 				h.nodes["20"], h.nodes["21"] = preloadTestItem("20", "Episode"), preloadTestItem("21", "Episode")
 				h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 				h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/old", nil)
@@ -1647,159 +1671,167 @@ func TestPreloadStoppedRechecksPlaybackAfterSlowBodyOrResponse(t *testing.T) {
 }
 
 func TestPreloadOutOfOrderSeasonMembersKeepLatestResponse(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.nodes["91"] = preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
-	h.request("GET", "/Users/10/Items/91", "device", "Emby Web", "Mozilla/test", nil)
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.GET("/Shows/90/Episodes", func(c *gin.Context) {
-		id := "21"
-		if c.Query("older") == "true" {
-			id = "20"
-			close(entered)
-			<-release
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.nodes["91"] = preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
+		h.request("GET", "/Users/10/Items/91", "device", "Emby Web", "Mozilla/test", nil)
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.GET("/Shows/90/Episodes", func(c *gin.Context) {
+			id := "21"
+			if c.Query("older") == "true" {
+				id = "20"
+				close(entered)
+				<-release
+			}
+			c.JSON(http.StatusOK, preloadItems{Items: []preloadItem{preloadTestItem(id, "Episode")}})
+		})
+		h.router = router
+		defer func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		}()
+		go func() {
+			defer close(done)
+			h.request("GET", "/Shows/90/Episodes?SeasonId=91&older=true", "device", "Emby Web", "Mozilla/test", nil)
+		}()
+		<-entered
+		h.request("GET", "/Shows/90/Episodes?SeasonId=91", "device", "Emby Web", "Mozilla/test", nil)
+		close(release)
+		<-done
+		h.adapter.mu.Lock()
+		defer h.adapter.mu.Unlock()
+		for _, device := range h.adapter.devices {
+			if !device.members["21"] || device.members["20"] {
+				t.Fatalf("旧 Episodes 恢复了过期成员关系：%v", device.members)
+			}
 		}
-		c.JSON(http.StatusOK, preloadItems{Items: []preloadItem{preloadTestItem(id, "Episode")}})
 	})
-	h.router = router
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	go func() {
-		defer close(done)
-		h.request("GET", "/Shows/90/Episodes?SeasonId=91&older=true", "device", "Emby Web", "Mozilla/test", nil)
-	}()
-	<-entered
-	h.request("GET", "/Shows/90/Episodes?SeasonId=91", "device", "Emby Web", "Mozilla/test", nil)
-	close(release)
-	<-done
-	h.adapter.mu.Lock()
-	defer h.adapter.mu.Unlock()
-	for _, device := range h.adapter.devices {
-		if !device.members["21"] || device.members["20"] {
-			t.Fatalf("旧 Episodes 恢复了过期成员关系：%v", device.members)
-		}
-	}
 }
 
 func TestPreloadOldPlaybackSelectionCannotReplaceNewDetail(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	a, b := preloadTestItem("20", "Movie"), preloadTestItem("21", "Movie")
-	b.MediaSources[0].ItemID = "20"
-	a.MediaSources = append(a.MediaSources, b.MediaSources[0])
-	h.nodes["20"] = a
-	h.request("GET", "/Users/10/Items/20?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.Any("/*path", func(c *gin.Context) {
-		if c.Request.Body != nil {
-			_, _ = io.ReadAll(c.Request.Body)
-		}
-		if c.Request.Method == http.MethodPost {
-			close(entered)
-			<-release
-			c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: a.MediaSources})
-			return
-		}
-		c.JSON(http.StatusOK, a)
-	})
-	h.router = router
-	defer func() {
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		a, b := preloadTestItem("20", "Movie"), preloadTestItem("21", "Movie")
+		b.MediaSources[0].ItemID = "20"
+		a.MediaSources = append(a.MediaSources, b.MediaSources[0])
+		h.nodes["20"] = a
+		h.request("GET", "/Users/10/Items/20?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.Any("/*path", func(c *gin.Context) {
+			if c.Request.Body != nil {
+				_, _ = io.ReadAll(c.Request.Body)
+			}
+			if c.Request.Method == http.MethodPost {
+				close(entered)
+				<-release
+				c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: a.MediaSources})
+				return
+			}
+			c.JSON(http.StatusOK, a)
+		})
+		h.router = router
+		defer func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		}()
+		go func() {
+			defer close(done)
+			h.request("POST", "/Items/20/PlaybackInfo?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", map[string]any{})
+		}()
 		select {
-		case <-release:
-		default:
-			close(release)
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("旧 PI 未进入阻塞点")
 		}
-	}()
-	go func() {
-		defer close(done)
-		h.request("POST", "/Items/20/PlaybackInfo?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", map[string]any{})
-	}()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("旧 PI 未进入阻塞点")
-	}
-	h.request("GET", "/Users/10/Items/20?MediaSourceId=source-21", "device", "Emby Web", "Mozilla/test", nil)
-	close(release)
-	<-done
-	h.adapter.mu.Lock()
-	for _, device := range h.adapter.devices {
-		if device.selected != "source-21" {
-			t.Errorf("旧 PI 选项覆盖新详情明确选源：%q", device.selected)
+		h.request("GET", "/Users/10/Items/20?MediaSourceId=source-21", "device", "Emby Web", "Mozilla/test", nil)
+		close(release)
+		<-done
+		h.adapter.mu.Lock()
+		for _, device := range h.adapter.devices {
+			if device.selected != "source-21" {
+				t.Errorf("旧 PI 选项覆盖新详情明确选源：%q", device.selected)
+			}
 		}
-	}
-	h.adapter.mu.Unlock()
-	if result := h.waitResolved(); result.path != b.MediaSources[0].Path {
-		t.Fatalf("没有准备最新明确源：%+v", result)
-	}
+		h.adapter.mu.Unlock()
+		if result := h.waitResolved(); result.path != b.MediaSources[0].Path {
+			t.Fatalf("没有准备最新明确源：%+v", result)
+		}
+	})
 }
 
 func TestPreloadUAMappingUsesExactControlAndSurvivesShortState(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	for _, id := range []string{"20", "21", "22", "23"} {
-		h.nodes[id] = preloadTestItem(id, "Movie")
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
-	if result := h.waitResolved(); result.ua != "Control/1.0" {
-		t.Fatalf("首次详情未使用当前完整UA：%q", result.ua)
-	}
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1.0", nil)
-	// 详情／进度资料释放后，只保留轻量映射。
-	h.adapter.mu.Lock()
-	clear(h.adapter.devices)
-	h.adapter.mu.Unlock()
-	h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1.0", nil)
-	if result := h.waitResolved(); result.ua != "Player/1.0" {
-		t.Fatalf("短资料过期后未复用独立映射：%q", result.ua)
-	}
-	h.request("GET", "/Videos/21/stream?MediaSourceId=source-21", "device", "Fixture App", "Player/2.0", nil)
-	h.request("GET", "/Users/10/Items/22", "device", "Fixture App", "Control/1.0", nil)
-	if result := h.waitResolved(); result.ua != "Player/2.0" {
-		t.Fatalf("播放器更新没有替换完整映射：%q", result.ua)
-	}
-	h.request("GET", "/Users/10/Items/23", "device", "Fixture App", "Control/2.0", nil)
-	if result := h.waitResolved(); result.ua != "Control/2.0" {
-		t.Fatalf("控制端版本变化继承了旧映射：%q", result.ua)
-	}
-	if h.metadata.Load() != 0 {
-		t.Fatalf("UA学习产生额外元数据：%d", h.metadata.Load())
-	}
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		for _, id := range []string{"20", "21", "22", "23"} {
+			h.nodes[id] = preloadTestItem(id, "Movie")
+		}
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
+		if result := h.waitResolved(); result.ua != "Control/1.0" {
+			t.Fatalf("首次详情未使用当前完整UA：%q", result.ua)
+		}
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1.0", nil)
+		// 详情／进度资料释放后，只保留轻量映射。
+		h.adapter.mu.Lock()
+		clear(h.adapter.devices)
+		h.adapter.mu.Unlock()
+		h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1.0", nil)
+		if result := h.waitResolved(); result.ua != "Player/1.0" {
+			t.Fatalf("短资料过期后未复用独立映射：%q", result.ua)
+		}
+		h.request("GET", "/Videos/21/stream?MediaSourceId=source-21", "device", "Fixture App", "Player/2.0", nil)
+		h.request("GET", "/Users/10/Items/22", "device", "Fixture App", "Control/1.0", nil)
+		if result := h.waitResolved(); result.ua != "Player/2.0" {
+			t.Fatalf("播放器更新没有替换完整映射：%q", result.ua)
+		}
+		h.request("GET", "/Users/10/Items/23", "device", "Fixture App", "Control/2.0", nil)
+		if result := h.waitResolved(); result.ua != "Control/2.0" {
+			t.Fatalf("控制端版本变化继承了旧映射：%q", result.ua)
+		}
+		if h.metadata.Load() != 0 {
+			t.Fatalf("UA学习产生额外元数据：%d", h.metadata.Load())
+		}
+	})
 }
 
 func TestPreloadNextUsesActualSessionUADespiteControlUA(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	current := preloadTestItem("20", "Episode")
-	current.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
-	h.nodes["20"] = current
-	h.upstream = func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/Users/10/Items/21" {
-			t.Errorf("意外后继查询：%s", r.URL.Path)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		current := preloadTestItem("20", "Episode")
+		current.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
+		h.nodes["20"] = current
+		h.upstream = func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/Users/10/Items/21" {
+				t.Errorf("意外后继查询：%s", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
 		}
-		_ = json.NewEncoder(w).Encode(preloadTestItem("21", "Episode"))
-	}
-	h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/control", nil)
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Player/2.0", nil)
-	h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/control", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
-	h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/control", map[string]any{
-		"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
-		"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}},
+		h.request("GET", "/Users/10/Items/20", "device", "Emby Web", "Mozilla/control", nil)
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Emby Web", "Player/2.0", nil)
+		h.request("POST", "/Sessions/Playing", "device", "Emby Web", "Mozilla/control", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session"})
+		h.request("POST", "/Sessions/Playing/Progress", "device", "Emby Web", "Mozilla/control", map[string]any{
+			"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "session", "PositionTicks": 54 * 60 * 10_000_000, "IsPaused": false,
+			"NowPlayingQueue": []map[string]string{{"Id": "20"}, {"Id": "21"}},
+		})
+		if result := h.waitResolved(); result.ua != "Player/2.0" || !strings.Contains(result.path, "pickcode=21&") {
+			t.Fatalf("控制端UA覆盖当前真实会话UA：%+v", result)
+		}
 	})
-	if result := h.waitResolved(); result.ua != "Player/2.0" || !strings.Contains(result.path, "pickcode=21&") {
-		t.Fatalf("控制端UA覆盖当前真实会话UA：%+v", result)
-	}
 }
 
 func TestPreloadFailedStreamDoesNotUpdateMapping(t *testing.T) {
 	for _, mode := range []string{"provider-failed", "stable-resolver-fallback"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, mode, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			h.nodes["20"], h.nodes["21"] = preloadTestItem("20", "Movie"), preloadTestItem("21", "Movie")
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 			h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1", nil)
@@ -1826,8 +1858,8 @@ func TestPreloadFailedStreamDoesNotUpdateMapping(t *testing.T) {
 func TestPreloadNaturalResponsesAssociateForSixtySeconds(t *testing.T) {
 	for _, order := range []string{"detail-first", "playback-first"} {
 		for _, age := range []time.Duration{30 * time.Second, 61 * time.Second} {
-			t.Run(fmt.Sprintf("%s/%s", order, age), func(t *testing.T) {
-				h := newEmbyPreloadHarness(t)
+			runEmbyPreloadCase(t, fmt.Sprintf("%s/%s", order, age), func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
 				item := preloadTestItem("20", "Movie")
 				h.nodes["20"] = item
 				h.nodes["20"] = preloadItem{ID: "20", Type: "Movie"}
@@ -1876,8 +1908,8 @@ func TestPreloadNaturalResponsesAssociateForSixtySeconds(t *testing.T) {
 
 func TestPreloadPendingEpisodeFinalThirdGET(t *testing.T) {
 	for _, mode := range []string{"final-source", "final-season-membership", "season-source-omitted"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, mode, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			parent := preloadItem{ID: "90", Type: "Series"}
 			candidate := preloadTestItem("21", "Episode")
 			if mode == "final-source" {
@@ -1921,8 +1953,8 @@ func TestPreloadPendingEpisodeFinalThirdGET(t *testing.T) {
 
 func TestPreloadPendingCompletesRelationsAndWarmSource(t *testing.T) {
 	for _, mode := range []string{"membership-and-source-missing", "playbackinfo-missing"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, mode, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			parent := preloadItem{ID: "91", Type: "Season", SeriesID: "90"}
 			candidate := preloadTestItem("21", "Episode")
 			if mode == "membership-and-source-missing" {
@@ -1976,94 +2008,100 @@ func TestPreloadPendingCompletesRelationsAndWarmSource(t *testing.T) {
 }
 
 func TestPreloadAuthorizedAccountHintsAllowTwoRealDetailJobs(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	entered, release := make(chan string, 2), make(chan struct{})
-	defer close(release)
-	h.adapter.options.Account = func(raw string) playback.PreloadAccount {
-		parsed, _ := url.Parse(raw)
-		return playback.PreloadAccount{Provider: "115", UserID: parsed.Query().Get("userid")}
-	}
-	h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-		return preloadHash(raw, ua), func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
-			entered <- raw
-			select {
-			case <-release:
-			case <-ctx.Done():
-			}
-			return playback.PreloadResult{Outcome: playback.PreloadSkipped}
-		}, true
-	}
-	for _, id := range []string{"20", "21"} {
-		item := preloadTestItem(id, "Movie")
-		item.MediaSources[0].Path = "http://qms.invalid/115/newurl?userid=owner-" + id + "&pickcode=" + id
-		h.nodes[id] = item
-		h.request("GET", "/Users/10/Items/"+id, "device-"+id, "Fixture App", "Control/1", nil)
-	}
-	for range 2 {
-		select {
-		case <-entered:
-		case <-time.After(2500 * time.Millisecond):
-			t.Fatal("真实详情提交未携带可信账号hint，第二账号仍被串行阻挡")
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		entered, release := make(chan string, 2), make(chan struct{})
+		defer close(release)
+		h.adapter.options.Account = func(raw string) playback.PreloadAccount {
+			parsed, _ := url.Parse(raw)
+			return playback.PreloadAccount{Provider: "115", UserID: parsed.Query().Get("userid")}
 		}
-	}
+		h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
+			return preloadHash(raw, ua), func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+				entered <- raw
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+			}, true
+		}
+		for _, id := range []string{"20", "21"} {
+			item := preloadTestItem(id, "Movie")
+			item.MediaSources[0].Path = "http://qms.invalid/115/newurl?userid=owner-" + id + "&pickcode=" + id
+			h.nodes[id] = item
+			h.request("GET", "/Users/10/Items/"+id, "device-"+id, "Fixture App", "Control/1", nil)
+		}
+		for range 2 {
+			select {
+			case <-entered:
+			case <-time.After(2500 * time.Millisecond):
+				t.Fatal("真实详情提交未携带可信账号hint，第二账号仍被串行阻挡")
+			}
+		}
+	})
 }
 
 func TestPreloadNaturalPlaybackUsesCurrentControlVersion(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	item := preloadTestItem("20", "Movie")
-	h.nodes["20"] = preloadItem{ID: "20", Type: "Movie"}
-	h.infos["20"] = preloadPlaybackInfo{MediaSources: item.MediaSources}
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
-	h.adapter.mu.Lock()
-	for scope, device := range h.adapter.devices {
-		h.adapter.uas.Remember(preloadUAKey(preloadRequest{scope: scope}, device), "Old Player", 1)
-	}
-	h.adapter.mu.Unlock()
-	h.request("POST", "/Items/20/PlaybackInfo", "device", "Fixture App", "Control/2", map[string]any{})
-	if result := h.waitResolved(); result.ua != "Control/2" {
-		t.Fatalf("新版本自然PlaybackInfo借用了旧控制UA映射：%q", result.ua)
-	}
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		item := preloadTestItem("20", "Movie")
+		h.nodes["20"] = preloadItem{ID: "20", Type: "Movie"}
+		h.infos["20"] = preloadPlaybackInfo{MediaSources: item.MediaSources}
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+		h.adapter.mu.Lock()
+		for scope, device := range h.adapter.devices {
+			h.adapter.uas.Remember(preloadUAKey(preloadRequest{scope: scope}, device), "Old Player", 1)
+		}
+		h.adapter.mu.Unlock()
+		h.request("POST", "/Items/20/PlaybackInfo", "device", "Fixture App", "Control/2", map[string]any{})
+		if result := h.waitResolved(); result.ua != "Control/2" {
+			t.Fatalf("新版本自然PlaybackInfo借用了旧控制UA映射：%q", result.ua)
+		}
+	})
 }
 
 func TestPreloadOlderControlPlaybackCannotEnrichNewVersion(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.Any("/*path", func(c *gin.Context) {
-		if c.Request.Body != nil {
-			_, _ = io.ReadAll(c.Request.Body)
-		}
-		if c.Request.Method == http.MethodPost {
-			close(entered)
-			<-release
-			c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: preloadTestItem("20", "Movie").MediaSources})
-		} else {
-			c.JSON(http.StatusOK, preloadItem{ID: "20", Type: "Movie"})
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.Any("/*path", func(c *gin.Context) {
+			if c.Request.Body != nil {
+				_, _ = io.ReadAll(c.Request.Body)
+			}
+			if c.Request.Method == http.MethodPost {
+				close(entered)
+				<-release
+				c.JSON(http.StatusOK, preloadPlaybackInfo{MediaSources: preloadTestItem("20", "Movie").MediaSources})
+			} else {
+				c.JSON(http.StatusOK, preloadItem{ID: "20", Type: "Movie"})
+			}
+		})
+		h.router = router
+		go func() {
+			defer close(done)
+			h.request("POST", "/Items/20/PlaybackInfo", "device", "Fixture App", "Control/1", map[string]any{})
+		}()
+		<-entered
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/2", nil)
+		close(release)
+		<-done
+		h.adapter.mu.Lock()
+		defer h.adapter.mu.Unlock()
+		for _, device := range h.adapter.devices {
+			if len(device.detail.MediaSources) != 0 || device.controlUA != "Control/2" {
+				t.Fatalf("旧控制版本响应污染当前详情：UA=%q sources=%d", device.controlUA, len(device.detail.MediaSources))
+			}
 		}
 	})
-	h.router = router
-	go func() {
-		defer close(done)
-		h.request("POST", "/Items/20/PlaybackInfo", "device", "Fixture App", "Control/1", map[string]any{})
-	}()
-	<-entered
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/2", nil)
-	close(release)
-	<-done
-	h.adapter.mu.Lock()
-	defer h.adapter.mu.Unlock()
-	for _, device := range h.adapter.devices {
-		if len(device.detail.MediaSources) != 0 || device.controlUA != "Control/2" {
-			t.Fatalf("旧控制版本响应污染当前详情：UA=%q sources=%d", device.controlUA, len(device.detail.MediaSources))
-		}
-	}
 }
 
 func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 	for _, change := range []string{"item", "source", "session"} {
-		t.Run(change, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, change, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			for _, id := range []string{"20", "21"} {
 				item := preloadTestItem(id, "Episode")
 				item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
@@ -2102,8 +2140,8 @@ func TestPreloadNextDoesNotReusePreviousPlaybackUA(t *testing.T) {
 
 func TestPreloadActualItemDoesNotRequireEpisodeDetail(t *testing.T) {
 	for _, entry := range []string{"series", "season", "autoplay", "episode-control"} {
-		t.Run(entry, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, entry, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			current := preloadTestItem("20", "Episode")
 			current.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 			detail := preloadItem{ID: "90", Type: "Series"}
@@ -2178,8 +2216,8 @@ func TestPreloadActualItemDoesNotRequireEpisodeDetail(t *testing.T) {
 
 func TestPreloadActualItemRetainsSourceAndSessionBoundaries(t *testing.T) {
 	for _, condition := range []string{"ambiguous-source", "stale-playbackinfo", "different-session", "changed-source", "denied-item", "ordinary-movie", "replaced-playbackinfo", "start-before-stream"} {
-		t.Run(condition, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, condition, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			item := preloadTestItem("20", "Episode")
 			item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 			h.nodes["90"] = preloadItem{ID: "90", Type: "Series"}
@@ -2302,8 +2340,8 @@ func TestPreloadActualStreamSessionMatchesStart(t *testing.T) {
 		{name: "malformed-session-query", query: "&PlaySessionId=%ZZ", startFirst: true},
 	} {
 		for _, includeSession := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/progress-session=%t", test.name, includeSession), func(t *testing.T) {
-				h := newEmbyPreloadHarness(t)
+			runEmbyPreloadCase(t, fmt.Sprintf("%s/progress-session=%t", test.name, includeSession), func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
 				current := preloadTestItem("20", "Episode")
 				current.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 				h.nodes["20"] = current
@@ -2412,8 +2450,8 @@ func TestPreloadCompleteReportInvalidatesBeforeUpstream(t *testing.T) {
 		{"malformed", "signing"}, {"read-error", "signing"}, {"read-error-then-eof", "signing"}, {"overflow", "signing"},
 		{"pause-resume", "preparing"}, {"stop-resume", "preparing"},
 	} {
-		t.Run(test.action+"/"+test.phase, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, test.action+"/"+test.phase, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			item := preloadTestItem("20", "Episode")
 			item.MediaSources[0].RunTimeTicks = 60 * 60 * 10_000_000
 			h.nodes["20"] = item
@@ -2606,77 +2644,79 @@ func TestPreloadCompleteReportInvalidatesBeforeUpstream(t *testing.T) {
 }
 
 func TestPreloadPausedProgressRechecksAfterSlowBody(t *testing.T) {
-	h := newEmbyPreloadHarness(t)
-	h.nodes["20"], h.nodes["21"] = preloadTestItem("20", "Episode"), preloadTestItem("21", "Episode")
-	h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
-	h.request("GET", "/Videos/20/stream?MediaSourceId=source-20&PlaySessionId=old", "device", "Fixture App", "Player/old", nil)
-	h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "old"})
-	reader, writer := io.Pipe()
-	release := sync.OnceFunc(func() { _ = writer.Close() })
-	t.Cleanup(func() { release(); _ = reader.Close() })
-	router := gin.New()
-	router.Use(PreloadObserver())
-	router.Any("/*path", func(c *gin.Context) {
-		kind, item, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
-		if c.Request.Body != nil {
-			_, _ = io.ReadAll(c.Request.Body)
+	runEmbyPreloadTest(t, func(t *testing.T) {
+		h := newEmbyPreloadTestHarness(t)
+		h.nodes["20"], h.nodes["21"] = preloadTestItem("20", "Episode"), preloadTestItem("21", "Episode")
+		h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+		h.request("GET", "/Videos/20/stream?MediaSourceId=source-20&PlaySessionId=old", "device", "Fixture App", "Player/old", nil)
+		h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "old"})
+		reader, writer := io.Pipe()
+		release := sync.OnceFunc(func() { _ = writer.Close() })
+		t.Cleanup(func() { release(); _ = reader.Close() })
+		router := gin.New()
+		router.Use(PreloadObserver())
+		router.Any("/*path", func(c *gin.Context) {
+			kind, item, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
+			if c.Request.Body != nil {
+				_, _ = io.ReadAll(c.Request.Body)
+			}
+			switch kind {
+			case "detail":
+				c.JSON(http.StatusOK, h.nodes[item])
+			case "stream":
+				c.Redirect(http.StatusTemporaryRedirect, "http://download.invalid/video")
+			default:
+				c.Status(http.StatusNoContent)
+			}
+		})
+		h.router = router
+		written, done := make(chan struct{}), make(chan struct{})
+		go func() {
+			_, _ = io.WriteString(writer, `{"ItemId":"20","MediaSourceId":"source-20","PlaySessionId":"old","IsPaused":true}`)
+			close(written)
+		}()
+		go func() {
+			defer close(done)
+			request := httptest.NewRequest("POST", "/Sessions/Playing/Progress", reader)
+			request.Header.Set(HeaderFullAuthName, `MediaBrowser Client="Fixture App", DeviceId="device", Token="user-token"`)
+			request.Header.Set("User-Agent", "Control/1")
+			router.ServeHTTP(httptest.NewRecorder(), request)
+		}()
+		<-written
+		newPlayback := make(chan struct{})
+		go func() {
+			defer close(newPlayback)
+			h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1", nil)
+			h.request("GET", "/Videos/21/stream?MediaSourceId=source-21&PlaySessionId=current", "device", "Fixture App", "Player/current", nil)
+			h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1", map[string]any{"ItemId": "21", "MediaSourceId": "source-21", "PlaySessionId": "current"})
+		}()
+		select {
+		case <-newPlayback:
+		case <-time.After(time.Second):
+			release()
+			<-newPlayback
+			t.Error("passive report body held playback lock")
 		}
-		switch kind {
-		case "detail":
-			c.JSON(http.StatusOK, h.nodes[item])
-		case "stream":
-			c.Redirect(http.StatusTemporaryRedirect, "http://download.invalid/video")
-		default:
-			c.Status(http.StatusNoContent)
+		release()
+		<-done
+		h.adapter.mu.Lock()
+		for _, device := range h.adapter.devices {
+			if !device.playing.Active || device.playing.Item.ID != "21" || device.playing.UA != "Player/current" || device.playing.Session != "current" || device.playing.Paused {
+				t.Error("late old pause body replaced current actual playback")
+			}
+		}
+		h.adapter.mu.Unlock()
+		if h.metadata.Load() != 0 || len(h.resolved) != 0 {
+			t.Error("old pause body started background work")
 		}
 	})
-	h.router = router
-	written, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		_, _ = io.WriteString(writer, `{"ItemId":"20","MediaSourceId":"source-20","PlaySessionId":"old","IsPaused":true}`)
-		close(written)
-	}()
-	go func() {
-		defer close(done)
-		request := httptest.NewRequest("POST", "/Sessions/Playing/Progress", reader)
-		request.Header.Set(HeaderFullAuthName, `MediaBrowser Client="Fixture App", DeviceId="device", Token="user-token"`)
-		request.Header.Set("User-Agent", "Control/1")
-		router.ServeHTTP(httptest.NewRecorder(), request)
-	}()
-	<-written
-	newPlayback := make(chan struct{})
-	go func() {
-		defer close(newPlayback)
-		h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1", nil)
-		h.request("GET", "/Videos/21/stream?MediaSourceId=source-21&PlaySessionId=current", "device", "Fixture App", "Player/current", nil)
-		h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1", map[string]any{"ItemId": "21", "MediaSourceId": "source-21", "PlaySessionId": "current"})
-	}()
-	select {
-	case <-newPlayback:
-	case <-time.After(time.Second):
-		release()
-		<-newPlayback
-		t.Error("passive report body held playback lock")
-	}
-	release()
-	<-done
-	h.adapter.mu.Lock()
-	for _, device := range h.adapter.devices {
-		if !device.playing.Active || device.playing.Item.ID != "21" || device.playing.UA != "Player/current" || device.playing.Session != "current" || device.playing.Paused {
-			t.Error("late old pause body replaced current actual playback")
-		}
-	}
-	h.adapter.mu.Unlock()
-	if h.metadata.Load() != 0 || len(h.resolved) != 0 {
-		t.Error("old pause body started background work")
-	}
 }
 
 func TestPreloadLateOrdinaryProgressKeepsCurrentPlayback(t *testing.T) {
 	for _, stage := range []string{"queued", "signing", "stream"} {
 		for _, mismatch := range []string{"item", "source", "session"} {
-			t.Run(stage+"/"+mismatch, func(t *testing.T) {
-				h := newEmbyPreloadHarness(t)
+			runEmbyPreloadCase(t, stage+"/"+mismatch, func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
 				h.nodes["20"] = preloadTestItem("20", "Episode")
 				h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 				h.request("POST", "/Sessions/Playing", "device", "Fixture App", "Control/1", map[string]any{"ItemId": "20", "MediaSourceId": "source-20", "PlaySessionId": "current"})
@@ -2809,13 +2849,13 @@ func (output *preloadLogOutput) text() string {
 
 func TestPreloadLogsKeepFinalTargetAndMetadataFailure(t *testing.T) {
 	for _, result := range []string{"success", "query-failed", "no-relation"} {
-		t.Run(result, func(t *testing.T) {
+		runEmbyPreloadCase(t, result, func(t *testing.T) {
 			output := &preloadLogOutput{changed: make(chan struct{}, 1)}
 			old := helpers.AppLogger
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(output, "", 0)}
 			helpers.AppLogger.SetLevel(helpers.LogLevelDebug)
 			t.Cleanup(func() { helpers.AppLogger = old })
-			h := newEmbyPreloadHarness(t)
+			h := newEmbyPreloadTestHarness(t)
 			season, episode := 1, 4
 			h.upstream = func(w http.ResponseWriter, r *http.Request) {
 				if result == "query-failed" {
@@ -2895,8 +2935,8 @@ func TestPreloadControlChangeDropsTopLevelPath(t *testing.T) {
 		{"ua", "Fixture App", "Control/2"},
 		{"client", "Fixture App/2", "Control/1"},
 	} {
-		t.Run(change.name, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, change.name, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			oldPath := preloadTestItem("20", "Movie").MediaSources[0].Path
 			fresh := preloadTestItem("20", "Movie")
 			fresh.MediaSources[0].Path += "-fresh"
@@ -2929,8 +2969,8 @@ func TestPreloadControlChangeDropsTopLevelPath(t *testing.T) {
 
 func TestPreloadDirectSourceRefreshRevokesOnlyRemovedURL(t *testing.T) {
 	for _, mode := range []string{"incomplete-replacement", "same-source-omitted-path", "omitted-sources"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newEmbyPreloadHarness(t)
+		runEmbyPreloadCase(t, mode, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
 			old := preloadTestItem("20", "Movie")
 			oldPath := old.MediaSources[0].Path
 			if mode != "same-source-omitted-path" {

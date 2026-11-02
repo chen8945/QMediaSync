@@ -146,7 +146,7 @@ GitHub 私有连接池回收运行 `go test -race ./internal/github -run '^TestM
 
 ## STRM 预加载验证
 
-Emby 分集列表及季观看状态回归使用独立 `testing/synctest` 时钟和 `httptest.NewTestServer` 内存网络，保留生产防抖、截止时间及原断言；旧真实网络夹具继续覆盖连接行为。夹具退出时恢复共享元数据客户端的 TLS 配置，验证退出后仍能执行真实 HTTP。运行 Emby 整包普通测试时保留 `go test` 默认超时，不能只依靠本地扩大超时通过验收。
+Emby 预加载的状态、待播候选、元数据、分集列表及季观看状态回归使用已有 `runEmbyPreloadTest`／`runEmbyPreloadCase` 和 `newEmbyPreloadTestHarness`，每个表格子项使用独立 `testing/synctest` 时钟及 `httptest.NewTestServer` 内存网络，保留生产防抖、截止时间及原断言。新增此类用例沿用该夹具，避免每个子项真实等待 2 秒防抖而再次拖慢 CI；第三方取链集成和连接行为使用显式命名的 `newEmbyPreloadRealNetworkHarness`。夹具退出时恢复共享元数据客户端的 TLS 配置，验证退出后仍能执行真实 HTTP。定时夹具调整后运行 `go test -count=3 -shuffle=on ./internal/emby302/service/emby`、该包的 race 和 vet（工作目录 `backend/`）；整包普通测试保留 `go test` 默认超时，不能只依靠本地扩大超时通过验收。
 
 飞牛预加载的定时与协议场景使用 `testing/synctest` 和 `httptest.NewTestServer` 的内存网络，客户端、反代及后台元数据请求共用测试服务的 transport；2 秒防抖、10 秒账号间隔与 30 秒重试冷却按虚拟时间执行，不缩短生产期限。每个表格子项使用独立时钟，worker 同步键不依赖当前时间；停服／配置替换、监听端口、HTTPS 和连接生命周期仍由真实网络回归覆盖。未知响应回退通过实际 handler 核对状态、编码和原始正文，配合有效详情正例及跨越防抖后的取链次数，避免请求提前被拒绝或立即断言导致假通过。定时夹具调整后运行 `go test -count=3 -shuffle=on ./internal/fnosproxy`、该包的 race 和 vet；HTTP 维护准入的改动同时运行 `internal/backup` 的普通、race 和 vet，覆盖多个在途请求及重复释放后仍等待最后一个请求。
 
