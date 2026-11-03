@@ -309,7 +309,10 @@ func (p *embyPreloader) observePending(request preloadRequest, data []byte) {
 		}
 		selectionSequence = max(selectionSequence, device.pendingTargetSequence)
 	}
-	if device.pendingParent != parent.ID && !sameEmpty || old.ID != candidate.ID || candidate.ID == "" && !sameEmpty || pendingSourceChanged(old, candidate, device.pendingTargetSelected, device.pendingTargetSelected) {
+	// 初始排队作业会读取刚合并的列表；在途查询仍需撤销，防止迟到结果恢复旧候选。
+	unstarted := old.ID == "" && p.options.Coordinator.DetailUnstarted(request.scope)
+	if !unstarted && (device.pendingParent != parent.ID && !sameEmpty || old.ID != candidate.ID ||
+		candidate.ID == "" && !sameEmpty || pendingSourceChanged(old, candidate, device.pendingTargetSelected, device.pendingTargetSelected)) {
 		device.revision++
 		p.options.Coordinator.CancelDetail(request.scope)
 	}

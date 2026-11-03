@@ -115,7 +115,7 @@ func ProxyOrigin(c *gin.Context) {
 	if err := https.ProxyPass(c.Request, c.Writer, origin); err != nil {
 		c.Header(cache.HeaderKeyExpired, "-1")
 		if errors.Is(err, context.Canceled) && errors.Is(c.Request.Context().Err(), context.Canceled) {
-			logs.Debug("代理请求已取消: %v", err)
+			logs.Debug("客户端已取消 Emby 请求：接口=%s", c.Request.URL.Path)
 		} else {
 			logs.Error("代理异常: %v", err)
 		}

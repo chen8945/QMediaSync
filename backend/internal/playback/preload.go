@@ -318,6 +318,19 @@ func (p *Preloader) CancelDetail(scope string) {
 	}, false)
 }
 
+// DetailUnstarted 判断详情是否仍在排队且未消耗查询或签名额度，供初始自然资料合并。
+func (p *Preloader) DetailUnstarted(scope string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, job := range p.queue {
+		if job.candidate.Scope == scope && job.candidate.Kind == PreloadDetail && job.expiresAt.After(time.Now()) &&
+			job.state.metadata == 0 && job.state.attempts == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // CancelNext 在进度或播放关联失效时撤销下一项，不影响当前详情。
 func (p *Preloader) CancelNext(scope string) {
 	p.cancelMatching(func(job *preloadJob) bool {

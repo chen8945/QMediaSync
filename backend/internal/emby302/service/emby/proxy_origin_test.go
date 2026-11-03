@@ -68,7 +68,7 @@ func TestProxyOriginCancellationLogLevel(t *testing.T) {
 			router.GET("/Items/1/Images/Primary", ProxyOrigin)
 			finished := make(chan struct{})
 			go func() {
-				router.ServeHTTP(writer, httptest.NewRequestWithContext(ctx, http.MethodGet, "/Items/1/Images/Primary", nil))
+				router.ServeHTTP(writer, httptest.NewRequestWithContext(ctx, http.MethodGet, "/Items/1/Images/Primary?X-Emby-Token=private-token", nil))
 				close(finished)
 			}()
 			if mode == "client_cancel" {
@@ -86,10 +86,17 @@ func TestProxyOriginCancellationLogLevel(t *testing.T) {
 			}
 			want := "[ERROR] 代理异常:"
 			if mode == "client_cancel" {
-				want = "[DEBUG] 代理请求已取消:"
+				want = "[DEBUG] 客户端已取消 Emby 请求：接口=/Items/1/Images/Primary"
 			}
 			if got := output.String(); !strings.Contains(got, want) || (mode == "client_cancel" && strings.Contains(got, "[ERROR]")) {
 				t.Fatalf("log = %q, want %q", got, want)
+			}
+			if mode == "client_cancel" {
+				for _, unwanted := range []string{"代理请求失败", "X-Emby-Token", "private-token", "context canceled"} {
+					if strings.Contains(output.String(), unwanted) {
+						t.Fatalf("client cancellation log contains %q: %s", unwanted, output.String())
+					}
+				}
 			}
 			if got := rec.Header().Get(cache.HeaderKeyExpired); got != "-1" {
 				t.Fatalf("Expired = %q, want -1", got)

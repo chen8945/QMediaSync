@@ -6,12 +6,72 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"qmediasync/internal/playback"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestPreloadInitialPendingListsKeepDetailDebounce(t *testing.T) {
+	for _, kind := range []string{"resume", "nextup"} {
+		for _, empty := range []bool{true, false} {
+			name := kind + "/candidate"
+			if empty {
+				name = kind + "/empty"
+			}
+			runEmbyPreloadCase(t, name, func(t *testing.T) {
+				h := newEmbyPreloadTestHarness(t)
+				h.nodes["90"] = preloadItem{ID: "90", Type: "Series"}
+				path, listPath := "/Shows/NextUp?SeriesId=90&UserId=10", "/Shows/NextUp"
+				if kind == "resume" {
+					path, listPath = "/Users/10/Items/Resume?ParentId=90", "/Users/10/Items/Resume"
+				}
+				items := []preloadItem{}
+				if !empty {
+					items = append(items, preloadTestItem("20", "Episode"))
+				}
+				h.lists[listPath] = preloadItems{Items: items}
+				h.upstream = func(w http.ResponseWriter, r *http.Request) {
+					want := "/Users/10/Items/Resume"
+					if kind == "resume" {
+						want = "/Shows/NextUp"
+					}
+					if r.URL.Path != want {
+						t.Errorf("unnecessary candidate query %s", r.URL.Path)
+					}
+					_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{preloadTestItem("20", "Episode")}})
+				}
+				started := time.Now()
+				h.request("GET", "/Users/10/Items/90", "device", "Fixture App", "Control/1", nil)
+				for range 2 {
+					time.Sleep(500 * time.Millisecond)
+					h.request("GET", path, "device", "Fixture App", "Control/1", nil)
+				}
+				time.Sleep(999 * time.Millisecond)
+				synctest.Wait()
+				if len(h.resolved) != 0 || h.metadata.Load() != 0 {
+					t.Fatal("preload started before the original detail debounce")
+				}
+				got := h.waitResolved()
+				if elapsed := time.Since(started); elapsed != 2*time.Second {
+					t.Fatalf("initial list enrichment reset detail debounce: elapsed=%v", elapsed)
+				}
+				if got.path != preloadTestItem("20", "Episode").MediaSources[0].Path {
+					t.Fatalf("wrong pending candidate %+v", got)
+				}
+				wantMetadata := int32(0)
+				if empty {
+					wantMetadata = 1
+				}
+				if calls := h.metadata.Load(); calls != wantMetadata {
+					t.Fatalf("metadata calls=%d, want %d", calls, wantMetadata)
+				}
+			})
+		}
+	}
+}
 
 func TestPreloadPendingNaturalLists(t *testing.T) {
 	for _, order := range []string{"list-first", "detail-first"} {

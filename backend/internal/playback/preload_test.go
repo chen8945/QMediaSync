@@ -115,6 +115,49 @@ func TestPreloadDisabledAndSingleLatestDetail(t *testing.T) {
 	})
 }
 
+func TestPreloadDetailUnstartedExcludesActiveAndUsedBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newTestPreloader(t)
+		p.Submit(preloadCandidate("seed", PreloadNext, func(_ context.Context, task *PreloadTask) PreloadResult {
+			if !task.BeginSignature(preloadTestAccount, "seed") {
+				t.Error("seed signature did not start")
+			}
+			return PreloadResult{Outcome: PreloadCached}
+		}))
+		synctest.Wait()
+		if p.DetailUnstarted("device") {
+			t.Fatal("playing-next work is not an initial detail")
+		}
+		var calls int
+		p.Submit(preloadCandidate("detail", PreloadDetail, func(ctx context.Context, task *PreloadTask) PreloadResult {
+			if p.DetailUnstarted("device") {
+				t.Error("active work reported as unstarted")
+			}
+			if err := task.Metadata(ctx, true, func(context.Context) (bool, error) {
+				calls++
+				return false, nil
+			}); err != nil {
+				t.Errorf("metadata failed: %v", err)
+			}
+			if task.BeginSignature(preloadTestAccount, "detail") {
+				t.Error("signature did not wait for the account interval")
+			}
+			return PreloadResult{Outcome: PreloadSkipped}
+		}))
+		if !p.DetailUnstarted("device") || p.DetailUnstarted("another-device") {
+			t.Fatal("initial queued detail must match its scope")
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if _, queued, active := preloadSize(p); queued != 1 || active || calls != 1 {
+			t.Fatalf("expected requeued work after metadata: queued=%d active=%v calls=%d", queued, active, calls)
+		}
+		if p.DetailUnstarted("device") {
+			t.Fatal("requeued work must preserve its consumed metadata budget")
+		}
+	})
+}
+
 func TestPreloadConcurrentDuplicatesAndQueueBound(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := newTestPreloader(t)
