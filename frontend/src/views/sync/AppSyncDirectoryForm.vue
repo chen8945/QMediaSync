@@ -53,6 +53,7 @@
             placeholder="请选择网盘账号"
             :loading="accountsLoading"
             :disabled="loading"
+            @change="handleAccountChange"
           >
             <el-option
               v-for="account in accounts"
@@ -651,6 +652,7 @@
             placeholder="请选择网盘账号"
             :loading="accountsLoading"
             :disabled="loading"
+            @change="handleAccountChange"
           >
             <el-option
               v-for="account in accounts"
@@ -1959,7 +1961,29 @@ const returnToDirectoryList = () => {
   void router.replace({ name: 'sync-directories' })
 }
 
+const handleAccountChange = () => {
+  form.base_cid = ''
+  form.remote_path = ''
+  selectedDirPath.value = ''
+  directoryUploadRules.value.forEach((rule) => {
+    rule.remote_root_id = ''
+    rule.remote_root_path = ''
+  })
+  directoryUploadRuleFieldErrors.value = {}
+  showDirDialog.value = false
+  tempSelectedDir.value = null
+  initialRootId.value = ''
+  initialRootPath.value = ''
+  selectedSourceType.value = ''
+  selectedAccountId.value = 0
+  directorySelectTarget.value = 'source'
+  activeDirectoryUploadRuleClientId.value = null
+  updateStrmPath()
+}
+
 const handleSourceTypeChange = () => {
+  form.account_id = ''
+  handleAccountChange()
   if (form.source_type !== 'local') {
     loadAccounts()
   }
@@ -2095,7 +2119,7 @@ const openDirectoryUploadRemoteSelector = (clientId: number) => {
 }
 
 const confirmSelectDir = async () => {
-  if (!tempSelectedDir.value) return
+  if (!showDirDialog.value || !tempSelectedDir.value) return
 
   const selectedDir = tempSelectedDir.value
 

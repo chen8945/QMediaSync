@@ -53,6 +53,7 @@
             placeholder="请选择网盘账号"
             :loading="accountsLoading"
             :disabled="loading"
+            @change="handleAccountChange"
           >
             <template v-for="account in accounts">
               <el-option
@@ -65,8 +66,13 @@
           </el-select>
           <div class="form-tip">选择用于刮削的网盘账号</div>
         </el-form-item>
-        <el-form-item label="媒体类型" prop="media_type" :disabled="loading || isEditMode">
-          <el-radio-group v-model="form.media_type" placeholder="请选择媒体类型">
+        <el-form-item label="媒体类型" prop="media_type">
+          <el-radio-group
+            v-model="form.media_type"
+            placeholder="请选择媒体类型"
+            :disabled="loading || isEditMode"
+            @change="handleMediaTypeChange"
+          >
             <el-radio-button value="movie">电影</el-radio-button>
             <el-radio-button value="tvshow">电视剧</el-radio-button>
             <el-radio-button value="other">其他</el-radio-button>
@@ -427,6 +433,7 @@
             placeholder="请选择网盘账号"
             :loading="accountsLoading"
             :disabled="loading"
+            @change="handleAccountChange"
           >
             <template v-for="account in accounts">
               <el-option
@@ -444,6 +451,7 @@
             v-model="form.media_type"
             placeholder="请选择媒体类型"
             :disabled="loading || isEditMode"
+            @change="handleMediaTypeChange"
           >
             <el-radio-button value="movie">电影</el-radio-button>
             <el-radio-button value="tvshow">电视剧</el-radio-button>
@@ -856,7 +864,7 @@ const form = reactive<Omit<ScrapePath, 'is_running'>>({
   dest_path: '',
   dest_path_id: '',
   scrape_type: 'scrape_and_rename',
-  rename_type: 'move',
+  rename_type: '',
   enable_category: false,
   folder_name_template: '{title} ({year})',
   file_name_template: '{title} ({year})',
@@ -900,7 +908,7 @@ const formRules: FormRules = {
   scrape_type: [{ required: true, message: '请选择操作方式', trigger: 'change' }],
   rename_type: [
     {
-      required: form.scrape_type !== 'only_scrape',
+      required: true,
       message: '请选择整理方式',
       trigger: 'change',
     },
@@ -936,7 +944,23 @@ const returnToScrapePathList = () => {
   void router.replace({ name: 'scrape-pathes' })
 }
 
+const handleAccountChange = () => {
+  form.source_path = ''
+  form.source_path_id = ''
+  form.dest_path = ''
+  form.dest_path_id = ''
+  showDirDialog.value = false
+  tempSelectedDir.value = null
+  selectedSourceType.value = ''
+  selectedAccountId.value = 0
+}
+
 const handleSourceTypeChange = () => {
+  form.account_id = 0
+  handleAccountChange()
+  if (form.source_type !== 'local' && ['soft_symlink', 'hard_symlink'].includes(form.rename_type)) {
+    form.rename_type = ''
+  }
   if (form.source_type !== 'local') {
     loadAccounts()
   }
@@ -975,7 +999,7 @@ const loadDirectoryData = async (id: number) => {
     form.dest_path = directory.dest_path
     form.dest_path_id = directory.dest_path_id
     form.scrape_type = directory.scrape_type
-    form.rename_type = directory.rename_type
+    form.rename_type = directory.rename_type === 'same' ? '' : directory.rename_type
     form.enable_category = directory.enable_category
     form.folder_name_template = directory.folder_name_template
     form.file_name_template = directory.file_name_template
@@ -1015,7 +1039,7 @@ const openDirSelector = (isSource: boolean = false) => {
 }
 
 const confirmSelectDir = () => {
-  if (!tempSelectedDir.value) return
+  if (!showDirDialog.value || !tempSelectedDir.value) return
   if (isSelectSource.value) {
     form.source_path = tempSelectedDir.value.path
     form.source_path_id = tempSelectedDir.value.id
@@ -1073,6 +1097,7 @@ const handleSubmit = async () => {
   }
   // 表单校验失败由字段自身展示，避免把校验对象作为请求错误处理。
   if (!(await formRef.value.validate().catch(() => false))) return
+  const renameType = form.scrape_type === 'only_scrape' ? 'same' : form.rename_type
 
   try {
     loading.value = true
@@ -1085,7 +1110,7 @@ const handleSubmit = async () => {
         dest_path: form.dest_path,
         dest_path_id: form.dest_path_id,
         scrape_type: form.scrape_type,
-        rename_type: form.rename_type,
+        rename_type: renameType,
         enable_category: form.enable_category,
         folder_name_template: form.folder_name_template,
         file_name_template: form.file_name_template,
@@ -1116,7 +1141,7 @@ const handleSubmit = async () => {
         dest_path: form.dest_path,
         dest_path_id: form.dest_path_id,
         scrape_type: form.scrape_type,
-        rename_type: form.rename_type,
+        rename_type: renameType,
         enable_category: form.enable_category,
         folder_name_template: form.folder_name_template,
         file_name_template: form.file_name_template,
@@ -1144,32 +1169,29 @@ const handleSubmit = async () => {
   }
 }
 
-watch(
-  () => form.media_type,
-  (newType) => {
-    if (newType === 'other') {
-      form.scrape_type = 'only_rename'
-      form.folder_name_template = '{actors}/{num}'
-      form.file_name_template = '{num}'
-    } else if (
-      newType === 'movie' &&
-      (form.file_name_template.includes('{num}') ||
-        form.file_name_template.includes('{season_episode}'))
-    ) {
-      form.folder_name_template = '{title} ({year})'
-      form.file_name_template = '{title} ({year})'
-    } else if (newType === 'tvshow' && !form.file_name_template.includes('{season_episode}')) {
-      form.folder_name_template = '{title} ({year})'
-      form.file_name_template = '{title} - {season_episode} - 第 {episode_number} 集'
-    }
-  },
-)
+const handleMediaTypeChange = () => {
+  const newType = form.media_type
+  if (newType === 'other') {
+    form.scrape_type = 'only_rename'
+    form.folder_name_template = '{actors}/{num}'
+    form.file_name_template = '{num}'
+  } else if (
+    newType === 'movie' &&
+    (form.file_name_template.includes('{num}') ||
+      form.file_name_template.includes('{season_episode}'))
+  ) {
+    form.folder_name_template = '{title} ({year})'
+    form.file_name_template = '{title} ({year})'
+  } else if (newType === 'tvshow' && !form.file_name_template.includes('{season_episode}')) {
+    form.folder_name_template = '{title} ({year})'
+    form.file_name_template = '{title} - {season_episode} - 第 {episode_number} 集'
+  }
+}
 
 watch(
   () => form.scrape_type,
   (newType) => {
     if (newType === 'only_scrape') {
-      form.rename_type = 'same'
       form.enable_category = false
     }
   },

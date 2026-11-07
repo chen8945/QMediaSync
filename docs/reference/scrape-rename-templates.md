@@ -1,12 +1,16 @@
 # 刮削命名模板与其他类型 NFO 契约
 
-> 职责：说明刮削整理时命名模板的渲染与回退规则、生成 NFO 的日期格式，以及媒体类型为其他时可用的 NFO 信息来源。
+> 职责：说明刮削命名模板的配置、渲染与回退规则、生成 NFO 的日期格式，以及媒体类型为其他时可用的 NFO 信息来源。
 >
-> 权威范围：本文件唯一维护模板渲染结果的清理与回退行为、生成 NFO 的日期格式、其他类型的 NFO 兼容范围和番号取值顺序；可用变量以 [模板实现](../../backend/internal/models/scrapemedia.go)及其测试为准，用户变量表的同步关系见 [Wiki 用户手册维护](../engineering/wiki-maintenance.md)。数据库字段语义见 [数据库 schema 与迁移](database-schema.md)。
+> 权威范围：本文件唯一维护模板配置回填、渲染结果的清理与回退行为、生成 NFO 的日期格式、其他类型的 NFO 兼容范围和番号取值顺序；可用变量以 [模板实现](../../backend/internal/models/scrapemedia.go)及其测试为准，用户变量表的同步关系见 [Wiki 用户手册维护](../engineering/wiki-maintenance.md)。数据库字段语义见 [数据库 schema 与迁移](database-schema.md)。
 >
-> 修改时机：修改命名模板渲染、模板变量、文件夹与文件名生成、NFO 日期生成、NFO 解析或其他类型的信息来源时必须更新本文件。
+> 修改时机：修改命名模板配置与渲染、模板变量、文件夹与文件名生成、NFO 日期生成、NFO 解析或其他类型的信息来源时必须更新本文件。
 >
-> 相关代码：`backend/internal/models/scrapemedia.go`、`backend/internal/scrape/scrape_movie.go`、`backend/internal/scrape/scrape_tvshow.go`、`backend/internal/scrape/scrape_season.go`、`backend/internal/scrape/scrape_episode.go`、`backend/internal/helpers/nfo_decode.go`、`backend/internal/helpers/nfo_movie.go`。
+> 相关代码：`frontend/src/views/scrape/AppScrapePathForm.vue`、`backend/internal/models/scrapemedia.go`、`backend/internal/scrape/scrape_movie.go`、`backend/internal/scrape/scrape_tvshow.go`、`backend/internal/scrape/scrape_season.go`、`backend/internal/scrape/scrape_episode.go`、`backend/internal/helpers/nfo_decode.go`、`backend/internal/helpers/nfo_movie.go`。
+
+## 配置表单
+
+新增刮削目录时，用户主动切换媒体类型才应用对应的默认模板逻辑。编辑详情回填必须原样保留已保存的文件夹与文件命名模板，包括自定义新旧语法和空字符串；不得因加载媒体类型而重设模板。
 
 ## 模板渲染流程
 
