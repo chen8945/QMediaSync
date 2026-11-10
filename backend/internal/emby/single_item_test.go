@@ -77,7 +77,7 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 		t.Fatalf("item = %+v, want name/library/pickcode updated", item)
 	}
 	var relationCount int64
-	if err := db.Db.Model(&models.EmbyMediaSyncFile{}).Where("emby_item_id = ?", uint(122145)).Count(&relationCount).Error; err != nil {
+	if err := db.Db.Model(&models.EmbyMediaSyncFile{}).Where("emby_item_id = ?", "122145").Count(&relationCount).Error; err != nil {
 		t.Fatalf("统计 EmbyMediaSyncFile 失败: %v", err)
 	}
 	if relationCount != 1 {
@@ -300,7 +300,7 @@ func TestSyncEmbyItemByID空结果不触发全量同步(t *testing.T) {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/emby/System/Info/Public" {
+		if r.URL.Path == "/System/Info/Public" || r.URL.Path == "/emby/System/Info/Public" {
 			fmt.Fprint(w, `{"Id":"server-a"}`)
 			return
 		}

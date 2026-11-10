@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 
 	"qmediasync/internal/db"
 	embyclientrestgo "qmediasync/internal/emby/client"
@@ -54,7 +56,7 @@ func (*EmbyMediaItem) TableName() string {
 type EmbyMediaSyncFile struct {
 	BaseModel
 	SyncPathId uint   `json:"sync_path_id" gorm:"index:idx_emby_sync_path_id"`
-	EmbyItemId uint   `json:"emby_item_id" gorm:"index:idx_emby_media_item_id"`
+	EmbyItemId string `json:"emby_item_id" gorm:"index:idx_emby_media_item_id"`
 	SyncFileId uint   `json:"sync_file_id" gorm:"index:idx_emby_sync_file_id"`
 	PickCode   string `json:"pick_code" gorm:"index:idx_emby_sf_pick_code"`
 	SnapshotID uint   `json:"snapshot_id" gorm:"index"`
@@ -63,6 +65,30 @@ type EmbyMediaSyncFile struct {
 
 func (*EmbyMediaSyncFile) TableName() string {
 	return "emby_media_sync_files"
+}
+
+// UnmarshalJSON 兼容持久删除任务中冻结的旧整数 ID，保留精度且不改写原始 JSON。
+func (link *EmbyMediaSyncFile) UnmarshalJSON(data []byte) error {
+	type plain EmbyMediaSyncFile
+	decoded := struct {
+		*plain
+		EmbyItemID json.RawMessage `json:"emby_item_id"`
+	}{plain: (*plain)(link)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.EmbyItemID) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(decoded.EmbyItemID, &link.EmbyItemId); err == nil {
+		return nil
+	}
+	var legacyID uint64
+	if err := json.Unmarshal(decoded.EmbyItemID, &legacyID); err != nil {
+		return err
+	}
+	link.EmbyItemId = strconv.FormatUint(legacyID, 10)
+	return nil
 }
 
 // EmbyLibrarySyncPath 媒体库与 SyncPath 关联（多对多允许重复库对应多个路径）
@@ -204,10 +230,10 @@ func CleanupStaleEmbyMediaItemsByLibrarySyncRun(libraryID string, syncRunID stri
 		}
 	}()
 
-	var staleItemIDs []int64
+	var staleItemIDs []string
 	if err := tx.Model(&EmbyMediaItem{}).
 		Where("library_id = ? AND (last_seen_sync_run IS NULL OR last_seen_sync_run != ?)", libraryID, syncRunID).
-		Pluck("item_id_int", &staleItemIDs).Error; err != nil {
+		Pluck("item_id", &staleItemIDs).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -234,14 +260,13 @@ func DeleteLocalEmbyItemByID(itemID string) error {
 	if itemID == "" {
 		return nil
 	}
-	itemIDInt := helpers.StringToInt64(itemID)
 	tx := db.Db.Begin()
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
 		}
 	}()
-	if err := tx.Where("emby_item_id = ?", itemIDInt).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+	if err := tx.Where("emby_item_id = ?", itemID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -273,8 +298,8 @@ func deleteLocalEmbyItemsByField(field string, value string) error {
 		}
 	}()
 
-	var itemIDs []int64
-	if err := tx.Model(&EmbyMediaItem{}).Where(field+" = ?", value).Pluck("item_id_int", &itemIDs).Error; err != nil {
+	var itemIDs []string
+	if err := tx.Model(&EmbyMediaItem{}).Where(field+" = ?", value).Pluck("item_id", &itemIDs).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -294,16 +319,15 @@ func deleteLocalEmbyItemsByField(field string, value string) error {
 // CreateEmbyMediaSyncFile 创建关联（存在则跳过）
 func CreateEmbyMediaSyncFile(embyItemId string, syncFileId uint, pickCode string, syncPathId uint) error {
 	var count int64
-	embyItemIdInt := helpers.StringToInt(embyItemId)
 	if err := db.Db.Model(&EmbyMediaSyncFile{}).
-		Where("emby_item_id = ? AND sync_file_id = ?", uint(embyItemIdInt), syncFileId).
+		Where("emby_item_id = ? AND sync_file_id = ?", embyItemId, syncFileId).
 		Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
 	}
-	relation := &EmbyMediaSyncFile{EmbyItemId: uint(embyItemIdInt), SyncFileId: syncFileId, PickCode: pickCode, SyncPathId: syncPathId}
+	relation := &EmbyMediaSyncFile{EmbyItemId: embyItemId, SyncFileId: syncFileId, PickCode: pickCode, SyncPathId: syncPathId}
 	return db.Db.Save(relation).Error
 }
 
@@ -463,7 +487,7 @@ func CleanupAllEmbyLibraryData() error {
 	}
 
 	// 清理 emby_media_sync_files
-	if err := tx.Exec("DELETE FROM emby_media_sync_files WHERE emby_item_id IN (SELECT item_id_int FROM emby_media_items)").Error; err != nil {
+	if err := tx.Exec("DELETE FROM emby_media_sync_files WHERE emby_item_id IN (SELECT item_id FROM emby_media_items)").Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -511,7 +535,7 @@ func CleanupUnselectedEmbyLibraryData(selectedLibIds []string) error {
 	}
 
 	// 清理 emby_media_sync_files
-	if err := tx.Exec("DELETE FROM emby_media_sync_files WHERE emby_item_id IN (SELECT item_id_int FROM emby_media_items WHERE library_id IN ?)", unselectedLibIds).Error; err != nil {
+	if err := tx.Exec("DELETE FROM emby_media_sync_files WHERE emby_item_id IN (SELECT item_id FROM emby_media_items WHERE library_id IN ?)", unselectedLibIds).Error; err != nil {
 		tx.Rollback()
 		return err
 	}

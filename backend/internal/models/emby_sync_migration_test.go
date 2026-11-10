@@ -23,12 +23,24 @@ func TestEmbySyncMigrationSQLite(t *testing.T) {
 	}
 }
 
+// 这些夹具从空关联表构造旧库，不能只回退版本号而保留当前文本列。
+func createLegacyEmbyLinkTable(t *testing.T, conn *gorm.DB) {
+	t.Helper()
+	if err := conn.Migrator().DropTable(&EmbyMediaSyncFile{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.AutoMigrate(&legacyEmbyMediaSyncFile{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 两种数据库都从没有根资料及映射字段的旧结构升级，并在连接重开后校验历史不变。
 func testEmbySyncMigration(t *testing.T, conn *gorm.DB, reopen func() *gorm.DB, scenario string) {
 	t.Helper()
 	if err := Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	createLegacyEmbyLinkTable(t, conn)
 	if err := conn.Migrator().DropIndex(&SyncFile{}, syncFileNameIndexName); err != nil {
 		t.Fatal(err)
 	}

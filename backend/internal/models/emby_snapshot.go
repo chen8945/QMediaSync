@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -483,7 +485,7 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 	if err := tx.Model(&EmbyMediaItem{}).Where("id = ?", member.ID).Updates(map[string]any{field: "", "snapshot_id": evidence.ID}).Error; err != nil {
 		return err
 	}
-	if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ? AND snapshot_id = ?", member.ItemIdInt, member.SnapshotID).Update("snapshot_id", evidence.ID).Error; err != nil {
+	if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ? AND snapshot_id = ?", member.ItemId, member.SnapshotID).Update("snapshot_id", evidence.ID).Error; err != nil {
 		return err
 	}
 	if err := tx.Model(&state).Updates(map[string]any{"snapshot_id": evidence.ID, "revision": token.Revision}).Error; err != nil {
@@ -499,9 +501,9 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 		}
 		cache.media[member.ItemId], cache.states[member.ItemId], cache.evidence[evidence.ID] = member, state, evidence
 		delete(cache.memberships, member.ItemId)
-		for i := range cache.links[uint(member.ItemIdInt)] {
-			if cache.links[uint(member.ItemIdInt)][i].SnapshotID == previousSnapshotID {
-				cache.links[uint(member.ItemIdInt)][i].SnapshotID = evidence.ID
+		for i := range cache.links[member.ItemId] {
+			if cache.links[member.ItemId][i].SnapshotID == previousSnapshotID {
+				cache.links[member.ItemId][i].SnapshotID = evidence.ID
 			}
 		}
 	}
@@ -510,7 +512,7 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 
 func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnapshot) error {
 	item := &snapshot.Item
-	id, err := parseEmbyItemID(item.ItemId)
+	id, err := parseEmbySnapshotItemID(item.ItemId)
 	if err != nil {
 		return err
 	}
@@ -976,18 +978,27 @@ func CleanupEmbyLibrarySnapshot(token EmbyIndexToken, libraryID, syncRunID strin
 		if err := checkEmbyToken(tx, token); err != nil {
 			return err
 		}
-		var ids []int64
-		query := tx.Model(&EmbyMediaItem{}).Where("library_id = ? AND (last_seen_sync_run IS NULL OR last_seen_sync_run != ?)", libraryID, syncRunID)
-		if err := query.Pluck("item_id_int", &ids).Error; err != nil {
+		var ids []uint
+		if err := tx.Model(&EmbyMediaItem{}).
+			Where("library_id = ? AND (last_seen_sync_run IS NULL OR last_seen_sync_run != ?)", libraryID, syncRunID).
+			Pluck("id", &ids).Error; err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
+		// 本地主键固定本事务的清理范围，避免传入成批 GUID 或重新计算范围。
+		batchSize := 1000
+		if tx.Dialector.Name() == "postgres" {
+			batchSize = 20000
 		}
-		if err := tx.Where("emby_item_id IN ?", ids).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
-			return err
+		for batch := range slices.Chunk(ids, batchSize) {
+			items := tx.Model(&EmbyMediaItem{}).Select("item_id").Where("id IN ?", batch)
+			if err := tx.Where("emby_item_id IN (?)", items).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", batch).Delete(&EmbyMediaItem{}).Error; err != nil {
+				return err
+			}
 		}
-		return tx.Where("item_id_int IN ?", ids).Delete(&EmbyMediaItem{}).Error
+		return nil
 	})
 }
 
@@ -998,6 +1009,22 @@ func parseEmbyItemID(id string) (int64, error) {
 	}
 	return value, nil
 }
+
+// parseEmbySnapshotItemID 仅扩展索引身份，删除和 Webhook 入口仍要求原数字 ID。
+func parseEmbySnapshotItemID(id string) (int64, error) {
+	// UUID 也可能全为数字，不能先按十进制解析。
+	if len(id) == 32 || len(id) == 36 {
+		parsed, err := uuid.Parse(id)
+		if err == nil && parsed != uuid.Nil {
+			return 0, nil
+		}
+	}
+	if value, err := parseEmbyItemID(id); err == nil {
+		return value, nil
+	}
+	return 0, fmt.Errorf("无效媒体条目 ID：%q", id)
+}
+
 func embyJSON(value any) string { data, _ := json.Marshal(value); return string(data) }
 func embyDigest(value any) string {
 	sum := sha256.Sum256([]byte(embyJSON(value)))

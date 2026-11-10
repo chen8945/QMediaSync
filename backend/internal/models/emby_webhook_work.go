@@ -295,7 +295,11 @@ func SaveEmbyWebhookPlan(ctx context.Context, record EmbyWebhookRecord, plan Emb
 		if err != nil {
 			return err
 		}
-		if current.InputJSON == "" || embyJSON(plan.Input) != current.InputJSON || !plan.Input.CleanupPolicy.AllowsJointBatch() {
+		var input EmbyDeletionInput
+		if err := json.Unmarshal([]byte(current.InputJSON), &input); err != nil {
+			return err
+		}
+		if embyJSON(plan.Input) != embyJSON(input) || !plan.Input.CleanupPolicy.AllowsJointBatch() {
 			return ErrEmbyIdentityAmbiguous
 		}
 		if err := ValidateEmbyDeletionInputMetadata(plan.Input); err != nil {
@@ -318,7 +322,11 @@ func SaveEmbyWebhookPlan(ctx context.Context, record EmbyWebhookRecord, plan Emb
 			return err
 		}
 		if current.PlanJSON != "" {
-			if current.PlanJSON != encoded {
+			var savedPlan EmbyDeletionPlan
+			if err := json.Unmarshal([]byte(current.PlanJSON), &savedPlan); err != nil {
+				return err
+			}
+			if embyJSON(savedPlan) != encoded {
 				return ErrEmbyIdentityAmbiguous
 			}
 			return nil
@@ -472,7 +480,7 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 				return ErrEmbyIdentityAmbiguous
 			}
 			for _, link := range owner.Links {
-				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemIdInt, owner.Evidence.ID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemId, owner.Evidence.ID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 					return err
 				}
 			}

@@ -26,6 +26,7 @@
 | STRM 播放链接预加载 | 按 [预加载验证](#strm-预加载验证) 覆盖关闭、候选选择、动态窗口、配额／重试、身份隔离、接手、生命周期及日志；设置迁移和恢复分别验证 SQLite／隔离 PostgreSQL，前端验证默认关闭和单一开关 | [预加载契约](../architecture/upload-and-strm-processing.md#strm-播放链接预加载)、[配置](../operations/configuration.md#strm-预加载)、[飞牛协议](../reference/fnos-proxy-api.md#预加载观察与限制) |
 | STRM 本地缺项和空目录收尾 | `syncstrm`、`models`、`directoryupload` 普通测试及相关 race / vet；覆盖多层空目录同轮清理、排除及失败保护、取消收尾、活跃上传保留、目录读取错误和上传任务查询失败。核对已确认缺失目录的实际查询次数及存在性 SQL，不用整轮上传任务快照替代删除前检查 | [同步编排](../architecture/sync-orchestration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md) |
 | Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
+| Jellyfin 索引与刷新、远端字符串身份 | `emby/client`、`emby`、`models`、`backup` 普通／race／vet，既有控制器、STRM 和应用回归；隔离 PostgreSQL 验证 70→71 和历史迁移、两种归档及跨引擎恢复。覆盖原生认证／子路径、GUID 规范化、全量／增量 HTTP 到持久关联、多版本／分段、坏页失败保旧、原数字删除资格，以及未适配流程不增加产品探测。实际服务器扫描和旧版兼容另做实机验收，HTTP 替身不能代替 | [媒体库同步](../architecture/emby-library-sync.md#jellyfin-适用范围)、[逻辑备份](../reference/database-schema.md#逻辑备份的数据契约) |
 | Emby 目录清理与共同批删 | `models`、`emby`、`embyclient-rest-go`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
 | STRM 分页、账本批删与进度并发 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/synccron ./internal/realtime`；相关并发回归加 `-race` | [同步调度与任务记录](../architecture/sync-orchestration.md)、[实时事件](../architecture/realtime-events.md) |
 | STRM 扫描完整性与失败范围 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/openlist ./internal/v115/openapi ./internal/synccron ./internal/realtime`；详情流另跑控制器流测试，并对相关并发运行 `-race`；模型事务与迁移同时验证 SQLite / PostgreSQL | [同步编排](../architecture/sync-orchestration.md)、[数据库 schema](../reference/database-schema.md) |
@@ -273,7 +274,7 @@ go test -p 1 -race ./internal/syncstrm ./internal/emby ./internal/models ./inter
 - PG 真实并发证明使用 `TestEmbySnapshotPipelineThreeCommitWorkersPostgresDML` 和 `TestEmbySnapshotOptimizedPostgres*`：前者从 `syncEmbyLibrary` 入口证明三个提交 worker 的真实 DML 可以同时在途，后者验证独立提交可前进、同一全局条目首次插入被串行化，以及删除同步根在写来源记录之前等待快照完成。这些并发回归及 STRM 冷启动／重开辅助使用生产的 `pgx` 驱动；局部模型夹具的四条连接不是生产默认值。
 - `TestSyncLedgerPostgresSerializesBeforeSourceRows` 用真实差异页验证批量账本写入先等待索引保护，再修改目录与视频；位置变化和仅更新时间两种批次都必须成功提交，不能靠取消中断掩盖死锁，也不能因协调而推进索引版本。
 
-两万条媒体／两千个目录的性能对照由 `TestEmbySyncPerformancePostgres` 和 `TestEmbySyncPerformanceSQLite` 显式启用，两者共用媒体、HTTP 响应和数据断言。PostgreSQL 使用 pgx 和 25/25 连接上限，`QMS_TEST_POSTGRES_DSN` 必须指向可丢弃的专用测试库，每个场景新建并清理独立 schema；SQLite 在临时目录使用单连接、WAL 和 NORMAL 同步模式：
+媒体与目录的性能对照由 `TestEmbySyncPerformancePostgres` 和 `TestEmbySyncPerformanceSQLite` 显式启用，两者共用媒体、HTTP 响应和数据断言。默认两万条媒体／两千个目录；`QMS_PERF_ITEMS` 可调整规模，`QMS_PERF_ID_KIND=guid` 使用散列分布的 UUID，未设置时使用数字身份。身份维度只改变远端 ID，路径、来源和数据分布保持一致。PostgreSQL 使用 pgx 和 25/25 连接上限，`QMS_TEST_POSTGRES_DSN` 必须指向可丢弃的专用测试库，每个场景新建并清理独立 schema；SQLite 在临时目录使用单连接、WAL 和 NORMAL 同步模式：
 
 ```bash
 cd backend
@@ -282,6 +283,12 @@ GOMAXPROCS=2 GOMEMLIMIT=300MiB QMS_EMBY_PERFORMANCE=1 go test -p 1 -tags=integra
 ```
 
 改动前后使用相同工具链、数据、分页和 HTTP 配额，夹具调用各版本的生产索引辅助，不能只执行模型 AutoMigrate；新版同时调用 `EnsureEmbySyncFileLookupIndexes` 与 `EnsureEmbyMediaLookupIndexes`，由数据库方言决定是否创建专用索引。默认分别执行全量与增量的两轮；只核对首次／重复全量时，在测试正则后加 `/^full_delete_off$`。记录完整同步耗时、Emby／网盘请求、SQL 数量及累计耗时，以及从 BeginTx 调用到提交返回的累计耗时；每轮结束核对全部条目、文件、目录证据和 membership 与持久 evidence JSON 的等价性。合批后事务数不再要求等于条目数。该事务指标包含连接等待，多个 worker 的区间可以重叠；不能从同步墙钟减去累计值推算事务外耗时，也不能与 SQL 累计相加。数据准备和断言耗时不计入同步耗时，重复轮继承首次数据核验后的状态。两版测量必须串行且避免同时构建；本地 HTTP 服务的高配额不能代表真实网盘限速，单轮结果不能证明稳定加速比，也不能替代真实增量变化负载。
+
+`TestEmbyIndexPerformanceSQLite` 与 `TestEmbyIndexPerformancePostgres` 使用同一开关和身份／规模参数，单独计时非空清理及单条／四条关联读取。清理保留当前批次、其他媒体库、同步文件、状态、成员和不可变证据；读取核对实际结果和原生查询计划，不预先 `ANALYZE` 或强制索引。按上述命令将测试正则换为 `^TestEmbyIndexPerformance(SQLite|Postgres)$` 即可运行。
+
+旧索引清理共用固定本地主键范围和字符串关联查询，SQLite 每批最多 1000 条、PostgreSQL 每批最多 20000 条；所有批次仍在同一事务内，任一批失败全部回滚。调整批量时验证跨批尾项、当前批次／其他库保留和后续批次失败回滚。仅比较 PostgreSQL 清理时，使用 `^TestEmbyIndexPerformancePostgres$/^cleanup$`，在同一隔离实例上交错串行测量改动前后的数字 ID／GUID，准备与保留断言不计时；两万条场景应分别核对批量调整前后的 45／7 条 SQL，不将减少 SQL 等同于稳定提速。
+
+字符串身份变更先点检两引擎 2k 首次／重复全量、20k 非空清理及 PostgreSQL 关联读取；需要稳定性能结论时再对存在疑问的场景增加样本，六轮对照可作为参考。增量场景首轮执行全量并核对成功游标，第二轮才计作增量；当前 HTTP 夹具仍返回固定媒体，不代表真实媒体变更负载。增量先验证正确性，不默认铺开多轮规模矩阵。预编译后按基线、数字候选、GUID 候选交错串行运行，避免与构建、回归或媒体扫描并行。发现退化信号时先检查关键 SQL、计划和阶段耗时，报告原因与绝对成本；少量点检不能证明稳定加速比或统计意义上的无退化。
 
 STRM 的规模对照使用 `TestSTRMSyncPerformancePostgres`，同样需要专用 PostgreSQL 测试库：
 

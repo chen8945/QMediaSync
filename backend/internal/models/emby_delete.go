@@ -193,7 +193,7 @@ func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, exclu
 		if !selected[owner.Item.ItemId] {
 			continue
 		}
-		if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", owner.Item.ItemIdInt, owner.Evidence.ID).Find(&owner.Links).Error; err != nil {
+		if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", owner.Item.ItemId, owner.Evidence.ID).Find(&owner.Links).Error; err != nil {
 			return input, err
 		}
 		for i := range owner.Links {
@@ -805,7 +805,7 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 	// 从物理文件查所有当前使用者，覆盖重叠同步目录、其他版本/季和共享目标。
 	var users []EmbyMediaItem
 	if err := conn.Table("emby_media_items AS i").Select("DISTINCT i.*").
-		Joins("JOIN emby_media_sync_files AS r ON r.emby_item_id = i.item_id_int").
+		Joins("JOIN emby_media_sync_files AS r ON r.emby_item_id = i.item_id").
 		Joins("JOIN sync_files AS f ON f.id = r.sync_file_id").
 		Where("f.source_type = ? AND f.account_id = ? AND (f.file_id = ? OR (f.path = ? AND f.file_name = ?))", file.SourceType, file.AccountID, file.FileID, file.Path, file.FileName).
 		Find(&users).Error; err != nil {
@@ -873,12 +873,12 @@ func FinalizeEmbyDeletionPlan(ctx context.Context, plan EmbyDeletionPlan, result
 				return ErrEmbyIdentityAmbiguous
 			}
 			for _, link := range owner.Links {
-				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemIdInt, ref.SnapshotID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemId, ref.SnapshotID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 					return err
 				}
 			}
 			var remaining int64
-			if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ?", owner.Item.ItemIdInt).Count(&remaining).Error; err != nil {
+			if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ?", owner.Item.ItemId).Count(&remaining).Error; err != nil {
 				return err
 			}
 			if remaining != 0 {

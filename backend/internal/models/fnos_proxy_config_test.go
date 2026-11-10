@@ -138,6 +138,7 @@ func testFnosProxyMigration(t *testing.T, conn *gorm.DB, reopen func() *gorm.DB,
 	if err := Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	createLegacyEmbyLinkTable(t, conn)
 	var original Settings
 	if err := conn.First(&original).Error; err != nil {
 		t.Fatal(err)

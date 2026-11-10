@@ -293,7 +293,7 @@ func TestEmbyLibraryCleanupUsesRemoteIDs(t *testing.T) {
 				t.Fatal(err)
 			}
 			items := []EmbyMediaItem{{BaseModel: BaseModel{ID: 9}, ItemId: "101", ItemIdInt: 101, LibraryId: "a"}, {BaseModel: BaseModel{ID: 101}, ItemId: "9", ItemIdInt: 9, LibraryId: "b"}}
-			for _, value := range []any{&items, &[]EmbyLibrary{{LibraryId: "a"}, {LibraryId: "b"}}, &[]EmbyMediaSyncFile{{EmbyItemId: 101, SyncFileId: 1}, {EmbyItemId: 9, SyncFileId: 2}}} {
+			for _, value := range []any{&items, &[]EmbyLibrary{{LibraryId: "a"}, {LibraryId: "b"}}, &[]EmbyMediaSyncFile{{EmbyItemId: "101", SyncFileId: 1}, {EmbyItemId: "9", SyncFileId: 2}}} {
 				if err := db.Db.Create(value).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -309,7 +309,7 @@ func TestEmbyLibraryCleanupUsesRemoteIDs(t *testing.T) {
 			}
 			var links []EmbyMediaSyncFile
 			db.Db.Find(&links)
-			if all && len(links) != 0 || !all && (len(links) != 1 || links[0].EmbyItemId != 9) {
+			if all && len(links) != 0 || !all && (len(links) != 1 || links[0].EmbyItemId != "9") {
 				t.Fatalf("wrong remote links: %+v", links)
 			}
 		})

@@ -39,9 +39,9 @@ func TestCleanupStaleEmbyMediaItemsByLibrarySyncRun只清理当前库旧批次(t
 		}
 	}
 	relations := []EmbyMediaSyncFile{
-		{EmbyItemId: 101, SyncFileId: 1, PickCode: "pick-101"},
-		{EmbyItemId: 102, SyncFileId: 2, PickCode: "pick-102"},
-		{EmbyItemId: 201, SyncFileId: 3, PickCode: "pick-201"},
+		{EmbyItemId: "101", SyncFileId: 1, PickCode: "pick-101"},
+		{EmbyItemId: "102", SyncFileId: 2, PickCode: "pick-102"},
+		{EmbyItemId: "201", SyncFileId: 3, PickCode: "pick-201"},
 	}
 	if err := db.Db.Create(&relations).Error; err != nil {
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
@@ -67,11 +67,11 @@ func TestCleanupStaleEmbyMediaItemsByLibrarySyncRun只清理当前库旧批次(t
 	if err := db.Db.Order("emby_item_id").Find(&remainingRelations).Error; err != nil {
 		t.Fatalf("查询剩余 EmbyMediaSyncFile 失败: %v", err)
 	}
-	gotRelations := make([]uint, 0, len(remainingRelations))
+	gotRelations := make([]string, 0, len(remainingRelations))
 	for _, relation := range remainingRelations {
 		gotRelations = append(gotRelations, relation.EmbyItemId)
 	}
-	if len(gotRelations) != 2 || gotRelations[0] != 102 || gotRelations[1] != 201 {
+	if len(gotRelations) != 2 || gotRelations[0] != "102" || gotRelations[1] != "201" {
 		t.Fatalf("remaining relation emby_item_ids = %v, want [102 201]", gotRelations)
 	}
 }
@@ -124,7 +124,7 @@ func TestDeleteLocalEmbyItemByID删除Item和关联(t *testing.T) {
 	if err := db.Db.Create(&EmbyMediaItem{ItemId: "101", ItemIdInt: 101, LibraryId: "lib-a"}).Error; err != nil {
 		t.Fatalf("创建 EmbyMediaItem 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{EmbyItemId: 101, SyncFileId: 1}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{EmbyItemId: "101", SyncFileId: 1}).Error; err != nil {
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestDeleteLocalEmbyItemsBySeasonID删除季内条目和关联(t *testing.T)
 			t.Fatalf("创建 EmbyMediaItem 失败: %v", err)
 		}
 	}
-	if err := db.Db.Create(&[]EmbyMediaSyncFile{{EmbyItemId: 101}, {EmbyItemId: 102}, {EmbyItemId: 201}}).Error; err != nil {
+	if err := db.Db.Create(&[]EmbyMediaSyncFile{{EmbyItemId: "101"}, {EmbyItemId: "102"}, {EmbyItemId: "201"}}).Error; err != nil {
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestDeleteLocalEmbyItemsBySeasonID删除季内条目和关联(t *testing.T)
 	if err := db.Db.Find(&remainingRelations).Error; err != nil {
 		t.Fatalf("查询剩余 EmbyMediaSyncFile 失败: %v", err)
 	}
-	if len(remainingRelations) != 1 || remainingRelations[0].EmbyItemId != 201 {
+	if len(remainingRelations) != 1 || remainingRelations[0].EmbyItemId != "201" {
 		t.Fatalf("remainingRelations = %+v, want only 201", remainingRelations)
 	}
 }
@@ -195,7 +195,7 @@ func TestDeleteLocalEmbyItemsBySeriesID删除剧内条目和关联(t *testing.T)
 			t.Fatalf("创建 EmbyMediaItem 失败: %v", err)
 		}
 	}
-	if err := db.Db.Create(&[]EmbyMediaSyncFile{{EmbyItemId: 101}, {EmbyItemId: 102}, {EmbyItemId: 201}}).Error; err != nil {
+	if err := db.Db.Create(&[]EmbyMediaSyncFile{{EmbyItemId: "101"}, {EmbyItemId: "102"}, {EmbyItemId: "201"}}).Error; err != nil {
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestDeleteLocalEmbyItemsBySeriesID删除剧内条目和关联(t *testing.T)
 	if err := db.Db.Find(&remainingRelations).Error; err != nil {
 		t.Fatalf("查询剩余 EmbyMediaSyncFile 失败: %v", err)
 	}
-	if len(remainingRelations) != 1 || remainingRelations[0].EmbyItemId != 201 {
+	if len(remainingRelations) != 1 || remainingRelations[0].EmbyItemId != "201" {
 		t.Fatalf("remainingRelations = %+v, want only 201", remainingRelations)
 	}
 }

@@ -341,6 +341,8 @@ func testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t *testing.T, dialector gorm
 		embyHTTP.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/System/Info/Public":
+			http.NotFound(w, r)
 		case r.URL.Path == "/emby/System/Info/Public":
 			fmt.Fprint(w, `{"Id":"strm-local-server"}`)
 		case r.URL.Path == "/emby/Users":

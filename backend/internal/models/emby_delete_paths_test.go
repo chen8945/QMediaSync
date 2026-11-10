@@ -244,7 +244,7 @@ func TestEmbyDeletion115PathRootAndSharedProtection(t *testing.T) {
 					}
 				case "shared file":
 					item := EmbyMediaItem{ItemId: "102", ItemIdInt: 102, ServerId: plan.Input.ServerID}
-					link := EmbyMediaSyncFile{EmbyItemId: 102, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID}
+					link := EmbyMediaSyncFile{EmbyItemId: "102", SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID}
 					if err := db.Db.Create(&item).Error; err != nil {
 						t.Fatal(err)
 					}

@@ -22,6 +22,7 @@ func testPreloadSettingsMigration(t *testing.T, conn *gorm.DB, reopen func() *go
 	if err := Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	createLegacyEmbyLinkTable(t, conn)
 	if err := conn.Model(&Settings{}).Where("id = ?", 1).Updates(map[string]any{"local_proxy": 1, "multi_playback_enabled": 1, "strm_base_url": "http://preserved.invalid"}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func testPreloadSettingsMigration(t *testing.T, conn *gorm.DB, reopen func() *go
 		if err := Migrate(); err != nil {
 			t.Fatal(err)
 		}
-		assertEmbyMigrationVersion(t, conn, 70)
+		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		var settings Settings
 		if err := conn.First(&settings).Error; err != nil || settings.StrmPreloadEnabled != 0 ||
 			settings.LocalProxy != 1 || settings.MultiPlaybackEnabled != 1 || settings.StrmBaseUrl != "http://preserved.invalid" {

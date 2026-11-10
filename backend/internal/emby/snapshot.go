@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/models"
 )
@@ -190,6 +192,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 		item              embyclientrestgo.BaseItemDtoV2
 		partOf, versionOf string
 		versionRoot       string
+		versionIDs        []string
 	}
 	pending := []member{{item: item}}
 	seen := map[string]bool{}
@@ -199,12 +202,15 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 		pending = pending[1:]
 		value := current.item
 		if value.Type != "Movie" && value.Type != "Episode" && value.Type != "Video" {
-			if strict && (value.Id != item.Id || len(snapshots) > 0) {
+			if current.versionRoot != "" || current.partOf != "" || strict && (value.Id != item.Id || len(snapshots) > 0) {
 				return nil, errors.New("Emby 物理成员类型缺失或不支持")
 			}
 			continue
 		}
 		if seen[value.Id] {
+			if current.partOf != "" {
+				return nil, errors.New("Emby 分段身份重复")
+			}
 			continue
 		}
 		if value.Id == "" {
@@ -229,7 +235,9 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 		distinctUnknown := map[string]bool{}
 		for _, source := range value.MediaSources {
 			if source.ItemID != "" && source.ItemID != value.Id {
-				foreignIDs = append(foreignIDs, source.ItemID)
+				if !slices.Contains(foreignIDs, source.ItemID) {
+					foreignIDs = append(foreignIDs, source.ItemID)
+				}
 				continue
 			}
 			if source.ItemID == "" {
@@ -240,19 +248,32 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 		if len(distinctUnknown) > 1 {
 			return nil, fmt.Errorf("%w: %s 存在无 ItemId 的多个来源", models.ErrEmbyIdentityAmbiguous, value.Id)
 		}
+		var versionIDs []string
+		if len(foreignIDs) > 0 || current.versionIDs != nil {
+			versionIDs = append([]string{value.Id}, foreignIDs...)
+			slices.Sort(versionIDs)
+			declaresDifferentGroup := current.versionIDs != nil && len(foreignIDs) > 0 && !slices.Equal(current.versionIDs, versionIDs)
+			if declaresDifferentGroup || len(ownSources) == 0 {
+				return nil, fmt.Errorf("%w: 版本组来源不完整或不一致", models.ErrEmbyIdentityAmbiguous)
+			}
+		}
 		versionRoot := value.Id
 		for _, id := range foreignIDs {
 			valueID, valueErr := strconv.ParseUint(versionRoot, 10, 64)
 			candidateID, candidateErr := strconv.ParseUint(id, 10, 64)
-			if valueErr != nil || candidateErr != nil {
-				return nil, models.ErrEmbyIdentityAmbiguous
-			}
-			if candidateID < valueID {
+			guidIDs := len(versionRoot) == 32 || len(id) == 32
+			if guidIDs || valueErr != nil || candidateErr != nil {
+				rootGUID, rootErr := uuid.Parse(versionRoot)
+				candidateGUID, candidateErr := uuid.Parse(id)
+				if rootErr != nil || candidateErr != nil || rootGUID == uuid.Nil || candidateGUID == uuid.Nil {
+					return nil, models.ErrEmbyIdentityAmbiguous
+				}
+				if id < versionRoot {
+					versionRoot = id
+				}
+			} else if candidateID < valueID {
 				versionRoot = id
 			}
-		}
-		if current.versionRoot != "" && len(foreignIDs) > 0 && current.versionRoot != versionRoot {
-			return nil, fmt.Errorf("%w: 版本组来源不一致", models.ErrEmbyIdentityAmbiguous)
 		}
 		if len(foreignIDs) > 0 {
 			if value.Id == versionRoot {
@@ -283,7 +304,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 				if detail.Id == versionRoot {
 					versionOf = ""
 				}
-				pending = append(pending, member{item: detail, versionOf: versionOf, versionRoot: versionRoot})
+				pending = append(pending, member{item: detail, versionOf: versionOf, versionRoot: versionRoot, versionIDs: versionIDs})
 			}
 			for _, id := range foreignIDs {
 				if !found[id] {
@@ -312,6 +333,9 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 				}
 				byID := map[string]embyclientrestgo.BaseItemDtoV2{}
 				for _, detail := range details {
+					if !slices.Contains(missing, detail.Id) || byID[detail.Id].Id != "" {
+						return nil, errors.New("Emby 分段查询返回未请求或重复条目")
+					}
 					byID[detail.Id] = detail
 				}
 				for i := range parts {

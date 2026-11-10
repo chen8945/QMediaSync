@@ -18,9 +18,19 @@ import (
 	"qmediasync/internal/helpers"
 )
 
+func newEmbyAPITestServer(handler http.Handler) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"emby-test-server","ProductName":"Emby","Version":"4.9"}`)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+}
+
 func TestFetchMediaItemsByLibraryID分页流式处理(t *testing.T) {
 	requestedStartIndexes := []int{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startIndex, _ := strconv.Atoi(r.URL.Query().Get("StartIndex"))
 		requestedStartIndexes = append(requestedStartIndexes, startIndex)
 
@@ -69,7 +79,7 @@ func TestFetchMediaItemsByLibraryIDFields(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if got := r.URL.Query().Get("Fields"); got != tt.wantFields {
 					t.Errorf("Fields = %q, want %q", got, tt.wantFields)
 				}
@@ -89,7 +99,7 @@ func TestFetchMediaItemsByLibraryIDFields(t *testing.T) {
 
 func TestFetchMediaItemsByLibraryID提前空页返回不完整错误(t *testing.T) {
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		startIndex, _ := strconv.Atoi(r.URL.Query().Get("StartIndex"))
 		if startIndex == 0 {
@@ -120,7 +130,7 @@ func TestFetchMediaItemsByLibraryID提前空页返回不完整错误(t *testing.
 
 func TestFetchMediaItemsByLibraryIDHandle错误停止分页(t *testing.T) {
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if requests > 1 {
 			t.Fatal("handle 返回错误后不应继续请求下一页")
@@ -151,7 +161,7 @@ func TestFetchMediaItemsByLibraryIDHandle错误停止分页(t *testing.T) {
 
 func TestFetchMediaItemsByLibraryIDLastDateCreatedAt正常停止(t *testing.T) {
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if requests > 1 {
 			t.Fatal("达到 LastDateCreatedAt 截止点后不应继续请求下一页")
@@ -179,7 +189,7 @@ func TestFetchMediaItemsByLibraryIDLastDateCreatedAt正常停止(t *testing.T) {
 }
 
 func TestFetchMediaItemsByLibraryIDContext取消(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("context 已取消时不应发送请求")
 	}))
 	defer server.Close()
@@ -199,7 +209,7 @@ func TestFetchMediaItemsByLibraryIDContext取消(t *testing.T) {
 }
 
 func TestFetchMediaItemsByLibraryIDHTTP错误(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fail", http.StatusBadGateway)
 	}))
 	defer server.Close()
@@ -216,7 +226,7 @@ func TestFetchMediaItemsByLibraryIDHTTP错误(t *testing.T) {
 }
 
 func TestGetItemLibraryIdAncestors为空时返回错误(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/emby/Items/episode-1/Ancestors":
 			fmt.Fprint(w, `[]`)
@@ -237,7 +247,7 @@ func TestGetItemLibraryIdAncestors为空时返回错误(t *testing.T) {
 }
 
 func TestGetItemLibraryId单个Ancestor命中媒体库(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/emby/Items/movie-1/Ancestors":
 			fmt.Fprint(w, `[{"Id":"movie-library-folder","Path":"/media/movie"}]`)
@@ -261,7 +271,7 @@ func TestGetItemLibraryId单个Ancestor命中媒体库(t *testing.T) {
 
 func TestRefreshItemUsesItemRefreshEndpoint(t *testing.T) {
 	var gotRecursive string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/emby/Items/item-1/Refresh" {
 			t.Fatalf("请求 = %s %s，期望 POST /emby/Items/item-1/Refresh", r.Method, r.URL.Path)
 		}
@@ -284,7 +294,7 @@ func TestRefreshItemUsesItemRefreshEndpoint(t *testing.T) {
 
 func TestFindItemByPathUsesPathQuery(t *testing.T) {
 	const localPath = "/strm/movie/movie.strm"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/emby/Items" {
 			t.Fatalf("请求 = %s %s，期望 GET /emby/Items", r.Method, r.URL.Path)
 		}
@@ -310,7 +320,7 @@ func TestFindItemByPathUsesPathQuery(t *testing.T) {
 }
 
 func TestFindItemByIDUsesIdsQuery(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/emby/Items" {
 			t.Fatalf("请求 = %s %s，期望 GET /emby/Items", r.Method, r.URL.Path)
 		}
@@ -353,7 +363,7 @@ func TestProcessLibrariesMediaStreamExtraction(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var itemRequests atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/emby/Library/MediaFolders":
 					fmt.Fprint(w, `{"Items":[{"Id":"lib-1","Name":"Movies"}]}`)

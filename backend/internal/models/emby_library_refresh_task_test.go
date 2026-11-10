@@ -97,7 +97,7 @@ func TestRequestEmbyLibraryRefreshBySyncPathIdUsesResolvedItemTargets(t *testing
 	if err := db.Db.Create(item).Error; err != nil {
 		t.Fatalf("创建 Emby 条目失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: syncPathID, SyncFileId: syncFile.ID, EmbyItemId: uint(item.ItemIdInt), PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: syncPathID, SyncFileId: syncFile.ID, EmbyItemId: item.ItemId, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建 Emby 文件关联失败: %v", err)
 	}
 	if err := db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-movie", LibraryName: "电影库", SyncPathId: syncPathID}).Error; err != nil {
@@ -584,6 +584,10 @@ func TestRefreshItemFailureRepairsIncorrectFallbackBeforeLibraryRefresh(t *testi
 	db.Db.Create(&EmbyMediaItem{ItemId: "301", ItemIdInt: 301, LibraryId: "lib-tv", Name: "第 1 集", Type: "Episode"})
 	requestedLibrary := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		if strings.Contains(r.URL.Path, "/Items/301/Refresh") {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -631,6 +635,10 @@ func TestExecuteEmbyRefreshTaskDoesNotUseFallbackWithoutItemIDs(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	refreshRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		refreshRequests++
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -880,6 +888,10 @@ func TestCheckPendingEmbyLibraryRefreshTasksRefreshesOnlyDueLibraries(t *testing
 	setupEmbyRefreshTestDB(t)
 	calledLibraries := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		parts := strings.Split(r.URL.Path, "/")
 		if len(parts) >= 5 {
 			calledLibraries <- parts[3]
@@ -1085,6 +1097,10 @@ func TestRefreshTaskCancelsAfterDeadline(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	var refreshCalled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		refreshCalled.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}))

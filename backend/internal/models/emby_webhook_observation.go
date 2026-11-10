@@ -296,11 +296,11 @@ func adoptEmbyObservedEvidenceTx(tx *gorm.DB, index *EmbyIndexState, record Emby
 			if err := json.Unmarshal([]byte(evidence.FilesJSON), &files); err != nil {
 				return nil, err
 			}
-			if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", item.ItemIdInt, state.SnapshotID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+			if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", item.ItemId, state.SnapshotID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 				return nil, err
 			}
 			for _, file := range files {
-				link := EmbyMediaSyncFile{EmbyItemId: uint(item.ItemIdInt), SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: file.PickCode, SnapshotID: evidence.ID, SourceID: file.SourceID}
+				link := EmbyMediaSyncFile{EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: file.PickCode, SnapshotID: evidence.ID, SourceID: file.SourceID}
 				if err := tx.Create(&link).Error; err != nil {
 					return nil, err
 				}

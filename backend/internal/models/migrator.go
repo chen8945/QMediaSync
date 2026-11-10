@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 70
+var MaxVersionCode = 71
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -264,7 +264,7 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 		// 备份相关表 + Emby 同步相关表
 		db.Db.AutoMigrate(
 			BackupConfig{}, BackupRecord{},
-			EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{},
+			EmbyConfig{}, EmbyMediaItem{}, legacyEmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{},
 		)
 		migrateEmbyConfig(db.Db)
 		migrator.UpdateVersionCode(db.Db)
@@ -281,7 +281,7 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 	}
 	if migrator.VersionCode == 15 {
 		// 优化 EmbyMediaSyncFile 表，添加 SyncPathId 字段
-		db.Db.AutoMigrate(EmbyMediaSyncFile{})
+		db.Db.AutoMigrate(legacyEmbyMediaSyncFile{})
 		// 给 EmbyMediaSyncFile 表补充新增的 SyncPathId 字段
 		fillSyncPathIdInEmbyMediaSyncFile(db.Db)
 		migrator.UpdateVersionCode(db.Db)
@@ -803,7 +803,7 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 	}
 	if migrator.VersionCode == 65 {
 		if err := db.Db.Transaction(func(tx *gorm.DB) error {
-			if err := MigrateEmbyDeletionSchema(tx); err != nil {
+			if err := migrateEmbyDeletionSchema(tx, &legacyEmbyMediaSyncFile{}); err != nil {
 				return err
 			}
 			return tx.Model(&migrator).Update("version_code", 66).Error
@@ -862,6 +862,17 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 		}
 		migrator.VersionCode = 70
 	}
+	if migrator.VersionCode == 70 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if err := migrateEmbyIdentity(tx); err != nil {
+				return err
+			}
+			return tx.Model(&migrator).Update("version_code", 71).Error
+		}); err != nil {
+			return fmt.Errorf("迁移媒体条目关联失败：%w", err)
+		}
+		migrator.VersionCode = 71
+	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {
 			if err := ensureAccountIdentityUniqueIndexes(db.Db); err != nil {
@@ -881,9 +892,13 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 // MigrateEmbyDeletionSchema 补齐 Emby 索引、身份及持久删除结构，不从旧媒体行生成可信证据。
 // 已有库由调用方在同一事务内执行结构变更和版本推进。
 func MigrateEmbyDeletionSchema(tx *gorm.DB) error {
+	return migrateEmbyDeletionSchema(tx, &EmbyMediaSyncFile{})
+}
+
+func migrateEmbyDeletionSchema(tx *gorm.DB, linkModel any) error {
 	return tx.AutoMigrate(
 		&EmbyMediaItem{},
-		&EmbyMediaSyncFile{},
+		linkModel,
 		&EmbyIndexState{},
 		&EmbyItemState{},
 		&EmbyItemEvidence{},
@@ -2060,8 +2075,8 @@ func fillSyncPathIdInEmbyMediaSyncFile(dbConn *gorm.DB) {
 	limit := 100
 	offset := 0
 	for {
-		var embyMediaSyncFiles []EmbyMediaSyncFile
-		dbConn.Model(&EmbyMediaSyncFile{}).Limit(limit).Offset(offset).Find(&embyMediaSyncFiles)
+		var embyMediaSyncFiles []legacyEmbyMediaSyncFile
+		dbConn.Model(&legacyEmbyMediaSyncFile{}).Limit(limit).Offset(offset).Find(&embyMediaSyncFiles)
 		if len(embyMediaSyncFiles) == 0 {
 			break
 		}
@@ -2072,7 +2087,7 @@ func fillSyncPathIdInEmbyMediaSyncFile(dbConn *gorm.DB) {
 				continue
 			}
 			embyMediaSyncFile.SyncPathId = syncFile.SyncPathId
-			dbConn.Save(&embyMediaSyncFile)
+			dbConn.Model(&legacyEmbyMediaSyncFile{}).Where("id = ?", embyMediaSyncFile.ID).UpdateColumn("sync_path_id", syncFile.SyncPathId)
 			helpers.AppLogger.Infof("为 EmbyMediaSyncFile %d 填充 SyncPathId %d 成功", embyMediaSyncFile.ID, syncFile.SyncPathId)
 		}
 		offset += limit

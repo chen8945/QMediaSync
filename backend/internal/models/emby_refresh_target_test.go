@@ -66,7 +66,7 @@ func TestResolveEmbyRefreshTargetUsesExistingMovieItem(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/movie", "movie.mkv", "movie")
 	createEmbyRefreshItem(t, "101", "Movie", "", "")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 101, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "101", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestResolveEmbyRefreshTargetUsesExistingEpisodeItem(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode.mkv", "episode")
 	createEmbyRefreshItem(t, "201", "Episode", "301", "401")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 201, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "201", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestResolveEmbyRefreshTargetFillsLibraryNameFromGlobalSyncPathRelation(t *t
 	if err := db.Db.Model(&EmbyMediaItem{}).Where("item_id = ?", "202").Update("library_id", "lib-tv").Error; err != nil {
 		t.Fatalf("更新 item 媒体库失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 202, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "202", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 
@@ -123,6 +123,10 @@ func TestResolveEmbyTargetLibraryRemoteCachesAndCoalescesSameItem(t *testing.T) 
 	var ancestorsRequests atomic.Int32
 	var virtualFoldersRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/emby/Items/cache-item/Ancestors":
 			ancestorsRequests.Add(1)
@@ -169,7 +173,7 @@ func TestResolveEmbyRefreshTargetUsesSeasonThenSeriesForNewEpisode(t *testing.T)
 	setupEmbyRefreshTestDB(t)
 	existing := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode01.mkv", "ep1")
 	createEmbyRefreshItem(t, "201", "Episode", "301", "401")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 201, SyncFileId: existing.ID, PickCode: existing.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "201", SyncFileId: existing.ID, PickCode: existing.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 	newEpisode := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode02.mkv", "ep2")
@@ -210,7 +214,7 @@ func TestResolveEmbyRefreshTargetSiblingPathIndexKeepsCandidateBounds(t *testing
 	bindEpisode := func(file *SyncFile, itemID int64) {
 		t.Helper()
 		createEmbyRefreshItem(t, fmt.Sprint(itemID), "Episode", fmt.Sprint(itemID+100), "series")
-		if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: file.SyncPathId, SyncFileId: file.ID, EmbyItemId: uint(itemID), PickCode: file.PickCode}).Error; err != nil {
+		if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: file.SyncPathId, SyncFileId: file.ID, EmbyItemId: fmt.Sprint(itemID), PickCode: file.PickCode}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -272,7 +276,7 @@ func TestResolveEmbyRefreshTargetUsesSiblingLibraryEvidenceFromSameEpisode(t *te
 	}).Error; err != nil {
 		t.Fatalf("创建带媒体库 sibling item 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 201, SyncFileId: withLibrary.ID, PickCode: withLibrary.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "201", SyncFileId: withLibrary.ID, PickCode: withLibrary.PickCode}).Error; err != nil {
 		t.Fatalf("创建带媒体库 sibling 关联失败: %v", err)
 	}
 	withoutLibrary := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode02.mkv", "same-sibling-empty")
@@ -289,7 +293,7 @@ func TestResolveEmbyRefreshTargetUsesSiblingLibraryEvidenceFromSameEpisode(t *te
 	}).Error; err != nil {
 		t.Fatalf("创建无媒体库 sibling item 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 202, SyncFileId: withoutLibrary.ID, PickCode: withoutLibrary.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "202", SyncFileId: withoutLibrary.ID, PickCode: withoutLibrary.PickCode}).Error; err != nil {
 		t.Fatalf("创建无媒体库 sibling 关联失败: %v", err)
 	}
 	newEpisode := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode03.mkv", "same-sibling-new")
@@ -306,10 +310,14 @@ func TestResolveEmbyRefreshTargetUsesSiblingLibraryEvidenceFromSameEpisode(t *te
 func TestResolveEmbyRefreshTargetFallsBackToPathLookupWhenLocalRelationIsStale(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/movie", "movie.mkv", "stale")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 999, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "999", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建陈旧关联失败: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		if r.URL.Path != "/emby/Items" || r.URL.Query().Get("Path") != syncFile.LocalFilePath {
 			http.NotFound(w, r)
 			return
@@ -334,6 +342,10 @@ func TestResolveEmbyRefreshTargetPathLookupUsesAncestorsInMultipleLibrarySyncPat
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-tv", LibraryName: "剧集", SyncPathId: 10})
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show", "episode.mkv", "path-ancestors")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		switch {
 		case r.URL.Path == "/emby/Items" && r.URL.Query().Get("Path") == syncFile.LocalFilePath:
 			fmt.Fprint(w, `{"Items":[{"Id":"501","Name":"path episode","Type":"Episode","Path":"`+syncFile.LocalFilePath+`"}],"TotalRecordCount":1}`)
@@ -362,6 +374,10 @@ func TestResolveEmbyRefreshTargetPathLookupPrefersAncestorsOverUniqueSyncPathLib
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-movie", LibraryName: "电影", SyncPathId: 10})
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show", "episode.mkv", "path-unique-ancestors")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		switch {
 		case r.URL.Path == "/emby/Items" && r.URL.Query().Get("Path") == syncFile.LocalFilePath:
 			fmt.Fprint(w, `{"Items":[{"Id":"501","Name":"path episode","Type":"Episode","Path":"`+syncFile.LocalFilePath+`"}],"TotalRecordCount":1}`)
@@ -406,12 +422,16 @@ func TestResolveEmbyRefreshTargetResolvesSiblingSeasonLibraryConflictFromAncesto
 		}).Error; err != nil {
 			t.Fatalf("创建 sibling item 失败: %v", err)
 		}
-		if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: uint(helpersStringToInt64ForTest(itemID)), SyncFileId: sibling.ID, PickCode: sibling.PickCode}).Error; err != nil {
+		if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: itemID, SyncFileId: sibling.ID, PickCode: sibling.PickCode}).Error; err != nil {
 			t.Fatalf("创建 sibling 关联失败: %v", err)
 		}
 	}
 	newEpisode := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode03.mkv", "conflict-new")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		switch r.URL.Path {
 		case "/emby/Items/301/Ancestors":
 			fmt.Fprint(w, `[{"Id":"tv-folder","Path":"/media/tv"}]`)
@@ -445,6 +465,10 @@ func TestResolveEmbyRefreshTargetPathLookupPrefersSiblingLibraryOverAncestors(t 
 	}
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show", "episode.mkv", "path-sibling")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		switch {
 		case r.URL.Path == "/emby/Items" && r.URL.Query().Get("Path") == syncFile.LocalFilePath:
 			fmt.Fprint(w, `{"Items":[{"Id":"301","Name":"path season","Type":"Season","Path":"`+syncFile.LocalFilePath+`"}],"TotalRecordCount":1}`)
@@ -475,11 +499,15 @@ func TestResolveEmbyRefreshTargetUsesCachedItemWithoutNetworkValidation(t *testi
 	if err := db.Db.Model(&EmbyMediaItem{}).Where("item_id = ?", "101").Update("last_seen_at", 0).Error; err != nil {
 		t.Fatalf("标记本地 Emby item 缓存未确认失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 101, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "101", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
+			return
+		}
 		requestCount++
 		http.NotFound(w, r)
 	}))
@@ -542,7 +570,7 @@ func TestRequestEmbyRefreshBySyncFileDedupesSameItem(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/movie", "movie.mkv", "dedupe")
 	createEmbyRefreshItem(t, "101", "Movie", "", "")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 101, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "101", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 
@@ -571,7 +599,7 @@ func TestRequestEmbyRefreshBySyncFileStoresFallbackLibraryForItem(t *testing.T) 
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-tv", LibraryName: "剧集", SyncPathId: 10})
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode.mkv", "episode-fallback")
 	createEmbyRefreshItem(t, "301", "Episode", "401", "501")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 301, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "301", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 
@@ -594,7 +622,7 @@ func TestResolveEmbyRefreshTargetUsesItemLibraryInsteadOfFirstSyncPathLibrary(t 
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-tv", LibraryName: "剧集", SyncPathId: 10})
 	syncFile := createEmbyRefreshSyncFile(t, 10, "/remote/show/Season 01", "episode.mkv", "episode-real-library")
 	createEmbyRefreshItem(t, "301", "Episode", "401", "501")
-	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: 301, SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{SyncPathId: 10, EmbyItemId: "301", SyncFileId: syncFile.ID, PickCode: syncFile.PickCode}).Error; err != nil {
 		t.Fatalf("创建关联失败: %v", err)
 	}
 

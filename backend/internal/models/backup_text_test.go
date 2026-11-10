@@ -16,6 +16,7 @@ func TestBackupTextColumnsSQLite(t *testing.T) {
 	if err := Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	createLegacyEmbyLinkTable(t, db.Db)
 	if err := db.Db.Model(&Migrator{}).Where("id = ?", 1).Update("version_code", 66).Error; err != nil {
 		t.Fatal(err)
 	}

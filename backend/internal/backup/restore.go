@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,11 +150,20 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 		}
 	} else {
 		helpers.AppLogger.Warnf("正在恢复旧格式备份：旧包未保存的字段无法补回，缺少的业务表保持原状")
+		versionTable, exists, err := prepareLegacyRestoreTable(dir, "Migrator", &models.Migrator{}, database, 0)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			sourceVersion = versionTable.sourceVersion
+		} else {
+			sourceVersion = models.MaxVersionCode
+		}
 		for _, model := range models.AllTables {
 			if restoreRebuildsModel(model) {
 				continue
 			}
-			entry, exists, err := prepareLegacyRestoreTable(dir, helpers.GetStructName(model), model, database)
+			entry, exists, err := prepareLegacyRestoreTable(dir, helpers.GetStructName(model), model, database, sourceVersion)
 			if err != nil {
 				return nil, err
 			}
@@ -170,18 +180,23 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 	if len(plan.tables) == 0 {
 		return nil, fmt.Errorf("%w：备份中没有可恢复的模型文件", ErrArchiveInvalid)
 	}
-	if (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (sourceVersion == 67 || (plan.legacy && sourceVersion == 66)) {
+	if sourceVersion < 68 {
 		if err := adaptEmbySyncRestorePlan(database, plan); err != nil {
 			return nil, err
 		}
 	}
-	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (sourceVersion == 67 || sourceVersion == 68 || (plan.legacy && sourceVersion == 66)) {
+	if sourceVersion < 69 {
 		if err := adaptFnosProxyRestorePlan(database, plan); err != nil {
 			return nil, err
 		}
 	}
-	if models.MaxVersionCode == 70 && (sourceVersion == 67 || sourceVersion == 68 || sourceVersion == 69 || (plan.legacy && sourceVersion == 66)) {
+	if sourceVersion < 70 {
 		adaptPreloadRestorePlan(plan)
+	}
+	if sourceVersion < 71 {
+		if err := adaptEmbyIdentityRestorePlan(plan); err != nil {
+			return nil, err
+		}
 	}
 	// 浏览器会话一律清空；派生索引只从恢复后的原始记录重建。
 	for _, model := range models.AllTables {
@@ -440,7 +455,7 @@ func applyRestorePlan(tx *gorm.DB, plan *restorePlan) error {
 	return nil
 }
 
-func prepareLegacyRestoreTable(dir, modelName string, model any, database *gorm.DB) (restoreTable, bool, error) {
+func prepareLegacyRestoreTable(dir, modelName string, model any, database *gorm.DB, sourceVersion int) (restoreTable, bool, error) {
 	table, err := newRestoreTable(database, model)
 	if err != nil {
 		return table, false, err
@@ -448,6 +463,14 @@ func prepareLegacyRestoreTable(dir, modelName string, model any, database *gorm.
 	logical, err := describeLogicalTable(database, model)
 	if err != nil {
 		return table, false, err
+	}
+	table.sourceVersion = sourceVersion
+	if sourceVersion > 0 && sourceVersion < 71 && logical.Name == "emby_media_sync_files" {
+		for i := range logical.Columns {
+			if logical.Columns[i].Name == "emby_item_id" {
+				logical.Columns[i] = legacyEmbyIdentityColumn()
+			}
+		}
 	}
 	path := filepath.Join(dir, modelName+".json")
 	if _, err := os.Stat(path); err != nil {
@@ -488,11 +511,8 @@ func adaptLegacyVersion(row map[string]any) error {
 	if ok && version == int64(models.MaxVersionCode) {
 		return nil
 	}
-	// 66 → 67 只放宽文本列；后续新增表与配置默认值由恢复计划明确补齐。
-	if ok && ((version == 66 && (models.MaxVersionCode == 67 || models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
-		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
-		(version == 68 && (models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
-		(version == 69 && models.MaxVersionCode == 70)) {
+	// 旧版结构差异在计划中按来源版本转换，版本值最终统一推进。
+	if ok && version >= 66 && version < int64(models.MaxVersionCode) {
 		row["version_code"] = int64(models.MaxVersionCode)
 		return nil
 	}
@@ -528,7 +548,30 @@ func decodeLegacyRow(line []byte, table restoreTable) (map[string]any, error) {
 		return nil, fmt.Errorf("记录必须是 JSON 对象")
 	}
 	item := reflect.New(table.schema.ModelType)
-	if err := json.Unmarshal(line, item.Interface()); err != nil {
+	legacyIdentity := table.schema.Table == "emby_media_sync_files" && table.sourceVersion > 0 && table.sourceVersion < 71
+	modelLine := line
+	if legacyIdentity {
+		// 先按旧整数契约解码；当前模型只用于其他字段，不让 string 提前拒绝旧行。
+		modelRaw := make(map[string]json.RawMessage, len(raw))
+		for name, value := range raw {
+			if strings.EqualFold(name, "emby_item_id") || strings.EqualFold(name, "EmbyItemId") {
+				decoded, err := decodeLogicalValue(legacyEmbyIdentityColumn(), value)
+				if err != nil {
+					return nil, err
+				}
+				if decoded != nil {
+					value, _ = json.Marshal(strconv.FormatInt(decoded.(int64), 10))
+				}
+			}
+			modelRaw[name] = value
+		}
+		var err error
+		modelLine, err = json.Marshal(modelRaw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := json.Unmarshal(modelLine, item.Interface()); err != nil {
 		return nil, fmt.Errorf("解析旧格式记录失败：%w", err)
 	}
 	row := make(map[string]any, len(table.schema.DBNames))
@@ -558,7 +601,11 @@ func decodeLegacyRow(line []byte, table restoreTable) (map[string]any, error) {
 			if bytes.Equal(bytes.TrimSpace(encoded), []byte("null")) {
 				value = nil
 			} else {
-				typed := reflect.New(field.FieldType)
+				fieldType := field.FieldType
+				if legacyIdentity && field.DBName == "emby_item_id" {
+					fieldType = reflect.TypeFor[uint]()
+				}
+				typed := reflect.New(fieldType)
 				if err := json.Unmarshal(encoded, typed.Interface()); err != nil {
 					return nil, fmt.Errorf("列 %s 类型不兼容：%w", field.DBName, err)
 				}
@@ -571,6 +618,12 @@ func decodeLegacyRow(line []byte, table restoreTable) (map[string]any, error) {
 		column, err := describeLogicalColumn(field)
 		if err != nil {
 			return nil, fmt.Errorf("列 %s 类型不兼容：%w", field.DBName, err)
+		}
+		if legacyIdentity && field.DBName == "emby_item_id" {
+			column = legacyEmbyIdentityColumn()
+			if !exists {
+				value = uint(0)
+			}
 		}
 		if field.Serializer != nil {
 			if _, ok := field.Serializer.(schema.JSONSerializer); !ok {

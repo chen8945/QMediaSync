@@ -1,23 +1,109 @@
 package backup
 
 import (
+	"fmt"
 	"slices"
+	"strconv"
 
 	"gorm.io/gorm"
 
 	"qmediasync/internal/models"
 )
 
+func legacyEmbyIdentityColumn() logicalColumn {
+	return logicalColumn{Name: "emby_item_id", Type: "unsigned_integer", Bits: 64}
+}
+
+// 旧关联只能使用同一备份的媒体身份解释，不能借目标库记录猜测来源。
+func adaptEmbyIdentityRestorePlan(plan *restorePlan) error {
+	var links, media *restoreTable
+	for i := range plan.tables {
+		table := &plan.tables[i]
+		switch table.schema.Table {
+		case "emby_media_sync_files":
+			links = table
+		case "emby_media_items":
+			media = table
+		}
+	}
+	if links != nil && links.rowCount > 0 {
+		if media == nil {
+			return fmt.Errorf("%w：恢复旧媒体关联时，请同时提供同一备份中的媒体条目表", ErrArchiveInvalid)
+		}
+		mapping := make(map[int64]string)
+		conflicts := make(map[int64]bool)
+		if media.readRows != nil {
+			if err := media.readRows(func(row map[string]any) error {
+				id, ok := row["item_id_int"].(int64)
+				if !ok {
+					return nil
+				}
+				itemID, ok := row["item_id"].(string)
+				if !ok {
+					return nil
+				}
+				if previous, exists := mapping[id]; exists && previous != itemID {
+					conflicts[id] = true
+				}
+				mapping[id] = itemID
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		readRows := links.readRows
+		links.readRows = func(consume func(map[string]any) error) error {
+			return readRows(func(row map[string]any) error {
+				if id, ok := row["emby_item_id"].(int64); ok {
+					if conflicts[id] {
+						return fmt.Errorf("%w：旧媒体编号 %d 对应多个条目，无法恢复关联", ErrArchiveInvalid, id)
+					}
+					itemID, exists := mapping[id]
+					if !exists {
+						itemID = strconv.FormatInt(id, 10)
+					}
+					row["emby_item_id"] = itemID
+				}
+				return consume(row)
+			})
+		}
+		if err := links.readRows(func(map[string]any) error { return nil }); err != nil {
+			return err
+		}
+	}
+	for i := range plan.tables {
+		table := &plan.tables[i]
+		if table.schema.Table == "migrator" && table.readRows != nil {
+			readRows := table.readRows
+			table.readRows = func(consume func(map[string]any) error) error {
+				return readRows(func(row map[string]any) error {
+					row["version_code"] = int64(models.MaxVersionCode)
+					return consume(row)
+				})
+			}
+		}
+	}
+	return nil
+}
+
 func supportsLogicalSchemaVersion(version int) bool {
-	return version == models.MaxVersionCode ||
-		(version == 67 && (models.MaxVersionCode == 68 || models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
-		(version == 68 && (models.MaxVersionCode == 69 || models.MaxVersionCode == 70)) ||
-		(version == 69 && models.MaxVersionCode == 70)
+	return version >= 67 && version <= models.MaxVersionCode
 }
 
 // logicalTablesForSchemaVersion 只回退明确新增的表和列，其他清单、行及文件校验保持原样。
 func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logicalTable {
-	if models.MaxVersionCode == 70 && (version == 67 || version == 68 || version == 69) {
+	if version < 71 {
+		for i := range tables {
+			if tables[i].Name == "emby_media_sync_files" {
+				for j := range tables[i].Columns {
+					if tables[i].Columns[j].Name == "emby_item_id" {
+						tables[i].Columns[j] = legacyEmbyIdentityColumn()
+					}
+				}
+			}
+		}
+	}
+	if version < 70 {
 		for i := range tables {
 			if tables[i].Name == "settings" {
 				tables[i].Columns = slices.DeleteFunc(tables[i].Columns, func(column logicalColumn) bool {
@@ -26,12 +112,12 @@ func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logical
 			}
 		}
 	}
-	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (version == 67 || version == 68) {
+	if version < 69 {
 		tables = slices.DeleteFunc(tables, func(table logicalTable) bool {
 			return table.Name == "fnos_proxy_config"
 		})
 	}
-	if version != 67 || (models.MaxVersionCode != 68 && models.MaxVersionCode != 69 && models.MaxVersionCode != 70) {
+	if version != 67 {
 		return tables
 	}
 	tables = slices.DeleteFunc(tables, func(table logicalTable) bool {
@@ -48,7 +134,7 @@ func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logical
 }
 
 func logicalExclusionsForSchemaVersion(excluded []logicalExclusion, version int) []logicalExclusion {
-	if (models.MaxVersionCode == 69 || models.MaxVersionCode == 70) && (version == 67 || version == 68) {
+	if version < 69 {
 		return slices.DeleteFunc(excluded, func(item logicalExclusion) bool {
 			return item.Name == "fnos_proxy_config"
 		})

@@ -188,7 +188,7 @@ func addEmbyCurrentDirectoryEvidence(tx *gorm.DB, serverID string, rootFile Emby
 	query := tx.Table("emby_item_evidences AS e").Select("DISTINCT e.*").
 		Joins("JOIN emby_item_states AS s ON s.snapshot_id = e.id AND s.server_id = e.server_id AND s.item_id = e.item_id AND s.generation = e.generation AND s.identity_key = e.identity_key").
 		Joins("JOIN emby_media_items AS i ON i.snapshot_id = e.id AND i.server_id = e.server_id AND i.item_id = e.item_id AND i.generation = e.generation").
-		Joins("JOIN emby_media_sync_files AS l ON l.emby_item_id = i.item_id_int AND l.snapshot_id = e.id").
+		Joins("JOIN emby_media_sync_files AS l ON l.emby_item_id = i.item_id AND l.snapshot_id = e.id").
 		Joins("JOIN emby_index_states AS current_server ON current_server.server_id = e.server_id AND current_server.server_config_key = e.server_config_key AND current_server.server_config_key <> ''").
 		Where("l.sync_path_id = ? AND s.deleted = ?", rootFile.SyncPathID, false)
 	if serverID != "" {

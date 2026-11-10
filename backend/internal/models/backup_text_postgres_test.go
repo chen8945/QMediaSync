@@ -93,8 +93,8 @@ func TestMigrateBackupTextColumnsPostgresPreservesExistingValuesAndConstraints(t
 func TestMigrateBackupTextColumnsPostgresRollsBackAndRetries(t *testing.T) {
 	conn, _ := setupEmbySnapshotPostgres(t)
 	createLegacyBackupTextTables(t, conn)
-	// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
-	if err := conn.AutoMigrate(&Migrator{}, &Settings{}); err != nil {
+	// 缩减旧库也保留后续设置和媒体关联迁移必需的旧表。
+	if err := conn.AutoMigrate(&Migrator{}, &Settings{}, &EmbyMediaItem{}, &legacyEmbyMediaSyncFile{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Migrator().DropColumn(&Settings{}, "StrmPreloadEnabled"); err != nil {

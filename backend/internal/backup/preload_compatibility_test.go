@@ -100,7 +100,7 @@ func testRestorePreloadSchemaCompatibility(t *testing.T, setup func(*testing.T) 
 					t.Fatalf("旧备份默认值 / 新备份往返不符：settings=%+v err=%v", stored, err)
 				}
 				var gotVersion models.Migrator
-				if err := conn.First(&gotVersion).Error; err != nil || gotVersion.VersionCode != 70 {
+				if err := conn.First(&gotVersion).Error; err != nil || gotVersion.VersionCode != models.MaxVersionCode {
 					t.Fatalf("恢复版本不符：%+v %v", gotVersion, err)
 				}
 			})
@@ -154,7 +154,7 @@ func TestPreloadCompatibilityRejectsUnknownShapes(t *testing.T) {
 			dir, manifest := preloadCompatibilityBackupDirectory(t, conn, 69)
 			switch scenario {
 			case "unknown_version":
-				manifest.SchemaVersion = 71
+				manifest.SchemaVersion = models.MaxVersionCode + 1
 			case "new_schema_old_shape":
 				manifest.SchemaVersion = 70
 			default:

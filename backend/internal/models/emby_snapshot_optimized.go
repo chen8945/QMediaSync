@@ -36,7 +36,7 @@ type embyApplyCache struct {
 	rootLoaded         map[uint]bool
 	accounts           map[uint]Account
 	accountLoaded      map[uint]bool
-	links              map[uint][]EmbyMediaSyncFile
+	links              map[string][]EmbyMediaSyncFile
 	candidates         map[string][]SyncFile
 	sourceAccounts     map[string][]Account
 	sourceBases        []string
@@ -71,7 +71,7 @@ func newEmbyApplyCache(config *EmbyConfig) *embyApplyCache {
 		rootLoaded:         map[uint]bool{},
 		accounts:           map[uint]Account{},
 		accountLoaded:      map[uint]bool{},
-		links:              map[uint][]EmbyMediaSyncFile{},
+		links:              map[string][]EmbyMediaSyncFile{},
 		candidates:         map[string][]SyncFile{},
 		sourceAccounts:     map[string][]Account{},
 		rootEvidence:       map[uint]SyncRootEvidence{},
@@ -162,14 +162,12 @@ func lockEmbyApplyItems(tx *gorm.DB, snapshots []EmbyItemSnapshot) error {
 
 func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemSnapshot, cache *embyApplyCache) error {
 	ids := make([]string, 0, len(snapshots))
-	intIDs := make([]int64, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		id, err := parseEmbyItemID(snapshot.Item.ItemId)
+		_, err := parseEmbySnapshotItemID(snapshot.Item.ItemId)
 		if err != nil {
 			return err
 		}
 		ids = append(ids, snapshot.Item.ItemId)
-		intIDs = append(intIDs, id)
 	}
 	if len(ids) == 0 {
 		return nil
@@ -240,7 +238,7 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		}
 	}
 	var links []EmbyMediaSyncFile
-	if err := tx.Where("emby_item_id IN ?", intIDs).Order("id").Find(&links).Error; err != nil {
+	if err := tx.Where("emby_item_id IN ?", ids).Order("id").Find(&links).Error; err != nil {
 		return err
 	}
 	for _, link := range links {
@@ -544,9 +542,9 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 			}
 			cache.files[current.ID] = current
 		}
-		desired = append(desired, EmbyMediaSyncFile{EmbyItemId: uint(item.ItemIdInt), SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: current.PickCode, SnapshotID: item.SnapshotID, SourceID: file.SourceID})
+		desired = append(desired, EmbyMediaSyncFile{EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: current.PickCode, SnapshotID: item.SnapshotID, SourceID: file.SourceID})
 	}
-	current := cache.links[uint(item.ItemIdInt)]
+	current := cache.links[item.ItemId]
 	sortLinks := func(rows []EmbyMediaSyncFile) {
 		slices.SortFunc(rows, func(a, b EmbyMediaSyncFile) int {
 			if a.SyncFileId < b.SyncFileId {
@@ -574,7 +572,7 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 		return nil
 	}
 	if len(current) > 0 {
-		if err := tx.Where("emby_item_id = ?", item.ItemIdInt).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+		if err := tx.Where("emby_item_id = ?", item.ItemId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 			return err
 		}
 	}
@@ -583,7 +581,7 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 			return err
 		}
 	}
-	cache.links[uint(item.ItemIdInt)] = desired
+	cache.links[item.ItemId] = desired
 	return nil
 }
 
@@ -618,7 +616,7 @@ func saveEmbyApplyLibraryRelations(tx *gorm.DB, snapshots []EmbyItemSnapshot, ca
 	relations := map[string]EmbyLibrarySyncPath{}
 	for _, snapshot := range snapshots {
 		if snapshot.Item.LibraryId != "" {
-			for _, file := range cache.links[uint(snapshot.Item.ItemIdInt)] {
+			for _, file := range cache.links[snapshot.Item.ItemId] {
 				row := EmbyLibrarySyncPath{LibraryId: snapshot.Item.LibraryId, SyncPathId: file.SyncPathId, LibraryName: snapshot.LibraryName}
 				relations[embyJSON([]any{row.LibraryId, row.SyncPathId})] = row
 			}

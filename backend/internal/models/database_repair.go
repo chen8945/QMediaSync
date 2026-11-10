@@ -30,8 +30,12 @@ func readMigrationRecord(conn *gorm.DB) (Migrator, error) {
 // RepairDatabase 在可信版本元数据存在时补齐结构、派生索引和主键序列。
 // 结构修复仍保留历史行为：回填传输去重键，并取消重复的活跃传输任务。
 func RepairDatabase(conn *gorm.DB) error {
-	if _, err := readMigrationRecord(conn); err != nil {
+	version, err := readMigrationRecord(conn)
+	if err != nil {
 		return err
+	}
+	if version.VersionCode != MaxVersionCode {
+		return errors.New("请先启动当前版本程序完成数据库升级，再执行修复")
 	}
 	if err := batchCreateTable(conn, false); err != nil {
 		return fmt.Errorf("补齐数据库结构失败：%w", err)

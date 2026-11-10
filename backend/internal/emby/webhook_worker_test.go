@@ -330,7 +330,7 @@ func TestWebhookWorkerBusyStillSavesEarlyEvidenceAndDeletesBeforeIndex(t *testin
 					t.Fatalf("shared item lost: %+v err=%v", item, err)
 				}
 				var relation models.EmbyMediaSyncFile
-				if err := db.Db.First(&relation).Error; err != nil || relation.EmbyItemId != 202 || relation.SyncFileId != f.file.ID || relation.SnapshotID != item.SnapshotID {
+				if err := db.Db.First(&relation).Error; err != nil || relation.EmbyItemId != "202" || relation.SyncFileId != f.file.ID || relation.SnapshotID != item.SnapshotID {
 					t.Fatalf("shared relation lost: %+v err=%v", relation, err)
 				}
 				if _, ok := f.provider.files["f1"]; !ok {

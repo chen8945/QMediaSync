@@ -236,7 +236,7 @@ func (replay *auditCorpusReplay) assertMappings(t *testing.T) {
 		byID[item.ItemId] = item
 	}
 	for _, link := range links {
-		id := strconv.FormatUint(uint64(link.EmbyItemId), 10)
+		id := link.EmbyItemId
 		linksByID[id] = append(linksByID[id], link)
 	}
 	expected := make(map[string]embyclientrestgo.BaseItemDtoV2, 157)

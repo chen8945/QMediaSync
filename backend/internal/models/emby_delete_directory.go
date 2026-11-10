@@ -319,7 +319,7 @@ func embyCheckDirectoryRetainers(ctx context.Context, input EmbyDeletionInput, t
 	query := db.Db.WithContext(ctx).Table("sync_files AS f").
 		Select("f.*, e.item_id AS user_item_id, e.server_id AS user_server_id, e.server_config_key AS user_config_key, r.snapshot_id AS user_snapshot_id, e.generation AS user_generation, s.snapshot_id AS current_snapshot_id, s.generation AS current_generation, s.deleted AS owner_deleted, i.snapshot_id AS live_snapshot_id, i.generation AS live_generation, i.server_id AS live_server_id").
 		Joins("JOIN emby_media_sync_files AS r ON r.sync_file_id = f.id").
-		Joins("LEFT JOIN emby_media_items AS i ON i.item_id_int = r.emby_item_id").
+		Joins("LEFT JOIN emby_media_items AS i ON i.item_id = r.emby_item_id").
 		Joins("LEFT JOIN emby_item_evidences AS e ON e.id = r.snapshot_id").
 		Joins("LEFT JOIN emby_item_states AS s ON s.server_id = e.server_id AND s.item_id = e.item_id")
 	if err := embyDirectorySubtreeQuery(query, *target.Directory).Scan(&users).Error; err != nil {

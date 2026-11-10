@@ -10,6 +10,22 @@
 
 实现细节以 `backend/internal/emby`、`backend/internal/models`、`backend/internal/synccron` 和 `frontend/src/views/settings/AppEmbySettings.vue` 为准。
 
+## Jellyfin 适用范围
+
+沿用“系统设置 → Emby”的单服务器配置、选库、手动／Cron 全量与增量索引、路径映射和刷新协调器。普通 Movie、Episode、Video 的静态多版本和服务器已识别的分段复用同一快照流程；不按名称自动合并媒体。Jellyfin 不接入 Emby 302 或页面代理。
+
+客户端按需读取 `System/Info/Public`，在当前实例内复用成功结果。`ProductName` 为 `Jellyfin` 或 `Jellyfin Server` 时使用原生管理路由及 `Authorization: MediaBrowser … Token="…"`；Emby 和未知产品保留既有 Emby 请求方式。公开信息只有明确 404 才尝试 Emby 前缀，认证、网络和解码错误直接返回。配置的反向代理子路径保留。旧 Jellyfin 同样使用原生管理接口，不按版本分流，也不因原生请求失败自动切回兼容接口。
+
+Jellyfin Items 显式请求 `DateCreated,ParentId,Path,MediaSources`，分页按 `DateCreated,SortName` 排序，增量仍使用 `MinDateLastSaved` 和 600 秒重叠窗口；成功游标取扫描起始时间。总数变化、重复身份、提前空页或不完整组失败时不清旧、不推进成功水位。该分页机制不提供远端事务快照。
+
+Jellyfin UUID 在分页去重前规范化为 32 位小写非零值。静态 `MediaSources[].Id` 经来源类型和条目归属核对后补入既有 `ItemID`，来源自身的 ID 和播放 URL 保留原义；Grouping 版本可关联，频道与占位来源不推断物理归属。数字 Emby 保留原数值稳定根，Jellyfin 版本组按规范化 GUID 取稳定根。分段仍使用 AdditionalParts；缺详情、缺成员或跨组冲突使整组失败。
+
+合并后的隐藏版本可能不出现在 `Items?Ids=...`，此时通过具备全部媒体库权限的用户，调用 `Items/{id}?UserId=...` 补查详情。旧版隐藏版本详情可能仅声明自身来源，按完整主项声明的成员核对；声明冲突或缺少详情仍使整组失败。
+
+Jellyfin 不使用 Emby 的远端 `Path` 查询；刷新按本地 item、同季／同剧及已有媒体库关联解析。原生 `POST /Items/{id}/Refresh` 显式设置 `MetadataRefreshMode=Default`、`ImageRefreshMode=Default`，不发送 Emby 的 Fields／Recursive，不强制替换元数据。HTTP 成功只表示已接受任务，新增剧集和图片是否生效需观察服务器扫描结果。
+
+本次未新增 Jellyfin 原生 Webhook、播放通知、主动媒体信息提取或网盘联动删除适配。已有入口不因产品名被禁用，原输入、鉴权、数字删除资格和冻结证据校验继续执行；GUID 能写入索引不构成删除授权。后文 Webhook 和联动删除约定仍描述现有 Emby 契约。
+
 ## 两条链路
 
 Emby 相关任务分为两条独立链路，不能混用。
@@ -102,7 +118,7 @@ STRM Webhook 的具体规则：
 1. 根据 `sync_file_id` 或 PickCode 查询本地 `emby_media_sync_files` 和 `emby_media_items` 关联。
 2. 已有关联的 Movie、Video、Episode 刷新对应 item。
 3. 同季新增剧集没有自身 Episode 关联时，按同步目录和路径查找同目录 sibling Episode，只检查最新的 50 条记录并排除自身。优先刷新 Season，缺少 Season 时刷新 Series。Season、Series 和 Folder 使用递归刷新。
-4. 本地索引无法定位 item 时，按 STRM 本地路径请求 Emby `/Items?Path=...` 做一次兜底查询。
+4. 本地索引无法定位 item 时，Emby 按 STRM 本地路径请求 `/Items?Path=...` 做一次兜底查询；Jellyfin 跳过此查询。
 5. 路径查询命中后，优先采用本地 item 或 sibling Episode 的媒体库证据；必要时通过 Emby Ancestors 消歧，最后才使用同步路径唯一关联的媒体库。
 6. 仍无法定位可靠 item 时，回退同步目录关联媒体库刷新。
 
@@ -300,7 +316,7 @@ QMS 生成和外部 STRM 共用自动路径推导：从已确认的本地存放�
 
 ### 物理快照与身份版本
 
-同步显式请求 Path、MediaSources、PartCount 及季／剧上下文字段。Movie 和 Episode 的 PartCount>1 时请求 `/Videos/{id}/AdditionalParts`，保留隐藏 Video 与主项关系；已有完整字段直接保存，主项、版本和分段缺 Path／MediaSources 时才按 ID 补详情；补查后仍缺字段则保留旧快照。分段读取失败时主项和分段均不替换，当前关系保留。
+Emby 同步显式请求 Path、MediaSources、PartCount 及季／剧上下文字段；Jellyfin 只请求其支持的 Fields，其余上下文字段按 DTO 返回读取。Movie 和 Episode 的 PartCount>1 时请求 `/Videos/{id}/AdditionalParts`，保留隐藏 Video 与主项关系；已有完整字段直接保存，主项、版本和分段缺 Path／MediaSources 时才按 ID 补详情；补查后仍缺字段则保留旧快照。分段读取失败时主项和分段均不替换，当前关系保留。
 
 物理 `/Items` 枚举不会按名称或 TMDB ID 合并版本。额外来源明确指向其他 ItemId 时查询其物理详情，再独立建立关联；无 ItemId 的多个不同来源不会盲绑到外层条目。没有云端来源的完整响应仍保存媒体项并清除旧关联。快照更新允许空字符串、0 和 false，保留 CreatedAt；增量与单条同步不清全量批次标记。
 

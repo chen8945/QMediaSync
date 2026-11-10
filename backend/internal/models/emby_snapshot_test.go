@@ -583,3 +583,98 @@ func TestEmbySnapshotLibrarySelectionDoesNotChangeServerEvidenceIdentity(t *test
 		t.Fatal("old evidence lost same-server identity")
 	}
 }
+
+func TestEmbySnapshotGUIDBindingsAndCleanup(t *testing.T) {
+	_, token, file := setupEmbySnapshotModelTest(t)
+	testEmbySnapshotGUIDBindingsAndCleanup(t, token, snapshotForFile(file))
+}
+
+func testEmbySnapshotGUIDBindingsAndCleanup(t *testing.T, token EmbyIndexToken, template EmbyItemSnapshot) {
+	t.Helper()
+	ids := []string{
+		"00000000000000000000000000000001", "aaaaaaaa111122223333444444444442",
+		"aaaaaaaa111122223333444444444443", "aaaaaaaa111122223333444444444444",
+	}
+	var snapshots []EmbyItemSnapshot
+	for i, id := range ids {
+		snapshot := template
+		snapshot.Item.BaseModel = BaseModel{}
+		snapshot.Item.ItemId, snapshot.Item.ItemIdInt, snapshot.Item.SnapshotID = id, 0, 0
+		snapshot.Item.LastSeenSyncRun = "old-run"
+		if i == 2 {
+			snapshot.Item.LastSeenSyncRun = "current-run"
+		}
+		if i == 3 {
+			snapshot.Item.LibraryId = "other-library"
+		}
+		snapshot.Sources = append([]EmbySnapshotSource(nil), template.Sources...)
+		for j := range snapshot.Sources {
+			snapshot.Sources[j].ItemID, snapshot.Sources[j].ID = id, "source-"+id
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	for range 2 {
+		if err := ApplyEmbySnapshots(token, snapshots); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var media []EmbyMediaItem
+	if err := db.Db.Where("item_id IN ?", ids).Find(&media).Error; err != nil || len(media) != len(ids) {
+		t.Fatalf("GUID media was not persisted: %+v %v", media, err)
+	}
+	for _, item := range media {
+		if item.ItemIdInt != 0 {
+			t.Fatalf("GUID %s was interpreted as numeric ID %d", item.ItemId, item.ItemIdInt)
+		}
+	}
+	var before []EmbyItemEvidence
+	if err := db.Db.Where("item_id IN ?", ids).Order("item_id").Find(&before).Error; err != nil || len(before) != len(ids) {
+		t.Fatalf("GUID resync did not reuse evidence: %d %v", len(before), err)
+	}
+	var links []EmbyMediaSyncFile
+	if err := db.Db.Where("emby_item_id IN ?", ids).Order("emby_item_id").Find(&links).Error; err != nil || len(links) != len(ids) {
+		t.Fatalf("GUID identities shared or duplicated links: %+v %v", links, err)
+	}
+	for i, link := range links {
+		if link.EmbyItemId != ids[i] || link.SyncFileId == 0 || link.SnapshotID != before[i].ID {
+			t.Fatalf("wrong GUID binding: %+v", link)
+		}
+	}
+	if err := RebuildEmbyItemMembership(db.Db); err != nil {
+		t.Fatal(err)
+	}
+	var memberships int64
+	if err := db.Db.Model(&EmbyItemMembership{}).Where("item_id IN ?", ids).Count(&memberships).Error; err != nil || memberships != int64(len(ids)) {
+		t.Fatalf("GUID membership rebuild = %d: %v", memberships, err)
+	}
+	if _, err := CaptureEmbyDeletionTx(db.Db, token.ServerID, ids[1], "Movie"); err == nil {
+		t.Fatal("GUID index support widened deletion admission")
+	}
+	if err := CleanupEmbyLibrarySnapshot(token, template.Item.LibraryId, "current-run"); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []any{&EmbyMediaItem{}, &EmbyMediaSyncFile{}} {
+		column := "item_id"
+		if _, ok := model.(*EmbyMediaSyncFile); ok {
+			column = "emby_item_id"
+		}
+		var remaining []string
+		if err := db.Db.Model(model).Where(column+" IN ?", ids).Order(column).Pluck(column, &remaining).Error; err != nil || !reflect.DeepEqual(remaining, ids[2:]) {
+			t.Fatalf("%T cleanup changed current run/other library: %v %v", model, remaining, err)
+		}
+	}
+	var after []EmbyItemEvidence
+	if err := db.Db.Where("item_id IN ?", ids).Order("item_id").Find(&after).Error; err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("cleanup rewrote GUID history: %v", err)
+	}
+	for _, model := range []any{&EmbyItemState{}, &EmbyItemMembership{}} {
+		var count int64
+		if err := db.Db.Model(model).Where("item_id IN ?", ids).Count(&count).Error; err != nil || count != int64(len(ids)) {
+			t.Fatalf("%T history count = %d: %v", model, count, err)
+		}
+	}
+	var files int64
+	if err := db.Db.Model(&SyncFile{}).Count(&files).Error; err != nil || files == 0 {
+		t.Fatalf("index cleanup deleted source files: %v", err)
+	}
+}

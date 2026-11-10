@@ -152,6 +152,8 @@ func TestEmbySnapshotAdditionalPartsOnlySupplementMissingFields(t *testing.T) {
 			detailCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
+				case "/System/Info/Public":
+					fmt.Fprint(w, `{"Id":"emby-test","ProductName":"Emby"}`)
 				case "/emby/Videos/1/AdditionalParts":
 					if !strings.Contains(r.URL.Query().Get("Fields"), "MediaSources") {
 						t.Error("fields missing")
@@ -194,6 +196,10 @@ func TestEmbySnapshotAdditionalPartsOnlySupplementMissingFields(t *testing.T) {
 
 func TestEmbySnapshotVersionsUseStableRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"emby-test","ProductName":"Emby"}`)
+			return
+		}
 		id := r.URL.Query().Get("Ids")
 		fmt.Fprintf(w, `{"TotalRecordCount":1,"Items":[{"Id":"%s","Type":"Movie","Path":"/version%s.strm","MediaSources":[{"Id":"a","ItemId":"1","Path":"http://qms?pickcode=one"},{"Id":"b","ItemId":"2","Path":"http://qms?pickcode=two"}]}]}`, id, id)
 	}))
@@ -221,6 +227,10 @@ func TestEmbySnapshotVersionsUseStableRoot(t *testing.T) {
 func TestEmbySnapshotOmittedSourcesCannotClearSnapshot(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			fmt.Fprint(w, `{"Id":"emby-test","ProductName":"Emby"}`)
+			return
+		}
 		calls++
 		fmt.Fprint(w, `{"TotalRecordCount":1,"Items":[{"Id":"1","Type":"Movie","Path":"/movie.strm"}]}`)
 	}))

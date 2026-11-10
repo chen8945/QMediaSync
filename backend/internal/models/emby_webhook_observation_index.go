@@ -44,7 +44,7 @@ func validateEmbyEvidenceItem(evidence EmbyItemEvidence, item EmbyMediaItem) err
 	if item.ItemId != evidence.ItemID || item.ServerId != evidence.ServerID || item.Generation != evidence.Generation {
 		return ErrEmbyIdentityAmbiguous
 	}
-	_, err := parseEmbyItemID(item.ItemId)
+	_, err := parseEmbySnapshotItemID(item.ItemId)
 	return err
 }
 

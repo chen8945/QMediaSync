@@ -40,7 +40,7 @@ func setupEmbyReceiptController(t *testing.T, enabled bool) (*gorm.DB, *gin.Engi
 	if err := conn.Create(&models.EmbyMediaItem{ItemId: "20", ItemIdInt: 20, Type: "Video"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Create(&models.EmbyMediaSyncFile{EmbyItemId: 20, SyncFileId: 1}).Error; err != nil {
+	if err := conn.Create(&models.EmbyMediaSyncFile{EmbyItemId: "20", SyncFileId: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	router := gin.New()

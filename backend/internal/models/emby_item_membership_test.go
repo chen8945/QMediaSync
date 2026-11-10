@@ -305,6 +305,12 @@ func TestEmbyItemMembershipReusedItemMatchesJSON(t *testing.T) {
 		}},
 		{name: "item server mismatch", wantErr: true, mutate: func(_ *EmbyItemState, _ *EmbyItemEvidence, item *EmbyMediaItem) { item.ServerId = "other" }},
 		{name: "item generation mismatch", wantErr: true, mutate: func(_ *EmbyItemState, _ *EmbyItemEvidence, item *EmbyMediaItem) { item.Generation++ }},
+		{name: "GUID identity", mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, item *EmbyMediaItem) {
+			state.ItemID, evidence.ItemID, item.ItemId = "aaaaaaaa111122223333444444444444", "aaaaaaaa111122223333444444444444", "aaaaaaaa111122223333444444444444"
+		}},
+		{name: "zero GUID remains invalid", wantErr: true, mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, item *EmbyMediaItem) {
+			state.ItemID, evidence.ItemID, item.ItemId = "00000000000000000000000000000000", "00000000000000000000000000000000", "00000000000000000000000000000000"
+		}},
 		{name: "invalid item ID", wantErr: true, mutate: func(state *EmbyItemState, evidence *EmbyItemEvidence, item *EmbyMediaItem) {
 			state.ItemID, evidence.ItemID, item.ItemId = "invalid", "invalid", "invalid"
 		}},

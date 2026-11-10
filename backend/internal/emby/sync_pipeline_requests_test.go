@@ -136,8 +136,8 @@ func TestEmbySnapshotPipelineFullAndIncrementalUseOnlyLocalCloudEvidence(t *test
 				embyRequests.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				switch {
-				case r.URL.Path == "/emby/System/Info/Public":
-					fmt.Fprint(w, `{"Id":"diagnosis-server"}`)
+				case r.URL.Path == "/System/Info/Public":
+					fmt.Fprint(w, `{"Id":"diagnosis-server","ProductName":"Emby"}`)
 				case r.URL.Path == "/emby/Users":
 					fmt.Fprint(w, `[{"Id":"user","Policy":{"EnableAllFolders":true}}]`)
 				case r.URL.Path == "/emby/Library/MediaFolders":

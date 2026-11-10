@@ -454,6 +454,9 @@ func TestLogicalBackupDeclaresRetiredColumnsWithoutChangingSource(t *testing.T) 
 		}
 	}
 	// 实际升级不会 DROP 这些旧列；备份不得因模型已移除它们而拒绝已升级的数据库。
+	if err := testDB.Exec("CREATE TABLE emby_media_sync_files (id INTEGER PRIMARY KEY AUTOINCREMENT, emby_item_id INTEGER)").Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := testDB.Exec("UPDATE migrator SET version_code = 66").Error; err != nil {
 		t.Fatal(err)
 	}

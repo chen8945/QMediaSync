@@ -145,8 +145,8 @@ func findEmbyItemBySyncFile(syncFile *SyncFile) (*EmbyMediaItem, error) {
 
 func findEmbyMediaItemByRelation(relation EmbyMediaSyncFile, syncFile *SyncFile) (*EmbyMediaItem, error) {
 	var item EmbyMediaItem
-	itemID := fmt.Sprintf("%d", relation.EmbyItemId)
-	err := db.Db.Where("item_id_int = ? OR item_id = ?", int64(relation.EmbyItemId), itemID).
+	itemID := relation.EmbyItemId
+	err := db.Db.Where("item_id = ?", itemID).
 		Order("id ASC").
 		First(&item).Error
 	if err == gorm.ErrRecordNotFound {
@@ -373,9 +373,6 @@ func embyItemLibraryIDsWithDB(tx *gorm.DB, itemID string) ([]string, error) {
 		return []string{}, nil
 	}
 	query := tx.Model(&EmbyMediaItem{}).Where("item_id = ?", itemID)
-	if itemIDInt := helpers.StringToInt64(itemID); itemIDInt > 0 {
-		query = tx.Model(&EmbyMediaItem{}).Where("item_id = ? OR item_id_int = ?", itemID, itemIDInt)
-	}
 	var libraryIDs []string
 	if err := query.Where("library_id <> ''").Distinct("library_id").Pluck("library_id", &libraryIDs).Error; err != nil {
 		return nil, err

@@ -7,19 +7,39 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
+
 	"time"
+
+	"github.com/google/uuid"
 
 	"qmediasync/internal/helpers"
 )
 
 // Client 是与 Emby API 交互的客户端。
 type Client struct {
-	embyURL    string
-	apiKey     string
-	httpClient *http.Client
+	embyURL     string
+	apiKey      string
+	httpClient  *http.Client
+	infoMu      sync.Mutex
+	serverInfo  *serverInfo
+	infoLoading chan struct{}
+}
+
+type serverInfo struct {
+	ID          string `json:"Id"`
+	ProductName string `json:"ProductName"`
+	Version     string `json:"Version"`
+}
+
+func (i serverInfo) jellyfin() bool {
+	return strings.EqualFold(i.ProductName, "Jellyfin") || strings.EqualFold(i.ProductName, "Jellyfin Server")
 }
 
 // NewClient 创建一个新的 Emby API 客户端。
@@ -76,6 +96,8 @@ type BaseItemDtoV2 struct {
 	SeasonId          string            `json:"SeasonId,omitempty"`
 	SeasonName        string            `json:"SeasonName,omitempty"`
 	Path              string            `json:"Path,omitempty"`
+	SourceType        string            `json:"SourceType,omitempty"`
+	ChannelID         string            `json:"ChannelId,omitempty"`
 	IndexNumber       int               `json:"IndexNumber,omitempty"`
 	ParentIndexNumber int               `json:"ParentIndexNumber,omitempty"`
 	ProductionYear    int               `json:"ProductionYear,omitempty"`
@@ -94,6 +116,7 @@ type BaseItemDtoV2 struct {
 
 type MediaSource struct {
 	ID     string `json:"Id,omitempty"`
+	Type   string `json:"Type,omitempty"`
 	ItemID string `json:"ItemId,omitempty"`
 	Path   string `json:"Path,omitempty"`
 	Name   string `json:"Name,omitempty"`
@@ -111,6 +134,8 @@ type QueryResultBaseItemDto struct {
 }
 
 const embyRefreshLookupItemTypes = "Movie,Video,Episode,Folder,Series"
+
+const jellyfinSnapshotFields = "DateCreated,ParentId,Path,MediaSources"
 
 // EmbySnapshotFields 是物理索引快照必须显式请求的字段。
 const EmbySnapshotFields = "DateCreated,DateModified,ParentId,PremiereDate,Path,MediaSources,PartCount,SeriesId,SeasonId,SeriesName,SeasonName,IndexNumber,ParentIndexNumber"
@@ -154,48 +179,32 @@ type VirtualFolderDto struct {
 
 // GetAllMediaLibraries 从 Emby 服务器检索所有媒体库。
 func (c *Client) GetAllMediaLibraries() ([]EmbyLibrary, error) {
-	// 构造请求 URL
-	url := fmt.Sprintf("%s/emby/Library/MediaFolders?api_key=%s", c.embyURL, c.apiKey)
-
-	// 创建一个新的 HTTP 请求
-	req, err := http.NewRequest("GET", url, nil)
+	info, err := c.getServerInfo(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("创建请求时出错：%w", err)
+		return nil, err
 	}
-
-	// 设置请求头
-	req.Header.Set("Accept", "application/json")
-
-	// 发送请求
-	resp, err := c.httpClient.Do(req)
+	libraries, err := c.getMediaLibraries()
 	if err != nil {
-		return nil, fmt.Errorf("发送请求时出错：%w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("收到非 200 状态码：%d", resp.StatusCode)
-	}
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体时出错：%w", err)
-	}
-
-	// 解析 JSON 响应
-	var librariesResponse EmbyLibrariesResponse
-	if err := json.Unmarshal(body, &librariesResponse); err != nil {
-		// 尝试解析为单个项目，以应对某些 Emby 版本可能返回不同结构的情况
-		var singleLibrary EmbyLibrary
-		if err2 := json.Unmarshal(body, &singleLibrary); err2 == nil && singleLibrary.Name != "" {
-			return []EmbyLibrary{singleLibrary}, nil
+	if info.jellyfin() {
+		for i := range libraries {
+			id, err := normalizeJellyfinID(libraries[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			libraries[i].ID = id
 		}
-		return nil, fmt.Errorf("解析 JSON 时出错：%w", err)
 	}
+	return libraries, nil
+}
 
-	return librariesResponse.Items, nil
+func (c *Client) getMediaLibraries() ([]EmbyLibrary, error) {
+	var response EmbyLibrariesResponse
+	if err := c.getSnapshotJSON(context.Background(), "/Library/MediaFolders", nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Items, nil
 }
 
 // GetMediaItemsByLibraryID 从指定的媒体库中检索所有媒体项目。
@@ -219,72 +228,281 @@ func (c *Client) GetMediaItemsByLibraryID(libraryID string, lastDateCreatedTime 
 
 // GetServerID 查询当前 Emby 实例身份，不用 URL 或版本号替代服务器 ID。
 func (c *Client) GetServerID(ctx context.Context) (string, error) {
-	var info struct {
-		ID string `json:"Id"`
-	}
-	if err := c.getSnapshotJSON(ctx, "/System/Info/Public", nil, &info); err != nil {
+	info, err := c.getServerInfo(ctx)
+	if err != nil {
 		return "", err
 	}
 	if info.ID == "" {
-		return "", errors.New("Emby 未返回服务器 ID")
+		return "", errors.New("媒体服务器未返回服务器 ID")
 	}
 	return info.ID, nil
 }
 
+func (c *Client) getServerInfo(ctx context.Context) (serverInfo, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return serverInfo{}, err
+		}
+		c.infoMu.Lock()
+		if c.serverInfo != nil {
+			info := *c.serverInfo
+			c.infoMu.Unlock()
+			return info, nil
+		}
+		if loading := c.infoLoading; loading != nil {
+			c.infoMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return serverInfo{}, ctx.Err()
+			case <-loading:
+				continue
+			}
+		}
+		c.infoLoading = make(chan struct{})
+		c.infoMu.Unlock()
+		var info serverInfo
+		status, err := c.getJSON(ctx, "/System/Info/Public", nil, &info, true)
+		if status == http.StatusNotFound {
+			_, err = c.getJSON(ctx, "/System/Info/Public", nil, &info, false)
+		}
+		c.infoMu.Lock()
+		if err == nil {
+			c.serverInfo = &info
+		}
+		close(c.infoLoading)
+		c.infoLoading = nil
+		c.infoMu.Unlock()
+		return info, err
+	}
+}
+
+func (c *Client) isJellyfin() bool {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	return c.serverInfo != nil && c.serverInfo.jellyfin()
+}
+
+func (c *Client) newAPIRequest(ctx context.Context, method, path string, params url.Values, jellyfin bool) (*http.Request, error) {
+	if params == nil {
+		params = url.Values{}
+	} else {
+		params = maps.Clone(params)
+	}
+	prefix := "/emby"
+	if jellyfin {
+		prefix = ""
+	} else {
+		params.Set("api_key", c.apiKey)
+	}
+	u := strings.TrimRight(c.embyURL, "/") + prefix + path
+	if len(params) > 0 {
+		u += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	if err != nil {
+		return nil, errors.New("创建媒体服务器请求失败")
+	}
+	req.Header.Set("Accept", "application/json")
+	if jellyfin {
+		req.Header.Set("Authorization", "MediaBrowser Client=\"QMediaSync\", Device=\"QMediaSync\", DeviceId=\"QMediaSync\", Version=\"1\", Token="+strconv.Quote(c.apiKey))
+	}
+	return req, nil
+}
+
 // GetAdditionalParts 获取隐藏分段并直接请求物理快照字段。
 func (c *Client) GetAdditionalParts(ctx context.Context, itemID string) ([]BaseItemDtoV2, error) {
+	info, err := c.getServerInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var result QueryResultBaseItemDto
-	params := url.Values{"Fields": {EmbySnapshotFields}}
+	fields := EmbySnapshotFields
+	if info.jellyfin() {
+		fields = jellyfinSnapshotFields
+	}
+	params := url.Values{"Fields": {fields}}
 	if err := c.getSnapshotJSON(ctx, "/Videos/"+url.PathEscape(itemID)+"/AdditionalParts", params, &result); err != nil {
 		return nil, err
 	}
 	if int(result.TotalRecordCount) != len(result.Items) {
 		return nil, errors.New("Emby AdditionalParts 响应不完整")
 	}
+	if info.jellyfin() {
+		for i := range result.Items {
+			if err := normalizeJellyfinItem(&result.Items[i]); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return result.Items, nil
 }
 
 // GetSnapshotItems 按 ID 补查缺少字段的物理条目，不依赖用户态聚合接口。
 func (c *Client) GetSnapshotItems(ctx context.Context, ids string) ([]BaseItemDtoV2, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := c.getServerInfo(ctx); err != nil {
+		return nil, err
+	}
 	var result []BaseItemDtoV2
 	err := c.FetchMediaItemsByLibraryID(ctx, EmbyItemsQuery{IDs: ids, Fields: EmbySnapshotFields}, func(item BaseItemDtoV2) error {
 		result = append(result, item)
 		return nil
 	})
+	if err != nil || !c.isJellyfin() || ids == "" {
+		return result, err
+	}
+	returned := make(map[string]bool, len(result))
+	for _, item := range result {
+		returned[item.Id] = true
+	}
+	var missing []string
+	for _, requested := range strings.Split(ids, ",") {
+		id, err := normalizeJellyfinID(requested)
+		if err != nil {
+			return nil, err
+		}
+		if !returned[id] {
+			missing = append(missing, id)
+			returned[id] = true
+		}
+	}
+	if len(missing) == 0 {
+		return result, nil
+	}
+	// Jellyfin 的集合查询隐藏自动合并的版本；单项详情仍可按原 ID 读取。
+	users, err := c.getUsersWithAllLibrariesAccess(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, errors.New("没有找到可读取隐藏版本的媒体库用户")
+	}
+	params := url.Values{"UserId": {users[0].ID}}
+	for _, id := range missing {
+		var item BaseItemDtoV2
+		if err := c.getSnapshotJSON(ctx, "/Items/"+url.PathEscape(id), params, &item); err != nil {
+			return nil, err
+		}
+		if err := normalizeJellyfinItem(&item); err != nil {
+			return nil, err
+		}
+		if item.Id != id {
+			return nil, errors.New("Jellyfin 版本详情返回了其他媒体条目")
+		}
+		result = append(result, item)
+	}
 	return result, err
 }
 
 func (c *Client) getSnapshotJSON(ctx context.Context, path string, params url.Values, result any) error {
-	if params == nil {
-		params = url.Values{}
-	}
-	params.Set("api_key", c.apiKey)
-	u := c.embyURL + "/emby" + path + "?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	_, err := c.getJSON(ctx, path, params, result, c.isJellyfin())
+	return err
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, params url.Values, result any, jellyfin bool) (int, error) {
+	req, err := c.newAPIRequest(ctx, http.MethodGet, path, params, jellyfin)
 	if err != nil {
-		return errors.New("创建 Emby 快照请求失败")
+		return 0, err
 	}
-	req.Header.Set("Accept", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return errors.New("Emby 快照请求失败")
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, errors.New("媒体服务器请求失败")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Emby 快照请求状态码：%d", resp.StatusCode)
+		return resp.StatusCode, fmt.Errorf("媒体服务器请求状态码：%d", resp.StatusCode)
 	}
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(result); err != nil {
-		return fmt.Errorf("解析 Emby 快照响应失败：%w", err)
+		return resp.StatusCode, fmt.Errorf("解析媒体服务器响应失败：%w", err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("Emby 快照响应含有多余内容")
+		return resp.StatusCode, errors.New("媒体服务器响应含有多余内容")
+	}
+	return resp.StatusCode, nil
+}
+
+func normalizeJellyfinID(value string) (string, error) {
+	if len(value) != 32 && len(value) != 36 {
+		return "", fmt.Errorf("Jellyfin 返回无效的媒体 ID：%q", value)
+	}
+	id, err := uuid.Parse(value)
+	if err != nil || id == uuid.Nil {
+		return "", fmt.Errorf("Jellyfin 返回无效的媒体 ID：%q", value)
+	}
+	return strings.ReplaceAll(id.String(), "-", ""), nil
+}
+
+func normalizeJellyfinItem(item *BaseItemDtoV2) error {
+	id, err := normalizeJellyfinID(item.Id)
+	if err != nil {
+		return err
+	}
+	item.Id = id
+	for _, field := range []*string{&item.ParentId, &item.SeriesId, &item.SeasonId} {
+		if *field != "" {
+			id, err := normalizeJellyfinID(*field)
+			if err != nil {
+				return err
+			}
+			*field = id
+		}
+	}
+	if len(item.MediaSources) == 0 {
+		return nil
+	}
+	switch item.Type {
+	case "Movie", "Episode", "Video":
+	default:
+		return nil
+	}
+	if item.SourceType != "" && item.SourceType != "Library" {
+		return errors.New("Jellyfin 媒体来源不属于普通媒体库")
+	}
+	if item.ChannelID != "" {
+		channel, err := uuid.Parse(item.ChannelID)
+		if err != nil || channel != uuid.Nil {
+			return errors.New("Jellyfin 频道媒体不能作为普通文件关联")
+		}
+	}
+	for i := range item.MediaSources {
+		source := &item.MediaSources[i]
+		if source.Type != "Default" && source.Type != "Grouping" {
+			return errors.New("Jellyfin 返回无法关联到媒体文件的来源")
+		}
+		id, err := normalizeJellyfinID(source.ID)
+		if err != nil {
+			return err
+		}
+		source.ItemID = id
+	}
+	return nil
+}
+
+func normalizeJellyfinVirtualFolders(folders []VirtualFolderDto) error {
+	for i := range folders {
+		for _, field := range []*string{&folders[i].ID, &folders[i].ItemId, &folders[i].Guid, &folders[i].PrimaryImageItemId} {
+			if *field == "" {
+				continue
+			}
+			id, err := normalizeJellyfinID(*field)
+			if err != nil {
+				return err
+			}
+			*field = id
+		}
 	}
 	return nil
 }
 
 // FetchMediaItemsByLibraryID 从指定媒体库分页拉取媒体条目，并逐条回调处理。
+// 索引入口先核验服务器；通知和媒体提取沿用既有请求，不额外探测。
 func (c *Client) FetchMediaItemsByLibraryID(
 	ctx context.Context,
 	query EmbyItemsQuery,
@@ -300,6 +518,7 @@ func (c *Client) FetchMediaItemsByLibraryID(
 		return errors.New("handle 不能为空")
 	}
 
+	jellyfin := c.isJellyfin()
 	startIndex := query.StartIndex
 	limit := query.Limit
 	if limit <= 0 {
@@ -332,7 +551,7 @@ func (c *Client) FetchMediaItemsByLibraryID(
 				return fmt.Errorf("Emby 分页返回重复条目 %s", item.Id)
 			}
 			seen[item.Id] = struct{}{}
-			if query.LastDateCreatedAt > 0 && item.DateCreated != "" {
+			if !jellyfin && query.LastDateCreatedAt > 0 && item.DateCreated != "" {
 				if t, err := time.Parse(time.RFC3339, item.DateCreated); err == nil && t.Unix() == query.LastDateCreatedAt {
 					return nil
 				}
@@ -359,17 +578,13 @@ func (c *Client) fetchMediaItemsPage(
 	startIndex int,
 	limit int,
 ) (QueryResultBaseItemDto, error) {
-	basePath := fmt.Sprintf("%s/emby/Items", c.embyURL)
+	path := "/Items"
 	if query.UserID != "" {
-		basePath = fmt.Sprintf("%s/emby/Users/%s/Items", c.embyURL, url.PathEscape(query.UserID))
+		path = "/Users/" + url.PathEscape(query.UserID) + "/Items"
 	}
-	baseURL, err := url.Parse(basePath)
-	if err != nil {
-		return QueryResultBaseItemDto{}, fmt.Errorf("解析基础 URL 时出错：%w", err)
-	}
+	jellyfin := c.isJellyfin()
 
 	params := url.Values{}
-	params.Add("api_key", c.apiKey)
 	params.Add("StartIndex", fmt.Sprintf("%d", startIndex))
 	params.Add("Limit", fmt.Sprintf("%d", limit))
 	params.Add("Recursive", "true")
@@ -402,32 +617,31 @@ func (c *Client) fetchMediaItemsPage(
 	if query.IDs != "" {
 		params.Add("Ids", query.IDs)
 	}
-	baseURL.RawQuery = params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL.String(), nil)
-	if err != nil {
-		return QueryResultBaseItemDto{}, fmt.Errorf("创建请求时出错：%w", err)
+	if jellyfin {
+		fields := jellyfinSnapshotFields
+		if slices.Contains(strings.Split(query.Fields, ","), "MediaStreams") {
+			fields += ",MediaStreams"
+		}
+		params.Set("Fields", fields)
+		params.Set("SortBy", "DateCreated,SortName")
 	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return QueryResultBaseItemDto{}, fmt.Errorf("发送请求时出错：%w", err)
+	var page struct {
+		Items *[]BaseItemDtoV2 `json:"Items"`
+		Total *int32           `json:"TotalRecordCount"`
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return QueryResultBaseItemDto{}, fmt.Errorf("收到非 200 状态码：%d", resp.StatusCode)
+	if err := c.getSnapshotJSON(ctx, path, params, &page); err != nil {
+		return QueryResultBaseItemDto{}, err
 	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return QueryResultBaseItemDto{}, fmt.Errorf("读取响应体时出错：%w", err)
+	if page.Items == nil || page.Total == nil || *page.Total < 0 {
+		return QueryResultBaseItemDto{}, errors.New("媒体服务器分页响应缺少完整的条目或总数")
 	}
-
-	var response QueryResultBaseItemDto
-	if err := json.Unmarshal(body, &response); err != nil {
-		return QueryResultBaseItemDto{}, fmt.Errorf("解析 JSON 时出错：%w", err)
+	response := QueryResultBaseItemDto{Items: *page.Items, TotalRecordCount: *page.Total}
+	if jellyfin {
+		for i := range response.Items {
+			if err := normalizeJellyfinItem(&response.Items[i]); err != nil {
+				return QueryResultBaseItemDto{}, err
+			}
+		}
 	}
 	return response, nil
 }
@@ -485,58 +699,35 @@ func (c *Client) CheckPlaybackInfo(item BaseItemDtoV2, userID string) error {
 
 // GetUsersWithAllLibrariesAccess 获取所有 Emby 用户，并筛选出可访问全部媒体库的用户。
 func (c *Client) GetUsersWithAllLibrariesAccess() ([]UserDto, error) {
-	// 构造请求 URL
-	url := fmt.Sprintf("%s/emby/Users?api_key=%s", c.embyURL, c.apiKey)
+	return c.getUsersWithAllLibrariesAccess(context.Background())
+}
 
-	// 创建新的 HTTP 请求
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求时出错：%w", err)
-	}
-
-	// 设置请求头
-	req.Header.Set("Accept", "application/json")
-
-	// 发送请求
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("发送请求时出错：%w", err)
-	}
-	defer resp.Body.Close()
-
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("收到非 200 状态码：%d", resp.StatusCode)
-	}
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体时出错：%w", err)
-	}
-
-	// 解析 JSON 响应
+func (c *Client) getUsersWithAllLibrariesAccess(ctx context.Context) ([]UserDto, error) {
 	var users []UserDto
-	if err := json.Unmarshal(body, &users); err != nil {
-		return nil, fmt.Errorf("解析 JSON 时出错：%w", err)
+	if err := c.getSnapshotJSON(ctx, "/Users", nil, &users); err != nil {
+		return nil, err
 	}
-
-	// 筛选可访问所有媒体库的用户
 	var usersWithAllAccess []UserDto
 	for _, user := range users {
 		if user.Policy.EnableAllFolders {
 			usersWithAllAccess = append(usersWithAllAccess, user)
 		}
 	}
-
 	return usersWithAllAccess, nil
 }
 
 // 刷新媒体库
 func (c *Client) RefreshLibrary(libraryId string, libraryName string) error {
+	info, err := c.getServerInfo(context.Background())
+	if err != nil {
+		return err
+	}
+	if info.jellyfin() {
+		return c.RefreshItem(libraryId, libraryName, true)
+	}
 	// 构造请求 URL
 	url := fmt.Sprintf("%s/emby/Items/%s/Refresh?api_key=%s&Fields=MediaStreams", c.embyURL, libraryId, c.apiKey)
-	err := helpers.PostUrl(url)
+	err = helpers.PostUrl(url)
 	if err != nil {
 		return err
 	}
@@ -546,20 +737,23 @@ func (c *Client) RefreshLibrary(libraryId string, libraryName string) error {
 
 // RefreshItem 刷新单个 Emby 条目。
 func (c *Client) RefreshItem(itemId string, itemName string, recursive bool) error {
-	baseURL, err := url.Parse(fmt.Sprintf("%s/emby/Items/%s/Refresh", c.embyURL, url.PathEscape(itemId)))
+	info, err := c.getServerInfo(context.Background())
 	if err != nil {
-		return fmt.Errorf("解析 Emby 条目刷新 URL 失败：%w", err)
+		return err
 	}
 	params := url.Values{}
-	params.Add("api_key", c.apiKey)
-	params.Add("Fields", "MediaStreams")
-	params.Add("Recursive", strconv.FormatBool(recursive))
-	baseURL.RawQuery = params.Encode()
-
-	req, err := http.NewRequest(http.MethodPost, baseURL.String(), nil)
-	if err != nil {
-		return fmt.Errorf("创建 Emby 条目刷新请求失败：%w", err)
+	if info.jellyfin() {
+		params.Set("MetadataRefreshMode", "Default")
+		params.Set("ImageRefreshMode", "Default")
+	} else {
+		params.Set("Fields", "MediaStreams")
+		params.Set("Recursive", strconv.FormatBool(recursive))
 	}
+	req, err := c.newAPIRequest(context.Background(), http.MethodPost, "/Items/"+url.PathEscape(itemId)+"/Refresh", params, info.jellyfin())
+	if err != nil {
+		return err
+	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送 Emby 条目刷新请求失败：%w", err)
@@ -577,13 +771,24 @@ func (c *Client) FindItemByPath(path string) (*BaseItemDtoV2, error) {
 	if path == "" {
 		return nil, nil
 	}
+	info, err := c.getServerInfo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if info.jellyfin() {
+		return nil, nil
+	}
 	params := url.Values{}
 	params.Add("Path", path)
 	params.Add("Recursive", "true")
 	params.Add("Fields", "Path")
 	params.Add("IncludeItemTypes", embyRefreshLookupItemTypes)
 	params.Add("Limit", "1")
-	return c.findFirstItem(params, "Emby 路径查询")
+	item, err := c.findFirstItem(params, "Emby 路径查询")
+	if err != nil || item == nil || item.Path == path {
+		return item, err
+	}
+	return nil, nil
 }
 
 // FindItemByID 按 item ID 查询 Emby 条目。
@@ -597,40 +802,40 @@ func (c *Client) FindItemByID(itemID string) (*BaseItemDtoV2, error) {
 	params.Add("Fields", "Path")
 	params.Add("IncludeItemTypes", embyRefreshLookupItemTypes)
 	params.Add("Limit", "1")
-	return c.findFirstItem(params, "Emby ID 查询")
+	item, err := c.findFirstItem(params, "Emby ID 查询")
+	if err != nil || item == nil {
+		return item, err
+	}
+	if c.isJellyfin() {
+		itemID, err = normalizeJellyfinID(itemID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if item.Id != itemID {
+		return nil, nil
+	}
+	return item, nil
 }
 
 func (c *Client) findFirstItem(params url.Values, errorContext string) (*BaseItemDtoV2, error) {
-	baseURL, err := url.Parse(fmt.Sprintf("%s/emby/Items", c.embyURL))
+	info, err := c.getServerInfo(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("解析 %s URL 失败：%w", errorContext, err)
-	}
-	params.Add("api_key", c.apiKey)
-	baseURL.RawQuery = params.Encode()
-
-	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建 %s 请求失败：%w", errorContext, err)
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("发送 %s 请求失败：%w", errorContext, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s 返回非 200 状态码：%d", errorContext, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s 响应失败：%w", errorContext, err)
+		return nil, err
 	}
 	var result QueryResultBaseItemDto
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析 %s 响应失败：%w", errorContext, err)
+	if err := c.getSnapshotJSON(context.Background(), "/Items", params, &result); err != nil {
+		return nil, fmt.Errorf("%s：%w", errorContext, err)
 	}
 	if len(result.Items) == 0 {
 		return nil, nil
+	}
+	if info.jellyfin() {
+		for i := range result.Items {
+			if err := normalizeJellyfinItem(&result.Items[i]); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return &result.Items[0], nil
 }
@@ -675,8 +880,10 @@ func (c *Client) GetItemLibraryId(itemId string) ([]VirtualFolderDto, error) {
 
 // GetItemLibraryIDContext 支持后台生命周期取消的所属媒体库查询。
 func (c *Client) GetItemLibraryIDContext(ctx context.Context, itemId string) ([]VirtualFolderDto, error) {
-	var ancestors []AncestorDto
-	err := c.getSnapshotJSON(ctx, "/Items/"+url.PathEscape(itemId)+"/Ancestors", nil, &ancestors)
+	if _, err := c.getServerInfo(ctx); err != nil {
+		return nil, err
+	}
+	ancestors, err := c.GetItemAncestorsContext(ctx, itemId)
 	if err != nil {
 		return nil, err
 	}
@@ -688,6 +895,11 @@ func (c *Client) GetItemLibraryIDContext(ctx context.Context, itemId string) ([]
 	err = c.getSnapshotJSON(ctx, "/Library/VirtualFolders", nil, &virtualFolders)
 	if err != nil {
 		return nil, err
+	}
+	if c.isJellyfin() {
+		if err := normalizeJellyfinVirtualFolders(virtualFolders); err != nil {
+			return nil, err
+		}
 	}
 	ancestorPaths := make(map[string]struct{}, len(ancestors))
 	for _, ancestor := range ancestors {
@@ -709,83 +921,26 @@ func (c *Client) GetItemLibraryIDContext(ctx context.Context, itemId string) ([]
 }
 
 func (c *Client) GetItemAncestors(itemId string) ([]AncestorDto, error) {
-	// 构造请求 URL
-	url := fmt.Sprintf("%s/emby/Items/%s/Ancestors?api_key=%s", c.embyURL, itemId, c.apiKey)
-
-	// 创建新的 HTTP 请求
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求时出错：%w", err)
+	if _, err := c.getServerInfo(context.Background()); err != nil {
+		return nil, err
 	}
-
-	// 设置请求头
-	req.Header.Set("Accept", "application/json")
-
-	// 发送请求
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("发送请求时出错：%w", err)
-	}
-	defer resp.Body.Close()
-
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("收到非 200 状态码：%d", resp.StatusCode)
-	}
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体时出错：%w", err)
-	}
-
-	// 解析 JSON 响应
-	var ancestors []AncestorDto
-	if err := json.Unmarshal(body, &ancestors); err != nil {
-		return nil, fmt.Errorf("解析 JSON 时出错：%w", err)
-	}
-	// 提取所有文件夹 ID
-	return ancestors, nil
+	return c.GetItemAncestorsContext(context.Background(), itemId)
 }
 
 // 获取所有媒体库的详情包括文件夹
 func (c *Client) GetLibraryVirtualFolders() ([]VirtualFolderDto, error) {
-	// 构造请求 URL
-	url := fmt.Sprintf("%s/emby/Library/VirtualFolders?api_key=%s", c.embyURL, c.apiKey)
-
-	// 创建新的 HTTP 请求
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求时出错：%w", err)
+	if _, err := c.getServerInfo(context.Background()); err != nil {
+		return nil, err
 	}
-
-	// 设置请求头
-	req.Header.Set("Accept", "application/json")
-
-	// 发送请求
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("发送请求时出错：%w", err)
-	}
-	defer resp.Body.Close()
-
-	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("收到非 200 状态码：%d", resp.StatusCode)
-	}
-
-	// 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体时出错：%w", err)
-	}
-
-	// 解析 JSON 响应
 	var virtualFolders []VirtualFolderDto
-	if err := json.Unmarshal(body, &virtualFolders); err != nil {
-		return nil, fmt.Errorf("解析 JSON 时出错：%w", err)
+	if err := c.getSnapshotJSON(context.Background(), "/Library/VirtualFolders", nil, &virtualFolders); err != nil {
+		return nil, err
 	}
-
+	if c.isJellyfin() {
+		if err := normalizeJellyfinVirtualFolders(virtualFolders); err != nil {
+			return nil, err
+		}
+	}
 	return virtualFolders, nil
 }
 
@@ -794,7 +949,7 @@ func ProcessLibraries(embyURL, apiKey string, excludeIds []string) []map[string]
 	// 创建一个新的 Emby 客户端
 	client := NewClient(embyURL, apiKey)
 
-	libs, err := client.GetAllMediaLibraries()
+	libs, err := client.getMediaLibraries()
 	if err != nil {
 		helpers.AppLogger.Errorf("获取媒体库失败：%v", err)
 		return nil

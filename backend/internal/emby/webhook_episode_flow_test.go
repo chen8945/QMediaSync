@@ -249,7 +249,7 @@ func TestWebhookEpisodePart1DeletionAndRemainingPartReindex(t *testing.T) {
 		t.Fatalf("old/current index cleanup mixed identities: %+v %v", items, err)
 	}
 	var links []models.EmbyMediaSyncFile
-	if err := conn.Find(&links).Error; err != nil || len(links) != 1 || links[0].EmbyItemId != 201 || links[0].SyncFileId != files["part2"].ID {
+	if err := conn.Find(&links).Error; err != nil || len(links) != 1 || links[0].EmbyItemId != "201" || links[0].SyncFileId != files["part2"].ID {
 		t.Fatalf("new Episode association lost: %+v %v", links, err)
 	}
 	countWebhookTest(t, &models.SyncFile{}, int64(len(files)))

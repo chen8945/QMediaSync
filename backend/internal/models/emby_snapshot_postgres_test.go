@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -439,10 +440,87 @@ func TestEmbySnapshotPostgresCleanupRetainsFrozenEvidence(t *testing.T) {
 	}
 }
 
+func TestEmbySnapshotPostgresCleanupAcrossBatchesRollsBack(t *testing.T) {
+	conn, _ := setupEmbySnapshotPostgres(t)
+	_, token, snapshot := seedEmbyPostgresSnapshot(t, conn)
+	if err := conn.Model(&EmbyMediaItem{}).Where("item_id = ?", snapshot.Item.ItemId).
+		Update("last_seen_sync_run", "current-run").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec(`INSERT INTO emby_media_items
+		(item_id, item_id_int, server_id, library_id, last_seen_sync_run)
+		SELECT lpad(to_hex(n), 32, '0'), 0, ?,
+			CASE WHEN n = 20003 THEN 'other-library' ELSE '100' END,
+			CASE WHEN n = 20002 THEN 'current-run' ELSE 'old-run' END
+		FROM generate_series(1, 20003) AS n`, token.ServerID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var source EmbyMediaSyncFile
+	if err := conn.Where("emby_item_id = ?", snapshot.Item.ItemId).First(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec(`INSERT INTO emby_media_sync_files (emby_item_id, sync_file_id, sync_path_id)
+		SELECT item_id, ?, ? FROM emby_media_items WHERE length(item_id) = 32`,
+		source.SyncFileId, source.SyncPathId).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before EmbyItemEvidence
+	if err := conn.First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("second cleanup batch failed")
+	deletes, failTail := 0, true
+	if err := conn.Callback().Delete().Before("gorm:delete").Register("test:fail_cleanup_tail", func(tx *gorm.DB) {
+		if tx.Statement.Table == conn.NamingStrategy.TableName("EmbyMediaItem") {
+			deletes++
+			if failTail && deletes == 2 {
+				tx.AddError(injected)
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Callback().Delete().Remove("test:fail_cleanup_tail") })
+	if err := CleanupEmbyLibrarySnapshot(token, "100", "current-run"); !errors.Is(err, injected) {
+		t.Fatalf("cleanup did not fail after an earlier batch: %v", err)
+	}
+	assertEmbyPostgresCount(t, conn, &EmbyMediaItem{}, 20004)
+	assertEmbyPostgresCount(t, conn, &EmbyMediaSyncFile{}, 20004)
+	failTail = false
+	if err := CleanupEmbyLibrarySnapshot(token, "100", "current-run"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{fmt.Sprintf("%032x", 20002), fmt.Sprintf("%032x", 20003), snapshot.Item.ItemId}
+	for _, model := range []any{&EmbyMediaItem{}, &EmbyMediaSyncFile{}} {
+		column := "item_id"
+		if _, ok := model.(*EmbyMediaSyncFile); ok {
+			column = "emby_item_id"
+		}
+		var remaining []string
+		if err := conn.Model(model).Order(column).Pluck(column, &remaining).Error; err != nil || !reflect.DeepEqual(remaining, want) {
+			t.Fatalf("%T cleanup changed current run/other library or left a tail: %v, %v", model, remaining, err)
+		}
+	}
+	assertEmbyPostgresCount(t, conn, &SyncFile{}, 1)
+	assertEmbyPostgresCount(t, conn, &EmbyItemState{}, 1)
+	assertEmbyPostgresCount(t, conn, &EmbyItemMembership{}, 1)
+	assertEmbyPostgresCount(t, conn, &EmbyItemEvidence{}, 1)
+	var after EmbyItemEvidence
+	if err := conn.First(&after, before.ID).Error; err != nil || after != before {
+		t.Fatalf("batch cleanup changed immutable evidence: %+v, %v", after, err)
+	}
+}
+
 func assertEmbyPostgresCount(t *testing.T, conn *gorm.DB, model any, want int64) {
 	t.Helper()
 	var got int64
 	if err := conn.Model(model).Count(&got).Error; err != nil || got != want {
 		t.Fatalf("%T count = %d, want %d: %v", model, got, want, err)
 	}
+}
+
+func TestEmbySnapshotPostgresGUIDBindingsAndCleanup(t *testing.T) {
+	conn, _ := setupEmbySnapshotPostgres(t)
+	_, token, snapshot := seedEmbyPostgresSnapshot(t, conn)
+	testEmbySnapshotGUIDBindingsAndCleanup(t, token, snapshot)
 }

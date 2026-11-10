@@ -28,7 +28,7 @@ func restoreFromJsonFile(backupDir, modelName string, totalTable int, count *int
 	if restoreRebuildsModel(model) {
 		return nil
 	}
-	table, exists, err := prepareLegacyRestoreTable(backupDir, modelName, model, db.Db)
+	table, exists, err := prepareLegacyRestoreTable(backupDir, modelName, model, db.Db, models.MaxVersionCode)
 	if err != nil || !exists {
 		return err
 	}

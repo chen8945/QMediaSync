@@ -62,7 +62,7 @@ func newDeletionVerificationFixture(t *testing.T) *deletionVerificationFixture {
 	original := filepath.Join(root, "movie", "original.strm")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/emby/System/Info/Public":
+		case "/System/Info/Public", "/emby/System/Info/Public":
 			f.servers.Add(1)
 			fmt.Fprint(w, `{"Id":"server-a"}`)
 		case "/emby/Items":

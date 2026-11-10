@@ -20,6 +20,7 @@
               <div class="card-header-content">
                 <h2 class="card-title">Emby 服务器配置</h2>
                 <p class="card-subtitle">配置 Emby 服务器连接信息</p>
+                <p class="card-subtitle">Jellyfin 也可填写地址和 API Key，同步、刷新媒体库。</p>
               </div>
             </div>
           </template>
@@ -35,7 +36,8 @@
               clearable
             />
             <p style="color: red; font-weight: bold; margin-left: 16px; font-size: 28px">
-              填写 Emby 地址后，请点击页面底部的“保存设置”，并重启 QMediaSync 使配置生效
+              填写或更改服务器地址后，请点击页面底部的“保存设置”；使用 Emby 302 代理时还需重启
+              QMediaSync
             </p>
             <div v-if="embyExample" class="emby-example-inline">
               <span class="example-label">示例格式：</span>
@@ -61,9 +63,7 @@
             />
             <div class="form-help">
               <el-icon><InfoFilled /></el-icon>
-              <span
-                >API Key 用于提取 STRM 文件的视频、音频和内封字幕信息；不需要该功能时可以不填</span
-              >
+              <span>读取媒体库和提交刷新需要 API Key，请填写对应服务器生成的密钥</span>
             </div>
             <div class="form-help author-credit">
               <span

@@ -196,8 +196,8 @@ func setupCleanupWorkerTest(t *testing.T, kind string, directory bool) *cleanupW
 			}
 		}
 		switch r.URL.Path {
-		case "/emby/System/Info/Public":
-			fmt.Fprint(w, `{"Id":"server-a"}`)
+		case "/System/Info/Public", "/emby/System/Info/Public":
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby"}`)
 		case "/emby/Items":
 			if r.URL.Query().Get("Ids") == "" {
 				f.fullScans.Add(1)

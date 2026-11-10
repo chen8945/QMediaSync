@@ -49,7 +49,9 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 	}
 	if scenario == "fresh" {
 		for range 2 {
-			Migrate()
+			if err := Migrate(); err != nil {
+				t.Fatal(err)
+			}
 			assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 			assertEmbyDeletionSchema(t, conn)
 		}
@@ -95,7 +97,9 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 		removeFailure()
 	}
 	for range 2 {
-		Migrate()
+		if err := Migrate(); err != nil {
+			t.Fatal(err)
+		}
 		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		assertEmbyDeletionSchema(t, conn)
 		assertEmbyMigrationLegacyRows(t, conn, items, links)
@@ -113,7 +117,7 @@ func testEmbyDeletionMigration(t *testing.T, conn *gorm.DB, scenario string) {
 func seedEmbyMigrationVersion65(t *testing.T, conn *gorm.DB) ([]EmbyMediaItem, []EmbyMediaSyncFile) {
 	t.Helper()
 	// 缩减旧库也保留后续 69→70 迁移必需的全局设置表。
-	if err := conn.AutoMigrate(&Migrator{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}, &Settings{}); err != nil {
+	if err := conn.AutoMigrate(&Migrator{}, &EmbyMediaItem{}, &legacyEmbyMediaSyncFile{}, &Settings{}); err != nil {
 		t.Fatal(err)
 	}
 	items := []EmbyMediaItem{
@@ -131,7 +135,7 @@ func seedEmbyMigrationVersion65(t *testing.T, conn *gorm.DB) ([]EmbyMediaItem, [
 	links := []EmbyMediaSyncFile{
 		{
 			BaseModel:  BaseModel{ID: 3, CreatedAt: 13, UpdatedAt: 14},
-			EmbyItemId: 9101, SyncFileId: 29, SyncPathId: 41, PickCode: "old-pick",
+			EmbyItemId: "9101", SyncFileId: 29, SyncPathId: 41, PickCode: "old-pick",
 		},
 	}
 	if err := conn.Create(&items).Error; err != nil {
@@ -366,7 +370,9 @@ func assertEmbyMigrationRetainsCurrentRows(t *testing.T, conn *gorm.DB) {
 		}
 	}
 	for range 2 {
-		Migrate()
+		if err := Migrate(); err != nil {
+			t.Fatal(err)
+		}
 		assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 		for _, before := range rows {
 			value := reflect.Indirect(reflect.ValueOf(before))

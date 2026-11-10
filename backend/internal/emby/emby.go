@@ -93,6 +93,9 @@ func PerformEmbySync() (result int, err error) {
 	}()
 
 	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	if _, err = client.GetServerID(context.Background()); err != nil {
+		return 0, err
+	}
 	users, err := client.GetUsersWithAllLibrariesAccess()
 	if err != nil {
 		return 0, err

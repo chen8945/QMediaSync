@@ -479,7 +479,7 @@ func TestEmbySeasonDeleteDoesNotAcquireAgainForEpisodes(t *testing.T) {
 	if err := db.Db.Create(item).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Db.Create(&EmbyMediaSyncFile{EmbyItemId: 7, SyncFileId: file.ID}).Error; err != nil {
+	if err := db.Db.Create(&EmbyMediaSyncFile{EmbyItemId: "7", SyncFileId: file.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)

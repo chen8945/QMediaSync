@@ -261,7 +261,7 @@ func addEmbyDirectoryRetainedUser(t *testing.T, input EmbyDeletionInput, complet
 	if err := db.Db.Create(&state).Error; err != nil {
 		t.Fatal(err)
 	}
-	link := EmbyMediaSyncFile{EmbyItemId: uint(item.ItemIdInt), SyncFileId: row.ID, SnapshotID: evidence.ID}
+	link := EmbyMediaSyncFile{EmbyItemId: item.ItemId, SyncFileId: row.ID, SnapshotID: evidence.ID}
 	if err := db.Db.Create(&link).Error; err != nil {
 		t.Fatal(err)
 	}
