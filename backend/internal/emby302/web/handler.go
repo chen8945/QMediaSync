@@ -15,18 +15,25 @@ const MatchRouteKey = "matchRoute"
 
 // globalDftHandler 全局默认兜底的请求处理器
 func defaultHandler(rules [][2]any) gin.HandlerFunc {
+	downloadRoute := regexp.MustCompile(constant.Reg_ItemDownload)
 	return func(c *gin.Context) {
-		if c.Request.Method == http.MethodHead {
+		isDownload := downloadRoute.MatchString(c.Request.URL.Path)
+		if c.Request.Method == http.MethodHead && !isDownload {
 			c.String(http.StatusOK, "")
 			return
+		}
+		uri := c.Request.RequestURI
+		if isDownload {
+			// 下载按解码后的路径分发，查询参数不能将下载改派给播放或回源。
+			uri = c.Request.URL.Path
 		}
 
 		// 依次匹配路由规则, 找到其他的处理器
 		for _, rule := range rules {
 			reg := rule[0].(*regexp.Regexp)
-			if reg.MatchString(c.Request.RequestURI) {
+			if reg.MatchString(uri) {
 				c.Set(MatchRouteKey, reg.String())
-				c.Set(constant.RouteSubMatchGinKey, reg.FindStringSubmatch(c.Request.RequestURI))
+				c.Set(constant.RouteSubMatchGinKey, reg.FindStringSubmatch(uri))
 				rule[1].(gin.HandlerFunc)(c)
 				return
 			}

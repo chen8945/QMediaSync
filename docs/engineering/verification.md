@@ -105,6 +105,20 @@
 
 实际 Emby 播放器的旧播放／新请求、网盘传输暂停和速率、Telegram 重配及 fnOS 体验单独验收。本地 HTTP／WebSocket 替身与 PostgreSQL 测试保护并发、协议和持久化边界，不代替实机结果。
 
+## Emby 代理下载验证
+
+修改下载策略、权限、同步下载映射或文件回源时，在 `backend/` 运行：
+
+```bash
+go test -p 1 ./internal/helpers ./internal/emby302/... ./internal/controllers . ./internal/app
+go test -p 1 -race ./internal/emby302/service/emby ./internal/emby302/web ./internal/emby302/web/cache ./internal/emby302/util/https
+go vet -p 1 ./internal/emby302/... ./internal/app
+```
+
+下载回归覆盖当前凭据与明确 `CanDownload`、无效或缺失权限拒绝且不取链、缓存命中后撤销权限、同步映射与异常停止，以及原有 `origin`／`403` 策略。`TestNewRouterDownloadRouting` 经过完整生产中间件与分发器，验证 HEAD 真正执行下载，以及编码路径和查询串不能改派同步授权或触发字幕回源。`TestDirectDownloadLocalAndProxyResources` 检查实际发送的下载响应头、不同 Range 和无 Body 的 HEAD，确认本地／代理资源没有自跳转或响应缓存复用；`TestRequestCacherStreamsDisabledResponses` 确认禁用缓存的文件流不进入内存缓冲。普通播放与 115 UA／签名回归继续运行。
+
+本地 HTTP 替身不代表真实客户端离线同步或网盘 CDN 下载成功。人工验证时使用有／无下载权限的普通 Emby 用户，分别从代理下载远程 STRM、本地文件并继续离线下载；已签发直链的撤销边界见[下载权限](../architecture/authentication-sessions.md#emby-代理下载权限)。
+
 ## 后端命令
 
 Emby 删除修复回归包含：未知存活来源的跨目录引用、百度历史 fsid 缺失／替换及独立真实父目录、收件重试造成的观察顺序倒置（含同时间戳、无效状态候选及 PostgreSQL）、首次父目录缺失与临时列表／详情故障、移动或替换对象保护、初始缺失结果原子保存和重启恢复。`TestWebhookCleanupSourceVerificationCountsBaiduHTTP` 使用真实 provider／SDK 和本地 HTTP 替身，分别断言列表、详情、删除及 Emby 请求数；单页夹具的计数不代表线上固定成本。提取回归验证完整音视频流不重复入队，字幕不计入流数量。`TestAppWebhookStartup` 通过子进程验证恢复失败时非零退出、队列停止与资源释放，以及成功恢复；Windows 构建验证不能替代真实桌面的托盘验收。

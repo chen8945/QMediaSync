@@ -47,7 +47,6 @@ func (app *App) emby302Options() (emby302.Options, error) {
 	}
 	config.C.Emby.ImagesOriginal = helpers.GlobalConfig.Emby302.ImagesOriginal
 	config.C.Emby.EpisodesUnplayPrior = false
-	config.C.Emby.LocalMediaRoot = "/"
 	config.C.VideoPreview.Enable = true
 	config.C.VideoPreview.Containers = []string{"strm"}
 	config.BasePath = helpers.ConfigDir

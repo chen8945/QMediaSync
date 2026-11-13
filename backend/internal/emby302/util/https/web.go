@@ -111,8 +111,8 @@ func ProxyPass(r *http.Request, w http.ResponseWriter, remote string, clients ..
 	defer resp.Body.Close()
 
 	// 2 回写响应头
-	w.WriteHeader(resp.StatusCode)
 	CloneHeader(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
 
 	// 3 回写响应体
 	buf := bytess.CommonFixedBuffer()

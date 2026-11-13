@@ -188,6 +188,20 @@ QMediaSync 在本端 Emby 或 Jellyfin 条目同步时自动确认 STRM 的路�
 
 调整挂载、同步目录或手工映射后，应重新执行本端条目同步，保存新的对应关系。旧通知继续核对原快照中的路径、根和账号，不会按后来发现的路径补删。原 STRM 仍在或挂载根不可访问时保留网盘目标。行为与删除边界见 [Emby 外部来源](../architecture/emby-library-sync.md#外部-strm-来源和路径映射)。
 
+## Emby 302 下载与本地媒体
+
+下载策略取自编译嵌入的 `backend/assets/emby302.yaml`，修改后需要重新构建，没有对应的运行时开关。
+
+| `emby.download-strategy` | 行为 |
+| --- | --- |
+| `direct`，或留空／省略 | 检查当前请求的 Emby 下载权限后，远程 STRM 返回直链跳转，本地或代理资源回源下载 |
+| `origin` | 原下载请求交给 Emby 处理 |
+| `403` | 禁用普通下载和同步下载接口，返回 HTTP 403 |
+
+内嵌模板默认使用 `direct`。权限、同步下载及缓存边界见[Emby 代理下载权限](../architecture/authentication-sessions.md#emby-代理下载权限)。
+
+内嵌模板的 `emby.local-media-root` 为 `/`，启动时不再覆盖。代理直接识别 Linux 绝对路径、Windows 盘符、网络共享及 SMB；该字段仅补充本地路径前缀识别，不是容器挂载或 STRM 路径映射。播放与 STRM 解析规则见[115 STRM 直链解析](../architecture/upload-and-strm-processing.md#115-strm-直链解析)。
+
 ## Emby 302 缓存
 
 内置缓存开关取自编译嵌入的 `backend/assets/emby302.yaml`，`cache.enable` 默认 `false`；修改该模板需重新构建。它独立于主配置 `config.yaml` 中的 `emby302.insecure_skip_verify`，当前没有对应的运行时开关。

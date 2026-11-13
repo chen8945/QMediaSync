@@ -41,6 +41,34 @@ func TestRequestCacherSkipsCanceledRequests(t *testing.T) {
 	}
 }
 
+func TestRequestCacherStreamsDisabledResponses(t *testing.T) {
+	scope := newCacheScope(t)
+	router := gin.New()
+	router.Use(scope.RequestCacher())
+	const body = "uncached media bytes"
+	calls := 0
+	router.GET("/download", func(c *gin.Context) {
+		calls++
+		c.Header(HeaderKeyExpired, "-1")
+		_, _ = c.Writer.Write([]byte(body))
+		if c.Writer.(*respCacheWriter).body.Len() != 0 {
+			t.Error("禁用缓存后仍在内存中缓冲媒体内容")
+		}
+	})
+	for _, rangeHeader := range []string{"bytes=0-2", "bytes=3-5"} {
+		req := httptest.NewRequest(http.MethodGet, "/download", nil)
+		req.Header.Set("Range", rangeHeader)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != body {
+			t.Fatalf("禁用缓存改变了流式响应：%d %q", rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatal("禁用缓存的响应被复用")
+	}
+}
+
 func TestCalcCacheKeyPreservesRequestValues(t *testing.T) {
 	tests := []struct {
 		name   string

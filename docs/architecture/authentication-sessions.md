@@ -6,7 +6,7 @@
 >
 > 修改时机：修改管理员恢复、登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
 >
-> 相关代码：`backend/internal/app/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`frontend/src/stores/auth.ts`。
+> 相关代码：`backend/internal/app/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`backend/internal/emby302/service/emby/download.go`、`frontend/src/stores/auth.ts`。
 
 ## 首次管理员
 
@@ -99,6 +99,16 @@
 - 共享下载代理只转发客户端的 `Range`、`Referer`，并设置对应网盘的 UA；首跳和后续重定向均不转发浏览器 `Cookie`，包括 `auth_token`、`csrf_token` 及其他会话凭据。
 - 共享 `Proxy115` 保持 GET 流式转发；内部以 HEAD 调用时向网盘仍发 HEAD，只返回状态和响应头，不读取或发送视频 Body。两种方法都传播请求 context，使客户端取消与服务停止能取消出站连接，不把 HEAD 转成整段 GET 后丢弃内容。主站 `/proxy-115` 的既有 GET 路由不变，飞牛 GET／HEAD 由应用入口局部分发，仍执行相同 URL 和逐跳重定向校验；维护准入与短许可边界见 [飞牛内部转交](../reference/fnos-proxy-api.md#播放接管与回退)。
 
+## Emby 代理下载权限
+
+`direct` 策略下，普通 `/Items/{id}/Download` 每次都使用当前请求的 Emby 凭据查询 `/Items?Ids={id}&Fields=CanDownload&Limit=1`，不携带客户端指定的 `UserId`，不使用 QMediaSync 配置的 Emby 管理密钥代替用户凭据。只有 HTTP 200、返回匹配条目且明确 `CanDownload=true` 才允许继续。认证失败返回 401，无权限返回 403，条目不存在返回 404；查询失败、响应异常或权限字段缺失返回 502，停止处理。策略取值与默认值见[配置](../operations/configuration.md#emby-302-下载与本地媒体)。
+
+权限检查先于响应缓存和 STRM 取链，权限结果不缓存。撤销权限后，新的下载请求即使已有直链响应缓存也必须拒绝；已经发出的网盘直链无法即时撤销，其可用期限由网盘签名决定。
+
+`/Sync/JobItems/{id}/File` 用于客户端离线同步文件传输，`id` 是同步任务项 ID。代理在下载中间件中通过 Targets／Ready 映射真实媒体 ItemId 和 MediaSourceId，再进行同样的下载权限检查，成功后跳转普通下载接口，不跳转播放接口。同步入口不读取或写入跳转缓存，映射失败或权限无法确认时停止处理，不走通用异常回源。下载按解码、规范化后的路径识别，尾斜杠、重复斜杠及查询参数不能绕过同步授权或改派普通下载路由；回源保留原始 RequestURI。下载 HEAD 执行实际下载处理，不返回未经处理的固定成功状态。此处以当前凭据对真实媒体的下载权限作为放行依据，不增加任务所有者限制；原生同步文件接口的 HEAD 成功不能作为下载权限或任务归属的证明。
+
+权限通过后，本地文件或本地代理资源直接将原下载请求回源给 Emby，保留 Range、HEAD 和原生响应；文件内容不缓冲到响应缓存。远程 STRM 继续携带下载客户端 UA 取链，115 签名与 UA 的边界见[115 STRM 直链解析](upload-and-strm-processing.md#115-strm-直链解析)。
+
 ## 不变量
 
 - 浏览器认证只使用 HttpOnly Cookie，会话状态以服务端 `user_sessions` 为准；前端状态不能替代鉴权。
@@ -110,9 +120,11 @@
 - API Key 明文只能在创建响应出现一次，日志和数据库不得保存完整值。
 - 跨源部署必须显式配置可信来源，SSE 不作为跨源 Cookie 通道。
 - 浏览器 Cookie 只用于 QMediaSync 会话鉴权，不能经下载代理发送给网盘或 CDN。
+- Emby `direct` 下载不得通过响应缓存、同步到播放的跳转或权限检查失败后的回源绕过真实媒体的下载权限。
 
 ## 验证方式
 
+- Emby 普通／同步下载、权限撤销与流式回源运行[Emby 代理下载验证](../engineering/verification.md#emby-代理下载验证)。
 - 运行 `(cd backend && go test -race ./internal/controllers -run '^TestProxy115')`，覆盖 115、百度网盘首跳及同域、跨允许域重定向的 Cookie 隔离，同时验证 Range、Referer、网盘 UA、GET 响应内容、HEAD 方法与无 Body，以及请求 context 取消。
 - 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Login|Session|Auth|CSRF|APIKey|Credential|TwoFactor|RateLimiter)')`、`(cd backend && go test ./internal/helpers/ -run TestTOTP)` 覆盖认证、会话、CSRF、API Key、两步验证、限流和凭据变更场景；控制器测试同时保护登录失败完整响应一致、已知拒绝原因的错误码及数据库故障不误分类。
 - 管理员恢复的 SQLite、PostgreSQL、命令入口及 Compose 脚本验证命令见 [验证说明](../engineering/verification.md#管理员恢复验证)，覆盖事务回滚、损坏旧凭据、非固定管理员 ID、认证清理和业务数据保留。

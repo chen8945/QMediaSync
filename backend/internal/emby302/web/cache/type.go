@@ -18,7 +18,9 @@ type respCacheWriter struct {
 }
 
 func (rcw *respCacheWriter) Write(b []byte) (int, error) {
-	rcw.body.Write(b)
+	if rcw.Header().Get(HeaderKeyExpired) != "-1" {
+		rcw.body.Write(b)
+	}
 	return rcw.ResponseWriter.Write(b)
 }
 

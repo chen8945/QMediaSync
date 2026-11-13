@@ -71,7 +71,7 @@ func (upstream *Session) Redirect2Transcode(c *gin.Context) {
 // Redirect2OpenlistLink 将资源重定向到 OpenList 网盘直链
 func (upstream *Session) Redirect2OpenlistLink(c *gin.Context) {
 	// 不处理字幕接口
-	if strings.Contains(strings.ToLower(c.Request.RequestURI), "subtitles") {
+	if strings.Contains(strings.ToLower(c.Request.URL.Path), "subtitles") {
 		upstream.ProxyOrigin(c)
 		return
 	}
@@ -151,6 +151,11 @@ func (upstream *Session) Redirect2OpenlistLink(c *gin.Context) {
 	// 5 如果是本地地址, 回源处理
 	if isLocalMedia || isProxyUrl != "" {
 		logs.Info("本地或代理路径: %s, 回源处理", embyPath)
+		if c.GetBool(downloadRequestKey) {
+			c.Header(cache.HeaderKeyExpired, "-1")
+			upstream.ProxyOrigin(c)
+			return
+		}
 		newUri := strings.Replace(c.Request.RequestURI, "stream", "original", 1)
 		newUri = strings.Replace(newUri, "universal", "original", 1)
 		c.Redirect(http.StatusTemporaryRedirect, newUri)
@@ -214,29 +219,7 @@ func (upstream *Session) Redirect2OpenlistLink(c *gin.Context) {
 
 // ProxyOriginalResource 拦截 original 接口
 func (upstream *Session) ProxyOriginalResource(c *gin.Context) {
-	// if strings.Contains(strings.ToLower(c.Request.RequestURI), "subtitles") {
-	// 	ProxyOrigin(c)
-	// 	return
-	// }
-
-	// itemInfo, err := resolveItemInfo(c, RouteOriginal)
-	// if checkErr(c, err) {
-	// 	return
-	// }
-
-	// embyPath, err := getEmbyFileLocalPath(itemInfo)
-	// if checkErr(c, err) {
-	// 	return
-	// }
-
-	// 如果是本地媒体, 代理回源
-	// 2. 以 Windows 盘符开头, 通过正则匹配
-	// pattern := `^[A-Za-z]:`
-	// matchedWin, _ := regexp.MatchString(pattern, embyPath)
-	// if strings.HasPrefix(embyPath, "/") || matchedWin || !strings.Contains(embyPath, "/proxy-115") {
 	upstream.ProxyOrigin(c)
-	// }
-	// Redirect2OpenlistLink(c)
 }
 
 // checkErr 检查 err 是否为空

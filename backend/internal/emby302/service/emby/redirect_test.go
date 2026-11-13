@@ -58,6 +58,70 @@ func TestRedirect2OpenlistLinkLocalMediaPaths(t *testing.T) {
 	}
 }
 
+func TestDirectDownloadLocalAndProxyResources(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer proxy.Close()
+	for _, source := range []string{"/media/movie.mkv", proxy.URL + "/proxy-115?url=fixture"} {
+		t.Run(source, func(t *testing.T) {
+			var downloads atomic.Int32
+			origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/Items":
+					_, _ = io.WriteString(w, `{"Items":[{"Id":"123","CanDownload":true}]}`)
+				case "/Items/123/PlaybackInfo":
+					_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{map[string]any{"Id": "ms", "Path": source}}})
+				case "/Items/123/Download":
+					downloads.Add(1)
+					if r.Header.Get("X-Emby-Token") != "user-token" || r.URL.Query().Get("MediaSourceId") != "ms" {
+						t.Error("回源下载丢失了原凭据或媒体源")
+					}
+					body, contentRange := "cde", "bytes 2-4/8"
+					if r.Header.Get("Range") == "bytes=5-7" {
+						body, contentRange = "fgh", "bytes 5-7/8"
+					}
+					w.Header().Set("Content-Type", "video/mp4")
+					w.Header().Set("Content-Range", contentRange)
+					w.Header().Set("Content-Length", "3")
+					w.Header().Set("Content-Disposition", `attachment; filename="movie.mkv"`)
+					w.WriteHeader(http.StatusPartialContent)
+					if r.Method != http.MethodHead {
+						_, _ = io.WriteString(w, body)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			_, _, session := newSTRMRedirectTestRouter(t, source, true, origin)
+			config.C.Emby.DownloadStrategy = config.DlStrategyDirect
+			router := gin.New()
+			router.Use(session.DownloadStrategyChecker(), cache.CacheableRouteMarker(), session.Cache.RequestCacher())
+			router.Match([]string{http.MethodGet, http.MethodHead}, "/Items/123/Download", session.Redirect2OpenlistLink)
+			for _, request := range []struct{ method, rangeHeader, body string }{
+				{http.MethodGet, "bytes=2-4", "cde"},
+				{http.MethodGet, "bytes=5-7", "fgh"},
+				{http.MethodHead, "bytes=2-4", ""},
+			} {
+				req := httptest.NewRequest(request.method, "/Items/123/Download?MediaSourceId=ms", nil)
+				req.Header.Set("X-Emby-Token", "user-token")
+				req.Header.Set("Range", request.rangeHeader)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				header := rec.Result().Header
+				if rec.Code != http.StatusPartialContent || header.Get("Location") != "" || rec.Body.String() != request.body ||
+					header.Get("Content-Length") != "3" || header.Get("Content-Disposition") != `attachment; filename="movie.mkv"` {
+					t.Fatalf("下载响应被改变：method=%s status=%d headers=%v body=%q", request.method, rec.Code, header, rec.Body.String())
+				}
+			}
+			if downloads.Load() != 3 {
+				t.Fatalf("不同 Range 和 HEAD 必须分别回源，实际次数=%d", downloads.Load())
+			}
+		})
+	}
+}
+
 func TestRedirect2OpenlistLinkNFSSTRM(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 文件名不支持冒号，无法构造 NFS STRM 测试路径")
