@@ -294,25 +294,36 @@ describe('AI 识别设置', () => {
     expect(wrapper.find('.test-status').exists()).toBe(true)
   })
 
-  it('保存沿用超时值，连接测试不额外发送超时字段', async () => {
-    const { adapter, act } = await mountSettings(AppAiSettings)
-    await act('保存设置')
+  it('连接测试与保存都使用当前草稿的地址、密钥、模型和超时', async () => {
+    const { wrapper, adapter, act } = await mountSettings(AppAiSettings)
+    await fieldInput(wrapper, '请求超时时间').setValue('9')
+    await fieldInput(wrapper, 'API 接口地址').setValue('https://draft.example.com')
     await act('测试连通性')
+    await act('保存设置')
     const requests = adapter.mock.calls
       .map(([config]) => config)
       .filter((config) => config.method === 'post')
-    expect(JSON.parse(requests[0].data)).toEqual({
-      ai_base_url: settings.ai_base_url,
-      ai_api_key: settings.ai_api_key,
-      ai_model_name: settings.ai_model_name,
-      ai_timeout: 60,
-    })
-    expect(JSON.parse(requests[1].data)).toEqual({
-      ai_base_url: settings.ai_base_url,
-      ai_api_key: settings.ai_api_key,
-      ai_model_name: settings.ai_model_name,
-    })
-    expect(requests[1].timeout).toBe(120000)
+    expect(requests.map((config) => [config.url, JSON.parse(config.data)])).toEqual([
+      [
+        '/api/scrape/ai-test',
+        {
+          ai_base_url: 'https://draft.example.com',
+          ai_api_key: settings.ai_api_key,
+          ai_model_name: settings.ai_model_name,
+          ai_timeout: 9,
+        },
+      ],
+      [
+        '/api/scrape/ai-settings',
+        {
+          ai_base_url: 'https://draft.example.com',
+          ai_api_key: settings.ai_api_key,
+          ai_model_name: settings.ai_model_name,
+          ai_timeout: 9,
+        },
+      ],
+    ])
+    expect(requests[0].timeout).toBe(120000)
   })
 })
 

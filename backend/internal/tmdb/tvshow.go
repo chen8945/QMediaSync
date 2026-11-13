@@ -1,6 +1,7 @@
 package tmdb
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 
@@ -105,9 +106,9 @@ type SeasonDetail struct {
 	Network      []TvNetwork `json:"network"`       // 播放平台
 }
 
-func (c *Client) SearchTv(tvName string, year int, language string, switchLanguage bool) (*SearchTvResponse, error) {
+func (c *Client) SearchTv(ctx context.Context, tvName string, year int, language string, switchLanguage bool) (*SearchTvResponse, error) {
 	var respResult SearchTvResponse = SearchTvResponse{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	if year > 0 {
 		req.SetQueryParam("first_air_date_year", fmt.Sprintf("%d", year))
 	}
@@ -130,14 +131,14 @@ func (c *Client) SearchTv(tvName string, year int, language string, switchLangua
 		} else {
 			language = "en-US"
 		}
-		return c.SearchTv(tvName, year, language, false)
+		return c.SearchTv(ctx, tvName, year, language, false)
 	}
 	return &respResult, nil
 }
 
-func (c *Client) GetTvDetail(tvID int64, language string) (*TvDetail, error) {
+func (c *Client) GetTvDetail(ctx context.Context, tvID int64, language string) (*TvDetail, error) {
 	respResult := TvDetail{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d?language=%s", tvID, language), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -153,9 +154,9 @@ func (c *Client) GetTvDetail(tvID int64, language string) (*TvDetail, error) {
 
 // https://api.themoviedb.org/3/tv/{series_id}/images
 // 查询电视剧的图片
-func (c *Client) GetTvImages(tvId int64, langauge string) (*Images, error) {
+func (c *Client) GetTvImages(ctx context.Context, tvId int64, langauge string) (*Images, error) {
 	respResult := Images{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/images?language=%s", tvId, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -186,9 +187,9 @@ func (c *Client) GetTvImages(tvId int64, langauge string) (*Images, error) {
 
 // https://api.themoviedb.org/3/tv/{series_id}/credits
 // 查询电视剧的演职人员
-func (c *Client) GetTvCredits(tvId int64, langauge string) (*PepolesRes, error) {
+func (c *Client) GetTvCredits(ctx context.Context, tvId int64, langauge string) (*PepolesRes, error) {
 	respResult := PepolesRes{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/credits?language=%s", tvId, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -204,9 +205,9 @@ func (c *Client) GetTvCredits(tvId int64, langauge string) (*PepolesRes, error) 
 
 // https://api.themoviedb.org/3/tv/{series_id}/keywords
 // 查询电视剧的关键词（标签）
-func (c *Client) GetTvKeywords(tvId int64) (*TvKeywords, error) {
+func (c *Client) GetTvKeywords(ctx context.Context, tvId int64) (*TvKeywords, error) {
 	respResult := TvKeywords{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/keywords", tvId), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -220,9 +221,9 @@ func (c *Client) GetTvKeywords(tvId int64) (*TvKeywords, error) {
 	return &respResult, nil
 }
 
-func (c *Client) GetTvSeasonDetail(tvId int64, seasonNumber int, langauge string) (*SeasonDetail, error) {
+func (c *Client) GetTvSeasonDetail(ctx context.Context, tvId int64, seasonNumber int, langauge string) (*SeasonDetail, error) {
 	respResult := SeasonDetail{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/season/%d?language=%s", tvId, seasonNumber, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -238,9 +239,9 @@ func (c *Client) GetTvSeasonDetail(tvId int64, seasonNumber int, langauge string
 
 // https://api.themoviedb.org/3/tv/{series_id}/season/{season_number}/credits
 // 查询季的演职人员
-func (c *Client) GetTvSeasonCredits(tvId int64, seasonNumber int, langauge string) (*PepolesRes, error) {
+func (c *Client) GetTvSeasonCredits(ctx context.Context, tvId int64, seasonNumber int, langauge string) (*PepolesRes, error) {
 	respResult := PepolesRes{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/season/%d/credits?language=%s", tvId, seasonNumber, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -256,9 +257,9 @@ func (c *Client) GetTvSeasonCredits(tvId int64, seasonNumber int, langauge strin
 
 // https://api.themoviedb.org/3/tv/{series_id}/season/{season_number}/images
 // 查询季的图片
-func (c *Client) GetTvSeasonImages(tvId int64, seasonNumber int, langauge string) (*Images, error) {
+func (c *Client) GetTvSeasonImages(ctx context.Context, tvId int64, seasonNumber int, langauge string) (*Images, error) {
 	respResult := Images{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/season/%d/images?language=%s", tvId, seasonNumber, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -272,9 +273,9 @@ func (c *Client) GetTvSeasonImages(tvId int64, seasonNumber int, langauge string
 	return &respResult, nil
 }
 
-func (c *Client) GetTvEpisodeDetail(tvId int64, seasonNumber int, episodeNumber int, langauge string) (*Episode, error) {
+func (c *Client) GetTvEpisodeDetail(ctx context.Context, tvId int64, seasonNumber int, episodeNumber int, langauge string) (*Episode, error) {
 	respResult := Episode{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/season/%d/episode/%d?language=%s", tvId, seasonNumber, episodeNumber, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
 		helpers.TMDBLog.Errorf("获取电视剧集详情失败：%+v", err)
@@ -291,9 +292,9 @@ func (c *Client) GetTvEpisodeDetail(tvId int64, seasonNumber int, episodeNumber 
 
 // https://api.themoviedb.org/3/tv/{series_id}/season/{season_number}/episode/{episode_number}/credits
 // 查询集的演职人员
-func (c *Client) GetTvEpisodeCredits(tvId int64, seasonNumber int, episodeNumber int, langauge string) (*PepolesRes, error) {
+func (c *Client) GetTvEpisodeCredits(ctx context.Context, tvId int64, seasonNumber int, episodeNumber int, langauge string) (*PepolesRes, error) {
 	respResult := PepolesRes{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/tv/%d/season/%d/episode/%d/credits?language=%s", tvId, seasonNumber, episodeNumber, langauge), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {

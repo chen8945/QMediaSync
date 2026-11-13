@@ -40,7 +40,7 @@
 
 如果原 Emby 能播，再检查代理入口，例如 `http://192.168.1.10:8095`。
 
-1. 在 QMediaSync“系统设置 → 媒体库 → Emby”确认已填写原 Emby 地址，点击“保存设置”并重启 QMediaSync。
+1. 在 QMediaSync“系统设置 → 媒体库 → Emby”确认已填写原 Emby 地址，点击“保存设置”。
 2. 确认 QMediaSync 能访问原 Emby，也能访问 STRM 中的地址。
 3. Docker 部署确认 `8095` 已映射；使用 HTTPS 时核对实际代理端口、域名与证书。
 4. 确认播放器连接的是 QMediaSync 的代理地址，而不是原 Emby 地址。

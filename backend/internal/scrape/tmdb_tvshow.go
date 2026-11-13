@@ -15,18 +15,14 @@ type TmdbTvShowImpl struct {
 	TmdbBase
 }
 
-func NewTmdbTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context) *TmdbTvShowImpl {
-	return &TmdbTvShowImpl{
-		scrapePath: scrapePath,
-		ctx:        ctx,
-		Client:     models.GlobalScrapeSettings.GetTmdbClient(),
-	}
+func NewTmdbTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context, client *tmdb.Client, settings models.ScrapeSettings) *TmdbTvShowImpl {
+	return &TmdbTvShowImpl{TmdbBase: TmdbBase{scrapePath: scrapePath, ctx: ctx, Client: client, settings: settings}}
 }
 
 // 检查电视剧是否存在
 func (t *TmdbTvShowImpl) CheckByNameAndYear(name string, year int, switchYear bool) (string, int64, int, error) {
 	// 查询电视剧详情
-	tvShowDetail, err := t.Client.SearchTv(name, year, models.GlobalScrapeSettings.GetTmdbLanguage(), true)
+	tvShowDetail, err := t.Client.SearchTv(t.ctx, name, year, t.settings.GetTmdbLanguage(), true)
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧详情失败，下次重试，失败原因：%v", err)
 		return "", 0, 0, err
@@ -51,7 +47,7 @@ func (t *TmdbTvShowImpl) CheckByNameAndYear(name string, year int, switchYear bo
 // 去 TMDB 查询是否存在
 func (t *TmdbTvShowImpl) CheckByTmdbId(tmdbId int64) (string, int, error) {
 	// 查询详情
-	tvDetail, err := t.Client.GetTvDetail(tmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+	tvDetail, err := t.Client.GetTvDetail(t.ctx, tmdbId, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧详情失败，下次重试，失败原因：%v", err)
 		return "", 0, err
@@ -62,7 +58,7 @@ func (t *TmdbTvShowImpl) CheckByTmdbId(tmdbId int64) (string, int, error) {
 // 检查季是否存在
 func (t *TmdbTvShowImpl) CheckSeasonByTmdbId(tmdbId int64, seasonNumber int) (*tmdb.SeasonDetail, error) {
 	// 查询季详情
-	seasonDetail, err := t.Client.GetTvSeasonDetail(tmdbId, seasonNumber, models.GlobalScrapeSettings.GetTmdbLanguage())
+	seasonDetail, err := t.Client.GetTvSeasonDetail(t.ctx, tmdbId, seasonNumber, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧季详情失败，下次重试，失败原因：%v", err)
 		return nil, err

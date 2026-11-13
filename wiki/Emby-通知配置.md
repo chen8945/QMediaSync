@@ -15,9 +15,8 @@
 
 1. 在 Emby 中创建 API 密钥。
 2. 打开 QMediaSync 的“系统设置 → 媒体库 → Emby”，开启“启用 Emby”，填写 Emby 地址和刚创建的 Emby API Key，然后点击“保存设置”。例如，Emby 地址为 `http://192.168.1.20:8096`。
-3. 如果同时使用 Emby 302 代理，首次配置或更换 Emby 地址后，还需要重启 QMediaSync。
-4. 按 [Emby 媒体库同步](Emby-媒体库同步.md) 启用同步，并完成一次全量 Emby 条目同步。使用联动删除前，还要先确保 STRM 文件记录已经更新。
-5. 保持“通知链接鉴权”开启，在“系统设置 → API Key”创建供 Emby 使用的 QMediaSync API Key。
+3. 按 [Emby 媒体库同步](Emby-媒体库同步.md) 启用同步，并完成一次全量 Emby 条目同步。使用联动删除前，还要先确保 STRM 文件记录已经更新。
+4. 保持“通知链接鉴权”开启，在“系统设置 → API Key”创建供 Emby 使用的 QMediaSync API Key。
 
 ## 2. 在 Emby 中添加 Webhook
 

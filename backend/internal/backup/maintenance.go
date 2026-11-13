@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"qmediasync/internal/emby"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/synccron"
@@ -31,12 +33,23 @@ func stopAllTasks() error {
 	// Webhook 收件和后台执行独立于同步 busy 标记，先等待其退出。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := models.StopSettingsRuntime(ctx); err != nil {
+		return fmt.Errorf("等待设置保存结束失败：%w", err)
+	}
+	if err := models.StopMediaLibrarySettingsRuntime(ctx); err != nil {
+		return fmt.Errorf("等待媒体库设置保存结束失败：%w", err)
+	}
+	if manager := notificationmanager.GlobalEnhancedNotificationManager; manager != nil {
+		if err := manager.StopAllContext(ctx); err != nil {
+			return fmt.Errorf("等待通知后台退出失败：%w", err)
+		}
+	}
 	if err := stopWebhookWorker(ctx); err != nil {
 		return fmt.Errorf("停止媒体服务器 Webhook 后台处理失败：%w", err)
 	}
 	models.StopEmbyLibraryRefreshCoordinator()
 	synccron.PauseAllNewSyncQueues()
-	for _, scheduler := range []*cron.Cron{synccron.SyncCron, synccron.GlobalCron, synccron.ScrapeCron, synccron.TokenCron} {
+	for _, scheduler := range []*cron.Cron{synccron.SyncCron, synccron.GlobalCron, synccron.TokenCron} {
 		if scheduler == nil {
 			continue
 		}
@@ -46,11 +59,20 @@ func stopAllTasks() error {
 			return fmt.Errorf("等待定时任务退出失败：%w", ctx.Err())
 		}
 	}
+	select {
+	case <-synccron.StopScrapeCron().Done():
+	case <-ctx.Done():
+		return fmt.Errorf("等待刮削定时任务退出失败：%w", ctx.Err())
+	}
 	if models.GlobalDownloadQueue != nil {
-		models.GlobalDownloadQueue.Stop()
+		if err := models.GlobalDownloadQueue.Shutdown(ctx); err != nil {
+			return fmt.Errorf("等待下载队列退出失败：%w", err)
+		}
 	}
 	if models.GlobalUploadQueue != nil {
-		models.GlobalUploadQueue.Stop()
+		if err := models.GlobalUploadQueue.Shutdown(ctx); err != nil {
+			return fmt.Errorf("等待上传队列退出失败：%w", err)
+		}
 	}
 	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
 		if err := emby.SetMediaLibrarySyncRunning(kind, true); err != nil {
@@ -145,11 +167,18 @@ func beginRestoreMaintenanceRuntime(ctx context.Context) (*restoreMaintenance, e
 	progressMu.Unlock()
 	realtime.GlobalLifecycle.Shutdown()
 
+	// 已接收的设置仍须完成提交及本地应用，再关闭它们使用的 SQL 入口。
+	settingsErr := models.StopSettingsRuntime(ctx)
+	mediaSettingsErr := models.StopMediaLibrarySettingsRuntime(ctx)
 	// 先关闭新的数据库操作，再等此前事务与结果集退出。专用许可仍使用原连接池。
 	maintenance, err := db.BeginMaintenance(ctx, db.Db)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, errors.Join(err, settingsErr, mediaSettingsErr)
+	}
+	if settingsErr != nil || mediaSettingsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("等待设置应用退出失败：%w", errors.Join(settingsErr, mediaSettingsErr))
 	}
 	// 等待先前接收的 HTTP handler 退出，避免它们继续修改外部文件或任务状态。
 	restoreRequests.Lock()

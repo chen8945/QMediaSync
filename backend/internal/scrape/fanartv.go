@@ -1,18 +1,17 @@
 package scrape
 
 import (
-	"qmediasync/internal/fanart"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 )
 
 // 从 fanart.tv 刮削元数据
 func (m *movieScrapeImpl) DownloadMovieImagesFromFanart(sm *models.ScrapeMediaFile) map[string]string {
-	client := fanart.NewClient()
+	client := m.fanartClient
 	if sm.TmdbId == 0 {
 		return nil
 	}
-	resp, err := client.GetMovieImages(sm.TmdbId)
+	resp, err := client.GetMovieImages(m.ctx, sm.TmdbId)
 	if err != nil {
 		helpers.AppLogger.Errorf("从 fanart.tv 查询电影图片失败：TMDB ID=%d，%v", sm.TmdbId, err)
 		return nil

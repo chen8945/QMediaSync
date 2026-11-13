@@ -36,7 +36,7 @@ func parseBuildUnixTime(value string) int64 {
 }
 
 // 设置路由
-func setRouter(r *gin.Engine) {
+func setRouter(r *gin.Engine, mediaSettings *controllers.MediaLibraryConfigController) {
 	r.Use(controllers.RestoreMaintenanceMiddleware())
 	webStatisPath := filepath.Join(helpers.RootDir, "web_statics")
 	// if helpers.IsFnOS {
@@ -169,10 +169,10 @@ func setRouter(r *gin.Engine) {
 		api.POST("/cron/validate", controllers.ValidateCron)                                       // 验证 Cron 表达式并返回描述
 		api.POST("/setting/emby/parse", controllers.ParseEmby)                                     // 解析 Emby 媒体信息
 		api.GET("/setting/emby-config", controllers.GetEmbyConfig)                                 // 获取新的 Emby 配置
-		api.POST("/setting/emby-config", controllers.UpdateEmbyConfig)                             // 更新新的 Emby 配置
+		api.POST("/setting/emby-config", mediaSettings.UpdateEmby)                                 // 更新新的 Emby 配置
 		api.POST("/setting/jellyfin/parse", controllers.ParseJellyfin)
 		api.GET("/setting/jellyfin-config", controllers.GetJellyfinConfig)
-		api.POST("/setting/jellyfin-config", controllers.UpdateJellyfinConfig)
+		api.POST("/setting/jellyfin-config", mediaSettings.UpdateJellyfin)
 		api.POST("/setting/threads", controllers.UpdateThreads) // 更新线程数
 		api.GET("/setting/threads", controllers.GetThreads)     // 获取线程数
 

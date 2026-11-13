@@ -66,6 +66,7 @@ type scrapeImpl interface {
 	Process(*models.ScrapeMediaFile) error
 	Scrape(*models.ScrapeMediaFile) error
 	Rollback(*models.ScrapeMediaFile) error
+	Close() error
 }
 
 type Scrape struct {
@@ -123,12 +124,12 @@ func (s *Scrape) CreateTmpRotDir() {
 	}
 }
 
-func (s *Scrape) init() {
+func (s *Scrape) init() error {
 	// 1. 准备 115 或 OpenList 客户端
 	err := s.initOpenClient()
 	if err != nil {
 		helpers.AppLogger.Errorf("初始化刮削目录 %s 失败：%v", s.scrapePath.SourcePath, err)
-		return
+		return err
 	}
 	// 2. 记录开始状态
 	s.scrapePath.SetRunning()
@@ -146,10 +147,11 @@ func (s *Scrape) init() {
 	}
 	// 确定扫描接口，识别接口，刮削接口，重命名接口
 	if s.scrapePath.MediaType == models.MediaTypeTvShow {
-		s.scrapeImpl = NewTvShowScrapeImpl(s.scrapePath, s.ctx, s.V115Client, s.OpenlistClient, s.BaiduPanClient)
+		s.scrapeImpl, err = NewTvShowScrapeImpl(s.scrapePath, s.ctx, s.V115Client, s.OpenlistClient, s.BaiduPanClient)
 	} else {
-		s.scrapeImpl = NewMovieScrapeImpl(s.scrapePath, s.ctx, s.V115Client, s.OpenlistClient, s.BaiduPanClient)
+		s.scrapeImpl, err = NewMovieScrapeImpl(s.scrapePath, s.ctx, s.V115Client, s.OpenlistClient, s.BaiduPanClient)
 	}
+	return err
 }
 
 // 开始扫描识别和刮削
@@ -158,17 +160,16 @@ func (s *Scrape) Start() bool {
 	helpers.AppLogger.Infof("开始刮削目录 %s", s.scrapePath.SourcePath)
 	s.scrapePath.SetRunning()
 	defer func() {
+		s.ctxCancel()
 		s.scrapePath.SetNotRunning()
-		select {
-		case <-s.ctx.Done():
-			return
-		default:
-			// s.ctxCancel() // 通知其他相关协程都退出
-		}
 	}()
 	// 把刮削中的全部改成待刮削
 	models.UpdateScrapeMediaStatus(models.ScrapeMediaStatusScraping, models.ScrapeMediaStatusScanned, s.scrapePath.ID)
-	s.init()
+	if err := s.init(); err != nil {
+		helpers.AppLogger.Errorf("初始化刮削失败：%v", err)
+		return false
+	}
+	defer s.scrapeImpl.Close()
 	// 检查来源目录和目标目录是否存在
 	err := s.scanImpl.CheckPathExists()
 	if err != nil {
@@ -193,7 +194,6 @@ func (s *Scrape) Start() bool {
 		return false
 	}
 	helpers.AppLogger.Infof("刮削整理 #%d %s 成功", s.scrapePath.ID, s.scrapePath.SourcePath)
-	// s.ctxCancel() // 通知其他相关协程都退出
 	return true
 }
 
@@ -213,7 +213,10 @@ func (s *Scrape) Rollback(mediaFile *models.ScrapeMediaFile) (err error) {
 			err = fmt.Errorf("回滚时发生 panic：%v", r)
 		}
 	}()
-	s.init()
+	if err := s.init(); err != nil {
+		return err
+	}
+	defer s.scrapeImpl.Close()
 	if s.scrapeImpl == nil {
 		helpers.AppLogger.Errorf("刮削实现为空")
 		return errors.New("刮削实现为空")

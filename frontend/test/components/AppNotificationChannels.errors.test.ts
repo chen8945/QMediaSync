@@ -8,7 +8,10 @@ import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { ChannelType, NotificationConfig } from '@/utils/notificationUtils'
 import { createDeferred } from '../support/deferred'
 
-const success = (data: unknown = null) => ({ status: 200, data: { code: 0, message: '', data } })
+const success = (data: unknown = null, warnings?: string[]) => ({
+  status: 200,
+  data: { code: 0, message: '', data, ...(warnings === undefined ? {} : { warnings }) },
+})
 const failure = (message = '通知渠道操作失败，请稍后重试', status = 200, error_code?: string) => ({
   status,
   data: { code: 1, message, data: null, error_code },
@@ -112,6 +115,45 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('通知渠道失败反馈', () => {
+  it('创建已提交但应用失败时关闭表单并显示警告，列表刷新失败单独报告', async () => {
+    const transport = createHTTP()
+    const wrapper = await mountPage(transport)
+    const form = await createForm(wrapper)
+    await field(form, 'Bot Token').setValue('private-token')
+    await field(form, 'Chat ID').setValue('456')
+    const warning = '通知渠道已保存，但应用失败，请重新保存'
+    transport.reply.mockResolvedValueOnce(success({ id: 8 }, [warning]))
+    transport.read.mockResolvedValueOnce(failure())
+    await click(form, '创建')
+    expect(form.props('modelValue')).toBe(false)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
+    expect(wrapper.get('.channel-name').text()).toBe('通知渠道')
+  })
+
+  it.each(['渠道', '规则'])('%s开关已保存但应用失败不回滚，只显示应用警告', async (target) => {
+    const transport = createHTTP()
+    const wrapper = await mountPage(transport)
+    const warning = '通知设置已保存，但应用失败，请重新保存'
+    transport.reply.mockResolvedValueOnce(success(null, [warning]))
+    if (target === '规则') await click(wrapper, '规则')
+    const control =
+      target === '规则'
+        ? dialog(wrapper, '通知渠道 - 通知规则').get('.el-switch')
+        : wrapper.get('.channel-card-header .el-switch')
+    await control.trigger('click')
+    await flushPromises()
+    expect(control.classes()).not.toContain('is-checked')
+    expect(JSON.parse(transport.adapter.mock.calls.at(-1)![0].data)).toMatchObject({
+      channel_id: 7,
+      is_enabled: false,
+    })
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+  })
+
   it.each([
     [failure('创建通知渠道失败：名称重复'), '创建通知渠道失败：名称重复'],
     [failure('bot_token：不能为空', 400), '请填写 Bot Token'],
@@ -335,15 +377,18 @@ describe('通知渠道失败反馈', () => {
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
   })
 
-  it('保存成功后的刷新失败仍报告刷新失败，并保留已有列表', async () => {
+  it('保存应用警告不被刷新失败掩盖，并保留已有列表', async () => {
     const transport = createHTTP()
     const wrapper = await mountPage(transport)
     await click(wrapper, '编辑')
     const form = dialog(wrapper, '编辑渠道 - 通知渠道')
+    const warning = '通知渠道已保存，但应用失败，请重新保存'
+    transport.reply.mockResolvedValueOnce(success({ id: 7 }, [warning]))
     transport.read.mockResolvedValue(failure())
     await click(form, '保存')
     expect(form.props('modelValue')).toBe(false)
-    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('更新成功')
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.success).not.toHaveBeenCalled()
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(wrapper.get('.channel-name').text()).toBe('通知渠道')
   })

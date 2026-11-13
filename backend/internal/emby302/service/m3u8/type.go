@@ -32,12 +32,6 @@ type Info struct {
 	TailComments  []string                           // 尾注释信息
 	RemoteTsInfos []*TsInfo                          // 远程 TS URL 列表, 用于重定向
 
-	// LastRead 客户端最后读取的时间戳 (毫秒)
-	//
-	// 超过 30 分钟未读取, 程序停止更新;
-	// 超过 12 小时未读取, M3U8 信息被移除
-	LastRead int64
-
 	// LastUpdate 程序最后的更新时间戳 (毫秒)
 	//
 	// 客户端读取时, 如果 M3U8 信息已经超过 10 分钟没有更新

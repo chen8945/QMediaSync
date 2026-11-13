@@ -64,7 +64,6 @@ var pendingTokenPersists = make(map[uint]pendingToken)
 var GlobalCron *cron.Cron
 var globalCronMu sync.Mutex
 var SyncCron *cron.Cron
-var ScrapeCron *cron.Cron
 var TokenCron *cron.Cron
 
 var tokenRefreshRunning int32 = 0
@@ -133,44 +132,6 @@ func StartSyncCron() {
 		if err := AddNewSyncTask(taskObj); err != nil {
 			helpers.AppLogger.Errorf("将同步任务添加到队列失败：%s", err.Error())
 			continue
-		}
-	}
-}
-
-// 开始刮削整理任务（通用定时任务）
-func startScrapeCron() {
-	// 查询所有刮削目录
-	scrapePaths := models.GetScrapePathes("")
-	if len(scrapePaths) == 0 {
-		// helpers.AppLogger.Info("没有找到刮削目录")
-		return
-	}
-	for _, scrapePath := range scrapePaths {
-		// 未启用定时任务的跳过
-		if !scrapePath.EnableCron {
-			continue
-		}
-		// 如果自定义了 cron 字段，则不走通用定时任务
-		if scrapePath.CronExpression != "" {
-			helpers.AppLogger.Infof("刮削目录 %d 已启用自定义定时任务，Cron 表达式：%s，跳过通用定时任务", scrapePath.ID, scrapePath.CronExpression)
-			continue
-		}
-		// 将刮削目录 ID 添加到处理队列，而不是直接执行
-		taskObj := &NewSyncTask{
-			ID:           scrapePath.ID,
-			SourcePath:   "",
-			SourcePathId: "",
-			TargetPath:   "",
-			AccountId:    scrapePath.AccountId,
-			IsFile:       false,
-			TaskType:     SyncTaskTypeScrape,
-			SourceType:   scrapePath.SourceType,
-		}
-		if err := AddNewSyncTask(taskObj); err != nil {
-			helpers.AppLogger.Errorf("将刮削任务添加到队列失败：%s", err.Error())
-			continue
-		} else {
-			helpers.AppLogger.Infof("刮削任务已创建并加入执行队列，刮削目录 ID：%d，刮削目录：%s，目标目录：%s", scrapePath.ID, scrapePath.SourcePath, scrapePath.DestPath)
 		}
 	}
 }
@@ -571,52 +532,6 @@ func InitSyncCronWithError() error {
 	}
 	SyncCron.Start()
 	return nil
-}
-
-// 初始化刮削目录的自定义定时任务
-func InitScrapeCron() {
-	if ScrapeCron != nil {
-		helpers.AppLogger.Info("已存在刮削目录的定时任务，先停止")
-		ScrapeCron.Stop()
-	}
-	ScrapeCron = cron.New()
-
-	// 查询所有刮削目录
-	scrapePaths := models.GetScrapePathes("")
-	if len(scrapePaths) == 0 {
-		helpers.AppLogger.Info("没有启用自定义定时任务的刮削目录")
-		return
-	}
-
-	for _, scrapePath := range scrapePaths {
-		// 未启用定时任务或没有自定义 Cron 表达式的跳过
-		if !scrapePath.EnableCron || scrapePath.CronExpression == "" {
-			helpers.AppLogger.Infof("刮削目录 %d 未启用自定义定时任务", scrapePath.ID)
-			continue
-		}
-
-		helpers.AppLogger.Infof("已添加刮削目录 %d 的定时任务，Cron 表达式：%s", scrapePath.ID, scrapePath.CronExpression)
-		scrapePathID := scrapePath.ID // 捕获变量
-		ScrapeCron.AddFunc(scrapePath.CronExpression, func() {
-			// 将刮削目录 ID 添加到处理队列，而不是直接执行
-			taskObj := &NewSyncTask{
-				ID:           scrapePathID,
-				SourcePath:   "",
-				SourcePathId: "",
-				TargetPath:   "",
-				AccountId:    scrapePath.AccountId,
-				IsFile:       false,
-				TaskType:     SyncTaskTypeScrape,
-				SourceType:   scrapePath.SourceType,
-			}
-			if err := AddNewSyncTask(taskObj); err != nil {
-				helpers.AppLogger.Errorf("将刮削任务添加到队列失败：%s", err.Error())
-				return
-			}
-			helpers.AppLogger.Infof("刮削任务已创建并加入执行队列，刮削目录 ID：%d，刮削目录：%s，目标目录：%s", scrapePathID, scrapePath.SourcePath, scrapePath.DestPath)
-		})
-	}
-	ScrapeCron.Start()
 }
 
 func addBackupCron() {

@@ -23,7 +23,7 @@ const mountSettings = async (loadError?: unknown) => {
   })
   if (loadError) getReply.mockRejectedValueOnce(loadError)
   const reply = vi
-    .fn<() => Promise<APIResponse<unknown>>>()
+    .fn<() => Promise<APIResponse<unknown> & { warnings?: string[] }>>()
     .mockResolvedValue({ code: 200, message: '', data: null })
   const adapter = vi.fn(async (config) => ({
     config,
@@ -55,6 +55,29 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('代理设置请求反馈', () => {
+  it.each(['success', 'failure'])('保存应用警告在 %s 回读后仍保留，刷新失败单独显示', async (readback) => {
+    const { wrapper, reply, getReply, act } = await mountSettings()
+    await wrapper.get('input').setValue(privateURL)
+    const warning = '代理设置已保存，但通知渠道刷新失败，请重新保存'
+    reply.mockResolvedValueOnce({ code: 200, message: '', data: null, warnings: [warning] })
+    if (readback === 'failure') getReply.mockRejectedValueOnce(new AxiosError(privateURL, 'ERR_NETWORK'))
+    await act('保存')
+    expect(wrapper.get('.proxy-status').text()).toContain(warning)
+    expect(wrapper.get('.proxy-status').text()).toContain('尚未完全生效')
+    if (readback === 'failure') {
+      expect(wrapper.get('.proxy-readback-status').text()).toContain('已保存，但刷新失败')
+      expect(wrapper.get('input').element).toHaveProperty('value', privateURL)
+    } else {
+      expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
+      expect(wrapper.get('input').element).toHaveProperty('value', masked)
+    }
+    expect(wrapper.findAll('[role="alert"]').map((alert) => alert.text()).join(' ')).not.toContain('private')
+    await act('保存')
+    expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存')
+    expect(wrapper.get('.proxy-status').text()).not.toContain(warning)
+    expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
+  })
+
   it('首次读取失败不能保存默认空配置，重试读取成功后才允许保存', async () => {
     const { wrapper, reply, act } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
     const save = () => wrapper.findAll('button').find((button) => button.text() === '保存')!

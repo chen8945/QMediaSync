@@ -39,6 +39,7 @@ func setup115PlaybackCache(t *testing.T) {
 func setup115PlaybackSettings(t *testing.T, settings *models.Settings) {
 	t.Helper()
 	previous, previousSnapshot := models.SettingsGlobal, models.GetPlaybackSettingsSnapshot()
+	previousThreads := models.GetThreadSettingsSnapshot()
 	validityEnabled := settings.URLValidityCheckEnabled
 	if err := db.Db.Create(settings).Error; err != nil {
 		t.Fatal(err)
@@ -50,10 +51,10 @@ func setup115PlaybackSettings(t *testing.T, settings *models.Settings) {
 	models.SettingsGlobal = &models.Settings{}
 	models.LoadSettings()
 	t.Cleanup(func() {
-		if err := db.Db.Model(settings).Updates(map[string]any{
-			"local_proxy": previousSnapshot.LocalProxy, "multi_playback_enabled": previousSnapshot.MultiPlaybackEnabled,
-			"strm_preload_enabled": previousSnapshot.PreloadEnabled, "strm_base_url": previousSnapshot.StrmBaseURL,
-		}).Error; err != nil {
+		fields := previousThreads.ToMap()
+		fields["local_proxy"], fields["multi_playback_enabled"] = previousSnapshot.LocalProxy, previousSnapshot.MultiPlaybackEnabled
+		fields["strm_preload_enabled"], fields["strm_base_url"] = previousSnapshot.PreloadEnabled, previousSnapshot.StrmBaseURL
+		if err := db.Db.Model(settings).Updates(fields).Error; err != nil {
 			t.Error(err)
 		} else {
 			models.LoadSettings()

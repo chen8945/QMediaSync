@@ -180,7 +180,7 @@ func (t *tvShowScrapeImpl) ScrapeSeasonMedia(mediaFile *models.ScrapeMediaFile) 
 		return nil
 	}
 	// 查询季详情
-	seasonDetail, err := t.tmdbClient.GetTvSeasonDetail(mediaFile.TmdbId, mediaFile.SeasonNumber, models.GlobalScrapeSettings.GetTmdbLanguage())
+	seasonDetail, err := t.tmdbClient.GetTvSeasonDetail(t.ctx, mediaFile.TmdbId, mediaFile.SeasonNumber, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧季详情失败，下次重试，失败原因：%v", err)
 		return err
@@ -261,7 +261,7 @@ func (t *tvShowScrapeImpl) MakeMediaSeasonFromTMDB(mediaFile *models.ScrapeMedia
 			ScrapePathId: mediaFile.ScrapePathId,
 		}
 	}
-	mediaFile.MediaSeason.FillInfoByTmdbInfo(seasonDetail)
+	mediaFile.MediaSeason.FillInfoByTmdbInfo(seasonDetail, t.settings.GetTmdbImageUrl())
 	mediaFile.MediaSeasonId = mediaFile.MediaSeason.ID
 	mediaFile.Save()
 }

@@ -243,16 +243,9 @@ const save = async () => {
     savedSyncEnabled.value = Boolean(form.sync_enabled)
     savedConnection.value = Boolean(form.server_url.trim() && form.api_key.trim())
     feedback.value = {
-      title:
-        result.warnings.length || result.restart_required ? '配置已保存，尚未完全生效' : '保存成功',
-      type: result.warnings.length || result.restart_required ? 'warning' : 'success',
-      description: [
-        `${productName} 配置已保存`,
-        ...result.warnings,
-        result.restart_required ? 'Emby 代理设置需重启 QMediaSync 生效' : '',
-      ]
-        .filter(Boolean)
-        .join('；'),
+      title: result.warnings.length ? '配置已保存，尚未完全生效' : '保存成功',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: [`${productName} 配置已保存`, ...result.warnings].join('；'),
     }
     if (await loadConfig(true)) await loadLibraries(true)
     void refreshStatus()
@@ -381,9 +374,6 @@ onBeforeUnmount(() => {
               clearable
             />
             <p class="form-help">填写完整服务地址，支持反向代理子路径。更改后请保存设置。</p>
-            <p v-if="serverType === 'emby'" class="form-help">
-              使用 Emby 302 代理时，连接设置更改需重启 QMediaSync 生效。
-            </p>
           </el-form-item>
           <el-form-item :label="`${productName} API Key`" prop="api_key">
             <el-input

@@ -64,8 +64,12 @@ func NewClient(serverURL, apiKey string) *Client {
 }
 
 // NewClientForProduct 将固定业务入口的预期产品绑定到连接检查。
-func NewClientForProduct(serverURL, apiKey string, expected Product) *Client {
-	return &Client{embyURL: serverURL, apiKey: apiKey, expectedProduct: expected, httpClient: &http.Client{Timeout: 30 * time.Second}}
+func NewClientForProduct(serverURL, apiKey string, expected Product, transport ...http.RoundTripper) *Client {
+	client := &Client{embyURL: serverURL, apiKey: apiKey, expectedProduct: expected, httpClient: &http.Client{Timeout: 30 * time.Second}}
+	if len(transport) != 0 {
+		client.httpClient.Transport = transport[0]
+	}
+	return client
 }
 
 func identifyProduct(name string) Product {

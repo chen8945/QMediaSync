@@ -2,6 +2,7 @@ package emby
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ const MediaSourceIdSegment = "[[_]]"
 //
 // URI 中必须有查询参数 MediaSourceId。
 // 如果没有携带该参数, 可能会请求到多个媒体, 默认返回第一个媒体的本地路径。
-func getEmbyFileLocalPath(itemInfo ItemInfo) (string, error) {
+func (upstream *Session) getEmbyFileLocalPath(ctx context.Context, itemInfo ItemInfo) (string, error) {
 	var header http.Header
 	switch itemInfo.ApiKeyType {
 	case Header:
@@ -45,7 +46,7 @@ func getEmbyFileLocalPath(itemInfo ItemInfo) (string, error) {
 	}
 
 	innerRequest := func(method string) (*http.Response, error) {
-		resp, err := https.Request(method, config.C.Emby.Host+itemInfo.PlaybackInfoUri).Header(header).Do()
+		resp, err := https.Request(method, upstream.Origin+itemInfo.PlaybackInfoUri).Client(upstream.Client).Context(ctx).Header(header).Do()
 		if err != nil {
 			return nil, fmt.Errorf("请求 Emby 接口失败, 错误: %v", err)
 		}
@@ -123,7 +124,7 @@ func getEmbyFileLocalPath(itemInfo ItemInfo) (string, error) {
 // findVideoPreviewInfos 查找 source 的所有转码资源
 //
 // 传入 resChan 进行异步查询, 调用方通过监听 resChan 获取结果
-func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan []*jsons.Item) {
+func (upstream *Session) findVideoPreviewInfos(ctx context.Context, source *jsons.Item, clientApiKey string, resChan chan []*jsons.Item) {
 	if resChan == nil {
 		return
 	}
@@ -143,12 +144,12 @@ func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan
 	}
 
 	// 转换 OpenList 绝对路径
-	openlistPathRes := path.Emby2Openlist(source.Attr("Path").Val().(string))
+	openlistPathRes := path.Emby2OpenlistContext(ctx, upstream.Client, source.Attr("Path").Val().(string))
 	var transcodingList []openlist.TranscodingVideoInfo
 	var subtitleList []openlist.TranscodingSubtitleInfo
 	firstFetchSuccess := false
 	if openlistPathRes.Success {
-		res := openlist.FetchFsOther(openlistPathRes.Path, nil)
+		res := openlist.FetchFsOtherContext(ctx, upstream.Client, openlistPathRes.Path, nil)
 
 		if res.Code == http.StatusOK {
 			firstFetchSuccess = true
@@ -172,7 +173,7 @@ func findVideoPreviewInfos(source *jsons.Item, clientApiKey string, resChan chan
 		}
 
 		for _, path := range paths {
-			res := openlist.FetchFsOther(path, nil)
+			res := openlist.FetchFsOtherContext(ctx, upstream.Client, path, nil)
 			if res.Code == http.StatusOK {
 				transcodingList = res.Data.VideoPreviewPlayInfo.LiveTranscodingTaskList
 				subtitleList = res.Data.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList

@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewHTTPClient默认启用证书校验并复用连接(t *testing.T) {
-	got := newHTTPClient(ClientOptions{})
+	got := NewClient(ClientOptions{})
 	transport, ok := got.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("Transport 类型 = %T，期望 *http.Transport", got.Transport)
@@ -26,7 +26,7 @@ func TestNewHTTPClient默认启用证书校验并复用连接(t *testing.T) {
 }
 
 func TestNewHTTPClient显式开启时才跳过证书校验(t *testing.T) {
-	got := newHTTPClient(ClientOptions{InsecureSkipVerify: true})
+	got := NewClient(ClientOptions{InsecureSkipVerify: true})
 	transport, ok := got.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("Transport 类型 = %T，期望 *http.Transport", got.Transport)

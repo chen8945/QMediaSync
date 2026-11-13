@@ -40,9 +40,9 @@ func TestRedirect2OpenlistLinkLocalMediaPaths(t *testing.T) {
 		{"正斜杠共享", "//nas/media/movie.mkv"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			router, _ := newSTRMRedirectTestRouter(t, tt.path, false)
+			router, _, session := newSTRMRedirectTestRouter(t, tt.path, false)
 			config.C.Emby.LocalMediaRoot = "/"
-			router.GET("/Videos/movie/original", ProxyOriginalResource)
+			router.GET("/Videos/movie/original", session.ProxyOriginalResource)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/Videos/movie/stream?MediaSourceId=ms&api_key=test", nil))
 			const original = "/Videos/movie/original?MediaSourceId=ms&api_key=test"
@@ -247,7 +247,8 @@ func TestGetFinalRedirectLinkClosesQMSResponseBody(t *testing.T) {
 			}))
 			defer resolver.Close()
 			defer close(release)
-			getFinalRedirectLink(context.Background(), resolver.URL+"/115/newurl?pickcode=test", make(http.Header), "")
+			session := newTestSession(t)
+			session.getFinalRedirectLink(context.Background(), resolver.URL+"/115/newurl?pickcode=test", make(http.Header), "")
 			select {
 			case <-closed:
 			case <-time.After(3 * time.Second):
@@ -310,7 +311,7 @@ func TestRedirect2OpenlistLinkCacheSeparatesUA(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer resolver.Close()
-	router, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/newurl?pickcode=test", true)
+	router, _, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/newurl?pickcode=test", true)
 	cacheID := t.TempDir()
 	for i, ua := range []string{"Player/1.2", "Player/2.1", "Player/1.2", "Player/2.1"} {
 		rec := serveCachedSTRMRedirect(t, router, cacheID, ua)
@@ -338,7 +339,7 @@ func TestRedirect2OpenlistLinkCacheExpiresBeforeSignature(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer resolver.Close()
-	router, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/url/movie.mkv?pickcode=test", true)
+	router, _, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/url/movie.mkv?pickcode=test", true)
 	cacheID := t.TempDir()
 	first := serveCachedSTRMRedirect(t, router, cacheID, "ExpiryPlayer")
 	second := serveCachedSTRMRedirect(t, router, cacheID, "ExpiryPlayer")
@@ -378,7 +379,7 @@ func TestRedirect2OpenlistLinkDoesNotCacheUnusableResolution(t *testing.T) {
 				w.WriteHeader(tt.status)
 			}))
 			defer resolver.Close()
-			router, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/newurl?pickcode=test", true)
+			router, _, _ := newSTRMRedirectTestRouter(t, resolver.URL+"/115/newurl?pickcode=test", true)
 			cacheID := t.TempDir()
 			for range 2 {
 				rec := serveCachedSTRMRedirect(t, router, cacheID, "RetryPlayer")
@@ -404,11 +405,10 @@ func serveCachedSTRMRedirect(t *testing.T, router *gin.Engine, cacheID, ua strin
 	req.Header.Set("Range", "bytes=0-1023")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	cache.WaitingForHandleChan()
 	return rec
 }
 
-func newSTRMRedirectTestRouter(t *testing.T, source string, cached bool) (*gin.Engine, *bytes.Buffer) {
+func newSTRMRedirectTestRouter(t *testing.T, source string, cached bool, handlers ...http.Handler) (*gin.Engine, *bytes.Buffer, *Session) {
 	t.Helper()
 	var output bytes.Buffer
 	oldLogger, oldConfig, oldMode := helpers.AppLogger, config.C, gin.Mode()
@@ -418,30 +418,34 @@ func newSTRMRedirectTestRouter(t *testing.T, source string, cached bool) (*gin.E
 		helpers.AppLogger, config.C = oldLogger, oldConfig
 		gin.SetMode(oldMode)
 	})
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": []any{map[string]any{
 			"Id": "ms", "Path": source, "SupportsTranscoding": true, "TranscodingUrl": "/origin/transcode",
 		}}})
-	}))
+	})
+	if len(handlers) != 0 {
+		handler = handlers[0]
+	}
+	origin := httptest.NewServer(handler)
 	t.Cleanup(origin.Close)
 	cacheConfig := &config.Cache{Enable: cached, Expired: "1h"}
 	if err := cacheConfig.Init(); err != nil {
 		t.Fatal(err)
 	}
 	config.C = &config.Config{Emby: &config.Emby{Host: origin.URL}, Cache: cacheConfig}
+	session := newTestSession(t)
 	router := gin.New()
 	if cached {
-		router.Use(cache.CacheableRouteMarker(), cache.RequestCacher())
-		t.Cleanup(cache.WaitingForHandleChan)
+		router.Use(cache.CacheableRouteMarker(), session.Cache.RequestCacher())
 	}
-	router.GET("/Videos/movie/stream", Redirect2OpenlistLink)
-	return router, &output
+	router.GET("/Videos/movie/stream", session.Redirect2OpenlistLink)
+	return router, &output, session
 }
 
 func runSTRMRedirectTest(t *testing.T, source, ua string) (*httptest.ResponseRecorder, string) {
 	t.Helper()
-	router, output := newSTRMRedirectTestRouter(t, source, false)
+	router, output, _ := newSTRMRedirectTestRouter(t, source, false)
 	req := httptest.NewRequest(http.MethodGet, "/Videos/movie/stream?MediaSourceId=ms&api_key=test", nil)
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Range", "bytes=0-1023")
@@ -451,9 +455,9 @@ func runSTRMRedirectTest(t *testing.T, source, ua string) (*httptest.ResponseRec
 }
 
 func TestRedirect2TranscodeMalformedHost(t *testing.T) {
-	router, output := newSTRMRedirectTestRouter(t, "", false)
+	router, output, session := newSTRMRedirectTestRouter(t, "", false)
 	config.C.Emby.ProxyErrorStrategy = config.PeStrategyReject
-	router.GET("/master.m3u8", Redirect2Transcode)
+	router.GET("/master.m3u8", session.Redirect2Transcode)
 	request := httptest.NewRequest(http.MethodGet, "/master.m3u8?template_id=test&openlist_path=movie&api_key=secret", nil)
 	request.Host = "[::1"
 	response := httptest.NewRecorder()
@@ -483,9 +487,9 @@ func TestSTRMPlaybackLogsSharedAndResponseCacheHits(t *testing.T) {
 	defer resolver.Close()
 	const ua = "Cached Player"
 	raw := resolver.URL + "/movie.mkv?k=signature"
-	router, output := newSTRMRedirectTestRouter(t, raw, true)
+	router, output, session := newSTRMRedirectTestRouter(t, raw, true)
 	header := http.Header{"User-Agent": {ua}}
-	if _, _, _, ok := getFinalRedirectLink(t.Context(), raw, header, ""); !ok || calls.Load() != 1 {
+	if _, _, _, ok := session.getFinalRedirectLink(t.Context(), raw, header, ""); !ok || calls.Load() != 1 {
 		t.Fatal("cache miss did not resolve the source once")
 	}
 	if strings.Contains(output.String(), "播放请求命中缓存") {
@@ -513,7 +517,7 @@ func TestSTRMPlaybackLogsSharedAndResponseCacheHits(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	output.Reset()
-	getFinalRedirectLink(ctx, raw, header, "/Videos/movie/stream")
+	session.getFinalRedirectLink(ctx, raw, header, "/Videos/movie/stream")
 	if strings.Contains(output.String(), "播放请求命中缓存") || calls.Load() != 1 {
 		t.Fatal("canceled cache read emitted playback INFO or made a request")
 	}
@@ -536,7 +540,7 @@ func TestSTRMCacheHitLogsOnlyMediaStreams(t *testing.T) {
 	defer resolver.Close()
 	const ua = "Cached Player"
 	raw := resolver.URL + "/movie.mkv?k=signature"
-	router, output := newSTRMRedirectTestRouter(t, raw, false)
+	router, output, _ := newSTRMRedirectTestRouter(t, raw, false)
 	serve := func(path string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, path+"?MediaSourceId=ms&api_key=test", nil)
 		request.Header.Set("User-Agent", ua)
@@ -564,7 +568,8 @@ func TestSTRMCacheHitLogsOnlyMediaStreams(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.path != "/Videos/movie/stream" {
-				router.GET(test.path, Redirect2OpenlistLink)
+				session := newTestSession(t)
+				router.GET(test.path, session.Redirect2OpenlistLink)
 			}
 			output.Reset()
 			response := serve(test.path)

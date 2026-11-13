@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/playback"
 )
 
@@ -728,7 +729,7 @@ func TestPreloadFirstEpisodeSeasonsRefresh(t *testing.T) {
 				}
 				request.Header.Set("User-Agent", "Control/1")
 				var ok bool
-				olderSeasons, ok = newPreloadRequest(request, t.Name(), "", "", 1)
+				olderSeasons, ok = newPreloadRequest(request, config.C.Emby.Host, t.Name(), "", "", 1)
 				olderSeasons.item = "90"
 				if !ok || !h.adapter.beginObservation(&olderSeasons, "seasons", nil) {
 					t.Fatal("old Seasons request was not admitted")
@@ -969,7 +970,7 @@ func TestPreloadLaterSourceLookupKeepsNewerWatchState(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20", nil)
 			r.Header.Set(HeaderFullAuthName, `MediaBrowser Client="Fixture App", DeviceId="device", Token="user-token"`)
 			r.Header.Set("User-Agent", "Control/1")
-			refresh, ok := newPreloadRequest(r, t.Name(), "", "", 1)
+			refresh, ok := newPreloadRequest(r, config.C.Emby.Host, t.Name(), "", "", 1)
 			refresh.item = "20"
 			if !ok || !h.adapter.beginObservation(&refresh, "detail", nil) {
 				t.Fatal("watch-state refresh was not admitted")
@@ -1130,7 +1131,7 @@ func TestPreloadEpisodesDoNotRestoreInvalidatedUserData(t *testing.T) {
 				r.Header.Set(HeaderFullAuthName, `MediaBrowser Client="Fixture App", DeviceId="device", Token="user-token"`)
 				r.Header.Set("User-Agent", "Control/1")
 				var ok bool
-				late, ok = newPreloadRequest(r, t.Name(), "", "", 1)
+				late, ok = newPreloadRequest(r, config.C.Emby.Host, t.Name(), "", "", 1)
 				if mode == "late-episodes" {
 					late.item = "90"
 				} else {

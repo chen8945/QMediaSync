@@ -56,11 +56,11 @@
           :disabled="loading"
           :min="5"
           :max="120"
-          step="1"
+          :step="1"
           style="width: 100%"
         />
         <div class="form-help">
-          请求超时时间，单位为秒，默认 120 秒。调小后刮削会更快，但 AI 识别更容易超时失败
+          单次 AI 请求的最长等待时间，单位为秒，默认 120 秒。调小后更容易超时失败。
         </div>
       </el-form-item>
 
@@ -239,6 +239,13 @@ async function fetchAiSettings() {
   }
 }
 
+const buildSettingsPayload = () => ({
+  ai_base_url: formData.aiBaseUrl,
+  ai_api_key: formData.aiApiKey,
+  ai_model_name: formData.aiModelName,
+  ai_timeout: formData.ai_timeout,
+})
+
 // 保存 AI 设置
 async function saveSettings() {
   if (!settingsLoaded.value || loading.value) return
@@ -255,14 +262,7 @@ async function saveSettings() {
     loading.value = true
     saveStatus.value = null
 
-    const payload = {
-      ai_base_url: formData.aiBaseUrl,
-      ai_api_key: formData.aiApiKey,
-      ai_model_name: formData.aiModelName,
-      ai_timeout: formData.ai_timeout,
-    }
-
-    await saveAiSettings(http, payload)
+    await saveAiSettings(http, buildSettingsPayload())
 
     saveStatus.value = {
       title: '保存成功',
@@ -296,13 +296,7 @@ async function testConnection() {
     testing.value = true
     testStatus.value = null
 
-    const payload = {
-      ai_base_url: formData.aiBaseUrl,
-      ai_api_key: formData.aiApiKey,
-      ai_model_name: formData.aiModelName,
-    }
-
-    await testAiConnection(http, payload)
+    await testAiConnection(http, buildSettingsPayload())
 
     testStatus.value = {
       title: '测试成功',

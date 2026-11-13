@@ -257,7 +257,7 @@ func scanFailureTestFile(id, parent, name string, directory bool) *SyncFileCache
 
 func TestStartOtherIsolatesFileAndSubtreeFailures(t *testing.T) {
 	s := newFailureScanSyncer(t)
-	models.SettingsGlobal.OpenlistRetry = 0
+	s.threadSettings.OpenlistRetry = 0
 	badFile := scanFailureTestFile("bad-file", "/media", "bad.mkv", false)
 	goodFile := scanFailureTestFile("good-file", "/media", "good.mkv", false)
 	goodChild := scanFailureTestFile("good-child", "/media/good", "child.mkv", false)
@@ -304,8 +304,8 @@ func TestStartOtherIsolatesFileAndSubtreeFailures(t *testing.T) {
 func TestStartOtherRetryCancellationPublishesOnce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newFailureScanSyncer(t)
-		models.SettingsGlobal.OpenlistRetry = 3
-		models.SettingsGlobal.OpenlistRetryDelay = 60
+		s.threadSettings.OpenlistRetry = 3
+		s.threadSettings.OpenlistRetryDelay = 60
 		var calls atomic.Int64
 		s.SyncDriver = &failureScanDriver{list: func(context.Context, string, string) ([]*SyncFileCache, error) {
 			calls.Add(1)
@@ -322,6 +322,101 @@ func TestStartOtherRetryCancellationPublishesOnce(t *testing.T) {
 		}
 		if err := <-s.PathErrChan; !errors.Is(err, context.Canceled) {
 			t.Fatalf("error=%v, want cancellation", err)
+		}
+	})
+}
+
+func TestStartOtherKeepsThreadSnapshotAcrossSettingsSave(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		previous := models.GetThreadSettingsSnapshot().SettingThreads
+		account, _ := setupStrmExclusionTestDB(t)
+		models.LoadSettings()
+		if err := models.StartSettingsRuntime(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := models.SaveThreadSettings(ctx, models.ThreadSettingsUpdate{SettingThreads: previous, UploadConcurrency: &previous.UploadThreads}); err != nil {
+				t.Error(err)
+			}
+			if err := models.StopSettingsRuntime(ctx); err != nil {
+				t.Error(err)
+			}
+			models.LoadSettings()
+		})
+		threads := models.GetThreadSettingsSnapshot().SettingThreads
+		threads.FileDetailThreads, threads.OpenlistQPS = 3, 4
+		threads.OpenlistRetry, threads.OpenlistRetryDelay = 1, 60
+		threads.FileListPageSize = 100
+		save := func() {
+			t.Helper()
+			if _, err := models.SaveThreadSettings(t.Context(), models.ThreadSettingsUpdate{SettingThreads: threads}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		save()
+		newScan := func() (*SyncStrm, *atomic.Int64) {
+			t.Helper()
+			s := newSyncStrm(account, 1, "/media", "root", t.TempDir(), SyncStrmConfig{}, true, 0, false, true)
+			if s == nil {
+				t.Fatal("创建同步器失败")
+			}
+			t.Cleanup(func() { s.Cancel(); s.Sync.Logger.Close() })
+			calls := new(atomic.Int64)
+			s.SyncDriver = &failureScanDriver{list: func(context.Context, string, string) ([]*SyncFileCache, error) {
+				calls.Add(1)
+				return nil, errors.New("temporary listing failure")
+			}}
+			return s, calls
+		}
+		oldScan, oldCalls := newScan()
+		done := make(chan struct{})
+		go func() { oldScan.StartOther(); close(done) }()
+		synctest.Wait()
+		if oldCalls.Load() != 1 {
+			t.Fatalf("旧扫描尚未进入重试等待：calls=%d", oldCalls.Load())
+		}
+		threads.FileDetailThreads, threads.OpenlistQPS = 6, 7
+		threads.OpenlistRetry, threads.OpenlistRetryDelay = 0, 0
+		threads.FileListPageSize = 200
+		save()
+		time.Sleep(59 * time.Second)
+		synctest.Wait()
+		if oldCalls.Load() != 1 {
+			t.Fatal("保存新设置不能缩短本轮重试间隔")
+		}
+		time.Sleep(time.Second)
+		<-done
+		if oldCalls.Load() != 2 {
+			t.Fatalf("本轮应继续使用原重试预算：calls=%d", oldCalls.Load())
+		}
+		nextScan, nextCalls := newScan()
+		nextScan.StartOther()
+		if nextCalls.Load() != 1 || oldScan.PathWorkerMax != 3 || nextScan.PathWorkerMax != 6 {
+			t.Fatalf("后续扫描应使用新参数：calls=%d old_workers=%d next_workers=%d", nextCalls.Load(), oldScan.PathWorkerMax, nextScan.PathWorkerMax)
+		}
+		originalList := list115FilesPage
+		t.Cleanup(func() { list115FilesPage = originalList })
+		var limits []int
+		list115FilesPage = func(_ context.Context, _ *v115open.OpenClient, _ string, _, _, _ bool, _, limit int) (*v115open.FileListResp, error) {
+			limits = append(limits, limit)
+			return &v115open.FileListResp{}, nil
+		}
+		for _, s := range []*SyncStrm{oldScan, nextScan} {
+			driver := NewOpen115Driver(nil)
+			driver.SetSyncStrm(s)
+			if _, err := driver.GetNetFileFiles(t.Context(), "/media/child", "child"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !slices.Equal(limits, []int{100, 200}) {
+			t.Fatalf("旧同步的后续目录和新同步应各用本轮分页设置：%v", limits)
+		}
+		account.SourceType = models.SourceTypeOpenList
+		openListScan, _ := newScan()
+		if openListScan.PathWorkerMax != 7 {
+			t.Fatalf("后续OpenList扫描应使用新并发：%d", openListScan.PathWorkerMax)
 		}
 	})
 }
@@ -355,7 +450,7 @@ func TestLocalSourceStatFailurePreservesScopeAndContinues(t *testing.T) {
 
 func TestLocalSourceReadDirFailureIsNotEmptySuccess(t *testing.T) {
 	s := newFailureScanSyncer(t)
-	models.SettingsGlobal.OpenlistRetry = 0
+	s.threadSettings.OpenlistRetry = 0
 	s.SourcePath = filepath.Join(t.TempDir(), "missing")
 	s.SourcePathId = s.SourcePath
 	s.Account.SourceType = models.SourceTypeLocal
@@ -373,8 +468,8 @@ func TestStartOtherOpenListAuthenticationAndDirectoryPermissions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := newFailureScanSyncer(t)
 			s.Account.SourceType = models.SourceTypeOpenList
-			models.SettingsGlobal.OpenlistRetry = 2
-			models.SettingsGlobal.OpenlistRetryDelay = 0
+			s.threadSettings.OpenlistRetry = 2
+			s.threadSettings.OpenlistRetryDelay = 0
 			oldLogger := helpers.OpenListLog
 			helpers.OpenListLog = s.Sync.Logger
 			t.Cleanup(func() { helpers.OpenListLog = oldLogger })
@@ -423,7 +518,7 @@ func TestStartOtherOpenListAuthenticationAndDirectoryPermissions(t *testing.T) {
 			s.SyncDriver = driver
 			if name == "directory-forbidden" {
 				// 目录局部重试行为保持不变，测试不额外重复外层重试。
-				models.SettingsGlobal.OpenlistRetry = 0
+				s.threadSettings.OpenlistRetry = 0
 			}
 			s.StartOther()
 			if name == "directory-forbidden" {

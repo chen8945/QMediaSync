@@ -43,6 +43,21 @@ const createUploadTask = (
 })
 
 describe('queueTaskDetailUtils', () => {
+  it('下载任务详情保留全部状态的文案和标签类型', () => {
+    const statuses: Array<[number, string, string]> = [
+      [0, '等待下载', 'info'],
+      [1, '正在下载', 'primary'],
+      [2, '下载完成', 'success'],
+      [3, '下载失败', 'danger'],
+      [4, '已取消', 'warning'],
+    ]
+    for (const [status, value, tagType] of statuses) {
+      expect(getFields(buildDownloadTaskDetailGroups(createDownloadTask({ status })))).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: 'status', value, tagType })]),
+      )
+    }
+  })
+
   // This test protects the queue summary contract shared by the upload and download pages.
   it('只以远端完整路径生成队列摘要，历史记录明确显示未知路径', () => {
     expect(getQueueRemotePathSummary('/remote/movie.mkv')).toBe('/remote/movie.mkv')

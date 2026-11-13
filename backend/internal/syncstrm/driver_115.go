@@ -37,7 +37,7 @@ var list115FilesPage = func(ctx context.Context, client *v115open.OpenClient, pa
 
 // 返回 SyncFile 的内存数据结构
 func (d *open115Driver) GetNetFileFiles(ctx context.Context, parentPath, parentPathId string) ([]*SyncFileCache, error) {
-	limit := models.GetFileListPageSize()
+	limit := d.s.threadSettings.GetFileListPageSize()
 	offset := 0
 	fileItems := make([]*SyncFileCache, 0)
 	expectedTotal := -1
@@ -291,7 +291,7 @@ func (d *open115Driver) GetDirsByPathId(ctx context.Context, pathId string) ([]p
 // GetDirsByPath 同时核对请求路径，避免空列表丢失父目录的位置证据。
 func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId string) ([]pathQueueItem, error) {
 	offset := 0
-	limit := models.GetFileListPageSize()
+	limit := d.s.threadSettings.GetFileListPageSize()
 	pathDirs := make([]pathQueueItem, 0)
 	expectedTotal := -1
 	expectedPath := ""

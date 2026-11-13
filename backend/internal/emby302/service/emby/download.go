@@ -19,29 +19,29 @@ import (
 )
 
 // HandleSyncDownload 处理 Sync 下载接口, 并重定向到直链
-func HandleSyncDownload(c *gin.Context) {
+func (upstream *Session) HandleSyncDownload(c *gin.Context) {
 	// 解析 JobItems ID
 	itemInfo, err := resolveItemInfo(c, RouteSyncDownload)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 	logs.SensitiveDebug("解析得到的 ItemInfo 信息: %s", itemInfo.SensitiveString())
 	if itemInfo.Id == "" {
-		checkErr(c, errors.New("JobItems ID 为空"))
+		upstream.checkErr(c, errors.New("JobItems ID 为空"))
 		return
 	}
 
 	// 请求 targets 列表
 	targetUri := "/Sync/Targets?api_key=" + itemInfo.ApiKey
-	resp, _ := Fetch(targetUri, http.MethodGet, nil, nil)
+	resp, _ := upstream.Fetch(c.Request.Context(), targetUri, http.MethodGet, nil, nil)
 	if resp.Code != http.StatusOK {
 		logs.SensitiveDebug("请求 Emby 失败完整 URI: %s", targetUri)
-		checkErr(c, fmt.Errorf("请求 Emby 失败: %v, URI: %s", resp.Msg, targetUri))
+		upstream.checkErr(c, fmt.Errorf("请求 Emby 失败: %v, URI: %s", resp.Msg, targetUri))
 		return
 	}
 	targets := resp.Data
 	if targets.Empty() {
-		checkErr(c, fmt.Errorf("targets 列表为空, 原始响应: %v", targets))
+		upstream.checkErr(c, fmt.Errorf("targets 列表为空, 原始响应: %v", targets))
 		return
 	}
 
@@ -55,10 +55,10 @@ func HandleSyncDownload(c *gin.Context) {
 
 		// 请求 Ready 接口
 		readyUri := readyUriTmpl + id
-		resp, _ := Fetch(readyUri, http.MethodGet, nil, nil)
+		resp, _ := upstream.Fetch(c.Request.Context(), readyUri, http.MethodGet, nil, nil)
 		if resp.Code != http.StatusOK {
 			logs.SensitiveDebug("请求 Emby 失败完整 URI: %s", readyUri)
-			checkErr(c, fmt.Errorf("请求 Emby 失败: %v, URI: %s", resp.Msg, readyUri))
+			upstream.checkErr(c, fmt.Errorf("请求 Emby 失败: %v, URI: %s", resp.Msg, readyUri))
 			return jsons.ErrBreakRange
 		}
 		readyItems := resp.Data
@@ -80,13 +80,13 @@ func HandleSyncDownload(c *gin.Context) {
 			// 匹配成功后获取下载项目的 ItemId, 重新封装请求并重定向到直链
 			itemId, ok := ri.Attr("Item").Attr("Id").String()
 			if !ok {
-				checkErr(c, fmt.Errorf("解析 Emby 响应失败: 获取不到 ItemId, 原始响应: %v", ri))
+				upstream.checkErr(c, fmt.Errorf("解析 Emby 响应失败: 获取不到 ItemId, 原始响应: %v", ri))
 				breakRange = true
 				return jsons.ErrBreakRange
 			}
 			msId, ok := ri.Attr("Item").Attr("MediaSources").Idx(0).Attr("Id").String()
 			if !ok {
-				checkErr(c, fmt.Errorf("解析 Emby 响应失败: 获取不到 MediaSourceId, 原始响应: %v", ri))
+				upstream.checkErr(c, fmt.Errorf("解析 Emby 响应失败: 获取不到 MediaSourceId, 原始响应: %v", ri))
 				breakRange = true
 				return jsons.ErrBreakRange
 			}
@@ -108,7 +108,7 @@ func HandleSyncDownload(c *gin.Context) {
 }
 
 // DownloadStrategyChecker 拦截下载请求, 并根据配置的策略进行响应
-func DownloadStrategyChecker() gin.HandlerFunc {
+func (upstream *Session) DownloadStrategyChecker() gin.HandlerFunc {
 
 	var downloadRoutes = []*regexp.Regexp{
 		regexp.MustCompile(constant.Reg_ItemDownload),
@@ -141,7 +141,7 @@ func DownloadStrategyChecker() gin.HandlerFunc {
 		}
 
 		if strategy == config.DlStrategyOrigin {
-			if err := https.ProxyPass(c.Request, c.Writer, config.C.Emby.Host); err != nil {
+			if err := https.ProxyPass(c.Request, c.Writer, upstream.Origin, upstream.Client); err != nil {
 				c.Header(cache.HeaderKeyExpired, "-1")
 				logs.Error("下载接口代理失败: %v", err)
 			}

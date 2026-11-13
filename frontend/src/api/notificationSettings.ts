@@ -7,7 +7,8 @@ import type {
   NotificationConfig,
   NotificationRule,
 } from '@/utils/notificationUtils'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface NotificationChannelPayload extends NotificationConfig {
   channel_name: string
@@ -69,6 +70,13 @@ function unwrapNotificationResponse<T>(response: AxiosResponse<APIResponse<T>>):
   return response.data.data
 }
 
+function unwrapNotificationSaveResponse(
+  response: AxiosResponse<APIResponse<unknown> & { warnings?: unknown }>,
+): SettingsSaveResult {
+  unwrapNotificationResponse(response)
+  return getSettingsSaveResult(response)
+}
+
 const channelsURL = `${SERVER_URL}/setting/notification/channels`
 const rulesURL = `${SERVER_URL}/setting/notification/rules`
 
@@ -92,8 +100,8 @@ export async function createNotificationChannel(
   http: AxiosInstance,
   type: ChannelType,
   payload: NotificationChannelPayload,
-): Promise<void> {
-  unwrapNotificationResponse(
+): Promise<SettingsSaveResult> {
+  return unwrapNotificationSaveResponse(
     await http.post<APIResponse<unknown>>(`${channelsURL}/${type}`, payload),
   )
 }
@@ -102,8 +110,8 @@ export async function updateNotificationChannel(
   http: AxiosInstance,
   type: ChannelType,
   payload: NotificationChannelPayload & { channel_id: number },
-): Promise<void> {
-  unwrapNotificationResponse(
+): Promise<SettingsSaveResult> {
+  return unwrapNotificationSaveResponse(
     await http.put<APIResponse<unknown>>(`${channelsURL}/${type}`, payload),
   )
 }
@@ -112,8 +120,8 @@ export async function setNotificationChannelEnabled(
   http: AxiosInstance,
   id: number,
   enabled: boolean,
-): Promise<void> {
-  unwrapNotificationResponse(
+): Promise<SettingsSaveResult> {
+  return unwrapNotificationSaveResponse(
     await http.post<APIResponse<null>>(`${channelsURL}/status`, {
       channel_id: id,
       is_enabled: enabled,
@@ -127,8 +135,13 @@ export async function testNotificationChannel(http: AxiosInstance, id: number): 
   )
 }
 
-export async function deleteNotificationChannel(http: AxiosInstance, id: number): Promise<void> {
-  unwrapNotificationResponse(await http.delete<APIResponse<null>>(`${channelsURL}/${id}`))
+export async function deleteNotificationChannel(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  return unwrapNotificationSaveResponse(
+    await http.delete<APIResponse<null>>(`${channelsURL}/${id}`),
+  )
 }
 
 export async function fetchNotificationRules(
@@ -145,6 +158,6 @@ export async function fetchNotificationRules(
 export async function saveNotificationRule(
   http: AxiosInstance,
   payload: Pick<NotificationRule, 'channel_id' | 'event_type' | 'is_enabled'>,
-): Promise<void> {
-  unwrapNotificationResponse(await http.put<APIResponse<null>>(rulesURL, payload))
+): Promise<SettingsSaveResult> {
+  return unwrapNotificationSaveResponse(await http.put<APIResponse<null>>(rulesURL, payload))
 }

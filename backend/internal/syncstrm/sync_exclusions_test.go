@@ -57,7 +57,7 @@ func TestSyncExclusionsAtStartPersistSkippedFiles(t *testing.T) {
 					}
 				})
 				oldDownload, oldUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-				models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(0), models.NewUq(1)
+				models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(1), models.NewUq(1)
 				defer func() {
 					models.GlobalDownloadQueue.Stop()
 					models.GlobalUploadQueue.Stop()
@@ -382,7 +382,7 @@ func TestSyncExclusionsProtectBeforeGeneration(t *testing.T) {
 		}
 		writeScopeFile(t, old.LocalFilePath)
 		oldDownload, oldUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-		models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(0), models.NewUq(1)
+		models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(1), models.NewUq(1)
 		defer func() {
 			models.GlobalDownloadQueue.Stop()
 			models.GlobalUploadQueue.Stop()

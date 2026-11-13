@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,9 +17,11 @@ import (
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/emby"
+	"qmediasync/internal/emby302"
 	"qmediasync/internal/fnosproxy"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/synccron"
@@ -26,6 +29,7 @@ import (
 	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/gin-gonic/gin"
+	"github.com/robfig/cron/v3"
 )
 
 var QMSApp *App
@@ -35,6 +39,7 @@ type App struct {
 	httpServer      *http.Server
 	httpsServer     *http.Server
 	fnosProxy       *fnosproxy.Service
+	embyProxy       *emby302.Service
 	version         string
 	publishDate     string
 	preloadCancel   context.CancelFunc
@@ -48,13 +53,15 @@ func (app *App) Start() {
 	}
 	app.startPlaybackPreloading(context.Background())
 	// 启动外网 302 服务
-	app.startEmby302()
+	if err := app.startEmby302(); err != nil {
+		helpers.AppLogger.Warnf("Emby 302 未能完全应用：%v", err)
+	}
 	if helpers.IsRelease {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
 	r.Use(controllers.Cors())
-	setRouter(r)
+	setRouter(r, controllers.NewMediaLibraryConfigController(app.applyEmby302))
 	app.startFnosProxy(r)
 	app.StartHttpServer(r)
 	app.StartHttpsServer(r)
@@ -85,24 +92,46 @@ func (app *App) Start() {
 }
 
 func (app *App) Stop() {
+	drained := true
 	// 先停止后台取链，再关闭代理、播放管理器及共享连接池。
 	app.stopPlaybackPreloading()
 	realtime.GlobalLifecycle.Shutdown()
 	if app.fnosProxy != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := app.fnosProxy.Stop(ctx); err != nil {
+			drained = false
 			helpers.AppLogger.Warnf("停止飞牛影视反代失败：%v", err)
 		}
 		cancel()
 	}
-	app.shutdownHTTPServers()
+	if err := app.shutdownHTTPServers(); err != nil {
+		drained = false
+	}
+	settingsCtx, cancelSettings := context.WithTimeout(context.Background(), 10*time.Second)
+	settingsErr := models.StopSettingsRuntime(settingsCtx)
+	mediaSettingsErr := models.StopMediaLibrarySettingsRuntime(settingsCtx)
+	cancelSettings()
+	if settingsErr != nil || mediaSettingsErr != nil {
+		drained = false
+		helpers.AppLogger.Warnf("设置保存尚未结束：settings=%v media=%v", settingsErr, mediaSettingsErr)
+	}
+	if app.embyProxy != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := app.embyProxy.Stop(ctx); err != nil {
+			drained = false
+			helpers.AppLogger.Warnf("等待 Emby 302 退出失败：%v", err)
+		}
+		cancel()
+	}
 	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := controllers.StopMediaLibraryNotifications(notificationCtx); err != nil {
+		drained = false
 		helpers.AppLogger.Warnf("等待媒体库通知发送结束失败：%v", err)
 	}
 	cancelNotifications()
 	webhookCtx, cancelWebhook := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := emby.ShutdownWebhookWorker(webhookCtx); err != nil {
+		drained = false
 		helpers.AppLogger.Warnf("等待媒体库通知后台处理结束失败：%v", err)
 	}
 	cancelWebhook()
@@ -112,24 +141,65 @@ func (app *App) Stop() {
 	// 已交接账本使用独立生命周期；在日志关闭前有界取消和保存已知退出结果。
 	ledgerCtx, cancelLedger := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := syncstrm.StopSyncBackgroundService(ledgerCtx); err != nil {
+		drained = false
 		helpers.AppLogger.Warnf("等待 STRM 同步文件记录更新结束失败：%v", err)
 	}
 	cancelLedger()
 	// 关闭上传下载队列
-	models.GlobalDownloadQueue.Stop()
-	models.GlobalUploadQueue.Stop()
+	transferCtx, cancelTransfers := context.WithTimeout(context.Background(), 10*time.Second)
+	if models.GlobalDownloadQueue != nil {
+		if err := models.GlobalDownloadQueue.Shutdown(transferCtx); err != nil {
+			drained = false
+			helpers.AppLogger.Warnf("下载队列尚未退出：%v", err)
+		}
+	}
+	if models.GlobalUploadQueue != nil {
+		if err := models.GlobalUploadQueue.Shutdown(transferCtx); err != nil {
+			drained = false
+			helpers.AppLogger.Warnf("上传队列尚未退出：%v", err)
+		}
+	}
+	cancelTransfers()
+	if notificationmanager.GlobalEnhancedNotificationManager != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := notificationmanager.GlobalEnhancedNotificationManager.StopAllContext(ctx); err != nil {
+			drained = false
+			helpers.AppLogger.Warnf("通知后台尚未退出：%v", err)
+		}
+		cancel()
+	}
 	// 关闭目录监控上传服务
 	directoryupload.StopDirectoryUploadService()
 	// 关闭 STRM 生成 worker
 	syncstrm.StopStrmGenerationWorker()
 	// 关闭定时任务（包含备份定时任务）
-	synccron.GlobalCron.Stop()
+	cronCtx, cancelCron := context.WithTimeout(context.Background(), 5*time.Second)
+	cronStops := []context.Context{synccron.StopScrapeCron()}
+	for _, scheduler := range []*cron.Cron{synccron.GlobalCron, synccron.SyncCron, synccron.TokenCron} {
+		if scheduler != nil {
+			cronStops = append(cronStops, scheduler.Stop())
+		}
+	}
+	for _, stopped := range cronStops {
+		select {
+		case <-stopped.Done():
+		case <-cronCtx.Done():
+			drained = false
+			helpers.AppLogger.Warnf("定时任务尚未退出：%v", cronCtx.Err())
+		}
+	}
+	cancelCron()
 	// 播放清理退出后再释放共享连接池；未完成的目录由下次定时维护回收。
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := playback.DefaultManager.Shutdown(cleanupCtx); err != nil {
+		drained = false
 		helpers.AppLogger.Warnf("等待 115 多端播放清理退出失败：%v", err)
 	}
 	cancelCleanup()
+	if !drained {
+		helpers.AppLogger.Warnf("仍有后台工作未退出，保留它们使用的共享连接与日志")
+		return
+	}
 	if err := v115open.ClosePlaybackClient(); err != nil {
 		helpers.AppLogger.Warnf("关闭 115 播放客户端失败：%v", err)
 	}
@@ -141,21 +211,20 @@ func (app *App) Stop() {
 }
 
 // shutdownHTTPServers 停止接收新请求并等待现有 handler 退出。
-func (app *App) shutdownHTTPServers() {
-	if app.httpServer != nil {
+func (app *App) shutdownHTTPServers() error {
+	var shutdownErr error
+	for _, server := range []*http.Server{app.httpServer, app.httpsServer} {
+		if server == nil {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.httpServer.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(ctx); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
 			log.Println("HTTP Server Shutdown:", err)
 		}
+		cancel()
 	}
-	if app.httpsServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.httpsServer.Shutdown(ctx); err != nil {
-			log.Println("HTTPS Server Shutdown:", err)
-		}
-	}
+	return shutdownErr
 }
 
 func (app *App) StartHttpsServer(r *gin.Engine) {

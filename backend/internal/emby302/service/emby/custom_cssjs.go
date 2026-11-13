@@ -1,6 +1,7 @@
 package emby
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/constant"
 	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/util/logs"
@@ -19,133 +19,134 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// customJsList 首次访问时, 将所有自定义脚本预加载在内存中
-var customJsList []string
+// CustomAssets 在模块内共享启动只读脚本，加载工作随模块取消。
+type CustomAssets struct {
+	js, css []string
+	load    func()
+}
 
-// customCssList 首次访问时, 将所有自定义样式预加载在内存中
-var customCssList []string
-
-// loadAllCustomCssJs 加载所有自定义脚本和样式表
-var loadAllCustomCssJs = sync.OnceFunc(func() {
-	loadRemoteContent := func(originBytes []byte) ([]byte, error) {
-		if len(originBytes) == 0 {
-			return []byte{}, nil
-		}
-
-		str := strings.TrimSpace(string(originBytes))
-		u, err := url.Parse(str)
-		if err != nil {
-			// 非远程地址
-			return originBytes, nil
-		}
-
-		resp, err := https.Get(u.String()).Do()
-		if err != nil {
-			return nil, fmt.Errorf("远程加载失败: %s, 错误: %v", u.String(), err)
-		}
-		defer resp.Body.Close()
-		if !https.IsSuccessCode(resp.StatusCode) {
-			return nil, fmt.Errorf("远程返回错误响应: %s, 状态: %s", u.String(), resp.Status)
-		}
-
-		bytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("读取远程内容失败: %s, 错误: %v", u.String(), err)
-		}
-
-		return bytes, nil
-	}
-
-	loadFiles := func(fp, ext, successLogPrefix string) ([]string, error) {
-		if err := os.MkdirAll(fp, os.ModePerm); err != nil {
-			return nil, fmt.Errorf("初始化目录失败: %s, 错误: %v", fp, err)
-		}
-
-		files, err := os.ReadDir(fp)
-		if err != nil {
-			return nil, fmt.Errorf("读取目录失败: %s, 错误: %v, 无法注入自定义脚本", fp, err)
-		}
-
-		res := []string{}
-		ch := make(chan string)
-		chg := new(errgroup.Group)
-		chg.Go(func() error {
-			for content := range ch {
-				res = append(res, content)
-			}
-			return nil
-		})
-
-		g := new(errgroup.Group)
-		for _, file := range files {
-			if file.IsDir() {
-				continue
+// NewCustomAssets 绑定模块客户端和取消边界，首次请求才加载静态资源。
+func NewCustomAssets(ctx context.Context, client *http.Client, basePath string) *CustomAssets {
+	assets := &CustomAssets{}
+	assets.load = sync.OnceFunc(func() {
+		loadRemoteContent := func(originBytes []byte) ([]byte, error) {
+			if len(originBytes) == 0 {
+				return []byte{}, nil
 			}
 
-			if filepath.Ext(file.Name()) != ext {
-				continue
+			str := strings.TrimSpace(string(originBytes))
+			u, err := url.Parse(str)
+			if err != nil {
+				// 非远程地址
+				return originBytes, nil
 			}
 
-			g.Go(func() error {
-				content, err := os.ReadFile(filepath.Join(fp, file.Name()))
-				if err != nil {
-					return fmt.Errorf("读取文件失败: %s, 错误: %v", file.Name(), err)
+			resp, err := https.Get(u.String()).Client(client).Context(ctx).Do()
+			if err != nil {
+				return nil, fmt.Errorf("远程加载失败: %s, 错误: %v", u.String(), err)
+			}
+			defer resp.Body.Close()
+			if !https.IsSuccessCode(resp.StatusCode) {
+				return nil, fmt.Errorf("远程返回错误响应: %s, 状态: %s", u.String(), resp.Status)
+			}
+
+			bytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return nil, fmt.Errorf("读取远程内容失败: %s, 错误: %v", u.String(), err)
+			}
+
+			return bytes, nil
+		}
+
+		loadFiles := func(fp, ext, successLogPrefix string) ([]string, error) {
+			if err := os.MkdirAll(fp, os.ModePerm); err != nil {
+				return nil, fmt.Errorf("初始化目录失败: %s, 错误: %v", fp, err)
+			}
+
+			files, err := os.ReadDir(fp)
+			if err != nil {
+				return nil, fmt.Errorf("读取目录失败: %s, 错误: %v, 无法注入自定义脚本", fp, err)
+			}
+
+			res := []string{}
+			ch := make(chan string)
+			chg := new(errgroup.Group)
+			chg.Go(func() error {
+				for content := range ch {
+					res = append(res, content)
 				}
-
-				// 支持远程加载
-				content, err = loadRemoteContent(content)
-				if err != nil {
-					return fmt.Errorf("远程加载失败: %s, 错误: %v", file.Name(), err)
-				}
-
-				ch <- string(content)
-				logs.Success("%s已加载: %s", successLogPrefix, file.Name())
 				return nil
 			})
 
-		}
+			g := new(errgroup.Group)
+			for _, file := range files {
+				if file.IsDir() {
+					continue
+				}
 
-		if err := g.Wait(); err != nil {
+				if filepath.Ext(file.Name()) != ext {
+					continue
+				}
+
+				g.Go(func() error {
+					content, err := os.ReadFile(filepath.Join(fp, file.Name()))
+					if err != nil {
+						return fmt.Errorf("读取文件失败: %s, 错误: %v", file.Name(), err)
+					}
+
+					// 支持远程加载
+					content, err = loadRemoteContent(content)
+					if err != nil {
+						return fmt.Errorf("远程加载失败: %s, 错误: %v", file.Name(), err)
+					}
+
+					ch <- string(content)
+					logs.Success("%s已加载: %s", successLogPrefix, file.Name())
+					return nil
+				})
+
+			}
+
+			err = g.Wait()
 			close(ch)
-			return nil, err
+			_ = chg.Wait()
+			return res, err
 		}
-		close(ch)
-		chg.Wait()
-		return res, nil
-	}
 
-	fp := filepath.Join(config.BasePath, constant.CustomJsDirName)
-	jsList, err := loadFiles(fp, ".js", "自定义脚本")
-	if err != nil {
-		logs.Error("加载自定义脚本失败: %v", err)
-		return
-	}
-	customJsList = jsList
+		fp := filepath.Join(basePath, constant.CustomJsDirName)
+		jsList, err := loadFiles(fp, ".js", "自定义脚本")
+		if err != nil {
+			logs.Error("加载自定义脚本失败: %v", err)
+			return
+		}
+		assets.js = jsList
 
-	fp = filepath.Join(config.BasePath, constant.CustomCssDirName)
-	cssList, err := loadFiles(fp, ".css", "自定义样式表")
-	if err != nil {
-		logs.Error("加载自定义样式表失败: %v", err)
-		return
-	}
-	customCssList = cssList
-})
+		fp = filepath.Join(basePath, constant.CustomCssDirName)
+		cssList, err := loadFiles(fp, ".css", "自定义样式表")
+		if err != nil {
+			logs.Error("加载自定义样式表失败: %v", err)
+			return
+		}
+		assets.css = cssList
+	})
+	return assets
+}
 
 // ProxyIndexHtml 代理 index.html, 注入自定义脚本和样式文件
-func ProxyIndexHtml(c *gin.Context) {
-	resp, err := https.ProxyRequest(c.Request, config.C.Emby.Host)
-	if checkErr(c, err) {
+func (upstream *Session) ProxyIndexHtml(c *gin.Context) {
+	resp, err := https.ProxyRequest(c.Request, upstream.Origin, upstream.Client)
+	if upstream.checkErr(c, err) {
 		return
 	}
 	defer resp.Body.Close()
 
 	if !https.IsSuccessCode(resp.StatusCode) {
-		checkErr(c, fmt.Errorf("远程返回错误响应: %v", resp.Status))
+		upstream.checkErr(c, fmt.Errorf("远程返回错误响应: %v", resp.Status))
 		return
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 
@@ -165,11 +166,11 @@ func ProxyIndexHtml(c *gin.Context) {
 }
 
 // ProxyCustomJs 代理自定义脚本，等待 ApiClient 初始化后执行。
-func ProxyCustomJs(c *gin.Context) {
-	loadAllCustomCssJs()
+func (upstream *Session) ProxyCustomJs(c *gin.Context) {
+	upstream.assets.load()
 
 	contentBuilder := strings.Builder{}
-	for _, script := range customJsList {
+	for _, script := range upstream.assets.js {
 		fmt.Fprintf(&contentBuilder, `(function waitForEmby() {
   if (typeof ApiClient === 'undefined' || ApiClient === null) {
     setTimeout(waitForEmby, 100);
@@ -198,11 +199,11 @@ func ProxyCustomJs(c *gin.Context) {
 }
 
 // ProxyCustomCss 代理自定义样式表
-func ProxyCustomCss(c *gin.Context) {
-	loadAllCustomCssJs()
+func (upstream *Session) ProxyCustomCss(c *gin.Context) {
+	upstream.assets.load()
 
 	contentBuilder := strings.Builder{}
-	for _, style := range customCssList {
+	for _, style := range upstream.assets.css {
 		contentBuilder.WriteString(fmt.Sprintf("%s\n\n\n", style))
 	}
 	contentBytes := []byte(contentBuilder.String())

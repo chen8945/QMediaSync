@@ -9,12 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
-	"qmediasync/internal/validation"
 )
 
 // ChannelHandler 通知渠道处理器接口
@@ -30,220 +28,17 @@ type BackgroundHandler interface {
 	Stop()
 }
 
-// TelegramChannelHandler Telegram 渠道处理器
-type TelegramChannelHandler struct {
-	config             *notification.TelegramChannelConfig
-	proxyURL           string // 系统代理 URL
-	bot                *helpers.TelegramBot
-	initOnce           sync.Once
-	listenMu           sync.Mutex
-	listenCancel       context.CancelFunc
-	listenToken        *struct{}
-	initBotFunc        func() error
-	startListeningFunc func(context.Context, map[string]func([]string) helpers.CommandResponse)
-	customCommands     map[string]func([]string) helpers.CommandResponse // 保存从外部注入的命令
-}
-
-func NewTelegramChannelHandler(config *notification.TelegramChannelConfig) *TelegramChannelHandler {
-	return &TelegramChannelHandler{
-		config:   config,
-		proxyURL: "",
-	}
-}
-
-func NewTelegramChannelHandlerWithProxy(config *notification.TelegramChannelConfig, proxyURL string) *TelegramChannelHandler {
-	return &TelegramChannelHandler{
-		config:   config,
-		proxyURL: proxyURL,
-	}
-}
-
-func (h *TelegramChannelHandler) GetChannelType() string {
-	return "telegram"
-}
-
-func (h *TelegramChannelHandler) IsHealthy() bool {
-	if h.config.BotToken == "" || h.config.ChatID == "" {
-		return false
-	}
-	return true
-}
-
-func (h *TelegramChannelHandler) Send(ctx context.Context, notification *notification.Notification) error {
-	message := h.formatMessage(notification)
-	// 验证配置
-	if h.config == nil {
-		return fmt.Errorf("Telegram 渠道配置为空")
-	}
-	if h.config.BotToken == "" {
-		return fmt.Errorf("Telegram Bot Token 为空")
-	}
-	if h.config.ChatID == "" {
-		return fmt.Errorf("Telegram Chat ID 为空")
-	}
-
-	// 使用实例中的代理配置
-	var bot *helpers.TelegramBot
-	var err error
-	if h.proxyURL != "" {
-		// 代理地址可能带用户名密码，QLogger 识别不了 URL 里的 userinfo，必须在调用点遮蔽
-		helpers.AppLogger.Debugf("使用系统代理发送 Telegram 消息：%s", validation.RedactProxyURL(h.proxyURL))
-		bot, err = helpers.NewTelegramBotWithProxy(h.config.BotToken, h.config.ChatID, h.proxyURL)
-		if err != nil {
-			return fmt.Errorf("创建代理 Telegram 机器人失败：%v", err)
-		}
-	} else {
-		helpers.AppLogger.Debugf("不使用代理，直接发送 Telegram 消息")
-		bot = helpers.NewTelegramBot(h.config.BotToken, h.config.ChatID)
-	}
-	if bot == nil {
-		return fmt.Errorf("创建 Telegram 机器人失败，请检查 Token 或 Chat ID 是否有效")
-	}
-	// 如果有图片，先尝试发送图片（用标题作为 caption）。
-	if notification.Image != "" {
-		if perr := bot.SendPhoto(notification.Image, message); perr != nil {
-			helpers.AppLogger.Errorf("发送 Telegram 图片失败：%v", perr)
-			// 不中断，继续发送文本
-			return perr
-		}
-		return nil
-	}
-
-	// 再发送文本消息
-	retries := 2
-	if h.proxyURL != "" {
-		retries = 3
-	}
-	return bot.SendMessageWithRetry(message, retries)
-}
-
-func (h *TelegramChannelHandler) formatMessage(notification *notification.Notification) string {
-	// timestamp := notification.Timestamp.Format("2006-01-02 15:04:05")
-
-	var message strings.Builder
-	message.WriteString(fmt.Sprintf("<b>%s</b>\n", notification.Title))
-	message.WriteString(fmt.Sprintf("%s\n", notification.Content))
-
-	if len(notification.Metadata) > 0 {
-		for key, value := range notification.Metadata {
-			message.WriteString(fmt.Sprintf("<b>%s:</b> %v\n", key, value))
-		}
-		message.WriteString("\n")
-	}
-
-	// message += fmt.Sprintf("⏰ <b>时间：</b> %s", timestamp)
-	return message.String()
-}
-
-// 内部初始化方法，确保只创建一个 bot 实例
-func (h *TelegramChannelHandler) initBot() error {
-	if h.bot != nil {
-		return nil
-	}
-	var err error
-	if h.proxyURL != "" {
-		h.bot, err = helpers.NewTelegramBotWithProxy(h.config.BotToken, h.config.ChatID, h.proxyURL)
-	} else {
-		h.bot = helpers.NewTelegramBot(h.config.BotToken, h.config.ChatID)
-	}
-	if h.bot == nil {
-		return fmt.Errorf("创建 Telegram 机器人失败")
-	}
-	h.bot.SetMenuContent()
-	return err
-}
-
-func (h *TelegramChannelHandler) SetCommands(cmds map[string]func([]string) helpers.CommandResponse) {
-	h.customCommands = cmds
-}
-
-// Start 实现 BackgroundHandler 接口
-func (h *TelegramChannelHandler) Start(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	listenCtx, cancel := context.WithCancel(ctx)
-	listenToken := &struct{}{}
-	h.listenMu.Lock()
-	if h.listenCancel != nil {
-		h.listenCancel()
-	}
-	h.listenCancel = cancel
-	h.listenToken = listenToken
-	h.listenMu.Unlock()
-
-	// 在协程中运行监听，避免阻塞主进程
-	go func() {
-		helpers.AppLogger.Infof("Telegram Bot 监听协程启动…")
-
-		if err := h.initializeBot(); err != nil {
-			helpers.AppLogger.Errorf("初始化 Telegram Bot 失败：%v", err)
-			h.clearListenState(listenToken)
-			return
-		}
-		select {
-		case <-listenCtx.Done():
-			h.clearListenState(listenToken)
-			helpers.AppLogger.Infof("Telegram Bot 监听协程已安全退出")
-			return
-		default:
-		}
-
-		h.startListening(listenCtx, h.customCommands)
-		h.clearListenState(listenToken)
-
-		helpers.AppLogger.Infof("Telegram Bot 监听协程已安全退出")
-	}()
-}
-
-func (h *TelegramChannelHandler) initializeBot() error {
-	if h.initBotFunc != nil {
-		return h.initBotFunc()
-	}
-	return h.initBot()
-}
-
-func (h *TelegramChannelHandler) startListening(ctx context.Context, cmds map[string]func([]string) helpers.CommandResponse) {
-	if h.startListeningFunc != nil {
-		h.startListeningFunc(ctx, cmds)
-		return
-	}
-	if h.bot == nil {
-		helpers.AppLogger.Errorf("Telegram Bot 未初始化")
-		return
-	}
-	h.bot.StartListening(ctx, cmds)
-}
-
-func (h *TelegramChannelHandler) clearListenState(listenToken *struct{}) {
-	h.listenMu.Lock()
-	defer h.listenMu.Unlock()
-
-	if h.listenToken == listenToken {
-		h.listenCancel = nil
-		h.listenToken = nil
-	}
-}
-
-func (h *TelegramChannelHandler) Stop() {
-	h.listenMu.Lock()
-	cancel := h.listenCancel
-	h.listenCancel = nil
-	h.listenToken = nil
-	h.listenMu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-}
-
 // MeoWChannelHandler MeoW 渠道处理器
 type MeoWChannelHandler struct {
 	config *notification.MeoWChannelConfig
 }
 
 func NewMeoWChannelHandler(config *notification.MeoWChannelConfig) *MeoWChannelHandler {
+	value := *config
+	if value.Endpoint == "" {
+		value.Endpoint = "http://api.chuckfang.com"
+	}
+	config = &value
 	return &MeoWChannelHandler{
 		config: config,
 	}
@@ -261,9 +56,6 @@ func (h *MeoWChannelHandler) IsHealthy() bool {
 }
 
 func (h *MeoWChannelHandler) Send(ctx context.Context, notification *notification.Notification) error {
-	if h.config.Endpoint == "" {
-		h.config.Endpoint = "http://api.chuckfang.com"
-	}
 
 	// 构建请求 URL
 	endpoint := fmt.Sprintf("%s/%s", h.config.Endpoint, h.config.Nickname)
@@ -337,6 +129,11 @@ type BarkChannelHandler struct {
 }
 
 func NewBarkChannelHandler(config *notification.BarkChannelConfig) *BarkChannelHandler {
+	value := *config
+	if value.ServerURL == "" {
+		value.ServerURL = "https://api.day.app"
+	}
+	config = &value
 	return &BarkChannelHandler{
 		config: config,
 	}
@@ -354,9 +151,6 @@ func (h *BarkChannelHandler) IsHealthy() bool {
 }
 
 func (h *BarkChannelHandler) Send(ctx context.Context, notification *notification.Notification) error {
-	if h.config.ServerURL == "" {
-		h.config.ServerURL = "https://api.day.app"
-	}
 
 	endpoint := fmt.Sprintf("%s/push", h.config.ServerURL)
 
@@ -413,6 +207,11 @@ type ServerChanChannelHandler struct {
 }
 
 func NewServerChanChannelHandler(config *notification.ServerChanChannelConfig) *ServerChanChannelHandler {
+	value := *config
+	if value.Endpoint == "" {
+		value.Endpoint = "https://sc.ftqq.com"
+	}
+	config = &value
 	return &ServerChanChannelHandler{
 		config: config,
 	}
@@ -430,9 +229,6 @@ func (h *ServerChanChannelHandler) IsHealthy() bool {
 }
 
 func (h *ServerChanChannelHandler) Send(ctx context.Context, notification *notification.Notification) error {
-	if h.config.Endpoint == "" {
-		h.config.Endpoint = "https://sc.ftqq.com"
-	}
 
 	endpoint := fmt.Sprintf("%s/%s.send", h.config.Endpoint, h.config.SCKEY)
 

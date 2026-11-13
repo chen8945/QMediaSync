@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -17,12 +18,16 @@ func (task *DbDownloadTask) savePublishedMetadata(hash string) error {
 }
 
 func (task *DbDownloadTask) downloadMetadata(url, ua string) error {
+	return task.downloadMetadataContext(context.Background(), url, ua)
+}
+
+func (task *DbDownloadTask) downloadMetadataContext(ctx context.Context, url, ua string) error {
 	contentMD5 := task.RemoteMd5
 	if task.SourceType == SourceTypeBaiduPan {
 		// 百度列表的 md5 是云端哈希，保留兼容字段但不用于内容校验；旧队列同样适用。
 		contentMD5 = ""
 	}
-	return helpers.DownloadMetadataFile(url, task.LocalFullPath, ua, task.ReplaceBaseline, task.Size, task.RemoteSha1, contentMD5, task.MTime, task.savePublishedMetadata)
+	return helpers.DownloadMetadataFileContext(ctx, url, task.LocalFullPath, ua, task.ReplaceBaseline, task.Size, task.RemoteSha1, contentMD5, task.MTime, task.savePublishedMetadata)
 }
 
 // 发布成功但任务状态未保存时，只认已经校验过的内容和时间。

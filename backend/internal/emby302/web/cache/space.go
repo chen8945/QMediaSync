@@ -1,77 +1,45 @@
-// 缓存空间功能会将特定请求的响应缓存分类整理,
-// 便于后续其他请求复用响应。
 package cache
 
-import (
-	"sync"
-	"time"
-
-	"qmediasync/internal/emby302/util/strs"
-)
+import "time"
 
 const (
-
-	// HeaderKeySpace 缓存空间 key
-	HeaderKeySpace = "Space"
-
-	// HeaderKeySpaceKey 缓存空间内部 key
+	HeaderKeySpace    = "Space"
 	HeaderKeySpaceKey = "Space-Key"
 )
 
-// spaceMap 缓存空间
-//
-// 三层结构: map[string]map[string]*respCache
-var spaceMap = sync.Map{}
-
-// GetSpaceCache 获取缓存空间的缓存对象
-func GetSpaceCache(space, spaceKey string) (RespCache, bool) {
-	if strs.AnyEmpty(space, spaceKey) {
+// GetSpaceCache 获取当前连接配置的空间缓存。
+func (scope *Scope) GetSpaceCache(space, key string) (RespCache, bool) {
+	s := scope.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if scope.closed || s.closed {
 		return nil, false
 	}
-	s := getSpace(space)
-	rc, ok := getSpaceCache(s, spaceKey)
-	if !ok {
+	rc := scope.spaces[space][key]
+	if rc == nil || rc.expired <= time.Now().UnixMilli() {
 		return nil, false
 	}
 	return rc, true
 }
 
-// putSpaceCache 设置缓存到缓存空间中
-func putSpaceCache(space, spaceKey string, cache *respCache) {
-	if strs.AnyEmpty(space, spaceKey) {
+func (scope *Scope) putSpaceCacheLocked(space, key string, rc *respCache) {
+	if space == "" || key == "" {
 		return
 	}
-	getSpace(space).Store(spaceKey, cache)
+	values := scope.spaces[space]
+	if values == nil {
+		values = make(map[string]*respCache)
+		scope.spaces[space] = values
+	}
+	values[key] = rc
 }
 
-func delSpaceCache(space, spaceKey string, expected *respCache) {
-	if strs.AnyEmpty(space, spaceKey) {
-		return
+func (scope *Scope) delSpaceCacheLocked(space, key string, expected *respCache) {
+	values := scope.spaces[space]
+	if values[key] == expected {
+		delete(values, key)
 	}
-	getSpace(space).CompareAndDelete(spaceKey, expected)
-}
-
-// getSpace 获取缓存空间
-//
-// 不存在指定名称的空间时, 初始化一个新的空间
-func getSpace(space string) *sync.Map {
-	if strs.AnyEmpty(space) {
-		return nil
+	if len(values) == 0 {
+		delete(scope.spaces, space)
 	}
-	s, _ := spaceMap.LoadOrStore(space, new(sync.Map))
-	return s.(*sync.Map)
-}
-
-// getSpaceCache 获取缓存空间中的某个缓存
-func getSpaceCache(space *sync.Map, spaceKey string) (*respCache, bool) {
-	if space == nil || strs.AnyEmpty(spaceKey) {
-		return nil, false
-	}
-	if cache, ok := space.Load(spaceKey); ok {
-		rc := cache.(*respCache)
-		if rc.expired > time.Now().UnixMilli() {
-			return rc, true
-		}
-	}
-	return nil, false
 }

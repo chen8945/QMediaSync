@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,17 +23,43 @@ import (
 	"qmediasync/internal/models"
 )
 
+var testListeners = struct {
+	sync.Mutex
+	held map[string]net.Listener
+}{held: make(map[string]net.Listener)}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	address := listener.Addr().String()
+	testListeners.Lock()
+	testListeners.held[address] = listener
+	testListeners.Unlock()
+	t.Cleanup(func() {
+		testListeners.Lock()
+		delete(testListeners.held, address)
+		testListeners.Unlock()
+		_ = listener.Close()
+	})
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func newTestService(t *testing.T, options Options) *Service {
+	t.Helper()
+	options.Listen = func(network, address string) (net.Listener, error) {
+		testListeners.Lock()
+		listener := testListeners.held[address]
+		delete(testListeners.held, address)
+		testListeners.Unlock()
+		if listener != nil {
+			return listener, nil
+		}
+		return net.Listen(network, address)
 	}
-	return port
+	return NewService(options)
 }
 
 func startService(t *testing.T, upstream string, options Options) (*Service, models.FnosProxyConfig, string) {
@@ -45,7 +72,7 @@ func startService(t *testing.T, upstream string, options Options) (*Service, mod
 	if options.HTTPSPort == 0 {
 		options.HTTPSPort = freePort(t)
 	}
-	service := NewService(options)
+	service := newTestService(t, options)
 	if err := service.Start(config); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +261,7 @@ func TestServiceHTTPSAndWebSocketShutdown(t *testing.T) {
 	}))
 	defer upstream.Close()
 	certificate, key, roots := certificateFiles(t)
-	service := NewService(Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", CertificateFile: certificate, KeyFile: key, HTTPPort: freePort(t), HTTPSPort: freePort(t)})
+	service := newTestService(t, Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", CertificateFile: certificate, KeyFile: key, HTTPPort: freePort(t), HTTPSPort: freePort(t)})
 	config := models.FnosProxyConfig{Enabled: true, FnosURL: upstream.URL, PathMappings: []models.FnosPathMapping{}}
 	if err := service.Start(config); err != nil {
 		t.Fatal(err)
@@ -316,7 +343,7 @@ func TestServiceAutomaticHTTPSFailureKeepsHTTP(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "http available") }))
 			defer upstream.Close()
-			service := NewService(Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: freePort(t), HTTPSPort: test.httpsPort, CertificateFile: test.certificate, KeyFile: test.key})
+			service := newTestService(t, Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: freePort(t), HTTPSPort: test.httpsPort, CertificateFile: test.certificate, KeyFile: test.key})
 			config := models.FnosProxyConfig{Enabled: true, FnosURL: upstream.URL}
 			err := service.Start(config)
 			t.Cleanup(func() { _ = service.Stop(context.Background()) })
@@ -348,7 +375,7 @@ func TestServiceHTTPFailureDoesNotStartHTTPS(t *testing.T) {
 	}
 	defer occupied.Close()
 	httpsPort := freePort(t)
-	service := NewService(Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: occupied.Addr().(*net.TCPAddr).Port, HTTPSPort: httpsPort, CertificateFile: certificate, KeyFile: key})
+	service := newTestService(t, Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: occupied.Addr().(*net.TCPAddr).Port, HTTPSPort: httpsPort, CertificateFile: certificate, KeyFile: key})
 	config := models.FnosProxyConfig{Enabled: true, FnosURL: "http://127.0.0.1:8005"}
 	if service.Start(config) == nil {
 		t.Fatal("预期HTTP绑定失败")
@@ -357,7 +384,7 @@ func TestServiceHTTPFailureDoesNotStartHTTPS(t *testing.T) {
 	if status.Running || status.ListenPort != 0 || status.HTTPSEnabled || status.HTTPSPort != 0 || status.LastError == "" || !status.RestartRequired {
 		t.Fatalf("HTTP失败状态：%+v", status)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsPort)))
+	listener, err := service.options.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsPort)))
 	if err != nil {
 		t.Fatal("HTTP失败仍绑定了HTTPS")
 	}
@@ -370,7 +397,7 @@ func TestServiceDisabledDoesNotBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	service := NewService(Options{HTTPPort: occupied.Addr().(*net.TCPAddr).Port})
+	service := newTestService(t, Options{HTTPPort: occupied.Addr().(*net.TCPAddr).Port})
 	config := models.FnosProxyConfig{}
 	if err := service.Start(config); err != nil || service.Status(config).Running {
 		t.Fatalf("关闭状态启动监听：%v %+v", err, service.Status(config))

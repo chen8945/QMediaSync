@@ -258,6 +258,36 @@ describe('刮削目录表单', () => {
     expect(router.replace).toHaveBeenCalledExactlyOnceWith({ name: 'scrape-pathes' })
   })
 
+  it('目录已保存但定时应用失败仍返回列表，保留本次 AI 提示词和定时设置', async () => {
+    const http = createHTTP({ ...directory, enable_ai: 'assist' })
+    const warning = '设置已保存，但定时任务应用失败，请重新保存重试'
+    http.post.mockResolvedValue({ status: 200, data: { code: 200, data: null, warnings: [warning] } })
+    const wrapper = await mountPage(AppScrapePathForm, http)
+    const fields = wrapper.findAllComponents(ElFormItem)
+    const prompt = fields.find((item) => item.props('prop') === 'ai_prompt')!.get('textarea')
+    await prompt.setValue(' 保留自定义提示词 ')
+    await fields
+      .find((item) => item.props('prop') === 'enable_cron')!
+      .get('[role="switch"]')
+      .trigger('click')
+    await clickButton(wrapper, '保存修改')
+
+    expect(http.post).toHaveBeenCalledWith(
+      '/api/scrape/pathes',
+      expect.objectContaining({
+        id: 12,
+        enable_ai: 'assist',
+        ai_prompt: ' 保留自定义提示词 ',
+        enable_cron: true,
+        cron_expression: directory.cron_expression,
+      }),
+    )
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
+    expect(router.replace).toHaveBeenCalledExactlyOnceWith({ name: 'scrape-pathes' })
+  })
+
   it('Cron 验证保留修剪规则，安全校验失败不覆盖已输入表达式或描述', async () => {
     const http = createHTTP({ ...directory, enable_cron: true })
     http.post.mockRejectedValue(failure(403, '', 'CSRF_TOKEN_INVALID'))
@@ -523,6 +553,38 @@ describe('刮削目录列表', () => {
     expect(http.get).toHaveBeenCalledTimes(2)
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('删除刮削目录失败')
+  })
+
+  it('删除已提交的应用警告与后续列表读取失败分别报告', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
+    const http = createHTTP()
+    const wrapper = await mountPage(AppScrapePathes, http)
+    const warning = '目录已删除，但定时任务应用失败，请重试'
+    http.delete.mockResolvedValueOnce({
+      status: 200,
+      data: { code: 200, data: null, warnings: [warning] },
+    })
+    http.get.mockRejectedValueOnce(failure(200, '目录列表读取失败'))
+    await clickButton(wrapper, '删除')
+
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('目录列表读取失败')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('/media')
+  })
+
+  it.each([false, true])('定时开关从 %s 保存后应用失败仍保持已提交值', async (enabled) => {
+    const http = createHTTP({ ...directory, enable_cron: enabled })
+    const wrapper = await mountPage(AppScrapePathes, http)
+    const warning = '设置已保存，但定时任务应用失败，请重新保存重试'
+    http.post.mockResolvedValueOnce({ status: 200, data: { code: 200, data: null, warnings: [warning] } })
+    await wrapper.get('[role="switch"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="switch"]').attributes('aria-checked')).toBe(String(!enabled))
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).not.toHaveBeenCalled()
   })
 
   it('定时任务切换失败回退开关', async () => {

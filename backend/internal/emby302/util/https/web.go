@@ -73,7 +73,7 @@ func CloneHeader(dst http.ResponseWriter, src http.Header) {
 }
 
 // ProxyRequest 代理请求, 返回远程响应
-func ProxyRequest(r *http.Request, remote string) (*http.Response, error) {
+func ProxyRequest(r *http.Request, remote string, clients ...*http.Client) (*http.Response, error) {
 	if r == nil || remote == "" {
 		return nil, errors.New("参数为空")
 	}
@@ -86,7 +86,11 @@ func ProxyRequest(r *http.Request, remote string) (*http.Response, error) {
 	}
 
 	// 2 发送请求
-	return Request(r.Method, rawUrl).
+	request := Request(r.Method, rawUrl)
+	if len(clients) > 0 {
+		request.Client(clients[0])
+	}
+	return request.
 		Header(r.Header).
 		Body(r.Body).
 		Context(r.Context()).
@@ -94,13 +98,13 @@ func ProxyRequest(r *http.Request, remote string) (*http.Response, error) {
 }
 
 // ProxyPass 代理转发请求
-func ProxyPass(r *http.Request, w http.ResponseWriter, remote string) error {
+func ProxyPass(r *http.Request, w http.ResponseWriter, remote string, clients ...*http.Client) error {
 	if r == nil || remote == "" {
 		return errors.New("参数为空")
 	}
 
 	// 1 代理请求
-	resp, err := ProxyRequest(r, remote)
+	resp, err := ProxyRequest(r, remote, clients...)
 	if err != nil {
 		return fmt.Errorf("代理请求失败: %w", err)
 	}

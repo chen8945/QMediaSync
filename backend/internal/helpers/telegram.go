@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -12,9 +13,11 @@ import (
 
 // TelegramBot 结构体用于处理 Telegram 机器人操作
 type TelegramBot struct {
-	Token  string
-	ChatID string
-	Client *tgbotapi.BotAPI
+	Token      string
+	ChatID     string
+	Client     *tgbotapi.BotAPI
+	ctx        context.Context
+	httpClient *http.Client
 }
 
 // TelegramResponse Telegram API 响应结构
@@ -46,54 +49,58 @@ func maskToken(token string) string {
 	return token[:4] + "***" + token[len(token)-4:]
 }
 
-// NewTelegramBot 创建新的 Telegram 机器人实例
+// NewTelegramBot 创建新的 Telegram 机器人实例。
 func NewTelegramBot(token, chatID string) *TelegramBot {
-	if token == "" {
-		AppLogger.Errorf("Telegram Token 为空")
-		return nil
-	}
-	if chatID == "" {
-		AppLogger.Errorf("Telegram Chat ID 为空")
-		return nil
-	}
-
-	bot, err := tgbotapi.NewBotAPI(token)
+	bot, err := NewTelegramBotContext(context.Background(), token, chatID, "")
 	if err != nil {
-		AppLogger.Errorf("创建 Telegram 机器人失败（Token：%s，Chat ID：%s）：%v", maskToken(token), chatID, err)
+		AppLogger.Errorf("创建 Telegram 机器人失败：%s", RedactSensitiveLog(err.Error(), token))
 		return nil
 	}
-	return &TelegramBot{
-		Token:  token,
-		ChatID: chatID,
-		Client: bot,
-	}
+	return bot
 }
 
-// NewTelegramBotWithProxy 创建带代理的 Telegram 机器人实例
+// NewTelegramBotWithProxy 创建带代理的 Telegram 机器人实例。
 func NewTelegramBotWithProxy(token, chatID, proxyURL string) (*TelegramBot, error) {
-	// 增加超时时间以适配代理连接
-	client := &http.Client{
-		Timeout: 120 * time.Second, // 增加总超时时间
-	}
+	return NewTelegramBotContext(context.Background(), token, chatID, proxyURL)
+}
 
-	// 如果提供了代理 URL，配置代理
-	if proxyURL != "" {
-		transport, err := createProxyTransport(proxyURL)
-		if err != nil {
-			return nil, fmt.Errorf("创建代理传输失败：%v", err)
-		}
-		client.Transport = transport
+type telegramHTTPClient struct {
+	ctx context.Context
+	*http.Client
+}
+
+func (c telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	return c.Client.Do(req.WithContext(c.ctx))
+}
+
+// NewTelegramBotContext 将初始化、发送及轮询的实际 HTTP 请求绑定到拥有者。
+func NewTelegramBotContext(ctx context.Context, token, chatID, proxyURL string) (*TelegramBot, error) {
+	if token == "" || chatID == "" {
+		return nil, fmt.Errorf("Telegram Token 和 Chat ID 不能为空")
 	}
-	bot, err := tgbotapi.NewBotAPIWithClient(token, "https://api.telegram.org/bot%s/%s", client)
+	transport, err := GetProxyTransport(proxyURL)
 	if err != nil {
 		return nil, err
 	}
+	if proxyURL == "" {
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+	// Telegram 轮询可等待 60 秒，由拥有者 context 和总超时控制退出。
+	transport.ResponseHeaderTimeout = 0
+	client := &http.Client{Timeout: 120 * time.Second, Transport: transport}
+	api, err := tgbotapi.NewBotAPIWithClient(token, "https://api.telegram.org/bot%s/%s", telegramHTTPClient{ctx: ctx, Client: client})
+	if err != nil {
+		client.CloseIdleConnections()
+		return nil, err
+	}
+	return &TelegramBot{Token: token, ChatID: chatID, Client: api, ctx: ctx, httpClient: client}, nil
+}
 
-	return &TelegramBot{
-		Token:  token,
-		ChatID: chatID,
-		Client: bot,
-	}, nil
+// CloseIdleConnections 释放本实例的私有连接池。
+func (bot *TelegramBot) CloseIdleConnections() {
+	if bot.httpClient != nil {
+		bot.httpClient.CloseIdleConnections()
+	}
 }
 
 // SendMessage 发送消息到 Telegram
@@ -207,15 +214,31 @@ func (bot *TelegramBot) SendPhoto(image string, caption string) error {
 // SendMessageWithRetry 带重试机制的发送消息
 func (bot *TelegramBot) SendMessageWithRetry(text string, maxRetries int) error {
 	var lastError error
+	if bot == nil {
+		return fmt.Errorf("Telegram Bot 实例不能为空")
+	}
+	ctx := bot.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			// 重试前等待，使用指数退避
 			waitTime := time.Duration(attempt*attempt) * time.Second
 			AppLogger.Infof("Telegram 消息发送失败，%d 秒后重试（第 %d 次尝试）", waitTime/time.Second, attempt)
-			time.Sleep(waitTime)
+			timer := time.NewTimer(waitTime)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		err := bot.SendMessage(text)
 		if err == nil {
 			if attempt > 0 {
@@ -225,7 +248,7 @@ func (bot *TelegramBot) SendMessageWithRetry(text string, maxRetries int) error 
 		}
 
 		lastError = err
-		AppLogger.Warnf("Telegram 消息发送失败（第 %d 次尝试）：%v", attempt+1, err)
+		AppLogger.Warnf("Telegram 消息发送失败（第 %d 次尝试）：%s", attempt+1, RedactSensitiveLog(err.Error(), bot.Token))
 
 		// 如果是超时错误，继续重试
 		if isTimeoutError(err) {
@@ -294,7 +317,7 @@ func TestTelegramBot(token, chatID, httpProxy string) error {
 }
 
 // StartListening 启动监听 Telegram 命令
-func (bot *TelegramBot) StartListening(ctx context.Context, handleCommand map[string]func([]string) CommandResponse) {
+func (bot *TelegramBot) StartListening(ctx context.Context, handleCommand map[string]func([]string) CommandResponse, offset *atomic.Int64) {
 	if bot.Client == nil {
 		AppLogger.Errorf("Bot Client 未初始化")
 		return
@@ -308,68 +331,86 @@ func (bot *TelegramBot) StartListening(ctx context.Context, handleCommand map[st
 	// 更准确的做法是：
 	_, err := bot.Client.Request(tgbotapi.DeleteWebhookConfig{}) // 如果库支持
 	if err != nil {
-		AppLogger.Errorf("清除 Webhook 时出错（可能没有设置过）：%v", err)
+		AppLogger.Errorf("清除 Webhook 时出错（可能没有设置过）：%s", RedactSensitiveLog(err.Error(), bot.Token))
 	} else {
 		AppLogger.Infof("已尝试清除 Webhook。")
 	}
 
 	// 配置轮询参数
-	u := tgbotapi.NewUpdate(0)
+	u := tgbotapi.NewUpdate(int(offset.Load()))
 	u.Timeout = 60
 
-	// 获取更新通道
-	updates := bot.Client.GetUpdatesChan(u)
-
 	AppLogger.Infof("Telegram Bot 控制监听已启动")
-
-	// 监听 context 取消信号
-	go func() {
-		<-ctx.Done()
-		bot.Client.StopReceivingUpdates() // 这会导致更新通道被关闭，从而结束下面的 for 循环
-	}()
-
-	for update := range updates {
-		var cmd string
-		var args []string
-		var chatID int64
-
-		if update.Message != nil && update.Message.IsCommand() {
-			// 处理文字命令 /xxxx
-			cmd = update.Message.Command()
-			args = strings.Fields(update.Message.CommandArguments())
-			chatID = update.Message.Chat.ID
-		} else if update.CallbackQuery != nil {
-			// 处理按钮点击
-			bot.Client.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			data := update.CallbackQuery.Data
-			// 解析命令和参数
-			parts := strings.Fields(data)
-			if len(parts) > 0 {
-				cmd = parts[0]
-				args = parts[1:]
-			} else {
-				cmd = data
-				args = []string{}
+	for ctx.Err() == nil {
+		u.Offset = int(offset.Load())
+		updates, err := bot.Client.GetUpdates(u)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
 			}
-			chatID = update.CallbackQuery.Message.Chat.ID
-		} else {
+			AppLogger.Warnf("Telegram 命令轮询失败：%s", RedactSensitiveLog(err.Error(), bot.Token))
+			timer := time.NewTimer(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			continue
 		}
+		for _, update := range updates {
+			if ctx.Err() != nil {
+				return
+			}
+			// 先领取更新，重载后重投的旧命令不能再次执行。
+			current := offset.Load()
+			for int64(update.UpdateID) >= current && !offset.CompareAndSwap(current, int64(update.UpdateID)+1) {
+				current = offset.Load()
+			}
+			if int64(update.UpdateID) < current {
+				continue
+			}
+			var cmd string
+			var args []string
+			var chatID int64
 
-		// --- 权限检查 ---
-		// 重点：只响应配置中指定的 Chat ID，防止其他人控制程序
-		if bot.ChatID != "" && fmt.Sprintf("%d", chatID) != bot.ChatID {
-			continue
-		}
+			if update.Message != nil && update.Message.IsCommand() {
+				// 处理文字命令 /xxxx
+				cmd = update.Message.Command()
+				args = strings.Fields(update.Message.CommandArguments())
+				chatID = update.Message.Chat.ID
+			} else if update.CallbackQuery != nil {
+				// 处理按钮点击
+				bot.Client.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+				data := update.CallbackQuery.Data
+				// 解析命令和参数
+				parts := strings.Fields(data)
+				if len(parts) > 0 {
+					cmd = parts[0]
+					args = parts[1:]
+				} else {
+					cmd = data
+					args = []string{}
+				}
+				chatID = update.CallbackQuery.Message.Chat.ID
+			} else {
+				continue
+			}
 
-		// --- 处理命令 ---
-		var response CommandResponse
-		if logic, ok := handleCommand[cmd]; ok {
-			response = logic(args)
-		} else {
-			switch cmd {
-			case "start", "help":
-				response.Text = `👋 <b>欢迎使用 QMediaSync Bot</b>
+			// --- 权限检查 ---
+			// 重点：只响应配置中指定的 Chat ID，防止其他人控制程序
+			if bot.ChatID != "" && fmt.Sprintf("%d", chatID) != bot.ChatID {
+				continue
+			}
+
+			// --- 处理命令 ---
+			var response CommandResponse
+			if logic, ok := handleCommand[cmd]; ok {
+				response = logic(args)
+			} else {
+				switch cmd {
+				case "start", "help":
+					response.Text = `👋 <b>欢迎使用 QMediaSync Bot</b>
 
 📋 <b>命令列表：</b>
 📊 /status - 查看系统运行状态
@@ -387,39 +428,41 @@ func (bot *TelegramBot) StartListening(ctx context.Context, handleCommand map[st
 • 不加参数时，会执行所有同步/刮削路径。
 • 可在命令后加序号指定目录，序号见同步/刮削目录设置。例如：/scrape #1
 `
-				// 构建内联键盘
-				keyboard := tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🚀 全量同步", "strm_sync"),
-						tgbotapi.NewInlineKeyboardButtonData("🔄 增量同步", "strm_inc"),
-						tgbotapi.NewInlineKeyboardButtonData("🎬 刮削任务", "scrape"),
-					),
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("📋 同步路径", "get_strm_path"),
-						tgbotapi.NewInlineKeyboardButtonData("🧹 刮削路径", "get_scrape_path"),
-						tgbotapi.NewInlineKeyboardButtonData("📊📊 系统状态", "status"),
-					),
-				)
-				response.ReplyMarkup = keyboard
-			case "status":
-				response.Text = "📊 <b>系统状态</b>\n运行状态：正常\n时间：" + time.Now().Format("2006-01-02 15:04:05")
-			default:
-				response.Text = "❓ 未知命令，输入 /help 查看帮助"
+					// 构建内联键盘
+					keyboard := tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(
+							tgbotapi.NewInlineKeyboardButtonData("🚀 全量同步", "strm_sync"),
+							tgbotapi.NewInlineKeyboardButtonData("🔄 增量同步", "strm_inc"),
+							tgbotapi.NewInlineKeyboardButtonData("🎬 刮削任务", "scrape"),
+						),
+						tgbotapi.NewInlineKeyboardRow(
+							tgbotapi.NewInlineKeyboardButtonData("📋 同步路径", "get_strm_path"),
+							tgbotapi.NewInlineKeyboardButtonData("🧹 刮削路径", "get_scrape_path"),
+							tgbotapi.NewInlineKeyboardButtonData("📊📊 系统状态", "status"),
+						),
+					)
+					response.ReplyMarkup = keyboard
+				case "status":
+					response.Text = "📊 <b>系统状态</b>\n运行状态：正常\n时间：" + time.Now().Format("2006-01-02 15:04:05")
+				default:
+					response.Text = "❓ 未知命令，输入 /help 查看帮助"
 
-			}
-		}
-
-		// 回复结果
-		if response.Text != "" {
-			reply := tgbotapi.NewMessage(chatID, response.Text)
-			reply.ParseMode = "HTML"
-
-			// 如果有内联键盘，则添加到回复中
-			if response.ReplyMarkup != nil {
-				reply.ReplyMarkup = response.ReplyMarkup
+				}
 			}
 
-			bot.Client.Send(reply)
+			// 回复结果
+			if response.Text != "" {
+				reply := tgbotapi.NewMessage(chatID, response.Text)
+				reply.ParseMode = "HTML"
+
+				// 如果有内联键盘，则添加到回复中
+				if response.ReplyMarkup != nil {
+					reply.ReplyMarkup = response.ReplyMarkup
+				}
+
+				bot.Client.Send(reply)
+			}
+
 		}
 
 	}

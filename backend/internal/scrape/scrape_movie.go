@@ -28,19 +28,16 @@ type movieScrapeImpl struct {
 	ScrapeBase
 }
 
-func NewMovieScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) scrapeImpl {
-	tmdbImpl := NewTmdbMovieImpl(scrapePath, ctx)
-	return &movieScrapeImpl{
-		scrapePath:     scrapePath,
-		ctx:            ctx,
-		identifyImpl:   NewIdMovieImpl(scrapePath, ctx, tmdbImpl),
-		tmdbClient:     tmdbImpl.Client,
-		categoryImpl:   NewCategoryMovieImpl(scrapePath),
-		renameImpl:     NewRenameMovieImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
-		v115Client:     v115Client,
-		openlistClient: openlistClient,
-		baiduPanClient: baiduPanClient,
+func NewMovieScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) (*movieScrapeImpl, error) {
+	base, err := newScrapeBase(scrapePath, ctx, v115Client, openlistClient, baiduPanClient)
+	if err != nil {
+		return nil, err
 	}
+	tmdbImpl := NewTmdbMovieImpl(scrapePath, ctx, base.tmdbClient, base.settings)
+	base.identifyImpl = NewIdMovieImpl(scrapePath, ctx, tmdbImpl, base.aiClient, base.aiPrompt())
+	base.categoryImpl = NewCategoryMovieImpl(scrapePath)
+	base.renameImpl = NewRenameMovieImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient)
+	return &movieScrapeImpl{ScrapeBase: base}, nil
 }
 
 func (m *movieScrapeImpl) Start() error {
@@ -56,9 +53,11 @@ func (m *movieScrapeImpl) Start() error {
 		return nil
 	}
 	threads := min(max, int(total))
+	var workers sync.WaitGroup
 	for i := range threads {
-		go m.scrapeWorker(i+1, wg)
+		workers.Go(func() { m.scrapeWorker(i+1, wg) })
 	}
+	defer func() { close(m.fileTasks); workers.Wait() }()
 mainloop:
 	for {
 		select {
@@ -70,49 +69,43 @@ mainloop:
 			mediaFiles := models.GetScannedScrapeMediaFiles(m.scrapePath.ID, m.scrapePath.MediaType, m.scrapePath.GetMaxThreads()*2)
 			if len(mediaFiles) == 0 {
 				helpers.AppLogger.Infof("所有待刮削和待整理记录都已加入处理队列，关闭队列通道，等待执行完成")
-				close(m.fileTasks)
 				break mainloop
 			}
 			for _, mediaFile := range mediaFiles {
-				m.fileTasks <- mediaFile
-				wg.Add(1) // 加进去之后，计数+1
+				wg.Add(1)
+				select {
+				case m.fileTasks <- mediaFile:
+				case <-m.ctx.Done():
+					wg.Done()
+					break mainloop
+				}
 				helpers.AppLogger.Infof("文件 %s 已加入刮削处理队列", mediaFile.VideoFilename)
 			}
 			wg.Wait()
 		}
 	}
 	helpers.AppLogger.Infof("所有刮削整理任务都已完成，本次任务结束")
-	return nil
+	return m.ctx.Err()
 }
 
 func (m *movieScrapeImpl) scrapeWorker(taskIndex int, wg *sync.WaitGroup) {
-mainloop:
-	for {
-		select {
-		case <-m.ctx.Done():
-			helpers.AppLogger.Infof("电影工作线程 %d 检测到停止信号，退出", taskIndex)
-			return
-		case mediaFile, ok := <-m.fileTasks:
-			if !ok {
-				helpers.AppLogger.Infof("刮削整理任务队列 %d 已关闭", taskIndex)
-				return
-			}
-			err := m.Process(mediaFile)
-			wg.Done() // 处理完成后，计数-1
-			if err != nil {
-				helpers.AppLogger.Errorf("任务队列 %d 刮削文件 %s 失败：%v", taskIndex, mediaFile.VideoFilename, err)
-			}
-			// 触发单个刮削项完成事件
-			realtime.BroadcastEvent(realtime.EventScraperItemComplete, map[string]any{
-				"item_id": mediaFile.ID,
-				"name":    mediaFile.VideoFilename,
-				"status":  string(mediaFile.Status),
-				"success": err == nil,
-			})
-			continue mainloop
-		case <-time.After(5 * time.Minute):
-			return // 5 分钟没响应自动退出
+	for mediaFile := range m.fileTasks {
+		if m.ctx.Err() != nil {
+			wg.Done()
+			continue
 		}
+		err := m.Process(mediaFile)
+		wg.Done() // 处理完成后，计数-1
+		if err != nil {
+			helpers.AppLogger.Errorf("任务队列 %d 刮削文件 %s 失败：%v", taskIndex, mediaFile.VideoFilename, err)
+		}
+		// 触发单个刮削项完成事件
+		realtime.BroadcastEvent(realtime.EventScraperItemComplete, map[string]any{
+			"item_id": mediaFile.ID,
+			"name":    mediaFile.VideoFilename,
+			"status":  string(mediaFile.Status),
+			"success": err == nil,
+		})
 	}
 }
 
@@ -229,7 +222,7 @@ func (m *movieScrapeImpl) ScrapeMovieMedia(mediaFile *models.ScrapeMediaFile) er
 	}
 	tmdbInfo := &models.TmdbInfo{}
 	// 查询详情
-	movieDetail, err := m.tmdbClient.GetMovieDetail(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+	movieDetail, err := m.tmdbClient.GetMovieDetail(m.ctx, mediaFile.TmdbId, m.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电影详情失败，下次重试，失败原因：%v", err)
 		return err
@@ -237,12 +230,12 @@ func (m *movieScrapeImpl) ScrapeMovieMedia(mediaFile *models.ScrapeMediaFile) er
 	tmdbInfo.MovieDetail = movieDetail
 	if mediaFile.ScrapeType != models.ScrapeTypeOnlyRename {
 		// 查询演职人员
-		cast, _ := m.tmdbClient.GetMoviePepoles(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+		cast, _ := m.tmdbClient.GetMoviePepoles(m.ctx, mediaFile.TmdbId, m.settings.GetTmdbLanguage())
 		tmdbInfo.Credits = cast
 		// 查询图片
-		images, _ := m.tmdbClient.GetMovieImages(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbImageLanguage())
+		images, _ := m.tmdbClient.GetMovieImages(m.ctx, mediaFile.TmdbId, m.settings.GetTmdbImageLanguage())
 		if images != nil {
-			helpers.AppLogger.Infof("查询 TMDB 电影图片成功，TMDB ID：%d，语言：%s", mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbImageLanguage())
+			helpers.AppLogger.Infof("查询 TMDB 电影图片成功，TMDB ID：%d，语言：%s", mediaFile.TmdbId, m.settings.GetTmdbImageLanguage())
 			// 如果图片为空,则使用详情中的图片
 			if len(images.Posters) == 0 && movieDetail.PosterPath != "" {
 				images.Posters = append(images.Posters, tmdb.Image{
@@ -257,11 +250,15 @@ func (m *movieScrapeImpl) ScrapeMovieMedia(mediaFile *models.ScrapeMediaFile) er
 		}
 		tmdbInfo.Images = images
 		// 查询分级信息
-		releasesDate, err := m.tmdbClient.GetReleasesDate(mediaFile.TmdbId)
+		releasesDate, err := m.tmdbClient.GetReleasesDate(m.ctx, mediaFile.TmdbId)
 		if err != nil {
+			if m.ctx.Err() != nil {
+				return m.ctx.Err()
+			}
 			helpers.AppLogger.Errorf("查询 TMDB 电影分级信息失败，下次重试，失败原因：%v", err)
+		} else {
+			tmdbInfo.ReleasesDate = releasesDate.Results
 		}
-		tmdbInfo.ReleasesDate = releasesDate.Results
 	}
 	m.MakeMediaFromTMDB(mediaFile, tmdbInfo)
 	return nil
@@ -910,7 +907,7 @@ func (m *movieScrapeImpl) MakeMediaFromTMDB(mediaFile *models.ScrapeMediaFile, t
 	} else {
 		mediaFile.QueryRelation()
 	}
-	mediaFile.Media.FillInfoByTmdbInfo(tmdbInfo)
+	mediaFile.Media.FillInfoByTmdbInfo(tmdbInfo, m.settings.GetTmdbImageUrl())
 	mediaFile.Media.Save()
 	mediaFile.MediaId = mediaFile.Media.ID
 	mediaFile.Name = mediaFile.Media.Name

@@ -21,7 +21,7 @@ func (s *SyncStrm) Start115FileDispathcer(total int64) error {
 	s.sync115.expectedTotal = total
 	s.sync115.rawFileIDs = make(map[string]struct{})
 	s.sync115.incompletePages = false
-	limit := models.GetFileListPageSize()
+	limit := s.threadSettings.GetFileListPageSize()
 	// 根据文件总数来计算需要多少个处理器
 	pageCount := total / int64(limit)
 	if total%int64(limit) != 0 {

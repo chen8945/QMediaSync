@@ -65,7 +65,8 @@ func TestProxyOriginCancellationLogLevel(t *testing.T) {
 				writer = canceledProxyWriter{ResponseWriter: rec, err: context.Canceled}
 			}
 			router := gin.New()
-			router.GET("/Items/1/Images/Primary", ProxyOrigin)
+			session := newTestSession(t)
+			router.GET("/Items/1/Images/Primary", session.ProxyOrigin)
 			finished := make(chan struct{})
 			go func() {
 				router.ServeHTTP(writer, httptest.NewRequestWithContext(ctx, http.MethodGet, "/Items/1/Images/Primary?X-Emby-Token=private-token", nil))

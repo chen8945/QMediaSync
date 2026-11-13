@@ -18,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
@@ -45,10 +44,13 @@ type PreloadOptions struct {
 }
 
 type embyPreloader struct {
+	origin    string
+	client    *http.Client
 	options   PreloadOptions
 	mu        sync.Mutex
 	devices   map[string]*preloadDevice
 	stopped   atomic.Bool
+	stopOnce  sync.Once
 	serial    atomic.Uint64
 	admission atomic.Pointer[preloadAdmission]
 	uas       playback.PreloadUAMappings
@@ -215,33 +217,23 @@ type preloadProgress struct {
 	}
 }
 
-var activeEmbyPreloader atomic.Pointer[embyPreloader]
-
-// ConfigurePreloading 替换实例时同步撤销旧候选；返回值只停止这次配置。
-func ConfigurePreloading(options PreloadOptions) func() {
+func newPreloader(options PreloadOptions, origin string, client *http.Client) *embyPreloader {
 	if options.Coordinator == nil {
 		options.Coordinator = playback.DefaultPreloader
 	}
 	if options.Enabled == nil {
 		options.Enabled = func() (bool, uint64) {
-			settings := models.GetPlaybackSettingsSnapshot()
-			return settings.PreloadEnabled, settings.Generation
+			v := models.GetPlaybackSettingsSnapshot()
+			return v.PreloadEnabled, v.Generation
 		}
 	}
-	next := &embyPreloader{options: options, devices: make(map[string]*preloadDevice)}
-	next.admission.Store(&preloadAdmission{enabled: true})
-	if previous := activeEmbyPreloader.Swap(next); previous != nil {
-		previous.stop()
-	}
-	return func() {
-		activeEmbyPreloader.CompareAndSwap(next, nil)
-		next.stop()
-	}
+	p := &embyPreloader{options: options, origin: origin, client: client, devices: make(map[string]*preloadDevice)}
+	p.admission.Store(&preloadAdmission{enabled: true})
+	return p
 }
 
-// PublishPreloadingEnabled 发布已提交的本端开关，失活关闭前的观察和作业。
-func PublishPreloadingEnabled(enabled bool) {
-	p := activeEmbyPreloader.Load()
+// PublishPreloadingEnabled 发布本会话开关并撤销既有候选。
+func (p *embyPreloader) publishEnabled(enabled bool) {
 	if p == nil || p.stopped.Load() {
 		return
 	}
@@ -260,19 +252,20 @@ func PublishPreloadingEnabled(enabled bool) {
 }
 
 func (p *embyPreloader) stop() {
-	if !p.stopped.Swap(true) {
+	p.stopped.Store(true)
+	p.stopOnce.Do(func() {
 		p.options.Coordinator.CancelInstance(p.options.Instance)
 		p.mu.Lock()
 		p.devices = make(map[string]*preloadDevice)
 		p.mu.Unlock()
 		p.uas.Clear()
-	}
+	})
 }
 
 // PreloadObserver 只观察原请求的成功结果，捕获有界副本并原样透传响应。
-func PreloadObserver() gin.HandlerFunc {
+func (upstream *Session) PreloadObserver() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		p := activeEmbyPreloader.Load()
+		p := upstream.preload
 		if p == nil || p.stopped.Load() || p.options.Resolve == nil {
 			return
 		}
@@ -285,7 +278,7 @@ func PreloadObserver() gin.HandlerFunc {
 		if kind == "" {
 			return
 		}
-		request, ok := newPreloadRequest(c.Request, p.options.Instance, user, prefix, generation)
+		request, ok := newPreloadRequest(c.Request, p.origin, p.options.Instance, user, prefix, generation)
 		if !ok {
 			return
 		}
@@ -527,8 +520,8 @@ func deletePreloadValues(query url.Values, name string) {
 	}
 }
 
-func newPreloadRequest(request *http.Request, instance, pathUser, prefix string, generation uint64) (preloadRequest, bool) {
-	if config.C == nil || config.C.Emby == nil || config.C.Emby.Host == "" {
+func newPreloadRequest(request *http.Request, origin, instance, pathUser, prefix string, generation uint64) (preloadRequest, bool) {
+	if origin == "" {
 		return preloadRequest{}, false
 	}
 	q, err := url.ParseQuery(request.URL.RawQuery)
@@ -572,14 +565,14 @@ func newPreloadRequest(request *http.Request, instance, pathUser, prefix string,
 			return preloadRequest{}, false
 		}
 	}
-	scope := preloadHash(instance, config.C.Emby.Host, token, device)
+	scope := preloadHash(instance, origin, token, device)
 	if device == "" {
 		// shortcut: 无设备标识时只按本次完整 UA 隔离，不跨次学习播放器 UA。
-		scope = preloadHash(instance, config.C.Emby.Host, token, "missing-device", ua)
+		scope = preloadHash(instance, origin, token, "missing-device", ua)
 	}
 	return preloadRequest{
 		scope: scope, weakIdentity: device == "", token: token, user: user,
-		ua: ua, client: client, prefix: prefix, origin: config.C.Emby.Host, selected: selected, generation: generation,
+		ua: ua, client: client, prefix: prefix, origin: origin, selected: selected, generation: generation,
 	}, true
 }
 

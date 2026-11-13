@@ -237,7 +237,7 @@ describe('Emby 设置请求反馈', () => {
     reply.mockResolvedValueOnce({
       code: 200,
       message: '配置已保存',
-      data: { warnings: ['调度未应用，请重新保存'], restart_required: true },
+      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
     })
     await act('保存设置')
     libraries.resolve()
@@ -249,9 +249,9 @@ describe('Emby 设置请求反馈', () => {
       data: { exists: true, config: { ...settings, sync_all_libraries: 0 } },
     })
     await flushPromises()
-    expect(feedbackDuringReadback).toContain('调度未应用，请重新保存')
-    expect(feedbackDuringReadback).toContain('需重启')
-    expect(wrapper.get('.emby-status-alert').text()).toContain('调度未应用，请重新保存')
+    expect(feedbackDuringReadback).toContain('代理未应用，请重新保存')
+    expect(feedbackDuringReadback).toContain('配置已保存，尚未完全生效')
+    expect(wrapper.get('.emby-status-alert').text()).toContain('代理未应用，请重新保存')
     expect(wrapper.find('.readback-failure').exists()).toBe(false)
   })
 

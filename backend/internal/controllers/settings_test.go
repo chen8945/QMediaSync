@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -305,7 +306,6 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 
 	oldSettings := models.SettingsGlobal
 	oldDownloadQueue := models.GlobalDownloadQueue
-	oldSetGlobalExecutorConfig := setGlobalExecutorConfig
 	oldAppLogger := helpers.AppLogger
 	oldDownloadQueueRunning := oldDownloadQueue != nil && oldDownloadQueue.IsRunning()
 	if oldDownloadQueueRunning {
@@ -323,7 +323,7 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 			oldDownloadQueue.Start()
 		}
 		models.SettingsGlobal = oldSettings
-		setGlobalExecutorConfig = oldSetGlobalExecutorConfig
+		models.SetThreadSettingsApplyHook(nil)
 		helpers.AppLogger = oldAppLogger
 	})
 
@@ -340,6 +340,11 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 		t.Fatalf("创建测试 settings 失败：%v", err)
 	}
 	models.SettingsGlobal = settings
+	models.LoadSettings()
+	if err := models.StartSettingsRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = models.StopSettingsRuntime(context.Background()) })
 
 	var (
 		setCalls       int
@@ -349,7 +354,8 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 		savedQPS       int
 		setCallbackErr error
 	)
-	setGlobalExecutorConfig = func(qps, qpm, qph int) {
+	models.SetThreadSettingsApplyHook(func(config models.SettingThreadAndRapidWait) error {
+		qps, qpm, qph := config.FileDetailThreads, config.FileDetailThreads*60, config.FileDetailThreads*3600
 		setCalls++
 		gotQPS, gotQPM, gotQPH = qps, qpm, qph
 		var saved models.Settings
@@ -357,7 +363,8 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 		if setCallbackErr == nil {
 			savedQPS = saved.FileDetailThreads
 		}
-	}
+		return nil
+	})
 
 	r := gin.New()
 	r.POST("/setting/threads", UpdateThreads)
@@ -396,7 +403,7 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldSettings, oldUploadQueue, oldDownloadQueue := models.SettingsGlobal, models.GlobalUploadQueue, models.GlobalDownloadQueue
-	oldLogger, oldSetRateConfig := helpers.AppLogger, setGlobalExecutorConfig
+	oldLogger := helpers.AppLogger
 	oldDownloadRunning := oldDownloadQueue != nil && oldDownloadQueue.IsRunning()
 	if oldDownloadRunning {
 		oldDownloadQueue.Stop()
@@ -405,7 +412,8 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() {
 		models.SettingsGlobal, models.GlobalUploadQueue, models.GlobalDownloadQueue = oldSettings, oldUploadQueue, oldDownloadQueue
-		helpers.AppLogger, setGlobalExecutorConfig = oldLogger, oldSetRateConfig
+		helpers.AppLogger = oldLogger
+		models.SetThreadSettingsApplyHook(nil)
 		if oldDownloadRunning {
 			oldDownloadQueue.Start()
 		}
@@ -440,6 +448,11 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 				t.Fatal(err)
 			}
 			models.SettingsGlobal = settings
+			models.LoadSettings()
+			if err := models.StartSettingsRuntime(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = models.StopSettingsRuntime(context.Background()) })
 			queue := models.NewUq(7)
 			models.GlobalUploadQueue = queue
 			t.Cleanup(func() {
@@ -455,7 +468,7 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 				}
 			}
 			rateCalls := 0
-			setGlobalExecutorConfig = func(_, _, _ int) { rateCalls++ }
+			models.SetThreadSettingsApplyHook(func(models.SettingThreadAndRapidWait) error { rateCalls++; return nil })
 			payload := map[string]any{
 				"download_threads": 1, "file_detail_threads": 4,
 				"openlist_qps": 2, "openlist_retry": 1, "openlist_retry_delay": 30,
@@ -482,7 +495,7 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 			wantCode := Success
 			if tt.wantHTTP != http.StatusOK || tt.failWrite {
 				wantCode = BadRequest
-				if settings.ThreadAndRapidWait() != previous || rateCalls != 0 {
+				if models.GetThreadSettingsSnapshot() != previous || rateCalls != 0 {
 					t.Fatal("拒绝请求或保存失败后不应修改内存配置或运行时速率")
 				}
 			}
@@ -496,8 +509,8 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 			if err := db.Db.Take(&saved, settings.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if saved.UploadThreads != tt.wantUpload || settings.UploadThreads != tt.wantUpload {
-				t.Fatalf("数据库/内存上传并发 = %d/%d，期望 %d", saved.UploadThreads, settings.UploadThreads, tt.wantUpload)
+			if saved.UploadThreads != tt.wantUpload || models.GetThreadSettingsSnapshot().UploadThreads != tt.wantUpload {
+				t.Fatalf("数据库/内存上传并发 = %d/%d，期望 %d", saved.UploadThreads, models.GetThreadSettingsSnapshot().UploadThreads, tt.wantUpload)
 			}
 			if wantCode != Success && saved.ThreadAndRapidWait() != previous {
 				t.Fatal("拒绝请求或保存失败后不应修改已保存配置")

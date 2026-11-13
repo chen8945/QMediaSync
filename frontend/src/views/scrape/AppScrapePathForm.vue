@@ -1102,66 +1102,41 @@ const handleSubmit = async () => {
   try {
     loading.value = true
 
-    if (isEditMode.value) {
-      await saveScrapePath(http, {
-        id: form.id,
-        source_path: form.source_path,
-        source_path_id: form.source_path_id,
-        dest_path: form.dest_path,
-        dest_path_id: form.dest_path_id,
-        scrape_type: form.scrape_type,
-        rename_type: renameType,
-        enable_category: form.enable_category,
-        folder_name_template: form.folder_name_template,
-        file_name_template: form.file_name_template,
-        delete_keyword: form.delete_keyword,
-        min_video_file_size: form.min_video_file_size,
-        video_ext_list: form.video_ext_list,
-        exclude_no_image_actor: form.exclude_no_image_actor,
-        enable_ai: form.enable_ai,
-        ai_prompt: form.ai_prompt,
-        force_delete_source_path: form.force_delete_source_path,
-        enable_cron: form.enable_cron,
-        cron_expression: form.cron_expression || '',
-        cron_description: form.cron_description || '',
-        enable_fanart_tv: form.enable_fanart_tv,
-        max_threads: parseInt(form.max_threads + ''),
-      })
+    const result = await saveScrapePath(http, {
+      id: isEditMode.value ? form.id : 0,
+      ...(isEditMode.value
+        ? {}
+        : {
+            source_type: form.source_type,
+            account_id: form.source_type !== 'local' ? form.account_id : 0,
+            media_type: form.media_type,
+          }),
+      source_path: form.source_path,
+      source_path_id: form.source_path_id,
+      dest_path: form.dest_path,
+      dest_path_id: form.dest_path_id,
+      scrape_type: form.scrape_type,
+      rename_type: renameType,
+      enable_category: form.enable_category,
+      folder_name_template: form.folder_name_template,
+      file_name_template: form.file_name_template,
+      delete_keyword: form.delete_keyword,
+      min_video_file_size: form.min_video_file_size,
+      video_ext_list: form.video_ext_list,
+      exclude_no_image_actor: form.exclude_no_image_actor,
+      enable_ai: form.enable_ai,
+      ai_prompt: form.ai_prompt,
+      force_delete_source_path: form.force_delete_source_path,
+      enable_cron: form.enable_cron,
+      cron_expression: form.cron_expression || '',
+      cron_description: form.cron_description || '',
+      enable_fanart_tv: form.enable_fanart_tv,
+      max_threads: isEditMode.value ? parseInt(form.max_threads + '') : form.max_threads,
+    })
 
-      ElMessage.success('编辑刮削目录成功')
-      returnToScrapePathList()
-    } else {
-      await saveScrapePath(http, {
-        id: 0,
-        source_type: form.source_type,
-        account_id: form.source_type !== 'local' ? form.account_id : 0,
-        media_type: form.media_type,
-        source_path: form.source_path,
-        source_path_id: form.source_path_id,
-        dest_path: form.dest_path,
-        dest_path_id: form.dest_path_id,
-        scrape_type: form.scrape_type,
-        rename_type: renameType,
-        enable_category: form.enable_category,
-        folder_name_template: form.folder_name_template,
-        file_name_template: form.file_name_template,
-        delete_keyword: form.delete_keyword,
-        min_video_file_size: form.min_video_file_size,
-        video_ext_list: form.video_ext_list,
-        exclude_no_image_actor: form.exclude_no_image_actor,
-        enable_ai: form.enable_ai,
-        ai_prompt: form.ai_prompt,
-        force_delete_source_path: form.force_delete_source_path,
-        enable_cron: form.enable_cron,
-        cron_expression: form.cron_expression || '',
-        cron_description: form.cron_description || '',
-        enable_fanart_tv: form.enable_fanart_tv,
-        max_threads: form.max_threads,
-      })
-
-      ElMessage.success('添加刮削目录成功')
-      returnToScrapePathList()
-    }
+    if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
+    else ElMessage.success(isEditMode.value ? '编辑刮削目录成功' : '添加刮削目录成功')
+    returnToScrapePathList()
   } catch (error) {
     reportError(error, isEditMode.value ? '编辑刮削目录失败' : '添加刮削目录失败')
   } finally {

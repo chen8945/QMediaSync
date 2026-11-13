@@ -31,9 +31,8 @@ func TestDownloadQueueRetriesAfterConfigReadError(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { db.Db.Callback().Query().Remove(callback) })
-			dq := NewDq(1)
-			dq.running = true
-			dq.moveTasksToChannel()
+			dq := newDownloadPollTestQueue(t)
+			pollDownloads(t, dq)
 			var stored DbDownloadTask
 			if err := db.Db.First(&stored, task.ID).Error; err != nil {
 				t.Fatal(err)
@@ -42,12 +41,16 @@ func TestDownloadQueueRetriesAfterConfigReadError(t *testing.T) {
 				t.Fatalf("failed configuration query changed task: %+v", stored)
 			}
 			for range 4 {
-				dq.moveTasksToChannel()
+				pollDownloads(t, dq)
 			}
-			if len(dq.tasks) != 1 {
-				t.Fatalf("database recovered but extraction was not automatically retried: queued=%d", len(dq.tasks))
+			pending := GetPendingDownloadTasks(10)
+			if len(pending) != 1 {
+				t.Fatalf("database recovered but extraction was not retried: pending=%d", len(pending))
 			}
-			queued := <-dq.tasks
+			queued := pending[0]
+			if !dq.claim(t.Context(), queued) {
+				t.Fatal("recovered pending extraction was not claimed")
+			}
 			if queued.ID != task.ID || queued.Status != DownloadStatusDownloading || queued.RetryCount != DefaultQueueRetryMax || queued.Error != "" {
 				t.Fatalf("invalid recovered extraction: %+v", queued)
 			}

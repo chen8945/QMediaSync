@@ -51,8 +51,9 @@ func TestFetchFullPlaybackInfoKeepsProcessedOriginalSources(t *testing.T) {
 				ApiKey: key, ApiKeyType: Header, ApiKeyName: "X-Emby-Token",
 				PlaybackInfoUri: "/Items/20/PlaybackInfo?MediaSourceId=ms",
 			}
+			session := newTestSession(t)
 			for attempt := range 2 {
-				body, err := fetchFullPlaybackInfo(item)
+				body, err := session.fetchFullPlaybackInfo(t.Context(), item)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -73,7 +74,6 @@ func TestFetchFullPlaybackInfoKeepsProcessedOriginalSources(t *testing.T) {
 				if _, exists := source.Attr("TranscodingUrl").Done(); exists {
 					t.Fatal("internal full PlaybackInfo bypassed normal processing")
 				}
-				cache.WaitingForHandleChan()
 				wantCalls := int32(attempt + 1)
 				if enabled {
 					wantCalls = 1
@@ -225,14 +225,14 @@ func TestMediaPathDisplayPreservesLiveSources(t *testing.T) {
 
 func TestSelectedPlaybackInfoCacheMissReturnsOriginalSource(t *testing.T) {
 	const raw = "http://strm.test/A%26B.mkv?x=2&x=1"
-	router, _ := newSTRMRedirectTestRouter(t, raw, false)
+	router, _, session := newSTRMRedirectTestRouter(t, raw, false)
 	config.C.VideoPreview = &config.VideoPreview{}
 	config.C.Cache.Enable = true
 	if err := config.C.Cache.Init(); err != nil {
 		t.Fatal(err)
 	}
 	router.Use(MediaPathDisplay())
-	router.POST("/Items/movie/PlaybackInfo", TransferPlaybackInfo)
+	router.POST("/Items/movie/PlaybackInfo", session.TransferPlaybackInfo)
 	path := "/Items/movie/PlaybackInfo?MediaSourceId=ms&api_key=" + url.QueryEscape(t.Name()+t.TempDir())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
@@ -240,26 +240,24 @@ func TestSelectedPlaybackInfoCacheMissReturnsOriginalSource(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusOK || len(body.MediaSources) != 1 || body.MediaSources[0].Id != "ms" || body.MediaSources[0].Path != "http://strm.test/A&B.mkv?x=2&x=1" {
 		t.Fatalf("selected PlaybackInfo: status=%d body=%s error=%v", response.Code, response.Body.String(), err)
 	}
-	cache.WaitingForHandleChan()
 }
 
 func TestMediaPathDisplayWriteFailureDoesNotCache(t *testing.T) {
-	router, _ := newSTRMRedirectTestRouter(t, "http://strm.test/A%26B.mkv", false)
+	router, _, session := newSTRMRedirectTestRouter(t, "http://strm.test/A%26B.mkv", false)
 	config.C.VideoPreview = &config.VideoPreview{}
 	config.C.Cache.Enable = true
 	if err := config.C.Cache.Init(); err != nil {
 		t.Fatal(err)
 	}
-	router.Use(MediaPathDisplay(), cache.CacheableRouteMarker(), cache.RequestCacher())
-	router.POST("/Items/movie/PlaybackInfo", TransferPlaybackInfo)
+	router.Use(MediaPathDisplay(), cache.CacheableRouteMarker(), session.Cache.RequestCacher())
+	router.POST("/Items/movie/PlaybackInfo", session.TransferPlaybackInfo)
 	path := "/Items/movie/PlaybackInfo?api_key=" + url.QueryEscape(t.Name()+t.TempDir())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(partialFailingResponseWriter{response}, httptest.NewRequest(http.MethodPost, path, nil))
 	if response.Body.Len() != 2 {
 		t.Fatalf("failed write body=%s", response.Body.String())
 	}
-	cache.WaitingForHandleChan()
-	if _, ok := cache.GetRequestCache(httptest.NewRequest(http.MethodPost, path, nil)); ok {
+	if _, ok := session.Cache.GetRequestCache(httptest.NewRequest(http.MethodPost, path, nil)); ok {
 		t.Fatal("failed display write published a response cache")
 	}
 }

@@ -162,49 +162,23 @@ func (r UpdateThreadsRequest) Validate() error {
 	return nil
 }
 
-// ToModel 转换为线程配置模型。
-func (r UpdateThreadsRequest) ToModel(base models.SettingThreadAndRapidWait) models.SettingThreadAndRapidWait {
-	modelReq := models.SettingThreadAndRapidWait{
-		DownloadThreads:         r.DownloadThreads,
-		UploadThreads:           base.UploadThreads,
-		FileDetailThreads:       r.FileDetailThreads,
-		OpenlistQPS:             r.OpenlistQPS,
-		OpenlistRetry:           r.OpenlistRetry,
-		OpenlistRetryDelay:      r.OpenlistRetryDelay,
-		FileListPageSize:        r.FileListPageSize,
-		SettingUploadRapidWait:  base.SettingUploadRapidWait,
-		SettingURLValidityCheck: base.SettingURLValidityCheck,
+// ToUpdate 保留可选字段的省略信息，交由模型写入拥有者合并最新配置。
+func (r UpdateThreadsRequest) ToUpdate() models.ThreadSettingsUpdate {
+	return models.ThreadSettingsUpdate{
+		SettingThreads: models.SettingThreads{
+			DownloadThreads: r.DownloadThreads, FileDetailThreads: r.FileDetailThreads,
+			OpenlistQPS: r.OpenlistQPS, OpenlistRetry: r.OpenlistRetry, OpenlistRetryDelay: r.OpenlistRetryDelay, FileListPageSize: r.FileListPageSize,
+		},
+		UploadConcurrency:              r.UploadThreads,
+		UploadRapidWaitEnabled:         r.UploadRapidWaitEnabled,
+		UploadRapidWaitTimeoutSeconds:  r.UploadRapidWaitTimeoutSeconds,
+		UploadRapidWaitIntervalSeconds: r.UploadRapidWaitIntervalSeconds,
+		UploadRapidWaitMinSize:         r.UploadRapidWaitMinSize,
+		UploadRapidWaitForceSize:       r.UploadRapidWaitForceSize,
+		UploadRapidWaitSkipUpload:      r.UploadRapidWaitSkipUpload,
+		URLValidityCheckEnabled:        r.URLValidityCheckEnabled,
+		URLValidityCheckTimeoutSeconds: r.URLValidityCheckTimeoutSeconds,
 	}
-	if r.UploadThreads != nil {
-		modelReq.UploadThreads = *r.UploadThreads
-	} else if modelReq.UploadThreads < 1 || modelReq.UploadThreads > models.MaxUploadThreads {
-		modelReq.UploadThreads = models.DefaultUploadThreads
-	}
-	if r.UploadRapidWaitEnabled != nil {
-		modelReq.UploadRapidWaitEnabled = *r.UploadRapidWaitEnabled
-	}
-	if r.UploadRapidWaitTimeoutSeconds != nil {
-		modelReq.UploadRapidWaitTimeoutSeconds = *r.UploadRapidWaitTimeoutSeconds
-	}
-	if r.UploadRapidWaitIntervalSeconds != nil {
-		modelReq.UploadRapidWaitIntervalSeconds = *r.UploadRapidWaitIntervalSeconds
-	}
-	if r.UploadRapidWaitMinSize != nil {
-		modelReq.UploadRapidWaitMinSize = *r.UploadRapidWaitMinSize
-	}
-	if r.UploadRapidWaitForceSize != nil {
-		modelReq.UploadRapidWaitForceSize = *r.UploadRapidWaitForceSize
-	}
-	if r.UploadRapidWaitSkipUpload != nil {
-		modelReq.UploadRapidWaitSkipUpload = *r.UploadRapidWaitSkipUpload
-	}
-	if r.URLValidityCheckEnabled != nil {
-		modelReq.URLValidityCheckEnabled = *r.URLValidityCheckEnabled
-	}
-	if r.URLValidityCheckTimeoutSeconds != nil {
-		modelReq.URLValidityCheckTimeoutSeconds = *r.URLValidityCheckTimeoutSeconds
-	}
-	return modelReq
 }
 
 // UpdateStrmConfigRequest 更新 STRM 配置请求。

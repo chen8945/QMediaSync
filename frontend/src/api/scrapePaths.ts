@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { ParseHttpErrorOptions } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface ScrapePath {
   id: number
@@ -99,12 +99,16 @@ export async function fetchScrapePath(http: AxiosInstance, id: number): Promise<
 export async function saveScrapePath(
   http: AxiosInstance,
   payload: SaveScrapePathPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes`, payload))
+): Promise<SettingsSaveResult> {
+  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes`, payload)
+  unwrapResponse(response)
+  return getSettingsSaveResult(response)
 }
 
-export async function deleteScrapePath(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/${id}`))
+export async function deleteScrapePath(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  const response = await http.delete<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/${id}`)
+  unwrapResponse(response)
+  return getSettingsSaveResult(response)
 }
 
 export async function startScrapePath(http: AxiosInstance, id: number): Promise<void> {
@@ -115,10 +119,10 @@ export async function stopScrapePath(http: AxiosInstance, id: number): Promise<v
   unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/stop`, { id }))
 }
 
-export async function toggleScrapePathCron(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(
-    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/toggle-cron`, { id }),
-  )
+export async function toggleScrapePathCron(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/toggle-cron`, { id })
+  unwrapResponse(response)
+  return getSettingsSaveResult(response)
 }
 
 export async function fetchScrapeSyncPathIDs(

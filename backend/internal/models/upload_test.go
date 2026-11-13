@@ -3,10 +3,14 @@ package models
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -166,22 +170,30 @@ func TestUploadQueueDiscardsQueryFromStoppedScheduler(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		queue, runner, tasks := setupUploadQueueTest(t, 1, 2)
 		queried := make(chan struct{}, 1)
-		releaseQuery := make(chan struct{}, 1)
-		var firstQuery sync.Once
+		newQueried := make(chan struct{}, 1)
+		releaseQuery, releaseNewQuery := make(chan struct{}), make(chan struct{})
+		releaseOld := sync.OnceFunc(func() { close(releaseQuery) })
+		releaseNew := sync.OnceFunc(func() { close(releaseNewQuery) })
+		var queryCount atomic.Int32
 		var stopping sync.WaitGroup
 		callbackName := "qms:test_block_upload_queue_query"
 		if err := db.Db.Callback().Query().After("gorm:after_query").Register(callbackName, func(tx *gorm.DB) {
 			if _, ok := tx.Statement.Dest.(*[]*DbUploadTask); ok {
-				firstQuery.Do(func() {
+				switch queryCount.Add(1) {
+				case 1:
 					queried <- struct{}{}
 					<-releaseQuery
-				})
+				case 2:
+					newQueried <- struct{}{}
+					<-releaseNewQuery
+				}
 			}
 		}); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
-			close(releaseQuery)
+			releaseOld()
+			releaseNew()
 			queue.Stop()
 			stopping.Wait()
 			runner.unblockAll()
@@ -201,11 +213,15 @@ func TestUploadQueueDiscardsQueryFromStoppedScheduler(t *testing.T) {
 		}
 		queue.UpdateConcurrency(2)
 		queue.Start()
-		releaseQuery <- struct{}{}
+		synctest.Wait()
+		if len(newQueried) != 1 {
+			t.Fatal("新调度查询应已到达独立屏障")
+		}
+		releaseOld()
 		stopping.Wait()
 		// 新队列虽已启动，旧查询也不能借用新代次派发任务。
 		expectStartedUploads(t, runner)
-		time.Sleep(time.Second)
+		releaseNew()
 		expectStartedUploads(t, runner, tasks[0].ID, tasks[1].ID)
 	})
 }
@@ -364,4 +380,200 @@ func TestUploadQueueFinalizesWithoutRetransfer(t *testing.T) {
 			t.Fatalf("收尾任务状态 = %s，期望不重新传输即可完成", got.Status.String())
 		}
 	})
+}
+
+func TestUploadQueueShutdownCancelsFinalizeClaimSQL(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	task := &DbUploadTask{Status: UploadStatusRemoteCompletedPendingFinalize}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	const callback = "test:block_upload_finalize_claim"
+	if err := db.Db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+		updates, ok := tx.Statement.Dest.(map[string]any)
+		if !ok || tx.Statement.Table != "db_upload_tasks" || updates["status"] != UploadStatusRemoteCompletedFinalizing {
+			return
+		}
+		entered <- struct{}{}
+		select {
+		case <-tx.Statement.Context.Done():
+			tx.AddError(tx.Statement.Context.Err())
+		case <-release:
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queue := NewUq(1)
+	t.Cleanup(func() {
+		unblock()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := queue.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+		db.Db.Callback().Update().Remove(callback)
+	})
+	queue.Start()
+	queue.signal()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("上传未进入收尾领取")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := queue.Shutdown(ctx); err != nil {
+		t.Fatalf("最终停止没有取消收尾领取SQL：%v", err)
+	}
+	var stored DbUploadTask
+	if err := db.Db.First(&stored, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != UploadStatusRemoteCompletedPendingFinalize {
+		t.Fatalf("取消收尾不能重新传输文件：%s", stored.Status.String())
+	}
+}
+
+type upload115HTTPRunner struct{ client *v115open.OpenClient }
+
+func (runner upload115HTTPRunner) Upload(ctx context.Context, task *DbUploadTask, _ *v115open.OpenClient) (upload115TaskResult, error) {
+	return open115UploadRunner{}.Upload(ctx, task, runner.client)
+}
+
+type upload115HTTPTransport func(*http.Request) (*http.Response, error)
+
+func (transport upload115HTTPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestUploadQueueShutdownPreserves115ResumeCheckpoint(t *testing.T) {
+	setupUpload115ProcessedTestDB(t)
+	if err := db.Db.AutoMigrate(&Account{}); err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{SourceType: SourceType115, Name: "续传关闭测试"}
+	if err := db.Db.Create(account).Error; err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(t.TempDir(), "movie.nfo")
+	if err := os.WriteFile(localPath, make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := buildUpload115LocalFileInfo(localPath, "movie.nfo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &DbUploadTask{
+		AccountId: account.ID, Source: UploadSourceStrm, SourceType: SourceType115,
+		Status: UploadStatusPending, LocalFullPath: localPath, FileName: info.FileName,
+		RemoteFullPath: "/remote/movie.nfo", RemotePathId: "100", UploadedBytes: 512,
+		RetryCount: 1,
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	session := &UploadSession{
+		UploadTaskId: task.ID, AccountId: account.ID, LocalFullPath: localPath,
+		FileName: info.FileName, FileSize: info.FileSize, LocalMtime: info.LocalMtime,
+		LocalSignature: info.LocalSignature, FileSha1: info.FileSha1, Preid: info.Preid,
+		ParentFileId: "100", PickCode: "pick-1", Bucket: "bucket-1", Object: "object-1",
+		UploadId: "upload-1", PartSize: 256, TotalParts: 4, UploadedBytes: 512,
+		UploadedParts: 2, LastPartNumber: 2, LastPartEtag: "etag-2",
+		Status: UploadSessionStatusMultipart, ResumeState: UploadResumeStateNewSession,
+	}
+	if err := session.Save(); err != nil {
+		t.Fatal(err)
+	}
+	resuming, requestDone, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		switch r.URL.Path {
+		case "/open/folder/get_info":
+			if r.Method == http.MethodGet {
+				fmt.Fprint(w, `{"state":true,"data":{"file_id":"100"}}`)
+			} else {
+				fmt.Fprint(w, `{"state":true,"data":{}}`)
+			}
+		case "/open/upload/resume":
+			if r.Form.Get("pick_code") != "pick-1" {
+				t.Errorf("续传请求未复用原 PickCode：%q", r.Form.Get("pick_code"))
+			}
+			close(resuming)
+			defer close(requestDone)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		default:
+			t.Errorf("取消续传不应重新初始化上传：%s", r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	client := v115open.NewClient(account.ID, "", "test-token", "")
+	client.SetTransport(upload115HTTPTransport(func(request *http.Request) (*http.Response, error) {
+		request = request.Clone(request.Context())
+		request.URL.Scheme, request.URL.Host = serverURL.Scheme, serverURL.Host
+		return transport.RoundTrip(request)
+	}))
+	setUpload115RunnerForTesting(t, upload115HTTPRunner{client: client})
+	queue := NewUq(1)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := queue.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+		unblock()
+		server.Close()
+		transport.CloseIdleConnections()
+	})
+	queue.Start()
+	queue.signal()
+	select {
+	case <-resuming:
+	case <-time.After(3 * time.Second):
+		t.Fatal("上传未进入真实续传请求")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := queue.Shutdown(ctx); err != nil {
+		t.Fatalf("关闭队列未取消续传请求：%v", err)
+	}
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("续传 HTTP 请求仍未退出")
+	}
+	got, err := GetUploadSessionByUploadTaskId(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UploadId != session.UploadId || got.PartSize != session.PartSize || got.TotalParts != session.TotalParts ||
+		got.UploadedBytes != session.UploadedBytes || got.UploadedParts != session.UploadedParts ||
+		got.LastPartNumber != session.LastPartNumber || got.LastPartEtag != session.LastPartEtag || got.PickCode != session.PickCode {
+		t.Fatalf("正常关闭丢失了有效上传 checkpoint：%+v", got)
+	}
+	if got.ResumeState != UploadResumeStateResumedSession || got.Status != UploadSessionStatusMultipart {
+		t.Fatalf("正常关闭不能将续传会话标为失效：%s/%s", got.ResumeState, got.Status)
+	}
+	var stored DbUploadTask
+	if err := db.Db.First(&stored, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != UploadStatusPending || stored.UploadedBytes != session.UploadedBytes ||
+		stored.RetryCount != 1 || stored.Error != "" || stored.StartTime != 0 || stored.EndTime != 0 {
+		t.Fatalf("取消上传应保留进度和重试预算回到 pending：%+v", stored)
+	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // ProxySubtitles 字幕代理, 过期时间设置为 30 天
-func ProxySubtitles(c *gin.Context) {
+func (upstream *Session) ProxySubtitles(c *gin.Context) {
 	if c == nil {
 		return
 	}
@@ -30,5 +30,5 @@ func ProxySubtitles(c *gin.Context) {
 	}
 
 	c.Header(cache.HeaderKeyExpired, cache.Duration(time.Hour*24*30))
-	ProxyOrigin(c)
+	upstream.ProxyOrigin(c)
 }

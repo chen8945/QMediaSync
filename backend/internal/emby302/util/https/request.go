@@ -12,6 +12,7 @@ import (
 )
 
 type RequestHolder struct {
+	client *http.Client
 
 	// method 请求方法
 	method string
@@ -37,38 +38,41 @@ type RequestHolder struct {
 
 // Request 构造自定义请求
 func Request(method, url string) *RequestHolder {
-	return &RequestHolder{method: method, url: url}
+	return &RequestHolder{client: client, method: method, url: url}
 }
 
 // Get 构造 GET 请求
 func Get(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodGet, url: url}
+	return &RequestHolder{client: client, method: http.MethodGet, url: url}
 }
 
 // Post 构造 POST 请求
 func Post(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodPost, url: url}
+	return &RequestHolder{client: client, method: http.MethodPost, url: url}
 }
 
 // Delete 构造 DELETE 请求
 func Delete(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodDelete, url: url}
+	return &RequestHolder{client: client, method: http.MethodDelete, url: url}
 }
 
 // Put 构造 PUT 请求
 func Put(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodPut, url: url}
+	return &RequestHolder{client: client, method: http.MethodPut, url: url}
 }
 
 // Options 构造 OPTIONS 请求
 func Options(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodOptions, url: url}
+	return &RequestHolder{client: client, method: http.MethodOptions, url: url}
 }
 
 // Head 构造 HEAD 请求
 func Head(url string) *RequestHolder {
-	return &RequestHolder{method: http.MethodHead, url: url}
+	return &RequestHolder{client: client, method: http.MethodHead, url: url}
 }
+
+// Client 捕获本次请求使用的连接池。
+func (r *RequestHolder) Client(client *http.Client) *RequestHolder { r.client = client; return r }
 
 // AddHeader 添加请求头字段
 func (r *RequestHolder) AddHeader(key, value string) *RequestHolder {
@@ -155,7 +159,7 @@ func (r *RequestHolder) execute() (string, *http.Response, error) {
 		req.Header = header
 
 		// 2 发出请求
-		resp, err := client.Do(req)
+		resp, err := r.client.Do(req)
 		if err != nil {
 			return url, resp, err
 		}
@@ -165,6 +169,7 @@ func (r *RequestHolder) execute() (string, *http.Response, error) {
 			return url, resp, err
 		}
 		loc := resp.Header.Get("Location")
+		resp.Body.Close()
 		newBody := io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		if strings.HasPrefix(loc, "http") {
@@ -184,18 +189,11 @@ func (r *RequestHolder) execute() (string, *http.Response, error) {
 	return inner(r.method, r.url, r.header, r.body, r.redirect, 0)
 }
 
-func GetLocation(url string) (string, error) {
-	client := &http.Client{
-		Timeout: 1 * time.Second, // 设置较短超时
-		// 禁用自动重定向, 返回最后一个响应
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := client.Get(url)
+func GetLocation(ctx context.Context, client *http.Client, url string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	resp, err := Get(url).Client(client).Context(ctx).DoSingle()
 	if err != nil {
-		fmt.Println("获取跳转地址失败:", err)
 		return "", err
 	}
 	defer resp.Body.Close()

@@ -8,7 +8,7 @@
       :label-width="200"
       class="thread-form"
     >
-      <el-form-item label="下载队列每秒处理数量" prop="downloadThreads">
+      <el-form-item label="同时下载任务数量" prop="downloadThreads">
         <el-input-number
           v-model="formData.downloadThreads"
           :min="THREAD_LIMITS.downloadThreads.min"
@@ -17,8 +17,8 @@
           size="large"
         />
         <div class="form-help">
-          控制每秒加入“正在下载”的任务数，并不是实际每秒下载数。因此“正在下载”数量可能高于该值，这是正常的。建议保留余量给播放和刮削，范围
-          1 到 10。
+          同时处理的下载任务数，也是每秒启动任务数的上限，范围 1 到
+          10。调低时让正在处理的任务完成，暂停状态不变。
         </div>
       </el-form-item>
 
@@ -34,7 +34,7 @@
         />
         <div class="form-help">
           同时处理的上传任务数，包含准备、秒传等待和完成处理，范围 1 到 10，默认 1。
-          保存后生效，无需重启；调低时让正在处理的任务完成，暂停状态不变。 多个任务共用 115
+          调低时让正在处理的任务完成，暂停状态不变。多个任务共用 115
           接口请求上限，增加任务数不会提高每秒请求上限。
         </div>
       </el-form-item>
@@ -52,7 +52,7 @@
         </div>
       </el-form-item>
 
-      <el-form-item label="OpenList 接口请求 QPS" prop="openlistQPS">
+      <el-form-item label="OpenList 接口并发数量" prop="openlistQPS">
         <el-input-number
           v-model="formData.openlistQPS"
           :min="THREAD_LIMITS.openlistQPS.min"
@@ -60,7 +60,9 @@
           :disabled="loading"
           size="large"
         />
-        <div class="form-help">控制 OpenList 接口每秒请求数，影响同步速度，范围 2 到 10。</div>
+        <div class="form-help">
+          控制 OpenList 接口同时执行的请求数，影响同步速度，范围 2 到 10。
+        </div>
       </el-form-item>
 
       <el-form-item label="OpenList 接口重试次数" prop="openlistRetryCount">
@@ -423,18 +425,19 @@ async function saveSettings() {
       upload_rapid_wait_skip_upload: formData.uploadRapidWaitSkipUpload ? 1 : 0,
     }
 
-    await saveThreadSettings(http, payload)
+    const result = await saveThreadSettings(http, payload)
 
     saveStatus.value = {
-      title: '保存成功',
-      type: 'success',
-      description: '线程设置已成功保存',
+      title: result.warnings.length ? '线程设置已保存，尚未完全生效' : '保存成功',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length ? result.warnings.join('；') : '线程设置已成功保存',
     }
 
-    // 3 秒后清除状态提示
-    saveStatusTimer = setTimeout(() => {
-      saveStatus.value = null
-    }, 3000)
+    if (!result.warnings.length) {
+      saveStatusTimer = setTimeout(() => {
+        saveStatus.value = null
+      }, 3000)
+    }
   } catch (error) {
     const parsed = parseHttpError(error, {
       fallbackMessage: '保存线程设置失败，请稍后重试',

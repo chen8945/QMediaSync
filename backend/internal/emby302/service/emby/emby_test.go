@@ -52,7 +52,8 @@ func TestProxySocketBypassesDefaultProxy(t *testing.T) {
 	config.C = &config.Config{Emby: &config.Emby{Host: origin.URL}}
 	t.Cleanup(func() { config.C = oldConfig })
 	router := gin.New()
-	router.GET("/embywebsocket", ProxySocket())
+	session := newTestSession(t)
+	router.GET("/embywebsocket", session.ProxySocket())
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -137,7 +138,8 @@ func TestHandleImagesUpstreamParameters(t *testing.T) {
 			}}
 			t.Cleanup(func() { config.C = oldConfig })
 			router := gin.New()
-			router.GET("/Items/:id/Images/*image", HandleImages)
+			session := newTestSession(t)
+			router.GET("/Items/:id/Images/*image", session.HandleImages)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tt.path+"?"+query+tt.processing, nil))
 			wantBody := "original image bytes"
@@ -196,7 +198,8 @@ func TestProxySocketPreservesRequestSemantics(t *testing.T) {
 			config.C = &config.Config{Emby: &config.Emby{Host: origin.URL + "/ignored?configured=ignored"}}
 			t.Cleanup(func() { config.C = oldConfig })
 			router := gin.New()
-			router.GET("/embywebsocket", ProxySocket())
+			session := newTestSession(t)
+			router.GET("/embywebsocket", session.ProxySocket())
 			uri := "/%65mbywebsocket?api_key=a%2Bb&duplicate=1&duplicate=2&raw=a;b&invalid=%zz"
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, uri, nil)
 			request.Host = "public.example:8096"

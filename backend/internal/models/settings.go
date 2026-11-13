@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -370,32 +371,6 @@ func (settings *Settings) ThreadAndRapidWait() SettingThreadAndRapidWait {
 	}
 }
 
-func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
-	settingsMu.Lock()
-	// 使用副本，避免 GORM 在写库失败时改写运行时设置。
-	updated := *settings
-	updated.SettingThreads = req.SettingThreads
-	updated.SettingUploadRapidWait = req.SettingUploadRapidWait
-	updated.SettingURLValidityCheck = req.SettingURLValidityCheck
-
-	updateData := req.ToMap()
-
-	err := db.Db.Model(&updated).Where("id = ?", settings.ID).Updates(updateData).Error
-	if err != nil {
-		settingsMu.Unlock()
-		helpers.AppLogger.Errorf("更新线程数失败：%v", err)
-		return false
-	}
-	settings.SettingThreads = updated.SettingThreads
-	settings.SettingUploadRapidWait = updated.SettingUploadRapidWait
-	settings.SettingURLValidityCheck = updated.SettingURLValidityCheck
-	settings.UpdatedAt = updated.UpdatedAt
-	settingsMu.Unlock()
-	// 重新初始化下载队列
-	InitDQ()
-	return true
-}
-
 // func (settings *Settings) UpdateTelegramBot(enabled bool, token string, chatId string) bool {
 // 	if enabled {
 // 		settings.UseTelegram = 1
@@ -416,28 +391,6 @@ func (settings *Settings) UpdateThreads(req SettingThreadAndRapidWait) bool {
 // 	InitNotificationManager()
 // 	return true
 // }
-
-func (settings *Settings) UpdateHttpProxy(httpProxy string) bool {
-	// 写库失败必须回滚内存值，否则形成脑裂：内存持新地址（GetProxyUrl、TestGithub 立即生效），
-	// 而数据库、GitHub 管理器和通知管理器仍持旧地址，重启后又静默回退到那个刚被告知"未保存成功"的代理。
-	// 注意不能只靠"把赋值挪到写库之后"：GORM 的 Updates(map) 在生成 SQL 阶段就会把 map 里的值
-	// 回写进模型字段（callbacks/update.go 的 assignValue），所以这里显式保存旧值并在失败时还原。
-	previousProxy := settings.HttpProxy
-	updateData := make(map[string]any)
-	updateData["http_proxy"] = httpProxy
-	err := db.Db.Model(settings).Where("id = ?", settings.ID).Updates(updateData).Error
-	if err != nil {
-		settings.HttpProxy = previousProxy
-		helpers.AppLogger.Errorf("更新 HTTP 代理失败：%v", err)
-		return false
-	}
-	settings.HttpProxy = httpProxy
-	InitNotificationManager()
-	// 代理属于出站链路的全局配置，保存后必须刷新直读生效值的下游客户端，否则 Fanart 会继续拨旧代理、
-	// TMDB 单例会继续走用户已撤销的隧道。
-	RefreshProxyConsumers()
-	return true
-}
 
 func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int, preloadEnabled ...*int) bool {
 	if req.VideoExtArr == nil {
@@ -493,6 +446,16 @@ func (settings *Settings) UpdateStrm(req SettingStrm, multiPlaybackEnabled int, 
 }
 
 func LoadSettings() {
+	if isSettingsRuntimeStarted() {
+		if _, err := submitSettingsCommand(context.Background(), settingsCommand{kind: settingsReload}); err != nil {
+			helpers.AppLogger.Errorf("加载设置失败：%v", err)
+		}
+		return
+	}
+	loadSettings()
+}
+
+func loadSettings() {
 	settingsMu.Lock()
 	var loaded Settings
 	if err := db.Db.Take(&loaded).Error; err != nil {
@@ -518,32 +481,34 @@ func LoadSettings() {
 		SettingsGlobal = &Settings{}
 	}
 	*SettingsGlobal = loaded
+	publishLoadedSettings(loaded)
 	snapshot := publishPlaybackSettingsLocked(SettingsGlobal)
 	settingsMu.Unlock()
 	notifyPlaybackSettingsChanged(snapshot)
 }
 
 func InitNotificationManager() {
-	// 初始化增强通知管理器
-	// 传入代理获取回调函数，避免循环依赖
-	enhancedManager := notificationmanager.NewEnhancedNotificationManager(db.Db, func() string {
-		if SettingsGlobal == nil {
-			return ""
-		}
-		// 代理地址可能带用户名密码，QLogger 识别不了 URL 里的 userinfo，必须在调用点遮蔽
-		helpers.AppLogger.Infof("获取 HTTP 代理：%s", validation.RedactProxyURL(SettingsGlobal.HttpProxy))
-		return SettingsGlobal.HttpProxy
-	})
-	if err := enhancedManager.LoadChannels(); err != nil {
+	if notificationmanager.GlobalEnhancedNotificationManager == nil {
+		notificationmanager.GlobalEnhancedNotificationManager = notificationmanager.NewEnhancedNotificationManager(db.Db, func() string {
+			proxy := GetHTTPProxy()
+			helpers.AppLogger.Infof("获取 HTTP 代理：%s", validation.RedactProxyURL(proxy))
+			return proxy
+		})
+	}
+	if err := notificationmanager.GlobalEnhancedNotificationManager.LoadChannels(); err != nil {
 		helpers.AppLogger.Warnf("加载通知渠道失败：%v", err)
 	}
-	notificationmanager.GlobalEnhancedNotificationManager = enhancedManager
 }
 
 // GetFileListPageSize 获取 115 文件列表每页查询数量
 // 如果配置不存在或不在范围内（100-1150），返回默认值 1150
 func GetFileListPageSize() int {
-	pageSize := SettingsGlobal.FileListPageSize
+	return GetThreadSettingsSnapshot().GetFileListPageSize()
+}
+
+// GetFileListPageSize 使用当前线程配置副本解析分页上限。
+func (settings SettingThreads) GetFileListPageSize() int {
+	pageSize := settings.FileListPageSize
 	if pageSize < 100 || pageSize > 1150 {
 		return 1150
 	}
@@ -552,17 +517,15 @@ func GetFileListPageSize() int {
 
 // IsURLValidityCheckEnabled 返回 115 直链缓存有效性检查是否启用。
 func IsURLValidityCheckEnabled() bool {
-	if SettingsGlobal == nil {
-		return DefaultURLValidityCheckEnabled == 1
-	}
-	return SettingsGlobal.URLValidityCheckEnabled == 1
+	return GetThreadSettingsSnapshot().URLValidityCheckEnabled == 1
 }
 
 // URLValidityCheckTimeout 返回 115 直链缓存有效性检查总超时。
 func URLValidityCheckTimeout() time.Duration {
 	timeoutSeconds := DefaultURLValidityCheckTimeoutSeconds
-	if SettingsGlobal != nil && SettingsGlobal.URLValidityCheckTimeoutSeconds >= 1 {
-		timeoutSeconds = min(SettingsGlobal.URLValidityCheckTimeoutSeconds, MaxURLValidityCheckTimeoutSeconds)
+	current := GetThreadSettingsSnapshot()
+	if current.URLValidityCheckTimeoutSeconds >= 1 {
+		timeoutSeconds = min(current.URLValidityCheckTimeoutSeconds, MaxURLValidityCheckTimeoutSeconds)
 	}
 	return time.Duration(timeoutSeconds) * time.Second
 }

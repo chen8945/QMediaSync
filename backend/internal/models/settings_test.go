@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -139,6 +140,11 @@ func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 	if !SettingsGlobal.UpdateStrm(config(0), 0) {
 		t.Fatal("初始化 STRM 设置失败")
 	}
+	LoadSettings()
+	if err := StartSettingsRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = StopSettingsRuntime(context.Background()) })
 	// 拒绝线程更新，以覆盖其全结构复制和失败解锁，不启动无关下载队列。
 	if err := db.Db.Exec(`CREATE TRIGGER fail_threads BEFORE UPDATE OF upload_threads ON settings BEGIN SELECT RAISE(ABORT, 'test write failure'); END`).Error; err != nil {
 		t.Fatal(err)
@@ -165,7 +171,7 @@ func TestPlaybackSettingsConcurrentSaveReloadAndSnapshot(t *testing.T) {
 	workers.Go(func() {
 		<-start
 		for range 40 {
-			if SettingsGlobal.UpdateThreads(SettingThreadAndRapidWait{}) {
+			if _, err := SaveThreadSettings(context.Background(), ThreadSettingsUpdate{}); err == nil {
 				errors <- fmt.Errorf("线程写入失败不应返回成功")
 				return
 			}

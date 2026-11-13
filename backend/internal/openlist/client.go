@@ -179,6 +179,9 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 			// 共享登录继续服务其他等待者；取消当前浏览只结束当前等待。
 			select {
 			case <-req.Context().Done():
+				if options.waitAuthRefresh {
+					<-refresh
+				}
 				return nil, req.Context().Err()
 			case refreshed := <-refresh:
 				if refreshed.Err != nil {

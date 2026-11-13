@@ -32,12 +32,12 @@ const strmResolvedKey = "qms.strmResolved"
 var strmStreamRoute = regexp.MustCompile(constant.Reg_ResourceStream + "$")
 
 // Redirect2Transcode 将 master 请求重定向到本地 TS 代理
-func Redirect2Transcode(c *gin.Context) {
+func (upstream *Session) Redirect2Transcode(c *gin.Context) {
 	templateId := c.Query("template_id")
 	if strs.AnyEmpty(templateId) {
 		// 尝试从 MediaSourceId 中获取 TemplateId
 		itemInfo, err := resolveItemInfo(c, RouteTranscode)
-		if checkErr(c, err) {
+		if upstream.checkErr(c, err) {
 			return
 		}
 		templateId = itemInfo.MsInfo.TemplateId
@@ -46,18 +46,18 @@ func Redirect2Transcode(c *gin.Context) {
 	apiKey := c.Query(QueryApiKeyName)
 	openlistPath := c.Query("openlist_path")
 	if strs.AnyEmpty(templateId) {
-		ProxyOrigin(c)
+		upstream.ProxyOrigin(c)
 		return
 	}
 
 	// 只有 TemplateId 时, 需要先获取 OpenList Path
 	if strs.AnyEmpty(openlistPath) {
-		Redirect2OpenlistLink(c)
+		upstream.Redirect2OpenlistLink(c)
 		return
 	}
 
 	tu, err := url.Parse(https.ClientRequestHost(c.Request) + "/videos/proxy_playlist")
-	if checkErr(c, helpers.URLRequestErrorForLog(err)) {
+	if upstream.checkErr(c, helpers.URLRequestErrorForLog(err)) {
 		return
 	}
 	q := tu.Query()
@@ -69,16 +69,16 @@ func Redirect2Transcode(c *gin.Context) {
 }
 
 // Redirect2OpenlistLink 将资源重定向到 OpenList 网盘直链
-func Redirect2OpenlistLink(c *gin.Context) {
+func (upstream *Session) Redirect2OpenlistLink(c *gin.Context) {
 	// 不处理字幕接口
 	if strings.Contains(strings.ToLower(c.Request.RequestURI), "subtitles") {
-		ProxyOrigin(c)
+		upstream.ProxyOrigin(c)
 		return
 	}
 
 	// 1 解析要请求的资源信息
 	itemInfo, err := resolveItemInfo(c, RouteStream)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 	// logs.Info("解析到的 itemInfo: %v", itemInfo)
@@ -99,8 +99,8 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	}
 
 	// 3 请求资源在 Emby 中的 Path 参数
-	embyPath, err := getEmbyFileLocalPath(itemInfo)
-	if checkErr(c, err) {
+	embyPath, err := upstream.getEmbyFileLocalPath(c.Request.Context(), itemInfo)
+	if upstream.checkErr(c, err) {
 		return
 	}
 
@@ -127,7 +127,7 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	isProxyUrl := ""
 	// 4 如果是远程地址 (STRM) 且不包含 QMediaSync 的本地代理播放链接, 则重定向处理。
 	if !isLocalMedia && (urls.IsRemote(strmUrl) || strings.HasPrefix(strmUrl, "http") || strings.HasPrefix(strmUrl, "nfs:")) {
-		finalPath, resolverStatus, expiresAt, resolved := getFinalRedirectLink(c.Request.Context(), strmUrl, c.Request.Header.Clone(), c.Request.URL.Path)
+		finalPath, resolverStatus, expiresAt, resolved := upstream.getFinalRedirectLink(c.Request.Context(), strmUrl, c.Request.Header.Clone(), c.Request.URL.Path)
 		c.Set(strmResolvedKey, resolved)
 		if !strings.Contains(finalPath, "/proxy-115") {
 			targetHost := ""
@@ -209,11 +209,11 @@ func Redirect2OpenlistLink(c *gin.Context) {
 	// 	return
 	// }
 
-	checkErr(c, fmt.Errorf("没有兼容的流"))
+	upstream.checkErr(c, fmt.Errorf("没有兼容的流"))
 }
 
 // ProxyOriginalResource 拦截 original 接口
-func ProxyOriginalResource(c *gin.Context) {
+func (upstream *Session) ProxyOriginalResource(c *gin.Context) {
 	// if strings.Contains(strings.ToLower(c.Request.RequestURI), "subtitles") {
 	// 	ProxyOrigin(c)
 	// 	return
@@ -234,7 +234,7 @@ func ProxyOriginalResource(c *gin.Context) {
 	// pattern := `^[A-Za-z]:`
 	// matchedWin, _ := regexp.MatchString(pattern, embyPath)
 	// if strings.HasPrefix(embyPath, "/") || matchedWin || !strings.Contains(embyPath, "/proxy-115") {
-	ProxyOrigin(c)
+	upstream.ProxyOrigin(c)
 	// }
 	// Redirect2OpenlistLink(c)
 }
@@ -243,7 +243,7 @@ func ProxyOriginalResource(c *gin.Context) {
 // 不为空则根据错误处理策略返回响应
 //
 // 返回 true 表示请求已经被处理
-func checkErr(c *gin.Context, err error) bool {
+func (upstream *Session) checkErr(c *gin.Context, err error) bool {
 	if err == nil || c == nil {
 		return false
 	}
@@ -259,14 +259,14 @@ func checkErr(c *gin.Context, err error) bool {
 	}
 
 	logs.Error("代理接口失败: %v, 回源处理", err)
-	ProxyOrigin(c)
+	upstream.ProxyOrigin(c)
 	return true
 }
 
 // getFinalRedirectLink 请求 STRM 取链接口，返回跳转地址、取链响应状态、缓存截止时间和解析是否成功。
 //
 // 自有 115 接口只读取 Location；其他服务沿用多跳解析。失败回退不缓存，未取得响应时状态为 0。
-func getFinalRedirectLink(ctx context.Context, originLink string, header http.Header, requestPath string) (string, int, time.Time, bool) {
+func (upstream *Session) getFinalRedirectLink(ctx context.Context, originLink string, header http.Header, requestPath string) (string, int, time.Time, bool) {
 	if cached, ok := playback.CachedExternalLink(originLink, header.Get("User-Agent")); ok {
 		playback.DefaultPreloader.Takeover(playback.ExternalLinkIdentity(originLink, header.Get("User-Agent")))
 		if ctx.Err() == nil && strmStreamRoute.MatchString(requestPath) {
@@ -280,7 +280,7 @@ func getFinalRedirectLink(ctx context.Context, originLink string, header http.He
 		originLink = urls.AppendArgs(originLink, "force", "1")
 		// 115 直链的 f=1 要求生成链接和后续 CDN 请求使用同一个 User-Agent，
 		// 因此保留 STRM 请求头传给 QMS 取链接口，避免中间跳转丢失 UA。
-		resp, err := https.Get(originLink).Context(ctx).Header(header).DoSingle()
+		resp, err := https.Get(originLink).Client(upstream.Client).Context(ctx).Header(header).DoSingle()
 		responseStatus := 0
 		if resp != nil {
 			responseStatus = resp.StatusCode
@@ -307,7 +307,7 @@ func getFinalRedirectLink(ctx context.Context, originLink string, header http.He
 		}
 		return finalLink, resp.StatusCode, redirectCacheExpiresAt(finalLink, true, time.Now()), true
 	}
-	result, err := playback.ResolveExternalLink(ctx, originLink, header, https.Transport())
+	result, err := playback.ResolveExternalLink(ctx, originLink, header, upstream.Client.Transport)
 	if err != nil {
 		logs.Warn("获取最终重定向链接失败, 原始链接: %s, 错误信息: %v", originLink, helpers.URLRequestErrorForLog(err))
 		return originLink, 0, time.Time{}, false

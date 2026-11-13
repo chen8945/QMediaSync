@@ -2,8 +2,8 @@ import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { ParsedHttpError } from '@/http/errors'
 import type { LogLevel } from '@/types/log'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface StrmSettings {
   video_ext_arr: string[]
@@ -77,10 +77,10 @@ export const systemSettingsPublicMessages: Readonly<Record<string, string>> = {
   'delete_dir：不是允许的取值': '空目录处理设置无效',
   'add_path：不是允许的取值': 'STRM 链接路径设置无效',
   'check_meta_mtime：不是允许的取值': '元数据修改时间检查设置无效',
-  'download_threads：取值超出允许范围': '下载 QPS 必须在 1 到 10 之间',
+  'download_threads：取值超出允许范围': '同时下载任务数必须在 1 到 10 之间',
   'upload_threads：取值超出允许范围': '同时上传任务数必须在 1 到 10 之间',
   'file_detail_threads：取值超出允许范围': '115 接口 QPS 必须在 2 到 10 之间',
-  'openlist_qps：取值超出允许范围': 'OpenList QPS 必须在 2 到 10 之间',
+  'openlist_qps：取值超出允许范围': 'OpenList 接口并发数必须在 2 到 10 之间',
   'openlist_retry：取值超出允许范围': 'OpenList 重试次数必须在 1 到 10 之间',
   'openlist_retry_delay：取值超出允许范围': 'OpenList 重试延迟必须在 30 到 3600 秒之间',
   'file_list_page_size：取值超出允许范围': '文件列表分页大小必须在 100 到 1150 之间',
@@ -154,8 +154,10 @@ export async function fetchThreadSettings(http: AxiosInstance): Promise<ThreadSe
 export async function saveThreadSettings(
   http: AxiosInstance,
   payload: ThreadSettings,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/setting/threads`, payload))
+): Promise<SettingsSaveResult> {
+  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/setting/threads`, payload)
+  unwrapResponse(response)
+  return getSettingsSaveResult(response)
 }
 
 export async function fetchLogSettings(http: AxiosInstance): Promise<LogSettingsResponse> {

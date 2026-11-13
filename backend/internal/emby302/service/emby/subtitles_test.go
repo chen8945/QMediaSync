@@ -54,9 +54,10 @@ func TestProxySubtitlesCachesOnlyCompleteResponses(t *testing.T) {
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 			t.Cleanup(func() { config.C, helpers.AppLogger = oldConfig, oldLogger })
 
+			session := newTestSession(t)
 			router := gin.New()
-			router.Use(cache.CacheableRouteMarker(), cache.RequestCacher())
-			router.GET("/Videos/1/Subtitles/0/Stream.vtt", ProxySubtitles)
+			router.Use(cache.CacheableRouteMarker(), session.Cache.RequestCacher())
+			router.GET("/Videos/1/Subtitles/0/Stream.vtt", session.ProxySubtitles)
 			finished := make(chan error, 3)
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				router.ServeHTTP(w, r)
@@ -71,7 +72,6 @@ func TestProxySubtitlesCachesOnlyCompleteResponses(t *testing.T) {
 				t.Helper()
 				select {
 				case err := <-finished:
-					cache.WaitingForHandleChan()
 					return err
 				case <-time.After(5 * time.Second):
 					t.Fatal("proxy handler did not finish")
@@ -141,15 +141,15 @@ func TestProxySubtitlesCachesOnlyCompleteResponses(t *testing.T) {
 func TestProxyPassHandlersDoNotRetryPartialResponses(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
-		handler   gin.HandlerFunc
+		handler   func(*Session) gin.HandlerFunc
 		failWrite bool
 	}{
-		{name: "origin_read", handler: ProxyOrigin},
-		{name: "download_read", handler: DownloadStrategyChecker()},
-		{name: "episodes_read", handler: ResortEpisodes},
-		{name: "origin_write", handler: ProxyOrigin, failWrite: true},
-		{name: "download_write", handler: DownloadStrategyChecker(), failWrite: true},
-		{name: "episodes_write", handler: ResortEpisodes, failWrite: true},
+		{name: "origin_read", handler: func(s *Session) gin.HandlerFunc { return s.ProxyOrigin }},
+		{name: "download_read", handler: func(s *Session) gin.HandlerFunc { return s.DownloadStrategyChecker() }},
+		{name: "episodes_read", handler: func(s *Session) gin.HandlerFunc { return s.ResortEpisodes }},
+		{name: "origin_write", handler: func(s *Session) gin.HandlerFunc { return s.ProxyOrigin }, failWrite: true},
+		{name: "download_write", handler: func(s *Session) gin.HandlerFunc { return s.DownloadStrategyChecker() }, failWrite: true},
+		{name: "episodes_write", handler: func(s *Session) gin.HandlerFunc { return s.ResortEpisodes }, failWrite: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -169,7 +169,8 @@ func TestProxyPassHandlersDoNotRetryPartialResponses(t *testing.T) {
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 			t.Cleanup(func() { config.C, helpers.AppLogger = oldConfig, oldLogger })
 			router := gin.New()
-			router.GET("/Items/1/Download", tt.handler)
+			session := newTestSession(t)
+			router.GET("/Items/1/Download", tt.handler(session))
 			rec := httptest.NewRecorder()
 			var writer http.ResponseWriter = rec
 			wantBody := "part"

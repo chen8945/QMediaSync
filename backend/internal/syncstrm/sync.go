@@ -70,6 +70,8 @@ type SyncStrm struct {
 	FullSync     bool // 是否是全量同步
 	IsFile       bool // 是否是文件
 
+	threadSettings models.SettingThreadAndRapidWait
+
 	// 路径队列
 	PathWorkerMax int64
 	PathErrChan   chan error
@@ -137,6 +139,7 @@ func NewSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePat
 }
 
 func newSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePathId, targetPath string, config SyncStrmConfig, IsFullSync bool, lastSyncAt int64, isFile bool, createSyncRecord bool) *SyncStrm {
+	threadSettings := models.GetThreadSettingsSnapshot()
 	if err := config.compileExcludeNameRegexes(); err != nil {
 		effectiveSyncLogger().Errorf("初始化 STRM 名称排除规则失败：%v", err)
 		return nil
@@ -155,16 +158,16 @@ func newSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePat
 	case models.SourceTypeBaiduPan:
 		syncDriver = NewBaiduPanDriver(account.GetBaiDuPanClient())
 	}
-	pathWorkerMax := int64(models.SettingsGlobal.FileDetailThreads)
+	pathWorkerMax := int64(threadSettings.FileDetailThreads)
 	switch account.SourceType {
 	case models.SourceTypeLocal:
 		pathWorkerMax = int64(10) // 本地类型（CD2 会自行限制并发），限制为 10 个并发
 	case models.SourceTypeOpenList:
-		pathWorkerMax = int64(models.SettingsGlobal.OpenlistQPS)
+		pathWorkerMax = int64(threadSettings.OpenlistQPS)
 	case models.SourceType115:
-		pathWorkerMax = int64(models.SettingsGlobal.FileDetailThreads)
+		pathWorkerMax = int64(threadSettings.FileDetailThreads)
 	case models.SourceTypeBaiduPan:
-		pathWorkerMax = int64(models.SettingsGlobal.FileDetailThreads)
+		pathWorkerMax = int64(threadSettings.FileDetailThreads)
 	}
 	if pathWorkerMax <= 1 {
 		pathWorkerMax = 2 // 最小为 2，否则并发操作会出错
@@ -199,6 +202,7 @@ func newSyncStrm(account *models.Account, syncPathId uint, sourcePath, sourcePat
 		LastSyncAt:    lastSyncAt,
 		IsFile:        isFile,
 
+		threadSettings:     threadSettings,
 		rootEvidenceBaseID: sourcePathId,
 	}
 	s.memSyncCache = NewMemorySyncCache(syncPathId)
@@ -602,13 +606,10 @@ func (s *SyncStrm) Start() (resultErr error) {
 		return err
 	}
 	// 等到目录空闲后再暂停传输，等待期间不影响上一轮任务。
-	models.GlobalDownloadQueue.Stop()
-	models.GlobalUploadQueue.Stop()
-	defer func() {
-		// 任务完成后启动上传下载队列
-		models.GlobalDownloadQueue.Start()
-		models.GlobalUploadQueue.Start()
-	}()
+	resumeDownload := models.GlobalDownloadQueue.Suspend()
+	resumeUpload := models.GlobalUploadQueue.Suspend()
+	defer resumeDownload()
+	defer resumeUpload()
 	atomic.StoreInt64(&s.NewMeta, 0)
 	atomic.StoreInt64(&s.NewStrm, 0)
 	atomic.StoreInt64(&s.NewUpload, 0)

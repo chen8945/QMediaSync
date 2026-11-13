@@ -1,7 +1,9 @@
 package tmdb
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"qmediasync/internal/helpers"
@@ -27,87 +29,44 @@ const (
 type Client struct {
 	resty       *resty.Client
 	apiKey      string
-	accessToken string
-	baseURL     string
-	language    string
 	proxyUrl    string
 	rateLimiter *rate.Limiter
 }
 
-var GlobalTmdbClient *Client
+// 单个客户端不能重置整个进程的 TMDB 请求配额。
+var requestLimiter = rate.NewLimiter(rate.Every(time.Second), 40)
 
-// NewClient creates a new TMDB API client with the given configuration
-func NewClient(apiKey, accessToken, baseUrl, language, proxyUrl string) *Client {
-	if GlobalTmdbClient != nil {
-		// if accessToken != "" {
-		// 	GlobalTmdbClient.SetAuthToken(accessToken)
-		// }
-		GlobalTmdbClient.SetProxyUrl(proxyUrl)
-		GlobalTmdbClient.SetBaseUrl(baseUrl)
-		GlobalTmdbClient.apiKey = apiKey
-		GlobalTmdbClient.language = language
-		return GlobalTmdbClient
+// NewClient 创建持有固定配置和私有连接池的 TMDB 客户端。
+func NewClient(apiKey, accessToken, baseUrl, language, proxyUrl string) (*Client, error) {
+	transport, err := helpers.GetProxyTransport(proxyUrl)
+	if err != nil {
+		return nil, err
 	}
-
-	// Create resty client
-	rc := resty.New()
+	rc := resty.NewWithClient(&http.Client{Transport: transport})
 	rc.SetHeader("User-Agent", v115open.DEFAULTUA)
-	GlobalTmdbClient = &Client{
+	rc.SetBaseURL(fmt.Sprintf("%s/3", baseUrl))
+	return &Client{
 		resty:       rc,
 		apiKey:      apiKey,
-		accessToken: accessToken,
-		baseURL:     baseUrl,
-		language:    language,
 		proxyUrl:    proxyUrl,
-	}
-	// if accessToken != "" {
-	// 	GlobalTmdbClient.SetAuthToken(accessToken)
-	// }
-	GlobalTmdbClient.SetProxyUrl(proxyUrl)
-	GlobalTmdbClient.SetBaseUrl(baseUrl)
-	// 设置限流
-	GlobalTmdbClient.rateLimiter = rate.NewLimiter(rate.Every(time.Second), 40) // 每秒 40 个请求
-	return GlobalTmdbClient
+		rateLimiter: requestLimiter,
+	}, nil
 }
 
-func (c *Client) SetAuthToken(accessToken string) {
-	c.accessToken = accessToken
-	c.resty.SetAuthToken(c.accessToken)
+// Close 释放本客户端持有的私有连接资源。
+func (c *Client) Close() error {
+	return helpers.CloseRestyClient(c.resty)
 }
 
-// SetProxyUrl 设置或清除客户端代理。
-// 必须有 else 分支：Client 是全局单例，只在非空时 SetProxy 会让"清空代理"和"关闭 TMDB 代理开关"变成空操作，
-// 请求会继续带 API Key 走用户已撤销的代理隧道。
-func (c *Client) SetProxyUrl(proxyUrl string) {
-	c.proxyUrl = proxyUrl
-	if proxyUrl != "" {
-		c.resty.SetProxy(proxyUrl)
-	} else {
-		c.resty.RemoveProxy()
-	}
-}
+// ProxyURL 返回本客户端构造时捕获的代理地址。
+func (c *Client) ProxyURL() string { return c.proxyUrl }
 
-// ProxyURL 返回底层 HTTP 客户端实际生效的代理地址，空字符串表示直连。
-// 读的是 resty 的传输配置而非本结构体字段，代理是否真的被清除只能由它证明。
-func (c *Client) ProxyURL() string {
-	if proxy := c.resty.ProxyURL(); proxy != nil {
-		return proxy.String()
-	}
-	return ""
-}
-
-func (c *Client) SetBaseUrl(baseUrl string) {
-	c.baseURL = baseUrl
-	baseURL := fmt.Sprintf("%s/3", c.baseURL)
-	c.resty.SetBaseURL(baseURL)
-}
-
-func (c *Client) TestToken() bool {
+func (c *Client) TestToken(ctx context.Context) bool {
 	type testResp struct {
 		Success bool `json:"success"`
 	}
 	respResult := testResp{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest("/authentication", req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -131,9 +90,9 @@ type Configuration struct {
 }
 
 // GetConfiguration 获取 TMDB 配置，包含图片基础 URL 等信息
-func (c *Client) GetConfiguration() (*Configuration, error) {
+func (c *Client) GetConfiguration(ctx context.Context) (*Configuration, error) {
 	respResult := Configuration{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest("/configuration", req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -162,6 +121,9 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 			return resp, nil
 		}
 		lastErr = err
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
 		// 如果是 Token 过期错误，等待 Token 刷新完成后重试
 		if err.Error() == "token expired" {
 			helpers.TMDBLog.Warn("TMDB Token 已失效")
@@ -171,7 +133,13 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 		if attempt < options.MaxRetries {
 			// helpers.TMDBLog.Warnf("%s %s 请求失败：%+v", req.Method, req.URL, lastErr)
 			helpers.TMDBLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误：%+v", req.Method, req.URL, options.RetryDelay.Seconds(), attempt+1, lastErr)
-			time.Sleep(options.RetryDelay)
+			timer := time.NewTimer(options.RetryDelay)
+			select {
+			case <-req.Context().Done():
+				timer.Stop()
+				return nil, req.Context().Err()
+			case <-timer.C:
+			}
 		}
 	}
 	return nil, lastErr

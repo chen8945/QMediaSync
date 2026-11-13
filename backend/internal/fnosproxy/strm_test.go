@@ -67,7 +67,7 @@ func TestSTRMMappingPrecedenceAndCacheFileInvalidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte("http://qms.internal:12333/115/newurl?pickcode=aaa&userid=user"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(Options{OutputRoots: func(context.Context) ([]string, error) { return []string{root}, nil },
+	service := newTestService(t, Options{OutputRoots: func(context.Context) ([]string, error) { return []string{root}, nil },
 		KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms.internal:12333"}, nil }})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -121,7 +121,7 @@ func TestSTRMAutomaticIdentityRequiresUniqueEvidence(t *testing.T) {
 		}
 	}
 	candidates := []Candidate{{Root: root, Path: filepath.Join(root, "first.strm"), URL: stable}}
-	service := NewService(Options{OutputRoots: func(context.Context) ([]string, error) { return []string{root}, nil },
+	service := newTestService(t, Options{OutputRoots: func(context.Context) ([]string, error) { return []string{root}, nil },
 		IdentityCandidates: func(context.Context, Source) ([]Candidate, error) { return candidates, nil }})
 	inst := &instance{service: service, ctx: t.Context(), cache: newSourceCache()}
 	source := Source{ItemID: "movie", ID: "source", Path: "/different/movie.strm"}

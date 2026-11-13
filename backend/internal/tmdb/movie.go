@@ -1,6 +1,7 @@
 package tmdb
 
 import (
+	"context"
 	"fmt"
 
 	"qmediasync/internal/helpers"
@@ -137,9 +138,9 @@ type ReleasesDateResp struct {
 }
 
 // https://developers.themoviedb.org/3/search/search-movies
-func (c *Client) SearchMovie(movieName string, year int, language string, switchLanguage bool, switchYear bool) (*SearchMovieResponse, error) {
+func (c *Client) SearchMovie(ctx context.Context, movieName string, year int, language string, switchLanguage bool, switchYear bool) (*SearchMovieResponse, error) {
 	respResult := SearchMovieResponse{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	req.SetQueryParam("query", movieName)
 	if year > 0 {
 		if switchYear {
@@ -167,16 +168,16 @@ func (c *Client) SearchMovie(movieName string, year int, language string, switch
 		} else {
 			language = "en-US"
 		}
-		return c.SearchMovie(movieName, year, language, false, switchYear)
+		return c.SearchMovie(ctx, movieName, year, language, false, switchYear)
 	}
 	return &respResult, nil
 }
 
 // https://api.themoviedb.org/3/movie/{movie_id}
 // 查询影片详情
-func (c *Client) GetMovieDetail(movieID int64, language string) (*MovieDetail, error) {
+func (c *Client) GetMovieDetail(ctx context.Context, movieID int64, language string) (*MovieDetail, error) {
 	respResult := MovieDetail{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/movie/%d?language=%s", movieID, language), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -190,9 +191,9 @@ func (c *Client) GetMovieDetail(movieID int64, language string) (*MovieDetail, e
 	return &respResult, nil
 }
 
-func (c *Client) GetMoviePepoles(movieID int64, language string) (*PepolesRes, error) {
+func (c *Client) GetMoviePepoles(ctx context.Context, movieID int64, language string) (*PepolesRes, error) {
 	respResult := PepolesRes{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	resp, err := c.doRequest(fmt.Sprintf("/movie/%d/credits?language=%s", movieID, language), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
 		helpers.TMDBLog.Errorf("获取电影演员失败：%+v", err)
@@ -208,9 +209,9 @@ func (c *Client) GetMoviePepoles(movieID int64, language string) (*PepolesRes, e
 
 // https://api.themoviedb.org/3/movie/{movie_id}/images
 // 查询电影的图片
-func (c *Client) GetMovieImages(movieID int64, language string) (*Images, error) {
+func (c *Client) GetMovieImages(ctx context.Context, movieID int64, language string) (*Images, error) {
 	respResult := Images{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/movie/%d/images?language=%s", movieID, language), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -241,9 +242,9 @@ func (c *Client) GetMovieImages(movieID int64, language string) (*Images, error)
 
 // https://api.themoviedb.org/3/movie/{movie_id}/keywords
 // 查询电影的关键词（标签）
-func (c *Client) GetMovieKeywords(movieID int64) (*MovieKeywords, error) {
+func (c *Client) GetMovieKeywords(ctx context.Context, movieID int64) (*MovieKeywords, error) {
 	respResult := MovieKeywords{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/movie/%d/keywords", movieID), req, MakeRequestConfig(2, 5, 5))
 	if err != nil {
@@ -259,9 +260,9 @@ func (c *Client) GetMovieKeywords(movieID int64) (*MovieKeywords, error) {
 
 // https://api.themoviedb.org/3/movie/{movie_id}/release_dates
 // 查询电影的发布日期，可以提取美国的分级
-func (c *Client) GetReleasesDate(movieID int64) (*ReleasesDateResp, error) {
+func (c *Client) GetReleasesDate(ctx context.Context, movieID int64) (*ReleasesDateResp, error) {
 	respResult := ReleasesDateResp{}
-	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req := c.resty.R().SetContext(ctx).SetMethod("GET").SetResult(&respResult)
 	// req.SetQueryParam("api_key", c.apiKey)
 	resp, err := c.doRequest(fmt.Sprintf("/movie/%d/release_dates", movieID), req, MakeRequestConfig(2, 5, 5))
 	// helpers.TMDBLog.Infof("获取电影发布日期响应：%s", resp.String())

@@ -3,6 +3,7 @@ package m3u8
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -77,7 +78,7 @@ func NewByContent(baseUrl string, content io.Reader) (*Info, error) {
 }
 
 // NewByRemote 从一个远程 M3U8 地址中初始化 Info 对象
-func NewByRemote(url string, header http.Header) (*Info, error) {
+func NewByRemote(ctx context.Context, client *http.Client, url string, header http.Header) (*Info, error) {
 	// 1 解析 base 地址
 	queryPos := strings.Index(url, "?")
 	if queryPos == -1 {
@@ -90,7 +91,7 @@ func NewByRemote(url string, header http.Header) (*Info, error) {
 	baseUrl := url[:lastSepPos+1]
 
 	// 2 请求远程地址
-	resp, err := https.Get(url).Header(header).Do()
+	resp, err := https.Get(url).Client(client).Context(ctx).Header(header).Do()
 	if err != nil {
 		return nil, fmt.Errorf("请求远程地址失败, URL: %s, 错误: %v", url, err)
 	}
@@ -215,14 +216,14 @@ func (i *Info) Content() string {
 // UpdateContent 从 OpenList 获取最新的 M3U8 并更新对象
 //
 // 通过 OpenlistPath 和 TemplateId 定位到唯一一个转码资源地址
-func (i *Info) UpdateContent() error {
+func (i *Info) UpdateContent(ctx context.Context, client *http.Client) error {
 	if i.OpenlistPath == "" || i.TemplateId == "" {
 		return errors.New("参数未设置, 无法更新")
 	}
 	logs.Progress("正在更新播放列表, OpenListPath: %s, TemplateId: %s", i.OpenlistPath, i.TemplateId)
 
 	// 请求 OpenList 资源
-	res := openlist.FetchResource(openlist.FetchInfo{
+	res := openlist.FetchResourceContext(ctx, client, openlist.FetchInfo{
 		Path:         i.OpenlistPath,
 		UseTranscode: true,
 		Format:       i.TemplateId,
@@ -232,7 +233,7 @@ func (i *Info) UpdateContent() error {
 	}
 
 	// 解析地址
-	newInfo, err := NewByRemote(res.Data.Url, nil)
+	newInfo, err := NewByRemote(ctx, client, res.Data.Url, nil)
 	if err != nil {
 		return fmt.Errorf("解析远程 M3U8 失败, URL: %s, 错误: %v", res.Data, err)
 	}

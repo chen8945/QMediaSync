@@ -99,6 +99,11 @@ func (runner open115UploadRunner) Upload(ctx context.Context, task *DbUploadTask
 	if client == nil {
 		return upload115TaskResult{}, errors.New("115 客户端为空")
 	}
+	settings := GetThreadSettingsSnapshot()
+	if task.uploadSettings != nil {
+		settings = *task.uploadSettings
+	}
+	policy := uploadRapidWaitPolicy(settings)
 	info, err := buildUpload115LocalFileInfo(task.LocalFullPath, task.FileName)
 	if err != nil {
 		return upload115TaskResult{}, err
@@ -127,6 +132,9 @@ func (runner open115UploadRunner) Upload(ctx context.Context, task *DbUploadTask
 
 	if session.ResumeState == UploadResumeStateResumedSession && session.UploadId != "" && session.PickCode != "" {
 		resumeResult, resumeErr := client.UploadResume(ctx, session.PickCode, info.FileSize, task.RemotePathId, info.FileSha1)
+		if errors.Is(resumeErr, context.Canceled) || errors.Is(resumeErr, context.DeadlineExceeded) {
+			return upload115TaskResult{}, resumeErr
+		}
 		if resumeErr == nil {
 			apply115ResumeResultToSession(session, resumeResult)
 			if err := session.Save(); err != nil {
@@ -138,7 +146,7 @@ func (runner open115UploadRunner) Upload(ctx context.Context, task *DbUploadTask
 		task.mark115SessionRestarted(session, resumeErr)
 	}
 
-	return runner.uploadByInit(ctx, task, client, session, info)
+	return runner.uploadByInit(ctx, task, client, session, info, policy)
 }
 
 func (runner open115UploadRunner) findExistingRemoteFile(
@@ -180,6 +188,7 @@ func (runner open115UploadRunner) uploadByInit(
 	client *v115open.OpenClient,
 	session *UploadSession,
 	info upload115LocalFileInfo,
+	policy v115open.RapidUploadWaitPolicy,
 ) (upload115TaskResult, error) {
 	request := v115open.UploadInitRequest{
 		FileName:     info.FileName,
@@ -212,7 +221,6 @@ func (runner open115UploadRunner) uploadByInit(
 		return upload115TaskResult{}, fmt.Errorf("保存 115 初始化调度信息失败：%w", err)
 	}
 
-	policy := uploadRapidWaitPolicyFromSettings()
 	if initResult.Status == v115open.UploadInitStatusNeedUpload && policy.Enabled {
 		session.Status = UploadSessionStatusRapidWaiting
 		session.RapidWaitUntil = time.Now().Add(policy.Timeout).Unix()
@@ -1000,36 +1008,32 @@ func uploadPhaseFromTask(task *DbUploadTask) string {
 	}
 }
 
-func uploadRapidWaitPolicyFromSettings() v115open.RapidUploadWaitPolicy {
-	if SettingsGlobal == nil {
-		return v115open.RapidUploadWaitPolicy{}
-	}
-	intervalSeconds := SettingsGlobal.UploadRapidWaitIntervalSeconds
+func uploadRapidWaitPolicy(settings SettingThreadAndRapidWait) v115open.RapidUploadWaitPolicy {
+	intervalSeconds := settings.UploadRapidWaitIntervalSeconds
 	if intervalSeconds <= 0 {
 		intervalSeconds = 60
 	}
 	return v115open.RapidUploadWaitPolicy{
-		Enabled:    SettingsGlobal.UploadRapidWaitEnabled == 1,
-		Timeout:    time.Duration(SettingsGlobal.UploadRapidWaitTimeoutSeconds) * time.Second,
-		Interval:   time.Duration(intervalSeconds) * time.Second,
-		MinSize:    SettingsGlobal.UploadRapidWaitMinSize,
-		ForceSize:  SettingsGlobal.UploadRapidWaitForceSize,
-		SkipUpload: SettingsGlobal.UploadRapidWaitSkipUpload == 1,
+		Enabled:  settings.UploadRapidWaitEnabled == 1,
+		Timeout:  time.Duration(settings.UploadRapidWaitTimeoutSeconds) * time.Second,
+		Interval: time.Duration(intervalSeconds) * time.Second,
+		MinSize:  settings.UploadRapidWaitMinSize, ForceSize: settings.UploadRapidWaitForceSize,
+		SkipUpload: settings.UploadRapidWaitSkipUpload == 1,
 	}
 }
 
 // EnqueueStrmGenerationAfterUpload 根据上传完成结果创建 STRM 生成任务。
 func (task *DbUploadTask) EnqueueStrmGenerationAfterUpload() error {
-	return task.enqueueStrmGenerationAfterUpload()
+	return task.enqueueStrmGenerationAfterUpload(context.Background())
 }
 
 // EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed 创建 STRM 任务并更新目录监控处理账本。
 func (task *DbUploadTask) EnqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed() error {
-	return task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed()
+	return task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(context.Background())
 }
 
-func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
-	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope()
+func (task *DbUploadTask) enqueueStrmGenerationAfterUpload(ctx context.Context) error {
+	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope(ctx)
 	if release != nil {
 		defer release()
 	}
@@ -1040,8 +1044,8 @@ func (task *DbUploadTask) enqueueStrmGenerationAfterUpload() error {
 	return err
 }
 
-func (task *DbUploadTask) enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed() error {
-	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope()
+func (task *DbUploadTask) enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(ctx context.Context) error {
+	strmTask, release, err := task.prepareStrmGenerationAfterUploadWithScope(ctx)
 	if release != nil {
 		defer release()
 	}
@@ -1076,17 +1080,17 @@ func (task *DbUploadTask) markDirectoryUploadProcessedStrmEnqueueFailed() error 
 }
 
 // prepareStrmGenerationAfterUploadWithScope 保护旧文件信息，直到后续任务入队完成。
-func (task *DbUploadTask) prepareStrmGenerationAfterUploadWithScope() (*StrmGenerationTask, func(), error) {
+func (task *DbUploadTask) prepareStrmGenerationAfterUploadWithScope(ctx context.Context) (*StrmGenerationTask, func(), error) {
 	if db.Db == nil {
 		return nil, nil, errors.New("数据库连接为空")
 	}
 	if task == nil || (task.Source != UploadSourceDirectoryMonitor && task.Source != UploadSourceStrm) ||
 		task.UploadResult == UploadResultSkippedAfterRapidWait || !task.hasStrmGenerationCompletionLocator() {
-		result, err := task.prepareStrmGenerationAfterUpload()
+		result, err := task.prepareStrmGenerationAfterUpload(ctx)
 		return result, nil, err
 	}
-	// 上传 worker 暂无取消 Context；等待超时沿用入队失败重试，不一直占着上传位置。
-	ctx, cancel := context.WithTimeout(db.Db.Statement.Context, 30*time.Second)
+	// 等待范围仍有30秒上限，最终关闭可以提前取消。
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for {
 		scopes, err := task.uploadStrmScopes(ctx)
@@ -1106,7 +1110,7 @@ func (task *DbUploadTask) prepareStrmGenerationAfterUploadWithScope() (*StrmGene
 			release()
 			continue
 		}
-		result, err := task.prepareStrmGenerationAfterUpload()
+		result, err := task.prepareStrmGenerationAfterUpload(ctx)
 		return result, release, err
 	}
 }
@@ -1138,7 +1142,7 @@ func (task *DbUploadTask) uploadStrmScopes(ctx context.Context) ([]syncscope.Sco
 }
 
 // prepareStrmGenerationAfterUpload 在事务外读取恢复信息和远端详情，避免占用 SQLite 唯一连接。
-func (task *DbUploadTask) prepareStrmGenerationAfterUpload() (*StrmGenerationTask, error) {
+func (task *DbUploadTask) prepareStrmGenerationAfterUpload(ctx context.Context) (*StrmGenerationTask, error) {
 	if db.Db == nil {
 		return nil, errors.New("数据库连接为空")
 	}
@@ -1169,7 +1173,7 @@ func (task *DbUploadTask) prepareStrmGenerationAfterUpload() (*StrmGenerationTas
 	sha1 := task.RemoteSha1
 	strmPickCode := task.RemotePickCode
 	var mtime int64
-	if session, err := GetUploadSessionByUploadTaskId(task.ID); err == nil && session != nil {
+	if session, err := getUploadSessionByUploadTaskIDWithDB(db.Db.WithContext(ctx), task.ID); err == nil && session != nil {
 		if parentID == "" {
 			parentID = session.CompletedParentId
 		}
@@ -1183,7 +1187,8 @@ func (task *DbUploadTask) prepareStrmGenerationAfterUpload() (*StrmGenerationTas
 		mtime = session.CompletedMtime
 	}
 	if task.SyncFileId > 0 {
-		if syncFile := GetSyncFileById(task.SyncFileId); syncFile != nil {
+		var syncFile SyncFile
+		if err := db.Db.WithContext(ctx).Where("id = ?", task.SyncFileId).First(&syncFile).Error; err == nil {
 			if syncPathID == 0 {
 				syncPathID = syncFile.SyncPathId
 			}
@@ -1210,9 +1215,12 @@ func (task *DbUploadTask) prepareStrmGenerationAfterUpload() (*StrmGenerationTas
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if remotePath == "" {
 		var err error
-		remotePath, err = task.resolveHistoricalStrmRemotePath()
+		remotePath, err = task.resolveHistoricalStrmRemotePath(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -1285,7 +1293,7 @@ func (task *DbUploadTask) hasStrmGenerationCompletionLocator() bool {
 
 // resolveHistoricalStrmRemotePath 只为缺少完整路径的历史 115 STRM 上传按新完成文件 ID 查询一次详情。
 // 查询结果仅用于构造 STRM 任务，不能反写历史上传任务的展示路径。
-func (task *DbUploadTask) resolveHistoricalStrmRemotePath() (string, error) {
+func (task *DbUploadTask) resolveHistoricalStrmRemotePath(ctx context.Context) (string, error) {
 	if task == nil || task.Source != UploadSourceStrm || task.SourceType != SourceType115 {
 		return "", errors.New("上传任务缺少远端完整路径")
 	}
@@ -1296,13 +1304,13 @@ func (task *DbUploadTask) resolveHistoricalStrmRemotePath() (string, error) {
 	account := task.Account
 	if account == nil {
 		var err error
-		account, err = GetAccountById(task.AccountId)
+		account, err = getAccountByIDWithDB(db.Db.WithContext(ctx), task.AccountId)
 		if err != nil {
 			return "", fmt.Errorf("查询历史 STRM 上传账户失败：%w", err)
 		}
 		task.Account = account
 	}
-	detail, err := get115FileDetailByCid(context.Background(), account.Get115Client(), task.RemoteFileId)
+	detail, err := get115FileDetailByCid(ctx, account.Get115Client(), task.RemoteFileId)
 	if err != nil {
 		return "", fmt.Errorf("查询历史 STRM 上传远端文件详情失败：%w", err)
 	}

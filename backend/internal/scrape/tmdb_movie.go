@@ -16,18 +16,14 @@ type TmdbMovieImpl struct {
 	TmdbBase
 }
 
-func NewTmdbMovieImpl(scrapePath *models.ScrapePath, ctx context.Context) *TmdbMovieImpl {
-	return &TmdbMovieImpl{
-		scrapePath: scrapePath,
-		ctx:        ctx,
-		Client:     models.GlobalScrapeSettings.GetTmdbClient(),
-	}
+func NewTmdbMovieImpl(scrapePath *models.ScrapePath, ctx context.Context, client *tmdb.Client, settings models.ScrapeSettings) *TmdbMovieImpl {
+	return &TmdbMovieImpl{TmdbBase: TmdbBase{scrapePath: scrapePath, ctx: ctx, Client: client, settings: settings}}
 }
 
 // 检查电影是否存在
 func (t *TmdbMovieImpl) CheckByNameAndYear(name string, year int, switchYear bool) (string, int64, int, error) {
 	// 查询电影详情
-	movieDetail, err := t.Client.SearchMovie(name, year, models.GlobalScrapeSettings.GetTmdbLanguage(), true, !switchYear)
+	movieDetail, err := t.Client.SearchMovie(t.ctx, name, year, t.settings.GetTmdbLanguage(), true, !switchYear)
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电影详情失败，下次重试，失败原因：%v", err)
 		return "", 0, 0, err
@@ -59,7 +55,7 @@ func (t *TmdbMovieImpl) CheckByNameAndYear(name string, year int, switchYear boo
 // 去 TMDB 查询是否存在
 func (t *TmdbMovieImpl) CheckByTmdbId(tmdbId int64) (string, int, error) {
 	// 查询电影详情
-	movieDetail, err := t.Client.GetMovieDetail(tmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+	movieDetail, err := t.Client.GetMovieDetail(t.ctx, tmdbId, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电影详情失败，下次重试，失败原因：%v", err)
 		return "", 0, err

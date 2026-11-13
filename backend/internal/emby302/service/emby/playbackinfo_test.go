@@ -30,10 +30,10 @@ func TestTransferPlaybackInfoLocalMediaPaths(t *testing.T) {
 				{"指定来源", "&MediaSourceId=ms"},
 			} {
 				t.Run(selected.name, func(t *testing.T) {
-					router, _ := newSTRMRedirectTestRouter(t, tt.path, false)
+					router, _, session := newSTRMRedirectTestRouter(t, tt.path, false)
 					config.C.Emby.LocalMediaRoot = "/"
 					config.C.VideoPreview = &config.VideoPreview{}
-					router.POST("/Items/movie/PlaybackInfo", TransferPlaybackInfo)
+					router.POST("/Items/movie/PlaybackInfo", session.TransferPlaybackInfo)
 					rec := httptest.NewRecorder()
 					req := httptest.NewRequest(http.MethodPost, "/Items/movie/PlaybackInfo?api_key=test"+selected.query, nil)
 					router.ServeHTTP(rec, req)

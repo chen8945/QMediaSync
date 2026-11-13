@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm"
+
 	"qmediasync/internal/db"
 )
 
@@ -125,8 +127,12 @@ func (session *UploadSession) Save() error {
 
 // GetUploadSessionByUploadTaskId 按上传任务 ID 查询上传会话。
 func GetUploadSessionByUploadTaskId(uploadTaskId uint) (*UploadSession, error) {
+	return getUploadSessionByUploadTaskIDWithDB(db.Db, uploadTaskId)
+}
+
+func getUploadSessionByUploadTaskIDWithDB(conn *gorm.DB, uploadTaskId uint) (*UploadSession, error) {
 	var session UploadSession
-	if err := db.Db.Where("upload_task_id = ?", uploadTaskId).Order("id DESC").First(&session).Error; err != nil {
+	if err := conn.Where("upload_task_id = ?", uploadTaskId).Order("id DESC").First(&session).Error; err != nil {
 		return nil, err
 	}
 	return &session, nil

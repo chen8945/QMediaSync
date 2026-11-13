@@ -11,7 +11,7 @@ import (
 )
 
 // GetRequestCache 复用 HTTP 请求身份读取未经过展示改写的内部响应。
-func GetRequestCache(request *http.Request) (RespCache, bool) {
+func (scope *Scope) GetRequestCache(request *http.Request) (RespCache, bool) {
 	if request == nil || request.Context().Err() != nil {
 		return nil, false
 	}
@@ -19,14 +19,14 @@ func GetRequestCache(request *http.Request) (RespCache, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if response, ok := getCache(key); ok {
+	if response, ok := scope.getCache(key); ok {
 		return response, true
 	}
 	return nil, false
 }
 
 // PutRequestCache 按现有截止时间和快照规则缓存内部处理结果。
-func PutRequestCache(request *http.Request, code int, body []byte, header http.Header) {
+func (scope *Scope) PutRequestCache(request *http.Request, code int, body []byte, header http.Header) {
 	if request == nil || request.Context().Err() != nil || https.IsErrorStatus(code) {
 		return
 	}
@@ -34,7 +34,7 @@ func PutRequestCache(request *http.Request, code int, body []byte, header http.H
 	if err != nil {
 		return
 	}
-	putCache(key, code, append([]byte(nil), body...), respHeader{
+	scope.putCache(key, code, append([]byte(nil), body...), respHeader{
 		expired: header.Get(HeaderKeyExpired), space: header.Get(HeaderKeySpace),
 		spaceKey: header.Get(HeaderKeySpaceKey), header: header.Clone(),
 	})

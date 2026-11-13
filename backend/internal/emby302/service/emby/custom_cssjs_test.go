@@ -18,22 +18,17 @@ func TestProxyCustomJsWaitsForEmby(t *testing.T) {
 		t.Skip("需要 Node.js 执行自定义脚本行为测试")
 	}
 
-	originalLoader, originalScripts := loadAllCustomCssJs, customJsList
-	loadAllCustomCssJs = func() {}
-	customJsList = []string{
+	session := &Session{assets: &CustomAssets{load: func() {}, js: []string{
 		`events.push("first"); throw new Error("expected script failure");`,
 		`"use strict";
 var ApiClient = "local";
 events.push(this === undefined ? "second" : "wrong scope");`,
-	}
-	t.Cleanup(func() {
-		loadAllCustomCssJs, customJsList = originalLoader, originalScripts
-	})
+	}}}
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/custom.js", nil)
-	ProxyCustomJs(ctx)
+	session.ProxyCustomJs(ctx)
 
 	const checkScript = `
 const assert = require('node:assert/strict');

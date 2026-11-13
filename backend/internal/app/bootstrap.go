@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -107,20 +108,35 @@ func initLogger() {
 	helpers.WarnUnsafeSensitiveLogIfEnabled()
 }
 
-func initOthers() {
+func initOthers() error {
 	helpers.InitEventBus() // 初始化事件总线
 	models.LoadSettings()  // 从数据库加载设置
 	// 初始化 GitHub 访问管理器
-	github.InitManager(models.SettingsGlobal.HttpProxy)
-	helpers.AppLogger.Infof("已加载配置，准备初始化 115 请求队列，线程数：%d", models.SettingsGlobal.FileDetailThreads)
-	qps := models.SettingsGlobal.FileDetailThreads
+	github.InitManager(models.GetHTTPProxy())
+	helpers.AppLogger.Infof("已加载配置，准备初始化 115 请求队列，线程数：%d", models.GetThreadSettingsSnapshot().FileDetailThreads)
+	qps := models.GetThreadSettingsSnapshot().FileDetailThreads
 	if qps <= 0 {
 		qps = 2
 	}
 	v115open.SetGlobalExecutorConfig(qps, qps*60, qps*3600)
-	models.LoadScrapeSettings()          // 从数据库加载刮削设置
-	models.InitDQ()                      // 初始化下载队列
-	models.InitUQ()                      // 初始化上传队列
+	models.LoadScrapeSettings()
+	models.InitDQ()
+	models.InitUQ()
+	if err := recoverTransferQueues(); err != nil {
+		return err
+	}
+	models.SetThreadSettingsApplyHook(func(settings models.SettingThreadAndRapidWait) error {
+		qps := settings.FileDetailThreads
+		if qps <= 0 {
+			qps = 2
+		}
+		v115open.SetGlobalExecutorConfig(qps, qps*60, qps*3600)
+		return nil
+	})
+	if err := models.StartSettingsRuntime(); err != nil {
+		return err
+	}
+	models.StartMediaLibrarySettingsRuntime()
 	models.InitNotificationManager()     // 初始化通知管理器
 	controllers.StartListenTelegramBot() // 初始化 Telegram Bot 监听
 	helpers.SubscribeSync(helpers.V115TokenInValidEvent, models.HandleV115TokenInvalid)
@@ -145,10 +161,12 @@ func initOthers() {
 	// 初始化实时事件中心
 	realtime.GlobalEventHub = realtime.NewEventHub()
 	realtime.GlobalSyncTaskHub = realtime.NewSyncTaskHub()
-	synccron.InitCron()       // 初始化定时任务（包含备份定时任务）
-	synccron.InitSyncCron()   // 初始化同步目录的定时任务
-	synccron.InitScrapeCron() // 初始化刮削目录的自定义定时任务
-	synccron.InitTokenCron()  // 初始化定时刷新 115 的访问凭证
+	synccron.InitCron()     // 初始化定时任务（包含备份定时任务）
+	synccron.InitSyncCron() // 初始化同步目录的定时任务
+	if err := synccron.InitScrapeCronWithError(); err != nil {
+		return fmt.Errorf("初始化刮削定时任务失败：%w", err)
+	}
+	synccron.InitTokenCron() // 初始化定时刷新 115 的访问凭证
 	// 初始化备份服务
 	models.InitBackupService()
 	// 将所有刮削中和整理中的记录改为未执行
@@ -157,10 +175,6 @@ func initOthers() {
 	models.UpdateScrapeMediaStatus(models.ScrapeMediaStatusScraping, models.ScrapeMediaStatusScanned, 0)
 	// 将所有整理中的记录改为待整理
 	models.UpdateScrapeMediaStatus(models.ScrapeMediaStatusRenaming, models.ScrapeMediaStatusScraped, 0)
-	// 上传中的任务改为待上传
-	models.UpdateUploadingToPending()
-	// 下载中的任务改为待下载
-	models.UpdateDownloadingToPending()
 	helpers.Subscribe(helpers.BackupCronEevent, func(event helpers.Event) {
 		backup.Backup(models.BackupTypeAuto, "定时备份")
 	})
@@ -191,6 +205,7 @@ func initOthers() {
 			}
 		}
 	})
+	return nil
 }
 
 // firstNonEmpty 返回参数中第一个非空字符串，用于按优先级取环境变量/默认值。
@@ -214,10 +229,8 @@ func initEnv() bool {
 	helpers.DEFAULT_SC_API_KEY = firstNonEmpty(os.Getenv("SC_API_KEY"), build.SCAPIKey)
 	helpers.DEFAULT_TMDB_API_KEY = firstNonEmpty(os.Getenv("TMDB_API_KEY"), build.TMDBAPIKey)
 	helpers.DEFAULT_TMDB_ACCESS_TOKEN = firstNonEmpty(os.Getenv("TMDB_ACCESS_TOKEN"), build.TMDBAccessToken)
-	// FANART_API_KEY：DEFAULT_FANART_API_KEY 保存“环境变量 > ldflags”的默认基线，
-	// 生效值先取默认基线，待加载刮削设置后再由 ScrapeSettings.ApplyKeyOverrides 按“UI 配置 > 默认”刷新。
+	// 默认密钥基线只在启动读取，网页配置由任务快照按优先级解析。
 	helpers.DEFAULT_FANART_API_KEY = firstNonEmpty(os.Getenv("FANART_API_KEY"), build.FanartAPIKey)
-	helpers.FANART_API_KEY = helpers.DEFAULT_FANART_API_KEY
 	helpers.OAuthRelayEncryptionKey = firstNonEmpty(os.Getenv("OAUTH_RELAY_ENCRYPTION_KEY"), build.OAuthRelayEncryptionKey)
 	initTimeZone() // 设置东 8 区
 	if err := getDataAndConfigDir(); err != nil {
@@ -276,7 +289,11 @@ func initEnv() bool {
 	}
 
 	db.InitCache() // 初始化内存缓存
-	initOthers()
+	if err := initOthers(); err != nil {
+		helpers.AppLogger.Errorf("初始化后台服务失败：%v", err)
+		QMSApp.Stop()
+		return false
+	}
 	// 托盘和 HTTP 启动前完成恢复，失败时清理已启动的队列并交给主流程退出。
 	if err := emby.StartWebhookWorker(); err != nil {
 		helpers.AppLogger.Errorf("启动媒体通知后台处理失败：%v", err)
@@ -284,4 +301,16 @@ func initEnv() bool {
 		return false
 	}
 	return true
+}
+
+func recoverTransferQueues() error {
+	if err := models.UpdateDownloadingToPending(); err != nil {
+		return fmt.Errorf("恢复下载任务失败：%w", err)
+	}
+	if err := models.UpdateUploadingToPending(); err != nil {
+		return fmt.Errorf("恢复上传任务失败：%w", err)
+	}
+	models.GlobalDownloadQueue.Start()
+	models.GlobalUploadQueue.Start()
+	return nil
 }

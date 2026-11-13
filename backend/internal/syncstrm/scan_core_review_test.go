@@ -127,9 +127,9 @@ func TestScanRetryNewInstanceConvergesWithoutRewritingSuccessfulFiles(t *testing
 		t.Fatal(err)
 	}
 	target := t.TempDir()
-	models.SettingsGlobal.OpenlistRetry = 0
 	for run := 0; run < 2; run++ {
 		s := newSyncStrm(account, path.ID, "/media", "root", target, SyncStrmConfig{VideoExt: []string{".mkv"}, StrmBaseUrl: "http://qms.test", StrmUrlNeedPath: 1}, true, 11, false, true)
+		s.threadSettings.OpenlistRetry = 0
 		t.Cleanup(s.Cancel)
 		urlDriver := NewBaiduPanDriver(nil)
 		urlDriver.SetSyncStrm(s)

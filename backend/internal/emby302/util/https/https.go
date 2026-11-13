@@ -19,7 +19,7 @@ const (
 	MaxRedirectDepth = 10
 )
 
-var client *http.Client
+var client = NewClient(ClientOptions{})
 
 // RedirectCodes 有重定向含义的 HTTP 响应码
 var RedirectCodes = [4]int{http.StatusMovedPermanently, http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect}
@@ -29,19 +29,8 @@ type ClientOptions struct {
 	InsecureSkipVerify bool
 }
 
-func init() {
-	ConfigureClient(ClientOptions{})
-}
-
-// ConfigureClient 配置 Emby 302 共享 HTTP 客户端。
-func ConfigureClient(options ClientOptions) {
-	client = newHTTPClient(options)
-}
-
-// Transport 复用 Emby 出站连接与 TLS 配置，不改变调用方的重定向策略。
-func Transport() http.RoundTripper { return client.Transport }
-
-func newHTTPClient(options ClientOptions) *http.Client {
+// NewClient 构造由调用方拥有的无凭据连接池。
+func NewClient(options ClientOptions) *http.Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   time.Minute,

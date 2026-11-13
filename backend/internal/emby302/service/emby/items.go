@@ -38,22 +38,22 @@ const (
 )
 
 // ResortRandomItems 对随机 Items 列表进行重排序
-func ResortRandomItems(c *gin.Context) {
+func (upstream *Session) ResortRandomItems(c *gin.Context) {
 	// 如果没有开启配置, 代理原请求并返回
 	if !config.C.Emby.ResortRandomItems {
-		ProxyOrigin(c)
+		upstream.ProxyOrigin(c)
 		return
 	}
 
 	// 如果请求的个数较少, 认为不是随机播放列表, 代理原请求并返回
 	limit, err := strconv.Atoi(c.Query("Limit"))
 	if err == nil && limit < ResortMinNum {
-		ProxyOrigin(c)
+		upstream.ProxyOrigin(c)
 		return
 	}
 
 	// 从缓存空间中获取列表
-	spaceCache, ok := cache.GetSpaceCache(ItemsCacheSpace, calcRandomItemsCacheKey(c))
+	spaceCache, ok := upstream.Cache.GetSpaceCache(ItemsCacheSpace, calcRandomItemsCacheKey(c))
 
 	// 缓存空间没有数据时, 默认使用 Emby 的原始随机结果
 	if !ok {
@@ -97,20 +97,20 @@ func ResortRandomItems(c *gin.Context) {
 }
 
 // RandomItemsWithLimit 代理原始的随机列表接口
-func RandomItemsWithLimit(c *gin.Context) {
+func (upstream *Session) RandomItemsWithLimit(c *gin.Context) {
 	u := randomItemsUpstreamURL(c.Request.URL)
-	embyHost := config.C.Emby.Host
+	embyHost := upstream.Origin
 	c.Request.Header.Del("Accept-Encoding")
-	resp, err := https.Request(c.Request.Method, embyHost+u.String()).
+	resp, err := https.Request(c.Request.Method, embyHost+u.String()).Client(upstream.Client).Context(c.Request.Context()).
 		Header(c.Request.Header).
 		Body(c.Request.Body).
 		Do()
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		checkErr(c, fmt.Errorf("错误的响应码: %v", resp.StatusCode))
+		upstream.checkErr(c, fmt.Errorf("错误的响应码: %v", resp.StatusCode))
 		return
 	}
 
@@ -173,22 +173,22 @@ func calcRandomItemsCacheKey(c *gin.Context) string {
 }
 
 // ProxyAddItemsPreviewInfo 代理 Items 接口, 并附带上转码版本信息
-func ProxyAddItemsPreviewInfo(c *gin.Context) {
+func (upstream *Session) ProxyAddItemsPreviewInfo(c *gin.Context) {
 	// 代理请求
 	c.Request.Header.Del("Accept-Encoding")
-	resp, err := https.ProxyRequest(c.Request, config.C.Emby.Host)
-	if checkErr(c, err) {
+	resp, err := https.ProxyRequest(c.Request, upstream.Origin, upstream.Client)
+	if upstream.checkErr(c, err) {
 		return
 	}
 	defer resp.Body.Close()
 
 	// 检查响应, 读取为 JSON
 	if resp.StatusCode != http.StatusOK {
-		checkErr(c, fmt.Errorf("Emby 远程返回错误响应码: %d", resp.StatusCode))
+		upstream.checkErr(c, fmt.Errorf("Emby 远程返回错误响应码: %d", resp.StatusCode))
 		return
 	}
 	resJson, err := jsons.Read(resp.Body)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 
@@ -263,22 +263,22 @@ func ProxyAddItemsPreviewInfo(c *gin.Context) {
 }
 
 // ProxyLatestItems 代理 Latest 请求
-func ProxyLatestItems(c *gin.Context) {
+func (upstream *Session) ProxyLatestItems(c *gin.Context) {
 	// 代理请求
 	c.Request.Header.Del("Accept-Encoding")
-	resp, err := https.ProxyRequest(c.Request, config.C.Emby.Host)
-	if checkErr(c, err) {
+	resp, err := https.ProxyRequest(c.Request, upstream.Origin, upstream.Client)
+	if upstream.checkErr(c, err) {
 		return
 	}
 	defer resp.Body.Close()
 
 	// 检查响应, 读取为 JSON
 	if resp.StatusCode != http.StatusOK {
-		checkErr(c, fmt.Errorf("Emby 远程返回错误响应码: %d", resp.StatusCode))
+		upstream.checkErr(c, fmt.Errorf("Emby 远程返回错误响应码: %d", resp.StatusCode))
 		return
 	}
 	resJson, err := jsons.Read(resp.Body)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 

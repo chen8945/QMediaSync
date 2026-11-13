@@ -153,12 +153,12 @@ describe('媒体库标签与独立表单', () => {
     pending.resolve({
       code: 200,
       message: '配置已保存',
-      data: { warnings: ['调度未应用，请重新保存'], restart_required: true },
+      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
     })
     await flushPromises()
     await tab('Emby')
-    expect(panel('emby').get('.emby-status-alert').text()).toContain('调度未应用，请重新保存')
-    expect(panel('emby').get('.emby-status-alert').text()).toContain('需重启')
+    expect(panel('emby').get('.emby-status-alert').text()).toContain('代理未应用，请重新保存')
+    expect(panel('emby').get('.emby-status-alert').text()).toContain('配置已保存，尚未完全生效')
     expect(panel('emby').get('.readback-failure').text()).toContain('已保存，但刷新失败')
     const save = panel('emby')
       .findAll('button')
@@ -166,7 +166,7 @@ describe('媒体库标签与独立表单', () => {
     expect(save.attributes('disabled')).toBeUndefined()
     await act(panel('emby'), '保存设置')
     expect(saveReply).toHaveBeenCalledTimes(2)
-    expect(panel('emby').text()).not.toContain('调度未应用')
+    expect(panel('emby').text()).not.toContain('代理未应用')
     expect(panel('emby').find('.readback-failure').exists()).toBe(false)
     expect(panel('emby').get('.emby-status-alert').text()).toContain('保存成功')
     await tab('Jellyfin')
@@ -176,7 +176,7 @@ describe('媒体库标签与独立表单', () => {
     )
   })
 
-  it('迟到的同步状态错误与保存警告、重启要求和回读错误分别展示，恢复只清状态错误', async () => {
+  it('迟到的同步状态错误与保存应用警告和回读错误分别展示，恢复只清状态错误', async () => {
     const { panel, tab, saveReply, statusReply, adapter } = await setup()
     const emby = panel('emby')
     const saved = createDeferred<APIResponse<unknown>>()
@@ -191,11 +191,11 @@ describe('媒体库标签与独立表单', () => {
     saved.resolve({
       code: 200,
       message: '配置已保存',
-      data: { warnings: ['调度未应用，请重新保存'], restart_required: true },
+      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
     })
     await flushPromises()
     expect(statusReply).toHaveBeenCalledTimes(2)
-    expect(emby.get('.emby-status-alert').text()).toContain('调度未应用，请重新保存')
+    expect(emby.get('.emby-status-alert').text()).toContain('代理未应用，请重新保存')
     const save = emby.findAll('button').find((item) => item.text() === '保存设置')!
     expect(save.attributes('disabled')).toBeUndefined()
 
@@ -203,8 +203,8 @@ describe('媒体库标签与独立表单', () => {
     await flushPromises()
     const saveFeedback = emby.get('.emby-status-alert').text()
     const readbackFailure = emby.get('.readback-failure').text()
-    expect(saveFeedback).toContain('调度未应用，请重新保存')
-    expect(saveFeedback).toContain('需重启')
+    expect(saveFeedback).toContain('代理未应用，请重新保存')
+    expect(saveFeedback).toContain('配置已保存，尚未完全生效')
     expect(readbackFailure).toContain('配置已保存，但刷新失败')
     const sync = emby.getComponent(MediaSyncStatus)
     expect(sync.get('[role="alert"]').text()).toContain('查询 Emby 同步状态失败')

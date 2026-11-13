@@ -102,7 +102,8 @@ func TestRandomItemsWithLimitUsesCopyOfOriginalRequestURL(t *testing.T) {
 	)
 	originalURI := ctx.Request.URL.RequestURI()
 
-	RandomItemsWithLimit(ctx)
+	session := newTestSession(t)
+	session.RandomItemsWithLimit(ctx)
 
 	if upstreamURI != "/Users/1/Items?Limit=300&ParentId=library&SortBy=Random&api_key=key-one" {
 		t.Fatalf("unexpected upstream URI: %s", upstreamURI)
@@ -127,7 +128,8 @@ func TestRandomItemsWithLimitDefaultsBlankLimitTo500(t *testing.T) {
 	})
 
 	ctx := newItemsTestContext(t, "/Users/1/Items/with_limit?SortBy=Random&Limit=+++&api_key=key-one")
-	RandomItemsWithLimit(ctx)
+	session := newTestSession(t)
+	session.RandomItemsWithLimit(ctx)
 
 	if !strings.Contains(upstreamURI, "Limit=500") {
 		t.Fatalf("blank Limit should default to 500: %s", upstreamURI)
@@ -149,7 +151,8 @@ func TestRandomItemsWithLimitCapsLimitTo500(t *testing.T) {
 	})
 
 	ctx := newItemsTestContext(t, "/Users/1/Items/with_limit?SortBy=Random&Limit=501&api_key=key-one")
-	RandomItemsWithLimit(ctx)
+	session := newTestSession(t)
+	session.RandomItemsWithLimit(ctx)
 
 	if !strings.Contains(upstreamURI, "Limit=500") {
 		t.Fatalf("Limit above 500 should be capped: %s", upstreamURI)

@@ -113,3 +113,70 @@ func Test115ScanExcludesPlaybackDirectoryAndSubtree(t *testing.T) {
 		})
 	}
 }
+
+func Test115ScanKeepsCapturedPageSizeAcrossDirectories(t *testing.T) {
+	oldDB, oldSettings, oldLogger := db.Db, models.SettingsGlobal, helpers.AppLogger
+	oldList := list115ScanFilesPage
+	oldThreads, oldProxy := models.GetThreadSettingsSnapshot(), models.GetHTTPProxy()
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := testDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := testDB.AutoMigrate(&models.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	settings := &models.Settings{FileDetailThreads: 1, FileListPageSize: 100, HttpProxy: oldProxy}
+	if err := testDB.Create(settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.Db = testDB
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	models.SettingsGlobal = nil
+	models.LoadSettings()
+	t.Cleanup(func() {
+		if err := testDB.Model(settings).Updates(oldThreads.ToMap()).Error; err != nil {
+			t.Error(err)
+		}
+		models.LoadSettings()
+		db.Db, models.SettingsGlobal, helpers.AppLogger = oldDB, oldSettings, oldLogger
+		list115ScanFilesPage = oldList
+		_ = sqlDB.Close()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scanner := New115ScanImpl(&models.ScrapePath{SourceType: models.SourceType115}, nil, ctx)
+	limits := make([]int, 0, 2)
+	list115ScanFilesPage = func(_ context.Context, _ *v115open.OpenClient, parentID string, _, limit int) (*v115open.FileListResp, error) {
+		limits = append(limits, limit)
+		if parentID == "0" {
+			if err := testDB.Model(settings).Update("file_list_page_size", 200).Error; err != nil {
+				return nil, err
+			}
+			models.LoadSettings()
+			return &v115open.FileListResp{Count: 1, RespBaseBool: v115open.RespBaseBool[[]v115open.File]{Data: []v115open.File{{FileId: "child", FileName: "child", FileCategory: v115open.TypeDir, Aid: "1"}}}}, nil
+		}
+		return &v115open.FileListResp{}, nil
+	}
+	scanner.pathTasks = make(chan string, 2)
+	scanner.wg.Add(1)
+	scanner.pathTasks <- "0"
+	done := make(chan struct{})
+	go func() {
+		scanner.wg.Wait()
+		close(scanner.pathTasks)
+	}()
+	go func() { defer close(done); scanner.startPathWorkWithLimiter(0) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scan did not finish")
+	}
+	if len(limits) != 2 || limits[0] != 100 || limits[1] != 100 || models.GetFileListPageSize() != 200 {
+		t.Fatalf("scan mixed newly saved page size into its snapshot: %v", limits)
+	}
+}

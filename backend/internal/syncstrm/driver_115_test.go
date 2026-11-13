@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,11 +24,10 @@ import (
 func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.V115Log = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	models.SettingsGlobal = &models.Settings{
-		FileListPageSize: 100,
-	}
+	var offsets []int
 	originalList115FilesPage := list115FilesPage
 	list115FilesPage = func(_ context.Context, _ *v115open.OpenClient, parentPathID string, _ bool, _ bool, _ bool, offset int, limit int) (*v115open.FileListResp, error) {
+		offsets = append(offsets, offset)
 		if parentPathID != "dir-1" {
 			t.Fatalf("parentPathID = %s，期望 dir-1", parentPathID)
 		}
@@ -56,6 +56,7 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 
 	driver := NewOpen115Driver(nil)
 	driver.SetSyncStrm(&SyncStrm{
+		threadSettings:          models.SettingThreadAndRapidWait{SettingThreads: models.SettingThreads{FileListPageSize: 100}},
 		Sync:                    &models.Sync{Logger: helpers.AppLogger},
 		lastProgressPublishedAt: time.Now(),
 	})
@@ -67,6 +68,9 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 	if len(files) != 250 {
 		t.Fatalf("文件数量 = %d，期望 250", len(files))
 	}
+	if !slices.Equal(offsets, []int{0, 100, 200}) {
+		t.Fatalf("分页偏移 = %v，期望完整的三页", offsets)
+	}
 	if files[0].FileId != "file-0" || files[249].FileId != "file-249" {
 		t.Fatalf("分页结果顺序错误，first=%s last=%s", files[0].FileId, files[249].FileId)
 	}
@@ -76,11 +80,10 @@ func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 }
 
 func TestOpen115DriverExcludesPlaybackFilesAfterResolvingPath(t *testing.T) {
-	originalList, originalSettings := list115FilesPage, models.SettingsGlobal
+	originalList := list115FilesPage
 	t.Cleanup(func() {
-		list115FilesPage, models.SettingsGlobal = originalList, originalSettings
+		list115FilesPage = originalList
 	})
-	models.SettingsGlobal = &models.Settings{FileListPageSize: 100}
 	for _, tt := range []struct {
 		name         string
 		parent       string
@@ -107,6 +110,7 @@ func TestOpen115DriverExcludesPlaybackFilesAfterResolvingPath(t *testing.T) {
 			}
 			driver := NewOpen115Driver(nil)
 			driver.SetSyncStrm(&SyncStrm{
+				threadSettings:          models.SettingThreadAndRapidWait{SettingThreads: models.SettingThreads{FileListPageSize: 100}},
 				Sync:                    &models.Sync{Logger: &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}},
 				lastProgressPublishedAt: time.Now(),
 			})

@@ -14,13 +14,13 @@ import {
 import { HttpResponseError } from '@/http/errors'
 import type { ChannelType } from '@/utils/notificationUtils'
 
-const createHTTP = (code = 0, data: unknown = null, status = 200) => {
+const createHTTP = (code = 0, data: unknown = null, status = 200, warnings?: unknown) => {
   const adapter = vi.fn(async (config) => ({
     config,
     status,
     statusText: '',
     headers: {},
-    data: { code, message: 'internal token=private', data },
+    data: { code, message: 'internal token=private', data, warnings },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
@@ -107,6 +107,26 @@ describe('通知渠道 API', () => {
         saveNotificationRule(http, { channel_id: 7, event_type: 'sync_finish', is_enabled: true }),
     ],
   ]
+  it.each(
+    operations.filter(([name]) =>
+      ['create', 'update', 'enable', 'delete', 'saveRule'].includes(name),
+    ),
+  )('%s 返回已提交后的应用警告，兼容旧响应缺省警告', async (_, operation) => {
+    const warnings = ['通知设置已保存，但应用失败，请重新保存']
+    await expect(operation(createHTTP(0, { id: 7 }, 200, warnings).http)).resolves.toEqual({
+      warnings,
+    })
+    await expect(operation(createHTTP().http)).resolves.toEqual({ warnings: [] })
+  })
+
+  it.each([null, '应用失败', [123]])('拒绝损坏的应用警告 %j', async (warnings) => {
+    await expect(
+      createNotificationChannel(createHTTP(0, null, 200, warnings).http, 'telegram', {
+        channel_name: '通知',
+      }),
+    ).rejects.toBeInstanceOf(HttpResponseError)
+  })
+
   it.each(operations)('%s 拒绝 HTTP 200/code=1，不因 data 为真误判成功', async (_, operation) => {
     const { http } = createHTTP(1, true)
     await expect(operation(http)).rejects.toMatchObject({

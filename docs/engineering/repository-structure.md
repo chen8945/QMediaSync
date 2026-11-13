@@ -33,6 +33,7 @@ qmediasync/
 │   │   │   └── internal/openxpanapi/ # 仅供百度适配器使用的生成 SDK
 │   │   ├── emby302/                 # 嵌入的 Emby 302 代理
 │   │   ├── fnosproxy/               # 飞牛影视反代、协议兼容和来源缓存
+│   │   ├── proxyhttp/               # 两代理共用的连接登记与最终关闭
 │   │   └── …                        # 现有控制器、模型、同步、刮削等模块
 │   └── web_statics/                  # 运行时 Web UI（生成且忽略）
 ├── packaging/

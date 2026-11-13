@@ -10,7 +10,7 @@ export interface AiSettings {
   ai_timeout: number
 }
 
-export type AiConnectionSettings = Omit<AiSettings, 'ai_timeout'>
+export type AiConnectionSettings = Omit<AiSettings, 'ai_timeout'> & { ai_timeout?: number }
 
 export interface TmdbSettings {
   tmdb_url: string

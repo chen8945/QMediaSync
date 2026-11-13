@@ -23,7 +23,7 @@ import (
 func TestServiceApplyEnableDisableAndValidationFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "upstream") }))
 	defer upstream.Close()
-	service := NewService(Options{HTTPHost: "127.0.0.1:12333", HTTPPort: freePort(t), HTTPSPort: freePort(t)})
+	service := newTestService(t, Options{HTTPHost: "127.0.0.1:12333", HTTPPort: freePort(t), HTTPSPort: freePort(t)})
 	t.Cleanup(func() { _ = service.Stop(context.Background()) })
 	config := models.FnosProxyConfig{FnosURL: upstream.URL}
 	if err := service.Start(config); err != nil {
@@ -230,7 +230,7 @@ func TestServiceApplyRetriesPartialHTTPSFailure(t *testing.T) {
 	defer occupied.Close()
 	upstream := httptest.NewServer(http.NotFoundHandler())
 	defer upstream.Close()
-	service := NewService(Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: freePort(t), HTTPSPort: occupied.Addr().(*net.TCPAddr).Port, CertificateFile: certificate, KeyFile: key})
+	service := newTestService(t, Options{HTTPHost: "127.0.0.1:12333", HTTPSHost: "127.0.0.1:12332", HTTPPort: freePort(t), HTTPSPort: occupied.Addr().(*net.TCPAddr).Port, CertificateFile: certificate, KeyFile: key})
 	t.Cleanup(func() { _ = service.Stop(context.Background()) })
 	config := models.FnosProxyConfig{Enabled: true, FnosURL: upstream.URL}
 	if err := service.Start(config); err == nil || !service.Status(config).Running || service.Status(config).HTTPSEnabled {

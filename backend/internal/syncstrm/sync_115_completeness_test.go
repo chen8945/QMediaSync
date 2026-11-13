@@ -15,12 +15,12 @@ import (
 
 func Test115DispatcherRejectsIncompleteRawPagesBeforeCleanup(t *testing.T) {
 	account, syncPath := setupStrmExclusionTestDB(t)
-	models.SettingsGlobal.FileListPageSize = 100
 	original := list115FilesPage
 	t.Cleanup(func() { list115FilesPage = original })
 	for _, mode := range []string{"complete", "empty", "short", "repeated", "missing_id", "changed_count", "changed_first", "request_error", "nil_response", "auth"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{VideoExt: []string{".mkv"}, StrmBaseUrl: "http://qms.test"}, false, 0, false, false)
+			s.threadSettings.FileListPageSize = 100
 			t.Cleanup(s.Cancel)
 			s.PathWorkerMax = 1
 			s.sync115 = &Sync115{firstFileID: "file-0"}
@@ -124,10 +124,10 @@ func make115ScanPage(offset, limit, total int) []v115open.File {
 
 func Test115DriverCountAndDirectoryResponsesMustBeComplete(t *testing.T) {
 	account, syncPath := setupStrmExclusionTestDB(t)
-	models.SettingsGlobal.FileListPageSize = 100
 	original := list115FilesPage
 	t.Cleanup(func() { list115FilesPage = original })
 	s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{}, false, 0, false, false)
+	s.threadSettings.FileListPageSize = 100
 	t.Cleanup(s.Cancel)
 	for _, mode := range []string{"zero", "nil", "missing_first", "negative", "zero_with_file", "missing_id"} {
 		t.Run("count_"+mode, func(t *testing.T) {
@@ -321,10 +321,10 @@ func Test115FileWriteFailureDoesNotCancelIndependentFiles(t *testing.T) {
 
 func Test115DispatcherCancellationStopsAndWaitsForRequests(t *testing.T) {
 	account, syncPath := setupStrmExclusionTestDB(t)
-	models.SettingsGlobal.FileListPageSize = 100
 	original := list115FilesPage
 	t.Cleanup(func() { list115FilesPage = original })
 	s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{}, false, 0, false, false)
+	s.threadSettings.FileListPageSize = 100
 	t.Cleanup(s.Cancel)
 	s.PathWorkerMax = 1
 	started := make(chan struct{})

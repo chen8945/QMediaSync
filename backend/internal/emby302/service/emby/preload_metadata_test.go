@@ -33,7 +33,7 @@ func TestPreloadFailedLookupDoesNotRejectInflightPI(t *testing.T) {
 			entered, release, done := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
 			queried := make(chan struct{}, 1)
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				if strings.HasSuffix(c.Request.URL.Path, "/PlaybackInfo") {
 					close(entered)
@@ -100,7 +100,7 @@ func TestPreloadCompletedMetadataSurvivesLeavingParent(t *testing.T) {
 			partial.MediaSources = []preloadSource{{ID: old.MediaSources[0].ID, ItemID: old.ID}}
 			entered, release, done := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				switch {
 				case strings.HasSuffix(c.Request.URL.Path, "/PlaybackInfo"):
@@ -173,7 +173,7 @@ func TestPreloadNaturalEpisodesDenialInvalidatesPendingList(t *testing.T) {
 			denied.PlayAccess = "None"
 			queried := make(chan struct{}, 1)
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				switch {
 				case strings.HasSuffix(c.Request.URL.Path, "/NextUp"):
@@ -246,7 +246,7 @@ func TestPreloadNaturalEpisodesDenialRevokesOnlyMatchingSignature(t *testing.T) 
 				}, true
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				item := preloadTestItem("20", "Episode")
@@ -302,7 +302,7 @@ func TestPreloadNaturalEpisodesDenialWhilePendingQuery(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{}, 1)
 			t.Cleanup(func() { close(release) })
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				if strings.HasSuffix(c.Request.URL.Path, "/Episodes") {
 					denied := preloadTestItem("20", "Episode")
@@ -358,7 +358,7 @@ func TestPreloadNaturalEpisodesKeepsNewerAuthorization(t *testing.T) {
 			listDone, episodesDone := make(chan struct{}), make(chan struct{})
 			t.Cleanup(func() { close(listRelease); close(episodesRelease); <-listDone; <-episodesDone })
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -434,7 +434,7 @@ func TestPreloadListOmissionUsesCompletedSeasonMetadata(t *testing.T) {
 			}, true
 		}
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			if strings.HasSuffix(c.Request.URL.Path, "/NextUp") {
 				if c.Query("refresh") != "" {
@@ -482,7 +482,7 @@ func TestPreloadOmittedPathDoesNotBecomeAuthoritative(t *testing.T) {
 		entered, release := make(chan struct{}, 1), make(chan struct{}, 1)
 		t.Cleanup(func() { close(release) })
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			if strings.HasSuffix(c.Request.URL.Path, "/NextUp") {
 				if c.Query("refresh") != "" {

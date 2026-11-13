@@ -15,7 +15,6 @@ import (
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/openai"
 	"qmediasync/internal/openlist"
 	v115open "qmediasync/internal/v115/openapi"
 
@@ -190,7 +189,7 @@ func (m *ScrapePath) Save() error {
 
 	if m.ID == 0 {
 		if m.MaxThreads > DEFAULT_LOCAL_MAX_THREADS {
-			if m.SourceType != SourceTypeLocal || GlobalScrapeSettings.TmdbApiKey == "" {
+			if m.SourceType != SourceTypeLocal || GetScrapeSettingsSnapshot().TmdbApiKey == "" {
 				// 非本地且没有 TMDB API Key 时，最大线程数只能使用默认值
 				m.MaxThreads = DEFAULT_LOCAL_MAX_THREADS
 			}
@@ -214,7 +213,7 @@ func (m *ScrapePath) Save() error {
 		helpers.AppLogger.Infof("新最大线程数：%d", m.MaxThreads)
 		helpers.AppLogger.Infof("是否本地目录：%s", m.SourceType)
 		if m.MaxThreads > DEFAULT_LOCAL_MAX_THREADS {
-			if oldScrapePath.SourceType != SourceTypeLocal || GlobalScrapeSettings.TmdbApiKey == "" {
+			if oldScrapePath.SourceType != SourceTypeLocal || GetScrapeSettingsSnapshot().TmdbApiKey == "" {
 				// 非本地且没有 TMDB API Key 时，最大线程数只能使用默认值
 				m.MaxThreads = DEFAULT_LOCAL_MAX_THREADS
 			}
@@ -627,15 +626,6 @@ func (sp *ScrapePath) CheckFileIsAllowed(fileName string, fileSize int64) bool {
 		return false // 如果不需要处理，则跳过
 	}
 	return true
-}
-
-// 获取 AI 识别提示词
-func (sp *ScrapePath) GetAiPrompt() string {
-	var prompt string = sp.AiPrompt
-	if prompt == "" {
-		prompt = openai.DEFAULT_MOVIE_PROMPT
-	}
-	return prompt
 }
 
 // 打开或关闭定时任务
@@ -1095,8 +1085,4 @@ func GetRelatStrmPathByScrapePathID(id uint) []*ScrapeStrmPath {
 		return nil
 	}
 	return scrapeStrmPaths
-}
-
-func GetTmdbImageUrl(path string) string {
-	return fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), path)
 }

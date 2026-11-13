@@ -86,7 +86,7 @@ func TestPreloadPendingNaturalLists(t *testing.T) {
 					path += "&StartIndex=30&Filters=IsFavorite"
 				}
 				h.router = gin.New()
-				h.router.Use(PreloadObserver())
+				h.router.Use(h.session.PreloadObserver())
 				h.router.Any("/*path", func(c *gin.Context) {
 					route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 					if route == "detail" {
@@ -374,7 +374,7 @@ func TestPreloadDetailRefreshKeepsNewerPlaybackInfo(t *testing.T) {
 			}
 			detailEntered, detailRelease, detailDone := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				if kind == "playback" {
@@ -521,7 +521,7 @@ func TestPreloadEmptySourcesSurviveOmittedPlaybackInfo(t *testing.T) {
 				parent = preloadItem{ID: "90", Type: "Series"}
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -590,7 +590,7 @@ func TestPreloadPendingRefreshWhileCandidateQueryRuns(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{}, 1)
 			t.Cleanup(func() { close(release) })
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				if kind == "detail" {
@@ -651,7 +651,7 @@ func TestPreloadEmptyPendingRefreshWhileDetailRuns(t *testing.T) {
 		}
 		detailEntered, detailRelease, detailDone := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			if kind == "detail" {
@@ -830,7 +830,7 @@ func TestPreloadPendingRefreshPreservesSourceIdentity(t *testing.T) {
 		runEmbyPreloadCase(t, mode, func(t *testing.T) {
 			h := newEmbyPreloadTestHarness(t)
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				if kind == "detail" {
@@ -920,7 +920,7 @@ func TestPreloadPendingRefreshKeepsSource(t *testing.T) {
 					}, true
 				}
 				h.router = gin.New()
-				h.router.Use(PreloadObserver())
+				h.router.Use(h.session.PreloadObserver())
 				h.router.Any("/*path", func(c *gin.Context) {
 					route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 					if route == "detail" {
@@ -1168,7 +1168,7 @@ func TestPreloadPendingKeepsNewerNaturalData(t *testing.T) {
 				}
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -1283,7 +1283,7 @@ func TestPreloadPendingGlobalDenialBeforeDetail(t *testing.T) {
 			queried <- struct{}{}
 		}
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			if kind == "detail" {
@@ -1339,7 +1339,7 @@ func TestPreloadPendingVerifiesEarlierSeasonCandidate(t *testing.T) {
 			first.SeasonID = ""
 			later := preloadTestItem("21", "Episode")
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				if kind == "detail" {
@@ -1418,7 +1418,7 @@ func TestPreloadPendingListsBeforeDetailKeepScope(t *testing.T) {
 			entered, release, done := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
 			t.Cleanup(func() { close(release); <-done })
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -1467,7 +1467,7 @@ func TestPreloadPendingIgnoresOldListResponses(t *testing.T) {
 			h := newEmbyPreloadTestHarness(t)
 			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -1535,7 +1535,7 @@ func TestPreloadPartialSourceChangesCancelOldPublish(t *testing.T) {
 			h.nodes["20"] = item
 			if mode == "global-denial" || mode == "mixed-empty" || mode == "pending-pi" || mode == "pending-pi-selection" || detailRefresh {
 				h.router = gin.New()
-				h.router.Use(PreloadObserver())
+				h.router.Use(h.session.PreloadObserver())
 				h.router.Any("/*path", func(c *gin.Context) {
 					kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 					if kind == "detail" {
@@ -1684,7 +1684,7 @@ func TestPreloadPendingSameKindListsBeforeDetailKeepScope(t *testing.T) {
 		runEmbyPreloadCase(t, kind, func(t *testing.T) {
 			h := newEmbyPreloadTestHarness(t)
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				if route == "detail" {
@@ -1727,7 +1727,7 @@ func TestPreloadPendingClearSourcesAcrossListsBeforeDetail(t *testing.T) {
 			globalCalls := 0
 			h := newEmbyPreloadTestHarness(t)
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				omitted := gin.H{"Items": []gin.H{{"Id": "20", "Type": "Episode", "SeriesId": "90"}}}
@@ -1801,7 +1801,7 @@ func TestPreloadPendingSelectionIgnoresSourceMetadataOrder(t *testing.T) {
 				}, true
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch route {
@@ -1862,7 +1862,7 @@ func TestPreloadPendingCrossListOmissionKeepsSource(t *testing.T) {
 		resumeCalls := 0
 		h := newEmbyPreloadTestHarness(t)
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			route, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			switch route {
@@ -1915,7 +1915,7 @@ func TestPreloadPendingDetailPermissionBoundaries(t *testing.T) {
 				}
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -2024,7 +2024,7 @@ func TestPreloadPendingPermissionPlaybackOrdering(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(fresh)
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 				switch kind {
@@ -2120,7 +2120,7 @@ func TestPreloadPendingMatchingOldListsKeepSelection(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(preloadItems{Items: []preloadItem{preloadTestItem("20", "Episode")}})
 		}
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.Any("/*path", func(c *gin.Context) {
 			kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			switch kind {

@@ -721,8 +721,12 @@ func GetAccountByUserId(userId string) (*Account, error) {
 
 // 通过 ID 查询开放平台账号
 func GetAccountById(id uint) (*Account, error) {
+	return getAccountByIDWithDB(db.Db, id)
+}
+
+func getAccountByIDWithDB(conn *gorm.DB, id uint) (*Account, error) {
 	account := &Account{}
-	err := db.Db.Where("id = ?", id).First(account).Error
+	err := conn.Where("id = ?", id).First(account).Error
 	if err != nil {
 		helpers.AppLogger.Errorf("查询开放平台账号失败：%v", err)
 		return nil, err

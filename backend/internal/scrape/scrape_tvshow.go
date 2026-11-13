@@ -30,19 +30,16 @@ type tvshowTask struct {
 	seasons   []uint
 }
 
-func NewTvShowScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) scrapeImpl {
-	tmdbImpl := NewTmdbTvShowImpl(scrapePath, ctx)
-	return &tvShowScrapeImpl{
-		scrapePath:     scrapePath,
-		ctx:            ctx,
-		identifyImpl:   NewIdTvShowImpl(scrapePath, ctx, tmdbImpl),
-		categoryImpl:   NewCategoryTvShowImpl(scrapePath),
-		renameImpl:     NewRenameTvShowImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient),
-		tmdbClient:     tmdbImpl.Client,
-		v115Client:     v115Client,
-		baiduPanClient: baiduPanClient,
-		openlistClient: openlistClient,
+func NewTvShowScrapeImpl(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) (*tvShowScrapeImpl, error) {
+	base, err := newScrapeBase(scrapePath, ctx, v115Client, openlistClient, baiduPanClient)
+	if err != nil {
+		return nil, err
 	}
+	tmdbImpl := NewTmdbTvShowImpl(scrapePath, ctx, base.tmdbClient, base.settings)
+	base.identifyImpl = NewIdTvShowImpl(scrapePath, ctx, tmdbImpl, base.aiClient, base.aiPrompt())
+	base.categoryImpl = NewCategoryTvShowImpl(scrapePath)
+	base.renameImpl = NewRenameTvShowImpl(scrapePath, ctx, v115Client, openlistClient, baiduPanClient)
+	return &tvShowScrapeImpl{ScrapeBase: base}, nil
 }
 
 // 先处理电视剧：按 PathId 分组，每组取第一条；识别后更新同批次、同 PathId 记录的 TMDB ID、name、year，再将这些 ID 放入待处理队列
@@ -59,40 +56,16 @@ func (t *tvShowScrapeImpl) Start() error {
 	// 启动 N 个协程，由 t.ctx 控制是否取消
 	wg := &sync.WaitGroup{}
 	episodeWg := &sync.WaitGroup{}
+	var showWorkers, episodeWorkers sync.WaitGroup
 	for i := 0; i < t.scrapePath.GetMaxThreads(); i++ {
-		go t.scrapeTvShow(i+1, wg, episodeWg)
-		go t.scrapeEpisode(i+1, episodeWg)
+		showWorkers.Go(func() { t.scrapeTvShow(i+1, wg, episodeWg) })
+		episodeWorkers.Go(func() { t.scrapeEpisode(i+1, episodeWg) })
 	}
-	// 启动一个协程检查是否停止
-	stopChan := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-t.ctx.Done():
-			stoploop:
-				for {
-					select {
-					case tvshowTask := <-t.fileTasks:
-						helpers.AppLogger.Infof("清理剩余电视剧刮削任务 %d", tvshowTask.mediaFile.ID)
-						wg.Done()
-					case episodeMediaFileID := <-t.episodeTasks:
-						helpers.AppLogger.Infof("清理剩余集刮削任务 %d", episodeMediaFileID)
-						episodeWg.Done()
-					default:
-						break stoploop
-					}
-				}
-				// helpers.AppLogger.Infof("所有待刮削和待整理记录都已处理")
-				time.Sleep(time.Second)
-				return
-			case <-stopChan:
-				helpers.AppLogger.Infof("刮削任务接收到停止信号，退出清理循环")
-				return
-			default:
-				helpers.AppLogger.Infof("1 秒后继续检查是否已经停止任务")
-				time.Sleep(time.Second)
-			}
-		}
+	defer func() {
+		close(t.fileTasks)
+		showWorkers.Wait()
+		close(t.episodeTasks)
+		episodeWorkers.Wait()
 	}()
 mainloop:
 	for {
@@ -126,80 +99,73 @@ mainloop:
 			tvshowTasks[mediaFile.TvshowPathId].seasons = append(tvshowTasks[mediaFile.TvshowPathId].seasons, mediaFile.ID)
 		}
 		for _, tvshowTask := range tvshowTasks {
-			t.fileTasks <- tvshowTask
-			wg.Add(1) // 加进去之后，计数+1
+			wg.Add(1)
+			select {
+			case t.fileTasks <- tvshowTask:
+			case <-t.ctx.Done():
+				wg.Done()
+				break mainloop
+			}
 			helpers.AppLogger.Infof("电视剧 %s 已加入处理队列", tvshowTask.mediaFile.VideoFilename)
 		}
 		helpers.AppLogger.Infof("已加入 %d 个季到处理队列，等待刮削完成", len(tvshowTasks))
 		wg.Wait()
 		episodeWg.Wait() // 等待集处理队列完成
 	}
-	helpers.AppLogger.Infof("所有集刮削整理任务都已完成，发送停止信号")
-	select {
-	case stopChan <- struct{}{}:
-		helpers.AppLogger.Infof("已发送信号让所有清理监控任务退出")
-	default:
-	}
-	close(stopChan)
-	close(t.fileTasks)
-	close(t.episodeTasks)
-	helpers.AppLogger.Infof("所有刮削整理任务都已完成，本次任务结束")
-	return nil
+	return t.ctx.Err()
 }
 
 func (t *tvShowScrapeImpl) scrapeTvShow(taskIndex int, wg *sync.WaitGroup, episodeWg *sync.WaitGroup) {
-mainloop:
-	for {
-		select {
-		case <-t.ctx.Done():
-			helpers.AppLogger.Infof("电视剧工作线程 %d 检测到停止信号，退出", taskIndex)
-			return
-		case tt, ok := <-t.fileTasks:
-			if !ok {
-				helpers.AppLogger.Infof("电视剧工作线程 %d 已关闭", taskIndex)
-				return
+	for tt := range t.fileTasks {
+		if t.ctx.Err() != nil {
+			wg.Done()
+			continue
+		}
+		helpers.AppLogger.Infof("电视剧工作线程 %d 开始处理电视剧 %s", taskIndex, filepath.Base(tt.mediaFile.TvshowPath))
+		err := t.ProcessTvShow(tt)
+		if err != nil {
+			wg.Done()
+			helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), err)
+			continue
+		}
+		helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s", taskIndex, filepath.Base(tt.mediaFile.TvshowPath))
+	seasonloop:
+		for _, seasonMediaFileID := range tt.seasons {
+			if !t.scrapePath.IsRunning() {
+				helpers.AppLogger.Infof("电视剧工作线程 %d 检测到刮削任务已停止，退出", taskIndex)
+				break seasonloop
 			}
-			helpers.AppLogger.Infof("电视剧工作线程 %d 开始处理电视剧 %s", taskIndex, filepath.Base(tt.mediaFile.TvshowPath))
-			err := t.ProcessTvShow(tt)
-			if err != nil {
-				wg.Done()
-				helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), err)
-				continue mainloop
+			seasonMediaFile := models.GetScrapeMediaFileById(seasonMediaFileID)
+			helpers.AppLogger.Infof("电视剧工作线程 %d 开始处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
+			serr := t.ProcessSeason(seasonMediaFile)
+			if serr != nil {
+				helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 季 %d 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber, serr)
+				continue seasonloop
 			}
-			helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s", taskIndex, filepath.Base(tt.mediaFile.TvshowPath))
-		seasonloop:
-			for _, seasonMediaFileID := range tt.seasons {
+			helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
+			// 将季下所有集加入处理队列
+			episodeMediaFileIds := models.GetScrapeMediaFileIdBySeasonId(seasonMediaFile.MediaSeasonId)
+			if len(episodeMediaFileIds) == 0 {
+				helpers.AppLogger.Infof("电视剧工作线程 %d 季 %d 下没有集，跳过", taskIndex, seasonMediaFile.SeasonNumber)
+				continue seasonloop
+			}
+			for _, episodeMediaFileID := range episodeMediaFileIds {
 				if !t.scrapePath.IsRunning() {
 					helpers.AppLogger.Infof("电视剧工作线程 %d 检测到刮削任务已停止，退出", taskIndex)
 					break seasonloop
 				}
-				seasonMediaFile := models.GetScrapeMediaFileById(seasonMediaFileID)
-				helpers.AppLogger.Infof("电视剧工作线程 %d 开始处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
-				serr := t.ProcessSeason(seasonMediaFile)
-				if serr != nil {
-					helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 季 %d 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber, serr)
-					continue seasonloop
+				episodeWg.Add(1)
+				select {
+				case t.episodeTasks <- episodeMediaFileID:
+				case <-t.ctx.Done():
+					episodeWg.Done()
+					break seasonloop
 				}
-				helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
-				// 将季下所有集加入处理队列
-				episodeMediaFileIds := models.GetScrapeMediaFileIdBySeasonId(seasonMediaFile.MediaSeasonId)
-				if len(episodeMediaFileIds) == 0 {
-					helpers.AppLogger.Infof("电视剧工作线程 %d 季 %d 下没有集，跳过", taskIndex, seasonMediaFile.SeasonNumber)
-					continue seasonloop
-				}
-				for _, episodeMediaFileID := range episodeMediaFileIds {
-					if !t.scrapePath.IsRunning() {
-						helpers.AppLogger.Infof("电视剧工作线程 %d 检测到刮削任务已停止，退出", taskIndex)
-						break seasonloop
-					}
-					t.episodeTasks <- episodeMediaFileID
-					episodeWg.Add(1) // 加进去之后，计数+1
-					helpers.AppLogger.Infof("电视剧工作线程 %d 已将 %d 加入集处理队列", taskIndex, episodeMediaFileID)
-				}
+				helpers.AppLogger.Infof("电视剧工作线程 %d 已将 %d 加入集处理队列", taskIndex, episodeMediaFileID)
 			}
-			// 处理完成后，计数-1
-			wg.Done()
 		}
+		// 处理完成后，计数-1
+		wg.Done()
 	}
 }
 
@@ -309,17 +275,17 @@ func (t *tvShowScrapeImpl) ScrapeTvshowMedia(mediaFile *models.ScrapeMediaFile) 
 	helpers.AppLogger.Infof("刮削电视剧，名称：%s，年份：%d，TMDB ID：%d", mediaFile.Name, mediaFile.Year, mediaFile.TmdbId)
 	tmdbInfo := &models.TmdbInfo{}
 	// 查询详情
-	tvDetail, err := t.tmdbClient.GetTvDetail(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+	tvDetail, err := t.tmdbClient.GetTvDetail(t.ctx, mediaFile.TmdbId, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧详情失败，下次重试，失败原因：%v", err)
 		return err
 	}
 	tmdbInfo.TvShowDetail = tvDetail
 	// 查询演职人员
-	cast, _ := t.tmdbClient.GetTvCredits(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbLanguage())
+	cast, _ := t.tmdbClient.GetTvCredits(t.ctx, mediaFile.TmdbId, t.settings.GetTmdbLanguage())
 	tmdbInfo.Credits = cast
 	// 查询图片
-	images, _ := t.tmdbClient.GetTvImages(mediaFile.TmdbId, models.GlobalScrapeSettings.GetTmdbImageLanguage())
+	images, _ := t.tmdbClient.GetTvImages(t.ctx, mediaFile.TmdbId, t.settings.GetTmdbImageLanguage())
 	if images != nil {
 		// 如果图片为空,则使用详情中的图片
 		if len(images.Posters) == 0 && tvDetail.PosterPath != "" {
@@ -435,7 +401,7 @@ func (t *tvShowScrapeImpl) MakeMediaFromTMDB(mediaFile *models.ScrapeMediaFile, 
 		}
 		helpers.AppLogger.Infof("创建新的 Media 对象：%s，TMDB ID：%d，类型：%s", mediaFile.Media.Name, mediaFile.Media.TmdbId, mediaFile.Media.MediaType)
 	}
-	mediaFile.Media.FillInfoByTmdbInfo(tmdbInfo)
+	mediaFile.Media.FillInfoByTmdbInfo(tmdbInfo, t.settings.GetTmdbImageUrl())
 	mediaFile.MediaId = mediaFile.Media.ID
 	mediaFile.Name = mediaFile.Media.Name
 	mediaFile.Year = mediaFile.Media.Year

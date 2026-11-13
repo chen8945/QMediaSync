@@ -60,6 +60,7 @@ describe.each([
         provide: { [httpKey]: { get } },
         stubs: {
           PageHeader: { template: '<header><slot name="actions" /></header>' },
+          ElSelect: { name: 'ElSelect', template: '<div><slot /></div>' },
           ElButton: false,
         },
       },
@@ -67,6 +68,22 @@ describe.each([
     const statsText = () =>
       wrapper.get(`[aria-label="${label}队列任务统计"]`).text().replace(/\s+/g, '')
     const refreshButton = wrapper.findAll('button').find((button) => button.text() === '刷新')!
+
+    if (queue === 'download') {
+      expect(
+        wrapper.findAllComponents({ name: 'ElOption' }).map((option) => [
+          option.props('value'),
+          option.props('label'),
+        ]),
+      ).toEqual([
+        [-1, '全部状态'],
+        [0, '等待下载'],
+        [1, '正在下载'],
+        [2, '下载完成'],
+        [3, '下载失败'],
+        [4, '已取消'],
+      ])
+    }
 
     expect(statsText()).toBe('剩余0·排队0·处理中0')
     await flushPromises()

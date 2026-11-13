@@ -200,7 +200,7 @@ func (me *MediaEpisode) DecodeJson() {
 	}
 }
 
-func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
+func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo, imageURL string) {
 	if m.MediaType == MediaTypeTvShow {
 		m.TmdbId = tmdbInfo.TvShowDetail.ID
 		m.Name = tmdbInfo.TvShowDetail.Name
@@ -251,7 +251,7 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 				Profile: fmt.Sprintf("https://www.themoviedb.org/person/%d", actor.ID),
 			}
 			if actor.ProfilePath != "" {
-				act.Thumb = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), actor.ProfilePath)
+				act.Thumb = fmt.Sprintf("%s/t/p/original%s", imageURL, actor.ProfilePath)
 			}
 			actors = append(actors, act)
 		}
@@ -274,7 +274,7 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 	if tmdbInfo.Images != nil && len(tmdbInfo.Images.Posters) > 0 {
 		for _, poster := range tmdbInfo.Images.Posters {
 			if poster.FilePath != "" {
-				m.PosterPath = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), poster.FilePath)
+				m.PosterPath = fmt.Sprintf("%s/t/p/original%s", imageURL, poster.FilePath)
 				break
 			}
 		}
@@ -282,7 +282,7 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 	if tmdbInfo.Images != nil && len(tmdbInfo.Images.Backdrops) > 0 {
 		for _, backdrop := range tmdbInfo.Images.Backdrops {
 			if backdrop.FilePath != "" {
-				m.BackdropPath = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), backdrop.FilePath)
+				m.BackdropPath = fmt.Sprintf("%s/t/p/original%s", imageURL, backdrop.FilePath)
 				break
 			}
 		}
@@ -290,7 +290,7 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 	if tmdbInfo.Images != nil && len(tmdbInfo.Images.Logos) > 0 {
 		for _, logo := range tmdbInfo.Images.Logos {
 			if logo.FilePath != "" {
-				m.LogoPath = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), logo.FilePath)
+				m.LogoPath = fmt.Sprintf("%s/t/p/original%s", imageURL, logo.FilePath)
 				break
 			}
 		}
@@ -299,14 +299,14 @@ func (m *Media) FillInfoByTmdbInfo(tmdbInfo *TmdbInfo) {
 	m.Save()
 }
 
-func (ms *MediaSeason) FillInfoByTmdbInfo(seasonDetail *tmdb.SeasonDetail) {
+func (ms *MediaSeason) FillInfoByTmdbInfo(seasonDetail *tmdb.SeasonDetail, imageURL string) {
 	if seasonDetail == nil {
 		ms.Save()
 		return
 	}
 	ms.SeasonName = seasonDetail.Name
 	ms.Overview = seasonDetail.Overview
-	ms.PosterPath = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), seasonDetail.PosterPath)
+	ms.PosterPath = fmt.Sprintf("%s/t/p/original%s", imageURL, seasonDetail.PosterPath)
 	ms.ReleaseDate = seasonDetail.AirDate
 	ms.VoteAverage = seasonDetail.VoteAverage
 	ms.Year = helpers.ParseYearFromDate(ms.ReleaseDate)
@@ -314,13 +314,13 @@ func (ms *MediaSeason) FillInfoByTmdbInfo(seasonDetail *tmdb.SeasonDetail) {
 	ms.Save()
 }
 
-func (me *MediaEpisode) FillInfoByTmdbInfo(episodeDetail *tmdb.Episode) {
+func (me *MediaEpisode) FillInfoByTmdbInfo(episodeDetail *tmdb.Episode, imageURL string) {
 	if episodeDetail == nil {
 		return
 	}
 	me.EpisodeName = episodeDetail.Name
 	me.Overview = episodeDetail.Overview
-	me.PosterPath = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), episodeDetail.StillPath)
+	me.PosterPath = fmt.Sprintf("%s/t/p/original%s", imageURL, episodeDetail.StillPath)
 	me.ReleaseDate = episodeDetail.AirDate
 	me.VoteAverage = episodeDetail.VoteAverage
 	me.VoteCount = episodeDetail.VoteCount
@@ -338,7 +338,7 @@ func (me *MediaEpisode) FillInfoByTmdbInfo(episodeDetail *tmdb.Episode) {
 				Profile: fmt.Sprintf("https://www.themoviedb.org/person/%d", actor.ID),
 			}
 			if actor.ProfilePath != "" {
-				act.Thumb = fmt.Sprintf("%s/t/p/original%s", GlobalScrapeSettings.GetTmdbImageUrl(), actor.ProfilePath)
+				act.Thumb = fmt.Sprintf("%s/t/p/original%s", imageURL, actor.ProfilePath)
 			}
 			actors = append(actors, act)
 		}
@@ -409,11 +409,11 @@ func GetMediaByName(mediaType MediaType, name string, year int) (*Media, error) 
 }
 
 // 使用 TMDB 信息创建 Media
-func MakeMediaFromTMDB(mediaType MediaType, tmdbInfo *TmdbInfo) (*Media, error) {
+func MakeMediaFromTMDB(mediaType MediaType, tmdbInfo *TmdbInfo, imageURL string) (*Media, error) {
 	media := &Media{
 		MediaType: mediaType,
 	}
-	media.FillInfoByTmdbInfo(tmdbInfo)
+	media.FillInfoByTmdbInfo(tmdbInfo, imageURL)
 	return media, nil
 }
 

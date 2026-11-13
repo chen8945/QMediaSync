@@ -23,53 +23,45 @@ import (
 
 // 处理集的刮削任务，启动 N 个协程
 func (t *tvShowScrapeImpl) scrapeEpisode(taskIndex int, wg *sync.WaitGroup) {
-mainloop:
-	for {
-		select {
-		case <-t.ctx.Done():
-			// 停止任务
-			helpers.AppLogger.Infof("集刮削整理任务队列 %d 收到停止信号，退出", taskIndex)
-			return
-		case mediaFileId, ok := <-t.episodeTasks:
-			if !ok {
-				helpers.AppLogger.Infof("刮削整理任务队列 %d 已关闭", taskIndex)
-				return
-			}
-			// 查询集详情
-			mediaFile := models.GetScrapeMediaFileById(mediaFileId)
-			if mediaFile == nil {
-				wg.Done() // 处理完成后，计数-1
-				helpers.AppLogger.Errorf("根据 ID 查询待刮削文件记录失败，ID：%d", mediaFileId)
-				continue mainloop
-			}
-			helpers.AppLogger.Infof("集刮削整理任务队列 %d 开始处理电视剧 %s 季 %d 集 %d", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
-			err := t.Process(mediaFile)
-			if err != nil {
-				helpers.AppLogger.Errorf("集刮削整理任务队列 %d 刮削电视剧 %s 季 %d 集 %d 失败：%v", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, err)
-			} else {
-				helpers.AppLogger.Infof("集刮削整理任务队列 %d 处理电视剧 %s 季 %d 集 %d 成功", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
-			}
-			// 触发单个刮削项完成事件
-			realtime.BroadcastEvent(realtime.EventScraperItemComplete, map[string]any{
-				"item_id": mediaFile.ID,
-				"name":    mediaFile.VideoFilename,
-				"status":  string(mediaFile.Status),
-				"success": err == nil,
-			})
-			wg.Done() // 处理完成后，计数-1
+	for mediaFileId := range t.episodeTasks {
+		if t.ctx.Err() != nil {
+			wg.Done()
+			continue
 		}
+		// 查询集详情
+		mediaFile := models.GetScrapeMediaFileById(mediaFileId)
+		if mediaFile == nil {
+			wg.Done() // 处理完成后，计数-1
+			helpers.AppLogger.Errorf("根据 ID 查询待刮削文件记录失败，ID：%d", mediaFileId)
+			continue
+		}
+		helpers.AppLogger.Infof("集刮削整理任务队列 %d 开始处理电视剧 %s 季 %d 集 %d", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
+		err := t.Process(mediaFile)
+		if err != nil {
+			helpers.AppLogger.Errorf("集刮削整理任务队列 %d 刮削电视剧 %s 季 %d 集 %d 失败：%v", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, err)
+		} else {
+			helpers.AppLogger.Infof("集刮削整理任务队列 %d 处理电视剧 %s 季 %d 集 %d 成功", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
+		}
+		// 触发单个刮削项完成事件
+		realtime.BroadcastEvent(realtime.EventScraperItemComplete, map[string]any{
+			"item_id": mediaFile.ID,
+			"name":    mediaFile.VideoFilename,
+			"status":  string(mediaFile.Status),
+			"success": err == nil,
+		})
+		wg.Done() // 处理完成后，计数-1
 	}
 }
 
 func (t *tvShowScrapeImpl) ScrapeEpisodeMedia(mediaFile *models.ScrapeMediaFile) error {
 	// 查询集详情
-	episodeDetail, err := t.tmdbClient.GetTvEpisodeDetail(mediaFile.TmdbId, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, models.GlobalScrapeSettings.GetTmdbLanguage())
+	episodeDetail, err := t.tmdbClient.GetTvEpisodeDetail(t.ctx, mediaFile.TmdbId, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧集详情失败，下次重试，失败原因：%v", err)
 		return err
 	}
 	// 查询集演员
-	credits, err := t.tmdbClient.GetTvEpisodeCredits(mediaFile.TmdbId, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, models.GlobalScrapeSettings.GetTmdbLanguage())
+	credits, err := t.tmdbClient.GetTvEpisodeCredits(t.ctx, mediaFile.TmdbId, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, t.settings.GetTmdbLanguage())
 	if err != nil {
 		helpers.AppLogger.Errorf("查询 TMDB 电视剧集演员失败，下次重试，失败原因：%v", err)
 	} else {
@@ -271,7 +263,7 @@ func (t *tvShowScrapeImpl) MakeMediaEpisodeFromTMDB(mediaFile *models.ScrapeMedi
 			EpisodeNumber: mediaFile.EpisodeNumber,
 		}
 	}
-	mediaFile.MediaEpisode.FillInfoByTmdbInfo(episodeDetail)
+	mediaFile.MediaEpisode.FillInfoByTmdbInfo(episodeDetail, t.settings.GetTmdbImageUrl())
 	mediaFile.MediaEpisode.Save()
 	mediaFile.MediaEpisodeId = mediaFile.MediaEpisode.ID
 	mediaFile.Save()

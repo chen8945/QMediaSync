@@ -176,7 +176,7 @@ func ReadFromUrl(targetUrl string, userAgent string) (content []byte, err error)
 }
 
 func DownloadFile(targetUrl string, filePath string, userAgent string) error {
-	return downloadFileResponse(targetUrl, userAgent, func(reader io.Reader) error {
+	return downloadFileResponse(context.Background(), targetUrl, userAgent, func(reader io.Reader) error {
 		content, err := io.ReadAll(reader)
 		if err != nil {
 			AppLogger.Errorf("[下载] 读取 %s 的 HTTP 响应失败：%v", targetUrl, err)
@@ -195,14 +195,19 @@ func DownloadFile(targetUrl string, filePath string, userAgent string) error {
 
 // DownloadMetadataFile 保留下载请求规则，仅在内容完整时发布到目标。
 func DownloadMetadataFile(targetURL, filePath, userAgent, baseline string, size int64, sha1, md5 string, mtime int64, beforePublish func(string) error) error {
-	return downloadFileResponse(targetURL, userAgent, func(reader io.Reader) error {
+	return DownloadMetadataFileContext(context.Background(), targetURL, filePath, userAgent, baseline, size, sha1, md5, mtime, beforePublish)
+}
+
+// DownloadMetadataFileContext 在请求取消时保留旧目标文件。
+func DownloadMetadataFileContext(ctx context.Context, targetURL, filePath, userAgent, baseline string, size int64, sha1, md5 string, mtime int64, beforePublish func(string) error) error {
+	return downloadFileResponse(ctx, targetURL, userAgent, func(reader io.Reader) error {
 		return WriteMetadataFile(filePath, baseline, size, sha1, md5, mtime, func(w io.Writer) error { _, err := io.Copy(w, reader); return err }, beforePublish)
 	})
 }
 
-func downloadFileResponse(targetUrl, userAgent string, consume func(io.Reader) error) error {
+func downloadFileResponse(ctx context.Context, targetUrl, userAgent string, consume func(io.Reader) error) error {
 	// 创建请求并设置 User-Agent
-	req, err := http.NewRequest("GET", targetUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", targetUrl, nil)
 	if err != nil {
 		AppLogger.Errorf("[下载] 创建 %s 的 HTTP 请求失败：%v", targetUrl, err)
 		return fmt.Errorf("创建 %s 的 HTTP 请求失败：%v", targetUrl, err)
@@ -258,7 +263,7 @@ func downloadFileResponse(targetUrl, userAgent string, consume func(io.Reader) e
 			// }
 
 			// 创建新请求
-			redirectReq, err := http.NewRequest("GET", location, nil)
+			redirectReq, err := http.NewRequestWithContext(ctx, "GET", location, nil)
 			if err != nil {
 				AppLogger.Errorf("[下载] 创建重定向请求失败：%v", err)
 				return fmt.Errorf("创建重定向请求失败：%v", err)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net"
+	"net/http"
 	"net/url"
 	"path"
 	"slices"
@@ -11,7 +12,6 @@ import (
 
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
-	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
@@ -42,7 +42,11 @@ func (app *App) newEmbyPlaybackPreload(rawURL, ua string, forceDirect bool) (str
 		}
 		identity, run, ok = newPlaybackPreload(normalized, ua, forceDirect)
 	} else {
-		identity, run, ok = playback.NewExternalPreload(rawURL, ua, https.Transport())
+		transport := http.DefaultTransport
+		if app.embyProxy != nil {
+			transport = app.embyProxy.Transport()
+		}
+		identity, run, ok = playback.NewExternalPreload(rawURL, ua, transport)
 	}
 	if !ok {
 		return "", nil, false

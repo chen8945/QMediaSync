@@ -18,16 +18,13 @@ import (
 )
 
 func TestRequestCacherSkipsCanceledRequests(t *testing.T) {
+	scope := newCacheScope(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/"+t.Name(), nil)
 	key := keyForRequest(t, req)
-	t.Cleanup(func() {
-		cacheMap.Delete(key)
-		spaceMap.Delete(t.Name())
-	})
 	router := gin.New()
-	router.Use(RequestCacher())
+	router.Use(scope.RequestCacher())
 	router.GET("/"+t.Name(), func(c *gin.Context) {
 		c.Header(HeaderKeyExpired, Duration(time.Minute))
 		c.Header(HeaderKeySpace, t.Name())
@@ -36,11 +33,10 @@ func TestRequestCacherSkipsCanceledRequests(t *testing.T) {
 		cancel()
 	})
 	router.ServeHTTP(httptest.NewRecorder(), req)
-	WaitingForHandleChan()
-	if _, ok := getCache(key); ok {
+	if _, ok := scope.getCache(key); ok {
 		t.Fatal("canceled response was cached")
 	}
-	if _, ok := GetSpaceCache(t.Name(), key); ok {
+	if _, ok := scope.GetSpaceCache(t.Name(), key); ok {
 		t.Fatal("canceled response was published to a cache space")
 	}
 }
@@ -168,6 +164,7 @@ func keyForRequest(t *testing.T, req *http.Request) string {
 }
 
 func TestRequestCacherLogsOnlyPlaybackRedirectHits(t *testing.T) {
+	scope := newCacheScope(t)
 	var output bytes.Buffer
 	oldLogger, oldLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
@@ -197,19 +194,17 @@ func TestRequestCacherLogsOnlyPlaybackRedirectHits(t *testing.T) {
 			request := httptest.NewRequestWithContext(ctx, http.MethodGet, test.path, nil)
 			request.Header.Set("User-Agent", "Cache Player")
 			key := keyForRequest(t, request)
-			putCache(key, test.status, []byte("cached body"), respHeader{
+			scope.putCache(key, test.status, []byte("cached body"), respHeader{
 				expired: Duration(time.Minute), header: http.Header{"Location": {test.location}},
 			})
-			WaitingForHandleChan()
-			t.Cleanup(func() { cacheMap.Delete(key) })
-			if _, ok := getCache(key); !ok {
+			if _, ok := scope.getCache(key); !ok {
 				t.Fatal("test response was not cached")
 			}
 			if test.canceled {
 				cancel()
 			}
 			router := gin.New()
-			router.Use(CacheableRouteMarker(), RequestCacher())
+			router.Use(CacheableRouteMarker(), scope.RequestCacher())
 			router.NoRoute(func(*gin.Context) { t.Error("cached response reached handler") })
 			output.Reset()
 			response := httptest.NewRecorder()

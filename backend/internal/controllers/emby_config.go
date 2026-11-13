@@ -1,15 +1,12 @@
 package controllers
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/emby"
-	embypreload "qmediasync/internal/emby302/service/emby"
-	"qmediasync/internal/emby302/web"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
@@ -20,7 +17,22 @@ import (
 	"gorm.io/gorm"
 )
 
-var embyConfigSaveMu, jellyfinConfigSaveMu sync.Mutex
+type MediaLibraryConfigController struct {
+	apply func(context.Context, *models.EmbyConfig) error
+}
+
+// NewMediaLibraryConfigController 注入已提交 Emby 配置的本地应用。
+func NewMediaLibraryConfigController(apply func(context.Context, *models.EmbyConfig) error) *MediaLibraryConfigController {
+	return &MediaLibraryConfigController{apply: apply}
+}
+
+func (controller *MediaLibraryConfigController) UpdateEmby(c *gin.Context) {
+	controller.update(c, models.MediaServerEmby)
+}
+
+func (controller *MediaLibraryConfigController) UpdateJellyfin(c *gin.Context) {
+	controller.update(c, models.MediaServerJellyfin)
+}
 
 // GetEmbyConfig 获取 Emby 配置。
 // @Summary 获取 Emby 配置
@@ -80,10 +92,10 @@ func getMediaLibraryConfig(c *gin.Context, kind models.MediaServerType) {
 // @Router /setting/emby-config [post]
 // @Security JwtAuth
 // @Security ApiKeyAuth
-func UpdateEmbyConfig(c *gin.Context) { updateMediaLibraryConfig(c, models.MediaServerEmby) }
+func UpdateEmbyConfig(c *gin.Context) { (&MediaLibraryConfigController{}).UpdateEmby(c) }
 
 // UpdateJellyfinConfig 保存独立 Jellyfin 配置并报告应用结果。
-func UpdateJellyfinConfig(c *gin.Context) { updateMediaLibraryConfig(c, models.MediaServerJellyfin) }
+func UpdateJellyfinConfig(c *gin.Context) { (&MediaLibraryConfigController{}).UpdateJellyfin(c) }
 
 func mediaLibraryConfigResponse(kind models.MediaServerType, config *models.EmbyConfig) any {
 	if kind == models.MediaServerJellyfin {
@@ -93,7 +105,7 @@ func mediaLibraryConfigResponse(kind models.MediaServerType, config *models.Emby
 	return config
 }
 
-func updateMediaLibraryConfig(c *gin.Context, kind models.MediaServerType) {
+func (controller *MediaLibraryConfigController) update(c *gin.Context, kind models.MediaServerType) {
 	var payload struct {
 		requests.UpdateEmbyConfigRequest
 		JellyfinURL    string `json:"jellyfin_url"`
@@ -123,137 +135,55 @@ func updateMediaLibraryConfig(c *gin.Context, kind models.MediaServerType) {
 			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: validation.New("path_mappings", err.Error()).Error()})
 			return
 		}
-		if err := validateEmbyPathMappingSyncPaths(pathMappings); err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error()})
-			return
-		}
 	}
 
-	// 本端提交与运行状态发布使用相同顺序；两端保存仍各自独立。
-	saveMu := &embyConfigSaveMu
-	if kind == models.MediaServerJellyfin {
-		saveMu = &jellyfinConfigSaveMu
+	change := models.MediaLibrarySettingsChange{
+		Values: models.EmbyConfig{
+			EmbyUrl: req.EmbyURL, EmbyApiKey: req.EmbyAPIKey,
+			EnableDeleteNetdisk: req.EnableDeleteNetdisk, EnableRefreshLibrary: req.EnableRefreshLibrary,
+			EnableExtractMediaInfo: req.EnableExtractMediaInfo, EnableAuth: req.EnableAuth,
+			SyncEnabled: req.SyncEnabled, SyncCron: req.SyncCron,
+			SelectedLibraries: req.SelectedLibraries, SyncAllLibraries: req.SyncAllLibraries,
+			EnablePlaybackOverview: req.EnablePlaybackOverview, EnablePlaybackProgress: req.EnablePlaybackProgress,
+		},
+		Enabled: req.Enabled, EnableMediaNotification: req.EnableMediaNotification,
+		EnableDailyFirstFullSync: req.EnableDailyFirstFullSync,
 	}
-	saveMu.Lock()
-	defer saveMu.Unlock()
-	config, err := models.ReadMediaLibraryConfigSnapshot(kind)
-	if err != nil && err != gorm.ErrRecordNotFound {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询媒体库配置失败：" + err.Error()})
+	var validate func() error
+	if req.PathMappings != nil {
+		change.PathMappings = &pathMappings
+		validate = func() error { return validateEmbyPathMappingSyncPaths(c.Request.Context(), pathMappings) }
+	}
+	warnings, err := models.SaveMediaLibrarySettings(c.Request.Context(), kind, change, validate, controller.applyCommitted)
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error()})
 		return
 	}
-	isNew := err == gorm.ErrRecordNotFound
-	if isNew {
-		config = &models.EmbyConfig{MediaServerType: kind}
-	}
-	if req.Enabled != nil {
-		config.Enabled = *req.Enabled
-	}
-	if req.SyncCron == "" {
-		req.SyncCron = "0 * * * *"
-	}
-	oldIdentity := models.EmbyConfigIdentity(config)
-	if req.PathMappings != nil {
-		encoded, err := json.Marshal(pathMappings)
-		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "编码媒体库路径映射失败"})
-			return
-		}
-		config.PathMappings, config.PathMappingsJSON = pathMappings, string(encoded)
-	}
-	config.EmbyUrl = req.EmbyURL
-	config.EmbyApiKey = req.EmbyAPIKey
-	config.EnableDeleteNetdisk = req.EnableDeleteNetdisk
-	config.EnableRefreshLibrary = req.EnableRefreshLibrary
-	if req.EnableMediaNotification != nil {
-		config.EnableMediaNotification = *req.EnableMediaNotification
-	}
-	config.EnableExtractMediaInfo = req.EnableExtractMediaInfo
-	config.EnableAuth = req.EnableAuth
-	config.SyncEnabled = req.SyncEnabled
-	config.SyncCron = req.SyncCron
-	config.SelectedLibraries = req.SelectedLibraries
-	config.SyncAllLibraries = req.SyncAllLibraries
-	if req.EnableDailyFirstFullSync != nil {
-		config.EnableDailyFirstFullSync = *req.EnableDailyFirstFullSync
-	} else if isNew {
-		config.EnableDailyFirstFullSync = 1
-	}
-	config.EnablePlaybackOverview = req.EnablePlaybackOverview
-	config.EnablePlaybackProgress = req.EnablePlaybackProgress
-	// if req.DeleteNetdiskLibrary != nil {
-	// 	config.DeleteNetdiskLibrary = strings.Join(req.DeleteNetdiskLibrary, ",")
-	// }
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "配置已保存", Data: gin.H{"warnings": warnings, "restart_required": false}})
+}
 
-	// 设置保存只拥有配置字段，不能回写读取期间变化的同步游标和运行状态。
-	fields := map[string]any{
-		"enabled":                      config.Enabled,
-		"emby_url":                     config.EmbyUrl,
-		"emby_api_key":                 config.EmbyApiKey,
-		"enable_delete_netdisk":        config.EnableDeleteNetdisk,
-		"enable_refresh_library":       config.EnableRefreshLibrary,
-		"enable_media_notification":    config.EnableMediaNotification,
-		"enable_extract_media_info":    config.EnableExtractMediaInfo,
-		"enable_auth":                  config.EnableAuth,
-		"sync_enabled":                 config.SyncEnabled,
-		"sync_cron":                    config.SyncCron,
-		"selected_libraries":           config.SelectedLibraries,
-		"sync_all_libraries":           config.SyncAllLibraries,
-		"enable_daily_first_full_sync": config.EnableDailyFirstFullSync,
-		"enable_playback_overview":     config.EnablePlaybackOverview,
-		"enable_playback_progress":     config.EnablePlaybackProgress,
-	}
-	if req.PathMappings != nil {
-		fields["path_mappings_json"] = config.PathMappingsJSON
-	}
-	if oldIdentity != models.EmbyConfigIdentity(config) {
-		for _, field := range []string{"last_saved_cursor_at", "last_full_sync_at", "last_incremental_sync_at", "last_sync_time"} {
-			fields[field] = int64(0)
-		}
-		fields["last_success_sync_mode"] = ""
-	}
-	var model any = &models.EmbyConfig{}
-	if kind == models.MediaServerJellyfin {
-		model = &models.JellyfinConfig{}
-		fields["jellyfin_url"], fields["jellyfin_api_key"] = fields["emby_url"], fields["emby_api_key"]
-		delete(fields, "emby_url")
-		delete(fields, "emby_api_key")
-	}
-	var saveErr error
-	if isNew {
-		// 显式零值不能被结构体创建时的 GORM 默认值改成开启。
-		now := helpers.NowUnix()
-		fields["created_at"], fields["updated_at"] = now, now
-		if config.SelectedLibraries == "" {
-			fields["selected_libraries"] = "[]"
-		}
-		saveErr = db.Db.Model(model).Create(fields).Error
-	} else {
-		saveErr = db.Db.Model(model).Where("id = ?", config.ID).Updates(fields).Error
-	}
-	if saveErr != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存配置失败：" + saveErr.Error()})
-		return
-	}
-	if kind == models.MediaServerEmby {
-		embypreload.PublishPreloadingEnabled(config.Enabled)
-	}
+func (controller *MediaLibraryConfigController) applyCommitted(ctx context.Context, config *models.EmbyConfig) []string {
 	warnings := []string{}
-	if err := synccron.UpdateMediaLibraryCron(kind); err != nil {
+	if config.MediaServerType == models.MediaServerEmby && controller.apply != nil {
+		if err := controller.apply(ctx, config); err != nil {
+			if helpers.AppLogger != nil {
+				helpers.AppLogger.Warnf("应用 Emby 302 配置失败：%v", err)
+			}
+			warnings = append(warnings, "配置已保存，Emby 302 尚未应用，请重新保存重试")
+		}
+	}
+	if err := synccron.UpdateMediaLibraryCron(config.MediaServerType); err != nil {
 		warnings = append(warnings, "配置已保存，定时同步尚未生效："+err.Error())
 	}
-	if err := emby.WakeMediaLibraryWebhookWorker(kind); err != nil {
+	if err := emby.WakeMediaLibraryWebhookWorker(config.MediaServerType); err != nil {
 		warnings = append(warnings, "配置已保存，通知后台处理尚未唤醒："+err.Error())
 	}
 	models.TriggerEmbyLibraryRefreshCheck()
 	models.TriggerMediaLibraryDownloadCheck()
-	restartRequired := false
-	if kind == models.MediaServerEmby {
-		restartRequired = web.EmbyRestartRequired(config.Enabled, config.EmbyUrl, config.EmbyApiKey)
-	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "配置已保存", Data: gin.H{"warnings": warnings, "restart_required": restartRequired}})
+	return warnings
 }
 
-func validateEmbyPathMappingSyncPaths(mappings []models.EmbyPathMapping) error {
+func validateEmbyPathMappingSyncPaths(ctx context.Context, mappings []models.EmbyPathMapping) error {
 	ids := make([]uint, 0, len(mappings))
 	for _, mapping := range mappings {
 		if mapping.SyncPathID != 0 {
@@ -264,7 +194,7 @@ func validateEmbyPathMappingSyncPaths(mappings []models.EmbyPathMapping) error {
 		return nil
 	}
 	var syncPaths []models.SyncPath
-	if err := db.Db.Where("id IN ?", ids).Find(&syncPaths).Error; err != nil {
+	if err := db.Db.WithContext(ctx).Where("id IN ?", ids).Find(&syncPaths).Error; err != nil {
 		return fmt.Errorf("读取路径映射的同步目录失败：%w", err)
 	}
 	byID := make(map[uint]models.SyncPath, len(syncPaths))
@@ -288,7 +218,7 @@ func validateEmbyPathMappingSyncPaths(mappings []models.EmbyPathMapping) error {
 		accountIDs = append(accountIDs, syncPath.AccountId)
 	}
 	var accounts []models.Account
-	if err := db.Db.Select("id, source_type, user_id, base_url, username, created_at").
+	if err := db.Db.WithContext(ctx).Select("id, source_type, user_id, base_url, username, created_at").
 		Where("id IN ?", accountIDs).Find(&accounts).Error; err != nil {
 		return fmt.Errorf("读取路径映射的网盘账号失败：%w", err)
 	}

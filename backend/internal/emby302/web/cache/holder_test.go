@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,9 +14,7 @@ import (
 )
 
 func TestPutCacheHonorsAbsoluteDeadline(t *testing.T) {
-	oldDefault := DefaultExpired
-	DefaultExpired = func() time.Duration { return time.Minute }
-	t.Cleanup(func() { DefaultExpired = oldDefault })
+	scope := newCacheScope(t)
 	now := time.Now().UnixMilli()
 	tests := []struct {
 		name    string
@@ -35,23 +34,21 @@ func TestPutCacheHonorsAbsoluteDeadline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			key := t.Name()
 			space := t.Name()
-			t.Cleanup(func() {
-				cacheMap.Delete(key)
-				spaceMap.Delete(space)
-			})
 			before := time.Now().UnixMilli()
-			putCache(key, http.StatusOK, []byte{}, respHeader{expired: tt.expired, space: space, spaceKey: key})
-			WaitingForHandleChan()
+			scope.putCache(key, http.StatusOK, []byte{}, respHeader{expired: tt.expired, space: space, spaceKey: key})
 			after := time.Now().UnixMilli()
-			rc, ok := getCache(key)
+			rc, ok := scope.getCache(key)
 			if ok != tt.wantHit {
 				t.Fatalf("cache hit = %v, want %v", ok, tt.wantHit)
 			}
-			if _, ok := GetSpaceCache(space, key); ok != tt.wantHit {
+			if _, ok := scope.GetSpaceCache(space, key); ok != tt.wantHit {
 				t.Fatalf("space hit = %v, want %v", ok, tt.wantHit)
 			}
 			if !tt.wantHit {
-				if _, stored := cacheMap.Load(key); stored {
+				scope.store.mu.Lock()
+				_, stored := scope.requests[key]
+				scope.store.mu.Unlock()
+				if stored {
 					t.Fatal("expired response was stored")
 				}
 				return
@@ -68,6 +65,7 @@ func TestPutCacheHonorsAbsoluteDeadline(t *testing.T) {
 }
 
 func TestCacheReadsRejectExpiredEntriesWithoutRenewing(t *testing.T) {
+	scope := newCacheScope(t)
 	now := time.Now().UnixMilli()
 	tests := []struct {
 		name    string
@@ -82,17 +80,15 @@ func TestCacheReadsRejectExpiredEntriesWithoutRenewing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			key := t.Name()
 			rc := &respCache{cacheKey: key, expired: tt.expired}
-			cacheMap.Store(key, rc)
-			putSpaceCache(key, key, rc)
-			t.Cleanup(func() {
-				cacheMap.Delete(key)
-				spaceMap.Delete(key)
-			})
+			scope.store.mu.Lock()
+			scope.requests[key] = rc
+			scope.putSpaceCacheLocked(key, key, rc)
+			scope.store.mu.Unlock()
 			for range 2 {
-				if _, ok := getCache(key); ok != tt.wantHit {
+				if _, ok := scope.getCache(key); ok != tt.wantHit {
 					t.Errorf("cache hit = %v, want %v", ok, tt.wantHit)
 				}
-				if _, ok := GetSpaceCache(key, key); ok != tt.wantHit {
+				if _, ok := scope.GetSpaceCache(key, key); ok != tt.wantHit {
 					t.Errorf("space hit = %v, want %v", ok, tt.wantHit)
 				}
 			}
@@ -103,43 +99,12 @@ func TestCacheReadsRejectExpiredEntriesWithoutRenewing(t *testing.T) {
 	}
 }
 
-func TestQueuedResponseExpiringBeforeStorageIsDropped(t *testing.T) {
-	oldDefault := DefaultExpired
-	DefaultExpired = func() time.Duration { return time.Minute }
-	t.Cleanup(func() { DefaultExpired = oldDefault })
-	blocker := &respCache{cacheKey: t.Name() + "/blocker", expired: time.Now().Add(time.Minute).UnixMilli()}
-	blocker.mu.Lock()
-	cacheHandleWaitGroup.Add(1)
-	preCacheChan <- blocker
-	key := t.Name()
-	t.Cleanup(func() {
-		cacheMap.Delete(blocker.cacheKey)
-		cacheMap.Delete(key)
-		spaceMap.Delete(key)
-	})
-	deadline := time.Now().Add(30 * time.Millisecond)
-	putCache(key, http.StatusTemporaryRedirect, []byte{}, respHeader{
-		expired:  strconv.FormatInt(deadline.UnixMilli(), 10),
-		space:    key,
-		spaceKey: key,
-		header:   http.Header{"Location": {"https://example.invalid/signed"}},
-	})
-	time.Sleep(time.Until(deadline) + time.Millisecond)
-	blocker.mu.Unlock()
-	WaitingForHandleChan()
-	if _, ok := cacheMap.Load(key); ok {
-		t.Fatal("response expired in the queue was still stored")
-	}
-	if _, ok := getSpace(key).Load(key); ok {
-		t.Fatal("response expired in the queue was published to a cache space")
-	}
-}
-
 func TestRequestCacherSnapshotsConcurrentResponses(t *testing.T) {
+	scope := newCacheScope(t)
 	const count = 32
 	var calls atomic.Int32
 	router := gin.New()
-	router.Use(RequestCacher())
+	router.Use(scope.RequestCacher())
 	router.GET("/:id", func(c *gin.Context) {
 		calls.Add(1)
 		id, _ := strconv.Atoi(c.Param("id"))
@@ -160,7 +125,6 @@ func TestRequestCacherSnapshotsConcurrentResponses(t *testing.T) {
 		workers.Go(func() { request(id) })
 	}
 	workers.Wait()
-	WaitingForHandleChan()
 	for id := range count {
 		response := request(id)
 		if response.Code != http.StatusOK+id%2 || response.Header().Get("X-Response-ID") != strconv.Itoa(id) ||
@@ -170,5 +134,65 @@ func TestRequestCacherSnapshotsConcurrentResponses(t *testing.T) {
 	}
 	if got := calls.Load(); got != count {
 		t.Fatalf("handler calls = %d, want %d", got, count)
+	}
+}
+
+func newCacheScope(t *testing.T) *Scope {
+	t.Helper()
+	store := NewStore(time.Minute)
+	t.Cleanup(func() {
+		if err := store.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	return store.NewScope()
+}
+
+func TestScopesIsolateResponsesAndRejectLateWrites(t *testing.T) {
+	first := newCacheScope(t)
+	second := first.store.NewScope()
+	request := httptest.NewRequest("GET", "/Items/item?api_key=same", nil)
+	header := http.Header{HeaderKeySpace: {"items"}, HeaderKeySpaceKey: {"same"}}
+	first.PutRequestCache(request, 200, []byte("first"), header)
+	if _, ok := second.GetRequestCache(request); ok {
+		t.Fatal("new connection reused old response")
+	}
+	if _, ok := second.GetSpaceCache("items", "same"); ok {
+		t.Fatal("new connection reused old space")
+	}
+	old, _ := first.GetRequestCache(request)
+	second.PutRequestCache(request, 200, []byte("second"), header)
+	first.Close()
+	first.PutRequestCache(request, 200, []byte("late first"), header)
+	old.Update(0, []byte("late update"), nil)
+	if _, ok := first.GetRequestCache(request); ok {
+		t.Fatal("closed scope revived")
+	}
+	response, ok := second.GetSpaceCache("items", "same")
+	if !ok || string(response.BodyBytes()) != "second" {
+		t.Fatal("late response changed new connection")
+	}
+}
+
+func TestStoreSharesCapacityAcrossScopes(t *testing.T) {
+	first := newCacheScope(t)
+	second := first.store.NewScope()
+	for id := range MaxCacheNum {
+		first.putCache(strconv.Itoa(id), 200, []byte("first"), respHeader{})
+	}
+	second.putCache("second", 200, []byte("second"), respHeader{})
+	if _, ok := first.getCache("0"); ok {
+		t.Fatal("new scope did not share eviction budget")
+	}
+	if _, ok := second.getCache("second"); !ok {
+		t.Fatal("latest response missing")
+	}
+	response, _ := second.getCache("second")
+	response.Update(0, make([]byte, int(MaxCacheSize)+1), nil)
+	if _, ok := second.getCache("second"); ok {
+		t.Fatal("response update escaped capacity budget")
+	}
+	if _, ok := first.getCache("1"); !ok {
+		t.Fatal("oversized update evicted other responses")
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"qmediasync/internal/validation"
+
+	"resty.dev/v3"
 )
 
 // proxyTransportField 传输层复用 validation 规则时的字段名，直接面向用户，用中文而非请求字段名。
@@ -343,4 +345,10 @@ type TestURLResult struct {
 	ErrorMessage string        `json:"error_message,omitempty"`
 	StartTime    time.Time     `json:"start_time"`
 	Duration     time.Duration `json:"duration"`
+}
+
+// CloseRestyClient 在请求结束后收回私有连接池；Resty.Close 本身不释放 HTTP 空闲连接。
+func CloseRestyClient(client *resty.Client) error {
+	client.Client().CloseIdleConnections()
+	return client.Close()
 }

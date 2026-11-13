@@ -1,6 +1,7 @@
 package path
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,6 +27,10 @@ type OpenlistPathRes struct {
 
 // Emby2Openlist 将 Emby 资源路径转换为 OpenList 资源路径
 func Emby2Openlist(embyPath string) OpenlistPathRes {
+	return Emby2OpenlistContext(context.Background(), nil, embyPath)
+}
+
+func Emby2OpenlistContext(ctx context.Context, client *http.Client, embyPath string) OpenlistPathRes {
 	pathRoutes := strings.Builder{}
 	pathRoutes.WriteString("[")
 	pathRoutes.WriteString("\n【原始路径】 => " + embyPath)
@@ -53,7 +58,7 @@ func Emby2Openlist(embyPath string) OpenlistPathRes {
 			return nil, fmt.Errorf("解析 OpenList 文件路径失败: %s, 错误: %v", openlistFilePath, err)
 		}
 
-		res := openlist.FetchFsList("/", nil)
+		res := openlist.FetchFsListContext(ctx, client, "/", nil)
 		if res.Code != http.StatusOK {
 			return nil, fmt.Errorf("请求 OpenList fs list 接口失败: %s", res.Msg)
 		}

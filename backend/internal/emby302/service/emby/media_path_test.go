@@ -15,7 +15,6 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/emby302/config"
-	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/web/cache"
 	"qmediasync/internal/emby302/web/webport"
 	"qmediasync/internal/playback"
@@ -43,10 +42,7 @@ func TestMediaResponsePathsDisplayDecodedURLs(t *testing.T) {
 		{"非法转义回退", "http://strm.test/file.mkv?name=%ZZ", "http://strm.test/file.mkv?name=%ZZ"},
 	} {
 		t.Run(source.name, func(t *testing.T) {
-			router, _ := newSTRMRedirectTestRouter(t, source.path, false)
-			router.Use(MediaPathDisplay())
-			config.C.VideoPreview = &config.VideoPreview{}
-			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			router, _, session := newSTRMRedirectTestRouter(t, source.path, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				sources := []any{map[string]any{"Id": "ms", "Path": source.path, "Container": "mkv"}}
 				item := map[string]any{"Id": "movie", "Type": "Folder", "Path": source.path, "MediaSources": sources}
@@ -67,12 +63,12 @@ func TestMediaResponsePathsDisplayDecodedURLs(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(body)
 			}))
-			defer origin.Close()
-			config.C.Emby.Host = origin.URL
-			router.POST("/Items/movie/PlaybackInfo", TransferPlaybackInfo)
-			router.GET("/Users/10/Items/20", LoadCacheItems)
-			router.GET("/Users/10/Items", ProxyAddItemsPreviewInfo)
-			router.GET("/Users/10/Items/Latest", ProxyLatestItems)
+			router.Use(MediaPathDisplay())
+			config.C.VideoPreview = &config.VideoPreview{}
+			router.POST("/Items/movie/PlaybackInfo", session.TransferPlaybackInfo)
+			router.GET("/Users/10/Items/20", session.LoadCacheItems)
+			router.GET("/Users/10/Items", session.ProxyAddItemsPreviewInfo)
+			router.GET("/Users/10/Items/Latest", session.ProxyLatestItems)
 			for _, route := range []struct{ name, method, path string }{
 				{"PlaybackInfo", http.MethodPost, "/Items/movie/PlaybackInfo"},
 				{"单项详情", http.MethodGet, "/Users/10/Items/20"},
@@ -140,9 +136,6 @@ func TestMediaResponsePathsDisplayDecodedURLs(t *testing.T) {
 func TestMediaResponsePathsPreserveLiveItems(t *testing.T) {
 	const raw = "http://strm.test/live%2Fstream?name=A%26B"
 	const displayed = "http://strm.test/live/stream?name=A&B"
-	router, _ := newSTRMRedirectTestRouter(t, raw, false)
-	router.Use(MediaPathDisplay())
-	config.C.VideoPreview = &config.VideoPreview{}
 	live := map[string]any{
 		"Id": "live", "Type": "TvChannel", "Path": raw,
 		"MediaSources": []any{map[string]any{"Id": "live-source", "Path": raw}},
@@ -151,7 +144,7 @@ func TestMediaResponsePathsPreserveLiveItems(t *testing.T) {
 		"Id": "normal", "Type": "Folder", "Path": raw,
 		"MediaSources": []any{map[string]any{"Id": "normal-source", "Path": raw}},
 	}
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	router, _, session := newSTRMRedirectTestRouter(t, raw, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body any
 		switch r.URL.Path {
@@ -168,11 +161,11 @@ func TestMediaResponsePathsPreserveLiveItems(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(body)
 	}))
-	defer origin.Close()
-	config.C.Emby.Host = origin.URL
-	router.GET("/Users/10/Items/20", LoadCacheItems)
-	router.GET("/Users/10/Items", ProxyAddItemsPreviewInfo)
-	router.GET("/Users/10/Items/Latest", ProxyLatestItems)
+	router.Use(MediaPathDisplay())
+	config.C.VideoPreview = &config.VideoPreview{}
+	router.GET("/Users/10/Items/20", session.LoadCacheItems)
+	router.GET("/Users/10/Items", session.ProxyAddItemsPreviewInfo)
+	router.GET("/Users/10/Items/Latest", session.ProxyLatestItems)
 	for _, path := range []string{"/Users/10/Items/20?api_key=test", "/Users/10/Items?IncludeItemTypes=Movie&api_key=test", "/Users/10/Items/Latest?api_key=test"} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -244,10 +237,7 @@ func TestItemDetailPreservesSourceThroughPlaybackInfoAndPreload(t *testing.T) {
 	}))
 	defer source.Close()
 	raw := source.URL + sourcePath
-	router, _ := newSTRMRedirectTestRouter(t, raw, false)
-	config.C.VideoPreview = &config.VideoPreview{}
-	config.C.Ssl = &config.Ssl{}
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	router, _, session := newSTRMRedirectTestRouter(t, raw, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		sources := []any{map[string]any{"Id": "ms", "Path": raw, "Container": "strm"}}
 		if r.URL.Path == "/Users/10/Items/20" {
@@ -257,24 +247,24 @@ func TestItemDetailPreservesSourceThroughPlaybackInfoAndPreload(t *testing.T) {
 		playbackInfoCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]any{"MediaSources": sources})
 	}))
-	defer origin.Close()
-	config.C.Emby.Host = origin.URL
+	config.C.VideoPreview = &config.VideoPreview{}
+	config.C.Ssl = &config.Ssl{}
 	core := playback.NewPreloader()
 	core.Start(t.Context())
 	core.Apply(true, 1)
 	defer core.Stop()
-	stop := ConfigurePreloading(PreloadOptions{
+	session.preload = newPreloader(PreloadOptions{
 		Instance: t.Name(), Coordinator: core,
 		Enabled: func() (bool, uint64) { return true, 1 },
 		Account: playback.ExternalPreloadAccount,
 		Resolve: func(raw, ua string, _ bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-			return playback.NewExternalPreload(raw, ua, https.Transport())
+			return playback.NewExternalPreload(raw, ua, session.Client.Transport)
 		},
-	})
-	defer stop()
-	router.Use(MediaPathDisplay(), PreloadObserver())
-	router.GET("/Users/10/Items/20", LoadCacheItems)
-	router.POST("/Items/:id/PlaybackInfo", TransferPlaybackInfo)
+	}, session.Origin, session.Client)
+	defer session.Retire()
+	router.Use(MediaPathDisplay(), session.PreloadObserver())
+	router.GET("/Users/10/Items/20", session.LoadCacheItems)
+	router.POST("/Items/:id/PlaybackInfo", session.TransferPlaybackInfo)
 	server := httptest.NewServer(router)
 	defer server.Close()
 	internal, err := url.Parse(server.URL)
@@ -322,14 +312,14 @@ func TestItemDetailPreservesSourceThroughPlaybackInfoAndPreload(t *testing.T) {
 
 func TestMediaResponseCacheKeepsOriginalPath(t *testing.T) {
 	const raw = "http://strm.test/file%252F%E7%94%B5%E5%BD%B1.mkv?name=A%26B%2BC&x=2&x=1"
-	router, _ := newSTRMRedirectTestRouter(t, raw, false)
+	router, _, session := newSTRMRedirectTestRouter(t, raw, false)
 	config.C.Cache.Enable = true
 	if err := config.C.Cache.Init(); err != nil {
 		t.Fatal(err)
 	}
 	config.C.VideoPreview = &config.VideoPreview{}
-	router.Use(MediaPathDisplay(), cache.CacheableRouteMarker(), cache.RequestCacher())
-	router.POST("/Items/movie/PlaybackInfo", TransferPlaybackInfo)
+	router.Use(MediaPathDisplay(), cache.CacheableRouteMarker(), session.Cache.RequestCacher())
+	router.POST("/Items/movie/PlaybackInfo", session.TransferPlaybackInfo)
 	path := "/Items/movie/PlaybackInfo?api_key=" + url.QueryEscape(t.Name()+t.TempDir())
 	for range 2 {
 		response := httptest.NewRecorder()
@@ -346,8 +336,7 @@ func TestMediaResponseCacheKeepsOriginalPath(t *testing.T) {
 		if response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {
 			t.Fatalf("display Content-Length=%s body=%d", response.Header().Get("Content-Length"), response.Body.Len())
 		}
-		cache.WaitingForHandleChan()
-		cached, ok := cache.GetRequestCache(httptest.NewRequest(http.MethodPost, path, nil))
+		cached, ok := session.Cache.GetRequestCache(httptest.NewRequest(http.MethodPost, path, nil))
 		if !ok {
 			t.Fatal("response cache missing")
 		}

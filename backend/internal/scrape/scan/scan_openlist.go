@@ -60,7 +60,8 @@ func (s *ScanOpenlistImpl) GetNetFileFiles() error {
 		return fmt.Errorf("源目录 %s 不存在或者其他错误：%v", s.scrapePath.SourcePathId, err)
 	}
 	// 初始化路径队列，容量为接口线程数
-	s.pathTasks = make(chan string, models.SettingsGlobal.FileDetailThreads)
+	threadCount := models.GetThreadSettingsSnapshot().FileDetailThreads
+	s.pathTasks = make(chan string, threadCount)
 	// 启动一个控制 buffer 的 context
 	bufferCtx, cancelBuffer := context.WithCancel(context.Background())
 	// 启动 buffer 到任务队列的转移协程
@@ -69,8 +70,8 @@ func (s *ScanOpenlistImpl) GetNetFileFiles() error {
 	s.wg = sync.WaitGroup{}
 	s.addPathToTasks(s.scrapePath.SourcePathId)
 	// 启动一个协程处理目录
-	helpers.AppLogger.Infof("开始处理目录 %s，开启 %d 个任务", s.scrapePath.SourcePath, models.SettingsGlobal.FileDetailThreads)
-	for i := 0; i < models.SettingsGlobal.FileDetailThreads; i++ {
+	helpers.AppLogger.Infof("开始处理目录 %s，开启 %d 个任务", s.scrapePath.SourcePath, threadCount)
+	for i := 0; i < threadCount; i++ {
 		// 在限速器控制下执行 startPathWork
 		go s.startPathWorkWithLimiter(i)
 	}

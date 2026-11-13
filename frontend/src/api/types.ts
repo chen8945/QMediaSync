@@ -4,3 +4,7 @@ export interface APIResponse<T> {
   data: T
   error_code?: string
 }
+
+export interface SettingsSaveResult {
+  warnings: string[]
+}

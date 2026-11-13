@@ -23,8 +23,10 @@
 `APIResponse[T]` 保留 `code`、`message`、`data`，并通过可选顶层 `error_code` 提供稳定的机器错误码；未设置时省略该字段，成功响应不携带错误码。三个状态来源各有职责：
 
 - HTTP 状态表示请求层面的结果，沿用接口已有的 `200`、`400`、`401`、`403` 等状态。
-- 数值 `code` 不代替 HTTP 认证状态；仅有响应体 `code=401` 不触发会话失效。它表示历史业务结果：常规接口 `200` 为成功，`500` 为业务失败，不能将响应体的 `500` 当作 HTTP `500`。通知管理接口保留 `code=0` 成功、`code=1` 失败的独立历史契约，前端仅在该领域 API 中识别。
+- 数值 `code` 不代替 HTTP 认证状态；仅有响应体 `code=401` 不触发会话失效。它表示历史业务结果：常规接口 `200` 为成功，`500` 为业务失败，不能将响应体的 `500` 当作 HTTP `500`。通知管理接口保留 `code=0` 成功、`code=1` 失败的独立历史契约，前端仅在该领域 API 中识别。 创建、更新、开关、规则和删除写入保留原 `data` 形状；成功提交后的应用警告使用可选顶层 `warnings: string[]`，旧响应缺少字段时按空列表处理。警告不改变已经成功提交的结果。
 - 字符串 `error_code` 提供可识别的原因；缺失或未知时，客户端根据 HTTP 状态和业务结果回退，不依赖任意文案猜测。
+
+出站代理、线程组和刮削目录写入保留常规成功码 `200` 与原 `data`，提交后的本地应用警告同样使用可选顶层 `warnings: string[]`。媒体设置仍将警告放在 `data.warnings`；各领域先按自己的成功码判断，再读取对应警告位置，不改变其他接口的响应。
 
 认证与来源校验错误码由 [认证与浏览器会话](../architecture/authentication-sessions.md#请求错误码) 定义。错误码只表达已知原因，不暴露凭据匹配细节，也不为了分类改变既有认证策略。
 
@@ -268,7 +270,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 | 手动提取 | `POST /api/setting/emby/parse` | `POST /api/setting/jellyfin/parse` |
 | 外部 Webhook | `POST /emby/webhook` | `POST /jellyfin/webhook` |
 
-`enabled` 与 `enable_media_notification` 支持旧请求省略或 `null` 时保留现值，显式 `false`／`0` 仍保存；新配置默认关闭。读取返回 `data={exists, config}`。保存只做本地字段校验，允许离线保存；提交成功返回 `code=200`，`data.warnings: string[]` 和 `data.restart_required: boolean` 表示提交后的应用结果；Jellyfin 的 `restart_required` 固定为 false，Emby 按已启动代理的连接／启用变更判断。应用失败不变成未保存，回读失败也不等同于配置提交失败；完整契约见 [独立配置与入口](../architecture/emby-library-sync.md#独立配置与入口)。
+`enabled` 与 `enable_media_notification` 支持旧请求省略或 `null` 时保留现值，显式 `false`／`0` 仍保存；新配置默认关闭。读取返回 `data={exists, config}`。保存只做本地字段校验，允许离线保存；提交成功返回 `code=200`，`data.warnings: string[]` 表示提交后的应用警告；`data.restart_required` 固定为 `false`，保留字段供旧调用方兼容。应用失败不变成未保存，回读失败也不等同于配置提交失败；完整契约见 [独立配置与入口](../architecture/emby-library-sync.md#独立配置与入口)。
 
 手动提取使用无 body 的 `POST /api/setting/{emby|jellyfin}/parse`，要求本端总开关、连接、全部媒体库及播放权限，不受 `enable_extract_media_info` 和同步选库限制。该分项只控制入库自动提取。手动全量仍要求本端总开关与 `sync_enabled=1`；媒体库列表只读查询允许总开关关闭。
 

@@ -68,7 +68,7 @@ func CacheableRouteMarker() gin.HandlerFunc {
 }
 
 // RequestCacher 请求缓存中间件
-func RequestCacher() gin.HandlerFunc {
+func (scope *Scope) RequestCacher() gin.HandlerFunc {
 	streamRoute := regexp.MustCompile(constant.Reg_ResourceStream + "$")
 	subtitleRoute := regexp.MustCompile(constant.Reg_VideoSubtitles)
 	return func(c *gin.Context) {
@@ -86,12 +86,13 @@ func RequestCacher() gin.HandlerFunc {
 		}
 
 		// 3 尝试获取缓存
-		if rc, ok := getCache(cacheKey); ok {
+		if rc, ok := scope.getCache(cacheKey); ok {
 			rc.mu.RLock()
 			code := rc.code
-			header := rc.header.header.Clone()
-			body := append([]byte(nil), rc.body...)
+			header, body := rc.header.header, rc.body
 			rc.mu.RUnlock()
+			header = header.Clone()
+			body = append([]byte(nil), body...)
 			if https.IsRedirectCode(code) {
 				if c.Request.Context().Err() == nil && streamRoute.MatchString(c.Request.URL.Path) &&
 					!subtitleRoute.MatchString(c.Request.URL.Path) && header.Get("Location") != "" {
@@ -136,7 +137,7 @@ func RequestCacher() gin.HandlerFunc {
 		defer header.Del(HeaderKeySpaceKey)
 
 		// 响应快照同步入队，后台维护不再访问会被 Gin 复用的 Context。
-		putCache(cacheKey, c.Writer.Status(), append([]byte(nil), customWriter.body.Bytes()...), respHeader)
+		scope.putCache(cacheKey, c.Writer.Status(), append([]byte(nil), customWriter.body.Bytes()...), respHeader)
 	}
 }
 
@@ -144,11 +145,6 @@ func RequestCacher() gin.HandlerFunc {
 func Duration(d time.Duration) string {
 	expired := d.Milliseconds() + time.Now().UnixMilli()
 	return fmt.Sprintf("%v", expired)
-}
-
-// WaitingForHandleChan 等待预缓存通道被处理完毕
-func WaitingForHandleChan() {
-	cacheHandleWaitGroup.Wait()
 }
 
 // calcCacheKey 计算缓存 key

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"container/list"
 	"net/http"
 	"sync"
 
@@ -23,6 +24,9 @@ func (rcw *respCacheWriter) Write(b []byte) (int, error) {
 
 // respCache 存放请求的响应信息
 type respCache struct {
+	scope   *Scope
+	element *list.Element
+	size    int64
 
 	// code 响应码
 	code int
@@ -60,23 +64,23 @@ func (c *respCache) Code() int {
 
 // Body 克隆一个响应体, 转换为缓冲区
 func (c *respCache) Body() *bytes.Buffer {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return bytes.NewBuffer(c.BodyBytes())
 }
 
 // BodyBytes 克隆一个响应体
 func (c *respCache) BodyBytes() []byte {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return append([]byte(nil), c.body...)
+	body := c.body
+	c.mu.RUnlock()
+	return append([]byte(nil), body...)
 }
 
 // JsonBody 将响应体转换成 JSON 返回
 func (c *respCache) JsonBody() (*jsons.Item, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return jsons.New(string(c.body))
+	body := c.body
+	c.mu.RUnlock()
+	return jsons.New(string(body))
 }
 
 // Header 获取响应头属性
@@ -89,8 +93,9 @@ func (c *respCache) Header(key string) string {
 // Headers 获取克隆响应头
 func (c *respCache) Headers() http.Header {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.header.header.Clone()
+	header := c.header.header
+	c.mu.RUnlock()
+	return header.Clone()
 }
 
 // Space 获取缓存空间名称
@@ -120,19 +125,35 @@ func (c *respCache) Update(code int, body []byte, header http.Header) {
 	if code == 0 && body == nil && header == nil {
 		return
 	}
+	if body != nil {
+		body = append([]byte(nil), body...)
+	}
+	if header != nil {
+		header = header.Clone()
+	}
+	store := c.scope.store
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed || c.scope.closed {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	if code != 0 {
 		c.code = code
 	}
-
 	if body != nil {
-		// 新建一个底层数组来存放响应体数据
-		c.body = append(([]byte)(nil), body...)
+		if c.element != nil {
+			store.size += int64(len(body)) - c.size
+		}
+		c.body, c.size = body, int64(len(body))
 	}
-
 	if header != nil {
-		c.header.header = header.Clone()
+		c.header.header = header
 	}
+	if c.size > MaxCacheSize {
+		store.removeLocked(c)
+		return
+	}
+	store.trimLocked()
 }

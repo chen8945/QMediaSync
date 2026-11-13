@@ -360,7 +360,7 @@ func TestScanResultRequestTimeoutIsNotTaskCancellation(t *testing.T) {
 
 func TestScanResultDirectoryTimeoutKeepsIndependentSibling(t *testing.T) {
 	s := newFailureScanSyncer(t)
-	models.SettingsGlobal.OpenlistRetry = 0
+	s.threadSettings.OpenlistRetry = 0
 	s.SyncDriver = &failureScanDriver{list: func(_ context.Context, path, _ string) ([]*SyncFileCache, error) {
 		switch path {
 		case "/media":

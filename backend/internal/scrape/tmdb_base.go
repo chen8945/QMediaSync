@@ -12,4 +12,5 @@ type TmdbBase struct {
 	scrapePath *models.ScrapePath
 	ctx        context.Context
 	Client     *tmdb.Client
+	settings   models.ScrapeSettings
 }

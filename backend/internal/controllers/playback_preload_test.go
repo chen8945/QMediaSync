@@ -187,8 +187,9 @@ func TestPlaybackPreloadRequiresSuccessfulCacheWrite(t *testing.T) {
 }
 
 func TestPlaybackPreloadOrdinaryTakeoverReusesActiveSignature(t *testing.T) {
-	setupControllerTestDB(t, &models.Account{})
+	setupControllerTestDB(t, &models.Account{}, &models.Settings{})
 	synctest.Test(t, func(t *testing.T) {
+		setup115PlaybackSettings(t, &models.Settings{URLValidityCheckEnabled: 0})
 		p, prepared := setupPreloadProvider(t)
 		prepared.account.ID = 9000007
 		prepared.source.AccountID = prepared.account.ID

@@ -1,9 +1,15 @@
 package models
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"qmediasync/internal/db"
 
@@ -48,9 +54,8 @@ func testDownloadQueueRetriesAfterDatabaseError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Db.Callback().Query().Remove(callback) })
-	dq := NewDq(1)
-	dq.running = true
-	dq.moveTasksToChannel()
+	dq := newDownloadPollTestQueue(t)
+	pollDownloads(t, dq)
 	for _, task := range tasks {
 		var stored DbDownloadTask
 		if err := db.Db.First(&stored, task.ID).Error; err != nil {
@@ -61,11 +66,13 @@ func testDownloadQueueRetriesAfterDatabaseError(t *testing.T) {
 		}
 	}
 	for range 4 {
-		dq.moveTasksToChannel()
+		pollDownloads(t, dq)
 	}
 	queued := make(map[uint]bool)
-	for len(dq.tasks) > 0 {
-		task := <-dq.tasks
+	for _, task := range GetPendingDownloadTasks(10) {
+		if !dq.claim(t.Context(), task) {
+			t.Fatalf("pending task %d was not claimed", task.ID)
+		}
 		if queued[task.ID] || task.RetryCount != DefaultQueueRetryMax || task.Status != DownloadStatusDownloading || task.Error != "" {
 			t.Fatalf("invalid recovered download task: %+v", task)
 		}
@@ -80,10 +87,10 @@ func testDownloadQueueRetriesAfterDatabaseError(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 3 {
-		dq.moveTasksToChannel()
+		pollDownloads(t, dq)
 	}
-	if len(dq.tasks) != 0 || retryQueries.Load() != 3 {
-		t.Fatalf("exhausted tasks or successful idle retry were repeated: queued=%d queries=%d", len(dq.tasks), retryQueries.Load())
+	if len(GetPendingDownloadTasks(10)) != 0 || retryQueries.Load() != 3 {
+		t.Fatalf("exhausted tasks or successful idle retry were repeated: queries=%d", retryQueries.Load())
 	}
 	for _, task := range tasks {
 		var stored DbDownloadTask
@@ -93,5 +100,96 @@ func testDownloadQueueRetriesAfterDatabaseError(t *testing.T) {
 		if stored.Status != DownloadStatusFailed || stored.RetryCount != DefaultQueueRetryMax {
 			t.Fatalf("retry limit was not preserved: %+v", stored)
 		}
+	}
+}
+
+// 固定慢轮询只隔离自动重试的SQL行为；正常准入由派发测试验证。
+func newDownloadPollTestQueue(t *testing.T) *DQ {
+	t.Helper()
+	queue := NewDq(1)
+	queue.interval = time.Hour
+	queue.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := queue.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return queue
+}
+
+func pollDownloads(t *testing.T, queue *DQ) []*DbDownloadTask {
+	t.Helper()
+	queue.mutex.RLock()
+	ctx := queue.generation
+	queue.mutex.RUnlock()
+	tasks, _ := queue.pendingTasks(ctx, 10, nil)
+	return tasks
+}
+
+func TestDownloadQueuePauseKeepsIOAndShutdownCancelsIt(t *testing.T) {
+	setupMediaDownloadTestDB(t)
+	requested, cancelled := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(requested)
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	t.Cleanup(server.Close)
+	task := &DbDownloadTask{Source: DownloadSourceStrm, SourceType: SourceTypeOpenList, Status: DownloadStatusPending,
+		LocalFullPath: filepath.Join(t.TempDir(), "movie.nfo"), RemoteDownloadUrl: server.URL, Size: -1}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	queue := NewDq(1)
+	query := queue.candidates
+	queue.candidates = func(ctx context.Context, limit int, excluded []uint) ([]*DbDownloadTask, error) {
+		tasks, err := query(ctx, limit, excluded)
+		for _, task := range tasks {
+			task.Account = &Account{SourceType: SourceTypeOpenList}
+		}
+		return tasks, err
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := queue.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	queue.Start()
+	select {
+	case <-requested:
+	case <-time.After(3 * time.Second):
+		t.Fatal("下载没有进入真实HTTP请求")
+	}
+	queue.Stop()
+	select {
+	case <-cancelled:
+		t.Fatal("网页暂停不应取消在途IO")
+	default:
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := queue.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Fatal("最终关闭未取消HTTP请求")
+	}
+	if _, err := os.Stat(task.LocalFullPath); !os.IsNotExist(err) {
+		t.Fatalf("取消不能发布不完整元数据：%v", err)
+	}
+	var stored DbDownloadTask
+	if err := db.Db.First(&stored, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != DownloadStatusPending || stored.StartTime != 0 || stored.EndTime != 0 || stored.Error != "" || stored.RetryCount != 0 {
+		t.Fatalf("取消的下载应保留完整待办状态：%+v", stored)
 	}
 }

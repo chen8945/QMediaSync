@@ -36,6 +36,7 @@ type preloadResolved struct {
 type embyPreloadHarness struct {
 	t          *testing.T
 	adapter    *embyPreloader
+	session    *Session
 	core       *playback.Preloader
 	router     *gin.Engine
 	server     *httptest.Server
@@ -81,30 +82,21 @@ func newEmbyPreloadHarnessWithNetwork(t *testing.T, memory bool) *embyPreloadHar
 		t.Errorf("unexpected metadata request %s", r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	})
+	client := https.NewClient(https.ClientOptions{})
 	if memory {
 		h.server = httptest.NewTestServer(t, handler)
 		network := h.server.Client().Transport.(*http.Transport)
-		previous := https.Transport().(*http.Transport)
-		options := https.ClientOptions{}
-		if previous.TLSClientConfig != nil {
-			options.InsecureSkipVerify = previous.TLSClientConfig.InsecureSkipVerify
-		}
-		previous.CloseIdleConnections()
-		https.ConfigureClient(options)
-		transport := https.Transport().(*http.Transport)
+		transport := client.Transport.(*http.Transport)
 		transport.DialContext, transport.DialTLSContext = network.DialContext, network.DialTLSContext
-		t.Cleanup(func() {
-			transport.CloseIdleConnections()
-			https.ConfigureClient(options)
-		})
 	} else {
 		h.server = httptest.NewServer(handler)
 	}
+	t.Cleanup(client.CloseIdleConnections)
 	old := config.C
 	config.C = &config.Config{Emby: &config.Emby{Host: h.server.URL}}
 	h.core.Start(t.Context())
 	h.core.Apply(true, 1)
-	stop := ConfigurePreloading(PreloadOptions{
+	h.session = newTestSessionWithClient(t, h.server.URL, client, PreloadOptions{
 		Instance: t.Name(), Coordinator: h.core,
 		Enabled:       func() (bool, uint64) { return h.enabled.Load(), h.generation.Load() },
 		TrustedOrigin: func(u *url.URL) bool { return u.Scheme == "http" && u.Host == "qms.invalid" && u.Path == "/115/newurl" },
@@ -119,9 +111,9 @@ func newEmbyPreloadHarnessWithNetwork(t *testing.T, memory bool) *embyPreloadHar
 			}, true
 		},
 	})
-	h.adapter = activeEmbyPreloader.Load()
+	h.adapter = h.session.preload
 	h.router = gin.New()
-	h.router.Use(PreloadObserver())
+	h.router.Use(h.session.PreloadObserver())
 	h.router.Any("/*path", func(c *gin.Context) {
 		kind, item, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 		if c.Request.Body != nil {
@@ -149,7 +141,7 @@ func newEmbyPreloadHarnessWithNetwork(t *testing.T, memory bool) *embyPreloadHar
 			c.Status(http.StatusNoContent)
 		}
 	})
-	t.Cleanup(func() { stop(); h.core.Stop(); h.server.Close(); config.C = old })
+	t.Cleanup(func() { h.session.Retire(); h.core.Stop(); h.server.Close(); config.C = old })
 	return h
 }
 
@@ -194,13 +186,8 @@ func preloadTestItem(id, kind string) preloadItem {
 }
 
 func TestPreloadVirtualClockPreservesDebounceAndRealNetwork(t *testing.T) {
-	previous := https.Transport().(*http.Transport)
-	options := https.ClientOptions{}
-	if previous.TLSClientConfig != nil {
-		options.InsecureSkipVerify = previous.TLSClientConfig.InsecureSkipVerify
-	}
-	https.ConfigureClient(https.ClientOptions{InsecureSkipVerify: true})
-	t.Cleanup(func() { https.ConfigureClient(options) })
+	client := https.NewClient(https.ClientOptions{InsecureSkipVerify: true})
+	t.Cleanup(client.CloseIdleConnections)
 	runEmbyPreloadTest(t, func(t *testing.T) {
 		h := newEmbyPreloadTestHarness(t)
 		h.nodes["20"] = preloadTestItem("20", "Episode")
@@ -214,14 +201,14 @@ func TestPreloadVirtualClockPreservesDebounceAndRealNetwork(t *testing.T) {
 			t.Fatalf("virtual detail resolved wrong source %q", got.path)
 		}
 	})
-	if transport := https.Transport().(*http.Transport); transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("virtual metadata transport did not restore the prior TLS option")
+	if transport := client.Transport.(*http.Transport); transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("virtual fixture changed another client TLS option")
 	}
 	h := newEmbyPreloadRealNetworkHarness(t)
 	h.upstream = func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(preloadTestItem("20", "Episode"))
 	}
-	response, err := https.Get(h.server.URL + "/Users/10/Items/20?UserId=10").Header(http.Header{
+	response, err := https.Get(h.server.URL + "/Users/10/Items/20?UserId=10").Client(h.session.Client).Header(http.Header{
 		"X-Emby-Token": {"user-token"}, "Accept": {"application/json"},
 	}).Context(t.Context()).DoSingle()
 	if err != nil {
@@ -263,22 +250,22 @@ func TestPreloadRoutesAndCredentialScope(t *testing.T) {
 	defer func() { config.C = old }()
 	request := httptest.NewRequest("GET", "/Users/10/Items/20?DeviceId=device&api_key=first", nil)
 	request.Header.Set("User-Agent", "Mozilla/test")
-	one, ok := newPreloadRequest(request, "test", "10", "", 1)
+	one, ok := newPreloadRequest(request, config.C.Emby.Host, "test", "10", "", 1)
 	if !ok {
 		t.Fatal("valid scope rejected")
 	}
 	request.Header.Set("X-Emby-Token", "second")
-	if _, ok := newPreloadRequest(request, "test", "10", "", 1); ok {
+	if _, ok := newPreloadRequest(request, config.C.Emby.Host, "test", "10", "", 1); ok {
 		t.Fatal("conflicting token accepted")
 	}
 	request.Header.Del("X-Emby-Token")
 	request.URL.RawQuery = "DeviceId=another&api_key=first"
-	two, ok := newPreloadRequest(request, "test", "10", "", 1)
+	two, ok := newPreloadRequest(request, config.C.Emby.Host, "test", "10", "", 1)
 	if !ok || one.scope == two.scope {
 		t.Fatal("devices share scope")
 	}
 	request.URL.RawQuery = "DeviceId=device&api_key=first&UserId=11"
-	if _, ok := newPreloadRequest(request, "test", "10", "", 1); ok {
+	if _, ok := newPreloadRequest(request, config.C.Emby.Host, "test", "10", "", 1); ok {
 		t.Fatal("conflicting user accepted")
 	}
 }
@@ -295,26 +282,26 @@ func TestPreloadClientIdentityCompatibility(t *testing.T) {
 			r.Header.Set(HeaderFullAuthName, description)
 			r.Header.Set("X-Emby-Token", "user-token")
 			r.Header.Set("User-Agent", "Player/1.0")
-			parsed, ok := newPreloadRequest(r, "fixture", "10", "", 1)
+			parsed, ok := newPreloadRequest(r, config.C.Emby.Host, "fixture", "10", "", 1)
 			if !ok || parsed.weakIdentity || parsed.ua != "Player/1.0" {
 				t.Fatal("合法播放器描述未被识别")
 			}
 			r.Header.Set("X-Emby-Device-Id", "different")
-			if _, ok := newPreloadRequest(r, "fixture", "10", "", 1); ok {
+			if _, ok := newPreloadRequest(r, config.C.Emby.Host, "fixture", "10", "", 1); ok {
 				t.Fatal("设备冲突被当成缺失后降级")
 			}
 		}
 		r := httptest.NewRequest(http.MethodGet, "/Users/10/Items/20?api_key=user-token", nil)
 		r.Header.Set("User-Agent", "Player/1.0")
-		weak, ok := newPreloadRequest(r, "fixture", "10", "", 1)
+		weak, ok := newPreloadRequest(r, config.C.Emby.Host, "fixture", "10", "", 1)
 		if !ok || !weak.weakIdentity {
 			t.Fatal("缺少设备标识未降级")
 		}
 		r.Header.Set("User-Agent", "Player/1.1")
-		changed, _ := newPreloadRequest(r, "fixture", "10", "", 1)
+		changed, _ := newPreloadRequest(r, config.C.Emby.Host, "fixture", "10", "", 1)
 		r.Header.Set("User-Agent", "Player/1.0")
 		r.Header.Set("X-Emby-Device-Id", "Player/1.0")
-		strong, _ := newPreloadRequest(r, "fixture", "10", "", 1)
+		strong, _ := newPreloadRequest(r, config.C.Emby.Host, "fixture", "10", "", 1)
 		if weak.scope == changed.scope || weak.scope == strong.scope {
 			t.Fatal("UA 版本或显式设备身份发生作用域碰撞")
 		}
@@ -640,7 +627,7 @@ func TestPreloadObserverPreservesBytesAndDisabledPath(t *testing.T) {
 		h := newEmbyPreloadTestHarness(t)
 		h.enabled.Store(false)
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		const requestBody = `{"ItemId":"20","PositionTicks":12345,"IsPaused":false,"extra":"unchanged"}`
 		response := []byte("raw response bytes\x00\n")
 		router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
@@ -674,12 +661,12 @@ func TestPreloadServerToggleRejectsOldWorkAndRecovers(t *testing.T) {
 					h.waitResolved()
 					synctest.Wait()
 				}
-				PublishPreloadingEnabled(false)
-				PublishPreloadingEnabled(false)
+				h.adapter.publishEnabled(false)
+				h.adapter.publishEnabled(false)
 			} else {
 				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 				router := gin.New()
-				router.Use(PreloadObserver())
+				router.Use(h.session.PreloadObserver())
 				router.GET("/Users/10/Items/20", func(c *gin.Context) {
 					close(entered)
 					<-release
@@ -689,8 +676,8 @@ func TestPreloadServerToggleRejectsOldWorkAndRecovers(t *testing.T) {
 				h.router = router
 				go func() { h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil); close(done) }()
 				<-entered
-				PublishPreloadingEnabled(false)
-				PublishPreloadingEnabled(true)
+				h.adapter.publishEnabled(false)
+				h.adapter.publishEnabled(true)
 				close(release)
 				<-done
 				h.router = original
@@ -699,7 +686,7 @@ func TestPreloadServerToggleRejectsOldWorkAndRecovers(t *testing.T) {
 			if len(h.resolved) != 0 || h.metadata.Load() != 0 {
 				t.Fatal("disabled or stale observation still performed preload")
 			}
-			PublishPreloadingEnabled(false)
+			h.adapter.publishEnabled(false)
 			response := h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"Id":"20"`) {
 				t.Fatal("disabled preload changed the ordinary response")
@@ -708,7 +695,7 @@ func TestPreloadServerToggleRejectsOldWorkAndRecovers(t *testing.T) {
 			if len(h.resolved) != 0 || h.metadata.Load() != 0 {
 				t.Fatal("disabled server admitted a new candidate")
 			}
-			PublishPreloadingEnabled(true)
+			h.adapter.publishEnabled(true)
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 			if result := h.waitResolved(); result.path != h.nodes["20"].MediaSources[0].Path {
 				t.Fatalf("reenabled server resolved %q", result.path)
@@ -870,7 +857,7 @@ func TestPreloadObserverPreservesGzipAndActiveRequestBytes(t *testing.T) {
 		_, _ = writer.Write(data)
 		_ = writer.Close()
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.GET("/Users/10/Items/20", func(c *gin.Context) {
 			c.Header("Content-Encoding", "gzip")
 			c.Header("X-Original", "preserved")
@@ -907,7 +894,7 @@ func TestPreloadOutOfOrderDetailAndPlaybackInfoKeepLatestIntent(t *testing.T) {
 			gates[name] = gate{make(chan struct{}), make(chan struct{}), make(chan struct{})}
 		}
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.Any("/*path", func(c *gin.Context) {
 			kind, id, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			if c.Request.Body != nil {
@@ -1114,7 +1101,7 @@ func TestPreloadInvalidProgressCancelsInFlightSuccessor(t *testing.T) {
 				endpoint = "/Sessions/Playing"
 			case "forbidden":
 				h.router = gin.New()
-				h.router.Use(PreloadObserver())
+				h.router.Use(h.session.PreloadObserver())
 				h.router.POST("/Sessions/Playing/Progress", func(c *gin.Context) {
 					_, _ = io.ReadAll(c.Request.Body)
 					c.Status(http.StatusForbidden)
@@ -1192,7 +1179,7 @@ func TestPreloadControlChangeCancelsBeforeNewDetailResponds(t *testing.T) {
 		h.request("GET", "/Users/10/Items/21", "device", "Fixture App", "Control/1", nil)
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.GET("/Users/10/Items/21", func(c *gin.Context) {
 			close(entered)
 			<-release
@@ -1236,7 +1223,7 @@ func TestPreloadStalePlaybackResponsesDoNotRestoreIntent(t *testing.T) {
 			h.request("POST", "/Sessions/Playing", "device", client, ua, report)
 			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			router := gin.New()
-			router.Use(PreloadObserver())
+			router.Use(h.session.PreloadObserver())
 			router.Any("/*path", func(c *gin.Context) {
 				if c.Request.Body != nil {
 					_, _ = io.ReadAll(c.Request.Body)
@@ -1384,7 +1371,7 @@ func TestPreloadStoppedMatchesCurrentPlayback(t *testing.T) {
 					ignored := change != "current" && change != "current_optional_fields"
 					raw, _ := json.Marshal(report)
 					router := gin.New()
-					router.Use(PreloadObserver())
+					router.Use(h.session.PreloadObserver())
 					router.Any("/*path", func(c *gin.Context) {
 						got, err := io.ReadAll(c.Request.Body)
 						if err != nil || !bytes.Equal(got, raw) {
@@ -1463,7 +1450,7 @@ func TestPreloadStoppedDuringCurrentStream(t *testing.T) {
 				release := sync.OnceFunc(func() { close(blocked) })
 				t.Cleanup(release)
 				router := gin.New()
-				router.Use(PreloadObserver())
+				router.Use(h.session.PreloadObserver())
 				router.Any("/*path", func(c *gin.Context) {
 					kind, _, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 					if kind == "stream" {
@@ -1583,7 +1570,7 @@ func TestPreloadStoppedBodyObservationPreservesOriginalReads(t *testing.T) {
 				body.terminal = readErr
 			}
 			router := gin.New()
-			router.Use(PreloadObserver())
+			router.Use(h.session.PreloadObserver())
 			router.POST("/Sessions/Playing/Stopped", func(c *gin.Context) {
 				if mode == "unread" || mode == "partial" {
 					if mode == "partial" {
@@ -1645,7 +1632,7 @@ func TestPreloadStoppedRechecksPlaybackAfterSlowBodyOrResponse(t *testing.T) {
 				release := sync.OnceFunc(func() { close(blocked); _ = writer.Close() })
 				t.Cleanup(func() { release(); _ = reader.Close() })
 				router := gin.New()
-				router.Use(PreloadObserver())
+				router.Use(h.session.PreloadObserver())
 				router.Any("/*path", func(c *gin.Context) {
 					kind, item, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 					if kind == "stop" {
@@ -1731,7 +1718,7 @@ func TestPreloadOutOfOrderSeasonMembersKeepLatestResponse(t *testing.T) {
 		h.request("GET", "/Users/10/Items/91", "device", "Emby Web", "Mozilla/test", nil)
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.GET("/Shows/90/Episodes", func(c *gin.Context) {
 			id := "21"
 			if c.Query("older") == "true" {
@@ -1777,7 +1764,7 @@ func TestPreloadOldPlaybackSelectionCannotReplaceNewDetail(t *testing.T) {
 		h.request("GET", "/Users/10/Items/20?MediaSourceId=source-20", "device", "Emby Web", "Mozilla/test", nil)
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.Any("/*path", func(c *gin.Context) {
 			if c.Request.Body != nil {
 				_, _ = io.ReadAll(c.Request.Body)
@@ -1890,7 +1877,7 @@ func TestPreloadFailedStreamDoesNotUpdateMapping(t *testing.T) {
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
 			h.request("GET", "/Videos/20/stream?MediaSourceId=source-20", "device", "Fixture App", "Player/1", nil)
 			router := gin.New()
-			router.Use(PreloadObserver())
+			router.Use(h.session.PreloadObserver())
 			router.GET("/Videos/20/stream", func(c *gin.Context) {
 				if mode == "provider-failed" {
 					c.Status(http.StatusServiceUnavailable)
@@ -2120,7 +2107,7 @@ func TestPreloadOlderControlPlaybackCannotEnrichNewVersion(t *testing.T) {
 		h := newEmbyPreloadTestHarness(t)
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.Any("/*path", func(c *gin.Context) {
 			if c.Request.Body != nil {
 				_, _ = io.ReadAll(c.Request.Body)
@@ -2595,7 +2582,7 @@ func TestPreloadCompleteReportInvalidatesBeforeUpstream(t *testing.T) {
 			releaseReport := sync.OnceFunc(func() { close(reportReleased) })
 			t.Cleanup(releaseReport)
 			router := gin.New()
-			router.Use(PreloadObserver())
+			router.Use(h.session.PreloadObserver())
 			router.Any("/*path", func(c *gin.Context) {
 				if c.Request.URL.Query().Get("hold") == "" {
 					_, _ = io.ReadAll(c.Request.Body)
@@ -2708,7 +2695,7 @@ func TestPreloadPausedProgressRechecksAfterSlowBody(t *testing.T) {
 		release := sync.OnceFunc(func() { _ = writer.Close() })
 		t.Cleanup(func() { release(); _ = reader.Close() })
 		router := gin.New()
-		router.Use(PreloadObserver())
+		router.Use(h.session.PreloadObserver())
 		router.Any("/*path", func(c *gin.Context) {
 			kind, item, _, _ := preloadRoute(c.Request.Method, c.Request.URL.Path)
 			if c.Request.Body != nil {
@@ -2780,7 +2767,7 @@ func TestPreloadLateOrdinaryProgressKeepsCurrentPlayback(t *testing.T) {
 				var published atomic.Bool
 				if stage == "stream" {
 					router := gin.New()
-					router.Use(PreloadObserver())
+					router.Use(h.session.PreloadObserver())
 					router.Any("/*path", func(c *gin.Context) {
 						if c.Request.Method == http.MethodGet {
 							close(entered)
@@ -3039,7 +3026,7 @@ func TestPreloadControlChangeDropsTopLevelPath(t *testing.T) {
 			fresh := preloadTestItem("20", "Movie")
 			fresh.MediaSources[0].Path += "-fresh"
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				if c.Request.Method == http.MethodPost {
 					c.JSON(http.StatusOK, gin.H{})
@@ -3106,7 +3093,7 @@ func TestPreloadDirectSourceRefreshRevokesOnlyRemovedURL(t *testing.T) {
 				}, true
 			}
 			h.router = gin.New()
-			h.router.Use(PreloadObserver())
+			h.router.Use(h.session.PreloadObserver())
 			h.router.Any("/*path", func(c *gin.Context) {
 				if c.Query("refresh") == "" {
 					c.JSON(http.StatusOK, old)

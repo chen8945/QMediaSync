@@ -249,13 +249,13 @@ func Test115DirectoryListingAcceptsMixedPages(t *testing.T) {
 
 func new115DirectoryListingDriver(t *testing.T) *open115Driver {
 	t.Helper()
-	originalList, originalSettings := list115FilesPage, models.SettingsGlobal
-	t.Cleanup(func() { list115FilesPage, models.SettingsGlobal = originalList, originalSettings })
-	models.SettingsGlobal = &models.Settings{FileListPageSize: 100}
+	originalList := list115FilesPage
+	t.Cleanup(func() { list115FilesPage = originalList })
 	driver := NewOpen115Driver(nil)
 	driver.SetSyncStrm(&SyncStrm{
 		SourcePath: "Media", SourcePathId: "10",
-		Sync: &models.Sync{Logger: &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}},
+		threadSettings: models.SettingThreadAndRapidWait{SettingThreads: models.SettingThreads{FileListPageSize: 100}},
+		Sync:           &models.Sync{Logger: &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}},
 	})
 	return driver
 }

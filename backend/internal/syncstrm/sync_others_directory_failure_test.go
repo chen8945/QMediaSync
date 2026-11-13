@@ -27,7 +27,7 @@ func baiduDirectoryFailureRow(s *SyncStrm, remote, id, local string, directory b
 func TestMovedUnreadableDirectoryKeepsOldSubtree(t *testing.T) {
 	s, _ := newSavedBaiduTestSyncer(t, "/media")
 	s.FullSync = true
-	models.SettingsGlobal.OpenlistRetry = 0
+	s.threadSettings.OpenlistRetry = 0
 	// 通配字符不能把其他兄弟目录纳入失败范围。
 	oldRemote := "/media/old_%!"
 	oldDir := filepath.Join(s.TargetPath, "media", "previous-directory-target")
@@ -101,7 +101,7 @@ func TestBaiduUnreadableDirectoryUncertainIdentityProtectsRoot(t *testing.T) {
 	for _, mode := range []string{"no_identity", "no_ledger", "duplicate_identity", "wrong_account", "wrong_sync_path", "malformed_ledger"} {
 		t.Run(mode, func(t *testing.T) {
 			s, _ := newSavedBaiduTestSyncer(t, "/media")
-			models.SettingsGlobal.OpenlistRetry = 0
+			s.threadSettings.OpenlistRetry = 0
 			oldDir := filepath.Join(s.TargetPath, "media", "old")
 			old := baiduDirectoryFailureRow(s, "/media/old", "10", oldDir, true)
 			identity := "10"

@@ -57,7 +57,8 @@ func (s *ScanLocalImpl) GetNetFileFiles() error {
 		return fmt.Errorf("源目录 %s 不存在", s.scrapePath.SourcePath)
 	}
 	// 初始化路径队列，容量为接口线程数
-	s.pathTasks = make(chan string, models.SettingsGlobal.FileDetailThreads)
+	threadCount := models.GetThreadSettingsSnapshot().FileDetailThreads
+	s.pathTasks = make(chan string, threadCount)
 	// 启动一个控制 buffer 的 context
 	bufferCtx, cancel := context.WithCancel(s.ctx)
 	// 启动 buffer 到任务队列的转移协程
@@ -66,7 +67,7 @@ func (s *ScanLocalImpl) GetNetFileFiles() error {
 	s.wg = sync.WaitGroup{}
 	s.addPathToTasks(s.scrapePath.SourcePathId)
 	// 启动一个协程处理目录
-	threads := models.SettingsGlobal.FileDetailThreads
+	threads := threadCount
 	if threads == 0 {
 		threads = 2
 	}

@@ -271,7 +271,7 @@ func ClearPendingDownloadTasks(ctx *gin.Context) {
 // @Security ApiKeyAuth
 func StartDownloadQueue(ctx *gin.Context) {
 	// 调用全局下载队列的 Start 方法
-	models.GlobalDownloadQueue.Restart()
+	models.GlobalDownloadQueue.Start()
 
 	// 返回结果
 	ctx.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "下载队列已启动", Data: nil})

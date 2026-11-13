@@ -1,11 +1,11 @@
 package emby
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 
-	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/model"
 	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/util/jsons"
@@ -17,11 +17,11 @@ import (
 // 返回响应内容, 并将响应头写入 c
 //
 // 如果请求是失败的响应, 会直接返回客户端, 并在第二个参数中返回 false
-func proxyAndSetRespHeader(c *gin.Context) (model.HttpRes[*jsons.Item], bool) {
+func (upstream *Session) proxyAndSetRespHeader(c *gin.Context) (model.HttpRes[*jsons.Item], bool) {
 	c.Request.Header.Del("Accept-Encoding")
-	res, respHeader := RawFetch(c.Request.URL.String(), c.Request.Method, c.Request.Header, c.Request.Body)
+	res, respHeader := upstream.RawFetch(c.Request.Context(), c.Request.URL.String(), c.Request.Method, c.Request.Header, c.Request.Body)
 	if res.Code != http.StatusOK {
-		checkErr(c, errors.New(res.Msg))
+		upstream.checkErr(c, errors.New(res.Msg))
 		return res, false
 	}
 	https.CloneHeader(c.Writer, respHeader)
@@ -29,13 +29,13 @@ func proxyAndSetRespHeader(c *gin.Context) (model.HttpRes[*jsons.Item], bool) {
 }
 
 // Fetch 请求 Emby API 接口, 使用 map 请求体
-func Fetch(uri, method string, header http.Header, body map[string]any) (model.HttpRes[*jsons.Item], http.Header) {
-	return RawFetch(uri, method, header, https.MapBody(body))
+func (upstream *Session) Fetch(ctx context.Context, uri, method string, header http.Header, body map[string]any) (model.HttpRes[*jsons.Item], http.Header) {
+	return upstream.RawFetch(ctx, uri, method, header, https.MapBody(body))
 }
 
 // RawFetch 请求 Emby API 接口, 使用流式请求体
-func RawFetch(uri, method string, header http.Header, body io.ReadCloser) (model.HttpRes[*jsons.Item], http.Header) {
-	u := config.C.Emby.Host + uri
+func (upstream *Session) RawFetch(ctx context.Context, uri, method string, header http.Header, body io.ReadCloser) (model.HttpRes[*jsons.Item], http.Header) {
+	u := upstream.Origin + uri
 
 	// 构造请求头并发出请求
 	if header == nil {
@@ -45,7 +45,7 @@ func RawFetch(uri, method string, header http.Header, body io.ReadCloser) (model
 		header.Set("Content-Type", "application/json;charset=utf-8")
 	}
 
-	resp, err := https.Request(method, u).Header(header).Body(body).Do()
+	resp, err := https.Request(method, u).Client(upstream.Client).Context(ctx).Header(header).Body(body).Do()
 	if err != nil {
 		return model.HttpRes[*jsons.Item]{Code: http.StatusBadRequest, Msg: "请求发送失败: " + err.Error()}, nil
 	}

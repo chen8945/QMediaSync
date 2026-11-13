@@ -56,6 +56,38 @@ const operations: [string, (http: AxiosInstance) => Promise<unknown>][] = [
 ]
 
 describe('Emby 与代理 API', () => {
+  it('媒体保存返回应用警告', async () => {
+    const warnings = ['代理尚未应用，请重新保存']
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { code: 200, data: { warnings, restart_required: false } },
+      }),
+    })
+    await expect(saveMediaLibraryConfig(http, 'emby', emby)).resolves.toEqual({ warnings })
+  })
+
+  it.each([undefined, null, '应用失败', [123]])(
+    '媒体保存拒绝损坏的应用结果 %j',
+    async (warnings) => {
+      const http = axios.create({
+        adapter: async (config) => ({
+          config,
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          data: { code: 200, data: { warnings } },
+        }),
+      })
+      await expect(saveMediaLibraryConfig(http, 'emby', emby)).rejects.toBeInstanceOf(
+        HttpResponseError,
+      )
+    },
+  )
+
   it('保留路径、方法、全部字段、JSON 头与客户端超时', async () => {
     const adapter = vi.fn(async (config) => ({
       config,
@@ -121,10 +153,12 @@ describe('Emby 与代理 API', () => {
   })
 
   it('合法空结果、未配置状态和显式清空代理正常返回', async () => {
+    const warnings = ['代理已保存，但通知渠道刷新失败，请重新保存']
     const adapter = vi.fn(async (config) => ({
       config,
       data: {
         code: 200,
+        warnings,
         data:
           config.url.endsWith('/emby-config') || config.url.endsWith('/sync/status')
             ? { exists: false }
@@ -140,7 +174,7 @@ describe('Emby 与代理 API', () => {
     await expect(fetchMediaLibraryLibraries(http, 'emby')).resolves.toEqual([])
     await expect(
       saveProxySettings(http, { http_proxy: '', preserve_proxy_credentials: false }),
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual({ warnings })
     expect(JSON.parse(adapter.mock.calls.at(-1)?.[0].data)).toEqual({
       http_proxy: '',
       preserve_proxy_credentials: false,

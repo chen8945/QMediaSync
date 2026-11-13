@@ -192,6 +192,17 @@ func (c *Client) FileDetail(path string) (*FileDetail, error) {
 
 // FileDetailContext 查询文件详情并响应调用方取消。
 func (c *Client) FileDetailContext(ctx context.Context, path string) (*FileDetail, error) {
+	return c.fileDetailContext(ctx, path, nil)
+}
+
+// UploadFileDetailContext 查询上传结果，并在退出前等候已加入的认证保存。
+func (c *Client) UploadFileDetailContext(ctx context.Context, path string) (*FileDetail, error) {
+	options := DefaultRequestConfig()
+	options.waitAuthRefresh = true
+	return c.fileDetailContext(ctx, path, options)
+}
+
+func (c *Client) fileDetailContext(ctx context.Context, path string, options *RequestConfig) (*FileDetail, error) {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -204,7 +215,7 @@ func (c *Client) FileDetailContext(ctx context.Context, path string) (*FileDetai
 	}
 	result := &Resp[FileDetail]{}
 	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
-	_, err := c.doRequest("/api/fs/get", req, nil)
+	_, err := c.doRequest("/api/fs/get", req, options)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 获取文件详情失败：%s", err.Error())
 		return nil, err
@@ -214,6 +225,11 @@ func (c *Client) FileDetailContext(ctx context.Context, path string) (*FileDetai
 
 // 上传
 func (c *Client) Upload(localFile string, remotePath string) (*UploadResult, error) {
+	return c.UploadContext(context.Background(), localFile, remotePath)
+}
+
+// UploadContext 沿用上传协议并响应调用方取消。
+func (c *Client) UploadContext(ctx context.Context, localFile string, remotePath string) (*UploadResult, error) {
 	remotePath = strings.ReplaceAll(remotePath, "\\", "/")
 	if !strings.HasPrefix(remotePath, "/") {
 		remotePath = "/" + remotePath
@@ -221,7 +237,7 @@ func (c *Client) Upload(localFile string, remotePath string) (*UploadResult, err
 	// info, _ := os.Stat(localFile)
 	helpers.AppLogger.Infof("OpenList 上传文件：%s，目标路径：%s", localFile, remotePath)
 	result := &Resp[UploadTask]{}
-	req := c.client.R()
+	req := c.client.R().SetContext(ctx)
 	req.SetFile("file", localFile)
 	// 对远程路径进行 URL 编码
 	encodedPath := helpers.UrlEncode(remotePath)
@@ -230,7 +246,9 @@ func (c *Client) Upload(localFile string, remotePath string) (*UploadResult, err
 	req.Header.Add("overwrite", "false")
 	req.Header.Add("Content-Type", "multipart/form-data")
 	req.SetMethod(http.MethodPut).SetResult(&result)
-	_, err := c.doRequest("/api/fs/form", req, MakeRequestConfig(0, 1, 300))
+	options := MakeRequestConfig(0, 1, 300)
+	options.waitAuthRefresh = true
+	_, err := c.doRequest("/api/fs/form", req, options)
 	if err != nil {
 		helpers.OpenListLog.Errorf("OpenList 上传文件失败：%s", err.Error())
 		return nil, err

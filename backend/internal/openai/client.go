@@ -1,10 +1,13 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"qmediasync/internal/helpers"
 
 	"resty.dev/v3"
 )
@@ -22,33 +25,6 @@ const (
 	DEFAULT_API_BASE_URL = "https://api.siliconflow.cn"
 	DEFAULT_MODEL_NAME   = "Qwen/Qwen2.5-7B-Instruct"
 
-	// 	DEFAULT_MOVIE_PROMPT = `任务规则：
-	// 1. 名称提取：
-	//  - 提取官方完整的主标题，
-	//  - 如果是系列电影，需要保留序列号，比如：Nobody 2、The Guy 3、流浪地球 II、流浪地球 III，一般序号大于等于 2 才会有
-	//  - 主标题中不应该有特殊字符比如下划线、点等，如果有特殊字符需要用空格替换再提取
-	//  - 如果有汉语标题则去掉其他语种标题如英语，多语种的分隔符可能为点、下划线、横杠、斜杠等，如：死神千年血战相克谭_Bleach 取 死神千年血战相克谭，鬼灭之刃_Kimetsu no Yaiba 取 鬼灭之刃
-	// 2. 年份提取：只提取四位数格式的发行年份（如：(2023)、2023）；如果文件名中没有明确的四位数年份，则返回 0；年份必须是标题外的独立数字，标题内数字（如《2012》《1942》）不算；年份只能大于 1900，小于未来 10 年
-	// 3. 忽略信息：文件扩展名、视频编码、分辨率、发布组等信息；音频、字幕、制作组等元数据`
-
-	//	DEFAULT_TV_PROMPT    = `任务规则：
-	//
-	// 1. 名称提取：
-	//   - 提取官方完整的主标题
-	//   - 去掉标题中的副标题（如"The Final Season"）
-	//   - 如果有中文标题则去掉其他语种标题（如英语），多语种分隔符可能为 \.|\_|\-|\||\\|\s 等
-	//   - 保留主题中的系列序号（如"2"、"III"）
-	//
-	// 2. 年份提取：只提取四位数格式的发行年份（如：(2023)、2023）；如果文件名中没有明确的四位数年份，则返回 0；年份必须是标题外的独立数字，标题内数字（如《2012》《1942》）不算
-	// 3. 剧集的季序号提取：提取数字格式的季编号，从 1 开始，如果没有，则返回 1
-	// 4. 剧集的集序号提取：提取数字格式的集编号，从 1 开始，如果没有，则返回 0
-	// 5. 可能有标题、年份、季序号都为空的情况，默认季编号为 1
-	// 6. 如果输入的内容中只有一组数字，则认为是集编号
-	// 7. 如果输入的内容中包含标题+数字的组合，则认为是集编号
-	// 8. 如果无法识别季编号，则默认为 1
-	// 9. 如果无法识别年份，则默认为 0
-	// 10. 如果无法识别标题，则默认为空
-	// 11. 忽略信息：文件扩展名、视频编码、分辨率、发布组等信息；音频、字幕、制作组等元数据`
 	DEFAULT_MOVIE_PROMPT = "从文件名中提取电影名称和年份；名称中不能包含点、下划线、横杠、斜杠等特殊字符\n"
 )
 
@@ -58,10 +34,8 @@ type Client struct {
 	apiKey    string
 	baseURL   string
 	modelName string
+	timeout   time.Duration
 }
-
-// GlobalOpenAIClient 是全局 OpenAI 客户端实例。
-var GlobalOpenAIClient *Client
 
 // ChatCompletionRequest 表示聊天补全请求。
 type ChatCompletionRequest struct {
@@ -123,12 +97,6 @@ func DefaultRequestConfig() *RequestConfig {
 
 // NewClient 创建新的 OpenAI API 客户端。
 func NewClient(apiKey, baseUrl, modelName string, timeout int) *Client {
-	if GlobalOpenAIClient != nil {
-		GlobalOpenAIClient.apiKey = apiKey
-		GlobalOpenAIClient.modelName = modelName
-		GlobalOpenAIClient.SetBaseUrl(baseUrl)
-		return GlobalOpenAIClient
-	}
 	if timeout == 0 {
 		timeout = DEFAULT_TIMEOUT
 	}
@@ -148,35 +116,32 @@ func NewClient(apiKey, baseUrl, modelName string, timeout int) *Client {
 		apiKey:    apiKey,
 		baseURL:   baseUrl,
 		modelName: modelName,
+		timeout:   time.Duration(timeout) * time.Second,
 	}
 
-	GlobalOpenAIClient = client
 	return client
 }
 
-// SetBaseUrl 设置客户端基础 URL。
-func (c *Client) SetBaseUrl(baseUrl string) {
-	c.baseURL = baseUrl
-}
+// Close 释放本客户端持有的私有连接资源。
+func (c *Client) Close() error { return helpers.CloseRestyClient(c.resty) }
 
 type MediaInfoAI struct {
 	Name string `json:"name"`
 	Year int    `json:"year"`
 }
 
-func (c *Client) TakeMoiveName(filename string, prompt string) (*MediaInfoAI, error) {
-	var userMessage string
-	var message []Message = make([]Message, 0)
-	userMessage += `\n输出格式：请严格按以下 JSON 格式返回，不要添加任何其他内容：{"name": "提取出的影视剧名称", "year": 年份或 0}\n现在请处理文件名：{{filename}}`
-	userMessage = strings.ReplaceAll(userMessage, "{{filename}}", filename)
-	message = append(message, Message{
+func (c *Client) TakeMoiveName(ctx context.Context, filename string, prompt string) (*MediaInfoAI, error) {
+	message := []Message{{
 		Role:    "user",
-		Content: userMessage,
-	})
+		Content: fmt.Sprintf("%s\n输出格式：请严格按以下 JSON 格式返回，不要添加任何其他内容：{\"name\": \"提取出的影视剧名称\", \"year\": 年份或 0}\n现在请处理文件名：%s", prompt, filename),
+	}}
 
-	resp, err := c.CreateChatCompletion(message, nil)
+	resp, err := c.CreateChatCompletion(ctx, message, nil)
 	if err != nil {
 		return nil, err
+	}
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("AI 响应未包含识别结果")
 	}
 	jsonContent := resp.Choices[0].Message.Content
 	var mediaInfo MediaInfoAI
@@ -192,11 +157,11 @@ func (c *Client) TakeMoiveName(filename string, prompt string) (*MediaInfoAI, er
 }
 
 // CreateChatCompletion 创建聊天补全。
-func (c *Client) CreateChatCompletion(message []Message, options *RequestConfig) (*ChatCompletionResponse, error) {
+func (c *Client) CreateChatCompletion(ctx context.Context, message []Message, options *RequestConfig) (*ChatCompletionResponse, error) {
 	url := fmt.Sprintf("%s/v1/chat/completions", c.baseURL)
 
 	// 准备请求
-	r := c.resty.R().SetHeader("Authorization", fmt.Sprintf("Bearer %s", c.apiKey)).SetMethod("POST")
+	r := c.resty.R().SetContext(ctx).SetHeader("Authorization", fmt.Sprintf("Bearer %s", c.apiKey)).SetMethod("POST")
 	req := ChatCompletionRequest{
 		Model:    c.modelName,
 		Stream:   false,
@@ -233,6 +198,7 @@ func (c *Client) CreateChatCompletion(message []Message, options *RequestConfig)
 func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfig) (*resty.Response, error) {
 	if options == nil {
 		options = DefaultRequestConfig()
+		options.Timeout = c.timeout
 	}
 
 	// 设置超时
@@ -247,13 +213,22 @@ func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfi
 		}
 
 		lastErr = err
+		if req.Context().Err() != nil {
+			return nil, req.Context().Err()
+		}
 
 		// 检查是否需要重试
 		if attempt < options.MaxRetries {
 			// 记录重试信息
 			fmt.Printf("%s %s 请求失败，将在 %.2f 秒后重试（第 %d 次），错误：%v\n",
 				req.Method, url, options.RetryDelay.Seconds(), attempt+1, lastErr)
-			time.Sleep(options.RetryDelay)
+			timer := time.NewTimer(options.RetryDelay)
+			select {
+			case <-req.Context().Done():
+				timer.Stop()
+				return nil, req.Context().Err()
+			case <-timer.C:
+			}
 		}
 	}
 

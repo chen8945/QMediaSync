@@ -62,7 +62,7 @@ func TestSyncPathAggregateWriteRoutesReplaceLegacyRoutes(t *testing.T) {
 	}
 	t.Chdir(root)
 	router := gin.New()
-	setRouter(router)
+	setRouter(router, controllers.NewMediaLibraryConfigController(nil))
 
 	routes := make(map[string]struct{})
 	for _, route := range router.Routes() {
@@ -105,7 +105,7 @@ func TestBackupFileRoutesRequireAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	setRouter(router)
+	setRouter(router, controllers.NewMediaLibraryConfigController(nil))
 	for _, scenario := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/backup/files", ""},
 		{http.MethodPost, "/api/backup/restore", `{"file_name":"backup.zip"}`},
@@ -134,7 +134,7 @@ func TestMediaLibraryRoutesRequireAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	setRouter(router)
+	setRouter(router, controllers.NewMediaLibraryConfigController(nil))
 	for _, kind := range []string{"emby", "jellyfin"} {
 		for _, endpoint := range []struct{ method, path string }{
 			{http.MethodGet, "/api/setting/" + kind + "-config"},

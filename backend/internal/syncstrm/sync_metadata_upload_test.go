@@ -161,7 +161,7 @@ func TestOpenListMetadataUploadPreservesPaths(t *testing.T) {
 	if err := db.Db.Save(s.Account).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !tasks[0].UploadOpenListFile() {
+	if !tasks[0].UploadOpenListFile(t.Context()) {
 		t.Fatalf("上传失败：%s", tasks[0].Error)
 	}
 	if uploadedPath != want || detailPath != want || tasks[0].RemoteFullPath != want {

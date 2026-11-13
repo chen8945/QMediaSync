@@ -25,7 +25,7 @@ func TestAppWebhookStartup(t *testing.T) {
 	const childEnv = "QMS_TEST_WEBHOOK_STARTUP"
 	mode := os.Getenv(childEnv)
 	if mode == "" {
-		for _, mode := range []string{"recovery_failure", "backup_reconciliation_failure", "success"} {
+		for _, mode := range []string{"recovery_failure", "download_recovery_failure", "upload_recovery_failure", "backup_reconciliation_failure", "success"} {
 			t.Run(mode, func(t *testing.T) {
 				// 最终停机不可在同一进程恢复，使用独立进程验证真实初始化和退出。
 				ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
@@ -36,7 +36,7 @@ func TestAppWebhookStartup(t *testing.T) {
 				if ctx.Err() != nil {
 					t.Fatalf("startup did not finish: %v\n%s", ctx.Err(), output)
 				}
-				if mode != "recovery_failure" {
+				if mode != "recovery_failure" && mode != "download_recovery_failure" && mode != "upload_recovery_failure" {
 					if err != nil {
 						t.Fatalf("successful startup failed: %v\n%s", err, output)
 					}
@@ -104,6 +104,22 @@ func TestAppWebhookStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if mode == "download_recovery_failure" || mode == "upload_recovery_failure" {
+		table := "db_download_tasks"
+		var task any = &models.DbDownloadTask{Status: models.DownloadStatusDownloading}
+		if mode == "upload_recovery_failure" {
+			table = "db_upload_tasks"
+			task = &models.DbUploadTask{Status: models.UploadStatusUploading}
+		}
+		if err := db.Db.Create(task).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Db.Exec(fmt.Sprintf(`CREATE TRIGGER reject_transfer_recovery
+			BEFORE UPDATE OF status ON %s
+			BEGIN SELECT RAISE(FAIL, 'startup recovery rejected'); END`, table)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	fixtureDB, err := db.Db.DB()
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +154,7 @@ func TestAppWebhookStartup(t *testing.T) {
 		}
 		return
 	}
-	if mode == "recovery_failure" {
+	if mode == "recovery_failure" || mode == "download_recovery_failure" || mode == "upload_recovery_failure" {
 		defer func() {
 			if QMSApp == nil || QMSApp.httpServer != nil || QMSApp.httpsServer != nil {
 				t.Error("failed startup entered HTTP serving")

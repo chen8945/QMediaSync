@@ -2,8 +2,6 @@ package controllers
 
 import (
 	"net/http"
-	"net/url"
-	"strings"
 
 	"qmediasync/internal/emby"
 	"qmediasync/internal/github"
@@ -11,7 +9,6 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
-	v115open "qmediasync/internal/v115/openapi"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
@@ -25,9 +22,6 @@ func init() {
 		helpers.AppLogger.Infof(format, args...)
 	})
 }
-
-// 允许控制器测试替换运行时配置应用函数，生产环境使用 115 全局执行器实现。
-var setGlobalExecutorConfig = v115open.SetGlobalExecutorConfig
 
 // LogSettingResponse 日志设置响应。
 type LogSettingResponse struct {
@@ -235,8 +229,7 @@ func parseMediaLibrary(c *gin.Context, kind models.MediaServerType) {
 // // @Security ApiKeyAuth
 // func GetTelegram(c *gin.Context) {
 // 	// 获取设置
-// 	models.LoadSettings() // 确保设置已加载
-// 	telegramBot := make(map[string]string)
+// // 	telegramBot := make(map[string]string)
 // 	if models.SettingsGlobal.UseTelegram == 1 {
 // 		telegramBot["enabled"] = "1"
 // 	} else {
@@ -246,48 +239,6 @@ func parseMediaLibrary(c *gin.Context, kind models.MediaServerType) {
 // 	telegramBot["chat_id"] = models.SettingsGlobal.TelegramChatId
 // 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 Telegram Bot 设置成功", Data: telegramBot})
 // }
-
-// resolveSubmittedHTTPProxy 按请求的显式意图保留当前代理凭据。
-//
-// GetHttpProxy 只回传脱敏地址。前端未编辑输入框时显式传 preserveProxyCredentials，
-// 只有提交地址与已存地址的端点一致，才可以替换 User 字段。
-func resolveSubmittedHTTPProxy(submitted string, preserveProxyCredentials bool) string {
-	if submitted == "" || !preserveProxyCredentials || models.SettingsGlobal.HttpProxy == "" {
-		return submitted
-	}
-
-	stored, err := url.Parse(models.SettingsGlobal.HttpProxy)
-	if err != nil {
-		return submitted
-	}
-	if stored.User == nil {
-		return submitted
-	}
-	parsed, err := url.Parse(submitted)
-	if err != nil {
-		return submitted
-	}
-	if !sameHTTPProxyEndpoint(stored, parsed) {
-		return submitted
-	}
-	parsed.User = stored.User
-	return parsed.String()
-}
-
-// sameHTTPProxyEndpoint 判断两个代理 URL 是否指向相同的协议、主机和端口。
-// User 信息、路径和查询参数不参与端点比较，避免将存储凭据转发到其他代理端点。
-func sameHTTPProxyEndpoint(left *url.URL, right *url.URL) bool {
-	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
-}
-
-// shouldPreserveProxyCredentials 兼容未升级的前端：它们不会提交显式标志，
-// 仍按历史约定将当前脱敏回传值视为未编辑。新前端始终提交该字段，因此不再依赖字符串相等推断意图。
-func shouldPreserveProxyCredentials(req requests.HTTPProxyRequest) bool {
-	if req.PreserveProxyCredentials != nil {
-		return *req.PreserveProxyCredentials
-	}
-	return req.NormalizedHTTPProxy() != "" && req.NormalizedHTTPProxy() == validation.RedactProxyURL(models.SettingsGlobal.HttpProxy)
-}
 
 // UpdateHttpProxy 更新出站代理设置。
 // @Summary 更新出站代理
@@ -312,14 +263,12 @@ func UpdateHttpProxy(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	httpProxy := resolveSubmittedHTTPProxy(req.NormalizedHTTPProxy(), shouldPreserveProxyCredentials(req))
-	// 更新设置
-	if !models.SettingsGlobal.UpdateHttpProxy(httpProxy) {
+	warnings, err := models.SaveHTTPProxy(c.Request.Context(), req.NormalizedHTTPProxy(), req.PreserveProxyCredentials)
+	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新出站代理设置失败", Data: nil})
 		return
 	}
-	github.UpdateConfig(httpProxy) // 更新 GitHub 配置
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "出站代理设置已更新", Data: nil})
+	c.JSON(http.StatusOK, gin.H{"code": Success, "message": "出站代理设置已更新", "data": nil, "warnings": warnings})
 }
 
 // GetHttpProxy 获取出站代理设置。
@@ -335,8 +284,7 @@ func UpdateHttpProxy(c *gin.Context) {
 // @Security ApiKeyAuth
 func GetHttpProxy(c *gin.Context) {
 	// 获取设置
-	models.LoadSettings() // 确保设置已加载
-	stored := models.SettingsGlobal.HttpProxy
+	stored := models.GetHTTPProxy()
 	// 代理地址可带凭据，接口一律回传脱敏结果；前端用显式 preserve_proxy_credentials 标志还原当前凭据。
 	redacted := validation.RedactProxyURL(stored)
 	credentialsMasked := "0"
@@ -376,7 +324,7 @@ func TestHttpProxy(c *gin.Context) {
 		return
 	}
 	// 用户不修改地址直接点测试时，前端显式要求保留凭据，再用当前真实凭据拨号。
-	httpProxy := resolveSubmittedHTTPProxy(req.NormalizedHTTPProxy(), shouldPreserveProxyCredentials(req))
+	httpProxy := models.ResolveHTTPProxy(req.NormalizedHTTPProxy(), models.GetHTTPProxy(), req.PreserveProxyCredentials)
 	detailed := req.Detailed == 1
 
 	if detailed {
@@ -468,7 +416,6 @@ func TestHttpProxy(c *gin.Context) {
 // @Security ApiKeyAuth
 func GetStrmConfig(c *gin.Context) {
 	// 获取设置
-	models.LoadSettings() // 确保设置已加载
 	strm, multiPlaybackEnabled, preloadEnabled := models.SettingsGlobal.StrmConfigSnapshot()
 	data := strm.ToMap(false, true)
 	data["multi_playback_enabled"] = multiPlaybackEnabled
@@ -604,7 +551,7 @@ func ValidateCron(c *gin.Context) {
 // @Security JwtAuth
 // @Security ApiKeyAuth
 func GetThreads(c *gin.Context) {
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取线程数成功", Data: models.SettingsGlobal.ThreadAndRapidWait()})
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取线程数成功", Data: models.GetThreadSettingsSnapshot()})
 }
 
 // UpdateThreads 更新线程配置
@@ -631,22 +578,10 @@ func UpdateThreads(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	modelReq := req.ToModel(models.SettingsGlobal.ThreadAndRapidWait())
-	downloadThreads := modelReq.DownloadThreads
-	// 更新设置，传递当前的百度网盘限速值
-	if !models.SettingsGlobal.UpdateThreads(modelReq) {
+	warnings, err := models.SaveThreadSettings(c.Request.Context(), req.ToUpdate())
+	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新线程数失败", Data: nil})
 		return
 	}
-
-	// 动态更新下载队列的并发数
-	models.UpdateGlobalDownloadQueueConcurrency(downloadThreads)
-	if models.GlobalUploadQueue != nil {
-		models.GlobalUploadQueue.UpdateConcurrency(modelReq.UploadThreads)
-	}
-	// 保存成功后立即更新 115 请求队列，后续请求使用新的接口速率配置。
-	fileDetailThreads := modelReq.FileDetailThreads
-	setGlobalExecutorConfig(fileDetailThreads, fileDetailThreads*60, fileDetailThreads*3600)
-
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新线程数成功", Data: nil})
+	c.JSON(http.StatusOK, gin.H{"code": Success, "message": "更新线程数成功", "data": nil, "warnings": warnings})
 }

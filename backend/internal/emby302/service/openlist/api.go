@@ -1,6 +1,7 @@
 package openlist
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,10 @@ import (
 
 // FetchResource 请求 OpenList 资源 URL 直链
 func FetchResource(fi FetchInfo) model.HttpRes[Resource] {
+	return FetchResourceContext(context.Background(), nil, fi)
+}
+
+func FetchResourceContext(ctx context.Context, client *http.Client, fi FetchInfo) model.HttpRes[Resource] {
 	if strs.AnyEmpty(fi.Path) {
 		return model.HttpRes[Resource]{Code: http.StatusBadRequest, Msg: "参数 path 不能为空"}
 	}
@@ -25,7 +30,7 @@ func FetchResource(fi FetchInfo) model.HttpRes[Resource] {
 
 	if !fi.UseTranscode {
 		// 请求原画资源
-		res := FetchFsGet(fi.Path, fi.Header)
+		res := FetchFsGetContext(ctx, client, fi.Path, fi.Header)
 		if res.Code == http.StatusOK {
 			return model.HttpRes[Resource]{Code: http.StatusOK, Data: Resource{Url: res.Data.RawUrl}}
 		}
@@ -39,11 +44,11 @@ func FetchResource(fi FetchInfo) model.HttpRes[Resource] {
 		}
 		logs.Error("请求转码资源失败, 尝试请求原画资源, 原始响应: %v", jsons.FromObject(originRes))
 		fi.UseTranscode = false
-		return FetchResource(fi)
+		return FetchResourceContext(ctx, client, fi)
 	}
 
 	// 请求转码资源
-	res := FetchFsOther(fi.Path, fi.Header)
+	res := FetchFsOtherContext(ctx, client, fi.Path, fi.Header)
 	if res.Code != http.StatusOK {
 		return failedAndTryRaw(res)
 	}
@@ -85,6 +90,10 @@ func FetchResource(fi FetchInfo) model.HttpRes[Resource] {
 //
 // 传入 path 与接口的 path 作用一致
 func FetchFsList(path string, header http.Header) model.HttpRes[FsList] {
+	return FetchFsListContext(context.Background(), nil, path, header)
+}
+
+func FetchFsListContext(ctx context.Context, client *http.Client, path string, header http.Header) model.HttpRes[FsList] {
 	if strs.AnyEmpty(path) {
 		return model.HttpRes[FsList]{Code: http.StatusBadRequest, Msg: "参数 path 不能为空"}
 	}
@@ -93,7 +102,7 @@ func FetchFsList(path string, header http.Header) model.HttpRes[FsList] {
 	defer removeMainApiRunner()
 
 	var res FsList
-	err := Fetch("/api/fs/list", http.MethodPost, header, map[string]any{
+	err := FetchContext(ctx, client, "/api/fs/list", http.MethodPost, header, map[string]any{
 		"refresh":  false,
 		"password": "",
 		"path":     path,
@@ -108,6 +117,10 @@ func FetchFsList(path string, header http.Header) model.HttpRes[FsList] {
 //
 // 传入 path 与接口的 path 作用一致
 func FetchFsGet(path string, header http.Header) model.HttpRes[FsGet] {
+	return FetchFsGetContext(context.Background(), nil, path, header)
+}
+
+func FetchFsGetContext(ctx context.Context, client *http.Client, path string, header http.Header) model.HttpRes[FsGet] {
 	if strs.AnyEmpty(path) {
 		return model.HttpRes[FsGet]{Code: http.StatusBadRequest, Msg: "参数 path 不能为空"}
 	}
@@ -116,7 +129,7 @@ func FetchFsGet(path string, header http.Header) model.HttpRes[FsGet] {
 	defer removeMainApiRunner()
 
 	var res FsGet
-	err := Fetch("/api/fs/get", http.MethodPost, header, map[string]any{
+	err := FetchContext(ctx, client, "/api/fs/get", http.MethodPost, header, map[string]any{
 		"refresh":  false,
 		"password": "",
 		"path":     path,
@@ -131,6 +144,10 @@ func FetchFsGet(path string, header http.Header) model.HttpRes[FsGet] {
 //
 // 传入 path 与接口的 path 作用一致
 func FetchFsOther(path string, header http.Header) model.HttpRes[FsOther] {
+	return FetchFsOtherContext(context.Background(), nil, path, header)
+}
+
+func FetchFsOtherContext(ctx context.Context, client *http.Client, path string, header http.Header) model.HttpRes[FsOther] {
 	if strs.AnyEmpty(path) {
 		return model.HttpRes[FsOther]{Code: http.StatusBadRequest, Msg: "参数 path 不能为空"}
 	}
@@ -139,7 +156,7 @@ func FetchFsOther(path string, header http.Header) model.HttpRes[FsOther] {
 	defer removeMainApiRunner()
 
 	var res FsOther
-	err := Fetch("/api/fs/other", http.MethodPost, header, map[string]any{
+	err := FetchContext(ctx, client, "/api/fs/other", http.MethodPost, header, map[string]any{
 		"method":   "video_preview",
 		"password": "",
 		"path":     path,
@@ -152,6 +169,10 @@ func FetchFsOther(path string, header http.Header) model.HttpRes[FsOther] {
 
 // Fetch 请求 OpenList API, 响应封装在 v 指针指向的结构中
 func Fetch(uri, method string, header http.Header, body map[string]any, v any, closeConn bool) error {
+	return FetchContext(context.Background(), nil, uri, method, header, body, v, closeConn)
+}
+
+func FetchContext(ctx context.Context, client *http.Client, uri, method string, header http.Header, body map[string]any, v any, closeConn bool) error {
 	host := config.C.Openlist.Host
 	token := config.C.Openlist.Token
 	if strs.AnyEmpty(host, token) {
@@ -167,7 +188,10 @@ func Fetch(uri, method string, header http.Header, body map[string]any, v any, c
 	header.Set("Content-Type", "application/json;charset=utf-8")
 	header.Set("Authorization", token)
 
-	holder := https.Request(method, host+uri).Header(header).Body(https.MapBody(body))
+	holder := https.Request(method, host+uri).Context(ctx).Header(header).Body(https.MapBody(body))
+	if client != nil {
+		holder.Client(client)
+	}
 	if closeConn {
 		holder.CloseConn()
 	}

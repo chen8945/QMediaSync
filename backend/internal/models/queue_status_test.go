@@ -154,7 +154,7 @@ func TestRemoteCompletedFinalizeClaimAllowsSingleOwner(t *testing.T) {
 		t.Fatalf("创建待收尾上传任务失败: %v", err)
 	}
 
-	claimed, err := task.claimRemoteCompletedFinalize()
+	claimed, err := task.claimRemoteCompletedFinalize(t.Context())
 	if err != nil {
 		t.Fatalf("首次抢占待收尾任务失败: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestRemoteCompletedFinalizeClaimAllowsSingleOwner(t *testing.T) {
 		t.Fatal("首次抢占待收尾任务应成功")
 	}
 	duplicate := &DbUploadTask{ID: task.ID}
-	claimedAgain, err := duplicate.claimRemoteCompletedFinalize()
+	claimedAgain, err := duplicate.claimRemoteCompletedFinalize(t.Context())
 	if err != nil {
 		t.Fatalf("重复抢占待收尾任务失败: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRemoteCompletedFinalizeClaimClearsPreviousError(t *testing.T) {
 		t.Fatalf("创建待收尾上传任务失败: %v", err)
 	}
 
-	claimed, err := task.claimRemoteCompletedFinalize()
+	claimed, err := task.claimRemoteCompletedFinalize(t.Context())
 	if err != nil {
 		t.Fatalf("抢占待收尾任务失败: %v", err)
 	}

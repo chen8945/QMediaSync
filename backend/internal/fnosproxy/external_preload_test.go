@@ -25,7 +25,7 @@ import (
 
 func TestExternalSourceDoesNotRequireLocalMount(t *testing.T) {
 	var roots atomic.Int64
-	service := NewService(Options{
+	service := newTestService(t, Options{
 		OutputRoots: func(context.Context) ([]string, error) {
 			roots.Add(1)
 			return nil, errors.New("no mount")
@@ -75,7 +75,7 @@ func TestInternalEquivalentOriginsCannotBypassFileValidation(t *testing.T) {
 	} {
 		t.Run(test.origin+"_"+test.target, func(t *testing.T) {
 			var roots atomic.Int64
-			service := NewService(Options{
+			service := newTestService(t, Options{
 				OutputRoots: func(context.Context) ([]string, error) {
 					roots.Add(1)
 					return nil, errors.New("no mount")
@@ -103,7 +103,7 @@ func TestInternalEquivalentOriginsCannotBypassFileValidation(t *testing.T) {
 
 func TestInternalRootEndpointsWithConfiguredPrefix(t *testing.T) {
 	root := t.TempDir()
-	service := NewService(Options{
+	service := newTestService(t, Options{
 		OutputRoots:  func(context.Context) ([]string, error) { return []string{root}, nil },
 		KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms.local/qms"}, nil },
 	})
@@ -330,7 +330,7 @@ func TestExternalPlaybackWaitsForExistingPreload(t *testing.T) {
 				t.Fatal("第三方候选不能提交")
 			}
 			<-entered
-			inst := &instance{service: NewService(Options{Preloader: preloader}), ctx: t.Context()}
+			inst := &instance{service: newTestService(t, Options{Preloader: preloader}), ctx: t.Context()}
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/Videos/movie/stream", nil)
 			request.Header.Set("User-Agent", ua)
 			result := make(chan string, 1)

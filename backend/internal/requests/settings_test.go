@@ -161,7 +161,7 @@ func TestUpdateThreadsRequestToModelIncludesRapidWaitPolicy(t *testing.T) {
 		URLValidityCheckTimeoutSeconds: new(9),
 	}
 
-	got := req.ToModel(models.SettingThreadAndRapidWait{})
+	got := req.ToUpdate().Merge(models.SettingThreadAndRapidWait{})
 
 	if got.UploadThreads != 3 {
 		t.Fatalf("UploadThreads = %d，期望 3", got.UploadThreads)
@@ -214,7 +214,7 @@ func TestUpdateThreadsRequestToModelKeepsOptionalPoliciesWhenOmitted(t *testing.
 		URLValidityCheckTimeoutSeconds: 12,
 	}
 
-	got := req.ToModel(models.SettingThreadAndRapidWait{
+	got := req.ToUpdate().Merge(models.SettingThreadAndRapidWait{
 		UploadThreads:           7,
 		SettingUploadRapidWait:  base,
 		SettingURLValidityCheck: baseURLValidityCheck,
@@ -241,7 +241,7 @@ func TestUpdateThreadsRequestToModelDefaultsUploadThreads(t *testing.T) {
 		{name: "旧配置超出范围", base: 11},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := (UpdateThreadsRequest{}).ToModel(models.SettingThreadAndRapidWait{
+			got := (UpdateThreadsRequest{}).ToUpdate().Merge(models.SettingThreadAndRapidWait{
 				UploadThreads: tt.base,
 			})
 			if got.UploadThreads != models.DefaultUploadThreads {

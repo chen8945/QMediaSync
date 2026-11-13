@@ -2,7 +2,7 @@ import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
 import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface MediaLibraryPathMapping {
   emby_root: string
@@ -124,20 +124,15 @@ export async function fetchMediaLibraryConfig(
   }
 }
 
-export interface MediaLibrarySaveResult {
-  warnings: string[]
-  restart_required: boolean
-}
-
 export async function saveMediaLibraryConfig(
   http: AxiosInstance,
   serverType: MediaServerType,
   payload: Omit<MediaLibraryConfig, 'path_mappings'> & {
     path_mappings?: MediaLibraryPathMapping[]
   },
-): Promise<MediaLibrarySaveResult> {
+): Promise<SettingsSaveResult> {
   const { server_url, api_key, ...fields } = payload
-  const response = await http.post<APIResponse<MediaLibrarySaveResult>>(
+  const response = await http.post<APIResponse<SettingsSaveResult>>(
     `${SERVER_URL}/setting/${serverType}-config`,
     { ...fields, [`${serverType}_url`]: server_url, [`${serverType}_api_key`]: api_key },
     { headers: { 'Content-Type': 'application/json' } },
@@ -146,11 +141,10 @@ export async function saveMediaLibraryConfig(
   if (
     !result ||
     !Array.isArray(result.warnings) ||
-    !result.warnings.every((warning) => typeof warning === 'string') ||
-    typeof result.restart_required !== 'boolean'
+    !result.warnings.every((warning) => typeof warning === 'string')
   )
     throw new HttpResponseError(response)
-  return result
+  return { warnings: result.warnings }
 }
 
 export async function fetchMediaLibraryLibraries(

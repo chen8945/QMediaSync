@@ -719,7 +719,7 @@ func (c *Client) Upload(ctx context.Context, localPath string, remotePath string
 			return nil, fmt.Errorf("打开临时文件失败：%w", err)
 		}
 		// 上传分片
-		uresp, ur, uerr := c.client.FileuploadApi.Pcssuperfile2(context.Background()).AccessToken(c.getAccessToken()).Partseq(fmt.Sprintf("%d", seqNum)).Path(remotePath).Uploadid(*preResp.Uploadid).Type_("tmpfile").File(file).Execute()
+		uresp, ur, uerr := c.client.FileuploadApi.Pcssuperfile2(ctx).AccessToken(c.getAccessToken()).Partseq(fmt.Sprintf("%d", seqNum)).Path(remotePath).Uploadid(*preResp.Uploadid).Type_("tmpfile").File(file).Execute()
 		if c.handleError(uerr, ur, uresp) != nil {
 			// 关闭且删除分片
 			file.Close()

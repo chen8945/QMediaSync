@@ -3,8 +3,14 @@ package notificationmanager
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,9 +39,11 @@ func setupNotificationManagerTest(t *testing.T) (*EnhancedNotificationManager, *
 type testBackgroundHandler struct {
 	channelType string
 	stopCount   int
+	sendCount   atomic.Int32
 }
 
 func (h *testBackgroundHandler) Send(context.Context, *notification.Notification) error {
+	h.sendCount.Add(1)
 	return nil
 }
 
@@ -184,21 +192,6 @@ func TestRemoveChannelStopsBackgroundHandlerAndDropsRules(t *testing.T) {
 	}
 }
 
-func TestTelegramChannelHandlerStopCancelsListeningContext(t *testing.T) {
-	handler := &TelegramChannelHandler{}
-	ctx, cancel := context.WithCancel(context.Background())
-	handler.listenCancel = cancel
-
-	handler.Stop()
-	handler.Stop()
-
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("停止 Telegram handler 应取消监听 context")
-	}
-}
-
 func TestTelegramChannelHandlerStartInitializesBotInBackground(t *testing.T) {
 	initStarted := make(chan struct{})
 	allowInitReturn := make(chan struct{})
@@ -274,5 +267,571 @@ func TestTelegramChannelHandlerStopBeforeInitCompletesSkipsListening(t *testing.
 	case <-listeningStarted:
 		t.Fatal("停止 Telegram handler 后，不应在初始化完成后继续进入监听")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+type blockedNotificationHandler struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (h *blockedNotificationHandler) Send(context.Context, *notification.Notification) error {
+	close(h.started)
+	<-h.release
+	return nil
+}
+func (*blockedNotificationHandler) GetChannelType() string { return "test" }
+func (*blockedNotificationHandler) IsHealthy() bool        { return true }
+
+func TestNotificationReloadDoesNotWaitForOldSend(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	received := make(chan struct{}, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received <- struct{}{} }))
+	defer remote.Close()
+	channel := notification.NotificationChannel{ChannelType: "webhook", ChannelName: "new", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.CustomWebhookChannelConfig{ChannelID: channel.ID, Endpoint: remote.URL, Method: "POST", Format: "text", Template: "{{title}}"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.NotificationRule{ChannelID: channel.ID, EventType: string(notification.SystemAlert), IsEnabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	old := &blockedNotificationHandler{started: make(chan struct{}), release: make(chan struct{})}
+	manager.handlers[channel.ID] = &channelInfo{handler: old, config: &channel}
+	if err := manager.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	message := &notification.Notification{Type: notification.SystemAlert, Title: "test"}
+	done := make(chan error, 1)
+	go func() { done <- manager.SendNotification(context.Background(), message) }()
+	<-old.started
+	reloaded := make(chan error, 1)
+	go func() { reloaded <- manager.ReloadChannel(channel.ID) }()
+	select {
+	case err := <-reloaded:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(old.release)
+		t.Fatal("slow send blocked reload")
+	}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("next send did not use new config")
+	}
+	close(old.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotificationPrepareFailureKeepsEffectiveChannel(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	channel := notification.NotificationChannel{ChannelType: "webhook", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	old := &testBackgroundHandler{}
+	manager.handlers[channel.ID] = &channelInfo{handler: old, config: &channel}
+	if err := manager.ReloadChannel(channel.ID); err == nil {
+		t.Fatal("missing config must fail")
+	}
+	if got := manager.GetChannels(); len(got) != 1 {
+		t.Fatalf("effective channels=%v", got)
+	}
+	if old.stopCount != 0 {
+		t.Fatal("prepare failure retired effective handler")
+	}
+	if err := conn.Create(&notification.CustomWebhookChannelConfig{ChannelID: channel.ID, Endpoint: "https://example.invalid", Method: "POST", Format: "text", Template: "{{title}}"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReloadChannel(channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if old.stopCount != 1 {
+		t.Fatal("successful retry did not retire old handler")
+	}
+}
+
+func TestTelegramRetiredHandlerCannotStartAgain(t *testing.T) {
+	initialized := make(chan struct{}, 1)
+	handler := &TelegramChannelHandler{initBotFunc: func() error { initialized <- struct{}{}; return nil }}
+	handler.Stop()
+	handler.Start(context.Background())
+	select {
+	case <-initialized:
+		t.Fatal("retired candidate started")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestTelegramCommandsAreCapturedWithoutMapMutation(t *testing.T) {
+	manager, _, _ := setupNotificationManagerTest(t)
+	initialized := make(chan struct{})
+	release := make(chan struct{})
+	got := make(chan helpers.CommandResponse, 1)
+	commands := map[string]func([]string) helpers.CommandResponse{"help": func([]string) helpers.CommandResponse { return helpers.CommandResponse{Text: "old"} }}
+	manager.RegisterTelegramCommands(commands)
+	handler := &TelegramChannelHandler{
+		initBotFunc: func() error { close(initialized); <-release; return nil },
+		startListeningFunc: func(_ context.Context, cmds map[string]func([]string) helpers.CommandResponse) {
+			got <- cmds["help"](nil)
+		},
+	}
+	handler.SetCommands(manager.telegramCommands)
+	handler.Start(context.Background())
+	<-initialized
+	commands["help"] = func([]string) helpers.CommandResponse { return helpers.CommandResponse{Text: "changed"} }
+	handler.SetCommands(commands)
+	close(release)
+	select {
+	case result := <-got:
+		if result.Text != "old" {
+			t.Fatalf("captured commands=%v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("listener not started")
+	}
+}
+
+func TestNotificationLateCandidateCannotReviveDisabledChannel(t *testing.T) {
+	manager, _, _ := setupNotificationManagerTest(t)
+	conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "notifications.sqlite")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.AutoMigrate(&notification.NotificationChannel{}, &notification.NotificationRule{}, &notification.TelegramChannelConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	manager.db = conn
+	channel := notification.NotificationChannel{ChannelType: "telegram", ChannelName: "before", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.TelegramChannelConfig{ChannelID: channel.ID, BotToken: "token", ChatID: "123"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared, release := make(chan struct{}), make(chan struct{})
+	manager.getProxyURL = func() string { close(prepared); <-release; return "" }
+	done := make(chan error, 1)
+	go func() { done <- manager.ReloadChannel(channel.ID) }()
+	<-prepared
+	if err := conn.Model(&notification.NotificationChannel{}).Where("id = ?", channel.ID).Update("is_enabled", false).Error; err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	if err := manager.ReloadChannel(channel.ID); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("superseded candidate reported application success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old candidate did not complete")
+	}
+	if got := manager.GetChannels(); len(got) != 0 {
+		t.Fatalf("old candidate revived disabled channel: %v", got)
+	}
+	manager.StartAll()
+	if err := manager.StopAllContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotificationShutdownWaitsForRetiredTelegramCommand(t *testing.T) {
+	manager, _, _ := setupNotificationManagerTest(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	handler := &TelegramChannelHandler{
+		initBotFunc:        func() error { return nil },
+		startListeningFunc: func(context.Context, map[string]func([]string) helpers.CommandResponse) { close(started); <-release },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.handlers[1] = &channelInfo{handler: handler, config: &notification.NotificationChannel{ID: 1}, ctx: ctx, cancel: cancel}
+	manager.backgrounds[handler] = struct{}{}
+	manager.StartAll()
+	<-started
+	manager.RemoveChannel(1)
+	limit, stop := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stop()
+	if err := manager.StopAllContext(limit); !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("shutdown falsely reported completion: %v", err)
+	}
+	close(release)
+	limit2, stop2 := context.WithTimeout(context.Background(), time.Second)
+	defer stop2()
+	if err := manager.StopAllContext(limit2); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotificationSupersededRulesWarnAndPreserveRoutingUntilRetry(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	channel := notification.NotificationChannel{ChannelType: "telegram", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := &testBackgroundHandler{}
+	manager.handlers[channel.ID] = &channelInfo{handler: handler, config: &channel}
+	rule := notification.NotificationRule{ChannelID: channel.ID, EventType: string(notification.SystemAlert), IsEnabled: true}
+	if err := conn.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Model(&rule).Update("is_enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared, release := make(chan struct{}), make(chan struct{})
+	var prepareCalls atomic.Int32
+	var failReload atomic.Bool
+	if err := conn.Callback().Query().After("gorm:query").Register("test:hold_rules", func(tx *gorm.DB) {
+		if tx.Statement.Table == "notification_rules" && prepareCalls.Add(1) == 1 {
+			close(prepared)
+			<-release
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Callback().Query().Before("gorm:query").Register("test:fail_rules", func(tx *gorm.DB) {
+		if failReload.Load() && tx.Statement.Table == "notification_rules" {
+			tx.AddError(errors.New("newer rules unavailable"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- manager.ReloadRules() }()
+	<-prepared
+	failReload.Store(true)
+	if err := manager.ReloadRules(); err == nil {
+		close(release)
+		t.Fatal("newer rules failure was hidden")
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("superseded rule application reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("superseded rule application did not finish")
+	}
+	message := &notification.Notification{Type: notification.SystemAlert}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if handler.sendCount.Load() != 1 {
+		t.Fatal("failed rule preparations did not preserve effective routing")
+	}
+	failReload.Store(false)
+	if err := manager.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if handler.sendCount.Load() != 1 || handler.stopCount != 0 {
+		t.Fatal("rule retry must disable routing while preserving the background handler")
+	}
+}
+
+func TestNotificationRulePreparationFailureKeepsWholeChannelUntilRetry(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	var oldSends, newSends atomic.Int32
+	server := func(counter *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { counter.Add(1) }))
+	}
+	oldRemote, newRemote := server(&oldSends), server(&newSends)
+	defer oldRemote.Close()
+	defer newRemote.Close()
+	channel := notification.NotificationChannel{ChannelType: "webhook", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	config := notification.CustomWebhookChannelConfig{ChannelID: channel.ID, Endpoint: oldRemote.URL, Method: "POST", Format: "text", Template: "{{title}}"}
+	if err := conn.Create(&config).Error; err != nil {
+		t.Fatal(err)
+	}
+	rule := notification.NotificationRule{ChannelID: channel.ID, EventType: string(notification.SystemAlert), IsEnabled: true}
+	if err := conn.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.LoadChannels(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Model(&config).Update("endpoint", newRemote.URL).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Model(&rule).Update("is_enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	var failRules atomic.Bool
+	failRules.Store(true)
+	if err := conn.Callback().Query().Before("gorm:query").Register("test:fail_channel_rules", func(tx *gorm.DB) {
+		if failRules.Load() && tx.Statement.Table == "notification_rules" {
+			tx.AddError(errors.New("rules unavailable"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReloadChannel(channel.ID); err == nil {
+		t.Fatal("rule preparation failure was hidden")
+	}
+	message := &notification.Notification{Type: notification.SystemAlert, Title: "test"}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if oldSends.Load() != 1 || newSends.Load() != 0 {
+		t.Fatal("failed rules preparation mixed the new handler with old routing")
+	}
+	failRules.Store(false)
+	if err := manager.ReloadChannel(channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if oldSends.Load() != 1 || newSends.Load() != 0 {
+		t.Fatal("retry did not apply the saved disabled rule")
+	}
+	if err := conn.Model(&rule).Update("is_enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SendNotification(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if newSends.Load() != 1 {
+		t.Fatal("successful retry did not retain the newly applied handler")
+	}
+}
+
+func TestNotificationLateRulesCannotOverwritePublishedChannelRouting(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	channel := notification.NotificationChannel{ChannelType: "webhook", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.CustomWebhookChannelConfig{ChannelID: channel.ID, Endpoint: "https://example.invalid", Method: "POST", Format: "text", Template: "{{title}}"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rule := notification.NotificationRule{ChannelID: channel.ID, EventType: string(notification.SystemAlert), IsEnabled: true}
+	if err := conn.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.LoadChannels(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Model(&rule).Update("is_enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	prepared, release := make(chan struct{}), make(chan struct{})
+	var queries atomic.Int32
+	if err := conn.Callback().Query().After("gorm:query").Register("test:hold_old_rules", func(tx *gorm.DB) {
+		if tx.Statement.Table == "notification_rules" && queries.Add(1) == 1 {
+			close(prepared)
+			<-release
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- manager.ReloadRules() }()
+	<-prepared
+	if err := conn.Model(&rule).Update("is_enabled", true).Error; err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	if err := manager.ReloadChannel(channel.ID); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("old rule snapshot reported success")
+	}
+	manager.mu.RLock()
+	ids := append([]uint(nil), manager.rules[string(notification.SystemAlert)]...)
+	manager.mu.RUnlock()
+	if len(ids) != 1 || ids[0] != channel.ID {
+		t.Fatal("old rules overwrote the newly published channel route")
+	}
+}
+
+func TestNotificationProxyReloadRetainsCommandsAndRetiresListeners(t *testing.T) {
+	manager, conn, _ := setupNotificationManagerTest(t)
+	if err := conn.AutoMigrate(&notification.TelegramChannelConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := notification.NotificationChannel{ChannelType: "telegram", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.TelegramChannelConfig{ChannelID: channel.ID, BotToken: "token", ChatID: "123"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var proxy atomic.Value
+	proxy.Store("http://first.invalid:8080")
+	manager.getProxyURL = func() string { return proxy.Load().(string) }
+	type listenerEvent struct{ proxy, command string }
+	started, stopped := make(chan listenerEvent, 4), make(chan string, 4)
+	var mu sync.Mutex
+	active := make(map[string]int)
+	oldConstructor := newTelegramChannelHandler
+	newTelegramChannelHandler = func(config *notification.TelegramChannelConfig, proxyURL string) *TelegramChannelHandler {
+		handler := NewTelegramChannelHandlerWithProxy(config, proxyURL)
+		handler.initBotFunc = func() error { return nil }
+		handler.startListeningFunc = func(ctx context.Context, commands map[string]func([]string) helpers.CommandResponse) {
+			mu.Lock()
+			active[proxyURL]++
+			mu.Unlock()
+			command := "missing"
+			if callback := commands["status"]; callback != nil {
+				command = callback(nil).Text
+			}
+			started <- listenerEvent{proxy: proxyURL, command: command}
+			<-ctx.Done()
+			mu.Lock()
+			active[proxyURL]--
+			mu.Unlock()
+			stopped <- proxyURL
+		}
+		return handler
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.StopAllContext(ctx); err != nil {
+			t.Error(err)
+		}
+		newTelegramChannelHandler = oldConstructor
+	})
+	manager.RegisterTelegramCommands(map[string]func([]string) helpers.CommandResponse{"status": func([]string) helpers.CommandResponse { return helpers.CommandResponse{Text: "registered"} }})
+	if err := manager.LoadChannels(); err != nil {
+		t.Fatal(err)
+	}
+	manager.StartAll()
+	assertStarted := func(expected string) {
+		t.Helper()
+		select {
+		case event := <-started:
+			if event.proxy != expected || event.command != "registered" {
+				t.Fatalf("listener=%+v", event)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("listener did not start")
+		}
+	}
+	assertStopped := func(expected string) {
+		t.Helper()
+		select {
+		case value := <-stopped:
+			if value != expected {
+				t.Fatalf("retired proxy=%s", value)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("old listener was not canceled")
+		}
+	}
+	assertStarted("http://first.invalid:8080")
+	proxy.Store("http://second.invalid:8080")
+	if err := manager.LoadChannels(); err != nil {
+		t.Fatal(err)
+	}
+	assertStarted("http://second.invalid:8080")
+	assertStopped("http://first.invalid:8080")
+	if err := manager.LoadChannels(); err != nil {
+		t.Fatal(err)
+	}
+	assertStarted("http://second.invalid:8080")
+	assertStopped("http://second.invalid:8080")
+	manager.StartAll()
+	mu.Lock()
+	first, second := active["http://first.invalid:8080"], active["http://second.invalid:8080"]
+	mu.Unlock()
+	if first != 0 || second != 1 {
+		t.Fatalf("active listeners: first=%d second=%d", first, second)
+	}
+}
+
+func TestNotificationLateChannelCannotOverwriteReloadedRules(t *testing.T) {
+	manager, _, _ := setupNotificationManagerTest(t)
+	conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "channel-rules.sqlite")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.AutoMigrate(&notification.NotificationChannel{}, &notification.NotificationRule{}, &notification.TelegramChannelConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	manager.db = conn
+	channel := notification.NotificationChannel{ChannelType: "telegram", IsEnabled: true}
+	if err := conn.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Create(&notification.TelegramChannelConfig{ChannelID: channel.ID, BotToken: "token", ChatID: "123"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rule := notification.NotificationRule{ChannelID: channel.ID, EventType: string(notification.SystemAlert), IsEnabled: true}
+	if err := conn.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := &testBackgroundHandler{}
+	manager.handlers[channel.ID] = &channelInfo{handler: handler, config: &channel}
+	if err := manager.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, release := make(chan struct{}), make(chan struct{})
+	manager.getProxyURL = func() string { close(prepared); <-release; return "" }
+	done := make(chan error, 1)
+	go func() { done <- manager.ReloadChannel(channel.ID) }()
+	<-prepared
+	if err := conn.Model(&rule).Update("is_enabled", false).Error; err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	if err := manager.ReloadRules(); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("old channel preparation reported success")
+	}
+	if err := manager.SendNotification(context.Background(), &notification.Notification{Type: notification.SystemAlert}); err != nil {
+		t.Fatal(err)
+	}
+	if handler.sendCount.Load() != 0 || handler.stopCount != 0 {
+		t.Fatal("old channel preparation overwrote newer rules or retired the effective handler")
 	}
 }

@@ -493,7 +493,7 @@ func UpdateToVersion(c *gin.Context) {
 			return
 		}
 		var proxyUrl string
-		connType, proxyUrl = helpers.TestGithub(downloadURL, models.SettingsGlobal.HttpProxy)
+		connType, proxyUrl = helpers.TestGithub(downloadURL, models.GetHTTPProxy())
 		if connType == github.ConnectionTypeFailed {
 			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "无法连接 GitHub，且未设置代理，无法升级", Data: nil})
 			return
@@ -505,7 +505,7 @@ func UpdateToVersion(c *gin.Context) {
 			downloadURL = proxyUrl
 		}
 		if connType == github.ConnectionTypeProxy {
-			httpProxy = models.SettingsGlobal.HttpProxy
+			httpProxy = models.GetHTTPProxy()
 		}
 	}
 	// systemd 替换文件前必须校验更新包；未发布校验文件的旧版本在下载前拒绝。

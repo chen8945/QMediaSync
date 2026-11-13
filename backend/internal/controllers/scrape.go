@@ -18,236 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 基础配置
-// TMDB API Key 或 Access Token 设置
-// 1. TMDB API Key 或 Access Token 设置查询和保存
-// 2. AI 识别设置查询和保存
-// 分类规则
-// 1 分类列表（分电影和电视剧）
-// 2. 分类添加和编辑（分电影和电视剧）
-// 分类数据
-// 1. 电影分类数组
-// 2. 电视剧分类数组
-// 语言数组
-// 1. 语言数组
-
-type TmdbSettings struct {
-	TmdbApiKey        string `json:"tmdb_api_key" form:"tmdb_api_key"`
-	TmdbAccessToken   string `json:"tmdb_access_token" form:"tmdb_access_token"`
-	TmdbUrl           string `json:"tmdb_url" form:"tmdb_url"`
-	TmdbImageUrl      string `json:"tmdb_image_url" form:"tmdb_image_url"`
-	TmdbLanguage      string `json:"tmdb_language" form:"tmdb_language"`
-	TmdbImageLanguage string `json:"tmdb_image_language" form:"tmdb_image_language"`
-	TmdbEnableProxy   bool   `json:"tmdb_enable_proxy" form:"tmdb_enable_proxy"`
-	FanartApiKey      string `json:"fanart_api_key" form:"fanart_api_key"`
-}
-
-type AiSettings struct {
-	EnableAi    models.AiAction `json:"enable_ai" form:"enable_ai"`
-	AiApiKey    string          `json:"ai_api_key" form:"ai_api_key"`
-	AiBaseUrl   string          `json:"ai_base_url" form:"ai_base_url"`
-	AiModelName string          `json:"ai_model_name" form:"ai_model_name"`
-	AiPrompt    string          `json:"ai_prompt" form:"ai_prompt"`
-	AiTimeout   int             `json:"ai_timeout" form:"ai_timeout"`
-}
-
-// GetTmdbSettings 获取 TMDB 设置。
-// @Summary 获取 TMDB 设置
-// @Description 获取当前的 TMDB API 配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func GetTmdbSettings(c *gin.Context) {
-	tmdbSettings := TmdbSettings{
-		TmdbApiKey:        models.GlobalScrapeSettings.TmdbApiKey,
-		TmdbAccessToken:   models.GlobalScrapeSettings.TmdbAccessToken,
-		TmdbUrl:           models.GlobalScrapeSettings.TmdbUrl,
-		TmdbImageUrl:      models.GlobalScrapeSettings.TmdbImageUrl,
-		TmdbLanguage:      models.GlobalScrapeSettings.TmdbLanguage,
-		TmdbImageLanguage: models.GlobalScrapeSettings.TmdbImageLanguage,
-		TmdbEnableProxy:   models.GlobalScrapeSettings.TmdbEnableProxy,
-		FanartApiKey:      models.GlobalScrapeSettings.FanartApiKey,
-	}
-	c.JSON(http.StatusOK, APIResponse[TmdbSettings]{Code: Success, Message: "", Data: tmdbSettings})
-}
-
-// SaveTmdbSettings 保存 TMDB 设置。
-// @Summary 保存 TMDB 设置
-// @Description 保存或更新 TMDB API 配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param tmdb_api_key body string false "TMDB API Key"
-// @Param tmdb_access_token body string false "TMDB Access Token"
-// @Param tmdb_url body string false "TMDB 服务器地址"
-// @Param tmdb_image_url body string false "TMDB 图片服务器地址"
-// @Param tmdb_language body string false "TMDB 默认语言"
-// @Param tmdb_image_language body string false "TMDB 图片语言"
-// @Param tmdb_enable_proxy body boolean false "是否启用代理"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func SaveTmdbSettings(c *gin.Context) {
-	reqData := requests.TMDBSettingsRequest{}
-	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := models.GlobalScrapeSettings.SaveTmdb(reqData.TmdbAPIKey, reqData.TmdbAccessToken, reqData.TmdbURL, reqData.TmdbImageURL, reqData.TmdbLanguage, reqData.TmdbImageLanguage, reqData.TmdbEnableProxy); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := models.GlobalScrapeSettings.SaveKeys(reqData.FanartAPIKey); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "TMDB 设置已保存", Data: nil})
-}
-
-// TestTmdbSettings 测试 TMDB 设置。
-// @Summary 测试 TMDB 连接
-// @Description 测试指定的 TMDB 配置是否有效
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param tmdb_api_key body string false "TMDB API Key"
-// @Param tmdb_access_token body string false "TMDB Access Token"
-// @Param tmdb_url body string false "TMDB 服务器地址"
-// @Param tmdb_image_url body string false "TMDB 图片服务器地址"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb-test [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func TestTmdbSettings(c *gin.Context) {
-	reqData := requests.TMDBSettingsRequest{}
-	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	tmpScrapeSetting := &models.ScrapeSettings{
-		TmdbApiKey:        reqData.TmdbAPIKey,
-		TmdbAccessToken:   reqData.TmdbAccessToken,
-		TmdbUrl:           reqData.TmdbURL,
-		TmdbImageUrl:      reqData.TmdbImageURL,
-		TmdbLanguage:      reqData.TmdbLanguage,
-		TmdbImageLanguage: reqData.TmdbImageLanguage,
-		TmdbEnableProxy:   reqData.TmdbEnableProxy,
-	}
-	testResult := tmpScrapeSetting.TestTmdb()
-	c.JSON(http.StatusOK, APIResponse[bool]{Code: Success, Message: "", Data: testResult})
-}
-
-// SaveAiSettings 保存 AI 识别设置。
-// @Summary 保存 AI 识别设置
-// @Description 保存或更新 AI 识别模型的配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param enable_ai body string false "是否启用 AI 识别"
-// @Param ai_api_key body string false "AI API Key"
-// @Param ai_base_url body string false "AI 服务器地址"
-// @Param ai_model_name body string false "AI 模型名称"
-// @Param ai_timeout body integer false "AI 超时时间"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-settings [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func SaveAiSettings(c *gin.Context) {
-	reqData := requests.AISettingsRequest{}
-	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := models.GlobalScrapeSettings.SaveAi(reqData.AIAPIKey, reqData.AIBaseURL, reqData.AIModelName, reqData.AITimeout); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "AI 识别设置已保存", Data: nil})
-}
-
-// TestAiSettings 测试 AI 识别设置。
-// @Summary 测试 AI 识别连接
-// @Description 测试指定的 AI 模型配置是否有效
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param ai_api_key body string true "AI API Key"
-// @Param ai_base_url body string true "AI 服务器地址"
-// @Param ai_model_name body string true "AI 模型名称"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-test [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func TestAiSettings(c *gin.Context) {
-	reqData := requests.AISettingsRequest{}
-	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if reqData.AIAPIKey == "" || reqData.AIBaseURL == "" || reqData.AIModelName == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请填写 API Key、接口地址和模型名称", Data: nil})
-		return
-	}
-	tmpScrapeSetting := &models.ScrapeSettings{
-		AiApiKey:    reqData.AIAPIKey,
-		AiBaseUrl:   reqData.AIBaseURL,
-		AiModelName: reqData.AIModelName,
-	}
-	testResult := tmpScrapeSetting.TestAi()
-	if testResult != nil {
-		c.JSON(http.StatusOK, APIResponse[error]{Code: BadRequest, Message: helpers.RedactSensitiveLog(testResult.Error(), reqData.AIAPIKey), Data: nil})
-		return
-	}
-	c.JSON(http.StatusOK, APIResponse[error]{Code: Success, Message: "AI 识别连接测试成功", Data: nil})
-}
-
-// GetAiSettings 获取 AI 识别设置。
-// @Summary 获取 AI 识别设置
-// @Description 获取当前的 AI 识别模型配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-settings [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func GetAiSettings(c *gin.Context) {
-	aiSettings := AiSettings{
-		AiApiKey:    models.GlobalScrapeSettings.AiApiKey,
-		AiBaseUrl:   models.GlobalScrapeSettings.AiBaseUrl,
-		AiModelName: models.GlobalScrapeSettings.AiModelName,
-		AiTimeout:   models.GlobalScrapeSettings.AiTimeout,
-	}
-	c.JSON(http.StatusOK, APIResponse[AiSettings]{Code: Success, Message: "", Data: aiSettings})
-}
-
 // GetMovieGenre 获取电影分类
 // @Summary 获取电影分类
 // @Description 获取 TMDB 电影分类列表
@@ -465,230 +235,6 @@ func DeleteTvshowCategory(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "电视剧分类已删除", Data: nil})
-}
-
-// GetScrapePathes 获取刮削路径列表
-// @Summary 获取刮削路径列表
-// @Description 获取所有配置的刮削路径列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func GetScrapePathes(c *gin.Context) {
-	sourceType := c.Query("source_type")
-	scrapePathes := models.GetScrapePathes(sourceType)
-	for _, scrapePath := range scrapePathes {
-		// 检查是否正在运行
-		scrapePath.IsTaskRunning = synccron.CheckNewTaskStatus(scrapePath.ID, synccron.SyncTaskTypeScrape)
-	}
-	c.JSON(http.StatusOK, APIResponse[[]*models.ScrapePath]{Code: Success, Message: "", Data: scrapePathes})
-}
-
-// GetScrapePath 获取刮削路径详情
-// @Summary 获取刮削路径详情
-// @Description 根据 ID 获取指定刮削路径的详细配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "刮削路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/:id [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func GetScrapePath(c *gin.Context) {
-	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
-		return
-	}
-	scrapePath := models.GetScrapePathByID(idReq.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
-		return
-	}
-	if scrapePath.EnableAi == "" {
-		scrapePath.EnableAi = models.AiActionOff
-	}
-	c.JSON(http.StatusOK, APIResponse[*models.ScrapePath]{Code: Success, Message: "", Data: scrapePath})
-}
-
-// SaveScrapePath 保存刮削路径
-// @Summary 保存刮削路径
-// @Description 创建或更新刮削路径配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer false "路径 ID，不填为新增"
-// @Param source_type body integer true "来源类型"
-// @Param source_path body string true "来源路径"
-// @Param dest_path body string true "目标路径"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func SaveScrapePath(c *gin.Context) {
-	var req requests.SaveScrapePathRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	var oldScrapePath *models.ScrapePath
-	if req.ID > 0 {
-		oldScrapePath = models.GetScrapePathByID(req.ID)
-		if err := req.ValidateUpdate(oldScrapePath); err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-			return
-		}
-	} else if err := req.ValidateCreate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	reqData := req.ToModel()
-	// 如果是 115，用 ID 查询实际目录
-	if reqData.SourceType == models.SourceType115 {
-		// 用 ID 查询实际目录
-		account, err := models.GetAccountById(reqData.AccountId)
-		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-			return
-		}
-		// 用 ID 查询实际目录
-		sourcePath := models.GetPathByPathFileId(account, reqData.SourcePathId)
-		if sourcePath == "" {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询来源目录失败", Data: nil})
-			return
-		}
-		reqData.SourcePath = sourcePath
-		if reqData.DestPathId != "" {
-			destPath := models.GetPathByPathFileId(account, reqData.DestPathId)
-			if destPath == "" {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询目标目录失败", Data: nil})
-				return
-			}
-			reqData.DestPath = destPath
-		}
-	}
-	helpers.AppLogger.Infof("最大线程数：%d", reqData.MaxThreads)
-
-	// 检查 Cron 表达式是否发生变化
-	var oldCronExpr string
-	var cronChanged bool
-	if reqData.ID > 0 {
-		// 更新操作
-		if oldScrapePath != nil {
-			oldCronExpr = oldScrapePath.CronExpression
-			cronChanged = oldCronExpr != reqData.CronExpression
-		}
-	} else {
-		// 新增操作：如果设置了 Cron 表达式，则需要重新加载定时任务
-		cronChanged = reqData.CronExpression != ""
-	}
-
-	if err := reqData.Save(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-
-	// 如果 Cron 表达式发生变化或新增了启用 Cron 的刮削目录，重新加载定时任务
-	if cronChanged {
-		helpers.AppLogger.Infof("检测到刮削目录的 Cron 配置发生变化，重新加载定时任务")
-		synccron.InitScrapeCron()
-	}
-
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削目录已保存", Data: nil})
-}
-
-// DeleteScrapePath 删除刮削路径
-// @Summary 删除刮削路径
-// @Description 删除指定的刮削路径
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/:id [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func DeleteScrapePath(c *gin.Context) {
-	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
-		return
-	}
-
-	// 检查是否是启用了 Cron 的刮削目录
-	oldScrapePath := models.GetScrapePathByID(idReq.ID)
-	shouldReloadCron := false
-	if oldScrapePath != nil && oldScrapePath.EnableCron && oldScrapePath.CronExpression != "" {
-		shouldReloadCron = true
-	}
-
-	if err := models.DeleteScrapePath(idReq.ID); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-
-	// 如果删除的是启用了 Cron 的刮削目录，重新加载定时任务
-	if shouldReloadCron {
-		helpers.AppLogger.Infof("检测到删除的刮削目录 %d 启用了 Cron，重新加载定时任务", idReq.ID)
-		synccron.InitScrapeCron()
-	}
-
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削目录已删除", Data: nil})
-}
-
-// ScanScrapePath 启动刮削路径扫描
-// @Summary 启动刮削任务
-// @Description 启动指定刮削路径的扫描任务
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/start [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func ScanScrapePath(c *gin.Context) {
-	var req requests.PositiveIDRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	// 查询 ScrapePath
-	scrapePath := models.GetScrapePathByID(req.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
-		return
-	}
-	// 添加刮削任务到队列
-	taskObj := &synccron.NewSyncTask{
-		ID:           scrapePath.ID,
-		SourcePath:   "",
-		SourcePathId: "",
-		TargetPath:   "",
-		AccountId:    scrapePath.AccountId,
-		SourceType:   scrapePath.SourceType,
-		IsFile:       false,
-		TaskType:     synccron.SyncTaskTypeScrape,
-	}
-	if err := synccron.AddNewSyncTask(taskObj); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "添加刮削任务失败：" + err.Error(), Data: nil})
-		return
-	}
-
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削任务已添加到队列", Data: nil})
 }
 
 // GetScrapeRecords 获取刮削记录
@@ -1017,7 +563,7 @@ func ReScrape(c *gin.Context) {
 		return
 	}
 	oldStatus := scrapeMedia.Status
-	err := scrapeMedia.ReScrape(req.Name, req.Year, req.TmdbID, req.Season, req.Episode)
+	err := scrapeMedia.ReScrape(c.Request.Context(), req.Name, req.Year, req.TmdbID, req.Season, req.Episode)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "重新刮削失败：" + err.Error(), Data: nil})
 		return
@@ -1138,48 +684,6 @@ func RenameFailedScrapeMediaFile(c *gin.Context) {
 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "所选记录已标记为待整理", Data: nil})
 }
 
-// ToggleScrapePathCron 切换刮削路径的定时任务
-// @Summary 切换定时刮削
-// @Description 开启或关闭刮削路径的定时刮削任务
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/toggle-cron [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
-func ToggleScrapePathCron(c *gin.Context) {
-	var req requests.PositiveIDRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
-		return
-	}
-	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
-		return
-	}
-	// 使用 ID 查询 ScrapePath
-	scrapePath := models.GetScrapePathByID(req.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要操作的刮削目录", Data: nil})
-		return
-	}
-	// 切换定时刮削
-	err := scrapePath.ToggleCron()
-	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "切换定时刮削失败：" + err.Error(), Data: nil})
-		return
-	}
-
-	// 重新加载定时任务管理器
-	helpers.AppLogger.Infof("刮削目录 %d 的定时任务开关已切换，重新加载定时任务", req.ID)
-	synccron.InitScrapeCron()
-
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "定时刮削状态已切换", Data: nil})
-}
-
 // StopScrape 停止刮削任务
 // @Summary 停止刮削任务
 // @Description 停止指定刮削路径正在运行的刮削任务
@@ -1293,12 +797,18 @@ func TmdbSearch(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
 		return
 	}
-	tmdbClient := models.GlobalScrapeSettings.GetTmdbClient()
+	settings := models.GetScrapeSettingsSnapshot()
+	tmdbClient, err := settings.GetTmdbClient()
+	if err != nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+		return
+	}
+	defer tmdbClient.Close()
 	switch req.Type {
 	case models.MediaTypeMovie:
 		if req.TmdbID == 0 {
 			// 搜索电影
-			resp, err := tmdbClient.SearchMovie(req.Name, req.Year, models.GlobalScrapeSettings.GetTmdbLanguage(), true, false)
+			resp, err := tmdbClient.SearchMovie(c.Request.Context(), req.Name, req.Year, settings.GetTmdbLanguage(), true, false)
 			if err != nil {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电影失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
@@ -1315,14 +825,14 @@ func TmdbSearch(c *gin.Context) {
 					Title:         r.Title,
 					OriginalTitle: r.OriginalTitle,
 					Year:          helpers.ParseYearFromDate(r.ReleaseDate),
-					PosterUrl:     models.GetTmdbImageUrl(r.PosterPath),
+					PosterUrl:     settings.ImageURL(r.PosterPath),
 					Overview:      r.Overview,
 				})
 			}
 			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "搜索电影成功", Data: tmdbResp})
 			return
 		} else {
-			resp, err := tmdbClient.GetMovieDetail(int64(req.TmdbID), models.GlobalScrapeSettings.GetTmdbLanguage())
+			resp, err := tmdbClient.GetMovieDetail(c.Request.Context(), int64(req.TmdbID), settings.GetTmdbLanguage())
 			if err != nil {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电影详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
@@ -1334,7 +844,7 @@ func TmdbSearch(c *gin.Context) {
 				Title:         resp.Title,
 				OriginalTitle: resp.OriginalTitle,
 				Year:          helpers.ParseYearFromDate(resp.ReleaseDate),
-				PosterUrl:     models.GetTmdbImageUrl(resp.PosterPath),
+				PosterUrl:     settings.ImageURL(resp.PosterPath),
 				Overview:      resp.Overview,
 			})
 			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取电影详情成功", Data: tmdbResp})
@@ -1343,7 +853,7 @@ func TmdbSearch(c *gin.Context) {
 	case models.MediaTypeTvShow:
 		if req.TmdbID == 0 {
 			// 搜索电视剧
-			resp, err := tmdbClient.SearchTv(req.Name, req.Year, models.GlobalScrapeSettings.GetTmdbLanguage(), true)
+			resp, err := tmdbClient.SearchTv(c.Request.Context(), req.Name, req.Year, settings.GetTmdbLanguage(), true)
 			if err != nil {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电视剧失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
@@ -1360,14 +870,14 @@ func TmdbSearch(c *gin.Context) {
 					Title:         r.Name,
 					OriginalTitle: r.OriginalName,
 					Year:          helpers.ParseYearFromDate(r.FirstAirDate),
-					PosterUrl:     models.GetTmdbImageUrl(r.PosterPath),
+					PosterUrl:     settings.ImageURL(r.PosterPath),
 					Overview:      r.Overview,
 				})
 			}
 			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "搜索电视剧成功", Data: tmdbResp})
 			return
 		} else {
-			resp, err := tmdbClient.GetTvDetail(int64(req.TmdbID), models.GlobalScrapeSettings.GetTmdbLanguage())
+			resp, err := tmdbClient.GetTvDetail(c.Request.Context(), int64(req.TmdbID), settings.GetTmdbLanguage())
 			if err != nil {
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电视剧详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
 				return
@@ -1379,7 +889,7 @@ func TmdbSearch(c *gin.Context) {
 				Title:         resp.Name,
 				OriginalTitle: resp.OriginalName,
 				Year:          helpers.ParseYearFromDate(resp.FirstAirDate),
-				PosterUrl:     models.GetTmdbImageUrl(resp.PosterPath),
+				PosterUrl:     settings.ImageURL(resp.PosterPath),
 				Overview:      resp.Overview,
 			})
 			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取电视剧详情成功", Data: tmdbResp})

@@ -418,6 +418,10 @@ func TestResolveExternalLinkSharedCancellation(t *testing.T) {
 					}
 					select {
 					case <-r.Context().Done():
+						// 全部取消后再结束旧请求，避免等待者在两次取消之间合法重试。
+						if mode == "all" {
+							<-release
+						}
 						return nil, r.Context().Err()
 					case <-release:
 						return &http.Response{StatusCode: 302, Header: http.Header{"Location": {finalURL}}, Body: http.NoBody}, nil

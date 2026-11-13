@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/web/cache"
 	"qmediasync/internal/playback"
 )
@@ -53,7 +52,7 @@ func TestExternalPreloadSharedWithEmbyPlayback(t *testing.T) {
 			raw := source.URL + path
 			h := newEmbyPreloadRealNetworkHarness(t)
 			h.adapter.options.Resolve = func(raw, ua string, force bool) (string, func(context.Context, *playback.PreloadTask) playback.PreloadResult, bool) {
-				return playback.NewExternalPreload(raw, ua, https.Transport())
+				return playback.NewExternalPreload(raw, ua, h.session.Client.Transport)
 			}
 			h.adapter.options.Account = playback.ExternalPreloadAccount
 			item := preloadTestItem("20", "Movie")
@@ -74,7 +73,7 @@ func TestExternalPreloadSharedWithEmbyPlayback(t *testing.T) {
 			if h.metadata.Load() != 0 || sourceCalls.Load() != 1 || cdnCalls.Load() != 1 {
 				t.Fatalf("已知 HTTP 源应直接取链，不要求 codec/时长或额外 PlaybackInfo：metadata=%d source=%d CDN=%d", h.metadata.Load(), sourceCalls.Load(), cdnCalls.Load())
 			}
-			router, _ := newSTRMRedirectTestRouter(t, raw, false)
+			router, _, _ := newSTRMRedirectTestRouter(t, raw, false)
 			for index, ua := range []string{firstUA, "Player/2.0"} {
 				request := httptest.NewRequest(http.MethodGet, "/Videos/movie/stream?MediaSourceId=ms&api_key=test", nil)
 				request.Header.Set("User-Agent", ua)
@@ -121,9 +120,9 @@ func TestExternalPreloadLearnsActualPlaybackUA(t *testing.T) {
 				item.MediaSources[0].Path = failed.URL + path + "?id=" + id
 				h.nodes[id] = item
 			}
-			streamRouter, _ := newSTRMRedirectTestRouter(t, h.nodes["20"].MediaSources[0].Path, false)
-			streamRouter.Use(PreloadObserver())
-			streamRouter.GET("/Videos/20/stream", Redirect2OpenlistLink)
+			streamRouter, _, session := newSTRMRedirectTestRouter(t, h.nodes["20"].MediaSources[0].Path, false)
+			streamRouter.Use(h.session.PreloadObserver())
+			streamRouter.GET("/Videos/20/stream", session.Redirect2OpenlistLink)
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
 			if result := h.waitResolved(); result.ua != "Control/1.0" {
 				t.Fatalf("首次第三方详情未使用当前 UA：%q", result.ua)
@@ -202,16 +201,15 @@ func TestExternalPreloadSuccessfulResolutionLearnsUA(t *testing.T) {
 				item.MediaSources[0].Path = raw + "?id=" + id
 				h.nodes[id] = item
 			}
-			streamRouter, _ := newSTRMRedirectTestRouter(t, h.nodes["20"].MediaSources[0].Path, false)
-			streamRouter.Use(PreloadObserver())
+			streamRouter, _, session := newSTRMRedirectTestRouter(t, h.nodes["20"].MediaSources[0].Path, false)
+			streamRouter.Use(h.session.PreloadObserver())
 			if test.cacheHit {
-				streamRouter.Use(cache.CacheableRouteMarker(), cache.RequestCacher())
-				t.Cleanup(cache.WaitingForHandleChan)
+				streamRouter.Use(cache.CacheableRouteMarker(), session.Cache.RequestCacher())
 			}
 			handlerCalls := 0
 			streamRouter.GET("/Videos/20/stream", func(c *gin.Context) {
 				handlerCalls++
-				Redirect2OpenlistLink(c)
+				session.Redirect2OpenlistLink(c)
 			})
 			detailRouter := h.router
 			streamURL := "/Videos/20/stream?MediaSourceId=source-20&case=" + url.QueryEscape(t.TempDir())
@@ -226,7 +224,6 @@ func TestExternalPreloadSuccessfulResolutionLearnsUA(t *testing.T) {
 			}
 			if test.cacheHit {
 				stream()
-				cache.WaitingForHandleChan()
 			}
 			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1.0", nil)
 			h.waitResolved()
@@ -269,7 +266,7 @@ func TestExternalPreloadSameOriginStreamSupportsUAAndNext(t *testing.T) {
 		}
 		previousRouter := h.router
 		h.router = gin.New()
-		h.router.Use(PreloadObserver())
+		h.router.Use(h.session.PreloadObserver())
 		h.router.GET("/Videos/20/stream", func(c *gin.Context) {
 			c.Redirect(http.StatusTemporaryRedirect, "http://qms.invalid/openlist/d/movie.mkv")
 		})

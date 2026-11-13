@@ -56,9 +56,10 @@ describe('刮削目录 API', () => {
   })
 
   it('保留现有路径、方法、完整载荷、空关联与 Cron 表达式', async () => {
+    const warnings = ['设置已保存，但定时任务应用失败，请重新保存重试']
     const adapter = vi.fn(async (config) => ({
       config,
-      data: { code: 200, data: null },
+      data: { code: 200, data: null, warnings },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -66,18 +67,18 @@ describe('刮削目录 API', () => {
     const http = axios.create({ adapter })
     await fetchScrapePaths(http)
     await fetchScrapePath(http, 12)
-    await saveScrapePath(http, payload)
-    await saveScrapePath(http, {
+    await expect(saveScrapePath(http, payload)).resolves.toEqual({ warnings })
+    await expect(saveScrapePath(http, {
       ...payload,
       id: 0,
       source_type: 'local',
       account_id: 0,
       media_type: 'movie',
-    })
-    await deleteScrapePath(http, 12)
+    })).resolves.toEqual({ warnings })
+    await expect(deleteScrapePath(http, 12)).resolves.toEqual({ warnings })
     await startScrapePath(http, 12)
     await stopScrapePath(http, 12)
-    await toggleScrapePathCron(http, 12)
+    await expect(toggleScrapePathCron(http, 12)).resolves.toEqual({ warnings })
     await fetchScrapeSyncPathIDs(http, 12)
     await saveScrapeSyncPathIDs(http, 12, [])
     await validateScrapePathCron(http, '0 * * * *')

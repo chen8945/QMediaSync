@@ -81,6 +81,21 @@ afterEach(() => {
 })
 
 describe('AppThreadSettings 同时上传任务数', () => {
+  it('已保存的应用警告保持输入且不自动消失，再次保存可重试', async () => {
+    const { wrapper, http, input, save } = await mountSettings({ upload_threads: 3 })
+    await input.setValue('4')
+    const warning = '线程设置已保存，但应用失败，请重新保存'
+    http.post.mockResolvedValueOnce({ data: { code: 200, data: null, warnings: [warning] } })
+    await save()
+    expect(wrapper.get('.save-status').text()).toContain(warning)
+    expect(wrapper.get('.save-status').text()).toContain('尚未完全生效')
+    expect(input.element).toHaveProperty('value', '4')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(wrapper.get('.save-status').text()).toContain(warning)
+    await save()
+    expect(wrapper.get('.save-status').text()).toContain('保存成功')
+  })
+
   it.each([
     { settings: { upload_threads: 3 }, expected: '3' },
     { settings: {}, expected: '1' },

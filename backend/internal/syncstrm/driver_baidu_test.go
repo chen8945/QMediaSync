@@ -222,7 +222,6 @@ func TestBaiduPanDriverGetNetFileFilesPreCanceled(t *testing.T) {
 
 func TestBaiduPanDriverListingFailureProtectsDirectory(t *testing.T) {
 	setupStrmExclusionTestDB(t)
-	models.SettingsGlobal.OpenlistRetry = 0
 	var offsets []int
 	driver := newBaiduListTestDriver(t, func(request *http.Request, start int) (*http.Response, error) {
 		offsets = append(offsets, start)
@@ -232,6 +231,7 @@ func TestBaiduPanDriverListingFailureProtectsDirectory(t *testing.T) {
 		return baiduListTestResponse(request, http.StatusOK, 0, baiduListTestFiles(0, 50))
 	})
 	syncer := driver.s
+	syncer.threadSettings.OpenlistRetry = 0
 	syncer.Account = &models.Account{SourceType: models.SourceTypeBaiduPan}
 	syncer.SourcePath, syncer.SourcePathId = "/media", "parent"
 	syncer.TargetPath = t.TempDir()

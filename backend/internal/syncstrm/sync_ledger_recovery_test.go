@@ -63,7 +63,7 @@ func useLedgerRecoveryDB(t *testing.T, filename string) {
 func setupLedgerRecoveryQueues(t *testing.T) {
 	t.Helper()
 	oldDownload, oldUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-	models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(0), models.NewUq(1)
+	models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(1), models.NewUq(1)
 	t.Cleanup(func() {
 		models.GlobalDownloadQueue.Stop()
 		models.GlobalUploadQueue.Stop()

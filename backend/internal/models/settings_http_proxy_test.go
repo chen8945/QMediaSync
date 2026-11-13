@@ -2,172 +2,199 @@ package models
 
 import (
 	"bytes"
+	"context"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
-	"qmediasync/internal/tmdb"
 )
 
-// setupHttpProxyTest 准备内存数据库和一条 settings 记录，并在结束后还原被测试改写的全局状态。
-func setupHttpProxyTest(t *testing.T) (*Settings, *bytes.Buffer) {
+type settingsLogBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (buffer *settingsLogBuffer) Write(value []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.Buffer.Write(value)
+}
+func (buffer *settingsLogBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.Buffer.String()
+}
+
+func setupHttpProxyTest(t *testing.T) (*Settings, *settingsLogBuffer) {
 	t.Helper()
+	return setupHttpProxyTestDatabase(t, ":memory:")
+}
 
-	oldDb := db.Db
-	oldSettings := SettingsGlobal
-	oldScrapeSettings := GlobalScrapeSettings
-	oldProxy := helpers.HTTP_PROXY
-	oldFanartKey := helpers.FANART_API_KEY
-	oldLogger := helpers.AppLogger
+func setupHttpProxyTestDatabase(t *testing.T, dsn string) (*Settings, *settingsLogBuffer) {
+	t.Helper()
+	oldDB, oldSettings, oldSnapshot := db.Db, SettingsGlobal, committedSettings.Load()
+	oldLogger, oldTMDBLogger := helpers.AppLogger, helpers.TMDBLog
 	oldManager := notificationmanager.GlobalEnhancedNotificationManager
-	oldTmdbClient := tmdb.GlobalTmdbClient
-	t.Cleanup(func() {
-		db.Db = oldDb
-		SettingsGlobal = oldSettings
-		GlobalScrapeSettings = oldScrapeSettings
-		helpers.HTTP_PROXY = oldProxy
-		helpers.FANART_API_KEY = oldFanartKey
-		helpers.AppLogger = oldLogger
-		notificationmanager.GlobalEnhancedNotificationManager = oldManager
-		tmdb.GlobalTmdbClient = oldTmdbClient
-	})
-
-	var buf bytes.Buffer
+	oldDownload, oldUpload := GlobalDownloadQueue, GlobalUploadQueue
+	oldThreadHook := threadSettingsApply.Load()
+	var buf settingsLogBuffer
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&buf, "", 0)}
-
-	testDb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	helpers.TMDBLog = helpers.AppLogger
+	testDB, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
-		t.Fatalf("打开测试数据库失败: %v", err)
+		t.Fatal(err)
 	}
-	db.Db = testDb
-	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
-		t.Fatalf("迁移 Settings 失败: %v", err)
+	sqlDB, err := testDB.DB()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	settings := &Settings{HttpProxy: "http://old.proxy.local:8080"}
-	if err := db.Db.Create(settings).Error; err != nil {
-		t.Fatalf("创建 settings 记录失败: %v", err)
+	sqlDB.SetMaxOpenConns(1)
+	db.Db = testDB
+	if err := testDB.AutoMigrate(&Settings{}, &ScrapeSettings{}); err != nil {
+		t.Fatal(err)
 	}
-	SettingsGlobal = settings
-
-	// 代理开关打开，GetProxyUrl 才会把全局代理下发给 Fanart 和 TMDB
-	GlobalScrapeSettings = &ScrapeSettings{TmdbEnableProxy: true}
-	helpers.HTTP_PROXY = "http://old.proxy.local:8080"
-
+	settings := &Settings{HttpProxy: "http://old.proxy.local:8080", DownloadThreads: 1, UploadThreads: 1, FileDetailThreads: 2}
+	if err := testDB.Create(settings).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.Create(&ScrapeSettings{TmdbEnableProxy: true, TmdbApiKey: "api-key"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	notificationmanager.GlobalEnhancedNotificationManager = nil
+	GlobalDownloadQueue, GlobalUploadQueue = nil, nil
+	SettingsGlobal = nil
+	LoadSettings()
+	LoadScrapeSettings()
+	github.GetManager()
+	if err := StartSettingsRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := StopSettingsRuntime(context.Background()); err != nil {
+			t.Error(err)
+		}
+		if current := notificationmanager.GlobalEnhancedNotificationManager; current != nil && current != oldManager {
+			current.StopAll()
+		}
+		threadSettingsApply.Store(oldThreadHook)
+		GlobalDownloadQueue, GlobalUploadQueue = oldDownload, oldUpload
+		db.Db, SettingsGlobal = oldDB, oldSettings
+		committedSettings.Store(oldSnapshot)
+		helpers.AppLogger, helpers.TMDBLog = oldLogger, oldTMDBLogger
+		notificationmanager.GlobalEnhancedNotificationManager = oldManager
+		_ = sqlDB.Close()
+	})
 	return settings, &buf
 }
 
-func TestUpdateHttpProxy写库失败不改内存全局值(t *testing.T) {
+func TestUpdateHttpProxyFailureKeepsCommittedSettings(t *testing.T) {
 	settings, _ := setupHttpProxyTest(t)
-
-	// 删表制造写库失败：控制器随后会提前返回，github.UpdateConfig 和 InitNotificationManager 都不会执行，
-	// 此时内存若已被改写就会与数据库、GitHub 管理器、通知管理器脑裂。
 	if err := db.Db.Migrator().DropTable(&Settings{}); err != nil {
-		t.Fatalf("删除 settings 表失败: %v", err)
+		t.Fatal(err)
 	}
-
-	if settings.UpdateHttpProxy("socks5://user:secret@10.0.0.5:1080") {
-		t.Fatal("写库失败时 UpdateHttpProxy 应返回 false")
+	if _, err := SaveHTTPProxy(context.Background(), "socks5://user:secret@10.0.0.5:1080", nil); err == nil {
+		t.Fatal("数据库失败应拒绝保存")
 	}
-	if settings.HttpProxy != "http://old.proxy.local:8080" {
-		t.Fatalf("写库失败后内存代理 = %q，应保持旧值", settings.HttpProxy)
-	}
-	if helpers.HTTP_PROXY != "http://old.proxy.local:8080" {
-		t.Fatalf("写库失败后 Fanart 生效代理 = %q，应保持旧值", helpers.HTTP_PROXY)
+	if GetHTTPProxy() != settings.HttpProxy {
+		t.Fatal("保存失败改变了运行时代理")
 	}
 }
 
-func TestUpdateHttpProxy写库成功后刷新下游客户端(t *testing.T) {
-	settings, _ := setupHttpProxyTest(t)
-
-	// 构造 TMDB 全局单例，验证保存代理后单例会被同步刷新
-	tmdb.GlobalTmdbClient = nil
-	client := tmdb.NewClient("api-key", "access-token", "https://api.tmdb.org", "zh-CN", "http://old.proxy.local:8080")
-
-	const newProxy = "socks5://user:secret@10.0.0.5:1080"
-	if !settings.UpdateHttpProxy(newProxy) {
-		t.Fatal("写库成功时 UpdateHttpProxy 应返回 true")
+func TestUpdateHttpProxyAffectsNewRequestsAndPreservesCapturedClient(t *testing.T) {
+	_, _ = setupHttpProxyTest(t)
+	var firstCount, secondCount, directCount atomic.Int32
+	server := func(counter *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			counter.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true}`))
+		}))
 	}
-
-	if settings.HttpProxy != newProxy {
-		t.Fatalf("内存代理 = %q，期望 %q", settings.HttpProxy, newProxy)
+	first, second, target := server(&firstCount), server(&secondCount), server(&directCount)
+	defer first.Close()
+	defer second.Close()
+	defer target.Close()
+	ctx := context.Background()
+	if _, err := SaveHTTPProxy(ctx, first.URL, nil); err != nil {
+		t.Fatal(err)
 	}
-	var saved Settings
-	if err := db.Db.Take(&saved).Error; err != nil {
-		t.Fatalf("读取 settings 失败: %v", err)
+	config := GetScrapeSettingsSnapshot()
+	config.TmdbUrl = target.URL
+	if err := SaveTmdbSettings(ctx, config); err != nil {
+		t.Fatal(err)
 	}
-	if saved.HttpProxy != newProxy {
-		t.Fatalf("数据库代理 = %q，期望 %q", saved.HttpProxy, newProxy)
+	oldConfig := GetScrapeSettingsSnapshot()
+	oldClient, err := oldConfig.GetTmdbClient()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Fanart 客户端每次构造都直读该变量
-	if helpers.HTTP_PROXY != newProxy {
-		t.Fatalf("Fanart 生效代理 = %q，期望 %q", helpers.HTTP_PROXY, newProxy)
+	defer oldClient.Close()
+	if _, err := SaveHTTPProxy(ctx, second.URL, nil); err != nil {
+		t.Fatal(err)
 	}
-	// TMDB 是单例，不刷新就会继续拨旧代理
-	if got := client.ProxyURL(); got != newProxy {
-		t.Fatalf("TMDB 单例代理 = %q，期望 %q", got, newProxy)
+	newConfig := GetScrapeSettingsSnapshot()
+	newClient, err := newConfig.GetTmdbClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newClient.Close()
+	if !oldClient.TestToken(ctx) || !newClient.TestToken(ctx) {
+		t.Fatal("代理请求失败")
+	}
+	if firstCount.Load() != 1 || secondCount.Load() != 1 {
+		t.Fatal("后续请求未按各自捕获的代理发送")
+	}
+	if _, err := SaveHTTPProxy(ctx, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	directConfig := GetScrapeSettingsSnapshot()
+	directClient, err := directConfig.GetTmdbClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directClient.Close()
+	if !directClient.TestToken(ctx) || !newClient.TestToken(ctx) {
+		t.Fatal("清空代理后请求失败")
+	}
+	if directCount.Load() != 1 || secondCount.Load() != 2 {
+		t.Fatal("清空代理未作用于新请求，或改写了在途客户端")
 	}
 }
 
-func TestUpdateHttpProxy清空代理后下游同步清空(t *testing.T) {
-	settings, _ := setupHttpProxyTest(t)
-
-	tmdb.GlobalTmdbClient = nil
-	client := tmdb.NewClient("api-key", "access-token", "https://api.tmdb.org", "zh-CN", "http://old.proxy.local:8080")
-
-	if !settings.UpdateHttpProxy("") {
-		t.Fatal("清空代理时 UpdateHttpProxy 应返回 true")
-	}
-
-	if helpers.HTTP_PROXY != "" {
-		t.Fatalf("清空代理后 Fanart 生效代理 = %q，应为空", helpers.HTTP_PROXY)
-	}
-	if got := client.ProxyURL(); got != "" {
-		t.Fatalf("清空代理后 TMDB 单例代理 = %q，应为空", got)
-	}
-}
-
-func TestInitNotificationManager代理日志脱敏(t *testing.T) {
-	settings, buf := setupHttpProxyTest(t)
-
-	// 只有存在启用的 Telegram 渠道，才会走到读取代理的回调；这正是每次保存代理都会触发的路径
+func TestInitNotificationManagerProxyLogRedactsCredentials(t *testing.T) {
+	_, buf := setupHttpProxyTest(t)
 	if err := db.Db.AutoMigrate(&notification.NotificationChannel{}, &notification.NotificationRule{}, &notification.TelegramChannelConfig{}); err != nil {
-		t.Fatalf("迁移通知表失败: %v", err)
+		t.Fatal(err)
 	}
 	channel := notification.NotificationChannel{ChannelType: "telegram", ChannelName: "Telegram", IsEnabled: true}
 	if err := db.Db.Create(&channel).Error; err != nil {
-		t.Fatalf("创建通知渠道失败: %v", err)
+		t.Fatal(err)
 	}
-	if err := db.Db.Create(&notification.TelegramChannelConfig{
-		ChannelID: channel.ID,
-		BotToken:  "bot-token",
-		ChatID:    "chat-id",
-	}).Error; err != nil {
-		t.Fatalf("创建 Telegram 配置失败: %v", err)
+	if err := db.Db.Create(&notification.TelegramChannelConfig{ChannelID: channel.ID, BotToken: "bot-token", ChatID: "chat-id"}).Error; err != nil {
+		t.Fatal(err)
 	}
-
-	if !settings.UpdateHttpProxy("socks5://user:secret@10.0.0.5:1080") {
-		t.Fatal("UpdateHttpProxy 应返回 true")
+	InitNotificationManager()
+	if _, err := SaveHTTPProxy(context.Background(), "socks5://user:secret@10.0.0.5:1080", nil); err != nil {
+		t.Fatal(err)
 	}
-
 	logged := buf.String()
-	if !strings.Contains(logged, "获取 HTTP 代理") {
-		t.Fatalf("未触发读取代理的日志，实际：%s", logged)
-	}
-	if strings.Contains(logged, "secret") {
-		t.Fatalf("保存代理的日志泄露了密码：%s", logged)
-	}
-	if strings.Contains(logged, "user:") {
-		t.Fatalf("保存代理的日志泄露了用户名：%s", logged)
+	if strings.Contains(logged, "secret") || strings.Contains(logged, "user:") {
+		t.Fatalf("日志泄露凭据：%s", logged)
 	}
 	if !strings.Contains(logged, "xxxxx") {
-		t.Fatalf("保存代理的日志应包含脱敏占位符，实际：%s", logged)
+		t.Fatalf("日志未使用脱敏地址：%s", logged)
 	}
 }

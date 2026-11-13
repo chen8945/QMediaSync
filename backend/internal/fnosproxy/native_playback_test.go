@@ -454,7 +454,7 @@ func TestNativePlaybackCacheHitLogOnlyWhenResponseIsRewritten(t *testing.T) {
 			defer cancel()
 			instCtx, stop := context.WithCancel(t.Context())
 			defer stop()
-			inst := &instance{ctx: instCtx, service: NewService(Options{})}
+			inst := &instance{ctx: instCtx, service: newTestService(t, Options{})}
 			payload := nativeStreamPayload("/unmounted/movie.strm", `"`+raw+`"`)
 			data := payload["data"].(map[string]any)
 			data["direct_link_qualities"] = []any{

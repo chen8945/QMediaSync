@@ -35,7 +35,7 @@ func mediaLibraryDownloadKind(task *DbDownloadTask) (MediaServerType, error) {
 func runnableDownloadTaskQuery(query *gorm.DB) *gorm.DB {
 	var enabled []DownloadSource
 	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
-		config, err := ReadMediaLibraryConfigSnapshot(kind)
+		config, err := readMediaLibraryConfigTx(db.Db.WithContext(query.Statement.Context), kind)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
 		}
@@ -100,7 +100,7 @@ func authorizeMediaLibraryDownload(ctx context.Context, task *DbDownloadTask) (*
 	if err != nil {
 		return nil, nil, "", err
 	}
-	config, err := ReadMediaLibraryConfigSnapshot(kind)
+	config, err := readMediaLibraryConfigTx(db.Db.WithContext(ctx), kind)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -153,7 +153,11 @@ func validateLegacyMediaDownload(task *DbDownloadTask, config *EmbyConfig) error
 
 // DownloadMediaLibraryInfo 只有响应包含适用的主要媒体流时才完成任务。
 func (task *DbDownloadTask) DownloadMediaLibraryInfo() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	task.downloadMediaLibraryInfo(context.Background())
+}
+
+func (task *DbDownloadTask) downloadMediaLibraryInfo(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	config, client, userID, err := authorizeMediaLibraryDownload(ctx, task)
 	if errors.Is(err, errMediaLibraryDownloadDisabled) {
@@ -170,7 +174,7 @@ func (task *DbDownloadTask) DownloadMediaLibraryInfo() {
 				APIKey  string
 			}
 			kind := string(config.MediaServerType)
-			readErr := db.Db.Table(mediaLibraryConfigTable(config.MediaServerType)).
+			readErr := db.Db.WithContext(ctx).Table(mediaLibraryConfigTable(config.MediaServerType)).
 				Select("enabled, " + kind + "_url AS url, " + kind + "_api_key AS api_key").Order("id ASC").Take(&current).Error
 			if readErr != nil {
 				err = readErr

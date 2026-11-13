@@ -8,6 +8,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/openai"
 )
 
 // 识别电视剧
@@ -16,12 +17,8 @@ type IdTvShowImpl struct {
 	IdBase
 }
 
-func NewIdTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context, tmdbImpl *TmdbTvShowImpl) *IdTvShowImpl {
-	return &IdTvShowImpl{
-		tmdbImpl:   tmdbImpl,
-		scrapePath: scrapePath,
-		ctx:        ctx,
-	}
+func NewIdTvShowImpl(scrapePath *models.ScrapePath, ctx context.Context, tmdbImpl TmdbImpl, aiClient *openai.Client, aiPrompt string) *IdTvShowImpl {
+	return &IdTvShowImpl{IdBase: IdBase{tmdbImpl: tmdbImpl, scrapePath: scrapePath, ctx: ctx, aiClient: aiClient, aiPrompt: aiPrompt}}
 }
 
 // 识别电视剧
@@ -106,8 +103,8 @@ func (i *IdTvShowImpl) extractInfo(mediaFile *models.ScrapeMediaFile) (*helpers.
 
 // AI 提取
 func (i *IdTvShowImpl) extractInfoByAI(mediaFile *models.ScrapeMediaFile) (*helpers.MediaInfo, error) {
-	client := models.GlobalScrapeSettings.GetAiClient()
-	info, err := client.TakeMoiveName(mediaFile.VideoFilename, i.scrapePath.GetAiPrompt())
+	client := i.aiClient
+	info, err := client.TakeMoiveName(i.ctx, mediaFile.VideoFilename, i.aiPrompt)
 	if err != nil {
 		helpers.AppLogger.Errorf("强制使用 AI 从文件名中提取媒体信息失败：%v", err)
 		return nil, err
@@ -131,7 +128,7 @@ func (i *IdTvShowImpl) extractInfoByAI(mediaFile *models.ScrapeMediaFile) (*help
 	folderName := filepath.Base(mediaFile.TvshowPath)
 	// 从文件夹中提取信息
 	helpers.AppLogger.Warnf("AI 从文件名中提取的媒体信息不完整，继续从文件夹中补齐，文件名：%s，提取结果：%+v", mediaFile.VideoFilename, info)
-	folderInfo, err := client.TakeMoiveName(folderName, i.scrapePath.GetAiPrompt())
+	folderInfo, err := client.TakeMoiveName(i.ctx, folderName, i.aiPrompt)
 	if err != nil {
 		helpers.AppLogger.Errorf("AI 从文件夹中提取媒体信息失败，文件夹：%s，错误信息：%v", folderName, err)
 		return nil, err

@@ -36,7 +36,7 @@ func baseCheck(c *gin.Context) (ProxyParams, error) {
 }
 
 // ProxyPlaylist 代理 M3U8 转码地址
-func ProxyPlaylist(c *gin.Context) {
+func (s *Store) ProxyPlaylist(c *gin.Context) {
 	params, err := baseCheck(c)
 	if err != nil {
 		logs.Error("代理 M3U8 失败: %v", err.Error())
@@ -50,26 +50,17 @@ func ProxyPlaylist(c *gin.Context) {
 	}
 
 	routePrefix := https.ClientRequestHost(c.Request) + "/videos"
-	m3uContent, ok := GetPlaylist(params.OpenlistPath, params.TemplateId, true, true, routePrefix, params.ApiKey)
+	m3uContent, ok := s.GetPlaylist(c.Request.Context(), params.OpenlistPath, params.TemplateId, true, true, routePrefix, params.ApiKey)
 	if ok {
 		okContent(m3uContent)
 		return
 	}
 
-	// 获取失败, 将当前请求的地址加入到预处理通道
-	PushPlaylistAsync(Info{OpenlistPath: params.OpenlistPath, TemplateId: params.TemplateId})
-
-	// 重新获取一次
-	m3uContent, ok = GetPlaylist(params.OpenlistPath, params.TemplateId, true, true, routePrefix, params.ApiKey)
-	if ok {
-		okContent(m3uContent)
-		return
-	}
 	c.String(http.StatusBadRequest, "获取不到播放列表, 请检查日志")
 }
 
 // ProxyTsLink 代理 TS 直链地址
-func ProxyTsLink(c *gin.Context) {
+func (s *Store) ProxyTsLink(c *gin.Context) {
 	params, err := baseCheck(c)
 	if err != nil {
 		logs.Error("代理 TS 失败: %v", err)
@@ -88,25 +79,17 @@ func ProxyTsLink(c *gin.Context) {
 		c.Redirect(http.StatusTemporaryRedirect, link)
 	}
 
-	tsLink, ok := GetTsLink(params.OpenlistPath, params.TemplateId, idx)
+	tsLink, ok := s.GetTsLink(c.Request.Context(), params.OpenlistPath, params.TemplateId, idx)
 	if ok {
 		okRedirect(tsLink)
 		return
 	}
 
-	// 获取失败, 将当前请求的地址加入到预处理通道
-	PushPlaylistAsync(Info{OpenlistPath: params.OpenlistPath, TemplateId: params.TemplateId})
-
-	tsLink, ok = GetTsLink(params.OpenlistPath, params.TemplateId, idx)
-	if ok {
-		okRedirect(tsLink)
-		return
-	}
 	c.String(http.StatusBadRequest, "获取不到 TS, 请检查日志")
 }
 
 // ProxySubtitle 代理字幕请求
-func ProxySubtitle(c *gin.Context) {
+func (s *Store) ProxySubtitle(c *gin.Context) {
 	params, err := baseCheck(c)
 	if err != nil {
 		logs.Error("代理字幕失败: %v", err)
@@ -122,7 +105,7 @@ func ProxySubtitle(c *gin.Context) {
 
 	proxySubtitle := func(link string) {
 		logs.Info("代理字幕: %s", link)
-		resp, err := https.Get(link).Do()
+		resp, err := https.Get(link).Client(s.client).Context(c.Request.Context()).Do()
 		if err != nil {
 			logs.Error("代理字幕失败: %v", err)
 			c.String(http.StatusInternalServerError, "代理字幕失败, 请检查日志")
@@ -141,19 +124,11 @@ func ProxySubtitle(c *gin.Context) {
 		}
 	}
 
-	subtitleLink, ok := GetSubtitleLink(params.OpenlistPath, params.TemplateId, subName)
+	subtitleLink, ok := s.GetSubtitleLink(c.Request.Context(), params.OpenlistPath, params.TemplateId, subName)
 	if ok {
 		proxySubtitle(subtitleLink)
 		return
 	}
 
-	// 获取失败, 将当前请求的地址加入到预处理通道
-	PushPlaylistAsync(Info{OpenlistPath: params.OpenlistPath, TemplateId: params.TemplateId})
-
-	subtitleLink, ok = GetSubtitleLink(params.OpenlistPath, params.TemplateId, subName)
-	if ok {
-		proxySubtitle(subtitleLink)
-		return
-	}
 	c.String(http.StatusBadRequest, "获取不到字幕")
 }

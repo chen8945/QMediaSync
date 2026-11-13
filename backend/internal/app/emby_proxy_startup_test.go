@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
-	"qmediasync/internal/emby302/web"
 	"qmediasync/internal/emby302/web/webport"
 	"qmediasync/internal/models"
 
@@ -34,7 +33,7 @@ func setupEmbyProxyConfig(t *testing.T, serverURL string) {
 }
 
 func TestEmbyProxyProductGate(t *testing.T) {
-	for _, scenario := range []string{"mismatch", "unknown", "ping_failure", "recovery", "disabled"} {
+	for _, scenario := range []string{"mismatch", "unknown", "ping_failure", "recovery"} {
 		t.Run(scenario, func(t *testing.T) {
 			var probes atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,20 +60,15 @@ func TestEmbyProxyProductGate(t *testing.T) {
 			}))
 			defer upstream.Close()
 			setupEmbyProxyConfig(t, upstream.URL)
-			if scenario == "disabled" {
-				if err := db.Db.Model(&models.EmbyConfig{}).Where("id > 0").Update("enabled", false).Error; err != nil {
-					t.Fatal(err)
-				}
-			}
 			router := gin.New()
-			router.Use(newEmby302Guard(upstream.URL, "test-key"))
+			router.Use(newEmby302Guard(upstream.URL, "test-key", http.DefaultTransport))
 			forwarded := 0
 			router.GET("/business", func(c *gin.Context) { forwarded++; c.String(http.StatusOK, "business") })
 			for range 3 {
 				response := httptest.NewRecorder()
 				router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/business", nil))
 				want := http.StatusOK
-				if scenario == "mismatch" || scenario == "disabled" {
+				if scenario == "mismatch" {
 					want = http.StatusServiceUnavailable
 				}
 				if response.Code != want {
@@ -83,14 +77,12 @@ func TestEmbyProxyProductGate(t *testing.T) {
 			}
 			wantProbes := int32(3)
 			switch scenario {
-			case "disabled":
-				wantProbes = 0
 			case "mismatch":
 				wantProbes = 1
 			case "recovery":
 				wantProbes = 2
 			}
-			if probes.Load() != wantProbes || (scenario == "mismatch" || scenario == "disabled") && forwarded != 0 {
+			if probes.Load() != wantProbes || scenario == "mismatch" && forwarded != 0 {
 				t.Fatalf("产品检查=%d，转发=%d", probes.Load(), forwarded)
 			}
 		})
@@ -138,10 +130,10 @@ func TestEmbyProxyLateUpstreamStartup(t *testing.T) {
 	_ = listener.Close()
 	build.Resources = fstest.MapFS{"assets/emby302.yaml": {Data: []byte("emby:\n  host: http://unused\ncache:\n  enable: false\n")}}
 	app := &App{}
-	app.startEmby302()
-	if app.stopEmbyPreload != nil {
-		defer app.stopEmbyPreload()
+	if err := app.startEmby302(); err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = app.embyProxy.Stop(context.Background()) }()
 	admin := gin.New()
 	admin.GET("/health", func(c *gin.Context) { c.String(http.StatusOK, "ready") })
 	adminServer := httptest.NewServer(admin)
@@ -188,14 +180,29 @@ func TestEmbyProxyLateUpstreamStartup(t *testing.T) {
 	healthy.Store(true)
 	request(http.StatusPartialContent)
 	request(http.StatusPartialContent)
-	if probes.Load() != 2 || business.Load() != 3 || web.EmbyRestartRequired(true, upstream.URL, "test-key") {
+	if probes.Load() != 2 || business.Load() != 3 {
 		t.Fatalf("晚启动未复用原监听/成功缓存：probe=%d business=%d", probes.Load(), business.Load())
 	}
 	if err := db.Db.Model(&models.EmbyConfig{}).Where("id > 0").Update("enabled", false).Error; err != nil {
 		t.Fatal(err)
 	}
+	stored, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.applyEmby302(t.Context(), stored); err != nil {
+		t.Fatal(err)
+	}
 	request(http.StatusServiceUnavailable)
-	if business.Load() != 3 || !web.EmbyRestartRequired(false, upstream.URL, "test-key") {
-		t.Fatal("关闭后仍在转发或缺少重启提示")
+	if business.Load() != 3 || probes.Load() != 2 {
+		t.Fatal("关闭后仍在转发或探测上游")
+	}
+	stored.Enabled = true
+	if err := app.applyEmby302(t.Context(), stored); err != nil {
+		t.Fatal(err)
+	}
+	request(http.StatusPartialContent)
+	if business.Load() != 4 || probes.Load() != 3 {
+		t.Fatal("重新启用后未在原端口转发新请求")
 	}
 }

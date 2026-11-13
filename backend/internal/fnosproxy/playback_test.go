@@ -586,7 +586,7 @@ func TestPlaybackInfoFallbackPreservesEncodedResponse(t *testing.T) {
 }
 
 func TestInternalURLDoesNotExposeMainAdministration(t *testing.T) {
-	inst := &instance{service: NewService(Options{KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms:12333/prefix"}, nil }})}
+	inst := &instance{service: newTestService(t, Options{KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms:12333/prefix"}, nil }})}
 	for _, test := range []struct {
 		name string
 		url  string
@@ -713,7 +713,7 @@ func TestCompatiblePlaybackCacheHitLog(t *testing.T) {
 			instCtx, stop := context.WithCancel(t.Context())
 			defer stop()
 			handoffs := 0
-			inst := &instance{ctx: instCtx, service: NewService(Options{
+			inst := &instance{ctx: instCtx, service: newTestService(t, Options{
 				KnownOrigins: func(context.Context) ([]string, error) { return []string{"http://qms.local"}, nil },
 				MainHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					handoffs++

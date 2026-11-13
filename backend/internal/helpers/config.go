@@ -128,8 +128,6 @@ var SharePathes string
 var AccessiblePathes string
 var IsFnOS bool
 var IsRelease bool
-var FANART_API_KEY = "" // 生效值：Fanart 客户端读取，由 ScrapeSettings.ApplyKeyOverrides 按“UI > 默认”刷新
-var HTTP_PROXY = ""     // 生效的通用刮削代理：由 ScrapeSettings.ApplyKeyOverrides 按代理开关刷新；Fanart 等直读 helpers 的客户端使用（空=直连）
 var DEFAULT_TMDB_ACCESS_TOKEN = ""
 var DEFAULT_TMDB_API_KEY = ""
 var DEFAULT_SC_API_KEY = ""

@@ -16,8 +16,13 @@ var controllerTestDBMu sync.Mutex
 
 func setupControllerTestDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
+	return setupControllerTestDBAt(t, ":memory:", models...)
+}
 
-	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+func setupControllerTestDBAt(t *testing.T, filename string, models ...any) *gorm.DB {
+	t.Helper()
+
+	testDB, err := gorm.Open(sqlite.Open(filename), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
@@ -37,6 +42,9 @@ func setupControllerTestDB(t *testing.T, models ...any) *gorm.DB {
 	}
 	t.Cleanup(func() {
 		directoryupload.StopDirectoryUploadService()
+		if filename != ":memory:" {
+			_ = sqlDB.Close()
+		}
 		db.Db = originalDB
 		runAuthBackgroundTask = originalRunner
 		controllerTestDBMu.Unlock()

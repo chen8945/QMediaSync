@@ -262,6 +262,72 @@ func TestUploadReadsTokenForEachRequest(t *testing.T) {
 	}
 }
 
+func TestUploadCancelsInFlightPart(t *testing.T) {
+	ensureBaiduPanTestLoggers()
+	client := NewBaiDuPanClientWithToken("upload-token")
+	requested, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var creates atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("method") {
+		case "precreate":
+			_, _ = io.WriteString(w, `{"errno":0,"uploadid":"upload-id","block_list":[0]}`)
+		case "upload":
+			_, _ = io.Copy(io.Discard, r.Body)
+			close(requested)
+			select {
+			case <-r.Context().Done():
+				close(cancelled)
+			case <-release:
+			}
+		case "create":
+			creates.Add(1)
+			_, _ = io.WriteString(w, `{"errno":0,"fs_id":123}`)
+		default:
+			t.Errorf("意外的上传请求：%s", r.URL.Query().Get("method"))
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(func() { close(release); server.Close() })
+	config := client.client.GetConfig()
+	for _, operation := range []string{"Xpanfileprecreate", "Pcssuperfile2", "Xpanfilecreate"} {
+		config.OperationServers["FileuploadApiService."+operation][0].URL = server.URL
+	}
+	localPath := filepath.Join(t.TempDir(), "upload.nfo")
+	if err := os.WriteFile(localPath, []byte("upload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.Upload(ctx, localPath, "/upload.nfo")
+		result <- err
+	}()
+	select {
+	case <-requested:
+	case <-time.After(3 * time.Second):
+		t.Fatal("上传没有进入分片请求")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消上传应保留context错误：%v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("取消没有结束分片上传")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("分片HTTP请求未被取消")
+	}
+	if creates.Load() != 0 {
+		t.Fatal("取消分片后不能创建远端文件")
+	}
+}
+
 func TestGetFileListRejectsMissingList(t *testing.T) {
 	ensureBaiduPanTestLoggers()
 	for _, tc := range []struct {

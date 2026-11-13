@@ -105,13 +105,13 @@ func (s *SyncStrm) StartOther() {
 				if isFatalSyncError(err) {
 					return err
 				}
-				if retryCount >= models.SettingsGlobal.OpenlistRetry {
-					s.Sync.Logger.Errorf("重试 %d 次后，获取目录 %s 下的文件列表失败：%v", models.SettingsGlobal.OpenlistRetry, pathItem.Path, err)
+				if retryCount >= s.threadSettings.OpenlistRetry {
+					s.Sync.Logger.Errorf("重试 %d 次后，获取目录 %s 下的文件列表失败：%v", s.threadSettings.OpenlistRetry, pathItem.Path, err)
 					return s.recordOtherDirectoryFailure(ctx, pathItem, err)
 				} else {
 					retryCount++
-					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，等待 %d 秒后重试第 %d 次：%v", pathItem.Path, models.SettingsGlobal.OpenlistRetryDelay, retryCount, err)
-					if err := waitForScanRetry(ctx, time.Duration(models.SettingsGlobal.OpenlistRetryDelay)*time.Second); err != nil {
+					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，等待 %d 秒后重试第 %d 次：%v", pathItem.Path, s.threadSettings.OpenlistRetryDelay, retryCount, err)
+					if err := waitForScanRetry(ctx, time.Duration(s.threadSettings.OpenlistRetryDelay)*time.Second); err != nil {
 						return err
 					}
 					continue apiloop

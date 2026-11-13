@@ -128,7 +128,7 @@ func runLocalEvidenceScan(t *testing.T, root *models.SyncPath, full bool) models
 	})
 	// 走完整 Start；下载队列不派发任务，避免元数据传输混入扫描请求计数。
 	oldDownload, oldUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-	download, upload := models.NewDq(0), models.NewUq(1)
+	download, upload := models.NewDq(1), models.NewUq(1)
 	models.GlobalDownloadQueue, models.GlobalUploadQueue = download, upload
 	defer func() {
 		download.Stop()

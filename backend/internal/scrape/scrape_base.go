@@ -2,13 +2,16 @@ package scrape
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 
 	"qmediasync/internal/baidupan"
+	"qmediasync/internal/fanart"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/openai"
 	"qmediasync/internal/openlist"
 	"qmediasync/internal/tmdb"
 	v115open "qmediasync/internal/v115/openapi"
@@ -29,10 +32,44 @@ type ScrapeBase struct {
 	identifyImpl   IdentifyImpl
 	categoryImpl   categoryImpl
 	renameImpl     renameImpl
+	settings       models.ScrapeSettings
+	aiClient       *openai.Client
+	fanartClient   *fanart.Client
 	tmdbClient     *tmdb.Client
 	v115Client     *v115open.OpenClient
 	openlistClient *openlist.Client
 	baiduPanClient *baidupan.Client
+}
+
+func newScrapeBase(scrapePath *models.ScrapePath, ctx context.Context, v115Client *v115open.OpenClient, openlistClient *openlist.Client, baiduPanClient *baidupan.Client) (ScrapeBase, error) {
+	settings := models.GetScrapeSettingsSnapshot()
+	tmdbClient, err := settings.GetTmdbClient()
+	if err != nil {
+		return ScrapeBase{}, err
+	}
+	fanartClient, err := fanart.NewClient(settings.GetFanartApiKey(), settings.GetProxyUrl())
+	if err != nil {
+		_ = tmdbClient.Close()
+		return ScrapeBase{}, err
+	}
+	return ScrapeBase{
+		scrapePath: scrapePath, ctx: ctx,
+		settings: settings, tmdbClient: tmdbClient,
+		aiClient: settings.GetAiClient(), fanartClient: fanartClient,
+		v115Client: v115Client, openlistClient: openlistClient, baiduPanClient: baiduPanClient,
+	}, nil
+}
+
+// Close 只在本轮真实执行结束后释放客户端。
+func (s *ScrapeBase) Close() error {
+	return errors.Join(s.tmdbClient.Close(), s.aiClient.Close(), s.fanartClient.Close())
+}
+
+func (s *ScrapeBase) aiPrompt() string {
+	if s.scrapePath.AiPrompt != "" {
+		return s.scrapePath.AiPrompt
+	}
+	return s.settings.GetAiPrompt()
 }
 
 // 下载图片到指定文件
@@ -40,7 +77,7 @@ func (s *ScrapeBase) DownloadImages(parentPath, ua string, fileList map[string]s
 	for fileName, url := range fileList {
 		filePath := filepath.Join(parentPath, fileName)
 		// helpers.AppLogger.Infof("下载图片 %s 到 %s", url, filePath)
-		if url == "" || helpers.PathExists(filePath) || url == models.GlobalScrapeSettings.GetTmdbImageUrl() {
+		if url == "" || helpers.PathExists(filePath) || url == s.settings.GetTmdbImageUrl() {
 			helpers.AppLogger.Warnf("图片 %s 已存在，或者 %s 为空，跳过下载", filePath, url)
 			continue
 		}

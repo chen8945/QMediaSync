@@ -33,6 +33,7 @@ const aiTest = {
   ai_base_url: ai.ai_base_url,
   ai_api_key: ai.ai_api_key,
   ai_model_name: ai.ai_model_name,
+  ai_timeout: 9,
 }
 const tmdbTest = {
   tmdb_url: tmdb.tmdb_url,
@@ -45,6 +46,23 @@ const tmdbTest = {
 }
 
 describe('刮削设置 API', () => {
+  it('AI 测试兼容旧调用省略超时', async () => {
+    const adapter = vi.fn(async (config) => ({
+      config,
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      data: { code: 200, data: null },
+    }))
+    const legacy = {
+      ai_base_url: ai.ai_base_url,
+      ai_api_key: ai.ai_api_key,
+      ai_model_name: ai.ai_model_name,
+    }
+    await expect(testAiConnection(axios.create({ adapter }), legacy)).resolves.toBeUndefined()
+    expect(JSON.parse(adapter.mock.calls[0]![0].data)).toEqual(legacy)
+  })
+
   it('保留客户端、接口地址、载荷与专用超时，允许成功空值和 TMDB 未连通结果', async () => {
     const adapter = vi.fn(async (config) => ({
       config,

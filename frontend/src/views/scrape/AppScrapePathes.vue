@@ -335,6 +335,7 @@ import {
   scrapePathErrorOptions,
   type ScrapePath as ScrapePathData,
 } from '@/api/scrapePaths'
+import type { SettingsSaveResult } from '@/api/types'
 import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -558,6 +559,11 @@ const loadAccounts = async (sourceType?: string) => {
   }
 }
 
+const showSaveResult = (result: SettingsSaveResult, successMessage: string) => {
+  if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
+  else ElMessage.success(successMessage)
+}
+
 const handleDelete = async (row: ScrapePath, index: number) => {
   try {
     await ElMessageBox.confirm('确定要删除这个刮削目录吗？', '确认删除', {
@@ -570,8 +576,8 @@ const handleDelete = async (row: ScrapePath, index: number) => {
       pathes.value[index].deleting = true
     }
 
-    await deleteScrapePath(http, row.id)
-    ElMessage.success('删除刮削目录成功')
+    const result = await deleteScrapePath(http, row.id)
+    showSaveResult(result, '删除刮削目录成功')
     void loadPathes()
   } catch (error) {
     if (!isMessageBoxCancelError(error)) {
@@ -610,8 +616,8 @@ const handleStop = async (row: ScrapePath) => {
 
 const toggleCron = async (row: ScrapePath) => {
   try {
-    await toggleScrapePathCron(http, row.id || 0)
-    ElMessage.success(row.enable_cron ? '开启定时任务成功' : '关闭定时任务成功')
+    const result = await toggleScrapePathCron(http, row.id || 0)
+    showSaveResult(result, row.enable_cron ? '开启定时任务成功' : '关闭定时任务成功')
   } catch (error) {
     row.enable_cron = !row.enable_cron
     reportError(error, '切换定时任务状态失败')

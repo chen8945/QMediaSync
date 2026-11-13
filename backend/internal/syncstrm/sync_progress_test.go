@@ -472,7 +472,7 @@ func TestStartReturnsRequiredProgressAndStatusErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 				oldDownload, oldUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-				models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(0), models.NewUq(1)
+				models.GlobalDownloadQueue, models.GlobalUploadQueue = models.NewDq(1), models.NewUq(1)
 				models.GlobalDownloadQueue.Start()
 				models.GlobalUploadQueue.Start()
 				defer func() {

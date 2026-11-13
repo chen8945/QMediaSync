@@ -1,11 +1,217 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
+
+	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
 
 	"gorm.io/gorm"
 )
+
+// MediaLibrarySettingsChange 只包含网页拥有的配置和需要保留的省略字段。
+type MediaLibrarySettingsChange struct {
+	Values                   EmbyConfig
+	Enabled                  *bool
+	EnableMediaNotification  *int
+	EnableDailyFirstFullSync *int
+	PathMappings             *[]EmbyPathMapping
+}
+
+type mediaLibrarySettingsCommand struct {
+	ctx      context.Context
+	change   MediaLibrarySettingsChange
+	validate func() error
+	apply    func(context.Context, *EmbyConfig) []string
+	result   chan mediaLibrarySettingsResult
+}
+
+type mediaLibrarySettingsResult struct {
+	warnings []string
+	err      error
+}
+
+type mediaLibrarySettingsWriter struct {
+	commands chan mediaLibrarySettingsCommand
+	done     chan struct{}
+}
+
+var mediaLibrarySettingsRuntime = struct {
+	sync.Mutex
+	writers  map[MediaServerType]*mediaLibrarySettingsWriter
+	stopping bool
+}{}
+
+// StartMediaLibrarySettingsRuntime 在管理入口开放前启动两端独立的有序写入。
+func StartMediaLibrarySettingsRuntime() {
+	mediaLibrarySettingsRuntime.Lock()
+	defer mediaLibrarySettingsRuntime.Unlock()
+	if mediaLibrarySettingsRuntime.writers != nil {
+		return
+	}
+	mediaLibrarySettingsRuntime.writers = make(map[MediaServerType]*mediaLibrarySettingsWriter, 2)
+	mediaLibrarySettingsRuntime.stopping = false
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		writer := &mediaLibrarySettingsWriter{commands: make(chan mediaLibrarySettingsCommand, 16), done: make(chan struct{})}
+		mediaLibrarySettingsRuntime.writers[kind] = writer
+		go func() {
+			defer close(writer.done)
+			for command := range writer.commands {
+				warnings, err := commitMediaLibrarySettings(kind, command)
+				command.result <- mediaLibrarySettingsResult{warnings, err}
+			}
+		}()
+	}
+}
+
+// StopMediaLibrarySettingsRuntime 停止接收，锁外等待已接受保存与本地应用结束。
+func StopMediaLibrarySettingsRuntime(ctx context.Context) error {
+	mediaLibrarySettingsRuntime.Lock()
+	writers := mediaLibrarySettingsRuntime.writers
+	if !mediaLibrarySettingsRuntime.stopping {
+		mediaLibrarySettingsRuntime.stopping = true
+		for _, writer := range writers {
+			close(writer.commands)
+		}
+	}
+	mediaLibrarySettingsRuntime.Unlock()
+	for _, writer := range writers {
+		select {
+		case <-writer.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	mediaLibrarySettingsRuntime.Lock()
+	mediaLibrarySettingsRuntime.writers = nil
+	mediaLibrarySettingsRuntime.Unlock()
+	return nil
+}
+
+// SaveMediaLibrarySettings 在本端序列中合并最新值、提交并完成应用；接受后不提前释放请求许可。
+func SaveMediaLibrarySettings(ctx context.Context, kind MediaServerType, change MediaLibrarySettingsChange,
+	validate func() error, apply func(context.Context, *EmbyConfig) []string,
+) ([]string, error) {
+	if err := kind.Validate(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	command := mediaLibrarySettingsCommand{ctx: ctx, change: change, validate: validate, apply: apply, result: make(chan mediaLibrarySettingsResult, 1)}
+	mediaLibrarySettingsRuntime.Lock()
+	writer := mediaLibrarySettingsRuntime.writers[kind]
+	if writer == nil || mediaLibrarySettingsRuntime.stopping {
+		mediaLibrarySettingsRuntime.Unlock()
+		return nil, fmt.Errorf("媒体库设置保存已停止")
+	}
+	select {
+	case writer.commands <- command:
+		mediaLibrarySettingsRuntime.Unlock()
+	default:
+		mediaLibrarySettingsRuntime.Unlock()
+		return nil, fmt.Errorf("媒体库设置保存繁忙，请重试")
+	}
+	result := <-command.result
+	return result.warnings, result.err
+}
+
+func commitMediaLibrarySettings(kind MediaServerType, command mediaLibrarySettingsCommand) ([]string, error) {
+	if err := command.ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx := command.ctx
+	if command.validate != nil {
+		if err := command.validate(); err != nil {
+			return nil, err
+		}
+	}
+	config, err := readMediaLibraryConfigTx(db.Db.WithContext(ctx), kind)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, fmt.Errorf("查询媒体库配置失败：%w", err)
+	}
+	isNew := err == gorm.ErrRecordNotFound
+	if isNew {
+		config = &EmbyConfig{MediaServerType: kind}
+	}
+	oldIdentity := EmbyConfigIdentity(config)
+	change := command.change
+	values := change.Values
+	values.ID, values.MediaServerType = config.ID, kind
+	values.Enabled = config.Enabled
+	if change.Enabled != nil {
+		values.Enabled = *change.Enabled
+	}
+	values.EnableMediaNotification = config.EnableMediaNotification
+	if change.EnableMediaNotification != nil {
+		values.EnableMediaNotification = *change.EnableMediaNotification
+	}
+	values.EnableDailyFirstFullSync = config.EnableDailyFirstFullSync
+	if change.EnableDailyFirstFullSync != nil {
+		values.EnableDailyFirstFullSync = *change.EnableDailyFirstFullSync
+	} else if isNew {
+		values.EnableDailyFirstFullSync = 1
+	}
+	values.PathMappings, values.PathMappingsJSON = config.PathMappings, config.PathMappingsJSON
+	if change.PathMappings != nil {
+		encoded, err := json.Marshal(*change.PathMappings)
+		if err != nil {
+			return nil, fmt.Errorf("编码媒体库路径映射失败：%w", err)
+		}
+		values.PathMappings, values.PathMappingsJSON = *change.PathMappings, string(encoded)
+	}
+	if values.SyncCron == "" {
+		values.SyncCron = "0 * * * *"
+	}
+	fields := map[string]any{
+		"enabled": values.Enabled, "emby_url": values.EmbyUrl, "emby_api_key": values.EmbyApiKey,
+		"enable_delete_netdisk": values.EnableDeleteNetdisk, "enable_refresh_library": values.EnableRefreshLibrary,
+		"enable_media_notification": values.EnableMediaNotification, "enable_extract_media_info": values.EnableExtractMediaInfo,
+		"enable_auth": values.EnableAuth, "sync_enabled": values.SyncEnabled, "sync_cron": values.SyncCron,
+		"selected_libraries": values.SelectedLibraries, "sync_all_libraries": values.SyncAllLibraries,
+		"enable_daily_first_full_sync": values.EnableDailyFirstFullSync,
+		"enable_playback_overview":     values.EnablePlaybackOverview, "enable_playback_progress": values.EnablePlaybackProgress,
+	}
+	if change.PathMappings != nil {
+		fields["path_mappings_json"] = values.PathMappingsJSON
+	}
+	if oldIdentity != EmbyConfigIdentity(&values) {
+		for _, field := range []string{"last_saved_cursor_at", "last_full_sync_at", "last_incremental_sync_at", "last_sync_time"} {
+			fields[field] = int64(0)
+		}
+		fields["last_success_sync_mode"] = ""
+	}
+	var model any = &EmbyConfig{}
+	if kind == MediaServerJellyfin {
+		model = &JellyfinConfig{}
+		fields["jellyfin_url"], fields["jellyfin_api_key"] = fields["emby_url"], fields["emby_api_key"]
+		delete(fields, "emby_url")
+		delete(fields, "emby_api_key")
+	}
+	if isNew {
+		now := helpers.NowUnix()
+		fields["created_at"], fields["updated_at"] = now, now
+		if values.SelectedLibraries == "" {
+			fields["selected_libraries"] = "[]"
+		}
+		err = db.Db.WithContext(ctx).Model(model).Create(fields).Error
+	} else {
+		err = db.Db.WithContext(ctx).Model(model).Where("id = ?", values.ID).Updates(fields).Error
+	}
+	if err != nil {
+		return nil, fmt.Errorf("保存配置失败：%w", err)
+	}
+	if command.apply == nil {
+		return []string{}, nil
+	}
+	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return command.apply(applyCtx, &values), nil
+}
 
 const (
 	EmbySyncModeIdle           = "idle"

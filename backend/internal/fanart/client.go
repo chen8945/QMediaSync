@@ -1,6 +1,7 @@
 package fanart
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,8 +23,12 @@ type Client struct {
 }
 
 // NewClient creates a new fanart.tv API client
-func NewClient() *Client {
-	client := resty.New()
+func NewClient(apiKey, proxyURL string) (*Client, error) {
+	transport, err := helpers.GetProxyTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	client := resty.NewWithClient(&http.Client{Transport: transport})
 
 	// Set default timeout
 	client.SetTimeout(30 * time.Second)
@@ -36,17 +41,15 @@ func NewClient() *Client {
 	client.SetHeader("User-Agent", "qmediasync-go/1.0")
 	client.SetBaseURL(FANART_API_URL)
 
-	// 通用刮削代理：与 TMDB 共用「刮削设置 - 是否启用代理」开关 + 全局代理地址（空=直连）
-	if helpers.HTTP_PROXY != "" {
-		client.SetProxy(helpers.HTTP_PROXY)
-	}
-
 	return &Client{
-		apiKey:      helpers.FANART_API_KEY,
+		apiKey:      apiKey,
 		baseURL:     FANART_API_URL,
 		restyClient: client,
-	}
+	}, nil
 }
+
+// Close 释放本客户端持有的私有连接资源。
+func (c *Client) Close() error { return helpers.CloseRestyClient(c.restyClient) }
 
 // SetBaseURL sets the base URL for the API
 func (c *Client) SetBaseURL(baseURL string) {
@@ -160,10 +163,10 @@ type MovieImagesResponse struct {
 }
 
 // GetMovieImages retrieves images for a specific movie by its TMDB ID
-func (c *Client) GetMovieImages(movieID int64) (*MovieImagesResponse, error) {
+func (c *Client) GetMovieImages(ctx context.Context, movieID int64) (*MovieImagesResponse, error) {
 	url := fmt.Sprintf("movies/%d", movieID)
 
-	request := c.restyClient.R()
+	request := c.restyClient.R().SetContext(ctx)
 	request.SetResult(&MovieImagesResponse{})
 
 	resp, err := c.doRequest(request, http.MethodGet, url)
@@ -243,10 +246,10 @@ type ShowImagesResponse struct {
 }
 
 // GetShowImages retrieves images for a specific TV show by its TVDB ID
-func (c *Client) GetShowImages(showID string) (*ShowImagesResponse, error) {
+func (c *Client) GetShowImages(ctx context.Context, showID string) (*ShowImagesResponse, error) {
 	url := fmt.Sprintf("tv/%s", showID)
 
-	request := c.restyClient.R()
+	request := c.restyClient.R().SetContext(ctx)
 	request.SetResult(&ShowImagesResponse{})
 
 	resp, err := c.doRequest(request, http.MethodGet, url)

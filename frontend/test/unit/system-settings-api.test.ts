@@ -54,6 +54,7 @@ const logResponse = { ...logs, levels: ['debug', 'info', 'warn', 'error'] }
 
 describe('系统设置 API', () => {
   it('保留地址、客户端超时、完整载荷与正则原文，日志保存返回生效配置', async () => {
+    const warnings = ['线程设置已保存，但应用失败，请重新保存']
     const adapter = vi.fn(async (config) => ({
       config,
       status: 200,
@@ -61,6 +62,7 @@ describe('系统设置 API', () => {
       headers: {},
       data: {
         code: 200,
+        warnings,
         message: '',
         data: config.url.endsWith('/log')
           ? logResponse
@@ -77,7 +79,7 @@ describe('系统设置 API', () => {
     expect(await fetchThreadSettings(http)).toEqual(threads)
     expect(await fetchLogSettings(http)).toEqual(logResponse)
     await expect(saveStrmSettings(http, strm)).resolves.toBeUndefined()
-    await expect(saveThreadSettings(http, threads)).resolves.toBeUndefined()
+    await expect(saveThreadSettings(http, threads)).resolves.toEqual({ warnings })
     expect(await saveLogSettings(http, logs)).toEqual(logResponse)
     expect(await fetchCronTimes(http, strm.cron)).toEqual([])
 

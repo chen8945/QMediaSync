@@ -1,42 +1,36 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"qmediasync/internal/emby302/config"
+	"qmediasync/internal/emby302/service/emby"
+	"qmediasync/internal/emby302/service/m3u8"
+	"qmediasync/internal/emby302/util/https"
+	"qmediasync/internal/emby302/web/cache"
 
 	"github.com/gin-gonic/gin"
 )
-
-func TestEmbyRestartRequired(t *testing.T) {
-	previous := activeListener.Load()
-	t.Cleanup(func() { activeListener.Store(previous) })
-	activeListener.Store(nil)
-	if EmbyRestartRequired(false, "http://emby", "key") || !EmbyRestartRequired(true, "http://emby", "key") {
-		t.Fatal("未启动代理时，应只对完整且已启用的配置提示重启")
-	}
-	activeListener.Store(&listenerConfig{host: "http://emby", apiKey: "key"})
-	if EmbyRestartRequired(true, "http://emby", "key") {
-		t.Fatal("原连接重复保存不应要求重启")
-	}
-	for _, candidate := range []struct {
-		enabled   bool
-		host, key string
-	}{{false, "http://emby", "key"}, {true, "http://new-emby", "key"}, {true, "http://emby", "new-key"}} {
-		if !EmbyRestartRequired(candidate.enabled, candidate.host, candidate.key) {
-			t.Fatal("启停或连接变化未提示重启")
-		}
-	}
-}
 
 func TestGuardPrecedesProxyMiddlewares(t *testing.T) {
 	previous := config.C
 	config.C = &config.Config{Cache: &config.Cache{}}
 	t.Cleanup(func() { config.C = previous })
-	router := gin.New()
-	initRouter(router, func(c *gin.Context) { c.AbortWithStatus(http.StatusServiceUnavailable) })
+	client := https.NewClient(https.ClientOptions{})
+	responses := cache.NewStore(time.Hour)
+	playlists := m3u8.NewStore(client)
+	session := emby.NewSession(emby.SessionOptions{Origin: "http://invalid.test", Client: client, Cache: responses.NewScope()})
+	t.Cleanup(func() {
+		session.Close()
+		_ = responses.Stop(context.Background())
+		_ = playlists.Stop(context.Background())
+		client.CloseIdleConnections()
+	})
+	router := NewRouter(session, func(c *gin.Context) { c.AbortWithStatus(http.StatusServiceUnavailable) }, playlists)
 	// PlaybackInfo 原本会先校验上游凭据；门禁拒绝后不得访问未配置的上游。
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/Items/1/PlaybackInfo", nil))

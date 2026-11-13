@@ -6,7 +6,7 @@
 >
 > 修改时机：修改媒体服务器设置、刷新入口、条目同步、任务状态、目标解析、去抖或 Webhook 行为时必须更新本文档。
 >
-> 相关代码：`backend/internal/medialibrary/client/`、`backend/internal/emby/`、`backend/internal/models/media_library*.go`、`backend/internal/models/emby_*.go`、`backend/internal/models/jellyfin_config.go`、`backend/internal/synccron/`、`backend/internal/controllers/media_library*.go`、`backend/internal/controllers/emby*.go`、`backend/internal/requests/jellyfin_webhook.go`、`frontend/src/components/media-library/`。
+> 相关代码：`backend/internal/medialibrary/client/`、`backend/internal/emby/`、`backend/internal/emby302/`、`backend/internal/models/media_library*.go`、`backend/internal/models/emby_*.go`、`backend/internal/models/jellyfin_config.go`、`backend/internal/synccron/`、`backend/internal/controllers/media_library*.go`、`backend/internal/controllers/emby*.go`、`backend/internal/requests/jellyfin_webhook.go`、`frontend/src/components/media-library/`。
 
 ## 独立配置与入口
 
@@ -22,9 +22,19 @@
 
 共享下载队列在空闲时安排失败任务重试；查询或更新遇到临时数据库错误后，后续空闲调度仍可继续尝试，数据库恢复后无需新任务或手动操作才能恢复。读取任一端配置失败也按查询失败处理，不能当作该端未启用后报告重试成功；配置行不存在仍按未配置处理。成功安排任务才增加其重试次数，既有重试上限不变；成功且无可重试任务时，同一空闲周期不反复扫描。
 
-连接与开关字段见 [配置说明](../operations/configuration.md#媒体服务器连接)，固定路由、读取／保存响应和省略字段语义见 [配置与提取请求](../engineering/request-validation.md#媒体服务器配置与提取)。保存允许离线操作，只更新配置字段，不覆盖并发同步状态。提交前失败保留原配置；提交后的应用失败保留已保存值并提示警告，同配置再次保存可重试应用。回读失败与应用警告分别展示，实际 Emby 监听变更仍保留重启边界。
+连接与开关字段见 [配置说明](../operations/configuration.md#媒体服务器连接)，固定路由、读取／保存响应和省略字段语义见 [配置与提取请求](../engineering/request-validation.md#媒体服务器配置与提取)。保存允许离线操作，只更新配置字段，不覆盖并发同步状态。提交前失败保留原配置；提交后的应用失败保留已保存值并提示警告，同配置再次保存可重试应用。回读失败与应用警告分别展示。Emby 代理在本地应用后对后续请求采用新配置，无需重启；详见下节。
 
 条目全量、增量和单项同步在准备期间遇到连接失败或配置变化时，也必须按固定入口收尾本端运行状态，保留错误且不推进成功水位。失败的索引令牌只保留本端类型，不授予提交资格；收尾入口拒绝空或非法类型，不能默认清理 Emby 状态。
+
+### Emby 代理的配置与生命周期
+
+Emby 302 模块拥有监听与连接会话。首次启用要求本端总开关、URL 和 API Key 完整，本地监听不等待远端产品或健康探测；监听绑定失败返回应用警告，同值重存可以重试。已有健康监听保持稳定，后续地址或密钥变化发布一个完整新会话；相同健康配置保存不重建会话。Jellyfin 配置不进入该模块。
+
+每次 HTTP 请求和 WebSocket 握手捕获本次会话，连接、授权、路由、响应缓存和辅助请求均沿该会话执行。关闭总开关后，新请求在鉴权、缓存和预加载之前返回 `503`；已接受的 HTTP 流与已升级 WebSocket 保持原连接。HLS 的后续分片属于新请求。旧响应与旧授权只在原会话范围内可见，不能填入或命中新配置的缓存；响应缓存共用模块的一份容量预算。
+
+换连接或关闭撤销旧会话的预加载，迟到响应不能恢复旧作业；已经接受的停止播放 Progress 辅助请求仍绑定原会话。模块复用不包含凭据的传输连接池，固定 OpenList／M3U8 资源及自定义脚本／样式缓存由模块拥有，网络读取和刷新沿模块的 TLS 策略与取消生命周期，在共享状态锁外完成。
+
+最终停止先拒绝新准入，关闭监听和升级连接，取消请求、预加载与辅助后台，等待它们及缓存／M3U8 后台实际退出，再释放连接池中的空闲连接。超出停止期限时返回未退出错误，不能以关闭空闲连接代替取消和收尾；停止后迟到的应用不能复活模块。恢复维护许可覆盖已接受的请求和设置命令；WebSocket 成功升级后仅转发连接数据，释放数据库许可但保留会话引用，普通 HTTP 和辅助请求仍持有许可至完成。数据库替换仍遵守[恢复流程](../operations/database.md#恢复与风险边界)。证书、主站地址和内嵌策略保留启动时配置，见[配置说明](../operations/configuration.md)。
 
 ## Jellyfin 适用范围
 
@@ -32,7 +42,7 @@ Jellyfin 使用独立标签与原生管理接口，支持选库、手动／Cron 
 
 客户端位于 `internal/medialibrary/client`，共用传输与分页，`emby.go`／`jellyfin.go` 封装协议差异。只需判断产品时请求 `/System/Ping`；业务需要真实 ServerID 时按需请求 `/System/Info/Public`，复用明确产品，Public 未识别时补 Ping。Ping 支持 Emby 的纯文本与 Jellyfin 的 JSON 字符串标识。反向代理子路径保留，只有明确 404 才尝试 Emby 前缀；不按版本分流，不因原生业务请求失败自动切换协议。
 
-明确识别为另一产品的连接不能执行本标签业务，Jellyfin 不能接入 Emby 代理。产品探测失败保留“未确认”及诊断、不缓存失败，也不单独阻断既有业务；最终未知产品沿用原 Emby 协议。需要身份、详情或用户权限的操作仍须完成实际业务核验。并发合并 Ping 或 Public 探测时，发起者取消或超时不会使其他有效请求失败；等待者按自己的上下文重新探测，自身取消则及时退出。Emby 代理启动不等待远端探测，远端暂不可用不阻止本地监听；后续请求重试核验。实际监听配置变更保留重启边界。
+明确识别为另一产品的连接不能执行本标签业务，Jellyfin 不能接入 Emby 代理。产品探测失败保留“未确认”及诊断、不缓存失败，也不单独阻断既有业务；最终未知产品沿用原 Emby 协议。需要身份、详情或用户权限的操作仍须完成实际业务核验。并发合并 Ping 或 Public 探测时，发起者取消或超时不会使其他有效请求失败；等待者按自己的上下文重新探测，自身取消则及时退出。Emby 代理启动不等待远端探测，远端暂不可用不阻止本地监听；后续请求重试核验。代理配置与旧请求的边界见[Emby 代理生命周期](#emby-代理的配置与生命周期)。
 
 Jellyfin 使用原生管理路由及 `Authorization: MediaBrowser … Token="…"`。Items 显式请求 `DateCreated,ParentId,Path,MediaSources`，分页按 `DateCreated,SortName` 排序，增量使用 `MinDateLastSaved` 和 600 秒重叠窗口；成功游标取扫描起始时间。总数变化、重复身份、提前空页或不完整组失败时不清旧、不推进成功水位。该分页机制不提供远端事务快照。
 
@@ -695,6 +705,7 @@ Web 设置页由 `api/mediaLibrary.ts` 封装两端配置、媒体库、提取�
 
 ## 不变量
 
+- Emby 网页连接应用只影响后续请求；旧 HTTP／WebSocket 保留其会话，授权和缓存不能跨连接配置复用。共享状态锁不跨 SQL、网络、流式转发或退出等待。
 - 通知媒体服务器刷新与读取本端本地索引是两条独立链路，入口和状态不得混用。
 - 配置、索引、同步水位、刷新任务和删除证据按固定媒体类型隔离；普通查询不能省略或猜测类型。
 - 新配置默认关闭，关闭通知只停止发送；入库自动提取分项不能阻止手动提取。
@@ -706,5 +717,6 @@ Web 设置页由 `api/mediaLibrary.ts` 封装两端配置、媒体库、提取�
 
 ## 验证方式
 
+- Emby 设置应用运行[网页设置应用验证](../engineering/verification.md#网页设置应用验证)，覆盖同一监听启停／换连接、旧 HTTP／WebSocket、授权与缓存隔离、绑定失败重试、迟到应用和最终停止。真实播放器效果单独验收。
 - 运行上述验证说明中的后端、前端命令；改动刷新协调器时至少覆盖 item 目标、媒体库回退、去抖、下载等待和父子任务失败场景。
 - 修改迁移字段时运行 `(cd backend && go test ./internal/models/)`，并核对 [数据库 schema 与迁移](../reference/database-schema.md) 的版本和字段说明。

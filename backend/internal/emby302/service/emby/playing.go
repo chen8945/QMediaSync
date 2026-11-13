@@ -2,12 +2,12 @@ package emby
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 
-	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/util/https"
 	"qmediasync/internal/emby302/util/jsons"
 	"qmediasync/internal/emby302/util/logs"
@@ -18,20 +18,20 @@ import (
 )
 
 // PlayingStoppedHelper 拦截停止播放接口, 然后手动请求一次 Progress 接口记录进度
-func PlayingStoppedHelper(c *gin.Context) {
+func (upstream *Session) PlayingStoppedHelper(c *gin.Context) {
 	// 取出原始请求体信息
 	bodyBytes, newBody, err := https.ExtractReqBody(c.Request.Body)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 	c.Request.Body = newBody
 	bodyJson, err := jsons.New(string(bodyBytes))
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 
 	// 代理原始 Stopped 接口
-	ProxyOrigin(c)
+	upstream.ProxyOrigin(c)
 
 	// 提取 API key
 	kType, kName, apiKey := getApiKey(c)
@@ -55,19 +55,19 @@ func PlayingStoppedHelper(c *gin.Context) {
 	body.Put("ItemId", jsons.FromValue(itemId))
 	body.Put("PlaySessionId", jsons.FromValue(randoms.RandomHex(32)))
 	body.Put("PositionTicks", jsons.FromValue(bodyJson.Attr("PositionTicks").Val()))
-	go sendPlayingProgress(kType, kName, apiKey, body)
+	upstream.RunAuxiliary(func(ctx context.Context) { upstream.sendPlayingProgress(ctx, kType, kName, apiKey, body) })
 }
 
 // PlayingProgressHelper 拦截 Progress 请求, 如果进度报告为 0 则认为是无效请求
-func PlayingProgressHelper(c *gin.Context) {
+func (upstream *Session) PlayingProgressHelper(c *gin.Context) {
 	// 取出原始请求体信息
 	bodyBytes, newBody, err := https.ExtractReqBody(c.Request.Body)
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 	c.Request.Body = newBody
 	bodyJson, err := jsons.New(string(bodyBytes))
-	if checkErr(c, err) {
+	if upstream.checkErr(c, err) {
 		return
 	}
 
@@ -75,11 +75,11 @@ func PlayingProgressHelper(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 		return
 	}
-	ProxyOrigin(c)
+	upstream.ProxyOrigin(c)
 }
 
 // sendPlayingProgress 发送辅助播放进度请求
-func sendPlayingProgress(kType ApiKeyType, kName, apiKey string, body *jsons.Item) {
+func (upstream *Session) sendPlayingProgress(ctx context.Context, kType ApiKeyType, kName, apiKey string, body *jsons.Item) {
 	if body == nil {
 		return
 	}
@@ -92,7 +92,7 @@ func sendPlayingProgress(kType ApiKeyType, kName, apiKey string, body *jsons.Ite
 		} else {
 			header.Set(kName, apiKey)
 		}
-		resp, err := https.Post(remote).Header(header).Body(io.NopCloser(bytes.NewBuffer([]byte(body.String())))).Do()
+		resp, err := https.Post(remote).Client(upstream.Client).Context(ctx).Header(header).Body(io.NopCloser(bytes.NewBuffer([]byte(body.String())))).Do()
 		if err != nil {
 			return err
 		}
@@ -104,11 +104,11 @@ func sendPlayingProgress(kType ApiKeyType, kName, apiKey string, body *jsons.Ite
 	}
 
 	logs.Tip("开始发送辅助 Progress 进度记录, 内容: %v", body)
-	if err := inner(config.C.Emby.Host + "/emby/Sessions/Playing/Progress"); err != nil {
+	if err := inner(upstream.Origin + "/emby/Sessions/Playing/Progress"); err != nil {
 		logs.Warn("发送辅助 Progress 进度记录失败: %v", err)
 		return
 	}
-	if err := inner(config.C.Emby.Host + "/emby/Sessions/Playing/Stopped"); err != nil {
+	if err := inner(upstream.Origin + "/emby/Sessions/Playing/Stopped"); err != nil {
 		logs.Warn("发送辅助 Progress 进度记录失败: %v", err)
 		return
 	}

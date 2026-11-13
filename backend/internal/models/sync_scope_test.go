@@ -437,16 +437,15 @@ func TestUploadStrmPreparationWaitsBeforeUsingOldFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer busy()
-			originalDB := db.Db
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 			defer cancel()
-			db.Db = db.Db.WithContext(ctx)
-			enqueue := task.enqueueStrmGenerationAfterUpload
+			enqueue := func(ctx context.Context) error { return task.enqueueStrmGenerationAfterUpload(ctx) }
 			if withProcessed {
-				enqueue = task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed
+				enqueue = func(ctx context.Context) error {
+					return task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(ctx)
+				}
 			}
-			err = enqueue()
-			db.Db = originalDB
+			err = enqueue(ctx)
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("上传后入队应等待旧文件范围且允许取消: %v", err)
 			}
@@ -455,7 +454,7 @@ func TestUploadStrmPreparationWaitsBeforeUsingOldFile(t *testing.T) {
 				t.Fatalf("取消等待后不应创建任务: %d, %v", count, err)
 			}
 			busy()
-			if err := enqueue(); err != nil {
+			if err := enqueue(t.Context()); err != nil {
 				t.Fatalf("范围释放后应可正常入队: %v", err)
 			}
 		})

@@ -67,6 +67,16 @@
       show-icon
       class="proxy-status"
     />
+    <el-alert
+      v-if="proxyReadbackStatus"
+      :title="proxyReadbackStatus.title"
+      :type="proxyReadbackStatus.type"
+      :description="proxyReadbackStatus.description"
+      closable
+      @close="proxyReadbackStatus = null"
+      show-icon
+      class="proxy-readback-status"
+    />
   </div>
 </template>
 
@@ -112,6 +122,7 @@ const proxyConfigLoading = ref(false)
 const proxyConfigLoaded = ref(false)
 const testingProxy = ref(false)
 const proxyStatus = ref<ProxyStatus | null>(null)
+const proxyReadbackStatus = ref<ProxyStatus | null>(null)
 const { feedbackRef, revealFeedback } = useFeedbackScroll(proxyStatus)
 // 已保存的凭据是否被后端脱敏，决定是否展示占位串说明
 const credentialsMasked = ref(false)
@@ -190,12 +201,14 @@ const showProxyFailure = (error: unknown, title: string, preserveTitle = false) 
   if (!failure.shouldNotify) return
   console.error(title, failure.diagnostics)
   const qmsRejected = failure.kind === 'origin' || failure.kind === 'csrf'
-  proxyStatus.value = {
+  const status: ProxyStatus = {
     title: !preserveTitle && qmsRejected ? '请求被 QMediaSync 拒绝' : title,
     type: 'error',
     description:
       preserveTitle && qmsRejected ? `请求被 QMediaSync 拒绝：${failure.message}` : failure.message,
   }
+  if (preserveTitle && proxyStatus.value?.type === 'warning') proxyReadbackStatus.value = status
+  else proxyStatus.value = status
 }
 
 // 测试代理连接
@@ -215,6 +228,7 @@ const testProxy = async () => {
   try {
     testingProxy.value = true
     proxyStatus.value = null
+    proxyReadbackStatus.value = null
 
     // 与校验用的是同一份规范化结果，否则带首尾空白的地址会通过校验但在后端解析失败
     const requestData = {
@@ -252,15 +266,24 @@ const saveProxy = async () => {
   try {
     proxyLoading.value = true
     proxyStatus.value = null
+    proxyReadbackStatus.value = null
 
     const requestData = {
       http_proxy: trimmedUrl,
       preserve_proxy_credentials: shouldPreserveProxyCredentials(),
     }
 
-    await saveProxySettings(http, requestData)
-    // 只在脱敏回读成功后更新提示；回读失败必须保留刷新错误和用户输入。
+    const result = await saveProxySettings(http, requestData)
+    if (result.warnings.length) {
+      proxyStatus.value = {
+        title: '代理设置已保存，尚未完全生效',
+        type: 'warning',
+        description: result.warnings.join('；'),
+      }
+    }
+    // 脱敏回读失败保留用户输入和已提交配置的应用警告。
     if (!(await loadProxy('代理设置已保存，但刷新失败'))) return
+    if (result.warnings.length) return
     proxyStatus.value = {
       title: '代理设置已保存',
       type: 'success',

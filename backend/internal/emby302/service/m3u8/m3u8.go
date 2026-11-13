@@ -1,7 +1,8 @@
 package m3u8
 
 import (
-	"sort"
+	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -10,279 +11,242 @@ import (
 )
 
 const (
-
-	// MaxPlaylistNum 在内存中最多维护的 M3U8 播放列表个数
-	// 超出则淘汰最久没有读取的一个
-	MaxPlaylistNum = 10
-
-	// PreChanSize 预处理通道大小, 塞满时从头部开始淘汰
-	PreChanSize = 1000
+	MaxPlaylistNum     = 10
+	PreChanSize        = 1000
+	maintainDuration   = 10 * time.Minute
+	stopUpdateDuration = maintainDuration + time.Minute
+	removeDuration     = time.Hour
 )
 
-func init() {
-	go loopMaintainPlaylist()
+type playlistKey struct{ path, template string }
+type playlistEntry struct {
+	info     *Info
+	lastRead time.Time
+}
+type playlistLoad struct {
+	done chan struct{}
+	info *Info
 }
 
-// GetPlaylist 获取 M3U8 播放列表, 返回 M3U8 文本
-var GetPlaylist func(openlistPath, templateId string, proxy, main bool, routePrefix, clientApiKey string) (string, bool)
+// Store 持有独立 OpenList 资源、单资源刷新和后台寿命。
+type Store struct {
+	mu           sync.Mutex
+	closed       bool
+	client       *http.Client
+	ctx          context.Context
+	cancel       context.CancelFunc
+	entries      map[playlistKey]playlistEntry
+	loading      map[playlistKey]*playlistLoad
+	workers      sync.WaitGroup
+	refreshSlots chan struct{}
+	done         chan struct{}
+	loadInfo     func(context.Context, playlistKey) (*Info, error)
+}
 
-// GetTsLink 获取 M3U8 播放列表中的某个 TS 链接
-var GetTsLink func(openlistPath, templateId string, idx int) (string, bool)
-
-// GetSubtitleLink 获取字幕链接
-var GetSubtitleLink func(openlistPath, templateId, subName string) (string, bool)
-
-// preMaintainInfoChan 预处理通道
-//
-// 外界将需要维护的信息放到这个通道中, 由 goroutine 单线程维护内存
-var preMaintainInfoChan = make(chan Info, PreChanSize)
-
-// preChanHandlingGroup 维护预处理通道的处理状态
-//
-// 当有新的任务加入通道时, group + 1
-// 当 goroutine 处理完一个任务时, group - 1
-var preChanHandlingGroup = sync.WaitGroup{}
-
-// PushPlaylistAsync 将一个 OpenList 转码资源异步缓存到内存中
-func PushPlaylistAsync(info Info) {
-	if info.OpenlistPath == "" || info.TemplateId == "" {
-		return
+// NewStore 同步构造所有查询入口；资源刷新不持共享锁。
+func NewStore(client *http.Client) *Store {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Store{client: client, ctx: ctx, cancel: cancel, entries: make(map[playlistKey]playlistEntry), loading: make(map[playlistKey]*playlistLoad), done: make(chan struct{}), refreshSlots: make(chan struct{}, MaxPlaylistNum)}
+	s.loadInfo = func(ctx context.Context, key playlistKey) (*Info, error) {
+		info := &Info{OpenlistPath: key.path, TemplateId: key.template}
+		if err := info.UpdateContent(ctx, client); err != nil {
+			return nil, err
+		}
+		return info, nil
 	}
-	info = Info{OpenlistPath: info.OpenlistPath, TemplateId: info.TemplateId}
-	preChanHandlingGroup.Add(1)
-	doneOnce := sync.OnceFunc(preChanHandlingGroup.Done)
-	go func() {
+	s.workers.Go(func() {
+		ticker := time.NewTicker(maintainDuration)
+		defer ticker.Stop()
 		for {
 			select {
-			case preMaintainInfoChan <- info:
+			case <-ctx.Done():
 				return
-			default:
-				<-preMaintainInfoChan
-				// 从通道中淘汰旧元素, 通道总大小不会改变
-				doneOnce()
+			case <-ticker.C:
+				s.refreshActive()
 			}
 		}
-	}()
+	})
+	go func() { s.workers.Wait(); close(s.done) }()
+	return s
 }
 
-// loopMaintainPlaylist 由单独的 goroutine 执行
-//
-// 维护内存中的 M3U8 播放列表
-func loopMaintainPlaylist() {
-	// map 记录播放列表, 用于快速响应客户端
-	infoMap := map[string]*Info{}
-	// arr 记录播放列表, 便于实现淘汰机制
-	infoArr := make([]*Info, 0)
-
-	// maintainDuration goroutine 维护播放列表的间隔
-	maintainDuration := time.Minute * 10
-	// stopUpdateTimeMillis 超过这个时间未读, 播放列表停止更新
-	stopUpdateTimeMillis := (maintainDuration + time.Minute).Milliseconds()
-	// removeTimeMillis 超过这个时间未读, 播放列表被移除
-	removeTimeMillis := time.Hour.Milliseconds()
-
-	// publicApiUpdateMutex 对外部暴露的 API 的内部实现中
-	// 如果涉及更新操作, 需要获取这个锁, 避免频繁请求 OpenList。
-	publicApiUpdateMutex := sync.Mutex{}
-
-	// printErr 打印错误日志
-	printErr := func(info *Info, err error) {
-		logs.Error("播放列表更新失败, OpenListPath: %s, TemplateId: %s, 错误: %v", info.OpenlistPath, info.TemplateId, err)
+// Stop 撤销刷新并等待实际网络工作完成。
+func (s *Store) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	s.closed = true
+	clear(s.entries)
+	s.mu.Unlock()
+	s.cancel()
+	select {
+	case <-s.done:
+		return nil
+	default:
 	}
-
-	// calcMapKey 计算 info 在 map 中的 key
-	calcMapKey := func(info Info) string {
-		return info.OpenlistPath + info.TemplateId
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+}
 
-	// beforeNow 判断一个时间是不是在当前时间之前
-	beforeNow := func(millis int64) bool {
-		return millis < time.Now().UnixMilli()
-	}
-
-	// queryInfo 查询内存中的 info 信息
-	//
-	// 如果内存中 map 已经能查询到 info 信息, 直接返回
-	// 否则会等待预处理通道处理完毕后再次判断
-	queryInfo := func(openlistPath, templateId string) (info *Info) {
-		key := calcMapKey(Info{OpenlistPath: openlistPath, TemplateId: templateId})
-		var ok bool
-		info, ok = infoMap[key]
-
-		defer func() {
-			if info == nil {
-				return
-			}
-			// 如果当前 info 已经停止更新, 则手动触发更新
-			if beforeNow(info.LastRead + stopUpdateTimeMillis) {
-				publicApiUpdateMutex.Lock()
-				defer publicApiUpdateMutex.Unlock()
-				if beforeNow(info.LastRead + stopUpdateTimeMillis) {
-					if err := info.UpdateContent(); err != nil {
-						printErr(info, err)
-						info = nil
-					}
-				}
-			}
-			// 更新最后读取时间
-			info.LastRead = time.Now().UnixMilli()
-		}()
-
-		if ok {
-			return
-		}
-
-		// 等待预处理通道处理完毕
-		preChanHandlingGroup.Wait()
-
-		info, ok = infoMap[key]
-		if ok {
-			return
-		}
+func (s *Store) startLoadLocked(key playlistKey) *playlistLoad {
+	if s.closed || key.path == "" || key.template == "" {
 		return nil
 	}
-
-	GetPlaylist = func(openlistPath, templateId string, proxy, main bool, routePrefix, clientApiKey string) (string, bool) {
-		info := queryInfo(openlistPath, templateId)
-		if info == nil {
-			return "", false
-		}
-		if proxy {
-			return info.ProxyContent(main, routePrefix, clientApiKey), true
-		}
-		return info.Content(), true
+	if load := s.loading[key]; load != nil {
+		return load
 	}
-
-	GetTsLink = func(openlistPath, templateId string, idx int) (string, bool) {
-		info := queryInfo(openlistPath, templateId)
-		if info == nil {
-			return "", false
-		}
-		return info.GetTsLink(idx)
+	if len(s.loading) >= PreChanSize {
+		return nil
 	}
-
-	GetSubtitleLink = func(openlistPath, templateId, subName string) (string, bool) {
-		info := queryInfo(openlistPath, templateId)
-		if info == nil {
-			return "", false
+	load := &playlistLoad{done: make(chan struct{})}
+	s.loading[key] = load
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		var info *Info
+		var err error
+		select {
+		case s.refreshSlots <- struct{}{}:
+			if err = s.ctx.Err(); err == nil {
+				info, err = s.loadInfo(s.ctx, key)
+			}
+			<-s.refreshSlots
+		case <-s.ctx.Done():
+			err = s.ctx.Err()
 		}
-		for _, subInfo := range info.Subtitles {
-			curSubName := urls.ResolveResourceName(subInfo.Url)
-			if curSubName == subName {
-				return subInfo.Url, true
+		s.mu.Lock()
+		if !s.closed && err == nil {
+			lastRead := s.entries[key].lastRead
+			if lastRead.IsZero() {
+				lastRead = time.Now()
+			}
+			s.entries[key] = playlistEntry{info: info, lastRead: lastRead}
+			load.info = info
+			s.evictLocked()
+		} else if err != nil {
+			delete(s.entries, key)
+		}
+		delete(s.loading, key)
+		close(load.done)
+		s.mu.Unlock()
+		if err != nil && s.ctx.Err() == nil {
+			logs.Error("播放列表更新失败, OpenListPath: %s, TemplateId: %s, 错误: %v", key.path, key.template, err)
+		}
+	}()
+	return load
+}
+
+func (s *Store) queryInfo(ctx context.Context, path, template string) *Info {
+	if ctx.Err() != nil {
+		return nil
+	}
+	key := playlistKey{path, template}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	entry, exists := s.entries[key]
+	if exists && time.Now().UnixMilli() < entry.info.LastUpdate+maintainDuration.Milliseconds() {
+		entry.lastRead = time.Now()
+		s.entries[key] = entry
+		s.mu.Unlock()
+		return entry.info
+	}
+	load := s.startLoadLocked(key)
+	s.mu.Unlock()
+	if load == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-load.done:
+		if ctx.Err() != nil {
+			return nil
+		}
+		s.mu.Lock()
+		if entry, ok := s.entries[key]; ok {
+			entry.lastRead = time.Now()
+			s.entries[key] = entry
+		}
+		info := load.info
+		if s.closed {
+			info = nil
+		}
+		s.mu.Unlock()
+		return info
+	}
+}
+
+func (s *Store) evictLocked() {
+	for len(s.entries) > MaxPlaylistNum {
+		var oldest playlistKey
+		var oldestRead time.Time
+		for key, entry := range s.entries {
+			if oldestRead.IsZero() || entry.lastRead.Before(oldestRead) {
+				oldest, oldestRead = key, entry.lastRead
 			}
 		}
+		delete(s.entries, oldest)
+	}
+}
+
+func (s *Store) refreshActive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for key, entry := range s.entries {
+		if now.UnixMilli() > entry.info.LastUpdate+removeDuration.Milliseconds() {
+			delete(s.entries, key)
+			continue
+		}
+		if now.Sub(entry.lastRead) < stopUpdateDuration {
+			s.startLoadLocked(key)
+		}
+	}
+}
+
+// PushPlaylistAsync 只登记当前资源，不等待其它资源的刷新。
+func (s *Store) PushPlaylistAsync(info Info) {
+	s.mu.Lock()
+	s.startLoadLocked(playlistKey{info.OpenlistPath, info.TemplateId})
+	s.mu.Unlock()
+}
+
+// GetPlaylist 渲染本次请求的地址和 Token，资源快照不保留 Emby 授权。
+func (s *Store) GetPlaylist(ctx context.Context, path, template string, proxy, main bool, prefix, apiKey string) (string, bool) {
+	info := s.queryInfo(ctx, path, template)
+	if info == nil {
 		return "", false
 	}
+	if proxy {
+		return info.ProxyContent(main, prefix, apiKey), true
+	}
+	return info.Content(), true
+}
 
-	// removeInfo 删除内存中的 info 信息
-	removeInfo := func(key string) {
-		info, ok := infoMap[key]
-		if !ok {
-			return
-		}
-		delete(infoMap, key)
-		for i, arrInfo := range infoArr {
-			if arrInfo == info {
-				infoArr = append(infoArr[:i], infoArr[i+1:]...)
-				break
-			}
+// GetTsLink 读取当次资源快照。
+func (s *Store) GetTsLink(ctx context.Context, path, template string, idx int) (string, bool) {
+	info := s.queryInfo(ctx, path, template)
+	if info == nil {
+		return "", false
+	}
+	return info.GetTsLink(idx)
+}
+
+// GetSubtitleLink 读取当次资源快照。
+func (s *Store) GetSubtitleLink(ctx context.Context, path, template, name string) (string, bool) {
+	info := s.queryInfo(ctx, path, template)
+	if info == nil {
+		return "", false
+	}
+	for _, subtitle := range info.Subtitles {
+		if urls.ResolveResourceName(subtitle.Url) == name {
+			return subtitle.Url, true
 		}
 	}
-
-	// updateAll 更新内存中的 info 信息
-	//
-	// 如果 lastRead 不满足条件, 被淘汰
-	updateAll := func() {
-		// 复制一份 arr
-		cpArr := append(([]*Info)(nil), infoArr...)
-		tot, active := len(cpArr), 0
-
-		for _, info := range cpArr {
-			key := calcMapKey(Info{OpenlistPath: info.OpenlistPath, TemplateId: info.TemplateId})
-
-			// 长时间未读, 移除
-			if beforeNow(info.LastUpdate + removeTimeMillis) {
-				removeInfo(key)
-				logs.Tip("播放列表长时间未更新, 已移除, OpenListPath: %s, TemplateId: %s", info.OpenlistPath, info.TemplateId)
-				tot--
-				continue
-			}
-
-			// 超过指定时间未读, 不更新
-			if beforeNow(info.LastRead + stopUpdateTimeMillis) {
-				continue
-			}
-
-			// 如果更新失败, 移除
-			active++
-			if err := info.UpdateContent(); err != nil {
-				printErr(info, err)
-				removeInfo(key)
-				tot--
-				active--
-			}
-		}
-
-		if len(cpArr) > 0 {
-			logs.Progress("当前正在维护的播放列表数: %d, 活跃数: %d", tot, active)
-		}
-	}
-
-	// addInfo 添加 info 到内存中
-	addInfo := func(preInfo Info) {
-		if preInfo.OpenlistPath == "" || preInfo.TemplateId == "" {
-			return
-		}
-		key := calcMapKey(preInfo)
-
-		// 如果内存已存在 key, 复用
-		info, exist := infoMap[key]
-		if !exist {
-			info = &preInfo
-		}
-
-		// 初始化 Info 信息, 并更新
-		if err := info.UpdateContent(); err != nil {
-			printErr(info, err)
-			removeInfo(key)
-			return
-		}
-		info.LastRead = time.Now().UnixMilli()
-
-		// 维护到内存中
-		if !exist {
-			infoMap[key] = info
-			infoArr = append(infoArr, info)
-		}
-
-		if len(infoArr) <= MaxPlaylistNum {
-			return
-		}
-		// 内存满, 淘汰旧内存
-		sort.Slice(infoArr, func(i, j int) bool {
-			return infoArr[i].LastRead < infoArr[j].LastRead
-		})
-		toDeletes := make([]*Info, len(infoArr)-MaxPlaylistNum)
-		copy(toDeletes, infoArr)
-		for _, toDel := range toDeletes {
-			removeInfo(calcMapKey(Info{OpenlistPath: toDel.OpenlistPath, TemplateId: toDel.TemplateId}))
-			logs.Tip("播放列表已被淘汰并从内存中移除, OpenListPath: %s, TemplateId: %s", toDel.OpenlistPath, toDel.TemplateId)
-		}
-	}
-
-	// 定时维护一次内存中的数据
-	t := time.NewTicker(maintainDuration)
-	defer t.Stop()
-
-	for {
-		select {
-		case <-t.C:
-			updateAll()
-		case preInfo := <-preMaintainInfoChan:
-			addInfo(preInfo)
-			preChanHandlingGroup.Done()
-		}
-	}
-
+	return "", false
 }

@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface ProxySettings {
   http_proxy: string
@@ -35,12 +35,12 @@ export async function fetchProxySettings(http: AxiosInstance): Promise<ProxySett
 export async function saveProxySettings(
   http: AxiosInstance,
   payload: ProxySettingsPayload,
-): Promise<void> {
-  unwrapResponse(
-    await http.post<APIResponse<null>>(`${SERVER_URL}/setting/http-proxy`, payload, {
-      headers: { 'Content-Type': 'application/json' },
-    }),
-  )
+): Promise<SettingsSaveResult> {
+  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/setting/http-proxy`, payload, {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  unwrapResponse(response)
+  return getSettingsSaveResult(response)
 }
 
 export async function testProxyConnection(

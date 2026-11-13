@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -274,35 +275,17 @@ func TestDownloadQueueRetriesWithoutRemoteAuthorization(t *testing.T) {
 		}
 		expected[task.ID] = task
 	}
-	dq := NewDq(1)
-	dq.running = true
-	done := make(chan struct{})
-	go func() { defer close(done); dq.taskScheduler() }()
-	t.Cleanup(func() {
-		unblock()
-		dq.mutex.Lock()
-		dq.running = false
-		dq.mutex.Unlock()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Error("download scheduler did not stop")
-		}
-	})
+	dq := newDownloadPollTestQueue(t)
+	t.Cleanup(unblock)
+	pollDownloads(t, dq)
+	pending := pollDownloads(t, dq)
 	queued := make(map[uint]bool)
-	for range tasks {
-		select {
-		case task := <-dq.tasks:
-			want := expected[task.ID]
-			if want == nil || queued[task.ID] || task.RetryCount != 1 || task.MediaServerID != want.MediaServerID || task.Source != want.Source || task.SourceType != want.SourceType {
-				t.Fatalf("retry lost its identity or budget: %+v", task)
-			}
-			queued[task.ID] = true
-		case <-requested:
-			t.Fatal("retry scheduling made a remote request and blocked the shared scheduler")
-		case <-time.After(3 * time.Second):
-			t.Fatal("retry scheduling did not advance both endpoints and local copy")
+	for _, task := range pending {
+		want := expected[task.ID]
+		if want == nil || queued[task.ID] || task.RetryCount != 1 || task.MediaServerID != want.MediaServerID || task.Source != want.Source || task.SourceType != want.SourceType {
+			t.Fatalf("retry lost its identity or budget: %+v", task)
 		}
+		queued[task.ID] = true
 	}
 	if remoteCalls.Load() != 0 {
 		t.Fatalf("retry scheduling made %d remote requests", remoteCalls.Load())
@@ -366,6 +349,11 @@ func TestMediaDownloadDisabledDuringAuthorizationKeepsPending(t *testing.T) {
 
 func TestDownloadQueueConcurrentSchedulersClaimEachEndpointOnce(t *testing.T) {
 	setupMediaDownloadTestDB(t)
+	testDownloadQueueClaimsEachEndpointOnce(t)
+}
+
+func testDownloadQueueClaimsEachEndpointOnce(t *testing.T) {
+	t.Helper()
 	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
 		config := saveMediaDownloadConfig(t, kind, "http://media.invalid", "key")
 		if err := AddDownloadTaskFromMediaLibrary(config, "shared-server", mediaDownloadTestItem, "movie"); err != nil {
@@ -374,6 +362,8 @@ func TestDownloadQueueConcurrentSchedulersClaimEachEndpointOnce(t *testing.T) {
 	}
 	fetched := make(chan struct{}, 2)
 	release := make(chan struct{})
+	releaseQuery := sync.OnceFunc(func() { close(release) })
+	var wg sync.WaitGroup
 	if err := db.Db.Callback().Query().After("gorm:query").Register("review:both_pending_snapshots", func(tx *gorm.DB) {
 		if tx.Statement.Table != "db_download_tasks" {
 			return
@@ -386,31 +376,62 @@ func TestDownloadQueueConcurrentSchedulersClaimEachEndpointOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Db.Callback().Query().Remove("review:both_pending_snapshots")
-	dq := NewDq(1)
-	dq.running = true
-	var wg sync.WaitGroup
+	dq := NewDq(2)
+	dq.interval = time.Hour
+	t.Cleanup(func() {
+		releaseQuery()
+		wg.Wait()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := dq.Shutdown(ctx); err != nil {
+			t.Error(err)
+			return
+		}
+		db.Db.Callback().Query().Remove("review:both_pending_snapshots")
+	})
+	claimed := make(chan uint, 4)
+	dq.prepare = nil
+	dq.run = func(ctx context.Context, task *DbDownloadTask) {
+		if dq.claim(ctx, task) {
+			claimed <- task.ID
+		}
+	}
+	dq.Start()
 	wg.Add(2)
-	go func() { defer wg.Done(); dq.moveTasksToChannel() }()
-	go func() { defer wg.Done(); dq.moveTasksToChannel() }()
+	go func() { defer wg.Done(); dq.dispatch(dq.generation) }()
+	go func() { defer wg.Done(); dq.dispatch(dq.generation) }()
 	for range 2 {
 		select {
 		case <-fetched:
 		case <-time.After(3 * time.Second):
-			close(release)
+			releaseQuery()
 			wg.Wait()
 			t.Fatal("did not fetch both pending snapshots")
 		}
 	}
-	close(release)
+	releaseQuery()
 	wg.Wait()
 	var ids []uint
-	for len(dq.tasks) > 0 {
-		ids = append(ids, (<-dq.tasks).ID)
+	for range 2 {
+		select {
+		case id := <-claimed:
+			ids = append(ids, id)
+		case <-time.After(3 * time.Second):
+			t.Fatal("重叠查询没有完成条件领取")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := dq.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for len(claimed) > 0 {
+		ids = append(ids, <-claimed)
 	}
 	if len(ids) != 2 || ids[0] == ids[1] {
 		t.Fatalf("each endpoint must be claimed once by overlapping schedulers: %v", ids)
 	}
+
 }
 
 func TestMediaDownloadDisableDuringDetailKeepsPendingWithDamagedMapping(t *testing.T) {

@@ -472,7 +472,7 @@ func (j *embyPreloadJob) fetch(ctx context.Context, task *playback.PreloadTask, 
 		if !j.owner.valid(j.request) {
 			return false, playback.ErrPreloadCanceled
 		}
-		response, err := https.Get(endpoint.String()).Header(header.Clone()).Context(ctx).DoSingle()
+		response, err := https.Get(endpoint.String()).Client(j.owner.client).Header(header.Clone()).Context(ctx).DoSingle()
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()

@@ -339,7 +339,7 @@ func newSTRMPerformanceServer(t *testing.T, files, directories []v115open.File, 
 func runSTRMPerformanceScan(t *testing.T, root *models.SyncPath, wantNewSTRM int, counter *strmPerformanceSQLCounter, counts *strmPerformanceHTTPCounts) (time.Time, time.Time) {
 	t.Helper()
 	previousDownload, previousUpload := models.GlobalDownloadQueue, models.GlobalUploadQueue
-	download, upload := models.NewDq(0), models.NewUq(1)
+	download, upload := models.NewDq(1), models.NewUq(1)
 	models.GlobalDownloadQueue, models.GlobalUploadQueue = download, upload
 	t.Cleanup(func() {
 		download.Stop()

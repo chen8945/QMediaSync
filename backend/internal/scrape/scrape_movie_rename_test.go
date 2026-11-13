@@ -108,7 +108,11 @@ func runOtherOnlyRename(t *testing.T, nfoContent, folderTemplate, fileTemplate s
 		t.Fatalf("保存刮削文件记录失败: %v", err)
 	}
 
-	impl := NewMovieScrapeImpl(scrapePath, context.Background(), nil, nil, nil)
+	impl, err := NewMovieScrapeImpl(scrapePath, context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = impl.Close() })
 	if err := impl.Process(mediaFile); err != nil {
 		t.Fatalf("整理失败: %v", err)
 	}

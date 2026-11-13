@@ -534,6 +534,7 @@ import {
   updateNotificationChannel,
   type NotificationChannelPayload,
 } from '@/api/notificationSettings'
+import type { SettingsSaveResult } from '@/api/types'
 import { useHttpClient } from '@/http/client'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
@@ -814,6 +815,11 @@ const showEditDialog = async (channel: NotificationChannel) => {
   }
 }
 
+const showSaveResult = (result: SettingsSaveResult, successMessage: string) => {
+  if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
+  else ElMessage.success(successMessage)
+}
+
 // 创建渠道
 const createChannel = async () => {
   if (!selectedChannelType.value) return
@@ -919,8 +925,8 @@ const createChannel = async () => {
       }
     }
 
-    await createNotificationChannel(http, selectedChannelType.value, requestData)
-    ElMessage.success('创建成功')
+    const result = await createNotificationChannel(http, selectedChannelType.value, requestData)
+    showSaveResult(result, '创建成功')
     createDialogVisible.value = false
     loadChannels()
   } catch (error: unknown) {
@@ -934,8 +940,8 @@ const createChannel = async () => {
 const toggleChannelStatus = async (channel: ChannelWithStatus) => {
   channel._switching = true
   try {
-    await setNotificationChannelEnabled(http, channel.id, channel.is_enabled)
-    ElMessage.success(channel.is_enabled ? '已启用' : '已禁用')
+    const result = await setNotificationChannelEnabled(http, channel.id, channel.is_enabled)
+    showSaveResult(result, channel.is_enabled ? '已启用' : '已禁用')
   } catch (error: unknown) {
     // 恢复原状态
     channel.is_enabled = !channel.is_enabled
@@ -1005,8 +1011,8 @@ const updateChannel = async () => {
       if (channelForm.description) requestData.description = channelForm.description
     }
 
-    await updateNotificationChannel(http, channelType, requestData)
-    ElMessage.success('更新成功')
+    const result = await updateNotificationChannel(http, channelType, requestData)
+    showSaveResult(result, '更新成功')
     editDialogVisible.value = false
     loadChannels()
   } catch (error: unknown) {
@@ -1042,8 +1048,8 @@ const deleteChannel = async (channel: NotificationChannel) => {
       },
     )
 
-    await deleteNotificationChannel(http, channel.id)
-    ElMessage.success('删除成功')
+    const result = await deleteNotificationChannel(http, channel.id)
+    showSaveResult(result, '删除成功')
     loadChannels()
   } catch (error: unknown) {
     if (!isMessageBoxCancelError(error)) {
@@ -1082,13 +1088,13 @@ const loadRules = async (channelId: number) => {
 const updateRule = async (rule: RuleWithStatus) => {
   rule._updating = true
   try {
-    await saveNotificationRule(http, {
+    const result = await saveNotificationRule(http, {
       channel_id: rule.channel_id,
       event_type: rule.event_type,
       is_enabled: rule.is_enabled,
     })
 
-    ElMessage.success('更新成功')
+    showSaveResult(result, '更新成功')
   } catch (error: unknown) {
     // 恢复原状态
     rule.is_enabled = !rule.is_enabled

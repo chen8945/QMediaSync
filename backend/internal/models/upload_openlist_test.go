@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -192,11 +193,11 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 				queue.workers.Wait()
 			})
 			queue.Start()
-			queue.moveTasksToChannel(queue.stop)
+			queue.signal()
 			waitBatch(accountReady)
 			close(startClients)
 			waitBatch(started)
-			queue.moveTasksToChannel(queue.stop)
+			queue.signal()
 			close(release[0])
 			waitBatch(started)
 			queue.Stop()
@@ -224,6 +225,120 @@ func TestUploadQueueOpenListConcurrency(t *testing.T) {
 				if count != 1 {
 					t.Fatalf("路径 %s 的上传次数 = %d，期望 1", task.RemoteFullPath, count)
 				}
+			}
+		})
+	}
+}
+
+func TestUploadQueueOpenListShutdownWaitsForJoinedAuthRefresh(t *testing.T) {
+	for _, phase := range []string{"upload", "detail"} {
+		t.Run(phase, func(t *testing.T) {
+			setupUpload115ProcessedTestDB(t)
+			oldLogger := helpers.OpenListLog
+			helpers.OpenListLog = helpers.AppLogger
+			t.Cleanup(func() { helpers.OpenListLog = oldLogger })
+			helpers.InitEventBus()
+			t.Cleanup(helpers.InitEventBus)
+			if err := db.Db.AutoMigrate(&Account{}); err != nil {
+				t.Fatal(err)
+			}
+			loginStarted, saveStarted := make(chan struct{}), make(chan struct{})
+			loginGate, saveGate := make(chan struct{}), make(chan struct{})
+			releaseLogin := sync.OnceFunc(func() { close(loginGate) })
+			releaseSave := sync.OnceFunc(func() { close(saveGate) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/auth/login":
+					close(loginStarted)
+					<-loginGate
+					writeOpenListResponse(w, `{"code":200,"data":{"token":"refreshed-token"}}`)
+				case "/api/fs/form":
+					_, _ = io.Copy(io.Discard, r.Body)
+					if phase == "upload" {
+						writeOpenListResponse(w, `{"code":401,"message":"expired"}`)
+					} else {
+						writeOpenListResponse(w, `{"code":200,"data":{"task":{"id":"uploaded"}}}`)
+					}
+				case "/api/fs/get":
+					writeOpenListResponse(w, `{"code":401,"message":"expired"}`)
+				default:
+					t.Errorf("意外请求：%s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			account := &Account{ID: uint(1_000_000 + openListQueueAccountID.Add(1)), SourceType: SourceTypeOpenList,
+				BaseUrl: server.URL, Username: "user", Password: "password", Token: "expired-token"}
+			if err := db.Db.Create(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, func(event helpers.Event) helpers.EventResult {
+				result := HandleOpenListTokenSaveSync(event)
+				close(saveStarted)
+				<-saveGate
+				return result
+			})
+			localPath := filepath.Join(t.TempDir(), "movie.nfo")
+			if err := os.WriteFile(localPath, []byte("movie"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			task := &DbUploadTask{AccountId: account.ID, Source: UploadSourceStrm, SourceType: SourceTypeOpenList,
+				Status: UploadStatusPending, LocalFullPath: localPath, RemoteFullPath: "/movie.nfo", FileName: "movie.nfo"}
+			if err := db.Db.Create(task).Error; err != nil {
+				t.Fatal(err)
+			}
+			queue := NewUq(1)
+			t.Cleanup(func() {
+				releaseLogin()
+				releaseSave()
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := queue.Shutdown(ctx); err != nil {
+					t.Error(err)
+				}
+				server.Close()
+			})
+			wait := func(ch <-chan struct{}) {
+				t.Helper()
+				select {
+				case <-ch:
+				case <-time.After(3 * time.Second):
+					t.Fatal("上传未到达认证边界")
+				}
+			}
+			assertUnfinished := func() {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				if err := queue.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("认证工作未退出时不能报告上传已排空：%v", err)
+				}
+			}
+			queue.Start()
+			queue.signal()
+			wait(loginStarted)
+			assertUnfinished()
+			releaseLogin()
+			wait(saveStarted)
+			assertUnfinished()
+			releaseSave()
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			if err := queue.Shutdown(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var savedAccount Account
+			if err := db.Db.First(&savedAccount, account.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if savedAccount.Token != "refreshed-token" {
+				t.Fatal("排空前应完成已加入的认证保存")
+			}
+			var savedTask DbUploadTask
+			if err := db.Db.First(&savedTask, task.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if savedTask.Status != UploadStatusPending || savedTask.StartTime != 0 || savedTask.EndTime != 0 || savedTask.Error != "" || savedTask.RetryCount != 0 {
+				t.Fatalf("最终取消应保留可恢复上传：%+v", savedTask)
 			}
 		})
 	}

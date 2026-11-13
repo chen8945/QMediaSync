@@ -24,6 +24,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
+	"qmediasync/internal/proxyhttp"
 	"qmediasync/internal/validation"
 )
 
@@ -34,6 +35,7 @@ const (
 
 // Options 注入当前主站的播放入口和可信目录；不向飞牛端口开放整个主站。
 type Options struct {
+	Listen             func(string, string) (net.Listener, error)
 	MainHandler        http.Handler
 	CertificateFile    string
 	KeyFile            string
@@ -76,7 +78,7 @@ type instance struct {
 	servers   []*http.Server
 	listeners []net.Listener
 	mu        sync.Mutex
-	conns     map[*trackedConn]struct{}
+	conns     proxyhttp.Connections
 	stopped   bool
 	done      sync.WaitGroup
 	active    sync.WaitGroup
@@ -213,7 +215,7 @@ func (s *Service) prepare(config models.FnosProxyConfig) (*instance, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	inst := &instance{service: s, config: config, upstream: upstream, ctx: ctx, cancel: cancel,
-		transport: transport, conns: make(map[*trackedConn]struct{}), cache: newSourceCache(), preloadID: "fnos:" + rand.Text()}
+		transport: transport, cache: newSourceCache(), preloadID: "fnos:" + rand.Text()}
 	inst.proxy = &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -270,11 +272,15 @@ func (inst *instance) bindListener(host string, port int, certificate *tls.Certi
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", address)
+	listen := inst.service.options.Listen
+	if listen == nil {
+		listen = net.Listen
+	}
+	listener, err := listen("tcp", address)
 	if err != nil {
 		return err
 	}
-	inst.listeners = append(inst.listeners, &trackedListener{Listener: listener, instance: inst})
+	inst.listeners = append(inst.listeners, inst.conns.Wrap(listener))
 	server := &http.Server{Handler: inst, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second,
 		MaxHeaderBytes: 1 << 20, ErrorLog: log.New(io.Discard, "", 0)}
 	if certificate != nil {
@@ -380,10 +386,6 @@ func (inst *instance) closeResources() {
 		return
 	}
 	inst.stopped = true
-	conns := make([]*trackedConn, 0, len(inst.conns))
-	for conn := range inst.conns {
-		conns = append(conns, conn)
-	}
 	inst.mu.Unlock()
 	inst.cancel()
 	if preloader := inst.service.options.Preloader; preloader != nil {
@@ -397,45 +399,8 @@ func (inst *instance) closeResources() {
 	for _, server := range inst.servers {
 		_ = server.Close()
 	}
-	for _, conn := range conns {
-		_ = conn.Close()
-	}
+	inst.conns.Close()
 	inst.transport.CloseIdleConnections()
-}
-
-type trackedListener struct {
-	net.Listener
-	instance *instance
-}
-
-func (listener *trackedListener) Accept() (net.Conn, error) {
-	conn, err := listener.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	tracked := &trackedConn{Conn: conn, instance: listener.instance}
-	listener.instance.mu.Lock()
-	if listener.instance.stopped {
-		listener.instance.mu.Unlock()
-		_ = conn.Close()
-		return nil, net.ErrClosed
-	}
-	listener.instance.conns[tracked] = struct{}{}
-	listener.instance.mu.Unlock()
-	return tracked, nil
-}
-
-type trackedConn struct {
-	net.Conn
-	instance *instance
-}
-
-func (conn *trackedConn) Close() error {
-	err := conn.Conn.Close()
-	conn.instance.mu.Lock()
-	delete(conn.instance.conns, conn)
-	conn.instance.mu.Unlock()
-	return err
 }
 
 func (inst *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {

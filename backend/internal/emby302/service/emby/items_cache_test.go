@@ -69,14 +69,14 @@ func TestRandomItemsWithLimitCachesOnlyCompleteResponses(t *testing.T) {
 					}
 					helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 					t.Cleanup(func() { config.C, helpers.AppLogger = oldConfig, oldLogger })
-					t.Cleanup(cache.WaitingForHandleChan)
 
+					session := newTestSession(t)
 					router := gin.New()
 					if config.C.Cache.Enable {
-						router.Use(cache.CacheableRouteMarker(), cache.RequestCacher())
+						router.Use(cache.CacheableRouteMarker(), session.Cache.RequestCacher())
 					}
-					router.GET("/Users/1/Items/with_limit", RandomItemsWithLimit)
-					router.GET("/Users/1/Items", ResortRandomItems)
+					router.GET("/Users/1/Items/with_limit", session.RandomItemsWithLimit)
+					router.GET("/Users/1/Items", session.ResortRandomItems)
 					finished := make(chan error, 1)
 					proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if mode == "downstream_write_error" && calls.Load() == 0 {
@@ -120,7 +120,6 @@ func TestRandomItemsWithLimitCachesOnlyCompleteResponses(t *testing.T) {
 						case <-time.After(5 * time.Second):
 							t.Fatal("proxy handler did not finish")
 						}
-						cache.WaitingForHandleChan()
 						return resp, body, readErr
 					}
 
@@ -136,7 +135,7 @@ func TestRandomItemsWithLimitCachesOnlyCompleteResponses(t *testing.T) {
 						t.Fatalf("first response: status=%d, bytes=%d, error=%v, origin calls=%d; want %d bytes without retry or appended content",
 							resp.StatusCode, len(body), readErr, calls.Load(), len(wantBody))
 					}
-					if _, ok := cache.GetSpaceCache(ItemsCacheSpace, spaceKey); ok != (tt.enabled && mode == "complete") {
+					if _, ok := session.Cache.GetSpaceCache(ItemsCacheSpace, spaceKey); ok != (tt.enabled && mode == "complete") {
 						t.Errorf("space cache exists = %t after %s", ok, mode)
 					}
 
@@ -149,7 +148,7 @@ func TestRandomItemsWithLimitCachesOnlyCompleteResponses(t *testing.T) {
 						t.Fatalf("following response: status=%d, bytes=%d, error=%v, origin calls=%d; want %d complete bytes and %d origin calls",
 							resp.StatusCode, len(body), readErr, calls.Load(), len(complete), wantCalls)
 					}
-					if rc, ok := cache.GetSpaceCache(ItemsCacheSpace, spaceKey); tt.enabled {
+					if rc, ok := session.Cache.GetSpaceCache(ItemsCacheSpace, spaceKey); tt.enabled {
 						if !ok || string(rc.BodyBytes()) != complete {
 							t.Fatal("complete response must populate the random Items cache space")
 						}

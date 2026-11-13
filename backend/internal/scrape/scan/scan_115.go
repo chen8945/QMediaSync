@@ -18,11 +18,12 @@ import (
 // 从 115 扫描需要刮削的文件入库
 type Scan115Impl struct {
 	scanBaseImpl
-	client *v115open.OpenClient
+	client         *v115open.OpenClient
+	threadSettings models.SettingThreadAndRapidWait
 }
 
 func New115ScanImpl(scrapePath *models.ScrapePath, client *v115open.OpenClient, ctx context.Context) *Scan115Impl {
-	return &Scan115Impl{ctx: ctx, scrapePath: scrapePath, client: client}
+	return &Scan115Impl{ctx: ctx, scrapePath: scrapePath, client: client, threadSettings: models.GetThreadSettingsSnapshot()}
 }
 
 var list115ScanFilesPage = func(ctx context.Context, client *v115open.OpenClient, parentID string, offset, limit int) (*v115open.FileListResp, error) {
@@ -65,7 +66,8 @@ func (s *Scan115Impl) GetNetFileFiles() error {
 		return ferr
 	}
 	// 初始化路径队列，容量为接口线程数
-	s.pathTasks = make(chan string, models.SettingsGlobal.FileDetailThreads)
+	threadCount := s.threadSettings.FileDetailThreads
+	s.pathTasks = make(chan string, threadCount)
 	// 启动一个控制 buffer 的 context
 	bufferCtx, cancelBuffer := context.WithCancel(context.Background())
 	// 启动 buffer 到任务队列的转移协程
@@ -74,8 +76,8 @@ func (s *Scan115Impl) GetNetFileFiles() error {
 	s.wg = sync.WaitGroup{}
 	s.addPathToTasks(s.scrapePath.SourcePathId)
 	// 启动一个协程处理目录
-	helpers.AppLogger.Infof("开始处理目录 %s，开启 %d 个任务", s.scrapePath.SourcePath, models.SettingsGlobal.FileDetailThreads)
-	for i := 0; i < models.SettingsGlobal.FileDetailThreads; i++ {
+	helpers.AppLogger.Infof("开始处理目录 %s，开启 %d 个任务", s.scrapePath.SourcePath, threadCount)
+	for i := 0; i < threadCount; i++ {
 		// 在限速器控制下执行 startPathWork
 		go s.startPathWorkWithLimiter(i)
 	}
@@ -102,7 +104,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 				return
 			}
 			offset := 0
-			limit := models.GetFileListPageSize()
+			limit := s.threadSettings.GetFileListPageSize()
 			// 记录图片、NFO、字幕文件
 			// 如果发现了视频文件，则查找对应的图片、NFO、字幕文件
 			// 如果没发现视频文件，则清空

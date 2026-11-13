@@ -2077,7 +2077,7 @@ func preloadTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 
 func preloadTestService(t *testing.T, options Options, upstream *httptest.Server) *Service {
 	t.Helper()
-	service := NewService(options)
+	service := newTestService(t, options)
 	inst, err := service.prepare(models.FnosProxyConfig{Enabled: true, FnosURL: upstream.URL})
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 
 	"qmediasync/internal/db"
 	embypreload "qmediasync/internal/emby302/service/emby"
+	"qmediasync/internal/emby302/web/cache"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
@@ -27,17 +29,34 @@ import (
 )
 
 func setupEmbyConfigControllerTest(t *testing.T) *gin.Engine {
+	return setupEmbyConfigControllerTestWithApply(t, nil)
+}
+
+func setupEmbyConfigControllerTestWithApply(t *testing.T, apply func(context.Context, *models.EmbyConfig) error, databasePath ...string) *gin.Engine {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
 	previousLogger := helpers.AppLogger
 	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	setupControllerTestDB(t, &models.EmbyConfig{}, &models.JellyfinConfig{})
+	filename := ":memory:"
+	if len(databasePath) != 0 {
+		filename = databasePath[0]
+	}
+	setupControllerTestDBAt(t, filename, &models.EmbyConfig{}, &models.JellyfinConfig{})
+	models.StartMediaLibrarySettingsRuntime()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := models.StopMediaLibrarySettingsRuntime(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	r := gin.New()
-	r.PUT("/emby/config", UpdateEmbyConfig)
-	r.PUT("/jellyfin/config", UpdateJellyfinConfig)
+	controller := NewMediaLibraryConfigController(apply)
+	r.PUT("/emby/config", controller.UpdateEmby)
+	r.PUT("/jellyfin/config", controller.UpdateJellyfin)
 	r.GET("/jellyfin/config", GetJellyfinConfig)
 	return r
 }
@@ -535,7 +554,14 @@ func TestMediaLibraryDisableCancelsOnlyCommittedEmbyPreloads(t *testing.T) {
 		{"failed Emby save", models.MediaServerEmby, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			router := setupEmbyConfigControllerTest(t)
+			var session *embypreload.Session
+			router := setupEmbyConfigControllerTestWithApply(t, func(_ context.Context, config *models.EmbyConfig) error {
+				if !config.Enabled {
+					session.Deactivate()
+					session.Retire()
+				}
+				return nil
+			})
 			if err := db.Db.Create(&models.EmbyConfig{Enabled: true, EmbyUrl: "http://offline.invalid", EmbyApiKey: "key"}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -557,8 +583,10 @@ func TestMediaLibraryDisableCancelsOnlyCommittedEmbyPreloads(t *testing.T) {
 			defer func() { preloader.Stop(); playback.DefaultPreloader = previous }()
 			preloader.Start(t.Context())
 			preloader.Apply(true, 1)
-			stopPreloading := embypreload.ConfigurePreloading(embypreload.PreloadOptions{Instance: "emby302", Coordinator: preloader})
-			defer stopPreloading()
+			store := cache.NewStore(time.Hour)
+			session = embypreload.NewSession(embypreload.SessionOptions{Cache: store.NewScope(), Client: http.DefaultClient,
+				Preload: embypreload.PreloadOptions{Instance: "emby302", Coordinator: preloader}})
+			defer func() { session.Close(); _ = store.Stop(context.Background()) }()
 			started, completed := make(chan string, 2), make(chan string, 2)
 			release := make(chan struct{})
 			defer func() {
@@ -695,5 +723,90 @@ func TestMediaLibraryConfigSavesKeepCommitOrderWithinEachService(t *testing.T) {
 	config, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
 	if err != nil || !config.Enabled {
 		t.Fatalf("last committed Emby value was lost: %+v %v", config, err)
+	}
+}
+
+func TestMediaLibraryConfigCancellationFollowsCommitBoundary(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("committed=%t", committed), func(t *testing.T) {
+			applied := make(chan error, 1)
+			// 取消可能丢弃 SQLite 的唯一连接，文件库保留需要核验的回滚结果。
+			router := setupEmbyConfigControllerTestWithApply(t, func(ctx context.Context, config *models.EmbyConfig) error {
+				applied <- ctx.Err()
+				return nil
+			}, filepath.Join(t.TempDir(), "emby-cancel.db"))
+			if err := db.Db.Create(&models.EmbyConfig{EmbyUrl: "http://original.invalid", EmbyApiKey: "old"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			reached, release := make(chan struct{}), make(chan struct{})
+			releaseSave := sync.OnceFunc(func() { close(release) })
+			callback := func(tx *gorm.DB) {
+				if tx.Statement.Table == "emby_config" {
+					close(reached)
+					<-release
+				}
+			}
+			var err error
+			if committed {
+				err = db.Db.Callback().Update().After("gorm:commit_or_rollback_transaction").Register("test:cancel_media_save", callback)
+			} else {
+				err = db.Db.Callback().Update().Before("gorm:update").Register("test:cancel_media_save", callback)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Db.Callback().Update().Remove("test:cancel_media_save") })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			finished := make(chan *httptest.ResponseRecorder, 1)
+			var saves sync.WaitGroup
+			defer func() { releaseSave(); saves.Wait() }()
+			saves.Go(func() {
+				request := httptest.NewRequest(http.MethodPut, "/emby/config", strings.NewReader(`{"emby_url":"http://saved.invalid","emby_api_key":"new","enabled":true}`)).WithContext(ctx)
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, request)
+				finished <- response
+			})
+			select {
+			case <-reached:
+			case <-time.After(time.Second):
+				t.Fatal("save did not reach commit boundary")
+			}
+			cancel()
+			releaseSave()
+			select {
+			case response := <-finished:
+				var result APIResponse[json.RawMessage]
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || (result.Code == Success) != committed {
+					t.Fatalf("cancelled save response: %s (%v)", response.Body, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancelled save did not finish")
+			}
+			config, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
+			wantURL := "http://original.invalid"
+			if committed {
+				wantURL = "http://saved.invalid"
+			}
+			if err != nil || config.EmbyUrl != wantURL {
+				t.Fatalf("saved configuration=%+v, err=%v", config, err)
+			}
+			if committed {
+				select {
+				case err := <-applied:
+					if err != nil {
+						t.Fatalf("committed application inherited browser cancellation: %v", err)
+					}
+				default:
+					t.Fatal("committed configuration was not applied")
+				}
+			} else {
+				select {
+				case <-applied:
+					t.Fatal("cancelled uncommitted configuration was applied")
+				default:
+				}
+			}
+		})
 	}
 }

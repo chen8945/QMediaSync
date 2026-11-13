@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 
-	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/util/bytess"
 	"qmediasync/internal/emby302/util/https"
 
@@ -13,16 +12,16 @@ import (
 )
 
 // ChangeBaseVideoModuleCorsDefined 调整 Emby 播放器的 CORS 配置, 使其支持跨域播放
-func ChangeBaseVideoModuleCorsDefined(c *gin.Context) {
+func (upstream *Session) ChangeBaseVideoModuleCorsDefined(c *gin.Context) {
 	// 1 代理请求
 	c.Request.Header.Del("If-Modified-Since")
 	c.Request.Header.Del("If-None-Match")
-	resp, err := https.ProxyRequest(c.Request, config.C.Emby.Host)
-	if checkErr(c, err) {
+	resp, err := https.ProxyRequest(c.Request, upstream.Origin, upstream.Client)
+	if upstream.checkErr(c, err) {
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
-		checkErr(c, fmt.Errorf("Emby 返回非预期状态码: %d", resp.StatusCode))
+		upstream.checkErr(c, fmt.Errorf("Emby 返回非预期状态码: %d", resp.StatusCode))
 		return
 	}
 	resp.Header.Del("Content-Length")

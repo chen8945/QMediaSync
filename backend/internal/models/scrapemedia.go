@@ -845,16 +845,21 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 }
 
 // 使用指定的名字和年份重新刮削
-func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season int, episode int) error {
+func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, tmdbId int64, season int, episode int) error {
 	sm.TmdbId = tmdbId
 	sm.Name = name
 	sm.Year = year
 	// 使用该参数在 TMDB 搜索，如果能搜到则更新 TMDB ID。
-	tmdbClient := GlobalScrapeSettings.GetTmdbClient()
+	settings := GetScrapeSettingsSnapshot()
+	tmdbClient, err := settings.GetTmdbClient()
+	if err != nil {
+		return err
+	}
+	defer tmdbClient.Close()
 	if sm.MediaType == MediaTypeTvShow {
 		if tmdbId > 0 {
 			// 使用 TMDB ID 直接查询详情
-			tvDetail, err := tmdbClient.GetTvDetail(tmdbId, GlobalScrapeSettings.GetTmdbLanguage())
+			tvDetail, err := tmdbClient.GetTvDetail(ctx, tmdbId, settings.GetTmdbLanguage())
 			if err != nil || tvDetail == nil {
 				helpers.AppLogger.Errorf("使用 ID 查询 TMDB 剧集详情失败：%v", err)
 				return err
@@ -863,7 +868,7 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 			sm.Year = helpers.ParseYearFromDate(tvDetail.FirstAirDate)
 		} else {
 			// 剧集
-			tvSearch, err := tmdbClient.SearchTv(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true)
+			tvSearch, err := tmdbClient.SearchTv(ctx, sm.Name, sm.Year, settings.GetTmdbLanguage(), true)
 			if err != nil {
 				helpers.AppLogger.Errorf("使用名称和年份查询 TMDB 剧集失败：%v", err)
 				return err
@@ -882,7 +887,7 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 		}
 	} else {
 		if sm.TmdbId > 0 {
-			movieDetail, merror := tmdbClient.GetMovieDetail(sm.TmdbId, GlobalScrapeSettings.GetTmdbLanguage())
+			movieDetail, merror := tmdbClient.GetMovieDetail(ctx, sm.TmdbId, settings.GetTmdbLanguage())
 			if merror != nil || movieDetail == nil {
 				helpers.AppLogger.Errorf("使用 ID 查询 TMDB 电影详情失败：%v", merror)
 				return merror
@@ -891,7 +896,7 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 			sm.Year = helpers.ParseYearFromDate(movieDetail.ReleaseDate)
 		} else {
 			// 电影
-			movieSearch, err := tmdbClient.SearchMovie(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true, false)
+			movieSearch, err := tmdbClient.SearchMovie(ctx, sm.Name, sm.Year, settings.GetTmdbLanguage(), true, false)
 			if err != nil {
 				helpers.AppLogger.Errorf("查询 TMDB 电影失败：%v", err)
 				return err
@@ -953,7 +958,7 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 			hasEdit := false
 			// 检查输入的季是否存在
 			if season > 0 {
-				tvSeason, err := tmdbClient.GetTvSeasonDetail(sm.TmdbId, season, GlobalScrapeSettings.GetTmdbLanguage())
+				tvSeason, err := tmdbClient.GetTvSeasonDetail(ctx, sm.TmdbId, season, settings.GetTmdbLanguage())
 				if err != nil || tvSeason == nil {
 					serr := fmt.Errorf("查询 TMDB 剧集第 %d 季失败：%v", season, err)
 					helpers.AppLogger.Errorf("%v", serr)
@@ -964,7 +969,7 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 				}
 				// 检查集是否存在
 				if episode > 0 {
-					tvEpisode, err := tmdbClient.GetTvEpisodeDetail(sm.TmdbId, season, episode, GlobalScrapeSettings.GetTmdbLanguage())
+					tvEpisode, err := tmdbClient.GetTvEpisodeDetail(ctx, sm.TmdbId, season, episode, settings.GetTmdbLanguage())
 					if err != nil || tvEpisode == nil {
 						serr := fmt.Errorf("查询 TMDB 剧集第 %d 季第 %d 集失败：%v", season, episode, err)
 						helpers.AppLogger.Errorf("%v", serr)

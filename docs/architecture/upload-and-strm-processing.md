@@ -1,12 +1,12 @@
 # 上传和 STRM 后处理流程
 
-> 职责：定义 115 上传、目录监控、STRM 生成与直链解析、源文件清理、上传后 Emby 刷新和多端播放副本的状态流转。
+> 职责：定义上传／下载队列的派发与生命周期、115 上传、目录监控、STRM 生成与直链解析、源文件清理、上传后 Emby 刷新和多端播放副本的状态流转。
 >
-> 权威范围：本文档维护上传、STRM 后处理与直链解析的行为契约；运行参数见 [配置、密钥与日志](../operations/configuration.md)，外部 Webhook 字段见 [STRM Webhook](../reference/strm-webhook.md)。
+> 权威范围：本文档维护传输队列、上传、STRM 后处理与直链解析的行为契约；运行参数见 [配置、密钥与日志](../operations/configuration.md)，外部 Webhook 字段见 [STRM Webhook](../reference/strm-webhook.md)。
 >
-> 修改时机：修改上传队列并发、上传协议、目录监控规则、上传任务状态、STRM 生成与直链解析、源文件清理、幂等策略、上传后刷新或 115 多端播放链路时必须更新本文档。
+> 修改时机：修改传输队列并发与暂停／停止、上传协议、目录监控规则、上传任务状态、STRM 生成与直链解析、源文件清理、幂等策略、上传后刷新或 115 多端播放链路时必须更新本文档。
 >
-> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/fnosproxy/`、`backend/internal/v115/openapi/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115.go`、`backend/internal/controllers/open115_playback.go`、`backend/internal/emby302/service/emby/`。
+> 相关代码：`backend/internal/directoryupload/`、`backend/internal/syncstrm/`、`backend/internal/playback/`、`backend/internal/fnosproxy/`、`backend/internal/v115/openapi/`、`backend/internal/openlist/`、`backend/internal/models/upload.go`、`backend/internal/models/download.go`、`backend/internal/models/transfer_dispatch.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/dbdownload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/controllers/directory_upload.go`、`backend/internal/controllers/open115.go`、`backend/internal/controllers/open115_playback.go`、`backend/internal/emby302/service/emby/`。
 
 ## 上传队列执行
 
@@ -14,15 +14,27 @@
 
 上传和下载任务表由每日 01:00 的定时清理统一维护，删除创建时间超过 7 天的任务，与 STRM 同步记录的 7 天保留策略一致；清理条件只判断创建时间，不区分任务状态，排队中超过 7 天的未执行任务会一并删除，上传队列页面和下载队列页面对此有相应说明。手动“清空”接口的语义不变：清空只影响对应状态的任务，不受定时清理影响。
 
-队列保留小容量缓冲，缓冲中的普通任务仍属于等待上传。同一任务在缓冲或执行期间不得被重复领取；执行前以数据库条件更新抢占等待任务，被清空、取消或已结束的任务不能由旧缓冲记录重新上传。远端完成任务继续使用 `5 → 6` 的原子收尾抢占，收尾失败回到等待完成处理，不能重新传输文件。
+上传普通任务执行前以数据库条件更新抢占等待任务；远端完成任务继续使用 `5 → 6` 的原子收尾抢占，收尾失败回到等待完成处理，不能重新传输文件。候选、名额和暂停的共同边界见[传输队列生命周期](#下载队列与共同生命周期)。
 
-并发调整和暂停、恢复共用在途任务计数；减少并发后，现有 worker 不能在实际并发仍达到或超过新上限时补入任务。暂停只停止领取新任务，在途任务继续完成；快速恢复也不能让新旧 worker 重复领取或突破上限。上传请求继续使用现有网盘限流器。
+上传请求继续使用现有网盘限流器；上传并发不增加 115 全局请求额度。秒传等待和 URL 校验等同组参数在操作入口捕获，后续阶段使用同一快照，不在一次操作中混用新旧设置。
 
 百度网盘上传与浏览、同步入口共用按账号缓存的客户端；请求级 Token 快照和原子更新遵循[百度网盘刷新](../reference/account-authorization.md#百度网盘刷新)约定，同账号上传无需串行化整个文件传输。
 
-OpenList 上传与目录浏览、同步等入口共用按账号缓存的客户端。缓存访问和客户端地址、登录凭据、Token 的读写必须同步；每次 HTTP 请求使用一致的配置快照，网络传输和 Token 保存事件在状态锁外执行，以保留同账号与不同账号的上传并发。并发 `401` 触发的 Token 刷新按客户端、OpenList 地址和登录凭据去重，同配置的在途刷新只执行一次登录，其余请求复用结果后重试。登录接口自身返回业务码 `401` 时直接返回凭据失效错误，不再触发刷新。
+OpenList 上传与目录浏览、同步等入口共用按账号缓存的客户端。缓存访问和客户端地址、登录凭据、Token 的读写必须同步；每次 HTTP 请求使用一致的配置快照，网络传输和 Token 保存事件在状态锁外执行，以保留同账号与不同账号的上传并发。并发 `401` 触发的 Token 刷新按客户端、OpenList 地址和登录凭据去重，同配置的在途刷新只执行一次登录，其余请求复用结果后重试。上传任务退出须等待其已触发的认证刷新及 Token 回写结束，最终停止超时不能报告任务已经退出。登录接口自身返回业务码 `401` 时直接返回凭据失效错误，不再触发刷新。
 
 OpenList 上传的普通重试预算保持为 `0`，网络错误或超时不自动重传。远端明确返回业务码 `401` 后允许一次认证恢复重发；重发必须重新读取完整文件，并保留 multipart 文件名、目标路径和原请求选项。认证恢复、登录结果的条件回写与账号编辑验证边界见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。
+
+### 下载队列与共同生命周期
+
+上传和下载队列各在进程内建立一次。它们共用有限的名额、任务 ID 预留、唤醒和运行意图管理，查询、条件领取、执行、重试和持久化收尾仍由各自业务负责。保存线程组或恢复队列不重建实例，也不复位在途记录；中断记录只在启动开放派发前各恢复一次，恢复失败不开放队列。
+
+候选查询、限速等待和数据库领取在共享状态锁外完成。候选预留不代表已经开始执行；最终准入再次核对最新并发上限与已接受任务数，再按数据库状态条件领取。被清空、取消、删除或已被另一执行者领取的任务不会由旧候选重新执行；查询失败不伪装为空队列，后续仍可重试。
+
+增加并发允许后续任务补位；降低并发让已接受任务完成，在途数量回到新上限以下后才接受下一项。旧上限下预留或等待速率的候选不能越过新限制。下载保留 `download_threads` 同时控制并发和启动 QPS 的原含义，上传使用现有网盘请求限流。
+
+网页暂停只撤销尚未接受的准备，在途任务继续完成；保存设置不改变暂停意图。同步和恢复维护的临时暂停独立计数、释放幂等，最后一个释放后仅在用户仍希望运行时恢复，不能解除用户手动暂停或恢复门禁。
+
+最终停止与普通暂停不同：停止拒绝新工作并取消实际执行上下文，沿下载／上传、HTTP、取链和媒体提取传递取消，再在锁外等待真正退出。仍由本执行者持有且已确认取消的进行中任务回到等待状态，保留重试预算；不能覆盖已经由其他执行者改变的状态。超过等待期限须报告未退出并保留可恢复记录，不能先关闭旧执行者仍可能写入的数据库或共享执行器。设置完成点见[网页设置与应用边界](../operations/configuration.md#网页设置与应用边界)，数据库恢复仍按[恢复流程](../operations/database.md#恢复与风险边界)执行。
 
 ## 115 上传增强
 
@@ -31,6 +43,8 @@ STRM 元数据回传的根目录识别和目录层级保留遵循[同步编排](
 115 上传任务先执行 `/open/upload/init`。所有上传入口在创建任务时写入不可变的 `remote_full_path`（包含文件名）；`remote_file_id` 在完成前保持空，完成后才记录新远端文件 ID。local 上传的 `remote_full_path` 记录受配置源根目录约束的本地目标完整路径，供复制 worker 使用；它不是远端身份，队列详情不会以远端路径展示它。115 官方秒传返回只保证包含新增 `file_id`，不返回 mtime；因此秒传成功后系统会按 `file_id` 查询远端文件详情，补齐 PickCode、SHA1、大小和官方修改时间，并记录 `upload_result=rapid_upload`。任务公开 `remote_sha1` 只接受远端详情或完成 callback 返回的 SHA1，不能用本地 SHA1 或 `upload_sessions` checkpoint 兜底。115 列表的 `upt` 和详情的 `utime` 是修改时间；只有字段缺失或零值时才回退列表 `uppt` 或详情 `ptime`。`strm_sync` 上传需要用最终查询到的远端官方修改时间同步本地元数据文件，详情查询失败会让任务失败；目录监控上传可用 init 返回的 `file_id` 兜底完成，后续 STRM worker 仍可按 `file_id` 补齐文件详情。如果未命中秒传且启用了秒传等待策略，任务会按 `upload_rapid_wait_interval_seconds` 重复尝试 init，直到命中秒传或达到 `upload_rapid_wait_timeout_seconds`。`upload_rapid_wait_interval_seconds` 是两次 init 之间的重试间隔，`upload_rapid_wait_timeout_seconds` 是最大等待时长；最后一次等待会按剩余超时时间裁剪，不会因为间隔更长而超过最大等待时长。`upload_rapid_wait_min_size` 控制进入等待策略的最小文件大小，`upload_rapid_wait_force_size` 控制必须等待到超时的大文件阈值；等待超时后是否跳过真实上传由 `upload_rapid_wait_skip_upload` 控制。
 
 非秒传上传使用 OSS multipart。初始化 OSS multipart 时会带 `sequential=1`；真实非秒传任务验证显示，该参数配合 115 callback 原样透传后，OSS 会在完成对象上返回可供 115 校验的最终 SHA1。默认 part size 为 `32 MiB`；当文件按该大小切分会超过 `9999` 个 part 时，part size 会按文件大小动态放大并向上取整到 `1 MiB`。首次创建 `upload_sessions` 后会持久化 part size、OSS `upload_id`、本地文件签名、115 调度字段和已上传进度，后续重试或进程重启恢复时必须复用这些 checkpoint。
+
+`/open/upload/resume` 请求因取消或期限到达而退出时，保留有效的上传断点；这些错误不是会话失效的依据。队列最终停止后任务回到等待状态，后续执行仍可复用原 `upload_id` 和分片进度。
 
 断点续传同时依赖 115 调度层和 OSS 数据层。恢复时先调用 115 `/open/upload/resume`，再用 OSS `ListParts` 查询已有分片并跳过已完成 part；如果本地文件大小、mtime、SHA1 或快速签名变化，系统会在同一 `upload_sessions` 记录中保存当前本地签名，清空 115 调度、OSS multipart 和进度 checkpoint，写入废弃原因并将恢复状态标记为 `session_expired_restarted`，随后在同一次上传执行中重新走 `/open/upload/init`。不得复用旧 checkpoint，也不先将任务标记失败。如果 OSS 返回 `NoSuchUpload`、`InvalidUploadId` 等明确 checkpoint 失效错误，任务会清空旧 `upload_id`、已上传字节和分片进度，将恢复状态标记为 `session_expired_restarted`，并在同一次任务中复用当前 115 调度结果创建新的 OSS multipart。
 
@@ -328,7 +342,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 - 副本清理仅针对已核验的 QMediaSync 操作目录，并使用对应账号身份；只有持有本进程创建记录且目录自身身份和原父 ID 未变，才允许随根目录移动后清理。扫描发现的目录仍受固定路径和时间约束。未知响应、目录最新项和不完整列表不得成为猜测文件归属的依据。定时维护必须避开活跃目录和无关目录。
 - 回收站永久删除必须匹配经本轮核验的固定根 ID、严格操作名称、目录类型和正常状态，完成全部分页后才删除；禁止将空 `tid` 作为删除请求发出。缓存期限不能用作实际播放结束的判断。
 
-- 上传任务领取必须幂等；减少并发、暂停或恢复不能中断在途上传，也不能重复执行缓冲中的任务。
+- 上传／下载的条件领取必须幂等；降低并发、普通暂停或恢复不能重复执行候选或中断已接受的任务。最终停止必须取消并等待实际执行退出，不能以普通暂停代替。
 - 断点续传必须同时恢复 115 调度和 OSS 分片 checkpoint；仅重新 init、普通 multipart 或远端已存在跳过都不是断点续传。
 - 115 callback / `callback_var` 必须原样透传给 OSS；不得本地展开占位符或记录 STS 凭证。
 - 115 上传成功后的本地 mtime 必须以远端详情的官方修改时间为准；只有详情查询成功且本地 `Chtimes` 成功，才视为本轮两端时间已收敛。
@@ -351,7 +365,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 - 回收站回归运行 `go test -race ./internal/playback ./internal/v115/openapi ./internal/synccron`，覆盖真实响应形态和大 ID 精度、空 ID 零请求、还原结果校验、分页完整性、批次上限、根目录变化、活跃操作及无关/还原中条目过滤、共享预算、取消和下一轮重试。已删除目录须覆盖 `231011`、`430004` 释放失败记录且不重复报错，授权与未知错误仍保留。
 - 真机验收使用测试账号和不同 UA 的两台设备同时直链播放同一文件，确认后到槽位使用副本、直接删除整个操作目录后链接仍可播放，并验证实际队列压力、失败残留回收、实际代理跳过及 `force=1` 保留值。真实网盘复制、删除只在取得对应测试账号授权后执行，mock 测试不代替该验收。
 
-- 上传并发测试须覆盖在途任务下增减并发、暂停后修改并恢复、快速暂停恢复、重复领取和已清空任务；运行相关 `models` 测试及 `-race` 检查，配置保存与迁移同时验证失败不生效和旧配置兼容。
+- 传输队列测试须覆盖在途任务下增减并发、旧预留等待速率时降低上限、暂停后保存与恢复、重叠临时暂停、重复条件领取、已清空任务、启动恢复先于派发以及真实 I/O 取消／最终等待；运行相关 `models` 测试及 `-race`。参数提交验证失败不发布、并发省略字段按最新值保留；稳定入口见[网页设置应用验证](../engineering/verification.md#网页设置应用验证)。
 - 百度网盘的 `models/upload_baidupan_test.go` 使用生产 SQLite 单连接、真实上传队列和本地 HTTP 替身，覆盖单 worker 对照、同账号和不同账号并发、冷缓存及后续缓存命中。验证请求实际重叠、凭据隔离、分片内容完整、每个上传阶段只执行一次及任务正确完成；运行 `(cd backend && go test -race ./internal/models -run '^TestUploadQueueBaiduPanConcurrency$')`。
 - OpenList 客户端测试覆盖并发创建、缓存命中、配置更新、同配置 Token 刷新去重、跨地址刷新隔离及登录 `401` 及时返回；认证恢复回归须覆盖零普通重试预算下的完整 multipart 重发、普通网络重试次数不变及持续 `401` 及时失败。`models/upload_openlist_test.go` 使用真实上传队列和本地 HTTP 替身覆盖单 worker 对照、同账号与不同账号并发，验证冷缓存和后续缓存命中、请求实际重叠、凭据隔离、有效凭据下每个文件只上传一次及任务正确完成。运行 `(cd backend && go test -race ./internal/openlist)` 和 `(cd backend && go test -race ./internal/models -run 'Test(UploadQueue|UpdateOpenList)')`。
 - 运行 `(cd backend && go test ./internal/directoryupload/)`、`(cd backend && go test ./internal/syncstrm/)` 和相关 `models` 测试。

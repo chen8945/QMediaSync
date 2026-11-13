@@ -137,11 +137,15 @@ func (task *DbDownloadTask) PrepareDownloadRetry(maxRetry int) {
 }
 
 func (task *DbDownloadTask) GetAccount() *Account {
+	return task.getAccount(context.Background())
+}
+
+func (task *DbDownloadTask) getAccount(ctx context.Context) *Account {
 	if task.Account != nil {
 		return task.Account
 	}
 	// 通过 AccountId 查询账户，然后判断是什么来源
-	account, err := GetAccountById(task.AccountId)
+	account, err := getAccountByIDWithDB(db.Db.WithContext(ctx), task.AccountId)
 	if err != nil {
 		task.Fail(err)
 		return nil
@@ -214,9 +218,30 @@ func publishDownloadTaskStatusChanged(task *DbDownloadTask) {
 }
 
 // 执行下载
-func (task *DbDownloadTask) Download() {
+func (task *DbDownloadTask) Download() { task.DownloadContext(context.Background()) }
+
+// DownloadContext 在最终关闭时取消在途网络；普通暂停不取消它。
+func (task *DbDownloadTask) DownloadContext(ctx context.Context) {
+	defer func() {
+		if ctx.Err() != nil && (task.Status == DownloadStatusDownloading || task.Status == DownloadStatusFailed) {
+			result := db.Db.Model(&DbDownloadTask{}).
+				Where("id = ? AND status IN ? AND start_time = ?", task.ID, []DownloadStatus{DownloadStatusDownloading, DownloadStatusFailed}, task.StartTime).
+				Updates(map[string]any{"status": DownloadStatusPending, "start_time": 0, "end_time": 0, "error": ""})
+			if result.Error != nil {
+				helpers.AppLogger.Errorf("保留取消下载的待办失败：%v", result.Error)
+				return
+			}
+			if result.RowsAffected != 0 {
+				task.Status, task.StartTime, task.EndTime, task.Error = DownloadStatusPending, 0, 0, ""
+				publishDownloadQueueChanged(task, "status_changed")
+			}
+		}
+	}()
+	if ctx.Err() != nil {
+		return
+	}
 	if task.isMediaLibraryDownload() {
-		task.DownloadMediaLibraryInfo()
+		task.downloadMediaLibraryInfo(ctx)
 		return
 	}
 	if task.finishPublishedMetadata() {
@@ -229,18 +254,18 @@ func (task *DbDownloadTask) Download() {
 	}
 	switch task.Source {
 	case DownloadSourceStrm:
-		account := task.GetAccount()
+		account := task.getAccount(ctx)
 		if account == nil {
 			task.Fail(fmt.Errorf("账户不存在，无法下载文件 %s", task.LocalFullPath))
 			return
 		}
 		switch account.SourceType {
 		case SourceType115:
-			task.Download115File()
+			task.Download115File(ctx)
 		case SourceTypeOpenList:
-			task.DownloadOpenListFile()
+			task.DownloadOpenListFile(ctx)
 		case SourceTypeBaiduPan:
-			task.DownloadBaiduPanFile()
+			task.DownloadBaiduPanFile(ctx)
 		}
 	case DownloadSourceLocalFile:
 		// 复制本地文件到指定位置。
@@ -257,8 +282,8 @@ func (task *DbDownloadTask) Download() {
 
 }
 
-func (task *DbDownloadTask) Download115File() {
-	account := task.GetAccount()
+func (task *DbDownloadTask) Download115File(ctx context.Context) {
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户不存在，无法下载文件 %s", task.LocalFullPath))
 		return
@@ -284,7 +309,7 @@ func (task *DbDownloadTask) Download115File() {
 	// 查询下载链接
 	v115Client := account.Get115Client()
 	// 首先获取到下载链接
-	result := v115Client.GetDownloadUrlResult(context.Background(), task.RemotePickCode, v115open.DEFAULTUA, false)
+	result := v115Client.GetDownloadUrlResult(ctx, task.RemotePickCode, v115open.DEFAULTUA, false)
 	if result == nil || result.URL == "" {
 		helpers.AppLogger.Warnf("[下载] 获取下载链接失败：%s", task.RemotePickCode)
 		task.Fail(fmt.Errorf("获取 %s => %s 的下载链接失败", task.RemotePickCode, task.FileName))
@@ -309,7 +334,7 @@ func (task *DbDownloadTask) Download115File() {
 		}
 	}
 	// 下载文件到指定位置
-	downloadErr := task.downloadMetadata(result.URL, v115open.DEFAULTUA)
+	downloadErr := task.downloadMetadataContext(ctx, result.URL, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
@@ -319,8 +344,8 @@ func (task *DbDownloadTask) Download115File() {
 	task.Complete()
 }
 
-func (task *DbDownloadTask) DownloadOpenListFile() {
-	account := task.GetAccount()
+func (task *DbDownloadTask) DownloadOpenListFile(ctx context.Context) {
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户不存在，无法下载文件 %s", task.LocalFullPath))
 		return
@@ -351,7 +376,7 @@ func (task *DbDownloadTask) DownloadOpenListFile() {
 		task.Fail(errors.New("OpenList 下载地址为空"))
 		return
 	}
-	downloadErr := task.downloadMetadata(task.RemoteDownloadUrl, v115open.DEFAULTUA)
+	downloadErr := task.downloadMetadataContext(ctx, task.RemoteDownloadUrl, v115open.DEFAULTUA)
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
@@ -362,8 +387,8 @@ func (task *DbDownloadTask) DownloadOpenListFile() {
 }
 
 // 下载百度网盘的文件
-func (task *DbDownloadTask) DownloadBaiduPanFile() {
-	account := task.GetAccount()
+func (task *DbDownloadTask) DownloadBaiduPanFile(ctx context.Context) {
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户不存在，无法下载文件 %s", task.LocalFullPath))
 		return
@@ -376,7 +401,7 @@ func (task *DbDownloadTask) DownloadBaiduPanFile() {
 		task.Fail(fmt.Errorf("百度网盘客户端不存在，无法下载文件 %s", task.LocalFullPath))
 		return
 	}
-	fileDetail, err := client.GetFileDetail(context.Background(), task.RemoteFileId, 1)
+	fileDetail, err := client.GetFileDetail(ctx, task.RemoteFileId, 1)
 	if err != nil {
 		helpers.AppLogger.Warnf("[下载] 获取文件详情失败：%s", err.Error())
 		task.Fail(err)
@@ -385,7 +410,7 @@ func (task *DbDownloadTask) DownloadBaiduPanFile() {
 	url := fmt.Sprintf("%s&access_token=%s", fileDetail.Dlink, account.Token)
 	helpers.AppLogger.Infof("[下载] 百度网盘文件下载链接：%s", url)
 	// 下载文件到指定位置
-	downloadErr := task.downloadMetadata(url, "pan.baidu.com")
+	downloadErr := task.downloadMetadataContext(ctx, url, "pan.baidu.com")
 	if downloadErr != nil {
 		helpers.AppLogger.Warnf("[下载] 下载文件失败：%s", downloadErr.Error())
 		task.Fail(downloadErr)
@@ -638,8 +663,12 @@ func GetDownloadingCount() int64 {
 
 // RetryFailedDownloadTasks 重试失败的下载任务
 func RetryFailedDownloadTasks(maxRetry int) error {
+	return retryFailedDownloadTasks(context.Background(), maxRetry)
+}
+
+func retryFailedDownloadTasks(ctx context.Context, maxRetry int) error {
 	var failedTasks []DbDownloadTask
-	if err := runnableDownloadTaskQuery(db.Db.Model(&DbDownloadTask{})).
+	if err := runnableDownloadTaskQuery(db.Db.WithContext(ctx).Model(&DbDownloadTask{})).
 		Where("status = ? AND retry_count < ?", DownloadStatusFailed, maxRetry).
 		Find(&failedTasks).Error; err != nil {
 		helpers.AppLogger.Errorf("查询待重试下载任务失败：%v", err)
@@ -649,7 +678,7 @@ func RetryFailedDownloadTasks(maxRetry int) error {
 	retried, skipped := 0, 0
 	for i := range failedTasks {
 		task := &failedTasks[i]
-		query := db.Db.Model(&DbDownloadTask{}).
+		query := db.Db.WithContext(ctx).Model(&DbDownloadTask{}).
 			Where("id = ? AND status = ? AND retry_count < ?", task.ID, DownloadStatusFailed, maxRetry)
 		if task.isMediaLibraryDownload() {
 			// 调度只检查本地条件，远端实例与权限留在执行入口核验。

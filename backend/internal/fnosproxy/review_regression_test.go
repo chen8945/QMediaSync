@@ -90,7 +90,7 @@ func TestSourceCacheCannotRetainRemovedOutputRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowedRoot := firstRoot
-	service := NewService(Options{
+	service := newTestService(t, Options{
 		OutputRoots: func(context.Context) ([]string, error) { return []string{allowedRoot}, nil },
 		KnownOrigins: func(context.Context) ([]string, error) {
 			return []string{"http://private-qms:12333"}, nil

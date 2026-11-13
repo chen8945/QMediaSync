@@ -113,9 +113,13 @@ func TestMakeParentPath拒绝跨出目标根目录(t *testing.T) {
 				VideoFilename:  "影片.mkv",
 				Media:          &models.Media{Name: "影片"},
 			}
-			impl := NewMovieScrapeImpl(scrapePath, context.Background(), nil, nil, nil).(*movieScrapeImpl)
+			impl, err := NewMovieScrapeImpl(scrapePath, context.Background(), nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = impl.Close() })
 
-			err := impl.MakeParentPath(mediaFile, nil)
+			err = impl.MakeParentPath(mediaFile, nil)
 			if tt.expectError {
 				if err == nil {
 					t.Fatalf("期望拒绝创建目录，实际成功：%s", mediaFile.NewPathId)

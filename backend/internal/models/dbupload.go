@@ -113,7 +113,8 @@ type DbUploadTask struct {
 	ProgressPercent      float64                   `json:"progress_percent" gorm:"-"`                          // 上传进度，仅用于队列展示
 	TotalParts           int                       `json:"total_parts" gorm:"-"`                               // 总分片数，仅用于队列展示
 	UploadedParts        int                       `json:"uploaded_parts" gorm:"-"`                            // 已上传分片数，仅用于队列展示
-	baiduUploadMtime     int64                     // 本轮百度创建文件响应确认的远端修改时间，仅供即时 STRM 收尾
+	uploadSettings       *SettingThreadAndRapidWait
+	baiduUploadMtime     int64 // 本轮百度创建文件响应确认的远端修改时间，仅供即时 STRM 收尾
 }
 
 // String 返回状态的字符串表示
@@ -316,11 +317,11 @@ func (task *DbUploadTask) MarkRemoteCompletedPendingFinalize() error {
 	return nil
 }
 
-func (task *DbUploadTask) claimRemoteCompletedFinalize() (bool, error) {
+func (task *DbUploadTask) claimRemoteCompletedFinalize(ctx context.Context) (bool, error) {
 	if task == nil {
 		return false, errors.New("上传任务为空")
 	}
-	result := db.Db.Model(&DbUploadTask{}).
+	result := db.Db.WithContext(ctx).Model(&DbUploadTask{}).
 		Where("id = ? AND status = ?", task.ID, UploadStatusRemoteCompletedPendingFinalize).
 		Updates(map[string]any{
 			"status": UploadStatusRemoteCompletedFinalizing,
@@ -408,9 +409,9 @@ func (task *DbUploadTask) cancelWithError(err error) {
 	publishUploadQueueChanged(task, "status_changed")
 }
 
-func (task *DbUploadTask) claimPendingUpload() (bool, error) {
+func (task *DbUploadTask) claimPendingUpload(ctx context.Context) (bool, error) {
 	startTime := time.Now().Unix()
-	result := db.Db.Model(&DbUploadTask{}).
+	result := db.Db.WithContext(ctx).Model(&DbUploadTask{}).
 		Where("id = ? AND status = ?", task.ID, UploadStatusPending).
 		Updates(map[string]any{
 			"status":     UploadStatusUploading,
@@ -429,11 +430,15 @@ func (task *DbUploadTask) claimPendingUpload() (bool, error) {
 }
 
 func (task *DbUploadTask) GetAccount() *Account {
+	return task.getAccount(context.Background())
+}
+
+func (task *DbUploadTask) getAccount(ctx context.Context) *Account {
 	if task.Account != nil {
 		return task.Account
 	}
 	// 通过 AccountId 查询账户，然后判断是什么来源
-	account, err := GetAccountById(task.AccountId)
+	account, err := getAccountByIDWithDB(db.Db.WithContext(ctx), task.AccountId)
 	if err != nil {
 		task.Fail(err)
 		return nil
@@ -443,12 +448,20 @@ func (task *DbUploadTask) GetAccount() *Account {
 }
 
 // 执行上传
-func (task *DbUploadTask) Upload() {
+func (task *DbUploadTask) Upload() { task.UploadContext(context.Background()) }
+
+// UploadContext 只由最终关闭取消，暂停期间已接受的上传继续。
+func (task *DbUploadTask) UploadContext(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	if task == nil {
 		return
 	}
+	settings := GetThreadSettingsSnapshot()
+	task.uploadSettings = &settings
 	if task.Status == UploadStatusRemoteCompletedPendingFinalize {
-		if err := task.finalizeRemoteCompletedUploadWithClaim(); err != nil {
+		if err := task.finalizeRemoteCompletedUploadWithClaim(ctx); err != nil {
 			helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d err=%v", task.ID, err)
 		}
 		return
@@ -456,7 +469,7 @@ func (task *DbUploadTask) Upload() {
 	if task.Status != UploadStatusPending {
 		return
 	}
-	claimed, err := task.claimPendingUpload()
+	claimed, err := task.claimPendingUpload(ctx)
 	if err != nil {
 		helpers.AppLogger.Warnf("[上传] 获取待上传任务失败：task_id=%d err=%v", task.ID, err)
 		return
@@ -464,6 +477,22 @@ func (task *DbUploadTask) Upload() {
 	if !claimed {
 		return
 	}
+	defer func() {
+		if ctx.Err() == nil || (task.Status != UploadStatusUploading && task.Status != UploadStatusFailed) {
+			return
+		}
+		result := db.Db.Model(&DbUploadTask{}).
+			Where("id = ? AND status IN ? AND start_time = ?", task.ID, []UploadStatus{UploadStatusUploading, UploadStatusFailed}, task.StartTime).
+			Updates(map[string]any{"status": UploadStatusPending, "start_time": 0, "end_time": 0, "error": ""})
+		if result.Error != nil {
+			helpers.AppLogger.Errorf("保留取消上传的待办失败：%v", result.Error)
+			return
+		}
+		if result.RowsAffected != 0 {
+			task.Status, task.StartTime, task.EndTime, task.Error = UploadStatusPending, 0, 0, ""
+			publishUploadQueueChanged(task, "status_changed")
+		}
+	}()
 	if !helpers.PathExists(task.LocalFullPath) {
 		task.Fail(fmt.Errorf("本地文件 %s 不存在", task.LocalFullPath))
 		return
@@ -474,11 +503,11 @@ func (task *DbUploadTask) Upload() {
 	}
 	switch task.SourceType {
 	case SourceType115:
-		if !task.Upload115File() {
+		if !task.Upload115File(ctx) {
 			return
 		}
 	case SourceTypeOpenList:
-		if !task.UploadOpenListFile() {
+		if !task.UploadOpenListFile(ctx) {
 			return
 		}
 	case SourceTypeLocal:
@@ -486,7 +515,7 @@ func (task *DbUploadTask) Upload() {
 			return
 		}
 	case SourceTypeBaiduPan:
-		if !task.UploadBaiduPanFile() {
+		if !task.UploadBaiduPanFile(ctx) {
 			return
 		}
 	default:
@@ -496,20 +525,20 @@ func (task *DbUploadTask) Upload() {
 	if err := task.MarkRemoteCompletedPendingFinalize(); err != nil {
 		return
 	}
-	if err := task.finalizeRemoteCompletedUploadWithClaim(); err != nil {
+	if err := task.finalizeRemoteCompletedUploadWithClaim(ctx); err != nil {
 		helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d err=%v", task.ID, err)
 	}
 }
 
-func (task *DbUploadTask) finalizeRemoteCompletedUploadWithClaim() error {
-	claimed, err := task.claimRemoteCompletedFinalize()
+func (task *DbUploadTask) finalizeRemoteCompletedUploadWithClaim(ctx context.Context) error {
+	claimed, err := task.claimRemoteCompletedFinalize(ctx)
 	if err != nil {
 		return fmt.Errorf("抢占待收尾任务失败：%w", err)
 	}
 	if !claimed {
 		return nil
 	}
-	if err := task.finalizeRemoteCompletedUpload(); err != nil {
+	if err := task.finalizeRemoteCompletedUpload(ctx); err != nil {
 		if revertErr := task.revertRemoteCompletedFinalizing(err); revertErr != nil {
 			return errors.Join(err, fmt.Errorf("恢复待收尾状态失败：%w", revertErr))
 		}
@@ -518,11 +547,11 @@ func (task *DbUploadTask) finalizeRemoteCompletedUploadWithClaim() error {
 	return nil
 }
 
-func (task *DbUploadTask) finalizeRemoteCompletedUpload() error {
+func (task *DbUploadTask) finalizeRemoteCompletedUpload(ctx context.Context) error {
 	if err := task.markDirectoryUploadProcessedAfterUploadComplete(); err != nil {
 		return fmt.Errorf("标记目录监控源文件上传完成失败：%w", err)
 	}
-	if err := task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(); err != nil {
+	if err := task.enqueueStrmGenerationAfterUploadAndMarkDirectoryProcessed(ctx); err != nil {
 		return fmt.Errorf("创建 STRM 生成任务失败：%w", err)
 	}
 	// 如果是刮削类型，需要进行后续通知
@@ -642,9 +671,9 @@ func ensureLocalPathWithinRoot(rootPath string, targetPath string) error {
 	return nil
 }
 
-func (task *DbUploadTask) Upload115File() bool {
+func (task *DbUploadTask) Upload115File(ctx context.Context) bool {
 	// 检查账户是否存在
-	account := task.GetAccount()
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户 %d 不存在", task.AccountId))
 		return false
@@ -655,7 +684,7 @@ func (task *DbUploadTask) Upload115File() bool {
 		task.Fail(fmt.Errorf("账户 %s 115 客户端不存在", account.Name))
 		return false
 	}
-	result, err := currentUpload115Runner.Upload(context.Background(), task, client)
+	result, err := currentUpload115Runner.Upload(ctx, task, client)
 	if err != nil {
 		task.Fail(fmt.Errorf("调用 115 上传 API 失败：%v", err))
 		return false
@@ -674,9 +703,9 @@ func (task *DbUploadTask) Upload115File() bool {
 }
 
 // 百度网盘上传文件
-func (task *DbUploadTask) UploadBaiduPanFile() bool {
+func (task *DbUploadTask) UploadBaiduPanFile(ctx context.Context) bool {
 	// 检查账户是否存在
-	account := task.GetAccount()
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户 %d 不存在", task.AccountId))
 		return false
@@ -689,7 +718,7 @@ func (task *DbUploadTask) UploadBaiduPanFile() bool {
 	}
 	task.baiduUploadMtime = 0
 	// 调用上传方法
-	resp, err := client.Upload(context.Background(), task.LocalFullPath, task.RemoteFullPath)
+	resp, err := client.Upload(ctx, task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
 		task.Fail(fmt.Errorf("百度网盘上传文件 %s 失败：%v", task.FileName, err))
 		return false
@@ -739,9 +768,9 @@ func (task *DbUploadTask) applyBaiduUploadResponse(response *baidupan.UploadResu
 	return int64(*response.Mtime), true
 }
 
-func (task *DbUploadTask) UploadOpenListFile() bool {
+func (task *DbUploadTask) UploadOpenListFile(ctx context.Context) bool {
 	// 检查账户是否存在
-	account := task.GetAccount()
+	account := task.getAccount(ctx)
 	if account == nil {
 		task.Fail(fmt.Errorf("账户 %d 不存在", task.AccountId))
 		return false
@@ -752,14 +781,14 @@ func (task *DbUploadTask) UploadOpenListFile() bool {
 		task.Fail(fmt.Errorf("账户 %s OpenList 客户端不存在", account.Name))
 		return false
 	}
-	_, err := client.Upload(task.LocalFullPath, task.RemoteFullPath)
+	_, err := client.UploadContext(ctx, task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
 		task.Fail(fmt.Errorf("OpenList 上传文件 %s 失败：%v", task.FileName, err))
 		return false
 	}
 	if task.Source == UploadSourceStrm {
 		// 查询文件详情
-		detail, err := client.FileDetail(task.RemoteFullPath)
+		detail, err := client.UploadFileDetailContext(ctx, task.RemoteFullPath)
 		if err != nil {
 			task.Fail(fmt.Errorf("OpenList 查询文件详情 %s 失败：%s", task.RemoteFullPath, err.Error()))
 			return false
@@ -1075,8 +1104,12 @@ func UpdateUploadingToPending() error {
 }
 
 func RetryFailedUploadTasks(maxRetry int) error {
+	return retryFailedUploadTasks(context.Background(), maxRetry)
+}
+
+func retryFailedUploadTasks(ctx context.Context, maxRetry int) error {
 	var failedTasks []DbUploadTask
-	if err := db.Db.Model(&DbUploadTask{}).
+	if err := db.Db.WithContext(ctx).Model(&DbUploadTask{}).
 		Select("id, source, source_type, account_id, remote_full_path").
 		Where("status = ? AND retry_count < ?", UploadStatusFailed, maxRetry).
 		Find(&failedTasks).Error; err != nil {
@@ -1092,7 +1125,7 @@ func RetryFailedUploadTasks(maxRetry int) error {
 	}
 	retried, skipped := 0, 0
 	for _, task := range failedTasks {
-		query := db.Db.Model(&DbUploadTask{}).
+		query := db.Db.WithContext(ctx).Model(&DbUploadTask{}).
 			Where("id = ? AND status = ? AND retry_count < ?", task.ID, UploadStatusFailed, maxRetry)
 		if task.RemoteFullPath != "" {
 			query = query.Where(`NOT EXISTS (

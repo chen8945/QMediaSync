@@ -90,22 +90,27 @@ func parseNotificationChannelID(c *gin.Context) (uint, bool) {
 	return idReq.ID, true
 }
 
-func reloadNotificationManagerChannel(channelID uint) {
-	if notificationmanager.GlobalEnhancedNotificationManager != nil {
-		_ = notificationmanager.GlobalEnhancedNotificationManager.ReloadChannel(channelID)
+func reloadNotificationManagerChannel(channelID uint) error {
+	if manager := notificationmanager.GlobalEnhancedNotificationManager; manager != nil {
+		return manager.ReloadChannel(channelID)
 	}
+	return nil
 }
 
-func reloadNotificationManagerRules() {
-	if notificationmanager.GlobalEnhancedNotificationManager != nil {
-		notificationmanager.GlobalEnhancedNotificationManager.ReloadRules()
+func reloadNotificationManagerRules() error {
+	if manager := notificationmanager.GlobalEnhancedNotificationManager; manager != nil {
+		return manager.ReloadRules()
 	}
+	return nil
 }
 
-func removeNotificationManagerChannel(channelID uint) {
-	if notificationmanager.GlobalEnhancedNotificationManager != nil {
-		notificationmanager.GlobalEnhancedNotificationManager.RemoveChannel(channelID)
+func completeNotificationSave(c *gin.Context, message string, data any, apply func() error) {
+	warnings := make([]string, 0)
+	if err := apply(); err != nil {
+		helpers.AppLogger.Warnf("通知设置已保存，但应用失败：%s", helpers.RedactSensitiveLog(err.Error()))
+		warnings = append(warnings, "设置已保存，但通知配置应用失败，请重新保存重试")
 	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": message, "data": data, "warnings": warnings})
 }
 
 // CreateTelegramChannel 创建 Telegram 渠道
@@ -144,50 +149,20 @@ func CreateTelegramChannel(c *gin.Context) {
 		IsEnabled:   true,
 	}
 
-	if err := db.Db.Save(&channel).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建渠道失败",
-			"data":    nil,
-		})
-		return
-	}
-
 	// 创建配置
 	config := models.TelegramChannelConfig{
 		ChannelID: channel.ID,
 		BotToken:  r.BotToken,
 		ChatID:    r.ChatID,
 	}
-	if err := db.Db.Save(&config).Error; err != nil {
-		// 回滚
-		db.Db.Delete(&channel)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建配置失败",
-			"data":    nil,
-		})
+	if err := models.CreateNotificationChannel(c.Request.Context(), &channel, func(tx *gorm.DB, id uint) error {
+		config.ChannelID = id
+		return tx.Create(&config).Error
+	}); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
 		return
 	}
-
-	// 创建默认规则
-	for _, eventType := range notification.AllNotificationTypes {
-		rule := models.NotificationRule{
-			ChannelID: channel.ID,
-			EventType: string(eventType),
-			IsEnabled: true,
-		}
-		db.Db.Save(&rule)
-	}
-
-	// 重新加载管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "创建成功",
-		"data":    toNotificationChannelResponse(channel),
-	})
+	completeNotificationSave(c, "创建成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // CreateMeoWChannel 创建 MeoW 渠道
@@ -226,15 +201,6 @@ func CreateMeoWChannel(c *gin.Context) {
 		IsEnabled:   true,
 	}
 
-	if err := db.Db.Save(&channel).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建渠道失败",
-			"data":    nil,
-		})
-		return
-	}
-
 	// 创建配置
 	if r.Endpoint == "" {
 		r.Endpoint = "http://api.chuckfang.com"
@@ -245,35 +211,14 @@ func CreateMeoWChannel(c *gin.Context) {
 		Nickname:  r.Nickname,
 		Endpoint:  r.Endpoint,
 	}
-	if err := db.Db.Save(&config).Error; err != nil {
-		// 回滚
-		db.Db.Delete(&channel)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建配置失败",
-			"data":    nil,
-		})
+	if err := models.CreateNotificationChannel(c.Request.Context(), &channel, func(tx *gorm.DB, id uint) error {
+		config.ChannelID = id
+		return tx.Create(&config).Error
+	}); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
 		return
 	}
-
-	// 创建默认规则
-	for _, eventType := range notification.AllNotificationTypes {
-		rule := models.NotificationRule{
-			ChannelID: channel.ID,
-			EventType: string(eventType),
-			IsEnabled: true,
-		}
-		db.Db.Save(&rule)
-	}
-
-	// 重新加载管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "创建成功",
-		"data":    toNotificationChannelResponse(channel),
-	})
+	completeNotificationSave(c, "创建成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // CreateBarkChannel 创建 Bark 渠道
@@ -314,15 +259,6 @@ func CreateBarkChannel(c *gin.Context) {
 		IsEnabled:   true,
 	}
 
-	if err := db.Db.Save(&channel).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建渠道失败",
-			"data":    nil,
-		})
-		return
-	}
-
 	// 创建配置
 	if r.ServerURL == "" {
 		r.ServerURL = "https://api.day.app"
@@ -338,35 +274,14 @@ func CreateBarkChannel(c *gin.Context) {
 		Sound:     r.Sound,
 		Icon:      r.Icon,
 	}
-	if err := db.Db.Save(&config).Error; err != nil {
-		// 回滚
-		db.Db.Delete(&channel)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建配置失败",
-			"data":    nil,
-		})
+	if err := models.CreateNotificationChannel(c.Request.Context(), &channel, func(tx *gorm.DB, id uint) error {
+		config.ChannelID = id
+		return tx.Create(&config).Error
+	}); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
 		return
 	}
-
-	// 创建默认规则
-	for _, eventType := range notification.AllNotificationTypes {
-		rule := models.NotificationRule{
-			ChannelID: channel.ID,
-			EventType: string(eventType),
-			IsEnabled: true,
-		}
-		db.Db.Save(&rule)
-	}
-
-	// 重新加载管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "创建成功",
-		"data":    toNotificationChannelResponse(channel),
-	})
+	completeNotificationSave(c, "创建成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // CreateServerChanChannel 创建 Server酱渠道
@@ -405,15 +320,6 @@ func CreateServerChanChannel(c *gin.Context) {
 		IsEnabled:   true,
 	}
 
-	if err := db.Db.Save(&channel).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建渠道失败",
-			"data":    nil,
-		})
-		return
-	}
-
 	// 创建配置
 	if r.Endpoint == "" {
 		r.Endpoint = "https://sc.ftqq.com"
@@ -424,35 +330,14 @@ func CreateServerChanChannel(c *gin.Context) {
 		SCKEY:     r.SCKEY,
 		Endpoint:  r.Endpoint,
 	}
-	if err := db.Db.Save(&config).Error; err != nil {
-		// 回滚
-		db.Db.Delete(&channel)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "创建配置失败",
-			"data":    nil,
-		})
+	if err := models.CreateNotificationChannel(c.Request.Context(), &channel, func(tx *gorm.DB, id uint) error {
+		config.ChannelID = id
+		return tx.Create(&config).Error
+	}); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
 		return
 	}
-
-	// 创建默认规则
-	for _, eventType := range notification.AllNotificationTypes {
-		rule := models.NotificationRule{
-			ChannelID: channel.ID,
-			EventType: string(eventType),
-			IsEnabled: true,
-		}
-		db.Db.Save(&rule)
-	}
-
-	// 重新加载管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "创建成功",
-		"data":    toNotificationChannelResponse(channel),
-	})
+	completeNotificationSave(c, "创建成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // CreateCustomWebhookChannel 创建自定义 Webhook 渠道
@@ -498,10 +383,6 @@ func CreateCustomWebhookChannel(c *gin.Context) {
 		Description: r.Description,
 		IsEnabled:   true,
 	}
-	if err := db.Db.Save(&channel).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
-		return
-	}
 
 	// 创建配置
 	// 额外头序列化
@@ -530,21 +411,14 @@ func CreateCustomWebhookChannel(c *gin.Context) {
 		AuthQueryKey:  r.AuthQueryKey,
 		Headers:       headersJSON,
 	}
-	if err := db.Db.Save(&cfg).Error; err != nil {
-		db.Db.Delete(&channel)
-		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建配置失败", "data": nil})
+	if err := models.CreateNotificationChannel(c.Request.Context(), &channel, func(tx *gorm.DB, id uint) error {
+		cfg.ChannelID = id
+		return tx.Create(&cfg).Error
+	}); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "创建渠道失败", "data": nil})
 		return
 	}
-
-	// 创建默认规则
-	for _, eventType := range notification.AllNotificationTypes {
-		db.Db.Save(&models.NotificationRule{ChannelID: channel.ID, EventType: string(eventType), IsEnabled: true})
-	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "创建成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "创建成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateCustomWebhookChannel 更新自定义 Webhook 渠道配置
@@ -606,14 +480,6 @@ func UpdateCustomWebhookChannel(c *gin.Context) {
 		return
 	}
 
-	// 更新渠道基本信息
-	if r.ChannelName != "" {
-		channel.ChannelName = r.ChannelName
-	}
-	if r.Description != "" {
-		channel.Description = r.Description
-	}
-
 	// 准备更新配置字段
 	updates := make(map[string]any)
 
@@ -661,24 +527,11 @@ func UpdateCustomWebhookChannel(c *gin.Context) {
 		}
 	}
 
-	// 更新配置
-	if len(updates) > 0 {
-		if err := db.Db.Model(&cfg).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新配置失败", "data": nil})
-			return
-		}
-	}
-
-	// 更新渠道
-	if err := db.Db.Save(&channel).Error; err != nil {
+	if err := models.UpdateNotificationChannel(c.Request.Context(), &channel, &cfg, updates, r.ChannelName, r.Description); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新渠道失败", "data": nil})
 		return
 	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "更新成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateTelegramChannel 更新 Telegram 渠道配置
@@ -726,14 +579,6 @@ func UpdateTelegramChannel(c *gin.Context) {
 		return
 	}
 
-	// 更新渠道基本信息
-	if r.ChannelName != "" {
-		channel.ChannelName = r.ChannelName
-	}
-	if r.Description != "" {
-		channel.Description = r.Description
-	}
-
 	// 准备更新配置字段
 	updates := make(map[string]any)
 	if r.BotToken != "" {
@@ -743,24 +588,11 @@ func UpdateTelegramChannel(c *gin.Context) {
 		updates["chat_id"] = r.ChatID
 	}
 
-	// 更新配置
-	if len(updates) > 0 {
-		if err := db.Db.Model(&cfg).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新配置失败", "data": nil})
-			return
-		}
-	}
-
-	// 更新渠道
-	if err := db.Db.Save(&channel).Error; err != nil {
+	if err := models.UpdateNotificationChannel(c.Request.Context(), &channel, &cfg, updates, r.ChannelName, r.Description); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新渠道失败", "data": nil})
 		return
 	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "更新成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateMeoWChannel 更新 MeoW 渠道配置
@@ -808,14 +640,6 @@ func UpdateMeoWChannel(c *gin.Context) {
 		return
 	}
 
-	// 更新渠道基本信息
-	if r.ChannelName != "" {
-		channel.ChannelName = r.ChannelName
-	}
-	if r.Description != "" {
-		channel.Description = r.Description
-	}
-
 	// 准备更新配置字段
 	updates := make(map[string]any)
 	if r.Nickname != "" {
@@ -825,24 +649,11 @@ func UpdateMeoWChannel(c *gin.Context) {
 		updates["endpoint"] = r.Endpoint
 	}
 
-	// 更新配置
-	if len(updates) > 0 {
-		if err := db.Db.Model(&cfg).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新配置失败", "data": nil})
-			return
-		}
-	}
-
-	// 更新渠道
-	if err := db.Db.Save(&channel).Error; err != nil {
+	if err := models.UpdateNotificationChannel(c.Request.Context(), &channel, &cfg, updates, r.ChannelName, r.Description); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新渠道失败", "data": nil})
 		return
 	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "更新成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateBarkChannel 更新 Bark 渠道配置
@@ -892,14 +703,6 @@ func UpdateBarkChannel(c *gin.Context) {
 		return
 	}
 
-	// 更新渠道基本信息
-	if r.ChannelName != "" {
-		channel.ChannelName = r.ChannelName
-	}
-	if r.Description != "" {
-		channel.Description = r.Description
-	}
-
 	// 准备更新配置字段
 	updates := make(map[string]any)
 	if r.DeviceKey != "" {
@@ -915,24 +718,11 @@ func UpdateBarkChannel(c *gin.Context) {
 		updates["icon"] = r.Icon
 	}
 
-	// 更新配置
-	if len(updates) > 0 {
-		if err := db.Db.Model(&cfg).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新配置失败", "data": nil})
-			return
-		}
-	}
-
-	// 更新渠道
-	if err := db.Db.Save(&channel).Error; err != nil {
+	if err := models.UpdateNotificationChannel(c.Request.Context(), &channel, &cfg, updates, r.ChannelName, r.Description); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新渠道失败", "data": nil})
 		return
 	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "更新成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateServerChanChannel 更新 Server酱渠道配置
@@ -980,14 +770,6 @@ func UpdateServerChanChannel(c *gin.Context) {
 		return
 	}
 
-	// 更新渠道基本信息
-	if r.ChannelName != "" {
-		channel.ChannelName = r.ChannelName
-	}
-	if r.Description != "" {
-		channel.Description = r.Description
-	}
-
 	// 准备更新配置字段
 	updates := make(map[string]any)
 	if r.SCKEY != "" {
@@ -997,24 +779,11 @@ func UpdateServerChanChannel(c *gin.Context) {
 		updates["endpoint"] = r.Endpoint
 	}
 
-	// 更新配置
-	if len(updates) > 0 {
-		if err := db.Db.Model(&cfg).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新配置失败", "data": nil})
-			return
-		}
-	}
-
-	// 更新渠道
-	if err := db.Db.Save(&channel).Error; err != nil {
+	if err := models.UpdateNotificationChannel(c.Request.Context(), &channel, &cfg, updates, r.ChannelName, r.Description); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "更新渠道失败", "data": nil})
 		return
 	}
-
-	// 刷新通知管理器
-	reloadNotificationManagerChannel(channel.ID)
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功", "data": toNotificationChannelResponse(channel)})
+	completeNotificationSave(c, "更新成功", toNotificationChannelResponse(channel), func() error { return reloadNotificationManagerChannel(channel.ID) })
 }
 
 // UpdateChannelStatus 启用/禁用渠道
@@ -1057,14 +826,7 @@ func UpdateChannelStatus(c *gin.Context) {
 		return
 	}
 
-	// 重新加载管理器
-	reloadNotificationManagerChannel(r.ChannelID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "更新成功",
-		"data":    nil,
-	})
+	completeNotificationSave(c, "更新成功", nil, func() error { return reloadNotificationManagerChannel(r.ChannelID) })
 }
 
 // GetTelegramChannel 查询单个 Telegram 渠道配置
@@ -1294,48 +1056,15 @@ func DeleteChannel(c *gin.Context) {
 		return
 	}
 
-	// 删除渠道及其关联的配置和规则
-	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		// 删除规则
-		if err := tx.Where("channel_id = ?", channelID).Delete(&models.NotificationRule{}).Error; err != nil {
-			return err
-		}
-		// 删除特定类型的配置
-		var channel models.NotificationChannel
-		if err := tx.Where("id = ?", channelID).First(&channel).Error; err != nil {
-			return err
-		}
-
-		switch channel.ChannelType {
-		case "telegram":
-			tx.Where("channel_id = ?", channelID).Delete(&models.TelegramChannelConfig{})
-		case "meow":
-			tx.Where("channel_id = ?", channelID).Delete(&models.MeoWChannelConfig{})
-		case "bark":
-			tx.Where("channel_id = ?", channelID).Delete(&models.BarkChannelConfig{})
-		case "serverchan":
-			tx.Where("channel_id = ?", channelID).Delete(&models.ServerChanChannelConfig{})
-		case "webhook":
-			tx.Where("channel_id = ?", channelID).Delete(&models.CustomWebhookChannelConfig{})
-		}
-
-		// 删除渠道
-		return tx.Delete(&channel).Error
-	}); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    1,
-			"message": "删除失败",
-			"data":    nil,
-		})
+	if err := models.DeleteNotificationChannel(c.Request.Context(), channelID); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 1, "message": "删除失败", "data": nil})
 		return
 	}
-
-	removeNotificationManagerChannel(channelID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "删除成功",
-		"data":    nil,
+	completeNotificationSave(c, "删除成功", nil, func() error {
+		if manager := notificationmanager.GlobalEnhancedNotificationManager; manager != nil {
+			manager.RemoveChannel(channelID)
+		}
+		return nil
 	})
 }
 
@@ -1444,14 +1173,7 @@ func UpdateNotificationRule(c *gin.Context) {
 		}
 	}
 
-	// 重新加载规则
-	reloadNotificationManagerRules()
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "更新成功",
-		"data":    nil,
-	})
+	completeNotificationSave(c, "更新成功", nil, reloadNotificationManagerRules)
 }
 
 // TestChannelConnection 测试渠道连接
@@ -1515,7 +1237,7 @@ func TestChannelConnection(c *gin.Context) {
 			})
 			return
 		}
-		handler = notificationmanager.NewTelegramChannelHandlerWithProxy(&config, models.SettingsGlobal.HttpProxy)
+		handler = notificationmanager.NewTelegramChannelHandlerWithProxy(&config, models.GetHTTPProxy())
 		secrets = []string{config.BotToken}
 
 	case "meow":
@@ -1580,7 +1302,7 @@ func TestChannelConnection(c *gin.Context) {
 	}
 
 	// 发送测试消息
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 
 	if err := handler.Send(ctx, testNotif); err != nil {
