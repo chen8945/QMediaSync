@@ -22,7 +22,7 @@ func seedEmbyExternalDeletion(t *testing.T, conn *gorm.DB, sameObject bool) (Emb
 	if err := MigrateEmbyDeletionSchema(conn); err != nil {
 		t.Fatal(err)
 	}
-	config := EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "external-test", SyncEnabled: 1, EnableDeleteNetdisk: 1,
+	config := EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "external-test", SyncEnabled: 1, EnableDeleteNetdisk: 1,
 		PathMappings: []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: t.TempDir()}},
 	}
 	config.PathMappingsJSON = embyJSON(config.PathMappings)
@@ -45,7 +45,7 @@ func seedEmbyExternalDeletion(t *testing.T, conn *gorm.DB, sameObject bool) (Emb
 	if err := ApplyEmbySnapshots(token, snapshots); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: "777", ItemType: "Season", Source: "official"}); err != nil {
+	if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: "777", ItemType: "Season", Source: "official"}); err != nil {
 		t.Fatal(err)
 	}
 	record := webhookModelClaim(t)
@@ -241,8 +241,11 @@ func testEmbyExternalDeletionResume(t *testing.T, setup cleanupPersistenceDataba
 		t.Fatal(err)
 	}
 	recovered := webhookModelClaim(t)
-	var restored EmbyDeletionPlan
+	restored := EmbyDeletionPlan{}
 	if err := json.Unmarshal([]byte(recovered.PlanJSON), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Input.BindMediaServerType(recovered.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	if recovered.InputJSON != record.InputJSON || recovered.PlanJSON != embyJSON(plan) || embyJSON(restored.Supplements) != embyJSON(plan.Supplements) {

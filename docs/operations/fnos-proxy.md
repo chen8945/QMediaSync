@@ -6,7 +6,7 @@
 >
 > 修改时机：修改页面入口、启用方式、证书路径、监听、保存生效时机或排障流程时必须同步更新。
 >
-> 相关代码：`backend/internal/app/proxies.go`、`backend/internal/fnosproxy/`、`frontend/src/views/settings/AppFnosProxySettings.vue`、`frontend/src/components/fnos-proxy/FnosPathMappings.vue`。
+> 相关代码：`backend/internal/app/proxies.go`、`backend/internal/fnosproxy/`、`frontend/src/components/media-library/FnosProxySettings.vue`、`frontend/src/components/fnos-proxy/FnosPathMappings.vue`。
 
 ## 范围与默认行为
 
@@ -19,7 +19,7 @@
 ## 启用与确认
 
 1. 确认 QMediaSync 能访问原飞牛影视服务，且可以读取对应 STRM 文件；Docker 需额外挂载文件目录。
-2. 打开「系统设置 → 飞牛影视」（`/settings/fnos-proxy`），开启「启用反代」，填写原飞牛影视根地址。地址不能指向反代自身、QMediaSync 主站或 Emby302；不要填播放器代理域名。
+2. 打开「系统设置 → 媒体库 → 飞牛影视」（`/settings/media-library#fnos`），开启「启用反代」，填写原飞牛影视根地址。旧 `/settings/fnos-proxy` 会定位到此标签。地址不能指向反代自身、QMediaSync 主站或 Emby302；不要填播放器代理域名。
 3. 同路径的已知输出可先不填写映射；路径不同或使用其他输出目录时，按下一节声明对应根。
 4. 点击保存，程序先入库再立即应用飞牛模块，无需重启 QMediaSync。HTTP 固定为 `9005`，HTTPS 自动检测证书后使用 `9006`，页面没有端口或 HTTPS 开关。
 5. 查看页头的轻量运行状态，以及保存按钮附近的结果提示。保存区只保留按钮，不显示附加说明或外框；状态区保留必要的错误／未应用原因，不提供连接地址示例或“已保存配置”行。“已保存”与“应用成功”不同。
@@ -69,7 +69,7 @@ HTTP 固定监听 `9005`，主机部分继承主站 `httpHost`；HTTPS 固定使
 
 内置端口固定，容器、路由器和防火墙不会随网页保存自动修改。Compose 可增加 `"9005:9005"`，也可以用 `"19005:9005"` 让宿主机 `19005` 对应容器 HTTP `9005`；此时播放器访问宿主机端口 `19005`。使用内置 HTTPS 时按需增加如 `"9006:9006"` 的发布。保留现有配置和挂载，只增加实际使用的端口，不整份覆盖部署文件。
 
-外部反代使用独立子域名和完整根路径，上游为飞牛反代 HTTP 端口；不复用管理站子路径，也不把上游误填成原飞牛服务而绕开 QMediaSync。Nginx 需要支持 WebSocket 升级、长连接、Range 和流式响应；代理不缓存带身份的播放信息或跳转。Caddy 的最小站点示例：
+外部反代使用独立子域名和完整根路径，上游为飞牛反代 HTTP 端口；不复用管理站子路径，也不把上游误填成原飞牛服务而绕开 QMediaSync。NGINX 需要支持 WebSocket 升级、长连接、Range 和流式响应；代理不缓存带身份的播放信息或跳转。Caddy 的最小站点示例：
 
 ```caddyfile
 video.example.com {

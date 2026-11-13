@@ -19,8 +19,8 @@ func setupWebhookAPIKeyTest(t *testing.T) (*gin.Engine, string) {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
-	previousConfig, previousLogger := models.GlobalEmbyConfig, helpers.AppLogger
-	t.Cleanup(func() { models.GlobalEmbyConfig, helpers.AppLogger = previousConfig, previousLogger })
+	previousLogger := helpers.AppLogger
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	setupControllerTestDB(t, &models.User{}, &models.ApiKey{}, &models.EmbyConfig{})
 	user := &models.User{Username: "admin", Password: "hashed"}
@@ -31,13 +31,13 @@ func setupWebhookAPIKeyTest(t *testing.T) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("创建 API Key 失败: %v", err)
 	}
-	models.GlobalEmbyConfig = &models.EmbyConfig{
+	config := &models.EmbyConfig{
 		EmbyUrl:    "http://emby.example",
 		EmbyApiKey: "emby-api-key",
 		EnableAuth: 1,
 	}
 
-	if err := db.Db.Create(models.GlobalEmbyConfig).Error; err != nil {
+	if err := db.Db.Create(config).Error; err != nil {
 		t.Fatal(err)
 	}
 

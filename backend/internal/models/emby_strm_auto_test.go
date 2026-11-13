@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func setupEmbyAutoSTRMDatabase(t *testing.T, setup cleanupPersistenceDatabase) *
 		t.Fatal(err)
 	}
 	f := &embyAutoSTRMFixture{
-		config:  EmbyConfig{EmbyUrl: "https://emby.invalid", EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1},
+		config:  EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "https://emby.invalid", EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1},
 		account: Account{SourceType: SourceType115, UserId: "auto-owner"},
 		reopen:  func() { reopen() },
 	}
@@ -100,7 +101,7 @@ func testEmbyAutoSTRMExternalReferencePersistsWithoutLedger(t *testing.T, setup 
 			collector := EmbyDirectoryEvidenceCollector{}
 			season := 1
 			roles := []EmbyMediaDirectory{{ItemID: "202", MediaType: "Season", LocalPath: "/emby/Show/Season 1", SeasonNumber: &season}}
-			if err := collector.Enrich(t.Context(), &f.snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -134,7 +135,7 @@ func testEmbyAutoSTRMExternalReferencePersistsWithoutLedger(t *testing.T, setup 
 			if err := ValidateEmbySTRMReference(t.Context(), &f.config, reference); err != nil {
 				t.Fatal("validation must check the frozen location without searching a replacement", err)
 			}
-			var config EmbyConfig
+			config := EmbyConfig{MediaServerType: MediaServerEmby}
 			if err := db.Db.First(&config).Error; err != nil || len(config.PathMappings) != 0 {
 				t.Fatal("automatic location changed manual mappings", err)
 			}
@@ -181,7 +182,7 @@ func TestEmbyAutoSTRMExternalProviders(t *testing.T) {
 				writeEmbyAutoSTRMTestFile(t, filepath.Join(otherRoot.GetFullLocalPath(), "Show", "Season 1", "episode.strm"), source.Path)
 				reads := forbidEmbyObservationHTTP(t)
 				collector := EmbyDirectoryEvidenceCollector{}
-				if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+				if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 					t.Fatal(err)
 				}
 				if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -217,7 +218,7 @@ func testEmbyAutoSTRMDeletionAfterReopen(t *testing.T, setup cleanupPersistenceD
 		t.Run(scenario, func(t *testing.T) {
 			f := setupEmbyAutoSTRMDatabase(t, setup)
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -230,7 +231,7 @@ func testEmbyAutoSTRMDeletionAfterReopen(t *testing.T, setup cleanupPersistenceD
 			if err := os.Remove(f.local); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: "101", ItemType: "Episode", Source: "official"}); err != nil {
+			if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: "101", ItemType: "Episode", Source: "official"}); err != nil {
 				t.Fatal(err)
 			}
 			record := webhookModelClaim(t)
@@ -259,8 +260,11 @@ func testEmbyAutoSTRMDeletionAfterReopen(t *testing.T, setup cleanupPersistenceD
 				t.Fatal(err)
 			}
 			recovered := webhookModelClaim(t)
-			var restored EmbyDeletionPlan
+			restored := EmbyDeletionPlan{}
 			if err := json.Unmarshal([]byte(recovered.PlanJSON), &restored); err != nil {
+				t.Fatal(err)
+			}
+			if err := restored.Input.BindMediaServerType(recovered.MediaServerType); err != nil {
 				t.Fatal(err)
 			}
 			if recovered.InputJSON != record.InputJSON || recovered.PlanJSON != embyJSON(plan) {
@@ -322,7 +326,7 @@ func TestEmbyAutoSTRMRejectsUnknownOrConflictingCandidates(t *testing.T) {
 				writeEmbyAutoSTRMTestFile(t, destination, content)
 			}
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -341,7 +345,7 @@ func TestEmbyAutoSTRMPreparationCannotBindChangedObjects(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			f := setupEmbyAutoSTRMTest(t)
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 				t.Fatal(err)
 			}
 			switch scenario {
@@ -515,7 +519,7 @@ func TestEmbyAutoSTRMMissingRootCannotBeIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector := EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -548,7 +552,7 @@ func TestEmbyAutoSTRMExplicitRulesNeverFallBackToAutomatic(t *testing.T) {
 				t.Fatal(err)
 			}
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &f.snapshot, nil); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &f.snapshot, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := ApplyEmbySnapshots(f.token, []EmbyItemSnapshot{f.snapshot}); err != nil {
@@ -597,7 +601,7 @@ func TestEmbyAutoSTRMManagedPreparationRejectsRootChanges(t *testing.T) {
 	snapshot := snapshotForFile(file)
 	snapshot.Item.Type, snapshot.Item.Path = "Video", "/emby/movie.strm"
 	collector := EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &snapshot, nil); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshot.cleanupFiles) != 1 || snapshot.cleanupFiles[0].Reference.AutoSyncPathID == 0 {
@@ -608,5 +612,151 @@ func TestEmbyAutoSTRMManagedPreparationRejectsRootChanges(t *testing.T) {
 	}
 	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); !errors.Is(err, ErrEmbySnapshotStale) {
 		t.Fatal("prepared path was rebound to a changed root", err)
+	}
+}
+
+func TestJellyfinManagedSTRMSourceRecovery(t *testing.T) {
+	for _, mode := range []string{"recovered", "explicit-many-roots", "same-path-many-roots", "native", "wrong-account", "wrong-code", "unmanaged", "mapping-conflict"} {
+		t.Run(mode, func(t *testing.T) {
+			f := setupEmbyAutoSTRMTest(t)
+			file := SyncFile{SyncPathId: f.root.ID, SourceType: f.account.SourceType, AccountId: f.account.ID, FileId: "video-id", ParentId: "season-root", PickCode: "external", IsVideo: true, Path: "movies/Show/Season 1", FileName: "episode.mkv", LocalFilePath: f.local}
+			if mode != "unmanaged" {
+				if err := db.Db.Create(&file).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			snapshot := f.snapshot
+			snapshot.Item.MediaServerType = MediaServerJellyfin
+			if mode == "same-path-many-roots" {
+				snapshot.Item.Path = f.local
+			}
+			snapshot.Sources = append([]EmbySnapshotSource(nil), snapshot.Sources...)
+			snapshot.Item.PickCode = ""
+			snapshot.Item.MediaSourcePath = snapshot.Item.Path
+			snapshot.Sources[0].Path = snapshot.Item.Path
+			snapshot.Sources[0].PickCode = ""
+			if mode == "native" {
+				snapshot.Sources[0] = f.snapshot.Sources[0]
+				snapshot.Item.MediaSourcePath = snapshot.Sources[0].Path
+			}
+			content := f.snapshot.Sources[0].Path
+			if mode == "wrong-account" {
+				content = strings.ReplaceAll(content, "auto-owner", "another-owner")
+			}
+			if mode == "wrong-code" {
+				content = strings.ReplaceAll(content, "external", "other")
+			}
+			writeEmbyAutoSTRMTestFile(t, f.local, content)
+			collector := EmbyDirectoryEvidenceCollector{pathConfig: &EmbyConfig{MediaServerType: MediaServerJellyfin}}
+			if mode == "explicit-many-roots" {
+				collector.pathConfig.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: f.root.GetFullLocalPath()}}
+			}
+			if mode == "explicit-many-roots" || mode == "same-path-many-roots" {
+				unrelated := make([]SyncPath, embyAutoSTRMMaxCandidates+1)
+				for i := range unrelated {
+					unrelated[i] = SyncPath{SourceType: f.root.SourceType, AccountId: f.account.ID, LocalPath: "/unused", RemotePath: "unrelated", BaseCid: "unrelated-" + strconv.Itoa(i)}
+				}
+				if err := db.Db.Create(&unrelated).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "mapping-conflict" {
+				collector.pathConfig.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: t.TempDir()}}
+			}
+			if _, err := collector.RecoverJellyfinSTRMSources(t.Context(), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			want := mode == "recovered" || mode == "explicit-many-roots" || mode == "same-path-many-roots" || mode == "native"
+			if (snapshot.Sources[0].PickCode == "external") != want {
+				t.Fatalf("source=%+v", snapshot.Sources[0])
+			}
+			if want && mode != "native" {
+				snapshot.pathConfig = collector.pathConfig
+				files, err := resolveEmbySnapshotFiles(db.Db, snapshot)
+				if err != nil || len(files) != 1 || files[0].SyncFileID != file.ID {
+					t.Fatalf("files=%+v err=%v", files, err)
+				}
+			}
+		})
+	}
+}
+
+func TestJellyfinManagedSTRMRecoveryFailurePreservesBoundSnapshot(t *testing.T) {
+	for _, mode := range []string{"unreadable", "wrong-account", "wrong-code"} {
+		t.Run(mode, func(t *testing.T) {
+			f := setupEmbyAutoSTRMTest(t)
+			if err := db.Db.AutoMigrate(&JellyfinConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			config := f.config
+			config.MediaServerType = MediaServerJellyfin
+			stored := JellyfinConfig(config)
+			if err := db.Db.Create(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			config = EmbyConfig(stored)
+			token, err := BeginEmbyIndexRead("jellyfin-server", &config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file := SyncFile{SyncPathId: f.root.ID, SourceType: f.account.SourceType, AccountId: f.account.ID, FileId: "video-id", ParentId: "season-root", PickCode: "external", IsVideo: true, Path: "movies/Show/Season 1", FileName: "episode.mkv", LocalFilePath: f.local}
+			if err := db.Db.Create(&file).Error; err != nil {
+				t.Fatal(err)
+			}
+			native := f.snapshot
+			native.Item.MediaServerType = MediaServerJellyfin
+			native.Item.ItemId = "a1111111111111111111111111111111"
+			native.Item.SeriesId = "b2222222222222222222222222222222"
+			native.Item.SeasonId = "c3333333333333333333333333333333"
+			native.Item.PickCode = ""
+			native.Item.MediaSourcePath = native.Item.Path
+			native.Sources = []EmbySnapshotSource{{ID: native.Item.ItemId, ItemID: native.Item.ItemId, Path: native.Item.Path}}
+			index := func() error {
+				snapshot := native
+				snapshot.Sources = append([]EmbySnapshotSource(nil), native.Sources...)
+				collector := EmbyDirectoryEvidenceCollector{pathConfig: &config}
+				if err := collector.Enrich(t.Context(), MediaServerJellyfin, &snapshot, nil); err != nil {
+					return err
+				}
+				return ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot})
+			}
+			if err := index(); err != nil {
+				t.Fatal(err)
+			}
+			var before EmbyMediaItem
+			if err := db.Db.Where("media_server_type = ? AND item_id = ?", MediaServerJellyfin, native.Item.ItemId).First(&before).Error; err != nil || before.PickCode != "external" {
+				t.Fatalf("first binding=%+v err=%v", before, err)
+			}
+			if mode == "unreadable" {
+				if err := os.Remove(f.local); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				content := f.snapshot.Sources[0].Path
+				if mode == "wrong-account" {
+					content = strings.ReplaceAll(content, "auto-owner", "another-owner")
+				} else {
+					content = strings.ReplaceAll(content, "external", "another-code")
+				}
+				writeEmbyAutoSTRMTestFile(t, f.local, content)
+			}
+			err = index()
+			var after EmbyMediaItem
+			if readErr := db.Db.Where("media_server_type = ? AND item_id = ?", MediaServerJellyfin, native.Item.ItemId).First(&after).Error; readErr != nil {
+				t.Fatal(readErr)
+			}
+			var links int64
+			if readErr := db.Db.Model(&EmbyMediaSyncFile{}).Where("media_server_type = ? AND emby_item_id = ? AND sync_file_id = ?", MediaServerJellyfin, before.ItemId, file.ID).Count(&links).Error; readErr != nil {
+				t.Fatal(readErr)
+			}
+			if err == nil || after.PickCode != before.PickCode || after.MediaSourcePath != before.MediaSourcePath || after.SnapshotID != before.SnapshotID || after.Generation != before.Generation || links != 1 {
+				t.Fatalf("failed recovery replaced bound snapshot: err=%v before=%+v after=%+v links=%d", err, before, after, links)
+			}
+			native.Sources[0].Path, native.Sources[0].PickCode = f.snapshot.Sources[0].Path, "external"
+			native.Item.MediaSourcePath, native.Item.PickCode = native.Sources[0].Path, "external"
+			if err := index(); err != nil {
+				t.Fatalf("native source did not bypass failed local fallback: %v", err)
+			}
+		})
 	}
 }

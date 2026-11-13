@@ -271,6 +271,7 @@
                 v-if="
                   scope.row.source_type !== 'local' &&
                   scope.row.source_type !== 'emby_media' &&
+                  scope.row.source_type !== 'jellyfin_media' &&
                   scope.row.remote_full_path &&
                   scope.row.local_full_path
                 "

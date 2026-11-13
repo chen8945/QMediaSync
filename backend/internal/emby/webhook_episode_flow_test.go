@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 )
@@ -138,7 +138,7 @@ func TestWebhookEpisodePart1DeletionAndRemainingPartReindex(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
+	config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
 	if err := conn.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestWebhookEpisodePart1DeletionAndRemainingPartReindex(t *testing.T) {
 	// 只映射身份到本隔离 fixture，保留官方 Episode deleted 外壳无分段列表的性质。
 	event.ServerID, event.ItemServerID, event.ItemID, event.ItemPath = "episode-flow-server", "episode-flow-server", "101", files["part1"].LocalFilePath
 	event.ParentID, event.SeasonID, event.SeriesID = "301", "301", "300"
-	worker := &webhookWorker{observe: observeEmbyWebhook, syncItem: SyncEmbyItemByIDContext, verify: verifyEmbyDeletion,
+	worker := &webhookWorker{observe: observeEmbyWebhook, syncItem: syncMediaItemByIDWithConfig, verify: verifyEmbyDeletion,
 		provider: func(models.EmbyFrozenFile) (models.EmbyDeleteProvider, error) { return provider, nil }}
 	process := func(envelope models.EmbyWebhookEnvelope) models.EmbyWebhookRecord {
 		t.Helper()

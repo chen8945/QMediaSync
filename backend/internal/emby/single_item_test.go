@@ -23,7 +23,6 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -52,7 +51,7 @@ func TestSyncEmbyItemByID使用ItemsIds单条Upsert且关联幂等(t *testing.T)
 	}))
 	defer server.Close()
 
-	if err := db.Db.Create(&models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, Enabled: true, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 
@@ -92,7 +91,6 @@ func TestSyncEmbyItemByID使用Ancestors解析Episode真实媒体库ID(t *testin
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -119,7 +117,7 @@ func TestSyncEmbyItemByID使用Ancestors解析Episode真实媒体库ID(t *testin
 	}))
 	defer server.Close()
 
-	if err := db.Db.Create(&models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, Enabled: true, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 
@@ -166,7 +164,6 @@ func TestSyncEmbyItemByID多媒体库候选不取第一个写入LibraryID(t *tes
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -193,7 +190,7 @@ func TestSyncEmbyItemByID多媒体库候选不取第一个写入LibraryID(t *tes
 	}))
 	defer server.Close()
 
-	if err := db.Db.Create(&models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, Enabled: true, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 
@@ -228,7 +225,6 @@ func TestSyncEmbyItemByID跳过未选择媒体库(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -255,10 +251,10 @@ func TestSyncEmbyItemByID跳过未选择媒体库(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := db.Db.Create(&models.EmbyConfig{
-		EmbyUrl:           server.URL,
-		EmbyApiKey:        "test-key",
-		SyncEnabled:       1,
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby,
+		EmbyUrl:     server.URL,
+		EmbyApiKey:  "test-key",
+		SyncEnabled: 1, Enabled: true,
 		SyncCron:          "0 * * * *",
 		SelectedLibraries: `["lib-selected"]`,
 	}).Error; err != nil {
@@ -292,7 +288,6 @@ func TestSyncEmbyItemByID空结果不触发全量同步(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -307,7 +302,7 @@ func TestSyncEmbyItemByID空结果不触发全量同步(t *testing.T) {
 		fmt.Fprint(w, `{"TotalRecordCount":0,"Items":[]}`)
 	}))
 	defer server.Close()
-	if err := db.Db.Create(&models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "test-key", SyncEnabled: 1, Enabled: true, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 

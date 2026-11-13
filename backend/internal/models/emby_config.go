@@ -2,11 +2,7 @@ package models
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-
-	"qmediasync/internal/db"
-	"qmediasync/internal/helpers"
 
 	"gorm.io/gorm"
 )
@@ -22,6 +18,8 @@ const (
 // EmbyConfig 独立的 Emby 配置表
 type EmbyConfig struct {
 	BaseModel
+	Enabled                  bool              `json:"enabled" gorm:"default:false"`
+	MediaServerType          MediaServerType   `json:"-" gorm:"-"`
 	EmbyUrl                  string            `json:"emby_url" gorm:"type:text"`
 	EmbyApiKey               string            `json:"emby_api_key" gorm:"type:text"`
 	EnableDeleteNetdisk      int               `json:"enable_delete_netdisk" gorm:"default:0"`
@@ -62,7 +60,7 @@ func (c *EmbyConfig) AfterFind(_ *gorm.DB) error {
 		return nil
 	}
 	if err := json.Unmarshal([]byte(c.PathMappingsJSON), &c.PathMappings); err != nil {
-		return fmt.Errorf("读取 Emby 路径映射失败：%w", err)
+		return fmt.Errorf("读取媒体库路径映射失败：%w", err)
 	}
 	if c.PathMappings == nil {
 		c.PathMappings = []EmbyPathMapping{}
@@ -70,157 +68,40 @@ func (c *EmbyConfig) AfterFind(_ *gorm.DB) error {
 	return nil
 }
 
-var GlobalEmbyConfig *EmbyConfig
+// GetEmbyConfig 获取独立的 Emby 配置快照。
+func GetEmbyConfig() (*EmbyConfig, error) { return ReadMediaLibraryConfigSnapshot(MediaServerEmby) }
 
-// GetEmbyConfig 获取 Emby 配置
-func GetEmbyConfig() (*EmbyConfig, error) {
-	if GlobalEmbyConfig != nil {
-		return GlobalEmbyConfig, nil
-	}
-	return GetEmbyConfigFromDB()
-}
-
-// GetEmbyConfigFromDB 从数据库读取最新 Emby 配置并刷新内存缓存。
 func GetEmbyConfigFromDB() (*EmbyConfig, error) {
-	config := &EmbyConfig{}
-	if err := db.Db.First(config).Error; err != nil {
-		return nil, err
-	}
-	normalizeEmbySyncMode(config)
-	GlobalEmbyConfig = config
-	return GlobalEmbyConfig, nil
+	return ReadMediaLibraryConfigSnapshot(MediaServerEmby)
 }
 
-// Update 更新配置
 func (c *EmbyConfig) Update(updates map[string]any) error {
-	if err := db.Db.Model(c).Updates(updates).Error; err != nil {
-		return err
-	}
-	_, err := GetEmbyConfigFromDB()
-	return err
+	return UpdateMediaLibraryConfig(c.MediaServerType, updates)
 }
 
-// StartEmbySyncRun 标记 Emby 条目同步任务开始。返回 false 表示已有任务运行。
+// StartEmbySyncRun 标记 Emby 条目同步任务开始。
 func StartEmbySyncRun(mode string, startedAt int64) (bool, error) {
-	if startedAt <= 0 {
-		startedAt = helpers.NowUnix()
-	}
-	if mode == "" {
-		mode = EmbySyncModeFull
-	}
-
-	config, err := ReadEmbyConfigSnapshot()
-	if err != nil {
-		return false, err
-	}
-	if config.IsRunning {
-		return false, nil
-	}
-
-	result := db.Db.Model(&EmbyConfig{}).
-		Where("id = ? AND is_running = ?", config.ID, false).
-		Updates(map[string]any{
-			"is_running": true,
-			"sync_mode":  mode,
-			"started_at": startedAt,
-			"last_error": "",
-		})
-	if result.Error != nil {
-		return false, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return false, nil
-	}
-
-	_, err = ReadEmbyConfigSnapshot()
-	return err == nil, err
+	return StartMediaLibrarySyncRun(MediaServerEmby, mode, startedAt)
 }
 
-// FinishEmbySyncRun 标记 Emby 条目同步任务结束，并记录成功或失败状态。
-func FinishEmbySyncRun(mode string, processedCount int64, finishedAt int64, runErr error) error {
-	if finishedAt <= 0 {
-		finishedAt = helpers.NowUnix()
-	}
-	if mode == "" {
-		mode = EmbySyncModeFull
-	}
-
-	updates := map[string]any{
-		"is_running":           false,
-		"sync_mode":            EmbySyncModeIdle,
-		"started_at":           0,
-		"last_processed_count": processedCount,
-	}
-	if runErr != nil {
-		updates["last_error"] = runErr.Error()
-	} else {
-		updates["last_error"] = ""
-		updates["last_sync_time"] = finishedAt
-		updates["last_success_sync_mode"] = mode
-		switch mode {
-		case EmbySyncModeFull:
-			updates["last_full_sync_at"] = finishedAt
-		case EmbySyncModeIncremental:
-			updates["last_incremental_sync_at"] = finishedAt
-		case EmbySyncModeWebhook:
-			// Webhook 单条同步不推进全量或增量游标。
-		}
-	}
-
-	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Updates(updates).Error; err != nil {
-		return err
-	}
-	_, err := ReadEmbyConfigSnapshot()
-	return err
+// FinishEmbySyncRun 标记 Emby 条目同步任务结束。
+func FinishEmbySyncRun(mode string, processedCount, finishedAt int64, runErr error) error {
+	return FinishMediaLibrarySyncRun(MediaServerEmby, mode, processedCount, finishedAt, runErr)
 }
 
-// FinishEmbyIncrementalSyncRun 标记增量同步结束，成功时推进 DateLastSaved 游标。
-func FinishEmbyIncrementalSyncRun(processedCount int64, finishedAt int64, cursorAt int64, runErr error) error {
-	if err := FinishEmbySyncRun(EmbySyncModeIncremental, processedCount, finishedAt, runErr); err != nil {
-		return err
-	}
-	if runErr != nil || cursorAt <= 0 {
-		return nil
-	}
-	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("last_saved_cursor_at", cursorAt).Error; err != nil {
-		return err
-	}
-	_, err := ReadEmbyConfigSnapshot()
-	return err
+// FinishEmbyIncrementalSyncRun 标记 Emby 增量同步结束并推进游标。
+func FinishEmbyIncrementalSyncRun(processedCount, finishedAt, cursorAt int64, runErr error) error {
+	return FinishMediaLibraryIncrementalSyncRun(MediaServerEmby, processedCount, finishedAt, cursorAt, runErr)
 }
 
-// ResetStaleEmbySyncRunOnStartup 清理进程异常退出遗留的 Emby 条目同步运行标记。
+// ResetStaleEmbySyncRunOnStartup 清理媒体库上次未结束的运行标记。
 func ResetStaleEmbySyncRunOnStartup() error {
-	if db.Db == nil {
-		return nil
-	}
-	result := db.Db.Model(&EmbyConfig{}).
-		Where("is_running = ?", true).
-		Updates(map[string]any{
-			"is_running": false,
-			"sync_mode":  EmbySyncModeIdle,
-			"started_at": 0,
-			"last_error": "程序启动时清理上次未完成的 Emby 同步运行状态",
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected > 0 {
-		helpers.AppLogger.Warnf("已清理 %d 条上次未完成的 Emby 同步运行状态", result.RowsAffected)
-	}
-	if _, err := GetEmbyConfigFromDB(); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-	return nil
+	return ResetStaleMediaLibrarySyncRunOnStartup()
 }
 
-// IsEmbySyncRunningInDB 查询数据库中的 Emby 条目同步运行状态。
+// IsEmbySyncRunningInDB 查询 Emby 条目同步运行状态。
 func IsEmbySyncRunningInDB() bool {
-	if db.Db == nil {
-		return false
-	}
-	config, err := ReadEmbyConfigSnapshot()
-	return err == nil && config.IsRunning
+	return IsMediaLibrarySyncRunningInDB(MediaServerEmby)
 }
 
 func normalizeEmbySyncMode(config *EmbyConfig) {

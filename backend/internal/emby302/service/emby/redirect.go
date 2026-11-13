@@ -289,19 +289,19 @@ func getFinalRedirectLink(ctx context.Context, originLink string, header http.He
 			}
 		}
 		if err != nil {
-			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，错误=%v",
+			logs.Warn("QMediaSync 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，错误=%v",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), responseStatus, helpers.URLRequestErrorForLog(err))
 			return originLink, responseStatus, time.Time{}, false
 		}
 		if !https.IsRedirectCode(resp.StatusCode) && resp.StatusCode != http.StatusSeeOther {
-			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=接口未返回跳转",
+			logs.Warn("QMediaSync 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=接口未返回跳转",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
 			return originLink, resp.StatusCode, time.Time{}, false
 		}
 		finalLink := resp.Header.Get("Location")
 		finalURL, err := url.Parse(finalLink)
 		if err != nil || finalURL.Hostname() == "" || (finalURL.Scheme != "http" && finalURL.Scheme != "https") {
-			logs.Warn("QMS 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=缺少或无效的 HTTP(S) Location",
+			logs.Warn("QMediaSync 115 取链失败，回退原始链接：PickCode=%s，UA=%q，接口状态=%d，原因=缺少或无效的 HTTP(S) Location",
 				origin.Query().Get("pickcode"), header.Get("User-Agent"), resp.StatusCode)
 			return originLink, resp.StatusCode, time.Time{}, false
 		}

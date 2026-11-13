@@ -59,7 +59,7 @@ func parseAdminRecoveryOptions(args []string) (*adminRecoveryOptions, error) {
 		return options, fmt.Errorf("必须且只能指定 --reset-admin-password 或 --delete-admin，不能附加位置参数")
 	}
 	if options.deleteAdmin && !options.confirmed {
-		return options, fmt.Errorf("删除管理员会撤销全部浏览器会话和 QMS API Key，业务数据保留；确认后请附加 --yes")
+		return options, fmt.Errorf("删除管理员会撤销全部浏览器会话和 QMediaSync API Key，业务数据保留；确认后请附加 --yes")
 	}
 	return options, nil
 }
@@ -109,7 +109,7 @@ func performAdminRecovery(ctx context.Context, configDir string, deleteAdmin boo
 		return nil, err
 	}
 	if result.Deleted {
-		logger.RequiredWarnf("管理员恢复完成：已删除管理员 ID=%d，全部浏览器会话和 QMS API Key 已清理，业务数据保留", result.UserID)
+		logger.RequiredWarnf("管理员恢复完成：已删除管理员 ID=%d，全部浏览器会话和 QMediaSync API Key 已清理，业务数据保留", result.UserID)
 	} else {
 		logger.RequiredWarnf("管理员恢复完成：已重置管理员 ID=%d 的密码，浏览器会话已撤销，两步验证已清空，API Key 保留", result.UserID)
 	}
@@ -118,7 +118,7 @@ func performAdminRecovery(ctx context.Context, configDir string, deleteAdmin boo
 
 func adminRecoveryMessage(result *models.AdminRecoveryResult) string {
 	if result.Deleted {
-		return fmt.Sprintf("管理员 %s 已删除。\n全部浏览器会话和 QMS API Key 已清理，业务数据保留。\n已重启服务，请从启动日志获取初始化码并重新创建管理员。", result.Username)
+		return fmt.Sprintf("管理员 %s 已删除。\n全部浏览器会话和 QMediaSync API Key 已清理，业务数据保留。\n已重启服务，请从启动日志获取初始化码并重新创建管理员。", result.Username)
 	}
 	return fmt.Sprintf("管理员密码已重置。\n用户名：%s\n新密码：%s\n全部浏览器会话已撤销，两步验证已关闭，API Key 已保留。\n请保存新密码，启动服务后登录并重新启用两步验证。", result.Username, result.Password)
 }

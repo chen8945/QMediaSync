@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"log"
 	"net/http"
+	"strings"
+	"sync/atomic"
 
 	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/service/emby"
@@ -14,18 +16,36 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Listen 监听指定端口
-func Listen() error {
+type listenerConfig struct {
+	host   string
+	apiKey string
+}
+
+var activeListener atomic.Pointer[listenerConfig]
+
+// EmbyRestartRequired 比较已保存配置和本次进程实际采用的代理连接。
+func EmbyRestartRequired(enabled bool, serverURL, apiKey string) bool {
+	active := activeListener.Load()
+	wanted := enabled && strings.TrimSpace(serverURL) != "" && strings.TrimSpace(apiKey) != ""
+	if active == nil {
+		return wanted
+	}
+	return !wanted || active.host != serverURL || active.apiKey != apiKey
+}
+
+// Listen 监听指定端口；远端检查只在业务请求到达时执行。
+func Listen(guard gin.HandlerFunc, apiKey string) error {
 	initRulePatterns()
+	activeListener.Store(&listenerConfig{host: config.C.Emby.Host, apiKey: apiKey})
 
 	errChanHTTP, errChanHTTPS := make(chan error, 1), make(chan error, 1)
 	if !config.C.Ssl.Enable {
-		go listenHTTP(errChanHTTP)
+		go listenHTTP(errChanHTTP, guard)
 	} else if config.C.Ssl.SinglePort {
-		go listenHTTPS(errChanHTTPS)
+		go listenHTTPS(errChanHTTPS, guard)
 	} else {
-		go listenHTTP(errChanHTTP)
-		go listenHTTPS(errChanHTTPS)
+		go listenHTTP(errChanHTTP, guard)
+		go listenHTTPS(errChanHTTPS, guard)
 	}
 
 	select {
@@ -38,8 +58,11 @@ func Listen() error {
 }
 
 // initRouter 初始化路由引擎
-func initRouter(r *gin.Engine) {
+func initRouter(r *gin.Engine, guard gin.HandlerFunc) {
 	r.Use(referrerPolicySetter())
+	if guard != nil {
+		r.Use(guard)
+	}
 	r.Use(emby.ApiKeyChecker())
 	r.Use(emby.DownloadStrategyChecker())
 	r.Use(emby.MediaPathDisplay())
@@ -54,14 +77,14 @@ func initRouter(r *gin.Engine) {
 // listenHTTP 在指定端口上监听 HTTP 服务
 //
 // 出现错误时, 会写入 errChan 中
-func listenHTTP(errChan chan error) {
+func listenHTTP(errChan chan error, guard gin.HandlerFunc) {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	// r.Use(CustomLogger(webport.HTTP))
 	r.Use(func(c *gin.Context) {
 		c.Set(webport.GinKey, webport.HTTP)
 	})
-	initRouter(r)
+	initRouter(r, guard)
 	logs.Info("在端口【%s】上启动 HTTP 服务", webport.HTTP)
 	err := r.Run("0.0.0.0:" + webport.HTTP)
 	errChan <- err
@@ -71,14 +94,14 @@ func listenHTTP(errChan chan error) {
 // listenHTTPS 在指定端口上监听 HTTPS 服务
 //
 // 出现错误时, 会写入 errChan 中
-func listenHTTPS(errChan chan error) {
+func listenHTTPS(errChan chan error, guard gin.HandlerFunc) {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	// r.Use(CustomLogger(webport.HTTPS))
 	r.Use(func(c *gin.Context) {
 		c.Set(webport.GinKey, webport.HTTPS)
 	})
-	initRouter(r)
+	initRouter(r, guard)
 	logs.Info("在端口【%s】上启动 HTTPS 服务", webport.HTTPS)
 	ssl := config.C.Ssl
 

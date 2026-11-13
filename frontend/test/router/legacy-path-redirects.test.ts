@@ -45,6 +45,19 @@ describe('旧路径重定向与未知路径兜底', () => {
     expect(document.title).toBe('数据库修复 - QMediaSync')
   })
 
+  it.each([
+    ['emby', 'emby'],
+    ['jellyfin', 'jellyfin'],
+    ['fnos-proxy', 'fnos'],
+  ])('旧媒体库 %s 路径定位 %s 标签并保留 query', async (path, hash) => {
+    signIn()
+    await router.push(`/settings/${path}?keep=1`)
+    expect(router.currentRoute.value.name).toBe('settings-media-library')
+    expect(router.currentRoute.value.hash).toBe(`#${hash}`)
+    expect(router.currentRoute.value.query).toEqual({ keep: '1' })
+    expect(document.title).toBe('媒体库 - QMediaSync')
+  })
+
   it('未知路径命中兜底路由，已登录时回到首页而不是空白页', async () => {
     signIn()
 

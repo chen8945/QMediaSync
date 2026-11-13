@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -87,7 +87,7 @@ func setupCleanupDeferredTest(t *testing.T, count int) *cleanupDeferredFixture {
 		}
 		id := fmt.Sprint(101 + i)
 		snapshots = append(snapshots, models.EmbyItemSnapshot{
-			Item:            models.EmbyMediaItem{ItemId: id, Type: "Episode", Path: file.LocalFilePath, PickCode: file.PickCode, SeriesId: "300", SeasonId: "301"},
+			Item:            models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: id, Type: "Episode", Path: file.LocalFilePath, PickCode: file.PickCode, SeriesId: "300", SeasonId: "301"},
 			Sources:         []models.EmbySnapshotSource{{ID: "source-" + id, ItemID: id, Path: "http://qms/stream?pickcode=" + file.PickCode, PickCode: file.PickCode}},
 			MembersComplete: true,
 		})
@@ -215,7 +215,7 @@ func TestWebhookCleanupDeferredRetryCompletes(t *testing.T) {
 			if err := models.RecoverEmbyWebhookWork(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if next, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Add(24*time.Hour).Unix()); err != nil || next != nil {
+			if next, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(24*time.Hour).Unix()); err != nil || next != nil {
 				t.Fatalf("完成记录重启后重新进入执行: next=%+v err=%v", next, err)
 			}
 		})
@@ -230,7 +230,7 @@ func TestWebhookCleanupDeferredPreservesBlockedDependency(t *testing.T) {
 		attempts     int
 	}{
 		{"identity_conflict", models.EmbyDeletionUnresolved, "远端文件身份或内容已变化", 0},
-		{"live_shared", models.EmbyDeletionUnresolved, "Emby 新条目仍使用原文件", 0},
+		{"live_shared", models.EmbyDeletionUnresolved, "新媒体条目仍使用原文件", 0},
 		{"delete_failed", models.EmbyDeletionFailed, "deferred dependency delete failed", 1},
 		{"temporary_verification", models.EmbyDeletionUnresolved, "temporary dependent video verification failure", 0},
 		{"last_delete_attempt_failed", models.EmbyDeletionFailed, "deferred dependency delete failed", models.EmbyWebhookTargetMaxAttempts},
@@ -332,7 +332,7 @@ func TestWebhookCleanupDeferredPreservesBlockedDependency(t *testing.T) {
 				t.Fatalf("未完成的依赖 owner 收尾错误: links=%d want=%d err=%v", links, wantLinks, err)
 			}
 			if wantStatus != models.EmbyWebhookRetry {
-				if next, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Add(24*time.Hour).Unix()); err != nil || next != nil {
+				if next, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(24*time.Hour).Unix()); err != nil || next != nil {
 					t.Fatalf("终结的保护结果重新进入执行: next=%+v err=%v", next, err)
 				}
 				return
@@ -526,7 +526,7 @@ func TestWebhookCleanupDeferredRecoversAfterVideosComplete(t *testing.T) {
 		}
 	}
 	countWebhookTest(t, &models.EmbyMediaSyncFile{}, 0)
-	if pending, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Add(24*time.Hour).Unix()); err != nil || pending != nil {
+	if pending, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(24*time.Hour).Unix()); err != nil || pending != nil {
 		t.Fatalf("恢复完成后仍有重复待办: pending=%+v err=%v", pending, err)
 	}
 }

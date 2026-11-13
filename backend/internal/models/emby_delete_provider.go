@@ -55,7 +55,7 @@ func NewEmbyDeleteProvider(file EmbyFrozenFile) (EmbyDeleteProvider, error) {
 	}
 	var account Account
 	if err := db.Db.First(&account, file.AccountID).Error; err != nil {
-		return nil, fmt.Errorf("读取 Emby 删除原账号：%w", err)
+		return nil, fmt.Errorf("读取媒体服务器删除原账号：%w", err)
 	}
 	if account.SourceType != file.SourceType || EmbyAccountIdentity(account) != file.AccountIdentity {
 		return nil, ErrEmbyDeleteUnverified

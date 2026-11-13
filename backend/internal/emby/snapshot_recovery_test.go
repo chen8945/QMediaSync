@@ -21,8 +21,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -68,7 +68,7 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		}
 		f.provider.files[file.FileId] = models.EmbyRemoteFile{FileID: file.FileId, ParentID: file.ParentId, FileName: file.FileName, Path: file.Path, PickCode: file.PickCode, SHA1: file.Sha1, FileSize: file.FileSize, MTime: file.MTime}
 		item := embyclientrestgo.BaseItemDtoV2{Id: id, Type: "Movie", Path: file.LocalFilePath, Name: "initial", MediaSources: []embyclientrestgo.MediaSource{{ID: "source-" + id, ItemID: id, Path: "http://qms/stream?pickcode=" + file.PickCode}}}
-		saved := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: id, Type: item.Type, Path: file.LocalFilePath, LibraryId: "99", Name: item.Name, PickCode: file.PickCode}, Sources: []models.EmbySnapshotSource{{ID: "source-" + id, ItemID: id, Path: item.MediaSources[0].Path, PickCode: file.PickCode}}, MembersComplete: true}
+		saved := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: id, Type: item.Type, Path: file.LocalFilePath, LibraryId: "99", Name: item.Name, PickCode: file.PickCode}, Sources: []models.EmbySnapshotSource{{ID: "source-" + id, ItemID: id, Path: item.MediaSources[0].Path, PickCode: file.PickCode}}, MembersComplete: true}
 		if strings.HasSuffix(id, "01") {
 			item.PartCount = 2
 			saved.Item.PartCount = 2
@@ -143,7 +143,7 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		}
 	}))
 	t.Cleanup(server.Close)
-	f.config = models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1, LastSavedCursorAt: 10000, LastFullSyncAt: 50}
+	f.config = models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, EnableDeleteNetdisk: 1, LastSavedCursorAt: 10000, LastFullSyncAt: 50}
 	if err := conn.Create(&f.config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,10 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		for i := range ids {
 			ids[i] = strconv.Itoa(5000 + i)
 		}
-		if err := conn.Transaction(func(tx *gorm.DB) error { _, err := models.RegisterEmbyDeletionTx(tx, "server-a", ids); return err }); err != nil {
+		if err := conn.Transaction(func(tx *gorm.DB) error {
+			_, err := models.RegisterEmbyDeletionTx(tx, models.MediaServerEmby, "server-a", ids)
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 		f.oldToken, err = models.BeginEmbyIndexRead("server-a", &f.config)
@@ -174,7 +177,7 @@ func setupSnapshotRecoveryFixture(t *testing.T, absentBarriers int) *snapshotRec
 		t.Fatal(err)
 	}
 	for _, item := range parentItems {
-		record, err := models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{Event: "deep.delete", ServerID: "server-a", ItemID: item.Id, ItemType: item.Type, ItemPath: item.Path, Source: "fixture"})
+		record, err := models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby, Event: "deep.delete", ServerID: "server-a", ItemID: item.Id, ItemType: item.Type, ItemPath: item.Path, Source: "fixture"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,7 +280,7 @@ func TestSnapshotRecoveryConcurrentDeleteRejectsOldReads(t *testing.T) {
 					return
 				}
 				if err := db.Db.Transaction(func(tx *gorm.DB) error {
-					_, err := models.RegisterEmbyDeletionTx(tx, "server-a", []string{"101", "102", "201", "202"})
+					_, err := models.RegisterEmbyDeletionTx(tx, models.MediaServerEmby, "server-a", []string{"101", "102", "201", "202"})
 					return err
 				}); err != nil {
 					t.Error(err)
@@ -322,7 +325,7 @@ func TestSnapshotRecoveryHiddenPartsAfterRootSurvivorAdmission(t *testing.T) {
 			admitSnapshotRecoveryRoots(t)
 			if cleanIndex {
 				for _, id := range []string{"101", "102", "201", "202"} {
-					if err := models.DeleteLocalEmbyItemByID(id); err != nil {
+					if err := models.DeleteLocalEmbyItemByID(models.MediaServerEmby, id); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -367,7 +370,7 @@ func admitSnapshotRecoveryRoots(t *testing.T) {
 			if err := tx.Where("server_id = ? AND item_id = ?", "server-a", id).First(&state).Error; err != nil {
 				return err
 			}
-			return models.AdmitEmbyItemGenerationTx(tx, "server-a", id, state.Revision)
+			return models.AdmitEmbyItemGenerationTx(tx, models.MediaServerEmby, "server-a", id, state.Revision)
 		}); err != nil {
 			t.Fatal(err)
 		}

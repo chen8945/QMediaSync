@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gorm.io/gorm"
@@ -254,4 +255,126 @@ func validatePreparedEmbySTRMReference(tx *gorm.DB, config *EmbyConfig, source E
 		return ErrEmbySnapshotStale
 	}
 	return nil
+}
+
+// RecoverJellyfinSTRMSources 补回误报的受管 STRM；返回是否有已知受管来源未能核验。
+func (c *EmbyDirectoryEvidenceCollector) RecoverJellyfinSTRMSources(ctx context.Context, snapshot *EmbyItemSnapshot) (unresolvedManaged bool, err error) {
+	if snapshot.Item.MediaServerType != MediaServerJellyfin || !strings.EqualFold(filepath.Ext(snapshot.Item.Path), ".strm") {
+		return false, nil
+	}
+	for i, original := range snapshot.Sources {
+		if original.ItemID != "" && original.ItemID != snapshot.Item.ItemId || !strings.EqualFold(filepath.Ext(original.Path), ".strm") || strings.Contains(original.Path, "://") {
+			continue
+		}
+		if err := c.loadPathConfig(ctx, MediaServerJellyfin); err != nil {
+			return false, err
+		}
+		explicit := ResolveEmbySTRMReference(c.pathConfig, snapshot.Item.Path)
+		if explicit.Reason != "" {
+			continue
+		}
+		directLocal := explicit.LocalPath
+		if directLocal == "" {
+			directLocal = snapshot.Item.Path
+		}
+		var candidates []SyncFile
+		if err := db.Db.WithContext(ctx).Where("local_file_path = ? AND is_video = ?", directLocal, true).Find(&candidates).Error; err != nil {
+			return false, err
+		}
+		directMatch := len(candidates) > 0 || explicit.LocalPath != ""
+		var roots []SyncPath
+		locals := []string{}
+		if directMatch {
+			locals = append(locals, directLocal)
+		} else {
+			if c.strmRoots == nil {
+				c.strmRoots = map[string][]SyncPath{}
+			}
+			var found bool
+			roots, found = c.strmRoots["managed-strm-fallback"]
+			if !found {
+				if err := db.Db.WithContext(ctx).Order("id").Limit(embyAutoSTRMMaxCandidates + 1).Find(&roots).Error; err != nil {
+					return false, err
+				}
+				c.strmRoots["managed-strm-fallback"] = roots
+			}
+			if len(roots) > embyAutoSTRMMaxCandidates {
+				continue
+			}
+			normalized, _, err := normalizeEmbyMappingPath(snapshot.Item.Path)
+			if err != nil {
+				continue
+			}
+			parts := strings.Split(normalized, "/")
+			if len(parts) > embyAutoSTRMMaxDepth {
+				continue
+			}
+			for _, root := range roots {
+				for start := 1; start < len(parts); start++ {
+					locals = append(locals, filepath.Join(root.GetFullLocalPath(), filepath.FromSlash(strings.Join(parts[start:], "/"))))
+				}
+			}
+		}
+		if len(locals) == 0 || len(locals) > embyAutoSTRMMaxCandidates {
+			continue
+		}
+		if !directMatch {
+			if err := db.Db.WithContext(ctx).Where("local_file_path IN ? AND is_video = ?", locals, true).Find(&candidates).Error; err != nil {
+				return false, err
+			}
+		}
+		if directMatch && len(candidates) > 0 {
+			rootIDs := make([]uint, 0, len(candidates))
+			for _, file := range candidates {
+				rootIDs = append(rootIDs, file.SyncPathId)
+			}
+			if err := db.Db.WithContext(ctx).Where("id IN ?", rootIDs).Find(&roots).Error; err != nil {
+				return false, err
+			}
+		}
+		var recovered *EmbySnapshotSource
+		knownManaged := false
+		for _, file := range candidates {
+			rootIndex := slices.IndexFunc(roots, func(root SyncPath) bool {
+				return root.ID == file.SyncPathId && root.AccountId == file.AccountId && root.SourceType == file.SourceType
+			})
+			if rootIndex < 0 || explicit.LocalPath != "" && explicit.LocalPath != file.LocalFilePath {
+				continue
+			}
+			var account Account
+			if err := db.Db.WithContext(ctx).First(&account, file.AccountId).Error; err != nil {
+				return false, err
+			}
+			if account.SourceType != file.SourceType {
+				continue
+			}
+			knownManaged = true
+			reference := embyAutoSTRMReference(snapshot.Item.Path, file.LocalFilePath, roots[rootIndex], EmbyAccountIdentity(account))
+			content, _, err := readEmbyAutoSTRM(reference)
+			if err != nil {
+				continue
+			}
+			content = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(content), "\ufeff"))
+			candidate := EmbySnapshotSource{ID: original.ID, ItemID: original.ItemID, Path: content}
+			sourceType, userID, code, known := embySourceAccountHint(candidate)
+			if !known || sourceType != file.SourceType || userID != account.UserId || code != file.PickCode {
+				continue
+			}
+			candidate.PickCode = code
+			if recovered != nil && (recovered.Path != candidate.Path || recovered.PickCode != candidate.PickCode) {
+				return false, ErrEmbyIdentityAmbiguous
+			}
+			recovered = &candidate
+		}
+		if recovered == nil && knownManaged {
+			unresolvedManaged = true
+		}
+		if recovered != nil {
+			snapshot.Sources[i] = *recovered
+			if snapshot.Item.MediaSourcePath == original.Path {
+				snapshot.Item.MediaSourcePath, snapshot.Item.PickCode = recovered.Path, recovered.PickCode
+			}
+		}
+	}
+	return unresolvedManaged, nil
 }

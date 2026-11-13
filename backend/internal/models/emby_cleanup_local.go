@@ -83,11 +83,11 @@ func (c *EmbyDirectoryEvidenceCollector) directoryChain(ctx context.Context, sna
 	if c.roots == nil {
 		c.roots = map[string]*embyLocalDirectoryView{}
 	}
-	key := embyDirectoryRootKey(file)
+	key := string(snapshot.Item.MediaServerType) + ":" + embyDirectoryRootKey(file)
 	view, ok := c.roots[key]
 	if !ok {
 		var err error
-		view, err = loadEmbyLocalDirectoryView(db.Db.WithContext(ctx), snapshot.Item.ServerId, file)
+		view, err = loadEmbyLocalDirectoryView(db.Db.WithContext(ctx), snapshot.Item.MediaServerType, snapshot.Item.ServerId, file)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +111,7 @@ func (c *EmbyDirectoryEvidenceCollector) directoryChain(ctx context.Context, sna
 	return view.chain(file), nil
 }
 
-func loadEmbyLocalDirectoryView(tx *gorm.DB, serverID string, file EmbyFrozenFile) (*embyLocalDirectoryView, error) {
+func loadEmbyLocalDirectoryView(tx *gorm.DB, kind MediaServerType, serverID string, file EmbyFrozenFile) (*embyLocalDirectoryView, error) {
 	view := newEmbyLocalDirectoryView()
 	roots, err := LoadSyncRootEvidenceBatchTx(tx, []uint{file.SyncPathID})
 	if err != nil {
@@ -125,7 +125,7 @@ func loadEmbyLocalDirectoryView(tx *gorm.DB, serverID string, file EmbyFrozenFil
 		for _, node := range root.Ancestors {
 			view.add(node)
 		}
-	} else if err := addEmbyCurrentDirectoryEvidence(tx, serverID, file, view); err != nil {
+	} else if err := addEmbyCurrentDirectoryEvidence(tx, kind, serverID, file, view); err != nil {
 		return nil, err
 	}
 	var directories []SyncFile
@@ -183,19 +183,19 @@ func embyLedgerDirectoryPath(directory SyncFile) (string, bool) {
 
 // addEmbyCurrentDirectoryEvidence 只读取当前状态引用的匹配快照；不会扫描历史最大 ID，
 // 也不会将历史提交时间写成新的网盘观察时间。
-func addEmbyCurrentDirectoryEvidence(tx *gorm.DB, serverID string, rootFile EmbyFrozenFile, view *embyLocalDirectoryView) error {
+func addEmbyCurrentDirectoryEvidence(tx *gorm.DB, kind MediaServerType, serverID string, rootFile EmbyFrozenFile, view *embyLocalDirectoryView) error {
 	var evidences []EmbyItemEvidence
 	query := tx.Table("emby_item_evidences AS e").Select("DISTINCT e.*").
-		Joins("JOIN emby_item_states AS s ON s.snapshot_id = e.id AND s.server_id = e.server_id AND s.item_id = e.item_id AND s.generation = e.generation AND s.identity_key = e.identity_key").
-		Joins("JOIN emby_media_items AS i ON i.snapshot_id = e.id AND i.server_id = e.server_id AND i.item_id = e.item_id AND i.generation = e.generation").
-		Joins("JOIN emby_media_sync_files AS l ON l.emby_item_id = i.item_id AND l.snapshot_id = e.id").
-		Joins("JOIN emby_index_states AS current_server ON current_server.server_id = e.server_id AND current_server.server_config_key = e.server_config_key AND current_server.server_config_key <> ''").
-		Where("l.sync_path_id = ? AND s.deleted = ?", rootFile.SyncPathID, false)
+		Joins("JOIN emby_item_states AS s ON s.snapshot_id = e.id AND s.media_server_type = e.media_server_type AND s.server_id = e.server_id AND s.item_id = e.item_id AND s.generation = e.generation AND s.identity_key = e.identity_key").
+		Joins("JOIN emby_media_items AS i ON i.snapshot_id = e.id AND i.media_server_type = e.media_server_type AND i.server_id = e.server_id AND i.item_id = e.item_id AND i.generation = e.generation").
+		Joins("JOIN emby_media_sync_files AS l ON l.media_server_type = i.media_server_type AND l.emby_item_id = i.item_id AND l.snapshot_id = e.id").
+		Joins("JOIN emby_index_states AS current_server ON current_server.media_server_type = e.media_server_type AND current_server.server_id = e.server_id AND current_server.server_config_key = e.server_config_key AND current_server.server_config_key <> ''").
+		Where("e.media_server_type = ? AND l.sync_path_id = ? AND s.deleted = ?", kind, rootFile.SyncPathID, false)
 	if serverID != "" {
 		query = query.Where("e.server_id = ?", serverID)
 	}
 	if err := query.Find(&evidences).Error; err != nil {
-		return fmt.Errorf("读取当前 Emby 目录资料失败：%w", err)
+		return fmt.Errorf("读取当前媒体服务器目录资料失败：%w", err)
 	}
 	var current []SyncFile
 	if len(evidences) == 0 {
@@ -211,7 +211,7 @@ func addEmbyCurrentDirectoryEvidence(tx *gorm.DB, serverID string, rootFile Emby
 	for _, evidence := range evidences {
 		var files []EmbyFrozenFile
 		if err := json.Unmarshal([]byte(evidence.FilesJSON), &files); err != nil {
-			return fmt.Errorf("读取当前 Emby 文件身份失败：%w", err)
+			return fmt.Errorf("读取当前媒体服务器文件身份失败：%w", err)
 		}
 		metadata, err := DecodeEmbyMetadata(evidence.SidecarsJSON)
 		if err != nil {

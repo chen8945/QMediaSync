@@ -16,8 +16,8 @@ import (
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 

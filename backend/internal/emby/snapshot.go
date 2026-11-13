@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -19,7 +19,7 @@ import (
 func prepareEmbyIndex(ctx context.Context, client *embyclientrestgo.Client, config *models.EmbyConfig) (models.EmbyIndexToken, error) {
 	serverID, err := client.GetServerID(ctx)
 	if err != nil {
-		return models.EmbyIndexToken{}, err
+		return models.EmbyIndexToken{MediaServerType: config.MediaServerType}, err
 	}
 	return models.BeginEmbyIndexRead(serverID, config)
 }
@@ -69,7 +69,7 @@ func prepareEmbyIndexForSync(ctx context.Context, client *embyclientrestgo.Clien
 		}
 		for _, item := range items {
 			if !requested[item.Id] {
-				return token, false, errors.New("Emby 存活核验返回未请求的条目")
+				return token, false, errors.New("媒体服务器存活核验返回未请求的条目")
 			}
 			if seen[item.Id] {
 				continue
@@ -136,14 +136,16 @@ func readEmbyItemSnapshots(ctx context.Context, client *embyclientrestgo.Client,
 		return "", nil, err
 	}
 	if len(items) > 1 || len(items) == 1 && items[0].Id != itemID {
-		return "", nil, errors.New("Emby 单条同步返回未请求的条目")
+		return "", nil, errors.New("媒体服务器单条同步返回未请求的条目")
 	}
 	readDetails := func(ctx context.Context, ids string) ([]embyclientrestgo.BaseItemDtoV2, error) {
 		return readEmbyRequestedSnapshotItems(ctx, client, ids)
 	}
-	if len(items) != 0 {
-		snapshots, err := collectEmbySnapshotsWithReader(ctx, client, items[0], "", "", "", 0, readDetails, true)
-		return items[0].Id, snapshots, err
+	// 可按自身 ID 读取的隐藏分段仍可能没有祖先；先用历史入口重新核验当前主项成员关系。
+	direct := items
+	if len(direct) != 0 && (direct[0].Type != "Video" || token.MediaServerType != models.MediaServerJellyfin) {
+		snapshots, err := collectEmbySnapshotsWithReader(ctx, client, direct[0], "", "", "", 0, readDetails, true)
+		return direct[0].Id, snapshots, err
 	}
 	parents, err := models.LoadEmbyItemRecoveryReadIDs(ctx, token, itemID)
 	if err != nil {
@@ -167,13 +169,17 @@ func readEmbyItemSnapshots(ctx context.Context, client *embyclientrestgo.Client,
 			}
 		}
 	}
+	if len(direct) != 0 {
+		snapshots, err := collectEmbySnapshotsWithReader(ctx, client, direct[0], "", "", "", 0, readDetails, true)
+		return direct[0].Id, snapshots, err
+	}
 	return "", nil, nil
 }
 
 func readEmbyRequestedSnapshotItems(ctx context.Context, client *embyclientrestgo.Client, ids string) ([]embyclientrestgo.BaseItemDtoV2, error) {
 	requested := strings.Split(ids, ",")
 	if slices.Contains(requested, "") {
-		return nil, errors.New("Emby 单条同步缺少物理条目 ID")
+		return nil, errors.New("媒体服务器单条同步缺少物理条目 ID")
 	}
 	items, err := client.GetDeletionVerificationItems(ctx, ids)
 	if err != nil {
@@ -181,7 +187,7 @@ func readEmbyRequestedSnapshotItems(ctx context.Context, client *embyclientrestg
 	}
 	for _, item := range items {
 		if !slices.Contains(requested, item.Id) {
-			return nil, errors.New("Emby 单条同步返回未请求的条目")
+			return nil, errors.New("媒体服务器单条同步返回未请求的条目")
 		}
 	}
 	return items, nil
@@ -203,18 +209,18 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 		value := current.item
 		if value.Type != "Movie" && value.Type != "Episode" && value.Type != "Video" {
 			if current.versionRoot != "" || current.partOf != "" || strict && (value.Id != item.Id || len(snapshots) > 0) {
-				return nil, errors.New("Emby 物理成员类型缺失或不支持")
+				return nil, errors.New("媒体物理成员类型缺失或不支持")
 			}
 			continue
 		}
 		if seen[value.Id] {
 			if current.partOf != "" {
-				return nil, errors.New("Emby 分段身份重复")
+				return nil, errors.New("媒体分段身份重复")
 			}
 			continue
 		}
 		if value.Id == "" {
-			return nil, errors.New("Emby 物理快照缺少 ID")
+			return nil, errors.New("媒体物理快照缺少 ID")
 		}
 		seen[value.Id] = true
 		if value.Path == "" || value.MediaSources == nil {
@@ -223,12 +229,15 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 				return nil, err
 			}
 			if len(details) != 1 || details[0].Id != value.Id || details[0].Path == "" || details[0].MediaSources == nil {
-				return nil, fmt.Errorf("Emby 条目 %s 缺少物理 Path 或 MediaSources", value.Id)
+				return nil, fmt.Errorf("媒体条目 %s 缺少物理 Path 或 MediaSources", value.Id)
 			}
 			value = details[0]
 			if strict && value.Type != "Movie" && value.Type != "Episode" && value.Type != "Video" {
-				return nil, errors.New("Emby 物理详情类型缺失或不支持")
+				return nil, errors.New("媒体物理详情类型缺失或不支持")
 			}
+		}
+		if err := client.CompleteSTRMSources(ctx, &value); err != nil {
+			return nil, err
 		}
 		ownSources := []models.EmbySnapshotSource{}
 		foreignIDs := []string{}
@@ -297,7 +306,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 					}
 				}
 				if !requested || found[detail.Id] {
-					return nil, errors.New("Emby 版本查询返回未请求或重复条目")
+					return nil, errors.New("媒体版本查询返回未请求或重复条目")
 				}
 				found[detail.Id] = true
 				versionOf := versionRoot
@@ -308,7 +317,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 			}
 			for _, id := range foreignIDs {
 				if !found[id] {
-					return nil, fmt.Errorf("Emby 版本 %s 详情不完整", id)
+					return nil, fmt.Errorf("媒体版本 %s 详情不完整", id)
 				}
 			}
 		}
@@ -318,7 +327,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 				return nil, err
 			}
 			if len(parts) != value.PartCount-1 {
-				return nil, fmt.Errorf("Emby 条目 %s 分段数量不完整", value.Id)
+				return nil, fmt.Errorf("媒体条目 %s 分段数量不完整", value.Id)
 			}
 			missing := []string{}
 			for _, part := range parts {
@@ -334,7 +343,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 				byID := map[string]embyclientrestgo.BaseItemDtoV2{}
 				for _, detail := range details {
 					if !slices.Contains(missing, detail.Id) || byID[detail.Id].Id != "" {
-						return nil, errors.New("Emby 分段查询返回未请求或重复条目")
+						return nil, errors.New("媒体分段查询返回未请求或重复条目")
 					}
 					byID[detail.Id] = detail
 				}
@@ -342,7 +351,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 					if parts[i].Path == "" || parts[i].MediaSources == nil {
 						detail, ok := byID[parts[i].Id]
 						if !ok || detail.Path == "" || detail.MediaSources == nil {
-							return nil, errors.New("Emby 分段详情不完整")
+							return nil, errors.New("媒体分段详情不完整")
 						}
 						parts[i] = detail
 					}
@@ -351,7 +360,7 @@ func collectEmbySnapshotsWithReader(ctx context.Context, client *embyclientrestg
 			partIDs := map[string]bool{}
 			for _, part := range parts {
 				if part.Id == "" || part.Id == value.Id || partIDs[part.Id] {
-					return nil, errors.New("Emby 分段身份重复或缺失")
+					return nil, errors.New("媒体分段身份重复或缺失")
 				}
 				partIDs[part.Id] = true
 				if part.Type == "" {

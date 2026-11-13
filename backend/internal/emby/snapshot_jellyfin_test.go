@@ -20,8 +20,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -68,6 +68,9 @@ func TestJellyfinSnapshotsKeepStablePhysicalGroups(t *testing.T) {
 					defer fixtureMu.RUnlock()
 					var result []embyclientrestgo.BaseItemDtoV2
 					switch r.URL.Path {
+					case "/System/Ping":
+						fmt.Fprint(w, `"Jellyfin Server"`)
+						return
 					case "/System/Info/Public":
 						fmt.Fprint(w, `{"Id":"jellyfin-test","ProductName":"Jellyfin","Version":"12.4"}`)
 						return
@@ -155,6 +158,9 @@ func TestJellyfinLegacyHiddenVersionKeepsPhysicalOwnership(t *testing.T) {
 	hidden.MediaSources = []embyclientrestgo.MediaSource{{ID: hidden.Id, Type: "Default", Path: "http://qms/stream?pickcode=" + hidden.Id}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/System/Ping":
+			fmt.Fprint(w, `"Jellyfin Server"`)
+			return
 		case "/System/Info/Public":
 			fmt.Fprint(w, `{"Id":"legacy-jellyfin","ProductName":"Jellyfin Server","Version":"10.11.11"}`)
 		case "/Items":
@@ -199,7 +205,7 @@ func TestJellyfinLegacyHiddenVersionKeepsPhysicalOwnership(t *testing.T) {
 }
 
 func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
-	previousDB, previousLogger, previousConfig := db.Db, helpers.AppLogger, models.GlobalEmbyConfig
+	previousDB, previousLogger := db.Db, helpers.AppLogger
 	conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "jellyfin.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -209,15 +215,18 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		SetEmbySyncRunning(false)
-		db.Db, helpers.AppLogger, models.GlobalEmbyConfig = previousDB, previousLogger, previousConfig
+		_ = SetMediaLibrarySyncRunning(models.MediaServerJellyfin, false)
+		db.Db, helpers.AppLogger = previousDB, previousLogger
 		_ = sqlDB.Close()
 	})
-	db.Db, models.GlobalEmbyConfig = conn, nil
+	db.Db = conn
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	SetEmbySyncRunning(false)
+	_ = SetMediaLibrarySyncRunning(models.MediaServerJellyfin, false)
 	setupSnapshotTestTables(t)
 	items := jellyfinVersionItems("Episode")
+	part := items[jellyfinPart]
+	part.Type = "Video"
+	items[jellyfinPart] = part
 	entryIDs := []string{jellyfinVersionB, jellyfinVersionA}
 	failParts := false
 	duplicatePage := false
@@ -229,11 +238,23 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 		defer fixtureMu.RUnlock()
 		var result []embyclientrestgo.BaseItemDtoV2
 		switch r.URL.Path {
+		case "/System/Ping":
+			fmt.Fprint(w, `"Jellyfin Server"`)
+			return
 		case "/System/Info/Public":
 			fmt.Fprint(w, `{"Id":"jellyfin-test","ProductName":"Jellyfin","Version":"12.4"}`)
 			return
 		case "/Users":
 			fmt.Fprint(w, `[{"Id":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","Policy":{"EnableAllFolders":true}}]`)
+			return
+		case "/Items/" + jellyfinVersionA + "/Ancestors":
+			fmt.Fprintf(w, `[{"Id":%q,"Path":"/jellyfin","IsFolder":true}]`, jellyfinLibrary)
+			return
+		case "/Items/" + jellyfinPart + "/Ancestors":
+			fmt.Fprint(w, `[]`)
+			return
+		case "/Library/VirtualFolders":
+			fmt.Fprintf(w, `[{"ItemId":%q,"Name":"library","Locations":["/jellyfin"]}]`, jellyfinLibrary)
 			return
 		case "/Library/MediaFolders":
 			fmt.Fprintf(w, `{"Items":[{"Id":%q,"Name":"library"}]}`, jellyfinLibrary)
@@ -273,8 +294,8 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	config := models.EmbyConfig{
-		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, LastSavedCursorAt: 100,
+	config := models.JellyfinConfig{MediaServerType: models.MediaServerJellyfin,
+		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, LastSavedCursorAt: 100,
 		PathMappingsJSON: `[{"emby_root":"/jellyfin","local_root":"/local"}]`,
 	}
 	if err := conn.Create(&config).Error; err != nil {
@@ -294,9 +315,9 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 	for _, run := range []struct {
 		name string
 		sync func() (int, error)
-	}{{"full", PerformEmbySync}, {"incremental", PerformEmbyIncrementalSync}, {"repeat_full", PerformEmbySync}} {
+	}{{"full", func() (int, error) { return PerformMediaLibrarySync(models.MediaServerJellyfin) }}, {"incremental", func() (int, error) { return PerformMediaLibraryIncrementalSync(models.MediaServerJellyfin) }}, {"repeat_full", func() (int, error) { return PerformMediaLibrarySync(models.MediaServerJellyfin) }}} {
 		t.Run(run.name, func(t *testing.T) {
-			var before models.EmbyConfig
+			var before models.JellyfinConfig
 			if err := conn.First(&before).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -320,7 +341,7 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 			if query.Get("MinDateLastSaved") != wantMinDate || query.Get("SortBy") != "DateCreated,SortName" {
 				t.Fatalf("Jellyfin scan query = %v, want MinDateLastSaved=%q with supported sorting", query, wantMinDate)
 			}
-			var after models.EmbyConfig
+			var after models.JellyfinConfig
 			if err := conn.First(&after).Error; err != nil || after.LastSavedCursorAt < startedAt || after.LastSavedCursorAt > time.Now().Unix() {
 				t.Fatalf("success cursor outside scan-start window: %+v error=%v", after, err)
 			}
@@ -344,11 +365,19 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 			}
 		})
 	}
-	var before models.EmbyConfig
+
+	if changed, err := SyncMediaItemByIDContext(t.Context(), models.MediaServerJellyfin, jellyfinPart); err != nil || !changed {
+		t.Fatalf("directly readable hidden part sync changed=%t err=%v", changed, err)
+	}
+	var syncedPart models.EmbyMediaItem
+	if err := conn.Where("media_server_type = ? AND item_id = ?", models.MediaServerJellyfin, jellyfinPart).First(&syncedPart).Error; err != nil || syncedPart.PartOfItemID != jellyfinVersionA || syncedPart.LibraryId != jellyfinLibrary {
+		t.Fatalf("hidden part lost verified parent/library: %+v err=%v", syncedPart, err)
+	}
+	var before models.JellyfinConfig
 	if err := conn.First(&before).Error; err != nil {
 		t.Fatal(err)
 	}
-	old := models.EmbyMediaItem{ItemId: "f5555555555555555555555555555555", LibraryId: jellyfinLibrary, LastSeenSyncRun: "old"}
+	old := models.EmbyMediaItem{MediaServerType: models.MediaServerJellyfin, ItemId: "f5555555555555555555555555555555", LibraryId: jellyfinLibrary, LastSeenSyncRun: "old"}
 	if err := conn.Create(&old).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -360,12 +389,12 @@ func TestJellyfinSyncPersistsGUIDLinksAndPreservesFailedRun(t *testing.T) {
 		for _, run := range []struct {
 			name string
 			sync func() (int, error)
-		}{{"full", PerformEmbySync}, {"incremental", PerformEmbyIncrementalSync}} {
+		}{{"full", func() (int, error) { return PerformMediaLibrarySync(models.MediaServerJellyfin) }}, {"incremental", func() (int, error) { return PerformMediaLibraryIncrementalSync(models.MediaServerJellyfin) }}} {
 			t.Run(failure+"/"+run.name, func(t *testing.T) {
 				if _, err := run.sync(); err == nil {
 					t.Fatal("incomplete Jellyfin scan reported success")
 				}
-				var after models.EmbyConfig
+				var after models.JellyfinConfig
 				if err := conn.First(&after).Error; err != nil || after.LastSavedCursorAt != before.LastSavedCursorAt || after.LastFullSyncAt != before.LastFullSyncAt || after.LastError == "" {
 					t.Fatalf("failure advanced success state: %+v error=%v", after, err)
 				}

@@ -2,18 +2,25 @@ package controllers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"qmediasync/internal/db"
+	embypreload "qmediasync/internal/emby302/service/emby"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/playback"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -23,12 +30,15 @@ func setupEmbyConfigControllerTest(t *testing.T) *gin.Engine {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
+	previousLogger := helpers.AppLogger
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	models.GlobalEmbyConfig = nil
-	setupControllerTestDB(t, &models.EmbyConfig{})
+	setupControllerTestDB(t, &models.EmbyConfig{}, &models.JellyfinConfig{})
 
 	r := gin.New()
 	r.PUT("/emby/config", UpdateEmbyConfig)
+	r.PUT("/jellyfin/config", UpdateJellyfinConfig)
+	r.GET("/jellyfin/config", GetJellyfinConfig)
 	return r
 }
 
@@ -50,7 +60,7 @@ func TestUpdateEmbyConfigPathMappingsCompatibilityAndClear(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			body := `{"emby_url":"http://emby.local","emby_api_key":"key","sync_enabled":1,"sync_cron":"0 * * * *","sync_all_libraries":1` + test.field + `}`
-			response := requestEmbyConfig(t, r, body)
+			response := requestMediaLibraryConfig(t, r, models.MediaServerEmby, body)
 			if response.Code != Success {
 				t.Fatalf("save failed: %+v", response)
 			}
@@ -92,7 +102,7 @@ func TestUpdateEmbyConfigPathMappingsValidationAndPersistence(t *testing.T) {
 	if err := db.Db.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
-	response := requestEmbyConfig(t, r, `{"emby_url":"http://emby.local","sync_enabled":1,"sync_cron":"0 * * * *","sync_all_libraries":1,"path_mappings":[{"emby_root":"/external/","local_root":"/mounted/","sync_path_id":9}]}`)
+	response := requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://emby.local","sync_enabled":1,"sync_cron":"0 * * * *","sync_all_libraries":1,"path_mappings":[{"emby_root":"/external/","local_root":"/mounted/","sync_path_id":9}]}`)
 	if response.Code != Success {
 		t.Fatalf("save failed: %+v", response)
 	}
@@ -125,7 +135,7 @@ func TestUpdateEmbyConfigPathMappingsValidationAndPersistence(t *testing.T) {
 			if err := db.Db.Model(&syncPath).Updates(map[string]any{"source_type": test.source, "account_id": test.accountID}).Error; err != nil {
 				t.Fatal(err)
 			}
-			response := requestEmbyConfig(t, r, `{"emby_url":"http://changed.local","path_mappings":`+test.mappings+`}`)
+			response := requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://changed.local","path_mappings":`+test.mappings+`}`)
 			if response.Code != BadRequest {
 				t.Fatalf("accepted invalid mapping: %+v", response)
 			}
@@ -135,9 +145,6 @@ func TestUpdateEmbyConfigPathMappingsValidationAndPersistence(t *testing.T) {
 			}
 			if fresh.EmbyUrl != stored.EmbyUrl || fresh.PathMappingsJSON != stored.PathMappingsJSON {
 				t.Fatal("rejected save changed config")
-			}
-			if models.GlobalEmbyConfig.EmbyUrl != stored.EmbyUrl || models.GlobalEmbyConfig.PathMappingsJSON != stored.PathMappingsJSON {
-				t.Fatal("rejected save changed runtime config")
 			}
 		})
 	}
@@ -150,9 +157,6 @@ func TestUpdateEmbyConfigMappingWriteFailureAndConcurrentState(t *testing.T) {
 	if err := db.Db.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := models.GetEmbyConfigFromDB(); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.Db.Callback().Update().Before("gorm:update").Register("test:reject_mapping_write", func(tx *gorm.DB) {
 		if tx.Statement.Table == "emby_config" {
 			tx.AddError(errors.New("injected mapping write failure"))
@@ -160,7 +164,7 @@ func TestUpdateEmbyConfigMappingWriteFailureAndConcurrentState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	response := requestEmbyConfig(t, r, `{"emby_url":"http://emby.local","path_mappings":[]}`)
+	response := requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://emby.local","path_mappings":[]}`)
 	if response.Code != BadRequest {
 		t.Fatalf("failed write returned success: %+v", response)
 	}
@@ -174,14 +178,11 @@ func TestUpdateEmbyConfigMappingWriteFailureAndConcurrentState(t *testing.T) {
 	if stored.PathMappingsJSON != config.PathMappingsJSON {
 		t.Fatal("failed write lost mappings")
 	}
-	if models.GlobalEmbyConfig.PathMappingsJSON != config.PathMappingsJSON {
-		t.Fatal("failed write changed runtime mappings")
-	}
 	// 同步状态更新不拥有路径配置，不能由空类型化数组触发清空。
 	if err := db.Db.Model(&models.EmbyConfig{}).Where("id = ?", config.ID).Updates(map[string]any{"is_running": true, "last_saved_cursor_at": 99}).Error; err != nil {
 		t.Fatal(err)
 	}
-	response = requestEmbyConfig(t, r, `{"emby_url":"http://emby.local","sync_enabled":1,"sync_cron":"0 * * * *","sync_all_libraries":1}`)
+	response = requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://emby.local","sync_enabled":1,"sync_cron":"0 * * * *","sync_all_libraries":1}`)
 	if response.Code != Success {
 		t.Fatalf("save failed: %+v", response)
 	}
@@ -200,15 +201,15 @@ func TestUpdateEmbyConfigMappingLookupAndDecodeFailure(t *testing.T) {
 	if err := db.Db.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
-	response := requestEmbyConfig(t, r, `{"emby_url":"http://changed.local","path_mappings":[{"emby_root":"/emby","local_root":"/mounted","sync_path_id":99}]}`)
+	response := requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://changed.local","path_mappings":[{"emby_root":"/emby","local_root":"/mounted","sync_path_id":99}]}`)
 	if response.Code != BadRequest || !strings.Contains(response.Message, "读取路径映射") {
 		t.Fatalf("lookup failure hidden: %+v", response)
 	}
 	if err := db.Db.Model(&config).Update("path_mappings_json", "{corrupt").Error; err != nil {
 		t.Fatal(err)
 	}
-	response = requestEmbyConfig(t, r, `{"emby_url":"http://changed.local","path_mappings":[]}`)
-	if response.Code != BadRequest || !strings.Contains(response.Message, "读取 Emby 路径映射失败") {
+	response = requestMediaLibraryConfig(t, r, models.MediaServerEmby, `{"emby_url":"http://changed.local","path_mappings":[]}`)
+	if response.Code != BadRequest || !strings.Contains(response.Message, "读取媒体库路径映射失败") {
 		t.Fatalf("decode failure hidden: %+v", response)
 	}
 	var persistedURL string
@@ -220,9 +221,9 @@ func TestUpdateEmbyConfigMappingLookupAndDecodeFailure(t *testing.T) {
 	}
 }
 
-func requestEmbyConfig(t *testing.T, router *gin.Engine, body string) APIResponse[json.RawMessage] {
+func requestMediaLibraryConfig(t *testing.T, router *gin.Engine, kind models.MediaServerType, body string) APIResponse[json.RawMessage] {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPut, "/emby/config", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPut, "/"+string(kind)+"/config", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, request)
@@ -238,11 +239,12 @@ func TestGetEmbyLibraries连接失败保留原因且隐藏密钥(t *testing.T) {
 	r.GET("/emby/libraries", GetEmbyLibraries)
 	server := httptest.NewServer(http.NotFoundHandler())
 	server.Close()
-	models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "private-emby-key"}
-	t.Cleanup(func() { models.GlobalEmbyConfig = nil })
+	if err := db.Db.Create(&models.EmbyConfig{Enabled: true, EmbyUrl: server.URL, EmbyApiKey: "private-emby-key"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/emby/libraries", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "查询 Emby 媒体库失败") || strings.Contains(w.Body.String(), "private-emby-key") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "查询媒体库失败") || strings.Contains(w.Body.String(), "private-emby-key") {
 		t.Fatalf("应返回不含密钥的连接失败：%s", w.Body.String())
 	}
 }
@@ -290,7 +292,6 @@ func TestUpdateEmbyConfigDoesNotOverwriteConcurrentSyncState(t *testing.T) {
 	if err := db.Db.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
-	models.GlobalEmbyConfig = &config
 	triggered := false
 	if err := db.Db.Callback().Update().Before("gorm:update").Register("test:advance_emby_cursor", func(tx *gorm.DB) {
 		if triggered || tx.Statement.Table != "emby_config" {
@@ -336,5 +337,363 @@ func TestUpdateEmbyConfigScopeChangeResetsSuccessfulWatermarks(t *testing.T) {
 	db.Db.First(&fresh)
 	if fresh.LastSavedCursorAt != 0 || fresh.LastFullSyncAt != 0 || fresh.LastSyncTime != 0 {
 		t.Fatalf("new server retained old watermarks: %+v", fresh)
+	}
+}
+
+func TestMediaLibraryConfigSaveIsolatedAndExplicitZeros(t *testing.T) {
+	router := setupEmbyConfigControllerTest(t)
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		body := fmt.Sprintf(`{"%s_url":"http://offline.invalid/%s","%s_api_key":"%s-key","enabled":false,"enable_media_notification":0,"enable_auth":0,"sync_enabled":0,"sync_all_libraries":0,"enable_daily_first_full_sync":0}`, kind, kind, kind, kind)
+		response := requestMediaLibraryConfig(t, router, kind, body)
+		if response.Code != Success {
+			t.Fatalf("%s save failed: %+v", kind, response)
+		}
+		config, err := models.ReadMediaLibraryConfigSnapshot(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.MediaServerType != kind || config.ID != 1 || config.Enabled || config.EnableMediaNotification != 0 || config.EnableAuth != 0 || config.SyncEnabled != 0 || config.SyncAllLibraries != 0 || config.EnableDailyFirstFullSync != 0 {
+			t.Fatalf("%s explicit zero or ownership changed: %+v", kind, config)
+		}
+		if config.CreatedAt <= 0 || config.UpdatedAt <= 0 || config.SyncMode != models.EmbySyncModeIdle || config.SelectedLibraries != "[]" {
+			t.Fatalf("%s new configuration lost defaults: %+v", kind, config)
+		}
+	}
+	for _, body := range []string{
+		`{"jellyfin_url":"http://offline.invalid/jellyfin","jellyfin_api_key":"jellyfin-key","enabled":true,"enable_media_notification":1}`,
+		`{"jellyfin_url":"http://offline.invalid/jellyfin","jellyfin_api_key":"jellyfin-key"}`,
+		`{"jellyfin_url":"http://offline.invalid/jellyfin","jellyfin_api_key":"jellyfin-key","enabled":null,"enable_media_notification":null}`,
+	} {
+		if response := requestMediaLibraryConfig(t, router, models.MediaServerJellyfin, body); response.Code != Success {
+			t.Fatalf("offline save failed: %+v", response)
+		}
+		config, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerJellyfin)
+		if err != nil || !config.Enabled || config.EnableMediaNotification != 1 {
+			t.Fatalf("omitted enabled/notification lost saved values: %+v %v", config, err)
+		}
+	}
+	if response := requestMediaLibraryConfig(t, router, models.MediaServerJellyfin, `{"jellyfin_url":"http://offline.invalid/jellyfin","enabled":false,"enable_media_notification":0}`); response.Code != Success {
+		t.Fatal(response)
+	}
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		config, err := models.ReadMediaLibraryConfigSnapshot(kind)
+		if err != nil || config.Enabled || config.EnableMediaNotification != 0 || config.EmbyUrl != "http://offline.invalid/"+string(kind) {
+			t.Fatalf("%s explicit disable changed other configuration: %+v %v", kind, config, err)
+		}
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/jellyfin/config", nil))
+	if !strings.Contains(response.Body.String(), `"jellyfin_url"`) || strings.Contains(response.Body.String(), `"emby_url"`) {
+		t.Fatalf("Jellyfin response fields: %s", response.Body)
+	}
+}
+
+func TestMediaLibraryConfigSavedWarningCanRetrySameValues(t *testing.T) {
+	router := setupEmbyConfigControllerTest(t)
+	if err := db.Db.Create(&models.JellyfinConfig{EmbyUrl: "http://offline.invalid", EmbyApiKey: "old-key"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	saved := false
+	if err := db.Db.Callback().Update().After("gorm:after_update").Register("test:mark_config_saved", func(tx *gorm.DB) {
+		if tx.Statement.Table == "jellyfin_config" {
+			saved = true
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Db.Callback().Update().Remove("test:mark_config_saved") })
+	if err := db.Db.Callback().Query().Before("gorm:query").Register("test:fail_config_apply", func(tx *gorm.DB) {
+		if saved && tx.Statement.Table == "jellyfin_config" {
+			tx.AddError(errors.New("injected post-commit reload failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Db.Callback().Query().Remove("test:fail_config_apply") })
+	body := `{"jellyfin_url":"http://offline.invalid","jellyfin_api_key":"new-key","enabled":true,"sync_enabled":1}`
+	response := requestMediaLibraryConfig(t, router, models.MediaServerJellyfin, body)
+	var result struct {
+		Warnings        []string `json:"warnings"`
+		RestartRequired bool     `json:"restart_required"`
+	}
+	if err := json.Unmarshal(response.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != Success || len(result.Warnings) != 1 || result.RestartRequired {
+		t.Fatalf("committed save reported failure or lost application warning: %+v %+v", response, result)
+	}
+	if err := db.Db.Callback().Query().Remove("test:fail_config_apply"); err != nil {
+		t.Fatal(err)
+	}
+	config, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerJellyfin)
+	if err != nil || !config.Enabled || config.EmbyApiKey != "new-key" {
+		t.Fatalf("application failure rolled back saved values: %+v %v", config, err)
+	}
+	response = requestMediaLibraryConfig(t, router, models.MediaServerJellyfin, body)
+	if err := json.Unmarshal(response.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != Success || len(result.Warnings) != 0 || result.RestartRequired {
+		t.Fatalf("same-value application retry failed: %+v %+v", response, result)
+	}
+}
+
+func TestMediaLibraryLibrariesCanConfigureDisabledService(t *testing.T) {
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		t.Run(string(kind), func(t *testing.T) {
+			router := setupEmbyConfigControllerTest(t)
+			if err := db.Db.AutoMigrate(&models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}); err != nil {
+				t.Fatal(err)
+			}
+			id := "101"
+			if kind == models.MediaServerJellyfin {
+				id = "11111111111111111111111111111111"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/System/Ping" {
+					if kind == models.MediaServerJellyfin {
+						fmt.Fprint(w, `"Jellyfin Server"`)
+					} else {
+						fmt.Fprint(w, "Emby Server")
+					}
+					return
+				}
+				path := "/emby/Library/MediaFolders"
+				if kind == models.MediaServerJellyfin {
+					path = "/Library/MediaFolders"
+				}
+				if r.URL.Path != path {
+					t.Errorf("unexpected configuration lookup: %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				fmt.Fprintf(w, `{"Items":[{"Id":%q,"Name":"Movies"}]}`, id)
+			}))
+			defer server.Close()
+			var config any = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "key"}
+			if kind == models.MediaServerJellyfin {
+				config = &models.JellyfinConfig{EmbyUrl: server.URL, EmbyApiKey: "key"}
+			}
+			if err := db.Db.Create(config).Error; err != nil {
+				t.Fatal(err)
+			}
+			endpoint := "/" + string(kind) + "/libraries"
+			if kind == models.MediaServerJellyfin {
+				router.GET(endpoint, GetJellyfinLibraries)
+			} else {
+				router.GET(endpoint, GetEmbyLibraries)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, endpoint, nil))
+			var result APIResponse[[]models.EmbyLibrary]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Code != Success || len(result.Data) != 1 || result.Data[0].LibraryId != id {
+				t.Fatalf("disabled service cannot configure libraries: %s", response.Body)
+			}
+			stored, err := models.ReadMediaLibraryConfigSnapshot(kind)
+			if err != nil || stored.Enabled {
+				t.Fatalf("lookup enabled the service: %+v %v", stored, err)
+			}
+		})
+	}
+}
+
+func TestMediaLibrarySyncStatusDoesNotHideCountFailure(t *testing.T) {
+	router := setupEmbyConfigControllerTest(t)
+	if err := db.Db.Create(&models.EmbyConfig{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	router.GET("/emby/status", GetEmbySyncStatus)
+	for _, available := range []bool{false, true} {
+		if available {
+			if err := db.Db.AutoMigrate(&models.EmbyMediaItem{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/emby/status", nil))
+		var result APIResponse[json.RawMessage]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if !available && (result.Code != BadRequest || !strings.Contains(result.Message, "读取媒体库条目数量失败")) || available && result.Code != Success {
+			t.Fatalf("count availability=%v: %s", available, response.Body)
+		}
+	}
+}
+
+func TestMediaLibraryDisableCancelsOnlyCommittedEmbyPreloads(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind models.MediaServerType
+		fail bool
+	}{
+		{"Emby disabled", models.MediaServerEmby, false},
+		{"Jellyfin disabled", models.MediaServerJellyfin, false},
+		{"failed Emby save", models.MediaServerEmby, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router := setupEmbyConfigControllerTest(t)
+			if err := db.Db.Create(&models.EmbyConfig{Enabled: true, EmbyUrl: "http://offline.invalid", EmbyApiKey: "key"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Create(&models.JellyfinConfig{Enabled: true, EmbyUrl: "http://offline.invalid", EmbyApiKey: "key"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.fail {
+				if err := db.Db.Callback().Update().Before("gorm:update").Register("test:reject_preload_disable", func(tx *gorm.DB) {
+					if tx.Statement.Table == "emby_config" {
+						tx.AddError(errors.New("injected config failure"))
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous := playback.DefaultPreloader
+			preloader := playback.NewPreloader()
+			playback.DefaultPreloader = preloader
+			defer func() { preloader.Stop(); playback.DefaultPreloader = previous }()
+			preloader.Start(t.Context())
+			preloader.Apply(true, 1)
+			stopPreloading := embypreload.ConfigurePreloading(embypreload.PreloadOptions{Instance: "emby302", Coordinator: preloader})
+			defer stopPreloading()
+			started, completed := make(chan string, 2), make(chan string, 2)
+			release := make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			for index, instance := range []string{"emby302", "fnos:independent"} {
+				if !preloader.Submit(playback.PreloadCandidate{Key: instance, Scope: instance, Instance: instance, Kind: playback.PreloadNext,
+					Account: playback.PreloadAccount{Provider: "115", AccountID: uint(index + 1), UserID: instance},
+					Run: func(ctx context.Context, task *playback.PreloadTask) playback.PreloadResult {
+						started <- instance
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+						state := "valid"
+						if ctx.Err() != nil || !task.Valid() {
+							state = "canceled"
+						}
+						completed <- instance + ":" + state
+						return playback.PreloadResult{Outcome: playback.PreloadSkipped}
+					}}) {
+					t.Fatal("preload was not admitted")
+				}
+			}
+			for range 2 {
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					t.Fatal("preloads did not start")
+				}
+			}
+			body := fmt.Sprintf(`{"%s_url":"http://offline.invalid","%s_api_key":"key","enabled":false}`, test.kind, test.kind)
+			response := requestMediaLibraryConfig(t, router, test.kind, body)
+			if (response.Code == Success) == test.fail {
+				t.Fatalf("unexpected save: %+v", response)
+			}
+			close(release)
+			for range 2 {
+				select {
+				case result := <-completed:
+					want := "valid"
+					if strings.HasPrefix(result, "emby302:") && test.kind == models.MediaServerEmby && !test.fail {
+						want = "canceled"
+					}
+					if !strings.HasSuffix(result, ":"+want) {
+						t.Fatalf("preload after save: %s, want %s", result, want)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("preloads did not finish")
+				}
+			}
+		})
+	}
+}
+
+func TestMediaLibraryConfigSavesKeepCommitOrderWithinEachService(t *testing.T) {
+	router := setupEmbyConfigControllerTest(t)
+	if err := db.Db.Create(&models.EmbyConfig{Enabled: true, EmbyUrl: "http://offline.invalid", EmbyApiKey: "key"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Create(&models.JellyfinConfig{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	firstCommitted, releaseFirst := make(chan struct{}), make(chan struct{})
+	var blockFirst atomic.Bool
+	var releaseOnce sync.Once
+	var saves sync.WaitGroup
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	defer func() { release(); saves.Wait() }()
+	if err := db.Db.Callback().Update().After("gorm:commit_or_rollback_transaction").Register("test:pause_committed_emby_save", func(tx *gorm.DB) {
+		if tx.Statement.Table == "emby_config" && tx.Error == nil && blockFirst.CompareAndSwap(false, true) {
+			close(firstCommitted)
+			<-releaseFirst
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Db.Callback().Update().Remove("test:pause_committed_emby_save") })
+	submit := func(kind models.MediaServerType, enabled bool, done chan<- *httptest.ResponseRecorder) {
+		defer saves.Done()
+		body := fmt.Sprintf(`{"%s_url":"http://offline.invalid","%s_api_key":"key","enabled":%t}`, kind, kind, enabled)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/"+string(kind)+"/config", strings.NewReader(body)))
+		done <- response
+	}
+	waitResponse := func(done <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+		t.Helper()
+		select {
+		case response := <-done:
+			return response
+		case <-time.After(time.Second):
+			release()
+			t.Fatal("configuration save did not finish")
+			return nil
+		}
+	}
+	firstDone, secondDone, jellyfinDone := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
+	saves.Add(1)
+	go submit(models.MediaServerEmby, false, firstDone)
+	select {
+	case <-firstCommitted:
+	case <-time.After(time.Second):
+		t.Fatal("first save did not reach its commit boundary")
+	}
+	saves.Add(2)
+	go submit(models.MediaServerEmby, true, secondDone)
+	go submit(models.MediaServerJellyfin, true, jellyfinDone)
+	responses := []*httptest.ResponseRecorder{waitResponse(jellyfinDone)}
+	var overtaking *httptest.ResponseRecorder
+	select {
+	case overtaking = <-secondDone:
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	responses = append(responses, waitResponse(firstDone))
+	if overtaking == nil {
+		responses = append(responses, waitResponse(secondDone))
+	} else {
+		responses = append(responses, overtaking)
+	}
+	for _, response := range responses {
+		var result APIResponse[json.RawMessage]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Code != Success {
+			t.Fatalf("configuration save failed: %s (%v)", response.Body, err)
+		}
+	}
+	if overtaking != nil {
+		t.Fatal("a later Emby save overtook the first committed save and its runtime publication")
+	}
+	config, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
+	if err != nil || !config.Enabled {
+		t.Fatalf("last committed Emby value was lost: %+v %v", config, err)
 	}
 }

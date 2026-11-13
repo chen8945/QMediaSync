@@ -30,12 +30,12 @@ func setupEmbyWebhookPostgres(t *testing.T) (*gorm.DB, string, *EmbyConfig, Emby
 }
 
 func embyPostgresEnvelope(event, itemID string) EmbyWebhookEnvelope {
-	return EmbyWebhookEnvelope{Event: event, ServerID: "server-a", ItemID: itemID, ItemType: "Movie", ItemPath: "/local/media/movie.strm", Source: "official"}
+	return EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: event, ServerID: "server-a", ItemID: itemID, ItemType: "Movie", ItemPath: "/local/media/movie.strm", Source: "official"}
 }
 
 func claimEmbyWebhookPostgres(t *testing.T, now int64) EmbyWebhookRecord {
 	t.Helper()
-	record, err := ClaimEmbyWebhook(t.Context(), now)
+	record, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, now)
 	if err != nil || record == nil || record.ClaimToken == "" || record.Status != EmbyWebhookRunning {
 		t.Fatalf("claim failed: %+v, %v", record, err)
 	}
@@ -125,7 +125,7 @@ func TestEmbyWebhookPostgresConcurrentClaimsKeepDistinctEvents(t *testing.T) {
 	for range 2 {
 		workers.Go(func() {
 			<-start
-			record, err := ClaimEmbyWebhook(t.Context(), time.Now().Unix())
+			record, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, time.Now().Unix())
 			results <- claimResult{record: record, err: err}
 		})
 	}
@@ -161,7 +161,7 @@ func TestEmbyWebhookPostgresConcurrentClaimsKeepDistinctEvents(t *testing.T) {
 	if got := claimEmbyWebhookPostgres(t, time.Now().Unix()); got.ID != third.ID {
 		t.Fatalf("event received during processing was lost: got=%d want=%d", got.ID, third.ID)
 	}
-	if record, err := ClaimEmbyWebhook(t.Context(), time.Now().Unix()); err != nil || record != nil {
+	if record, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, time.Now().Unix()); err != nil || record != nil {
 		t.Fatalf("running events must not be reclaimed without recovery: %+v, %v", record, err)
 	}
 }
@@ -311,7 +311,7 @@ func TestEmbyWebhookPostgresReceiptAuthorizationNeverIncreases(t *testing.T) {
 	if err := FinishEmbyWebhook(t.Context(), claimed, EmbyWebhookRetry, "busy", future, false); err != nil {
 		t.Fatal(err)
 	}
-	if premature, err := ClaimEmbyWebhook(t.Context(), future-1); err != nil || premature != nil {
+	if premature, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, future-1); err != nil || premature != nil {
 		t.Fatalf("retry was claimed before its saved time: %+v, %v", premature, err)
 	}
 	again := claimEmbyWebhookPostgres(t, future)
@@ -575,7 +575,7 @@ func TestEmbyWebhookPostgresObservedSurvivorReleasesOnlyFreshBarrier(t *testing.
 func TestEmbyWebhookPostgresVerifiedGroupAdmissionAtomic(t *testing.T) {
 	conn, _, config, _, _ := setupEmbyWebhookPostgres(t)
 	if err := conn.Transaction(func(tx *gorm.DB) error {
-		_, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"9101", "9102"})
+		_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"9101", "9102"})
 		return err
 	}); err != nil {
 		t.Fatal(err)

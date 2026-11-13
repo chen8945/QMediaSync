@@ -87,12 +87,12 @@ func TestSTRMSyncPerformancePostgres(t *testing.T) {
 	if os.Getenv("QMS_STRM_PERFORMANCE") != "1" {
 		t.Skip("requires QMS_STRM_PERFORMANCE=1 and QMS_TEST_POSTGRES_DSN")
 	}
-	previousSettings, previousConfig := models.SettingsGlobal, models.GlobalEmbyConfig
+	previousSettings := models.SettingsGlobal
 	previousLog, previous115Log, previousConfigDir := helpers.AppLogger, helpers.V115Log, helpers.ConfigDir
 	previousNotifications := notificationmanager.GlobalEnhancedNotificationManager
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.V115Log, helpers.ConfigDir = helpers.AppLogger, t.TempDir()
-	models.GlobalEmbyConfig, notificationmanager.GlobalEnhancedNotificationManager = nil, nil
+	notificationmanager.GlobalEnhancedNotificationManager = nil
 	models.SettingsGlobal = &models.Settings{
 		SettingThreads: models.SettingThreads{FileDetailThreads: 2, FileListPageSize: strmPerformancePageSize},
 		SettingStrm:    models.SettingStrm{StrmBaseUrl: "http://qms.fixture", VideoExt: `[".mkv"]`, MetaExt: `[]`, Cron: "0 0 * * *"},
@@ -100,7 +100,7 @@ func TestSTRMSyncPerformancePostgres(t *testing.T) {
 	v115open.SetGlobalExecutorConfig(100, 1_000_000, 1_000_000)
 	t.Cleanup(func() {
 		v115open.SetGlobalExecutorConfig(3, 200, 12_000)
-		models.SettingsGlobal, models.GlobalEmbyConfig = previousSettings, previousConfig
+		models.SettingsGlobal = previousSettings
 		helpers.AppLogger, helpers.V115Log, helpers.ConfigDir = previousLog, previous115Log, previousConfigDir
 		notificationmanager.GlobalEnhancedNotificationManager = previousNotifications
 	})

@@ -108,14 +108,14 @@ func embySameBatchParent(left, right EmbyFrozenFile) bool {
 
 func registerEmbyDeletionTargets(ctx context.Context, plan EmbyDeletionPlan, targets []EmbyDeletionTarget) error {
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := lockEmbyIndexState(tx); err != nil {
+		if _, err := lockEmbyIndexState(tx, plan.Input.MediaServerType); err != nil {
 			return err
 		}
 		var ids []string
 		for _, target := range targets {
 			for _, ref := range target.Owners {
 				var state EmbyItemState
-				if err := tx.Where("server_id = ? AND item_id = ?", plan.Input.ServerID, ref.ItemID).First(&state).Error; err != nil {
+				if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", plan.Input.MediaServerType, plan.Input.ServerID, ref.ItemID).First(&state).Error; err != nil {
 					return err
 				}
 				if state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation {
@@ -127,7 +127,7 @@ func registerEmbyDeletionTargets(ctx context.Context, plan EmbyDeletionPlan, tar
 			}
 		}
 		if len(ids) > 0 {
-			_, err := RegisterEmbyDeletionTx(tx, plan.Input.ServerID, ids)
+			_, err := RegisterEmbyDeletionTx(tx, plan.Input.MediaServerType, plan.Input.ServerID, ids)
 			return err
 		}
 		return nil
@@ -150,7 +150,7 @@ func validateEmbyDeletionBarrier(ctx context.Context, input EmbyDeletionInput, t
 		}
 	}
 	var states []EmbyItemState
-	if err := db.Db.WithContext(ctx).Where("server_id = ? AND item_id IN ?", input.ServerID, ids).Find(&states).Error; err != nil {
+	if err := db.Db.WithContext(ctx).Where("media_server_type = ? AND server_id = ? AND item_id IN ?", input.MediaServerType, input.ServerID, ids).Find(&states).Error; err != nil {
 		return err
 	}
 	if len(states) != len(refs) {

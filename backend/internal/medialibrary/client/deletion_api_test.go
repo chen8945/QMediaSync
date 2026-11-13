@@ -3,7 +3,6 @@ package embyclientrestgo
 import (
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -24,7 +23,7 @@ func TestGetDeletionVerificationItemsRequiresCompleteInventory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/emby/Items" || r.URL.Query().Get("ParentId") != "" || r.URL.Query().Get("UserId") != "" {
 					t.Error("verification inventory was scoped")
 				}
@@ -41,7 +40,7 @@ func TestGetDeletionVerificationItemsRequiresCompleteInventory(t *testing.T) {
 
 func TestGetDeletionVerificationItemsIncludesParentsAndChecksChangingPages(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newEmbyAPITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("Ids") == "123" {
 			if q.Get("IncludeItemTypes") != "Movie,Video,Episode,Season,Series" {

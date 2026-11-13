@@ -74,7 +74,7 @@ func TestStrmGenerationWorkerBatchContinuation(t *testing.T) {
 				}
 				service := NewStrmGenerationService()
 				service.resolveStrmOwner = func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error) { return true, nil }
-				service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+				service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 				service.acquireRefreshSubmission = func(context.Context) (func(), error) { return func() {}, nil }
 				service.detailByFileID = func(context.Context, *SyncStrm, string) (*SyncFileCache, error) {
 					return nil, errors.New("unexpected remote request")

@@ -166,7 +166,7 @@ func TestEmbyOpenListPlanDeletesVideoAndSidecarWithDownloadURLs(t *testing.T) {
 	var input EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		input, err = CaptureEmbyDeletionTx(tx, token.ServerID, "101", "Movie")
+		input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, "101", "Movie")
 		return err
 	}); err != nil {
 		t.Fatal(err)

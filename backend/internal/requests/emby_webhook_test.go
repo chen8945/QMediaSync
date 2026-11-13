@@ -152,3 +152,21 @@ func TestEmbyDeepDescriptionConservativeCandidates(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbyWebhookEnvelopeSeasonEpisodeLabels(t *testing.T) {
+	for _, tc := range []struct{ name, item, want string }{
+		{"season", `{"Id":"1","Type":"Season","Name":"第 1 季","SeriesName":"剧名","IndexNumber":1}`, "剧名 S01"},
+		{"native_season_precedes_parent", `{"Id":"1","Type":"Season","SeriesName":"剧名","IndexNumber":1,"ParentIndexNumber":0}`, "剧名 S01"},
+		{"special_episode", `{"Id":"1","Type":"Episode","SeriesName":"剧名","ParentIndexNumber":0,"IndexNumber":111}`, "剧名 S00E111"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, err := ParseEmbyWebhook([]byte(`{"Event":"library.deleted","Server":{"Id":"server"},"Item":` + tc.item + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := request.ToEnvelope().DisplayLabel(); got != tc.want {
+				t.Fatalf("label=%q want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -32,8 +32,9 @@ func stopAllTasks() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := stopWebhookWorker(ctx); err != nil {
-		return fmt.Errorf("停止 Emby Webhook 后台处理失败：%w", err)
+		return fmt.Errorf("停止媒体服务器 Webhook 后台处理失败：%w", err)
 	}
+	models.StopEmbyLibraryRefreshCoordinator()
 	synccron.PauseAllNewSyncQueues()
 	for _, scheduler := range []*cron.Cron{synccron.SyncCron, synccron.GlobalCron, synccron.ScrapeCron, synccron.TokenCron} {
 		if scheduler == nil {
@@ -51,7 +52,11 @@ func stopAllTasks() error {
 	if models.GlobalUploadQueue != nil {
 		models.GlobalUploadQueue.Stop()
 	}
-	emby.SetEmbySyncRunning(true)
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		if err := emby.SetMediaLibrarySyncRunning(kind, true); err != nil {
+			return err
+		}
+	}
 	// 这些服务已有取消与等待接口；超时后保留门禁，不触碰待恢复的表。
 	stopped := make(chan error, 1)
 	go func() {
@@ -78,9 +83,14 @@ func startAllTasks() error {
 	if models.GlobalUploadQueue != nil {
 		models.GlobalUploadQueue.Start()
 	}
-	emby.SetEmbySyncRunning(false)
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		if err := emby.SetMediaLibrarySyncRunning(kind, false); err != nil {
+			return err
+		}
+	}
+	models.InitEmbyLibraryRefreshCoordinator()
 	if err := startWebhookWorker(); err != nil {
-		return fmt.Errorf("恢复 Emby Webhook 后台处理失败：%w", err)
+		return fmt.Errorf("恢复媒体服务器 Webhook 后台处理失败：%w", err)
 	}
 	return nil
 }

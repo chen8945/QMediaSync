@@ -54,15 +54,14 @@ type StrmGenerationResult struct {
 
 // StrmGenerationService 复用现有 SyncStrm 能力完成单文件 STRM 后处理。
 type StrmGenerationService struct {
-	buildSyncer                  func(*models.SyncPath, *models.Account, *SyncStrmConfig) (*SyncStrm, error)
-	compareStrm                  func(*SyncStrm, *SyncFileCache) int
-	processStrmFile              func(*SyncStrm, *SyncFileCache) error
-	requestEmbyRefreshBySyncFile func(*models.SyncFile) error
-	resolveRefreshTarget         func(*models.SyncFile) (models.EmbyRefreshTarget, error)
-	requestEmbyRefreshTargets    func(uint, []models.EmbyRefreshTarget) error
-	acquireRefreshSubmission     func(context.Context) (func(), error)
-	detailByFileID               func(context.Context, *SyncStrm, string) (*SyncFileCache, error)
-	resolveStrmOwner             func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error)
+	buildSyncer               func(*models.SyncPath, *models.Account, *SyncStrmConfig) (*SyncStrm, error)
+	compareStrm               func(*SyncStrm, *SyncFileCache) int
+	processStrmFile           func(*SyncStrm, *SyncFileCache) error
+	resolveRefreshTargets     func(*models.SyncFile) ([]models.EmbyRefreshTarget, error)
+	requestEmbyRefreshTargets func(uint, []models.EmbyRefreshTarget) error
+	acquireRefreshSubmission  func(context.Context) (func(), error)
+	detailByFileID            func(context.Context, *SyncStrm, string) (*SyncFileCache, error)
+	resolveStrmOwner          func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error)
 }
 
 // NewStrmGenerationService 创建 STRM 生成服务。
@@ -86,9 +85,8 @@ func NewStrmGenerationService() *StrmGenerationService {
 	service.processStrmFile = func(syncer *SyncStrm, file *SyncFileCache) error {
 		return syncer.writeStrmFile(file)
 	}
-	service.requestEmbyRefreshBySyncFile = models.RequestEmbyRefreshBySyncFile
-	service.resolveRefreshTarget = models.ResolveEmbyRefreshTarget
-	service.requestEmbyRefreshTargets = models.RequestEmbyRefreshTargets
+	service.resolveRefreshTargets = models.ResolveMediaLibraryRefreshTargets
+	service.requestEmbyRefreshTargets = models.RequestMediaLibraryRefreshTargets
 	service.acquireRefreshSubmission = acquireStrmGenerationRefreshSubmission
 	service.detailByFileID = func(ctx context.Context, syncer *SyncStrm, fileID string) (*SyncFileCache, error) {
 		if syncer == nil || syncer.SyncDriver == nil {
@@ -148,6 +146,19 @@ func (service *StrmGenerationService) generate(ctx context.Context, input StrmGe
 	if reason := syncer.generationSkipReason(file); reason != "" {
 		return &StrmGenerationResult{SkipReason: reason}, nil
 	}
+	isWebhookFile := task.Source == models.StrmGenerationSourceWebhook && task.TaskType == models.StrmGenerationTaskTypeFile
+	var refreshTargets []models.EmbyRefreshTarget
+	var refreshResolutionErr error
+	if (!isWebhookFile || task.RefreshEmby) && file.IsVideo {
+		// 在目标锁及文件副作用之前冻结身份；无变化时不提交刷新。
+		refreshFile := file.GetSyncFile(syncer, syncer.Account.BaseUrl)
+		if existing, err := findExistingGeneratedSyncFile(ctx, task.SyncPathId, file.GetFileId(), file.PickCode); err != nil {
+			return nil, err
+		} else if existing != nil {
+			refreshFile.BaseModel = existing.BaseModel
+		}
+		refreshTargets, refreshResolutionErr = service.resolveRefreshTargets(refreshFile)
+	}
 	var unlockTarget func()
 	if file.IsVideo {
 		unlockTarget = lockStrmTarget(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath))
@@ -181,6 +192,9 @@ func (service *StrmGenerationService) generate(ctx context.Context, input StrmGe
 	newLocalPath := syncFile.LocalFilePath
 
 	changed := file.IsVideo && isStrmOwner && service.compareStrm(syncer, file) != 1
+	if refreshResolutionErr != nil && changed {
+		return nil, refreshResolutionErr
+	}
 	if changed {
 		if err := service.processStrmFile(syncer, file); err != nil {
 			return nil, fmt.Errorf("生成 STRM 文件失败：%w", err)
@@ -203,31 +217,29 @@ func (service *StrmGenerationService) generate(ctx context.Context, input StrmGe
 		unlockTarget()
 		unlockTarget = nil
 	}
-	isWebhookFile := task.Source == models.StrmGenerationSourceWebhook && task.TaskType == models.StrmGenerationTaskTypeFile
 	newMeta := 0
 	if isWebhookFile && task.DownloadMeta && file.IsVideo {
-		newMeta, err = service.downloadMatchedMetadata(ctx, syncer, syncPath, file, directory)
+		newMeta, err = service.downloadMatchedMetadata(ctx, syncer, syncPath, file, directory, refreshResolutionErr)
 		if err != nil {
 			return nil, err
 		}
 	}
 	result := &StrmGenerationResult{SyncFile: syncFile, Changed: changed, NewMeta: newMeta}
-	shouldSubmitWebhookRefresh := isWebhookFile && task.RefreshEmby && (changed || newMeta > 0)
-	switch {
-	case shouldSubmitWebhookRefresh:
-		target, err := service.resolveRefreshTarget(syncFile)
-		if err != nil {
-			return nil, err
-		}
-		result.RefreshTargets = []models.EmbyRefreshTarget{target}
-		if task.ParentTaskId == 0 {
-			if err := service.submitEmbyRefreshTargets(ctx, syncFile.SyncPathId, result.RefreshTargets); err != nil {
-				return nil, fmt.Errorf("提交 Emby 刷新任务失败：%w", err)
+	shouldSubmitRefresh := (!isWebhookFile && changed) || (isWebhookFile && task.RefreshEmby && (changed || newMeta > 0))
+	if shouldSubmitRefresh {
+		result.RefreshTargets = refreshTargets
+		if !isWebhookFile || task.ParentTaskId == 0 {
+			remaining, err := service.submitEmbyRefreshTargets(ctx, syncFile.SyncPathId, result.RefreshTargets)
+			if err != nil {
+				result.RefreshTargets = remaining
+				if task.ID > 0 {
+					// 文件已写入，调用取消也必须留下可恢复的刷新目标。
+					if saveErr := task.MarkRefreshFinalizing(context.WithoutCancel(ctx), result.RefreshTargets, err.Error()); saveErr != nil {
+						return result, errors.Join(err, saveErr)
+					}
+				}
+				return result, fmt.Errorf("提交媒体库刷新任务失败：%w", err)
 			}
-		}
-	case changed && !isWebhookFile:
-		if err := service.submitEmbyRefreshBySyncFile(ctx, syncFile); err != nil {
-			return nil, fmt.Errorf("提交 Emby 刷新任务失败：%w", err)
 		}
 	}
 	return result, nil
@@ -283,7 +295,7 @@ func (service *StrmGenerationService) prepareGenerationFile(ctx context.Context,
 	}
 }
 
-func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Context, syncer *SyncStrm, syncPath *models.SyncPath, video *SyncFileCache, directory *generationDirectory) (int, error) {
+func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Context, syncer *SyncStrm, syncPath *models.SyncPath, video *SyncFileCache, directory *generationDirectory, refreshErr error) (int, error) {
 	if syncer == nil || syncer.SyncDriver == nil || video == nil || !video.IsVideo {
 		return 0, nil
 	}
@@ -329,6 +341,22 @@ func (service *StrmGenerationService) downloadMatchedMetadata(ctx context.Contex
 		syncFile := item.GetSyncFile(syncer, baseURL)
 		if helpers.PathExists(syncFile.LocalFilePath) {
 			continue
+		}
+		if refreshErr != nil {
+			// 已有 115 下载不产生新变化，无需本次解析成功才允许复用。
+			if syncFile.SourceType == models.SourceType115 {
+				var active int64
+				if err := db.Db.WithContext(ctx).Model(&models.DbDownloadTask{}).
+					Where("source = ? AND source_type = ? AND account_id = ? AND sync_path_id = ? AND remote_file_id = ?",
+						models.DownloadSourceStrm, syncFile.SourceType, syncFile.AccountId, syncFile.SyncPathId, syncFile.FileId).
+					Where("status IN ?", []models.DownloadStatus{models.DownloadStatusPending, models.DownloadStatusDownloading}).Count(&active).Error; err != nil {
+					return created, errors.Join(refreshErr, err)
+				}
+				if active > 0 {
+					continue
+				}
+			}
+			return created, refreshErr
 		}
 		if err := models.SaveSyncFilePosition(db.Db.WithContext(ctx), syncFile); err != nil {
 			return created, fmt.Errorf("保存元数据 SyncFile 失败：%w", err)
@@ -1156,6 +1184,9 @@ func ProcessPendingStrmGenerationTasks(ctx context.Context, service *StrmGenerat
 		processed++
 		result, err := processStrmGenerationTask(ctx, service, task, configs, blockers, directories)
 		if err != nil {
+			if result != nil {
+				return processed, err
+			}
 			if missing, ok := errors.AsType[*generationSyncPathMissingError](err); ok {
 				if _, retireErr := models.RetireStrmGenerationTasksForMissingSyncPath(ctx, missing.syncPathID); retireErr != nil {
 					return processed, retireErr
@@ -1302,6 +1333,11 @@ func completeStrmGenerationTaskAfterSideEffects(ctx context.Context, service *St
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if task.ParentTaskId == 0 && finalizing && len(task.GetRefreshTargets()) > 0 && !task.RefreshSubmitted {
+		if err := service.submitPendingRefresh(ctx, task); err != nil {
+			return err
+		}
+	}
 	if task.ParentTaskId > 0 {
 		parent, err := models.GetStrmGenerationTaskByID(task.ParentTaskId)
 		if err != nil {
@@ -1345,15 +1381,27 @@ func submitStrmGenerationParentRefreshIfReady(ctx context.Context, service *Strm
 	if parent == nil || !parent.IsReadyToSubmitRefresh() {
 		return nil
 	}
-	if err := service.submitEmbyRefreshTargets(ctx, parent.SyncPathId, parent.GetRefreshTargets()); err != nil {
-		return err
-	}
-	return models.MarkStrmGenerationRefreshSubmitted(parent.ID)
+	return service.submitPendingRefresh(ctx, parent)
 }
 
-func (service *StrmGenerationService) submitEmbyRefreshTargets(ctx context.Context, syncPathID uint, targets []models.EmbyRefreshTarget) error {
+func (service *StrmGenerationService) submitPendingRefresh(ctx context.Context, task *models.StrmGenerationTask) error {
+	targets := task.GetRefreshTargets()
+	remaining, err := service.submitEmbyRefreshTargets(ctx, task.SyncPathId, targets)
+	if err == nil || len(remaining) < len(targets) {
+		// 提交已经成功的端即使随后取消，也要留下进度，避免重试重置防抖。
+		err = errors.Join(err, task.SaveRefreshSubmissionProgress(context.WithoutCancel(ctx), remaining))
+	}
+	return err
+}
+
+func (service *StrmGenerationService) submitEmbyRefreshTargets(ctx context.Context, syncPathID uint, targets []models.EmbyRefreshTarget) ([]models.EmbyRefreshTarget, error) {
 	if service == nil || service.requestEmbyRefreshTargets == nil {
-		return errors.New("Emby 刷新任务提交器未初始化")
+		return targets, errors.New("媒体库刷新任务提交器未初始化")
+	}
+	for _, target := range targets {
+		if err := target.MediaServerType.Validate(); err != nil {
+			return targets, err
+		}
 	}
 	acquire := service.acquireRefreshSubmission
 	if acquire == nil {
@@ -1361,26 +1409,34 @@ func (service *StrmGenerationService) submitEmbyRefreshTargets(ctx context.Conte
 	}
 	release, err := acquire(ctx)
 	if err != nil {
-		return err
+		return targets, err
 	}
 	defer release()
-	return service.requestEmbyRefreshTargets(syncPathID, targets)
-}
-
-func (service *StrmGenerationService) submitEmbyRefreshBySyncFile(ctx context.Context, syncFile *models.SyncFile) error {
-	if service == nil || service.requestEmbyRefreshBySyncFile == nil {
-		return errors.New("Emby 刷新任务提交器未初始化")
+	if len(targets) == 0 {
+		return nil, service.requestEmbyRefreshTargets(syncPathID, targets)
 	}
-	acquire := service.acquireRefreshSubmission
-	if acquire == nil {
-		acquire = acquireStrmGenerationRefreshSubmission
+	var remaining []models.EmbyRefreshTarget
+	var errs []error
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		var selected []models.EmbyRefreshTarget
+		for _, target := range targets {
+			if target.MediaServerType == kind {
+				selected = append(selected, target)
+			}
+		}
+		if len(selected) == 0 {
+			continue
+		}
+		err := ctx.Err()
+		if err == nil {
+			err = service.requestEmbyRefreshTargets(syncPathID, selected)
+		}
+		if err != nil {
+			remaining = append(remaining, selected...)
+			errs = append(errs, err)
+		}
 	}
-	release, err := acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	return service.requestEmbyRefreshBySyncFile(syncFile)
+	return remaining, errors.Join(errs...)
 }
 
 func boolToInt(value bool) int {

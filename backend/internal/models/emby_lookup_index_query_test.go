@@ -84,14 +84,14 @@ func TestSQLiteEmbyLookupQueryPlans(t *testing.T) {
 			[]any{SourceType115, 7, 11, v115open.TypeDir, "/movies", "movies", name}, []string{syncFileDirectoryNameIndexName, syncFileNameIndexName}, "file_name=?", []uint{11, 12, 18}},
 		{"baidu_directory_identity", "SELECT * FROM sync_files WHERE source_type = ? AND account_id = ? AND sync_path_id = ? AND file_type = ? AND pick_code = ? ORDER BY id",
 			[]any{SourceTypeBaiduPan, 7, 11, v115open.TypeDir, "directory-code"}, []string{syncFileDirectoryPickCodeIndexName}, "pick_code=?", []uint{14}},
-		{"part_members", "SELECT * FROM emby_media_items WHERE server_id = ? AND part_of_item_id IN (?) ORDER BY id",
-			[]any{"server", "parent"}, []string{embyMediaPartLookupIndexName}, "part_of_item_id=?", []uint{1, 2}},
-		{"version_members", "SELECT * FROM emby_media_items WHERE server_id = ? AND version_of_item_id IN (?) ORDER BY id",
-			[]any{"server", "version"}, []string{embyMediaVersionLookupIndexName}, "version_of_item_id=?", []uint{1, 2}},
-		{"multiple_part_members", "SELECT * FROM emby_media_items WHERE server_id = ? AND part_of_item_id IN (?, ?) ORDER BY id",
-			[]any{"server", "parent", "missing"}, []string{embyMediaPartLookupIndexName, "idx_emby_server_id"}, "server_id=?", []uint{1, 2}},
-		{"multiple_version_members", "SELECT * FROM emby_media_items WHERE server_id = ? AND version_of_item_id IN (?, ?) ORDER BY id",
-			[]any{"server", "version", "missing"}, []string{embyMediaVersionLookupIndexName, "idx_emby_server_id"}, "server_id=?", []uint{1, 2}},
+		{"part_members", "SELECT * FROM emby_media_items WHERE media_server_type = ? AND server_id = ? AND part_of_item_id IN (?) ORDER BY id",
+			[]any{MediaServerEmby, "server", "parent"}, []string{embyMediaPartLookupIndexName}, "part_of_item_id=?", []uint{1, 2}},
+		{"version_members", "SELECT * FROM emby_media_items WHERE media_server_type = ? AND server_id = ? AND version_of_item_id IN (?) ORDER BY id",
+			[]any{MediaServerEmby, "server", "version"}, []string{embyMediaVersionLookupIndexName}, "version_of_item_id=?", []uint{1, 2}},
+		{"multiple_part_members", "SELECT * FROM emby_media_items WHERE media_server_type = ? AND server_id = ? AND part_of_item_id IN (?, ?) ORDER BY id",
+			[]any{MediaServerEmby, "server", "parent", "missing"}, []string{embyMediaPartLookupIndexName, "idx_emby_server_id"}, "server_id=?", []uint{1, 2}},
+		{"multiple_version_members", "SELECT * FROM emby_media_items WHERE media_server_type = ? AND server_id = ? AND version_of_item_id IN (?, ?) ORDER BY id",
+			[]any{MediaServerEmby, "server", "version", "missing"}, []string{embyMediaVersionLookupIndexName, "idx_emby_server_id"}, "server_id=?", []uint{1, 2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var rows []struct{ ID uint }

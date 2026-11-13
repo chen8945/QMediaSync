@@ -21,8 +21,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 )
@@ -48,10 +48,10 @@ func TestEmbySnapshotPipelineFullAndIncrementalUseOnlyLocalCloudEvidence(t *test
 		{"incremental_distinct_folders_delete_off", true, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			oldDB, oldConfig := db.Db, models.GlobalEmbyConfig
+			oldDB := db.Db
 			oldLog, old115Log := helpers.AppLogger, helpers.V115Log
 			t.Cleanup(func() {
-				db.Db, models.GlobalEmbyConfig = oldDB, oldConfig
+				db.Db = oldDB
 				helpers.AppLogger, helpers.V115Log = oldLog, old115Log
 				SetEmbySyncRunning(false)
 			})
@@ -69,7 +69,6 @@ func TestEmbySnapshotPipelineFullAndIncrementalUseOnlyLocalCloudEvidence(t *test
 			}
 			sqlDB.SetMaxOpenConns(1)
 			t.Cleanup(func() { sqlDB.Close() })
-			models.GlobalEmbyConfig = nil
 			SetEmbySyncRunning(false)
 			setupSnapshotTestTables(t)
 			if err := conn.AutoMigrate(&models.Media{}, &models.ScrapePath{}, &models.SyncRootEvidence{}); err != nil {
@@ -155,7 +154,7 @@ func TestEmbySnapshotPipelineFullAndIncrementalUseOnlyLocalCloudEvidence(t *test
 				}
 			}))
 			defer server.Close()
-			config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: tc.deleteEnabled}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, EnableDeleteNetdisk: tc.deleteEnabled}
 			if err := conn.Create(&config).Error; err != nil {
 				t.Fatal(err)
 			}

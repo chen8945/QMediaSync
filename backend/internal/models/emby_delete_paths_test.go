@@ -118,7 +118,7 @@ func setupEmbyDeletion115Paths(t *testing.T, directory, kind string) (EmbyDeleti
 	var input EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		input, err = CaptureEmbyDeletionTx(tx, matrix.token.ServerID, "101", kind)
+		input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, matrix.token.ServerID, "101", kind)
 		return err
 	}); err != nil {
 		t.Fatal(err)

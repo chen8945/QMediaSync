@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,6 +161,9 @@ func embyIdentityBackupDirectory(t *testing.T, conn *gorm.DB, format string, ver
 		table := &manifest.Tables[i]
 		var content bytes.Buffer
 		if err := readLogicalRows(dir, *table, func(row map[string]any) error {
+			if version < 71 {
+				delete(row, "media_server_type")
+			}
 			if table.Name == "migrator" {
 				row["version_code"] = int64(version)
 			} else if table.Name == "emby_media_sync_files" && version < 71 {
@@ -168,6 +172,9 @@ func embyIdentityBackupDirectory(t *testing.T, conn *gorm.DB, format string, ver
 			return json.NewEncoder(&content).Encode(row)
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if version < 71 {
+			table.Columns = slices.DeleteFunc(table.Columns, func(column logicalColumn) bool { return column.Name == "media_server_type" })
 		}
 		if table.Name == "emby_media_sync_files" && version < 71 {
 			for j := range table.Columns {

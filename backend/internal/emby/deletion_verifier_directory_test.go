@@ -55,7 +55,7 @@ func TestEmbyDirectoryLiveRetentionUsesDirectPhysicalIdentity(t *testing.T) {
 			}
 			provider := &cleanupWorkerProvider{webhookTestProvider: &webhookTestProvider{files: map[string]models.EmbyRemoteFile{child.FileID: child}}}
 			ctx := models.WithEmbyDirectoryProvider(t.Context(), provider)
-			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: "/media/Other/live.strm"}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=" + code, PickCode: code}}}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9", Path: "/media/Other/live.strm"}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=" + code, PickCode: code}}}
 			err := verifyEmbyDirectoryLiveItems(ctx, scope, []models.EmbyItemSnapshot{snapshot})
 			if (err == nil) != test.wantAllowed {
 				t.Fatalf("allowed=%t err=%v", test.wantAllowed, err)
@@ -132,7 +132,7 @@ func TestEmbyDirectoryLiveRetentionUsesMappedEmbyPaths(t *testing.T) {
 			if source == "" {
 				source = tc.item
 			}
-			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: tc.item}, Sources: []models.EmbySnapshotSource{{Path: source}}}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9", Path: tc.item}, Sources: []models.EmbySnapshotSource{{Path: source}}}
 			err := verifyEmbyDirectoryLiveItems(ctx, scope, []models.EmbyItemSnapshot{snapshot})
 			if (err == nil) != tc.allowed {
 				t.Fatalf("mapped directory allowed=%t err=%v", tc.allowed, err)

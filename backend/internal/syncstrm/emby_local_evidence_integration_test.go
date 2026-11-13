@@ -24,8 +24,8 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/emby"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
 	v115open "qmediasync/internal/v115/openapi"
@@ -46,16 +46,15 @@ func (transport localEvidenceHTTPTransport) RoundTrip(request *http.Request) (*h
 
 func setupLocalEvidenceDatabase(t *testing.T, dialector gorm.Dialector) func() {
 	t.Helper()
-	oldDB, oldSettings, oldConfig := db.Db, models.SettingsGlobal, models.GlobalEmbyConfig
+	oldDB, oldSettings := db.Db, models.SettingsGlobal
 	oldLog, old115Log, oldConfigDir := helpers.AppLogger, helpers.V115Log, helpers.ConfigDir
 	t.Cleanup(func() {
-		db.Db, models.SettingsGlobal, models.GlobalEmbyConfig = oldDB, oldSettings, oldConfig
+		db.Db, models.SettingsGlobal = oldDB, oldSettings
 		helpers.AppLogger, helpers.V115Log, helpers.ConfigDir = oldLog, old115Log, oldConfigDir
 		emby.SetEmbySyncRunning(false)
 	})
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	helpers.V115Log, helpers.ConfigDir = helpers.AppLogger, t.TempDir()
-	models.GlobalEmbyConfig = nil
 	models.SettingsGlobal = &models.Settings{
 		SettingThreads: models.SettingThreads{FileDetailThreads: 2, FileListPageSize: 100},
 		SettingStrm: models.SettingStrm{StrmBaseUrl: "http://qms.fixture", VideoExt: `[".mkv"]`,
@@ -81,7 +80,7 @@ func setupLocalEvidenceDatabase(t *testing.T, dialector gorm.Dialector) func() {
 	}
 	open()
 	if err := db.Db.AutoMigrate(&models.Account{}, &models.SyncPath{}, &models.Sync{}, &models.SyncFile{},
-		&models.DbDownloadTask{}, &models.DbUploadTask{}, &models.Settings{}, &models.EmbyConfig{},
+		&models.DbDownloadTask{}, &models.DbUploadTask{}, &models.Settings{}, &models.EmbyConfig{}, &models.JellyfinConfig{},
 		&models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.EmbyLibraryRefreshTask{},
 		&models.Media{}, &models.ScrapePath{}, &models.SyncPathScrapePath{}); err != nil {
 		t.Fatal(err)
@@ -103,7 +102,6 @@ func setupLocalEvidenceDatabase(t *testing.T, dialector gorm.Dialector) func() {
 		if err := sqlDB.Close(); err != nil {
 			t.Fatal(err)
 		}
-		models.GlobalEmbyConfig = nil
 		open()
 	}
 }
@@ -341,6 +339,8 @@ func testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t *testing.T, dialector gorm
 		embyHTTP.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/System/Ping"):
+			fmt.Fprint(w, "Emby Server")
 		case r.URL.Path == "/System/Info/Public":
 			http.NotFound(w, r)
 		case r.URL.Path == "/emby/System/Info/Public":
@@ -371,7 +371,7 @@ func testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t *testing.T, dialector gorm
 		}
 	}))
 	t.Cleanup(embyServer.Close)
-	config := models.EmbyConfig{EmbyUrl: embyServer.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
+	config := models.EmbyConfig{Enabled: true, MediaServerType: models.MediaServerEmby, EmbyUrl: embyServer.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
 	if err := db.Db.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t *testing.T, dialector gorm
 		}
 	})
 	beforeWebhook := cloudHTTP.Load()
-	modified, err := emby.ReceiveWebhook(t.Context(), models.EmbyWebhookEnvelope{
+	modified, err := emby.ReceiveWebhook(t.Context(), models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby,
 		Event: "library.modified", ServerID: "strm-local-server", ItemID: "101", ItemType: "Episode", ItemPath: localEpisode, Source: "official",
 	})
 	if err != nil {
@@ -429,7 +429,7 @@ func testSTRMLocalEvidenceSurvivesReopenAndEmbySync(t *testing.T, dialector gorm
 		t.Fatal(err)
 	}
 	itemDeleted.Store(true)
-	deletion, err := emby.ReceiveWebhook(t.Context(), models.EmbyWebhookEnvelope{
+	deletion, err := emby.ReceiveWebhook(t.Context(), models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby,
 		Event: "library.deleted", ServerID: "strm-local-server", ItemID: "202", ItemType: "Season",
 		ItemPath: filepath.Dir(localEpisode), SeriesID: "201", SeasonID: "202", Source: "official",
 	})

@@ -50,6 +50,7 @@ func setRouter(r *gin.Engine) {
 		c.HTML(200, "index.html", gin.H{})
 	})
 	r.POST("/emby/webhook", controllers.Webhook)                           // 接收 Emby 事件回调
+	r.POST("/jellyfin/webhook", controllers.JellyfinWebhook)               // 接收 Jellyfin 官方插件事件
 	r.POST("/api/login", controllers.LoginAction)                          // 用户登录
 	r.POST("/api/strm/webhook", controllers.StrmWebhook)                   // 接收外部 STRM 生成任务
 	r.GET("/api/setup/status", controllers.SetupStatusAction)              // 查询首个管理员初始化状态
@@ -169,12 +170,18 @@ func setRouter(r *gin.Engine) {
 		api.POST("/setting/emby/parse", controllers.ParseEmby)                                     // 解析 Emby 媒体信息
 		api.GET("/setting/emby-config", controllers.GetEmbyConfig)                                 // 获取新的 Emby 配置
 		api.POST("/setting/emby-config", controllers.UpdateEmbyConfig)                             // 更新新的 Emby 配置
-		api.POST("/setting/threads", controllers.UpdateThreads)                                    // 更新线程数
-		api.GET("/setting/threads", controllers.GetThreads)                                        // 获取线程数
+		api.POST("/setting/jellyfin/parse", controllers.ParseJellyfin)
+		api.GET("/setting/jellyfin-config", controllers.GetJellyfinConfig)
+		api.POST("/setting/jellyfin-config", controllers.UpdateJellyfinConfig)
+		api.POST("/setting/threads", controllers.UpdateThreads) // 更新线程数
+		api.GET("/setting/threads", controllers.GetThreads)     // 获取线程数
 
 		api.POST("/emby/sync/start", controllers.StartEmbySync)     // 手动启动 Emby 同步
 		api.GET("/emby/sync/status", controllers.GetEmbySyncStatus) // 获取 Emby 同步状态
 		api.GET("/emby/libraries", controllers.GetEmbyLibraries)    // 获取 Emby 媒体库列表
+		api.POST("/jellyfin/sync/start", controllers.StartJellyfinSync)
+		api.GET("/jellyfin/sync/status", controllers.GetJellyfinSyncStatus)
+		api.GET("/jellyfin/libraries", controllers.GetJellyfinLibraries)
 		// 删除媒体库与同步目录关联
 
 		api.POST("/sync/start", controllers.StartSync)                       // 启动同步

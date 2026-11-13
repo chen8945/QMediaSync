@@ -90,7 +90,7 @@ func seedEmbyPostgresSnapshot(t *testing.T, conn *gorm.DB) (*EmbyConfig, EmbyInd
 	if err := MigrateEmbyDeletionSchema(conn); err != nil {
 		t.Fatal(err)
 	}
-	config := &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "isolated-test-key", SyncEnabled: 1}
+	config := &EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "isolated-test-key", SyncEnabled: 1}
 	account := Account{SourceType: SourceType115, UserId: "isolated-user"}
 	if err := conn.Create(config).Error; err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestEmbySnapshotPostgresDeletionSerializesWithSnapshot(t *testing.T) {
 			if err := tx.Raw("SELECT pg_backend_pid()").Scan(&blockerPID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if _, err := RegisterEmbyDeletionTx(tx, token.ServerID, []string{snapshot.Item.ItemId}); err != nil {
+			if _, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, []string{snapshot.Item.ItemId}); err != nil {
 				t.Fatal(err)
 			}
 			result := make(chan error, 1)
@@ -218,7 +218,7 @@ func TestEmbySnapshotPostgresSnapshotSerializesWithDeletion(t *testing.T) {
 	go func() {
 		defer close(deleteFinished)
 		deleteResult <- conn.Transaction(func(tx *gorm.DB) error {
-			_, err := RegisterEmbyDeletionTx(tx, token.ServerID, []string{"9101"})
+			_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, []string{"9101"})
 			return err
 		})
 	}()
@@ -300,7 +300,7 @@ func TestEmbySnapshotPostgresUnknownDeletionAndAdmission(t *testing.T) {
 	snapshot.Sources[0].ItemID = "9102"
 	var revision int64
 	if err := conn.Transaction(func(tx *gorm.DB) (err error) {
-		revision, err = RegisterEmbyDeletionTx(tx, oldToken.ServerID, []string{"9102"})
+		revision, err = RegisterEmbyDeletionTx(tx, MediaServerEmby, oldToken.ServerID, []string{"9102"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -316,12 +316,12 @@ func TestEmbySnapshotPostgresUnknownDeletionAndAdmission(t *testing.T) {
 		t.Fatalf("new read must not clear unknown item's deletion barrier: %v", err)
 	}
 	if err := conn.Transaction(func(tx *gorm.DB) error {
-		return AdmitEmbyItemGenerationTx(tx, oldToken.ServerID, "9102", revision-1)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, oldToken.ServerID, "9102", revision-1)
 	}); !errors.Is(err, ErrEmbySnapshotStale) {
 		t.Fatalf("wrong deletion revision admitted: %v", err)
 	}
 	if err := conn.Transaction(func(tx *gorm.DB) error {
-		return AdmitEmbyItemGenerationTx(tx, oldToken.ServerID, "9102", revision)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, oldToken.ServerID, "9102", revision)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -351,13 +351,13 @@ func TestEmbySnapshotPostgresNewGenerationNeverRevivesOldToken(t *testing.T) {
 	}
 	var deletionRevision int64
 	if err := conn.Transaction(func(tx *gorm.DB) (err error) {
-		deletionRevision, err = RegisterEmbyDeletionTx(tx, oldToken.ServerID, []string{"9101"})
+		deletionRevision, err = RegisterEmbyDeletionTx(tx, MediaServerEmby, oldToken.ServerID, []string{"9101"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Transaction(func(tx *gorm.DB) error {
-		return AdmitEmbyItemGenerationTx(tx, oldToken.ServerID, "9101", deletionRevision)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, oldToken.ServerID, "9101", deletionRevision)
 	}); err != nil {
 		t.Fatal(err)
 	}

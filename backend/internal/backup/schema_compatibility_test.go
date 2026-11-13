@@ -168,6 +168,7 @@ func schema67BackupDirectory(t *testing.T, conn *gorm.DB) (string, *logicalManif
 			if err := readLogicalRows(dir, table, func(row map[string]any) error {
 				if table.Name == "emby_config" {
 					delete(row, "path_mappings_json")
+					delete(row, "enabled")
 				} else {
 					row["version_code"] = int64(67)
 				}
@@ -181,7 +182,9 @@ func schema67BackupDirectory(t *testing.T, conn *gorm.DB) (string, *logicalManif
 			sum := sha256.Sum256(content.Bytes())
 			table.SHA256 = hex.EncodeToString(sum[:])
 			if table.Name == "emby_config" {
-				table.Columns = slices.DeleteFunc(table.Columns, func(column logicalColumn) bool { return column.Name == "path_mappings_json" })
+				table.Columns = slices.DeleteFunc(table.Columns, func(column logicalColumn) bool {
+					return column.Name == "path_mappings_json" || column.Name == "enabled"
+				})
 			}
 		}
 		tables = append(tables, table)

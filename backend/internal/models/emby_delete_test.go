@@ -72,7 +72,7 @@ func setupEmbyDeleteTest(t *testing.T) (EmbyDeletionPlan, *embyDeleteTestProvide
 	var input EmbyDeletionInput
 	err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		input, err = CaptureEmbyDeletionTx(tx, token.ServerID, "101", "Movie")
+		input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, "101", "Movie")
 		return err
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func TestEmbyDeletionRecoversEvidenceAfterCurrentIndexCleanup(t *testing.T) {
 	var captured EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		captured, err = CaptureEmbyDeletionTx(tx, plan.Input.ServerID, "101", "Movie")
+		captured, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, plan.Input.ServerID, "101", "Movie")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -300,9 +300,9 @@ func TestEmbyLibraryCleanupUsesRemoteIDs(t *testing.T) {
 			}
 			var err error
 			if all {
-				err = CleanupAllEmbyLibraryData()
+				err = CleanupAllEmbyLibraryData(MediaServerEmby)
 			} else {
-				err = CleanupUnselectedEmbyLibraryData([]string{"b"})
+				err = CleanupUnselectedEmbyLibraryData(MediaServerEmby, []string{"b"})
 			}
 			if err != nil {
 				t.Fatal(err)

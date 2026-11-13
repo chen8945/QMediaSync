@@ -19,6 +19,7 @@ func MigrateBackupTextColumns(tx *gorm.DB) error {
 	}{
 		{&Account{}, []string{"token", "refresh_token", "username", "password", "base_url", "token_failed_reason"}},
 		{&EmbyConfig{}, []string{"emby_url", "emby_api_key", "sync_cron"}},
+		{&JellyfinConfig{}, []string{"jellyfin_url", "jellyfin_api_key", "sync_cron"}},
 		{&RequestStat{}, []string{"url"}},
 		{&EmbyLibraryRefreshTask{}, []string{"library_name", "fallback_library_name"}},
 	}

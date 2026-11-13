@@ -197,6 +197,9 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 		if err := adaptEmbyIdentityRestorePlan(plan); err != nil {
 			return nil, err
 		}
+		if err := adaptMediaLibraryRestorePlan(database, plan); err != nil {
+			return nil, err
+		}
 	}
 	// 浏览器会话一律清空；派生索引只从恢复后的原始记录重建。
 	for _, model := range models.AllTables {
@@ -428,11 +431,11 @@ func applyRestorePlan(tx *gorm.DB, plan *restorePlan) error {
 		switch table.model.(type) {
 		case models.EmbyObservedEvidenceIndex, *models.EmbyObservedEvidenceIndex:
 			if err := models.RebuildEmbyObservedEvidenceIndex(tx); err != nil {
-				return restoreDBError("重建 Emby 观察索引失败", err)
+				return restoreDBError("重建媒体观察索引失败", err)
 			}
 		case models.EmbyItemMembership, *models.EmbyItemMembership:
 			if err := models.RebuildEmbyItemMembership(tx); err != nil {
-				return restoreDBError("重建 Emby 成员索引失败", err)
+				return restoreDBError("重建媒体成员索引失败", err)
 			}
 		}
 	}

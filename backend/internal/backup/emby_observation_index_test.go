@@ -26,7 +26,7 @@ func seedEmbyObservationBackup(t *testing.T, conn *gorm.DB) (*gorm.DB, models.Em
 	}
 	// 故意把派生表排在原表前，恢复只能在全部原表导入后重建一次。
 	models.AllTables = []any{
-		&models.EmbyItemMembership{}, &models.EmbyObservedEvidenceIndex{}, &models.EmbyIndexState{},
+		&models.Migrator{}, &models.EmbyItemMembership{}, &models.EmbyObservedEvidenceIndex{}, &models.EmbyIndexState{},
 		&models.EmbyItemState{}, &models.EmbyWebhookRecord{}, &models.EmbyItemEvidence{}, &backupTestItem{},
 	}
 	if err := conn.AutoMigrate(models.AllTables...); err != nil {
@@ -96,8 +96,9 @@ func testRestoreEmbyObservationIndexRebuildsFromOriginals(t *testing.T, setup fu
 				}
 				archivePath = archive.FilePath
 			} else {
-				files := map[string]string{"backupTestItem.json": "{\"ID\":1,\"Name\":\"restored\"}\n"}
+				files := map[string]string{"backupTestItem.json": "{\"ID\":1,\"Name\":\"restored\"}\n", "Migrator.json": "{\"id\":1,\"version_code\":71}\n"}
 				if scenario == "old archive without index" {
+					files["Migrator.json"] = "{\"id\":1,\"version_code\":70}\n"
 					files["EmbyWebhookRecord.json"] = cleanupBackupJSON(t, record) + "\n"
 					files["EmbyItemEvidence.json"] = cleanupBackupJSON(t, evidence[0]) + "\n" + cleanupBackupJSON(t, evidence[1]) + "\n"
 				}

@@ -21,7 +21,7 @@ func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, Sync
 	if err := db.Db.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &SyncFile{}, &SyncPath{}, &Account{}, &SyncRootEvidence{}); err != nil {
 		t.Fatal(err)
 	}
-	config := &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}
+	config := &EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}
 	if err := db.Db.Create(config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +46,30 @@ func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, Sync
 
 func snapshotForFile(file SyncFile) EmbyItemSnapshot {
 	return EmbyItemSnapshot{Item: EmbyMediaItem{ItemId: "101", Type: "Movie", Path: file.LocalFilePath, LibraryId: "lib", PickCode: file.PickCode, MediaSourcePath: "http://qms/stream?pickcode=" + file.PickCode}, Sources: []EmbySnapshotSource{{ID: "source-101", ItemID: "101", Path: "http://qms/stream?pickcode=" + file.PickCode, PickCode: file.PickCode}}, LibraryName: "电影", MembersComplete: true}
+}
+
+func TestEmbyIndexPreparationFailureKeepsOnlyValidatedOwnership(t *testing.T) {
+	config, _, _ := setupEmbySnapshotModelTest(t)
+	if err := db.Db.Model(config).Updates(map[string]any{"sync_enabled": 0, "is_running": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, serverID := range []string{"", "server-a"} {
+		t.Run(serverID, func(t *testing.T) {
+			token, err := BeginEmbyIndexRead(serverID, config)
+			if err == nil || token != (EmbyIndexToken{MediaServerType: MediaServerEmby}) {
+				t.Fatalf("failed preparation returned commit authority: token=%+v err=%v", token, err)
+			}
+		})
+	}
+	for _, kind := range []MediaServerType{"", "invalid"} {
+		if err := FinishEmbyIndexSyncRun(EmbyIndexToken{MediaServerType: kind}, EmbySyncModeFull, 0, 100, 100, errors.New("preparation failed")); err == nil {
+			t.Fatalf("invalid ownership %q accepted", kind)
+		}
+	}
+	var after EmbyConfig
+	if err := db.Db.First(&after).Error; err != nil || !after.IsRunning || after.LastError != "" {
+		t.Fatalf("invalid finish changed runtime: %+v err=%v", after, err)
+	}
 }
 
 func TestEmbySnapshotZeroValuesReplaceLinksAndPreserveHistory(t *testing.T) {
@@ -140,7 +164,7 @@ func TestEmbySnapshotDeletionBarrierAndAdmission(t *testing.T) {
 	var revision int64
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		revision, err = RegisterEmbyDeletionTx(tx, "server-a", []string{"101", "202"})
+		revision, err = RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101", "202"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -158,7 +182,9 @@ func TestEmbySnapshotDeletionBarrierAndAdmission(t *testing.T) {
 	if err := CleanupEmbyLibrarySnapshot(old, "lib", "new-full"); !errors.Is(err, ErrEmbySnapshotStale) {
 		t.Fatal("stale cleanup admitted", err)
 	}
-	if err := db.Db.Transaction(func(tx *gorm.DB) error { return AdmitEmbyItemGenerationTx(tx, "server-a", "101", revision) }); err != nil {
+	if err := db.Db.Transaction(func(tx *gorm.DB) error {
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, "server-a", "101", revision)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyEmbySnapshots(old, []EmbyItemSnapshot{snapshot}); !errors.Is(err, ErrEmbySnapshotStale) {
@@ -268,7 +294,10 @@ func TestEmbySnapshotFinishChecksTokenEvenWithoutItems(t *testing.T) {
 	if err := db.Db.Model(config).Updates(map[string]any{"last_saved_cursor_at": 100, "last_full_sync_at": 50}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Db.Transaction(func(tx *gorm.DB) error { _, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101"}); return err }); err != nil {
+	if err := db.Db.Transaction(func(tx *gorm.DB) error {
+		_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101"})
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := FinishEmbyIndexSyncRun(token, EmbySyncModeIncremental, 0, 200, 150, nil); !errors.Is(err, ErrEmbySnapshotStale) {
@@ -551,7 +580,7 @@ func TestEmbySnapshotFinishRedactsTransportCredentials(t *testing.T) {
 	if err := FinishEmbyIndexSyncRun(token, EmbySyncModeFull, 0, 200, 0, failure); err != nil {
 		t.Fatal(err)
 	}
-	var config EmbyConfig
+	config := EmbyConfig{MediaServerType: MediaServerEmby}
 	db.Db.First(&config)
 	for _, secret := range []string{"password", "secret-key", "secret-token"} {
 		if strings.Contains(config.LastError, secret) {
@@ -647,8 +676,8 @@ func testEmbySnapshotGUIDBindingsAndCleanup(t *testing.T, token EmbyIndexToken, 
 	if err := db.Db.Model(&EmbyItemMembership{}).Where("item_id IN ?", ids).Count(&memberships).Error; err != nil || memberships != int64(len(ids)) {
 		t.Fatalf("GUID membership rebuild = %d: %v", memberships, err)
 	}
-	if _, err := CaptureEmbyDeletionTx(db.Db, token.ServerID, ids[1], "Movie"); err == nil {
-		t.Fatal("GUID index support widened deletion admission")
+	if input, err := CaptureEmbyDeletionTx(db.Db, token.MediaServerType, token.ServerID, ids[1], "Movie"); err != nil || len(input.Owners) != 1 || input.Owners[0].Item.ItemId != ids[1] {
+		t.Fatalf("valid GUID ownership was not retained: %+v %v", input, err)
 	}
 	if err := CleanupEmbyLibrarySnapshot(token, template.Item.LibraryId, "current-run"); err != nil {
 		t.Fatal(err)

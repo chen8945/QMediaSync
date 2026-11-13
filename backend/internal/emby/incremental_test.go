@@ -44,7 +44,6 @@ func TestPerformEmbyIncrementalSync使用MinDateLastSaved并推进游标(t *test
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	setupSnapshotTestTables(t)
 
@@ -72,10 +71,10 @@ func TestPerformEmbyIncrementalSync使用MinDateLastSaved并推进游标(t *test
 	}))
 	defer server.Close()
 
-	if err := db.Db.Create(&models.EmbyConfig{
-		EmbyUrl:           server.URL,
-		EmbyApiKey:        "test-key",
-		SyncEnabled:       1,
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby,
+		EmbyUrl:     server.URL,
+		EmbyApiKey:  "test-key",
+		SyncEnabled: 1, Enabled: true,
 		SyncCron:          "0 * * * *",
 		SyncAllLibraries:  1,
 		LastSavedCursorAt: 1782698400,

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -47,8 +47,8 @@ func TestEmbyNotificationTimeFallback(t *testing.T) {
 }
 
 func TestEmbyNotificationEpisodeTime(t *testing.T) {
-	previousConfig, previousLogger := models.GlobalEmbyConfig, helpers.AppLogger
-	t.Cleanup(func() { models.GlobalEmbyConfig, helpers.AppLogger = previousConfig, previousLogger })
+	previousLogger := helpers.AppLogger
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	fallback := time.Date(2026, 10, 18, 5, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -71,7 +71,7 @@ func TestEmbyNotificationEpisodeTime(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newNotificationTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/emby/Items" || r.URL.Query().Get("Ids") != "21,22" ||
 					r.URL.Query().Get("Fields") != "DateCreated" || r.URL.Query().Get("IncludeItemTypes") != "Episode" {
 					t.Errorf("单集查询范围错误：%s", r.URL.Path+"?"+r.URL.RawQuery)
@@ -80,9 +80,9 @@ func TestEmbyNotificationEpisodeTime(t *testing.T) {
 				fmt.Fprint(w, test.body)
 			}))
 			defer server.Close()
-			models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test"}
+			client := embyclientrestgo.NewClient(server.URL, "test")
 			episodes := map[string]time.Time{"21": fallback.Add(-time.Hour), "22": fallback}
-			got := newSeriesAddedTime(t.Context(), episodes)
+			got := newSeriesAddedTime(t.Context(), client, episodes)
 			want, err := time.Parse(time.RFC3339, test.want)
 			if err != nil {
 				t.Fatal(err)
@@ -98,10 +98,8 @@ func TestEmbyNotificationEpisodeTime(t *testing.T) {
 }
 
 func TestEmbyNotificationEpisodeBatch(t *testing.T) {
-	previousConfig := models.GlobalEmbyConfig
-	t.Cleanup(func() { models.GlobalEmbyConfig = previousConfig })
 	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newNotificationTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		ids := strings.Split(r.URL.Query().Get("Ids"), ",")
 		if len(ids) > 100 || ids[0] == "" {
@@ -114,12 +112,12 @@ func TestEmbyNotificationEpisodeBatch(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
 	}))
 	defer server.Close()
-	models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test"}
+	client := embyclientrestgo.NewClient(server.URL, "test")
 	episodes := make(map[string]time.Time)
 	for id := 1; id <= 201; id++ {
 		episodes[fmt.Sprint(id)] = time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
 	}
-	got := newSeriesAddedTime(t.Context(), episodes)
+	got := newSeriesAddedTime(t.Context(), client, episodes)
 	if requests.Load() != 3 || got.UTC().Format(time.RFC3339) != "2026-10-18T01:02:03Z" {
 		t.Fatalf("请求数 = %d，入库时间 = %s", requests.Load(), got)
 	}
@@ -128,44 +126,47 @@ func TestEmbyNotificationEpisodeBatch(t *testing.T) {
 	previousLogger := helpers.AppLogger
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() { helpers.AppLogger = previousLogger })
-	got = newSeriesAddedTime(ctx, episodes)
+	got = newSeriesAddedTime(ctx, client, episodes)
 	if requests.Load() != 3 || !got.Equal(episodes["1"]) {
 		t.Fatalf("取消后应直接使用事件时间：请求数 = %d，入库时间 = %s", requests.Load(), got)
 	}
 }
 
+func newNotificationTestServer(handler http.Handler) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+}
+
 func TestEmbyNotificationEpisodeBuffer(t *testing.T) {
-	previousLogger := helpers.AppLogger
-	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	newSeriesBufferMu.Lock()
-	previousBuffer := newSeriesBuffer
-	newSeriesBuffer = make(map[string]newSeries)
-	newSeriesBufferMu.Unlock()
-	newSeriesBufferTickerStartedMu.Lock()
-	previousStarted := newSeriesBufferTickerStarted
-	newSeriesBufferTickerStarted = true
-	newSeriesBufferTickerStartedMu.Unlock()
+	conn := setupControllerTestDB(t, &models.EmbyConfig{})
+	config := &models.EmbyConfig{Enabled: true, EnableMediaNotification: 1, MediaServerType: models.MediaServerEmby, EmbyUrl: "http://emby.invalid", EmbyApiKey: "test"}
+	if err := conn.Create(config).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := StartMediaLibraryNotifications(); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		newSeriesBufferMu.Lock()
-		newSeriesBuffer = previousBuffer
-		newSeriesBufferMu.Unlock()
-		newSeriesBufferTickerStartedMu.Lock()
-		newSeriesBufferTickerStarted = previousStarted
-		newSeriesBufferTickerStartedMu.Unlock()
-		helpers.AppLogger = previousLogger
+		if err := StopMediaLibraryNotifications(context.Background()); err != nil {
+			t.Error(err)
+		}
 	})
 	latest := time.Date(2026, 10, 18, 1, 2, 3, 0, time.UTC)
+	n := newMediaNotifier(config)
 	var workers sync.WaitGroup
 	for offset := range 10 {
 		workers.Go(func() {
-			addItemToEpisodeBuffer("series", 1, 1, "21", latest.Add(-time.Duration(offset)*time.Hour))
+			n.addEpisode("series", 1, 1, "21", "Series", latest.Add(-time.Duration(offset)*time.Hour), false)
 		})
 	}
 	workers.Wait()
-	newSeriesBufferMu.Lock()
-	defer newSeriesBufferMu.Unlock()
-	series := newSeriesBuffer["series"]
-	if !series.Episodes["21"].Equal(latest) || len(series.Seasons[1]) != 10 {
-		t.Fatalf("合并单集 ID、时间或季集信息丢失：%+v", series)
+	added, _ := takeSeriesNotifications(latest.AddDate(10, 0, 0), models.MediaServerEmby)
+	if len(added) != 1 || !added[0].Episodes["21"].Equal(latest) || len(added[0].Seasons[1]) != 10 {
+		t.Fatalf("合并单集 ID、时间或季集信息丢失：%+v", added)
 	}
 }

@@ -306,7 +306,10 @@ const cachedRouteNames = new Set([
 ])
 
 const getRouteViewKey = (routeName: unknown, fullPath: string) => {
-  if (typeof routeName === 'string' && cachedRouteNames.has(routeName)) {
+  if (
+    typeof routeName === 'string' &&
+    (routeName === 'settings-media-library' || cachedRouteNames.has(routeName))
+  ) {
     return routeName
   }
   return fullPath
@@ -514,7 +517,7 @@ const restartStatusMessage = computed(() => {
   if (backupStore.restartPhase === 'checking') return '正在检查服务状态，请勿关闭或刷新本页。'
   if (backupStore.restartPhase === 'ready') return '服务已重新上线，请重新登录。恢复结果见上方。'
   if (backupStore.restartRequired && !backupStore.restartSupported)
-    return '当前运行方式不支持页面重启，请手动重启 QMS 服务，再点击“检查服务状态”。'
+    return '当前运行方式不支持页面重启，请手动重启 QMediaSync 服务，再点击“检查服务状态”。'
   return ''
 })
 

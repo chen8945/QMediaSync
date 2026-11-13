@@ -39,7 +39,7 @@ type deletionMatrix struct {
 
 func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMatrix {
 	t.Helper()
-	previousDB, previousConfig, previousLogger := db.Db, GlobalEmbyConfig, helpers.AppLogger
+	previousDB, previousLogger := db.Db, helpers.AppLogger
 	conn, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -49,17 +49,17 @@ func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMa
 		t.Fatal(err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	db.Db, GlobalEmbyConfig = conn, nil
+	db.Db = conn
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() {
-		db.Db, GlobalEmbyConfig, helpers.AppLogger = previousDB, previousConfig, previousLogger
+		db.Db, helpers.AppLogger = previousDB, previousLogger
 		_ = sqlDB.Close()
 	})
 	if err := conn.AutoMigrate(&EmbyConfig{}, &EmbyLibrarySyncPath{}, &EmbyMediaItem{}, &EmbyMediaSyncFile{}, &EmbyIndexState{}, &EmbyItemState{}, &EmbyItemEvidence{}, &EmbyItemMembership{}, &SyncFile{}, &SyncPath{}, &Account{}); err != nil {
 		t.Fatal(err)
 	}
 	matrix := &deletionMatrix{
-		config: &EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "offline-test", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1},
+		config: &EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "offline-test", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1},
 		roots:  map[uint]SyncPath{}, files: map[string]SyncFile{}, remote: map[string]EmbyRemoteFile{}, fail: map[string]bool{},
 	}
 	if err := conn.Create(matrix.config).Error; err != nil {
@@ -205,7 +205,7 @@ func (matrix *deletionMatrix) plan(t *testing.T, itemID, kind string) EmbyDeleti
 	var input EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		input, err = CaptureEmbyDeletionTx(tx, "matrix-server", itemID, kind)
+		input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, "matrix-server", itemID, kind)
 		return err
 	}); err != nil {
 		t.Fatal(err)

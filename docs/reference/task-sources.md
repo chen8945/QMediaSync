@@ -6,13 +6,13 @@
 >
 > 修改时机：新增、删除或迁移任务来源、任务类型、前端映射、队列 API / 事件、队列 key 或持久化存储值时必须更新本文档。
 >
-> 相关代码：`backend/internal/models/dbdownload.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/synccron/`、`backend/internal/realtime/`、`backend/internal/controllers/file.go`、`frontend/src/utils/taskSourceUtils.ts`、`frontend/src/utils/sourceTypeUtils.ts`。
+> 相关代码：`backend/internal/models/dbdownload.go`、`backend/internal/models/media_library_download.go`、`backend/internal/models/dbupload.go`、`backend/internal/models/strm_generation_task.go`、`backend/internal/synccron/`、`backend/internal/realtime/`、`backend/internal/controllers/file.go`、`frontend/src/utils/taskSourceUtils.ts`、`frontend/src/utils/sourceTypeUtils.ts`。
 
-下载和上传队列表都会持久化 `source` 与 `source_type`。`source` 表示创建任务的业务流程，用于来源级查询、去重和后处理分支；`source_type` 表示关联的账号 / 存储后端类型，完整稳定值见 [数据库 schema 与迁移](database-schema.md#常用枚举)。两者不能互相推导：例如 `strm_sync` 可以对应多种存储后端，而 Emby 媒体信息提取下载任务同时使用 `source=emby_media` 与 `source_type=emby_media`。上传任务只在同一 `source + source_type + account_id + remote_full_path` 范围内对活跃状态去重；`remote_full_path` 已是实际目标，因此不以 `sync_path_id` 额外切分。
+下载和上传队列表都会持久化 `source` 与 `source_type`。`source` 表示创建任务的业务流程，用于来源级查询、去重和后处理分支；`source_type` 表示关联的账号 / 存储后端类型，完整稳定值见 [数据库 schema 与迁移](database-schema.md#常用枚举)。两者不能互相推导：例如 `strm_sync` 可以对应多种存储后端，而 Emby／Jellyfin 媒体信息提取分别同时使用 `source=source_type=emby_media|jellyfin_media`。这两个来源值不属于账号或同步目录可选存储类型。上传任务只在同一 `source + source_type + account_id + remote_full_path` 范围内对活跃状态去重；`remote_full_path` 已是实际目标，因此不以 `sync_path_id` 额外切分。
 
 下载和上传队列把远端位置与身份分开存储：`remote_full_path` 是创建任务时确定、包含文件名的远端完整路径，`remote_file_id` 只表示服务实际返回的稳定文件 ID，115 PickCode 只存 `remote_pick_code`。摘要始终按传输方向使用完整路径；历史任务无法可靠回填时显示“远端路径未知（历史记录未保存）”，不得把 ID 回退显示为路径。local 上传例外地将该字段作为受配置源根目录约束的本地复制目标路径保存；它不是远端身份，前端不会以远端路径展示。
 
-下载任务保留 `remote_path` 作为不含文件名的远端目录路径。OpenList 只在 API 提供非空对象 ID 时写入文件 ID，带签名的下载直链只存入隐藏的 `remote_download_url`；Emby 提取地址、Emby 条目 ID 和本地复制源路径同样只使用隐藏执行字段。Emby 提取请求不解析响应内容，但必须排空并关闭响应体。local 与 Emby 不伪造远端身份字段。SHA1 和 MD5 仅在对应远端响应明确声明算法时写入和展示；115 使用 SHA1，百度使用 MD5。
+下载任务保留 `remote_path` 作为不含文件名的远端目录路径。OpenList 只在 API 提供非空对象 ID 时写入文件 ID，带签名的下载直链只存入隐藏的 `remote_download_url`；媒体提取的条目 ID、原 `media_server_id` 和本地复制源路径同样只使用隐藏执行字段。新提取任务不持久化连接地址／密钥，按任务来源选择当前同端同实例连接；旧地址任务不自动改换凭据。只有 HTTP 200、合法 JSON、无 ErrorCode 且具备适用媒体流才算完成，始终关闭响应体。local 与媒体提取不伪造网盘身份字段。SHA1 和 MD5 仅在对应远端响应明确声明算法时写入和展示；115 使用 SHA1，百度使用 MD5。
 
 上传覆盖时，只有旧远端文件已删除成功才会在 `replaced_remote_file_id` 记录和展示旧文件 ID：115 使用文件 ID，百度使用 `fs_id`，OpenList 使用非空对象 ID。新文件上传、删除失败的覆盖，以及没有稳定 ID 的来源都不会显示该字段。
 
@@ -22,7 +22,7 @@
 
 队列页面通过 `taskSourceUtils.ts` 展示 `source` 和 `source_type`。其中任务队列的 `source_type=local` 显示为「本地文件」，同步目录 / 账号映射中的同值显示为「本地目录」，两者不可混用。
 
-`DownloadTaskStatusChangedPayload` 是内部下载状态事件，其 `source` 使用上述下载来源机器值。`sync_path_id` 的旧数据回退、下载状态触发的 Emby 刷新等待和取消语义见 [Emby 媒体库同步](../architecture/emby-library-sync.md)；字段存储兼容性见 [数据库 schema 与迁移](database-schema.md)。
+`DownloadTaskStatusChangedPayload` 是内部下载状态事件，其 `source` 使用上述下载来源机器值。`sync_path_id` 的旧数据回退、下载状态触发的两端媒体刷新等待和取消语义见 [媒体库同步](../architecture/emby-library-sync.md)；字段存储兼容性见 [数据库 schema 与迁移](database-schema.md)。
 
 ## 下载任务
 
@@ -31,6 +31,9 @@
 | `db_download_tasks.source` | `strm_sync` | `STRM 同步` | STRM 同步产生的下载任务 |
 | `db_download_tasks.source` | `local_file` | `本地文件` | 本地文件复制任务 |
 | `db_download_tasks.source` | `emby_media` | `Emby 媒体信息提取` | Emby 媒体信息提取触发任务 |
+| `db_download_tasks.source` | `jellyfin_media` | `Jellyfin 媒体信息提取` | Jellyfin 媒体信息提取触发任务 |
+
+提取复用原下载队列，不增加队列或改写历史 `emby_media`。归属来自任务来源，不从当前设置标签推断；同端同原 ServerID 的条目才参与去重和凭据轮换。
 
 ## 上传任务
 

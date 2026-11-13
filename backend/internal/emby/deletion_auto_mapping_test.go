@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -41,7 +41,7 @@ func setupAutomaticExternalDeletionTest(t *testing.T) (*externalDeletionFixture,
 		t.Fatal(err)
 	}
 	collector := models.EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &snapshot, nil); err != nil {
+	if err := collector.Enrich(t.Context(), models.MediaServerEmby, &snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.apply(t, snapshot)
@@ -107,6 +107,9 @@ func TestPrepareEmbyAutomaticReferencePropagatesDatabaseFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 		t.Fatal(err)
 	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+		t.Fatal(err)
+	}
 	failure := errors.New("injected automatic root query failure")
 	if err := db.Db.Callback().Query().Before("gorm:query").Register("test:auto_root_failure", func(tx *gorm.DB) {
 		if tx.Statement.Table == "sync_paths" {
@@ -128,7 +131,7 @@ func TestPrepareEmbyAutomaticReferencePropagatesDatabaseFailure(t *testing.T) {
 
 func TestEmbyLegacyReferenceRejectsNewExplicitMapping(t *testing.T) {
 	local := filepath.Join(t.TempDir(), "old.strm")
-	owner := models.EmbyDeletionOwner{Item: models.EmbyMediaItem{Path: local}}
+	owner := models.EmbyDeletionOwner{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, Path: local}}
 	file := models.EmbyFrozenFile{LocalFilePath: local}
 	config := &models.EmbyConfig{}
 	if err := verifyEmbyFileReference(t.Context(), config, owner, file); err != nil {

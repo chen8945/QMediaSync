@@ -43,7 +43,7 @@ func TestEmbyObservedEvidenceUsesNewestSuccessfulRead(t *testing.T) {
 			if err := db.Db.Save(&file).Error; err != nil {
 				t.Fatal(err)
 			}
-			recovered, err := ClaimEmbyWebhook(t.Context(), now+3601)
+			recovered, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, now+3601)
 			if err != nil || recovered == nil || recovered.ID != olderReceipt.ID {
 				t.Fatalf("wrong recovered receipt: %+v err=%v", recovered, err)
 			}
@@ -263,7 +263,8 @@ func TestEmbyObservedEvidenceNewestMembershipPreventsOlderAdoption(t *testing.T)
 				t.Fatal(err)
 			}
 			deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{
-				Event: "library.deleted", ServerID: "server-a", ItemID: "201", ItemType: itemType, Source: "official",
+				MediaServerType: MediaServerEmby,
+				Event:           "library.deleted", ServerID: "server-a", ItemID: "201", ItemType: itemType, Source: "official",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -312,7 +313,7 @@ func TestEmbyObservedSurvivorAdmissionRequiresFreshReadAfterRelease(t *testing.T
 		t.Run(event, func(t *testing.T) {
 			config, file, deleted, observed, _ := prepareEmbyObservedSurvivor(t, event)
 			if err := db.Db.Transaction(func(tx *gorm.DB) error {
-				_, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"102"})
+				_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"102"})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -409,7 +410,7 @@ func TestEmbyObservedSurvivorAdmissionRejectsConflicts(t *testing.T) {
 func TestEmbyVerifiedSurvivorsGroupAndBarrierPagination(t *testing.T) {
 	config, _, _ := setupEmbyWebhookModelTest(t)
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		_, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101", "102", "103"})
+		_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101", "102", "103"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -448,7 +449,7 @@ func TestEmbyVerifiedSurvivorsGroupRollsBackOnAnyConflict(t *testing.T) {
 		t.Run(conflict, func(t *testing.T) {
 			config, _, _ := setupEmbyWebhookModelTest(t)
 			if err := db.Db.Transaction(func(tx *gorm.DB) error {
-				_, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101", "102"})
+				_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101", "102"})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -529,7 +530,7 @@ func prepareEmbyHiddenBarrier(t *testing.T) (*EmbyConfig, SyncFile, SyncFile, Em
 		t.Fatal(err)
 	}
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		return AdmitEmbyItemGenerationTx(tx, "server-a", "101", record.DeletionRevision)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, "server-a", "101", record.DeletionRevision)
 	}); err != nil {
 		t.Fatal(err)
 	}

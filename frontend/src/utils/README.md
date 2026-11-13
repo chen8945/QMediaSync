@@ -244,14 +244,14 @@ STRM 正则输入的语法预检：
 
 ## syncRefreshDecision.ts
 
-同步任务完成后是否提交 Emby 媒体库刷新的展示决策：
+同步任务完成后是否提交媒体服务器刷新的展示决策：
 
 - `SyncRefreshDecisionInput`
 - `SyncRefreshDecisionTagType`
 - `SyncRefreshDecision`
 - `getEmbyRefreshDecision(input)`
 
-该函数根据同步结果中的新增 STRM 数、下载元数据数和任务状态派生展示状态。前端只展示是否存在媒体库刷新相关变更，不声明后端已提交刷新任务；实际刷新还需要后端满足 Emby 已启用和同步目录已关联媒体库等条件。
+该函数根据同步结果中的新增 STRM 数、下载元数据数和任务状态派生展示状态。前端只展示是否存在媒体库刷新相关变更，不声明后端已提交刷新任务；实际刷新还需要后端满足对应媒体服务器已启用和同步目录已关联媒体库等条件。
 
 ## taskSourceUtils.ts
 

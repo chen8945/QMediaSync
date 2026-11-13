@@ -32,14 +32,14 @@
 
 ## 项目快照
 
-QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网盘、OpenList 等云存储与 Emby 媒体服务器之间的文件同步、STRM 生成和媒体刮削。
+QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网盘、OpenList 等云存储与 Emby/Jellyfin 媒体服务器之间的文件同步、STRM 生成和媒体刮削。
 
 - 语言：Go 1.27.3。
 - 后端：Gin、GORM，模块名为 `qmediasync`，位于 `backend/`。
 - 应用入口：根 `main.go` 保留构建变量与 embed 声明，`internal/app` 负责现有启动、生命周期、路由和代理组装；构建仍在 backend 根执行，不将业务实现堆入 app。
 - 数据库：SQLite 或 PostgreSQL，默认 PostgreSQL；不包含内嵌 PostgreSQL 和旧库自动迁移能力。
 - 前端：Vue 3、Vite、TypeScript，位于 `frontend/`；路由页面在 `src/views/`，复用组件在 `src/components/`，共享类型按领域放在 `src/types/`，归属边界见 [前端开发约定](frontend-development.md#目录与类型归属)。本地生产构建输出 `frontend/dist`，发布流程将其复制为 `backend/web_statics`，运行目录使用 `web_statics`。
-- 其他目录：`backend/internal/emby302/` 是嵌入的 Emby 302 代理，`backend/internal/baidupan/internal/openxpanapi/` 是自动生成的百度网盘 OpenAPI 客户端，`docker/` 存放容器脚本，`scripts/` 存放安装和发布辅助脚本。
+- 其他目录：`backend/internal/medialibrary/client/` 封装两端共用传输和原生协议，`backend/internal/emby/` 保留共用媒体库业务；`backend/internal/emby302/` 是嵌入的 Emby 302 代理，`backend/internal/baidupan/internal/openxpanapi/` 是自动生成的百度网盘 OpenAPI 客户端，`docker/` 存放容器脚本，`scripts/` 存放安装和发布辅助脚本。
 
 完整目录职责见 [仓库结构](repository-structure.md)。
 
@@ -56,7 +56,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 | Vue 组件、HTTP 客户端注入、SSE 消费、路由历史、响应式布局或交互反馈 | [前端开发约定](frontend-development.md) 和 [验证说明](verification.md)；涉及接口字段时同时查看 [请求校验约定](request-validation.md) |
 | 同步目录、全局或自定义 Cron、同步队列、`sync` 记录、取消或同步完成后的下游触发 | [STRM 同步调度与任务记录](../architecture/sync-orchestration.md)；修改保存接口、目录监控规则或幂等时同时查看 [同步目录聚合 API](../reference/sync-path-api.md) |
 | 上传、目录监控、STRM 生成、源文件清理 | [上传与 STRM 处理](../architecture/upload-and-strm-processing.md) |
-| Emby 刷新、全量 / 增量同步、Webhook 同步 | [Emby 媒体库同步](../architecture/emby-library-sync.md) |
+| Emby/Jellyfin 配置、刷新、全量 / 增量同步、Webhook 同步 | [媒体库同步](../architecture/emby-library-sync.md) |
 | 任务来源、任务类型、展示映射或数据库机器值 | [任务来源](../reference/task-sources.md) |
 | 刮削命名模板、模板变量、NFO 解析或媒体类型为其他的信息来源 | [刮削命名模板与其他类型 NFO](../reference/scrape-rename-templates.md) |
 | 发布、CI、镜像标签或 FPK 打包 | [发布流程](../operations/release.md) |

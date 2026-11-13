@@ -12,6 +12,7 @@
 
 - 按改动范围运行最小必要验证，不为了无关改动运行全量构建。
 - 新增行为必须有相应验证；优先扩展相应 Go 包内、可提交的 table-driven 测试。
+- 会修改 `time.Local` 等进程级启动状态的用例使用独立子进程；顺序运行及 cleanup 写回不能隔离其他定时器的并发读取。race 失败须定位真实读写，不能以关闭符号化后通过代替修复。
 - 业务改动的验证应覆盖成功路径、与改动相关的无效输入或状态冲突、失败处理和关键边界；不要求为无关场景机械增加测试。
 - 纯文档改动至少运行 `git diff --check` 和相对 Markdown 链接检查；不强行构建后端或前端。
 - 无法运行验证时，在最终回复中说明未运行的命令、原因和剩余风险。
@@ -21,13 +22,16 @@
 | 改动范围 | 最小验证 | 相关文档 |
 | --- | --- | --- |
 | Go helper、模型或请求 DTO | 对应包的 `go test`；需要时指定 `-run` | 请求校验、数据库 schema |
+| 刷新故障恢复与并发探测取消 | `syncstrm` 的 `TestLegacyStrmParentRefreshFinalizes`、`TestStrmRefreshIdentityFailureRemainsRecoverable` 与生成/收尾回归；`medialibrary/client` 的 `TestConnectionWaiterRecoversAfterInitiatorCancellation` 及既有取消、错配和失败恢复回归。运行相关普通/race/vet；隔离 PostgreSQL 以 `-tags=integration` 运行对应恢复用例，核对真实目标入队、原实例拒绝、文件只写一次和重载不再生成，skip 不计通过 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理规则](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
+| 同步准备失败与普通上传刷新恢复 | `emby`、`models`、`syncstrm` 普通/race/vet；全量、增量和单项同步分别在选库、连接、总开关变化及身份查询失败时核对本端收尾、另一端保留和后续同步。普通上传覆盖上传完成/远端已存在、双端、已知原身份离线、新连接解析失败、提交失败后重载仅刷新、无变化/关闭刷新及源文件保留；用隔离 PostgreSQL 实际执行同类恢复用例，skip 不计通过 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理规则](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
+| 双端刷新部分成功后的收尾 | `syncstrm` 的 `TestStrmRefreshRetryDoesNotPostponeHealthyEndpoint`、`TestStrmRefreshSubmissionProgressCancellationAndSaveFailure`；普通/race/vet 及隔离 PostgreSQL 的 `TestStrmRefreshRetryHealthyEndpointPostgres`。覆盖首次生成/独立收尾/批父、两种健康端、item/library、兄弟子项重载、健康端实际执行、故障端补交和新事件防抖；取消、保存失败和过期进度不能丢待办 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理恢复](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
 | 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
 | STRM 播放链接预加载 | 按 [预加载验证](#strm-预加载验证) 覆盖关闭、候选选择、动态窗口、配额／重试、身份隔离、接手、生命周期及日志；设置迁移和恢复分别验证 SQLite／隔离 PostgreSQL，前端验证默认关闭和单一开关 | [预加载契约](../architecture/upload-and-strm-processing.md#strm-播放链接预加载)、[配置](../operations/configuration.md#strm-预加载)、[飞牛协议](../reference/fnos-proxy-api.md#预加载观察与限制) |
 | STRM 本地缺项和空目录收尾 | `syncstrm`、`models`、`directoryupload` 普通测试及相关 race / vet；覆盖多层空目录同轮清理、排除及失败保护、取消收尾、活跃上传保留、目录读取错误和上传任务查询失败。核对已确认缺失目录的实际查询次数及存在性 SQL，不用整轮上传任务快照替代删除前检查 | [同步编排](../architecture/sync-orchestration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md) |
-| Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`embyclient-rest-go`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
-| Jellyfin 索引与刷新、远端字符串身份 | `emby/client`、`emby`、`models`、`backup` 普通／race／vet，既有控制器、STRM 和应用回归；隔离 PostgreSQL 验证 70→71 和历史迁移、两种归档及跨引擎恢复。覆盖原生认证／子路径、GUID 规范化、全量／增量 HTTP 到持久关联、多版本／分段、坏页失败保旧、原数字删除资格，以及未适配流程不增加产品探测。实际服务器扫描和旧版兼容另做实机验收，HTTP 替身不能代替 | [媒体库同步](../architecture/emby-library-sync.md#jellyfin-适用范围)、[逻辑备份](../reference/database-schema.md#逻辑备份的数据契约) |
-| Emby 目录清理与共同批删 | `models`、`emby`、`embyclient-rest-go`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
+| Emby 物理索引、持久 Webhook 与联动删除 | `emby`、`medialibrary/client`、`models`、`controllers`、`requests`、`backup` 和应用包的普通测试／vet；相关并发加 `-race`，provider 变更另验证 `v115open`、`baidupan`、`openlist`。覆盖真实脱敏通知、失败 deep、早期观察、删除屏障、逐目标结果保存失败、停止／重启和备份停收；SQLite 与隔离 PostgreSQL 验证新库初始化、统一 65→66 迁移、建表或版本写入失败的完整回滚、重复启动和连接重开。迁移后保留旧媒体／关联，不凭空生成删除证据；旧数组、空字符串、损坏或未知版本的旁车 JSON 必须拒绝，包含纯视频冻结计划和成员证据复制路径。未设置 `QMS_TEST_POSTGRES_DSN` 导致 skip 不算 PostgreSQL 通过；`TestWebhookEpisodePart1DeletionAndRemainingPartReindex` 贯穿官方收件、后台删除 part1／专属旁车、part2 新 ID 同步及晚到旧事件保护 | [Emby 同步与删除](../architecture/emby-library-sync.md)、[数据库 schema](../reference/database-schema.md) |
+| Jellyfin 原生功能、独立连接与远端字符串身份 | 按下方 [双端媒体库验证](#双端媒体库验证) 运行 `medialibrary/client`、`emby`、`models`、`controllers`、`requests`、`backup`、STRM 与应用的相关普通／race／vet，以及隔离 PostgreSQL 的 70→71、归档恢复和连接隔离用例。覆盖原生认证／子路径、GUID、全量／增量持久关联、多版本／分段、坏页保旧、按需品牌／实例核验、总开关、同实例凭据轮换和异实例拒绝。两版实机验证正常 QMediaSync 刷新／提取队列、官方插件四事件、通知与本端证据驱动的 GUID 删除最终效果；HTTP 接受或替身不能代替真实远端结果 | [媒体库同步](../architecture/emby-library-sync.md#jellyfin-适用范围)、[逻辑备份](../reference/database-schema.md#逻辑备份的数据契约) |
+| Emby 目录清理与共同批删 | `models`、`emby`、`medialibrary/client`、`v115open`、`baidupan`、`openlist`、`backup` 的普通测试／vet及相关 race；新持久化用例另以 `-tags=integration` 和隔离 PostgreSQL DSN 验证。`TestWebhookCleanup*` 覆盖共同批次、部分成功、attempt／结果写入失败、重启、旧／未知政策拒绝及三类目录；`TestEmbyCleanup*Persistence` 和 `TestBackupRestoreEmbyCleanupAuthorityAndAttempts` 验证政策、结果、大小限制及真实备份恢复。按真实来源的账本字段验证根证据，包含百度路径 ID 与 fsid 区分、同路径替换和同步根移动；正常目录成功确认原 ID 后免子项回查，初次或异常目录缺失仍逐已知身份恢复。分别计数 Emby 全扫描／分页／AdditionalParts、网盘列表／详情／写请求、重试和本地 SQL；接口替身计数不能冒充实际 HTTP。验证采集超过 30 秒可成功、完成后 30 秒复用、5 分钟采集预算、排队后过期拒绝、写后列表失效，以及未知文件不逐项查归属 | [目录清理](../architecture/emby-library-sync.md#已采纳的目录清理策略)、[身份与事件存储](../reference/database-schema.md#emby_index_statesemby_item_statesemby_item_evidences) |
 | STRM 分页、账本批删与进度并发 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/synccron ./internal/realtime`；相关并发回归加 `-race` | [同步调度与任务记录](../architecture/sync-orchestration.md)、[实时事件](../architecture/realtime-events.md) |
 | STRM 扫描完整性与失败范围 | `cd backend && go test ./internal/syncstrm ./internal/models ./internal/baidupan ./internal/openlist ./internal/v115/openapi ./internal/synccron ./internal/realtime`；详情流另跑控制器流测试，并对相关并发运行 `-race`；模型事务与迁移同时验证 SQLite / PostgreSQL | [同步编排](../architecture/sync-orchestration.md)、[数据库 schema](../reference/database-schema.md) |
 | 百度保存目录路径兼容 | `syncstrm` 的 `TestBaiduSavedPathIncrementalScope` 和 `TestMovedUnreadableDirectoryKeepsOldSubtree`，运行普通/race；经真实目录保存与构造验证前导斜杠、空根、空格、越界拒绝、旧子树保留与独立兄弟清理 | [同步编排](../architecture/sync-orchestration.md) |
@@ -112,7 +116,7 @@ YAML 配置变更运行 `go test ./internal/helpers ./internal/emby302/config ./
 
 性能比较使用同一工具链、CPU 和 GC 参数，至少重复 6 次并用 `benchstat` 比较：`go test ./internal/emby302/util/jsons ./internal/helpers -run '^$' -bench 'Benchmark(FromObject|ConfigYAML)$' -benchmem -benchtime=200ms -count=6 -cpu=1`。以改动前工作区为对照，同时报告耗时与分配；无显著差异不得宣称提速，依赖维护收益与运行时性能收益分开记录。
 
-备份压缩回归通过 `go test ./internal/helpers ./internal/backup` 验证 Deflate 输出、备份恢复往返和旧版 Store 包兼容。性能测量可运行 `go test ./internal/helpers ./internal/emby/client -run '^$' -bench 'Benchmark(ZipDir|FetchMediaItemsPage)$' -benchmem`；使用合成 JSON 数据，ZIP 结果包括文件 I/O，不代表真实数据库导出总耗时。
+备份压缩回归通过 `go test ./internal/helpers ./internal/backup` 验证 Deflate 输出、备份恢复往返和旧版 Store 包兼容。性能测量可运行 `go test ./internal/helpers ./internal/medialibrary/client -run '^$' -bench 'Benchmark(ZipDir|FetchMediaItemsPage)$' -benchmem`；使用合成 JSON 数据，ZIP 结果包括文件 I/O，不代表真实数据库导出总耗时。
 
 网络升级回归覆盖非法百度 STRM 地址与转码 Host、WebSocket 原始请求语义，以及私有 HTTP transport 在成功、错误和重定向后的连接释放；运行 `go test -race ./internal/helpers ./internal/syncstrm ./internal/emby302/service/emby`。密码与 NFO 的 Unicode 分类随工具链升级，分别由 `requests` 和 `helpers` 包测试保护；Windows 证书环境变量须按 [出站证书信任](../operations/configuration.md#emby-302-出站-https) 在目标机器验收。
 
@@ -155,11 +159,11 @@ Emby 预加载的状态、待播候选、元数据、分集列表及季观看状
 
 以同样的授权源、UA、模式和缓存状态对照关闭／开启，区分元数据 HTTP、实际网盘签名、缓存 HEAD、CDN、复制／删除和 SQL。关闭、重复信号、未到窗口、冷却、已知普通电影进度或关联不明时新增后台查询为零；有效预加载命中后，普通播放少一次签名，实际播放原有探活与回退单独计数。快切详情只保留最新项，并验证已知源缺 codec、时长或 PlaySessionId 仍能成功，不能以全部跳过验收。
 
-第三方 HTTP(S) STRM 在共享解析层及 Emby、飞牛真实 handler 分别验证：Docker 内网地址、编码路径、重复／有序查询参数、无 userid／pickcode／特定签名或媒体扩展名、缺媒体字段及首次 UA 的正例。已配置 QMS origin＋完整前缀＋实际端点保留自有参数校验，非法自有参数不能转成第三方绕过。只提供本地路径时保留安全有限补源及受限读文件，不扫描或触发冷源探测。分别计数媒体服务器元数据、第三方跳转服务与最终视频服务请求，后者允许一次有界 GET，不得当作完整视频预读。
+第三方 HTTP(S) STRM 在共享解析层及 Emby、飞牛真实 handler 分别验证：Docker 内网地址、编码路径、重复／有序查询参数、无 userid／pickcode／特定签名或媒体扩展名、缺媒体字段及首次 UA 的正例。已配置 QMediaSync origin＋完整前缀＋实际端点保留自有参数校验，非法自有参数不能转成第三方绕过。只提供本地路径时保留安全有限补源及受限读文件，不扫描或触发冷源探测。分别计数媒体服务器元数据、第三方跳转服务与最终视频服务请求，后者允许一次有界 GET，不得当作完整视频预读。
 
 URL 编码回归须覆盖 MoviePilot 裸中文／空格与对应百分号编码在同 UA 下共用缓存、在途解析和播放接手，Emby 的 PlaybackInfo、详情、普通列表和 Latest 输出一次完整解码的 HTTP 展示 Path，字面加号保留、非法转义回退，本地路径与直播仍按原规则处理。内部补全、普通／空间响应缓存和预加载保留原始 HTTP 源；自然 PlaybackInfo 与内部补全交错时不因展示文本误判换源。核对源 ID、权限、源清单顺序、转码资料和大整数保留，缓存命中也只解码一次，客户端与内部缓存各自的 Content-Length 对应各自正文。LitePan 已转义路径签名保持可用。保留字符、已有转义大小写、重复参数、顺序和空参数不得改写或错误合并；路径混合裸竖线、花括号、反斜杠与 `%2F` 时仍须保留编码分隔符，不能因标准库丢弃无效 RawPath 而改变签名或合并不同源；验证每跳实际请求采用与身份一致的规范化地址。飞牛兼容及原生分别验证等价地址缓存命中和在途等待，不新增前台解析。用假时钟确认预加载超过原 6 秒（例如 7 秒）仍能成功、10 秒到期取消且不迟到发布，接手共享原轮剩余期限。
 
-通用解析使用本地 HTTP 链覆盖 301／302／303／307／308、相对 Location、10 次跳转及 10 秒总预算，核对 `Range: bytes=0-0`、完整 UA 和每跳响应关闭，不携带 Authorization／Cookie／authx；终端 200／206、缺类型和 octet-stream 为正例，HTML／JSON 错页、无效跳转、失败、取消和近过期结果不发布。同源 URL＋同 UA 的后台结果及在途请求必须供正式播放复用；不同源或完整 UA 不能串用，命中不续期，115 CDN 的 `t − 5 分钟` 与 10 分钟上限分别覆盖。Emby 命中后不重复解析，飞牛兼容和原生各验证命中改写及未命中原 URL、零前台解析；保留 QMS 115／百度原缓存、槽位、UA、无 CDN 请求的回归。外部同 origin 串行、10 秒起始间隔、429／401／403 冷却及瞬时故障受限第二次机会须有并发与取消回归；第三方解析改动运行受影响共享层、app 和两个适配器的普通、race 与 vet，不以单一 MoviePilot 示例代替通用性验证。
+通用解析使用本地 HTTP 链覆盖 301／302／303／307／308、相对 Location、10 次跳转及 10 秒总预算，核对 `Range: bytes=0-0`、完整 UA 和每跳响应关闭，不携带 Authorization／Cookie／authx；终端 200／206、缺类型和 octet-stream 为正例，HTML／JSON 错页、无效跳转、失败、取消和近过期结果不发布。同源 URL＋同 UA 的后台结果及在途请求必须供正式播放复用；不同源或完整 UA 不能串用，命中不续期，115 CDN 的 `t − 5 分钟` 与 10 分钟上限分别覆盖。Emby 命中后不重复解析，飞牛兼容和原生各验证命中改写及未命中原 URL、零前台解析；保留 QMediaSync 115／百度原缓存、槽位、UA、无 CDN 请求的回归。外部同 origin 串行、10 秒起始间隔、429／401／403 冷却及瞬时故障受限第二次机会须有并发与取消回归；第三方解析改动运行受影响共享层、app 和两个适配器的普通、race 与 vet，不以单一 MoviePilot 示例代替通用性验证。
 
 第三方直链缓存期限与共享取消回归须分别在 `TZ=UTC` 和 `TZ=Asia/Shanghai` 下运行 `CGO_ENABLED=0 go test ./internal/playback -count=1`（工作目录 `backend/`）。`ExternalLink` 跨 JSON 缓存往返后，分别比较 URL、状态和 `ExpiresAt.Equal()`；不得用整个结构体的 `==`／`!=` 比较时间，避免 UTC 与本地时区的内部表示差异造成误报。保留缓存命中不续期、不重复取链及有效等待者可复用结果的断言。
 
@@ -229,7 +233,7 @@ UA 用有界内存和真实播放观察验证：首次、重启、映射过期�
 
 同步目录来源修改／删除提交后，同时覆盖 Emby 与飞牛的等待中、准备中及签名中旧作业；播放设置 Generation 未变化也必须撤销，旧任务无法发布。失败提交和幂等重放不误撤销，来源清单重建失败不能放过飞牛旧签名。取消不重置账号间隔、风控冷却或候选尝试次数；后续合法的新候选仍可正常进入队列。
 
-配置前缀与生命周期测试覆盖 Emby 已配置全局／目录路径前缀、多个／重叠前缀和原查询保留，Resolve 与 Account 均无热路径 SQL。QMS 自有规范化继续拒绝非法路径和参数；不同 origin 或非 QMS 端点的合法 HTTP(S) 源进入通用第三方流程，编码路径与重复参数不会因此被拒绝。用户信息、fragment、非法地址及试图绕过自有校验的输入分别回归；模式代际变化、失败／过旧快照和来源通知后才运行的旧 resolver 不能签名或补查。
+配置前缀与生命周期测试覆盖 Emby 已配置全局／目录路径前缀、多个／重叠前缀和原查询保留，Resolve 与 Account 均无热路径 SQL。QMediaSync 自有规范化继续拒绝非法路径和参数；不同 origin 或非 QMediaSync 端点的合法 HTTP(S) 源进入通用第三方流程，编码路径与重复参数不会因此被拒绝。用户信息、fragment、非法地址及试图绕过自有校验的输入分别回归；模式代际变化、失败／过旧快照和来源通知后才运行的旧 resolver 不能签名或补查。
 
 后端运行以下包的普通测试和 vet，受影响的并发路径另运行 race；SQLite 和隔离 `QMS_TEST_POSTGRES_DSN` 验证新库／69→70、失败回滚重跑、字段省略／null／显式 0、旧逻辑 67–69／旧格式 66–69 适配及 70 往返，未知 shape 继续拒绝。未设置 DSN 的 skip 不算 PostgreSQL 通过。
 
@@ -249,14 +253,75 @@ Emby 首集与资料复用回归按实际 HTTP 和最终选中源断言：普通
 
 缓存命中日志通过正式返回分支验证：Emby 第三方直链与外层媒体流跳转、飞牛兼容跳转与原生响应改写。断言缓存确实被采用、取消／停止／下载等非流／未改写不误报、原生多个质量只记录一次，且不新增解析请求或重复现有 115／百度日志；不单独测试短辅助函数的格式。完成本轮改动后运行 Emby、共享 playback、响应 cache 和飞牛包的完整普通测试、race 与 vet，helpers 运行相关文件名提取回归。实机验收另外记录服务版本、候选 ID、每个新增元数据请求和观看状态前后对照；只替代网盘签名的实机测试不能称为真实播放或首帧提速验证。
 
-## Emby 本地资料与外部 STRM 验证
+## 双端媒体库验证
 
-根链、来源快照和删除执行必须一起验证。普通回归覆盖 `syncstrm`、`emby`、`models`、`controllers`、`requests`、`backup`、`embyclient-rest-go` 及三个网盘客户端；相关并发执行 race 和 vet。低内存机器用 `GOMAXPROCS=2 GOMEMLIMIT=300MiB`、`-p 1` 串行运行，避免多个编译／链接进程挤占内存。
+媒体库变更先验证共享客户端与固定入口，再验证 SQLite／PostgreSQL 共表隔离、迁移恢复和生命周期。覆盖相同 item/library ID、不同连接及 ServerID 的索引、版本、状态、缓存、刷新、收件和提取；一端失败、关闭或运行缓慢不能改写另一端。旧删除证据、整数关联、NULL、序列与终态仍按原保护执行，不能因产品适配放宽授权。
+
+Jellyfin STRM 兼容回归覆盖正常 HTTP 来源零补读、管理列表与用户详情差异、受管本地 STRM 来源恢复、路径或账号冲突不误绑定，以及隐藏分段通过当前主项关系解析媒体库。目录回归同时验证受管 Movie 不经刮削也能取得有效目录资格、根与共享存活成员保护，并分别实测电影／整季／整剧的最终网盘目录缺失；文件模式成功不能替代目录模式验收。合集按 `CollectionType=boxsets` 从两端共用入口排除，Jellyfin Playlists 按原生类型排除，同名普通库保留；Series／Season 新增跳过不影响删除处理。双端日志回归覆盖原生季号字段差异、特殊季 S00、本次冻结资料补缺和冲突回退、名称与 ItemId 位置、同步／删除动作结果，以及未授权处理不误报网盘已删除。
+
+下载重试回归须证明调度阶段不访问远端，另一端提取和普通下载仍能入队；原身份、权限与旧 URL 的拒绝在执行入口验证，关闭端不消耗重试。页面交互须覆盖保存已返回应用警告／重启提示后，状态请求迟到失败和后续恢复均不覆盖保存结果。不用源码函数名、注释文案或组件源码顺序代替这些行为断言。
+
+下载队列的空闲重试还须覆盖一次临时数据库错误后的连续调度：恢复后普通下载及两端提取均可入队，已达上限和关闭端的失败任务不被重试；成功且无可重试任务时，同一空闲周期不重复扫描。SQLite 回归与隔离 PostgreSQL 验证共用行为断言，并运行定向 race。
+
+受管 STRM 来源与离线刷新入队的局部修复可在 `backend/` 定向运行以下回归，并以相同选择运行 `-race`。删除测试应通过完整 worker 确认：未入索引的新 GUID 存活条目，其已确认受管的 STRM 暂不可读时不调用 provider；恢复后按共享或独立来源判断，不误阻止正常 HTTP 来源。完整同步测试应从下游提交入口确认两端 item／library 目标在 503 时保留原 ServerID 入库，恢复后执行；实例变更、缺少原身份或索引已属另一实例仍受保护。已有收尾恢复／公平性测试应使用真实入队失败或既有提交钩子，不能继续把远端 503 当作已冻结目标的入队失败。
+
+存活清单的受管 STRM 不可读用例应断言在清单阶段核验失败；可读文件与原生 HTTP 用例继续验证来源恢复和目录共享保护。连接切换的 HTTP 夹具须允许重复身份查询，进入信号只发送一次；最终断言旧任务因版本失效进入重试，不能仅以状态非成功掩盖夹具 panic 或请求失败。
+
+```bash
+go test ./internal/emby -run '^TestJellyfinDeletionRetainsUnresolvedManagedLiveSource$' -count=1
+go test ./internal/syncstrm -run '^TestFullSyncDownstreamRetainsOfflineRefresh$' -count=1
+```
+
+仅修改配置读取错误传播或刷新停止边界时，可在 `backend/` 定向运行下列回归，并用同一选择加 `-race` 检查并发。配置错误必须传回重试入口，恢复后空闲队列能继续调度；未配置、关闭或连接不完整仍跳过。停止刷新时，当前任务收尾后不再发起下一条请求，剩余待办在协调器重新启动后可继续执行。
+
+```bash
+go test ./internal/models -run '^Test(DownloadQueueRetriesAfterConfigReadError|DownloadRetryPropagatesConfigReadError|DownloadRetryKeepsUnconfiguredAndDisabledSourcesPaused|MediaLibraryRefreshStopRetainsRemainingBatch)$' -count=1
+```
+
+刷新提交的配置错误应从持久收尾入口验证：一次配置查询失败后保留该端原目标，健康端可入队；重载并恢复查询后只提交剩余目标，已成功端防抖时间不变。未配置、明确关闭或连接不完整仍跳过。以下回归也用同一选择运行 `-race`。
+
+```bash
+go test ./internal/models -run '^TestMediaLibraryRefreshSubmissionSkipsUnavailableConfig$' -count=1
+go test ./internal/syncstrm -run '^TestStrmRefreshConfigReadFailureRetainsTargets$' -count=1
+```
 
 ```bash
 cd backend
-go test -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/emby/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
-go vet -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/emby/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
+go test -p 1 . ./internal/app ./internal/medialibrary/client ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/synccron ./internal/syncstrm ./internal/backup ./internal/fnosproxy ./internal/emby302/...
+go test -p 1 -race ./internal/medialibrary/client ./internal/emby ./internal/models ./internal/controllers ./internal/synccron ./internal/backup
+go vet -p 1 . ./internal/app ./internal/medialibrary/client ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/synccron ./internal/syncstrm ./internal/backup
+go test -p 1 -tags=integration ./internal/models ./internal/backup ./internal/db
+```
+
+PostgreSQL integration 必须提供 `QMS_TEST_POSTGRES_DSN`，在随机临时 schema 内验证；没有 DSN 的跳过不能算 PostgreSQL 通过。恢复验证包括当前 schema 两端显式零值、旧 Emby 启用／通知回填和 Jellyfin 默认关闭、完整／部分归档、身份冲突回滚以及修复真实复合索引。
+
+前端回归使用实际的新入口和轮询测试：
+
+```bash
+cd frontend
+pnpm exec vitest run test/components/AppMediaLibrarySettings.test.ts test/composables/useMediaLibrarySyncStatus.test.ts test/components/AppEmbySettings.errors.test.ts test/components/AppEmbySettings.path-mappings.test.ts test/components/AppFnosProxySettings.test.ts
+pnpm run test
+pnpm run lint
+pnpm run build
+pnpm run check:build
+```
+
+实际浏览器验证生产构建的三标签深链／旧路径、独立草稿、隐藏时保存与迟到响应、关闭保留设置、应用警告与回读失败，以及桌面和窄屏按钮可达。媒体操作还须运行当前 QMediaSync 与真实 Emby、Jellyfin 两个目标版本的完整业务闭环：配置→全量／Cron／Webhook 索引→本端刷新→提取→渠道通知→授权删除→重启恢复。记录真实 ServerID、服务／插件版本、HTTP 与最终条目／队列／消息／文件效果，插件样例和孤立上游 API 实验不能替代当前产品验收，也不能据此宣称所有历史版本均兼容。
+
+实机分页须实际触发第二页并记录 `StartIndex`／`Limit`，核对无重复及完整条目、版本／分段成员；小于单页上限的总数不能证明分页。增量须先正常同步建立非零保存游标，再产生远端变化，核对实际请求的 `MinDateLastSaved`、本地结果及成功水位；保留 600 秒重叠语义，不把空游标读取当作已有水位上的增量验证。
+
+已有 NFO 更新须证明本次确实创建并完成复制任务，记录实际生效的同步配置、文件时间、原生 `DateLastSaved`、刷新参数及服务端完成证据，再独立核对确切字段值。没有创建任务或只收到刷新 HTTP 成功均不足以关闭验收；短间隔及不替换模式的限制按实际条件记录，既不能承诺立即覆盖，也不能预设服务端必须保留旧值。一次性夹具通过正常入口加载配置时，应核对持久设置，不能假定构造函数传入值就是执行值。
+
+最终浏览器记录须匹配当前生产构建的 `index.html` 与相关资源指纹；旧构建通过不替代修改后的页面验证。报告区分真实认证／配置提交回读、故障注入、HTTP／provider 替身和真实媒体服务器；分轮补验可以复用已通过步骤，但须保留原失败及每轮准确范围，不将合并结果写成整条命令一次成功。
+
+## Emby 本地资料与外部 STRM 验证
+
+根链、来源快照和删除执行必须一起验证。普通回归覆盖 `syncstrm`、`emby`、`models`、`controllers`、`requests`、`backup`、`medialibrary/client` 及三个网盘客户端；相关并发执行 race 和 vet。低内存机器用 `GOMAXPROCS=2 GOMEMLIMIT=300MiB`、`-p 1` 串行运行，避免多个编译／链接进程挤占内存。
+
+```bash
+cd backend
+go test -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/medialibrary/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
+go vet -p 1 ./internal/syncstrm ./internal/emby ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/medialibrary/client ./internal/v115/openapi ./internal/baidupan ./internal/openlist . ./internal/app
 go test -p 1 -race ./internal/syncstrm ./internal/emby ./internal/models ./internal/backup
 ```
 
@@ -321,7 +386,7 @@ docker build -f docker/source.local.Dockerfile -t qmediasync:verify .
 
 定向回归可运行 `cd backend && go test -tags=integration ./internal/models . ./internal/app -run 'TestMigrateFresh|TestStartDatabaseRejectsInitializationFailure'`；PostgreSQL 用例要求 `QMS_TEST_POSTGRES_DSN` 指向可丢弃测试库，缺少 DSN 的跳过不算通过。驱动变更另运行 `go test -tags=integration ./internal/db/...`，验证 pgx 的 SQLSTATE 错误链、维护门禁下的预编译语句和重复 AutoMigrate，以及已有库恢复的单连接、缺库不创建和取消行为。
 
-镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。fnOS 两架构验证模板不生成业务配置，数据库生成复用 QMS 网页；真实系统分别验证 SQLite 和独立 PostgreSQL 保存后进入正式服务；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
+镜像在临时配置目录和专用PostgreSQL 中验证启动；确认不含 PostgreSQL 服务端和旧 `DB_*` 默认环境变量，且 `GUID` / `GPID` 权限切换、`su-exec`、`inotifywait` 仍可用。fnOS 两架构验证模板不生成业务配置，数据库生成复用 QMediaSync 网页；真实系统分别验证 SQLite 和独立 PostgreSQL 保存后进入正式服务；Linux 脚本使用隔离替身检查参数传递和 systemd 内容，不在验证中安装或修改主机数据库。
 
 fnOS / Windows 首次配置和打包变更还运行：
 

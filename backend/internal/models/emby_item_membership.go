@@ -15,14 +15,15 @@ import (
 // 它只缩小候选范围，删除授权仍由对应 state 和不可变证据决定。
 type EmbyItemMembership struct {
 	BaseModel
-	ServerID        string `json:"server_id" gorm:"uniqueIndex:idx_emby_membership_item,priority:1;index:idx_emby_membership_part,priority:1;index:idx_emby_membership_season,priority:1;index:idx_emby_membership_series,priority:1"`
-	ItemID          string `json:"item_id" gorm:"uniqueIndex:idx_emby_membership_item,priority:2"`
-	ServerConfigKey string `json:"server_config_key" gorm:"index:idx_emby_membership_part,priority:2;index:idx_emby_membership_season,priority:2;index:idx_emby_membership_series,priority:2"`
-	SnapshotID      uint   `json:"snapshot_id"`
-	ItemType        string `json:"item_type"`
-	PartOfItemID    string `json:"part_of_item_id" gorm:"index:idx_emby_membership_part,priority:3"`
-	SeasonID        string `json:"season_id" gorm:"index:idx_emby_membership_season,priority:3"`
-	SeriesID        string `json:"series_id" gorm:"index:idx_emby_membership_series,priority:3"`
+	MediaServerType MediaServerType `json:"-" gorm:"not null;default:emby;uniqueIndex:idx_emby_membership_item,priority:0;index:idx_emby_membership_part,priority:0;index:idx_emby_membership_season,priority:0;index:idx_emby_membership_series,priority:0"`
+	ServerID        string          `json:"server_id" gorm:"uniqueIndex:idx_emby_membership_item,priority:1;index:idx_emby_membership_part,priority:1;index:idx_emby_membership_season,priority:1;index:idx_emby_membership_series,priority:1"`
+	ItemID          string          `json:"item_id" gorm:"uniqueIndex:idx_emby_membership_item,priority:2"`
+	ServerConfigKey string          `json:"server_config_key" gorm:"index:idx_emby_membership_part,priority:2;index:idx_emby_membership_season,priority:2;index:idx_emby_membership_series,priority:2"`
+	SnapshotID      uint            `json:"snapshot_id"`
+	ItemType        string          `json:"item_type"`
+	PartOfItemID    string          `json:"part_of_item_id" gorm:"index:idx_emby_membership_part,priority:3"`
+	SeasonID        string          `json:"season_id" gorm:"index:idx_emby_membership_season,priority:3"`
+	SeriesID        string          `json:"series_id" gorm:"index:idx_emby_membership_series,priority:3"`
 }
 
 func makeEmbyItemMembership(state EmbyItemState, evidence EmbyItemEvidence) (EmbyItemMembership, error) {
@@ -30,7 +31,7 @@ func makeEmbyItemMembership(state EmbyItemState, evidence EmbyItemEvidence) (Emb
 }
 
 func makeEmbyItemMembershipFromItem(state EmbyItemState, evidence EmbyItemEvidence, item *EmbyMediaItem) (EmbyItemMembership, error) {
-	if state.SnapshotID != evidence.ID || state.ItemID != evidence.ItemID || state.ServerID != evidence.ServerID ||
+	if state.MediaServerType != evidence.MediaServerType || state.SnapshotID != evidence.ID || state.ItemID != evidence.ItemID || state.ServerID != evidence.ServerID ||
 		state.Generation != evidence.Generation || state.IdentityKey != evidence.IdentityKey {
 		return EmbyItemMembership{}, ErrEmbyIdentityAmbiguous
 	}
@@ -52,7 +53,7 @@ func makeEmbyItemMembershipFromItem(state EmbyItemState, evidence EmbyItemEviden
 		}
 	}
 	return EmbyItemMembership{
-		ServerID: state.ServerID, ItemID: state.ItemID, ServerConfigKey: evidence.ServerConfigKey,
+		MediaServerType: state.MediaServerType, ServerID: state.ServerID, ItemID: state.ItemID, ServerConfigKey: evidence.ServerConfigKey,
 		SnapshotID: evidence.ID, ItemType: item.Type,
 		PartOfItemID: item.PartOfItemID, SeasonID: item.SeasonId, SeriesID: item.SeriesId,
 	}, nil
@@ -64,7 +65,7 @@ func saveEmbyItemMembershipTx(tx *gorm.DB, state EmbyItemState, evidence EmbyIte
 		return err
 	}
 	return tx.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "server_id"}, {Name: "item_id"}},
+		Columns: []clause.Column{{Name: "media_server_type"}, {Name: "server_id"}, {Name: "item_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"server_config_key", "snapshot_id", "item_type", "part_of_item_id", "season_id", "series_id", "updated_at",
 		}),
@@ -75,7 +76,7 @@ func saveEmbyItemMembershipTx(tx *gorm.DB, state EmbyItemState, evidence EmbyIte
 // 恢复备份在同一事务中导入原表并重建索引，不采用备份中的派生行；失败整体回滚。
 func RebuildEmbyItemMembership(conn *gorm.DB) error {
 	return conn.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&EmbyIndexState{}).Where("id = ?", 1).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
+		if err := tx.Model(&EmbyIndexState{}).Where("media_server_type IN ?", []MediaServerType{MediaServerEmby, MediaServerJellyfin}).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
 			return err
 		}
 		if err := tx.AutoMigrate(&EmbyItemMembership{}); err != nil {
@@ -105,11 +106,11 @@ func RebuildEmbyItemMembership(conn *gorm.DB) error {
 			for _, state := range states {
 				entry, ok := evidence[state.SnapshotID]
 				if !ok {
-					return fmt.Errorf("Emby 条目 %s 缺少证据 %d: %w", state.ItemID, state.SnapshotID, gorm.ErrRecordNotFound)
+					return fmt.Errorf("媒体条目 %s 缺少证据 %d: %w", state.ItemID, state.SnapshotID, gorm.ErrRecordNotFound)
 				}
 				row, err := makeEmbyItemMembership(state, entry)
 				if err != nil {
-					return fmt.Errorf("重建 Emby 成员 %s: %w", state.ItemID, err)
+					return fmt.Errorf("重建媒体服务器成员 %s: %w", state.ItemID, err)
 				}
 				rows = append(rows, row)
 			}
@@ -121,14 +122,14 @@ func RebuildEmbyItemMembership(conn *gorm.DB) error {
 	})
 }
 
-func embyItemMembershipQuery(tx *gorm.DB, serverID, serverConfigKey string) *gorm.DB {
+func embyItemMembershipQuery(tx *gorm.DB, kind MediaServerType, serverID, serverConfigKey string) *gorm.DB {
 	return tx.Model(&EmbyItemMembership{}).Table("emby_item_memberships AS m").
-		Joins("JOIN emby_item_states AS s ON s.server_id = m.server_id AND s.item_id = m.item_id AND s.snapshot_id = m.snapshot_id").
-		Where("m.server_id = ? AND m.server_config_key = ?", serverID, serverConfigKey)
+		Joins("JOIN emby_item_states AS s ON s.media_server_type = m.media_server_type AND s.server_id = m.server_id AND s.item_id = m.item_id AND s.snapshot_id = m.snapshot_id").
+		Where("m.media_server_type = ? AND m.server_id = ? AND m.server_config_key = ?", kind, serverID, serverConfigKey)
 }
 
 // embyStateEvidenceCandidateIDsTx 供早期观察与冻结共用；extraParents 保留历史观察父项的分段候选。
-func embyStateEvidenceCandidateIDsTx(tx *gorm.DB, serverID, serverConfigKey, itemID, itemType string, extraParents []string) ([]string, error) {
+func embyStateEvidenceCandidateIDsTx(tx *gorm.DB, kind MediaServerType, serverID, serverConfigKey, itemID, itemType string, extraParents []string) ([]string, error) {
 	candidates := map[string]bool{itemID: true}
 	for _, id := range extraParents {
 		candidates[id] = true
@@ -146,7 +147,7 @@ func embyStateEvidenceCandidateIDsTx(tx *gorm.DB, serverID, serverConfigKey, ite
 	}
 	if scopeColumn != "" {
 		var ids []string
-		if err := embyItemMembershipQuery(tx, serverID, serverConfigKey).
+		if err := embyItemMembershipQuery(tx, kind, serverID, serverConfigKey).
 			Where(scopeColumn+" = ? AND m.item_type IN ?", itemID, []string{"Episode", "Video"}).Pluck("m.item_id", &ids).Error; err != nil {
 			return nil, err
 		}
@@ -157,7 +158,7 @@ func embyStateEvidenceCandidateIDsTx(tx *gorm.DB, serverID, serverConfigKey, ite
 	// 分段可能只有 PartOf，没有重复 Season/Series 字段；仅扩展真实 Video 边。
 	for ids := range slices.Chunk(slices.Sorted(maps.Keys(candidates)), embyObservationBatchSize) {
 		var parts []string
-		if err := embyItemMembershipQuery(tx, serverID, serverConfigKey).
+		if err := embyItemMembershipQuery(tx, kind, serverID, serverConfigKey).
 			Where("m.part_of_item_id IN ? AND m.item_type = ?", ids, "Video").Pluck("m.item_id", &parts).Error; err != nil {
 			return nil, err
 		}
@@ -168,8 +169,8 @@ func embyStateEvidenceCandidateIDsTx(tx *gorm.DB, serverID, serverConfigKey, ite
 	return slices.Sorted(maps.Keys(candidates)), nil
 }
 
-func loadEmbyScopeEvidenceTx(tx *gorm.DB, serverID, serverConfigKey, itemID, itemType string, excluded map[string]bool) ([]EmbyItemEvidence, error) {
-	ids, err := embyStateEvidenceCandidateIDsTx(tx, serverID, serverConfigKey, itemID, itemType, nil)
+func loadEmbyScopeEvidenceTx(tx *gorm.DB, kind MediaServerType, serverID, serverConfigKey, itemID, itemType string, excluded map[string]bool) ([]EmbyItemEvidence, error) {
+	ids, err := embyStateEvidenceCandidateIDsTx(tx, kind, serverID, serverConfigKey, itemID, itemType, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -178,8 +179,8 @@ func loadEmbyScopeEvidenceTx(tx *gorm.DB, serverID, serverConfigKey, itemID, ite
 	for batch := range slices.Chunk(ids, embyObservationBatchSize) {
 		var rows []EmbyItemEvidence
 		if err := tx.Table("emby_item_evidences AS e").Select("e.*").
-			Joins("JOIN emby_item_states AS s ON s.snapshot_id = e.id AND s.server_id = e.server_id AND s.item_id = e.item_id").
-			Where("s.server_id = ? AND s.item_id IN ? AND e.server_config_key = ?", serverID, batch, serverConfigKey).
+			Joins("JOIN emby_item_states AS s ON s.media_server_type = e.media_server_type AND s.snapshot_id = e.id AND s.server_id = e.server_id AND s.item_id = e.item_id").
+			Where("s.media_server_type = ? AND s.server_id = ? AND s.item_id IN ? AND e.server_config_key = ?", kind, serverID, batch, serverConfigKey).
 			Order("e.id").Find(&rows).Error; err != nil {
 			return nil, err
 		}

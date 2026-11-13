@@ -39,7 +39,7 @@ func testGenerationSkipped(t *testing.T, account *models.Account, sp *models.Syn
 		}
 		return nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	for i := 0; i < 2; i++ {
 		name := "skip.mkv"
 		if i == 1 && kind != "all" {
@@ -272,7 +272,7 @@ func TestGenerationSkippedMetadata(t *testing.T) {
 	}
 	syncer.SyncDriver = &collisionTestDriver{files: []*SyncFileCache{{FileId: "meta", PickCode: "meta", ParentId: "root", Path: "/remote", FileName: "movie.nfo", FileType: v115open.TypeFile, SourceType: models.SourceType115}}}
 	video := &SyncFileCache{FileId: "video", ParentId: "root", Path: "/remote", FileName: "movie.mkv", IsVideo: true, SourceType: models.SourceType115}
-	if n, err := service.downloadMatchedMetadata(context.Background(), syncer, sp, video, &generationDirectory{}); n != 0 || err != nil {
+	if n, err := service.downloadMatchedMetadata(context.Background(), syncer, sp, video, &generationDirectory{}, nil); n != 0 || err != nil {
 		t.Fatalf("metadata downloads %d %v", n, err)
 	}
 	var count int64

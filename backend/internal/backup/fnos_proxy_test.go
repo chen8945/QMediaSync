@@ -247,10 +247,14 @@ func fnosCompatibilityBackupDirectory(t *testing.T, conn *gorm.DB, version int) 
 			}
 			continue
 		}
-		if table.Name == "migrator" {
+		if table.Name == "migrator" || table.Name == "emby_config" {
 			var buffer bytes.Buffer
 			if err := readLogicalRows(dir, table, func(row map[string]any) error {
-				row["version_code"] = int64(version)
+				if table.Name == "migrator" {
+					row["version_code"] = int64(version)
+				} else {
+					delete(row, "enabled")
+				}
 				return json.NewEncoder(&buffer).Encode(row)
 			}); err != nil {
 				t.Fatal(err)
@@ -260,6 +264,9 @@ func fnosCompatibilityBackupDirectory(t *testing.T, conn *gorm.DB, version int) 
 			}
 			sum := sha256.Sum256(buffer.Bytes())
 			table.SHA256 = hex.EncodeToString(sum[:])
+			if table.Name == "emby_config" {
+				table.Columns = slices.DeleteFunc(table.Columns, func(column logicalColumn) bool { return column.Name == "enabled" })
+			}
 		}
 		tables = append(tables, table)
 	}

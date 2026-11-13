@@ -117,11 +117,11 @@ export function getEventTypeName(type: EventType): string {
     scrape_finish: '刮削完成',
     scrape_error: '刮削错误',
     system_alert: '系统警告',
-    media_added: 'Emby 媒体添加',
-    media_removed: 'Emby 媒体移除',
-    playback_start: 'Emby 播放开始',
-    playback_pause: 'Emby 播放暂停',
-    playback_stop: 'Emby 播放停止',
+    media_added: '媒体添加',
+    media_removed: '媒体移除',
+    playback_start: '播放开始',
+    playback_pause: '播放暂停',
+    playback_stop: '播放停止',
   }
   return nameMap[type] || type
 }

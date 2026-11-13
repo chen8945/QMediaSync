@@ -23,8 +23,9 @@ qmediasync/
 │   │   ├── v115/
 │   │   │   ├── auth/                # 115 授权来源和会话
 │   │   │   └── openapi/             # 115 API 客户端
-│   │   ├── emby/
-│   │   │   └── client/              # Emby REST 客户端，父目录保留业务编排
+│   │   ├── emby/                    # 两端共用的媒体库同步与事件业务
+│   │   ├── medialibrary/
+│   │   │   └── client/              # 共用传输与 Emby/Jellyfin 原生协议
 │   │   ├── strm/
 │   │   │   ├── config/              # 同步目录聚合保存
 │   │   │   └── scope/               # 共享范围协调
@@ -51,7 +52,7 @@ qmediasync/
 │   │   │   ├── backup/
 │   │   │   ├── settings/
 │   │   │   └── system/
-│   │   ├── components/              # common 与各领域复用组件
+│   │   ├── components/              # common 与各领域复用组件，含 media-library 设置面板
 │   │   ├── api/                     # 领域请求、响应和 API 专用类型
 │   │   ├── http/                    # 唯一客户端、认证和错误解析
 │   │   ├── composables/             # 复用状态和生命周期

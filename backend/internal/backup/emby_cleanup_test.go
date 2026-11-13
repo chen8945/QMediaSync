@@ -62,7 +62,7 @@ func TestBackupRestoreEmbyCleanupAuthorityAndAttempts(t *testing.T) {
 	if err := models.RecoverEmbyWebhookWork(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Unix())
+	reclaimed, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Unix())
 	if err != nil || reclaimed == nil || reclaimed.ID != fixture.record.ID || reclaimed.ClaimToken == fixture.record.ClaimToken {
 		t.Fatalf("restored work did not receive a new claim: %+v %v", reclaimed, err)
 	}
@@ -99,12 +99,12 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 		t.Fatal(err)
 	}
 	if err := conn.Model(&models.EmbyConfig{}).Where("id = ?", 1).Updates(map[string]any{
-		"emby_url": "http://emby.invalid", "emby_api_key": "backup-test-key", "sync_enabled": 1,
+		"enabled": true, "emby_url": "http://emby.invalid", "emby_api_key": "backup-test-key", "sync_enabled": 1,
 		"enable_delete_netdisk": 1, "path_mappings_json": cleanupBackupJSON(t, mappings),
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	var config models.EmbyConfig
+	config := models.EmbyConfig{MediaServerType: models.MediaServerEmby}
 	if err := conn.First(&config, 1).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +161,10 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 		t.Fatal(err)
 	}
 	// 新增／修改观察使用真实保存入口，让恢复同时重建两个派生索引。
-	if _, err := models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{Event: "library.modified", ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: snapshot.Item.Path, Source: "official"}); err != nil {
+	if _, err := models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby, Event: "library.modified", ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: snapshot.Item.Path, Source: "official"}); err != nil {
 		t.Fatal(err)
 	}
-	observation, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Unix())
+	observation, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Unix())
 	if err != nil || observation == nil {
 		t.Fatalf("claim observation: %+v %v", observation, err)
 	}
@@ -181,16 +181,19 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 	if err := models.FinishEmbyWebhook(t.Context(), *observation, models.EmbyWebhookDone, "", 0, false); err != nil {
 		t.Fatal(err)
 	}
-	_, err = models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: snapshot.Item.Path, Source: "official"})
+	_, err = models.SaveEmbyWebhook(t.Context(), models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: snapshot.Item.Path, Source: "official"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Unix())
+	record, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Unix())
 	if err != nil || record == nil {
 		t.Fatalf("claim: %+v %v", record, err)
 	}
 	var input models.EmbyDeletionInput
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	if len(input.Owners) != 1 || len(input.Owners[0].Files) != 1 || len(input.DirectoryScopes) != 1 {

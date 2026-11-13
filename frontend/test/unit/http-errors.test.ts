@@ -21,7 +21,7 @@ describe('公共 HTTP 错误解析', () => {
     )
     expect(parsed.kind).toBe('maintenance')
     expect(parsed.message).toBe(
-      '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMS 服务后重新登录',
+      '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMediaSync 服务后重新登录',
     )
     expect(parsed.shouldNotify).toBe(true)
     expect(parsed.message).not.toContain('secret')

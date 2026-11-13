@@ -31,18 +31,17 @@ func TestUpdateBackupConfigRemovesDisabledSchedule(t *testing.T) {
 	database := setupControllerTestDB(t, &models.BackupConfig{})
 	previousDir, previousLogger := helpers.ConfigDir, helpers.AppLogger
 	previousService, previousCron := models.GlobalBackupService, synccron.GlobalCron
-	previousSettings, previousEmby := models.SettingsGlobal, models.GlobalEmbyConfig
+	previousSettings := models.SettingsGlobal
 	helpers.ConfigDir = t.TempDir()
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	models.GlobalBackupService, synccron.GlobalCron = nil, nil
 	models.SettingsGlobal = &models.Settings{Cron: "0 * * * *"}
-	models.GlobalEmbyConfig = &models.EmbyConfig{}
 	t.Cleanup(func() {
 		if synccron.GlobalCron != nil {
 			<-synccron.GlobalCron.Stop().Done()
 		}
 		models.GlobalBackupService, synccron.GlobalCron = previousService, previousCron
-		models.SettingsGlobal, models.GlobalEmbyConfig = previousSettings, previousEmby
+		models.SettingsGlobal = previousSettings
 		helpers.ConfigDir, helpers.AppLogger = previousDir, previousLogger
 	})
 

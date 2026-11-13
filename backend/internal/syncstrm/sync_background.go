@@ -229,12 +229,12 @@ func submitGenerationDownstream(ctx context.Context, record *models.Sync, target
 		return
 	}
 	if shouldRequestEmbyLibraryRefresh(int64(record.NewMeta), int64(record.NewStrm)) {
-		record.Logger.Info("有新的元数据文件或 STRM 文件，提交 Emby 媒体库刷新任务")
+		record.Logger.Info("有新的元数据文件或 STRM 文件，提交媒体库刷新任务")
 		if len(targets) == 0 {
-			targets = []models.EmbyRefreshTarget{{TargetType: models.EmbyRefreshTargetTypeLibrary}}
+			targets = []models.EmbyRefreshTarget{{MediaServerType: models.MediaServerEmby, TargetType: models.EmbyRefreshTargetTypeLibrary}, {MediaServerType: models.MediaServerJellyfin, TargetType: models.EmbyRefreshTargetTypeLibrary}}
 		}
-		if err := models.RequestEmbyRefreshTargets(record.SyncPathId, targets); err != nil {
-			record.Logger.Errorf("提交 Emby 媒体库刷新任务失败：%v", err)
+		if err := models.RequestMediaLibraryRefreshTargets(record.SyncPathId, targets); err != nil {
+			record.Logger.Errorf("提交媒体库刷新任务失败：%v", err)
 		}
 	}
 	if ctx.Err() != nil {

@@ -254,6 +254,12 @@ func (task *StrmGenerationTask) GetRefreshTargets() []EmbyRefreshTarget {
 		helpers.AppLogger.Warnf("解析 STRM 生成任务刷新目标失败：%v", err)
 		return []EmbyRefreshTarget{}
 	}
+	// 升级前的持久目标仅属于 Emby；新提交入口仍严格要求端归属。
+	for i := range targets {
+		if targets[i].MediaServerType == "" {
+			targets[i].MediaServerType = MediaServerEmby
+		}
+	}
 	return normalizeEmbyRefreshTargets(targets)
 }
 
@@ -323,7 +329,7 @@ func normalizeEmbyRefreshTargets(targets []EmbyRefreshTarget) []EmbyRefreshTarge
 		if _, covered := libraries[refreshTargetLibraryKey(target)]; covered {
 			continue
 		}
-		key := string(target.TargetType) + ":" + target.ItemID
+		key := string(refreshTargetServerType(target)) + ":" + target.ServerID + ":" + string(target.TargetType) + ":" + target.ItemID
 		if existing, ok := items[key]; ok {
 			items[key] = mergeRefreshItemTarget(existing, target)
 			continue
@@ -345,13 +351,14 @@ func normalizeEmbyRefreshTargets(targets []EmbyRefreshTarget) []EmbyRefreshTarge
 }
 
 func refreshTargetLibraryKey(target EmbyRefreshTarget) string {
+	prefix := string(refreshTargetServerType(target)) + ":" + target.ServerID + ":"
 	if target.FallbackLibraryId != "" {
-		return target.FallbackLibraryId
+		return prefix + target.FallbackLibraryId
 	}
 	if target.SyncPathID > 0 {
-		return fmt.Sprintf("sync_path:%d", target.SyncPathID)
+		return prefix + fmt.Sprintf("sync_path:%d", target.SyncPathID)
 	}
-	return "__default_library__"
+	return prefix + "__default_library__"
 }
 
 func refreshTargetSortKey(target EmbyRefreshTarget) string {
@@ -359,7 +366,7 @@ func refreshTargetSortKey(target EmbyRefreshTarget) string {
 	case EmbyRefreshTargetTypeLibrary:
 		return "0:" + refreshTargetLibraryKey(target)
 	default:
-		return "1:" + target.FallbackLibraryId + ":" + target.ItemID
+		return "1:" + refreshTargetLibraryKey(target) + ":" + target.ItemID
 	}
 }
 
@@ -663,6 +670,32 @@ func GetStrmGenerationFinalizingRetries() ([]*StrmGenerationTask, error) {
 	return tasks, err
 }
 
+// MarkRefreshFinalizing 保留已生成文件的刷新目标，重试时不再次生成。
+func (task *StrmGenerationTask) MarkRefreshFinalizing(ctx context.Context, targets []EmbyRefreshTarget, message string) error {
+	task.SetRefreshTargets(targets)
+	now := time.Now().Unix()
+	result := db.Db.WithContext(ctx).Model(&StrmGenerationTask{}).
+		Where("id = ? AND status = ?", task.ID, StrmGenerationStatusRunning).
+		Updates(map[string]any{
+			"status":              StrmGenerationStatusFinalizing,
+			"refresh_targets_str": task.RefreshTargetsStr,
+			"retry_count":         gorm.Expr("COALESCE(retry_count, 0) + 1"),
+			"last_retry_time":     now,
+			"last_error":          message,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("STRM 刷新任务状态已变化")
+	}
+	task.Status = StrmGenerationStatusFinalizing
+	task.RetryCount++
+	task.LastRetryTime = now
+	task.LastError = message
+	return nil
+}
+
 // MarkFinalizingRetry 保存收尾错误；生成结果和父任务计数保持不变。
 func (task *StrmGenerationTask) MarkFinalizingRetry(message string) error {
 	now := time.Now().Unix()
@@ -823,14 +856,25 @@ func GetStrmGenerationTaskByID(taskID uint) (*StrmGenerationTask, error) {
 	return &task, nil
 }
 
-// MarkStrmGenerationRefreshSubmitted 标记父任务刷新目标已经提交。
-func MarkStrmGenerationRefreshSubmitted(parentTaskId uint) error {
-	if parentTaskId == 0 {
-		return nil
+// SaveRefreshSubmissionProgress 仅保留尚未成功提交的目标，全部成功时标记已提交。
+func (task *StrmGenerationTask) SaveRefreshSubmissionProgress(ctx context.Context, remaining []EmbyRefreshTarget) error {
+	if task.Status != StrmGenerationStatusFinalizing && task.Status != StrmGenerationStatusCompleted {
+		return errors.New("STRM 刷新任务尚未进入收尾")
 	}
-	return db.Db.Model(&StrmGenerationTask{}).
-		Where("id = ?", parentTaskId).
-		Update("refresh_submitted", true).Error
+	updated := *task
+	updated.SetRefreshTargets(remaining)
+	result := db.Db.WithContext(ctx).Model(&StrmGenerationTask{}).
+		Where("id = ? AND status = ? AND refresh_submitted = ? AND COALESCE(refresh_targets_str, '') = ?", task.ID, task.Status, false, task.RefreshTargetsStr).
+		Updates(map[string]any{"refresh_targets_str": updated.RefreshTargetsStr, "refresh_submitted": len(remaining) == 0})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("STRM 刷新提交进度已变化")
+	}
+	task.RefreshTargetsStr = updated.RefreshTargetsStr
+	task.RefreshSubmitted = len(remaining) == 0
+	return nil
 }
 
 // MarkSkipping 保存跳过原因并累计父任务，随后完成刷新等收尾。

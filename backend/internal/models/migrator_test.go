@@ -532,7 +532,6 @@ func TestMigrateVersion50AddsEmbyDailyFirstFullSyncFields(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
 	createMigratorTestTable(t)
 	if err := db.Db.Create(&Migrator{VersionCode: 50}).Error; err != nil {
@@ -718,7 +717,6 @@ func TestMigrateVersion49AddsEmbySyncStateAndBatchFields(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
 	createMigratorTestTable(t)
 	if err := db.Db.Create(&Migrator{VersionCode: 49}).Error; err != nil {
@@ -1269,6 +1267,7 @@ func TestMigrateVersion60SeparatesTransferRemoteIdentityFields(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
+
 	createMigratorTestTable(t)
 	if err := db.Db.AutoMigrate(&Settings{}); err != nil {
 		t.Fatal(err)
@@ -1307,6 +1306,9 @@ func TestMigrateVersion60SeparatesTransferRemoteIdentityFields(t *testing.T) {
 			completed_pick_code text
 		)`,
 	} {
+		if strings.HasPrefix(strings.TrimSpace(statement), "CREATE TABLE") {
+			statement = strings.Join(strings.Fields(statement), " ")
+		}
 		if err := db.Db.Exec(statement).Error; err != nil {
 			t.Fatalf("创建版本 60 测试表失败: %v", err)
 		}

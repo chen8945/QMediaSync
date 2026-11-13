@@ -23,10 +23,10 @@ func setupEmbyReceiptController(t *testing.T, enabled bool) (*gorm.DB, *gin.Engi
 	conn := setupControllerTestDB(t, &models.EmbyConfig{}, &models.EmbyIndexState{}, &models.EmbyItemState{},
 		&models.EmbyItemEvidence{}, &models.EmbyItemMembership{}, &models.EmbyMediaItem{}, &models.EmbyMediaSyncFile{}, &models.EmbyWebhookRecord{},
 		&models.EmbyWebhookTarget{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{})
-	previousConfig, previousLogger := models.GlobalEmbyConfig, helpers.AppLogger
-	t.Cleanup(func() { models.GlobalEmbyConfig, helpers.AppLogger = previousConfig, previousLogger })
+	previousLogger := helpers.AppLogger
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	config := &models.EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "offline-only", SyncEnabled: 1}
+	config := &models.EmbyConfig{Enabled: true, MediaServerType: models.MediaServerEmby, EmbyUrl: "http://emby.invalid", EmbyApiKey: "offline-only", SyncEnabled: 1}
 	if enabled {
 		config.EnableDeleteNetdisk = 1
 	}
@@ -36,11 +36,10 @@ func setupEmbyReceiptController(t *testing.T, enabled bool) (*gorm.DB, *gin.Engi
 	if err := conn.Model(config).Update("enable_auth", 0).Error; err != nil {
 		t.Fatal(err)
 	}
-	models.GlobalEmbyConfig = config
-	if err := conn.Create(&models.EmbyMediaItem{ItemId: "20", ItemIdInt: 20, Type: "Video"}).Error; err != nil {
+	if err := conn.Create(&models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "20", ItemIdInt: 20, Type: "Video"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Create(&models.EmbyMediaSyncFile{EmbyItemId: "20", SyncFileId: 1}).Error; err != nil {
+	if err := conn.Create(&models.EmbyMediaSyncFile{MediaServerType: models.MediaServerEmby, EmbyItemId: "20", SyncFileId: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	router := gin.New()

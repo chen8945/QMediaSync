@@ -19,7 +19,7 @@ func LoadEmbyItemRecoveryReadIDs(ctx context.Context, token EmbyIndexToken, item
 			return err
 		}
 		var state EmbyItemState
-		if err := tx.Where("server_id = ? AND item_id = ?", token.ServerID, itemID).First(&state).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", token.MediaServerType, token.ServerID, itemID).First(&state).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
 			}
@@ -38,7 +38,7 @@ func LoadEmbyItemRecoveryReadIDs(ctx context.Context, token EmbyIndexToken, item
 			}
 			return err
 		}
-		if evidence.ServerID != token.ServerID || evidence.ServerConfigKey != token.ServerConfigKey || evidence.ItemID != state.ItemID || evidence.Generation != state.Generation || evidence.IdentityKey != state.IdentityKey {
+		if evidence.MediaServerType != token.MediaServerType || evidence.ServerID != token.ServerID || evidence.ServerConfigKey != token.ServerConfigKey || evidence.ItemID != state.ItemID || evidence.Generation != state.Generation || evidence.IdentityKey != state.IdentityKey {
 			return nil
 		}
 		var item EmbyMediaItem
@@ -49,7 +49,7 @@ func LoadEmbyItemRecoveryReadIDs(ctx context.Context, token EmbyIndexToken, item
 			return nil
 		}
 		for _, id := range []string{item.PartOfItemID, item.VersionOfItemID} {
-			if _, err := parseEmbyItemID(id); err == nil && id != itemID && !slices.Contains(ids, id) {
+			if _, err := parseEmbySnapshotItemID(id); err == nil && id != itemID && !slices.Contains(ids, id) {
 				ids = append(ids, id)
 			}
 		}

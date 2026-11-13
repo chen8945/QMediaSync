@@ -28,16 +28,16 @@ describe('页面展示元信息', () => {
     expect(getPageTitle(accounts.meta)).toBe('网盘账号管理')
   })
 
-  it('飞牛影视反代作为受保护的设置菜单独立接入', () => {
-    const fnos = router.resolve('/settings/fnos-proxy')
-    expect(fnos.name).toBe('settings-fnos-proxy')
+  it('媒体库作为受保护的统一设置菜单接入', () => {
+    const fnos = router.resolve('/settings/media-library')
+    expect(fnos.name).toBe('settings-media-library')
     expect(fnos.meta).toMatchObject({
-      title: '飞牛影视',
+      title: '媒体库',
       requiresAuth: true,
       parent: 'settings',
       showInMenu: true,
     })
     expect(fnos.meta.page?.variant).toBe('settings')
-    expect(router.resolve('/settings/emby').name).toBe('settings-emby')
+    expect(router.resolve('/settings/emby').meta.showInMenu).toBe(false)
   })
 })

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"path"
 	"strings"
 	"time"
@@ -23,9 +21,10 @@ import (
 type DownloadSource string
 
 const (
-	DownloadSourceStrm      DownloadSource = "strm_sync"
-	DownloadSourceLocalFile DownloadSource = "local_file"
-	DownloadSourceEmbyMedia DownloadSource = "emby_media"
+	DownloadSourceStrm          DownloadSource = "strm_sync"
+	DownloadSourceLocalFile     DownloadSource = "local_file"
+	DownloadSourceEmbyMedia     DownloadSource = "emby_media"
+	DownloadSourceJellyfinMedia DownloadSource = "jellyfin_media"
 )
 
 // DownloadStatus 下载状态
@@ -56,6 +55,7 @@ type DbDownloadTask struct {
 	RemoteMd5         string         `json:"remote_md5"`                             // 远端 MD5 字段；百度为云端哈希，不用于内容校验
 	RemoteDownloadUrl string         `json:"-"`                                      // 下载执行使用的直链或提取地址，不暴露给前端
 	EmbyItemId        string         `json:"-"`                                      // Emby 媒体提取执行定位，不暴露给前端
+	MediaServerID     string         `json:"-"`                                      // 新媒体提取任务的原服务器身份；旧 URL 任务留空
 	LocalSourcePath   string         `json:"-"`                                      // 本地复制任务源路径，不暴露给前端
 	DedupScopeHash    string         `json:"-"`                                      // 活跃任务去重范围摘要，不暴露给前端
 	DedupLocatorHash  string         `json:"-"`                                      // 活跃任务去重定位摘要，不暴露给前端
@@ -215,6 +215,10 @@ func publishDownloadTaskStatusChanged(task *DbDownloadTask) {
 
 // 执行下载
 func (task *DbDownloadTask) Download() {
+	if task.isMediaLibraryDownload() {
+		task.DownloadMediaLibraryInfo()
+		return
+	}
 	if task.finishPublishedMetadata() {
 		return
 	}
@@ -238,9 +242,6 @@ func (task *DbDownloadTask) Download() {
 		case SourceTypeBaiduPan:
 			task.DownloadBaiduPanFile()
 		}
-	case DownloadSourceEmbyMedia:
-		// Emby 媒体信息提取，从 Emby 下载
-		task.DownloadEmbyMedia()
 	case DownloadSourceLocalFile:
 		// 复制本地文件到指定位置。
 		// 标记为下载中
@@ -394,49 +395,6 @@ func (task *DbDownloadTask) DownloadBaiduPanFile() {
 	task.Complete()
 }
 
-// 访问 Emby 下载链接
-func (task *DbDownloadTask) DownloadEmbyMedia() {
-	// 标记为下载中
-	task.Downloading()
-	// 发送一个 POST 请求
-	// 创建请求并设置 User-Agent
-	client := &http.Client{
-		Timeout: 30 * time.Second, // 30 秒超时
-	}
-	if task.RemoteDownloadUrl == "" {
-		task.Fail(errors.New("Emby 提取地址为空"))
-		return
-	}
-	req, err := http.NewRequest(http.MethodPost, task.RemoteDownloadUrl, nil)
-	if err != nil {
-		helpers.AppLogger.Errorf("[下载] 创建 %s 的 HTTP request 失败：%v", task.FileName, err)
-		task.Fail(err)
-		return
-	}
-	req.Header.Set("User-Agent", v115open.DEFAULTUA)
-	// 发送请求
-	resp, doErr := client.Do(req)
-	if doErr != nil {
-		helpers.AppLogger.Errorf("[Emby 媒体信息提取] 失败，名称：%s，Emby Item ID：%s，错误：%v", task.FileName, task.EmbyItemId, doErr)
-		task.Fail(doErr)
-		return
-	}
-	closeEmbyResponseBody(resp)
-	if helpers.IsRelease {
-		helpers.AppLogger.Infof("[Emby 媒体信息提取] 成功，名称：%s，Emby Item ID：%s", task.FileName, task.EmbyItemId)
-	}
-	task.Complete()
-}
-
-// closeEmbyResponseBody 读取并关闭不需要解析的 Emby 提取响应，允许 HTTP 连接复用。
-func closeEmbyResponseBody(resp *http.Response) {
-	if resp == nil || resp.Body == nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-}
-
 // downloadTaskScope 表示下载任务去重的远端存储范围。
 // 相同远端文件可以在不同账号或同步目录中分别下载到各自的本地目标。
 type downloadTaskScope struct {
@@ -507,8 +465,13 @@ func setDownloadTaskDeduplicationKeys(task *DbDownloadTask) {
 		}
 	case SourceTypeLocal:
 		locator = "local_source_path:" + task.LocalSourcePath
-	case SourceTypeEmbyMedia:
-		locator = "remote_download_url:" + task.RemoteDownloadUrl
+	case SourceTypeEmbyMedia, SourceTypeJellyfinMedia:
+		if task.MediaServerID != "" {
+			scope = "media_server_id:" + task.MediaServerID
+			locator = "media_item_id:" + task.EmbyItemId
+		} else {
+			locator = "remote_download_url:" + task.RemoteDownloadUrl
+		}
 	default:
 		locator = "remote_file_id:" + task.RemoteFileId
 	}
@@ -648,34 +611,6 @@ func AddDownloadTaskFromSyncFile(file *SyncFile, replaceBaseline ...string) erro
 	return err
 }
 
-func AddDownloadTaskFromEmbyMedia(url, itemId, itemName string) error {
-	// 先检查是否存在
-	scope := downloadTaskScope{source: DownloadSourceEmbyMedia, sourceType: SourceTypeEmbyMedia}
-	if task := checkDownloadTaskExistByColumn(scope, "remote_download_url", url); task != nil {
-		return activeDownloadTaskExistsError(task)
-	}
-	// 插入新纪录
-	task := &DbDownloadTask{
-		AccountId:         0,
-		RemoteDownloadUrl: url,
-		EmbyItemId:        itemId,
-		FileName:          itemName,
-		LocalFullPath:     "",
-		Source:            DownloadSourceEmbyMedia,
-		Status:            DownloadStatusPending,
-		Size:              0,
-		SourceType:        SourceTypeEmbyMedia,
-	}
-	err := createDownloadTaskWithDB(db.Db, task)
-	if errors.Is(err, ErrActiveDownloadTaskExists) {
-		return activeDownloadTaskExistsError(findActiveDownloadTaskByDeduplicationKeys(task))
-	}
-	if err == nil {
-		publishDownloadQueueChanged(task, "created")
-	}
-	return err
-}
-
 func remoteFullPath(remotePath string, fileName string) string {
 	if remotePath == "" || fileName == "" {
 		return ""
@@ -685,7 +620,7 @@ func remoteFullPath(remotePath string, fileName string) string {
 
 func GetPendingDownloadTasks(limit int) []*DbDownloadTask {
 	var tasks []*DbDownloadTask
-	db.Db.Model(&DbDownloadTask{}).
+	runnableDownloadTaskQuery(db.Db.Model(&DbDownloadTask{})).
 		Where("status = ?", DownloadStatusPending).
 		Limit(limit).
 		Order("id ASC").
@@ -704,7 +639,7 @@ func GetDownloadingCount() int64 {
 // RetryFailedDownloadTasks 重试失败的下载任务
 func RetryFailedDownloadTasks(maxRetry int) error {
 	var failedTasks []DbDownloadTask
-	if err := db.Db.
+	if err := runnableDownloadTaskQuery(db.Db.Model(&DbDownloadTask{})).
 		Where("status = ? AND retry_count < ?", DownloadStatusFailed, maxRetry).
 		Find(&failedTasks).Error; err != nil {
 		helpers.AppLogger.Errorf("查询待重试下载任务失败：%v", err)
@@ -714,6 +649,19 @@ func RetryFailedDownloadTasks(maxRetry int) error {
 	retried, skipped := 0, 0
 	for i := range failedTasks {
 		task := &failedTasks[i]
+		query := db.Db.Model(&DbDownloadTask{}).
+			Where("id = ? AND status = ? AND retry_count < ?", task.ID, DownloadStatusFailed, maxRetry)
+		if task.isMediaLibraryDownload() {
+			// 调度只检查本地条件，远端实例与权限留在执行入口核验。
+			kind, err := mediaLibraryDownloadKind(task)
+			if err != nil || task.EmbyItemId == "" {
+				skipped++
+				continue
+			}
+			prefix := string(kind)
+			query = query.Where("EXISTS (SELECT 1 FROM "+mediaLibraryConfigTable(kind)+
+				" WHERE enabled = ? AND "+prefix+"_url <> '' AND "+prefix+"_api_key <> '')", true)
+		}
 		setDownloadTaskDeduplicationKeys(task)
 		updateData := map[string]any{
 			"status":          DownloadStatusPending,
@@ -721,8 +669,6 @@ func RetryFailedDownloadTasks(maxRetry int) error {
 			"retry_count":     gorm.Expr("retry_count + 1"),
 			"last_retry_time": time.Now().Unix(),
 		}
-		query := db.Db.Model(&DbDownloadTask{}).
-			Where("id = ? AND status = ? AND retry_count < ?", task.ID, DownloadStatusFailed, maxRetry)
 		if task.DedupScopeHash != "" && task.DedupLocatorHash != "" {
 			updateData["dedup_scope_hash"] = task.DedupScopeHash
 			updateData["dedup_locator_hash"] = task.DedupLocatorHash

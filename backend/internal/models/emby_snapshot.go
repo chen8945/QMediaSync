@@ -24,46 +24,49 @@ import (
 )
 
 var (
-	ErrEmbySnapshotStale     = errors.New("Emby 索引读取版本已失效")
-	ErrEmbyItemDeleted       = errors.New("Emby 条目等待删除核验")
-	ErrEmbyIdentityAmbiguous = errors.New("Emby 物理来源身份不明确")
+	ErrEmbySnapshotStale     = errors.New("媒体服务器索引读取版本已失效")
+	ErrEmbyItemDeleted       = errors.New("媒体条目等待删除核验")
+	ErrEmbyIdentityAmbiguous = errors.New("媒体物理来源身份不明确")
 )
 
 // EmbyIndexState 保存单服务器索引接收水位；SQL 写锁同时协调同步提交和删除登记。
 type EmbyIndexState struct {
 	BaseModel
-	ServerID        string `json:"server_id"`
-	ConfigKey       string `json:"config_key"`
-	ServerConfigKey string `json:"server_config_key"`
-	Revision        int64  `json:"revision"`
+	MediaServerType MediaServerType `json:"-" gorm:"not null;default:emby;uniqueIndex:idx_media_index_type"`
+	ServerID        string          `json:"server_id"`
+	ConfigKey       string          `json:"config_key"`
+	ServerConfigKey string          `json:"server_config_key"`
+	Revision        int64           `json:"revision"`
 }
 
 // EmbyItemState 的代际不依赖普通 UpdatedAt；清理当前索引不会删除此记录。
 type EmbyItemState struct {
 	BaseModel
-	ServerID    string `json:"server_id" gorm:"uniqueIndex:idx_emby_item_state,priority:1"`
-	ItemID      string `json:"item_id" gorm:"uniqueIndex:idx_emby_item_state,priority:2"`
-	Generation  int64  `json:"generation"`
-	SnapshotID  uint   `json:"snapshot_id"`
-	IdentityKey string `json:"identity_key"`
-	Deleted     bool   `json:"deleted"`
-	Revision    int64  `json:"revision"`
+	MediaServerType MediaServerType `json:"-" gorm:"not null;default:emby;uniqueIndex:idx_emby_item_state,priority:0"`
+	ServerID        string          `json:"server_id" gorm:"uniqueIndex:idx_emby_item_state,priority:1"`
+	ItemID          string          `json:"item_id" gorm:"uniqueIndex:idx_emby_item_state,priority:2"`
+	Generation      int64           `json:"generation"`
+	SnapshotID      uint            `json:"snapshot_id"`
+	IdentityKey     string          `json:"identity_key"`
+	Deleted         bool            `json:"deleted"`
+	Revision        int64           `json:"revision"`
 }
 
 // EmbyItemEvidence 保存不可变身份与成员证据，不能随全量索引清理删除。
 type EmbyItemEvidence struct {
 	BaseModel
-	ServerID        string `json:"server_id" gorm:"index:idx_emby_evidence_item,priority:1"`
-	ConfigKey       string `json:"config_key"`
-	ServerConfigKey string `json:"server_config_key"`
-	ItemID          string `json:"item_id" gorm:"index:idx_emby_evidence_item,priority:2"`
-	Generation      int64  `json:"generation"`
-	IdentityKey     string `json:"identity_key"`
-	EvidenceKey     string `json:"evidence_key"`
-	ItemJSON        string `json:"item_json" gorm:"type:text"`
-	SourcesJSON     string `json:"sources_json" gorm:"type:text"`
-	FilesJSON       string `json:"files_json" gorm:"type:text"`
-	SidecarsJSON    string `json:"sidecars_json" gorm:"type:text"`
+	MediaServerType MediaServerType `json:"-" gorm:"not null;default:emby;index:idx_emby_evidence_item,priority:0"`
+	ServerID        string          `json:"server_id" gorm:"index:idx_emby_evidence_item,priority:1"`
+	ConfigKey       string          `json:"config_key"`
+	ServerConfigKey string          `json:"server_config_key"`
+	ItemID          string          `json:"item_id" gorm:"index:idx_emby_evidence_item,priority:2"`
+	Generation      int64           `json:"generation"`
+	IdentityKey     string          `json:"identity_key"`
+	EvidenceKey     string          `json:"evidence_key"`
+	ItemJSON        string          `json:"item_json" gorm:"type:text"`
+	SourcesJSON     string          `json:"sources_json" gorm:"type:text"`
+	FilesJSON       string          `json:"files_json" gorm:"type:text"`
+	SidecarsJSON    string          `json:"sidecars_json" gorm:"type:text"`
 }
 
 // EmbyFrozenFile 是不含凭据的物理文件证据。Reason 非空的证据不能直接用于删除。
@@ -126,6 +129,7 @@ type EmbyItemSnapshot struct {
 }
 
 type EmbyIndexToken struct {
+	MediaServerType MediaServerType
 	ServerID        string
 	ConfigKey       string
 	ServerConfigKey string
@@ -174,33 +178,35 @@ func EmbyConfigIdentity(config *EmbyConfig) string {
 
 // ReadEmbyConfigSnapshot 读取独立配置值，不改写供旧调用方使用的全局缓存。
 func ReadEmbyConfigSnapshot() (*EmbyConfig, error) {
-	var config EmbyConfig
-	if err := db.Db.First(&config).Error; err != nil {
-		return nil, err
-	}
-	normalizeEmbySyncMode(&config)
-	return &config, nil
+	return ReadMediaLibraryConfigSnapshot(MediaServerEmby)
 }
 
 // BeginEmbyIndexRead 必须在读取条目或第一页之前调用；服务器 ID 必须来自实际服务。
 func BeginEmbyIndexRead(serverID string, config *EmbyConfig) (token EmbyIndexToken, err error) {
-	if strings.TrimSpace(serverID) == "" || config == nil {
+	if config == nil {
+		return token, ErrEmbyIdentityAmbiguous
+	}
+	if err := config.MediaServerType.Validate(); err != nil {
+		return token, err
+	}
+	token.MediaServerType = config.MediaServerType
+	if strings.TrimSpace(serverID) == "" {
 		return token, ErrEmbyIdentityAmbiguous
 	}
 	resetCursor := false
 	err = db.Db.Transaction(func(tx *gorm.DB) error {
-		state, err := lockEmbyIndexState(tx)
+		state, err := lockEmbyIndexState(tx, config.MediaServerType)
 		if err != nil {
 			return err
 		}
-		if err := checkEmbyConfig(tx, EmbyConfigIdentity(config)); err != nil {
+		if err := checkEmbyConfig(tx, config.MediaServerType, EmbyConfigIdentity(config)); err != nil {
 			return err
 		}
 		key := EmbyConfigIdentity(config)
 		if state.ServerID != serverID || state.ConfigKey != key {
 			resetCursor = state.ServerID != ""
 			if resetCursor {
-				if err := tx.Model(&EmbyConfig{}).Where("id = ?", config.ID).Updates(map[string]any{"last_saved_cursor_at": 0, "last_full_sync_at": 0, "last_incremental_sync_at": 0, "last_sync_time": 0, "last_success_sync_mode": ""}).Error; err != nil {
+				if err := tx.Table(mediaLibraryConfigTable(config.MediaServerType)).Where("id = ?", config.ID).Updates(map[string]any{"last_saved_cursor_at": 0, "last_full_sync_at": 0, "last_incremental_sync_at": 0, "last_sync_time": 0, "last_success_sync_mode": ""}).Error; err != nil {
 					return err
 				}
 			}
@@ -214,9 +220,12 @@ func BeginEmbyIndexRead(serverID string, config *EmbyConfig) (token EmbyIndexTok
 		if err := tx.Model(&EmbyItemEvidence{}).Select("COALESCE(MAX(id), 0)").Scan(&evidenceID).Error; err != nil {
 			return err
 		}
-		token = EmbyIndexToken{ServerID: serverID, ConfigKey: key, ServerConfigKey: state.ServerConfigKey, Revision: state.Revision, EvidenceHighWatermark: evidenceID}
+		token = EmbyIndexToken{MediaServerType: config.MediaServerType, ServerID: serverID, ConfigKey: key, ServerConfigKey: state.ServerConfigKey, Revision: state.Revision, EvidenceHighWatermark: evidenceID}
 		return nil
 	})
+	if err != nil {
+		return EmbyIndexToken{MediaServerType: config.MediaServerType}, err
+	}
 	if err == nil && resetCursor {
 		config.LastSavedCursorAt, config.LastFullSyncAt, config.LastIncrementalSyncAt, config.LastSyncTime = 0, 0, 0, 0
 		config.LastSuccessSyncMode = ""
@@ -224,16 +233,19 @@ func BeginEmbyIndexRead(serverID string, config *EmbyConfig) (token EmbyIndexTok
 	return token, err
 }
 
-func lockEmbyIndexState(tx *gorm.DB) (*EmbyIndexState, error) {
-	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&EmbyIndexState{BaseModel: BaseModel{ID: 1}}).Error; err != nil {
+func lockEmbyIndexState(tx *gorm.DB, kind MediaServerType) (*EmbyIndexState, error) {
+	if err := kind.Validate(); err != nil {
+		return nil, err
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&EmbyIndexState{MediaServerType: kind}).Error; err != nil {
 		return nil, err
 	}
 	// UPDATE 在 PostgreSQL 取得行锁，在 SQLite 取得写锁；不得先读后无条件写。
-	if err := tx.Model(&EmbyIndexState{}).Where("id = ?", 1).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
+	if err := tx.Model(&EmbyIndexState{}).Where("media_server_type = ?", kind).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
 		return nil, err
 	}
 	var state EmbyIndexState
-	if err := tx.First(&state, 1).Error; err != nil {
+	if err := tx.Where("media_server_type = ?", kind).First(&state).Error; err != nil {
 		return nil, err
 	}
 	return &state, nil
@@ -244,35 +256,39 @@ func LockEmbySourceMutationTx(tx *gorm.DB) error {
 	if tx.Dialector.Name() != "postgres" {
 		return nil
 	}
-	_, err := lockEmbyIndexState(tx)
-	return err
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		if _, err := lockEmbyIndexState(tx, kind); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func checkEmbyConfig(tx *gorm.DB, key string) error {
-	var config EmbyConfig
-	if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&config).Error; err != nil {
+func checkEmbyConfig(tx *gorm.DB, kind MediaServerType, key string) error {
+	config, err := readMediaLibraryConfigTx(tx.Clauses(clause.Locking{Strength: "SHARE"}), kind)
+	if err != nil {
 		return err
 	}
-	if config.SyncEnabled != 1 || EmbyConfigIdentity(&config) != key {
+	if !config.Enabled || config.SyncEnabled != 1 || EmbyConfigIdentity(config) != key {
 		return ErrEmbySnapshotStale
 	}
 	return nil
 }
 
 func checkEmbyToken(tx *gorm.DB, token EmbyIndexToken) error {
-	state, err := lockEmbyIndexState(tx)
+	state, err := lockEmbyIndexState(tx, token.MediaServerType)
 	if err != nil {
 		return err
 	}
 	if state.ServerID != token.ServerID || state.ConfigKey != token.ConfigKey || state.ServerConfigKey != token.ServerConfigKey || state.Revision != token.Revision {
 		return ErrEmbySnapshotStale
 	}
-	return checkEmbyConfig(tx, token.ConfigKey)
+	return checkEmbyConfig(tx, token.MediaServerType, token.ConfigKey)
 }
 
 // RegisterEmbyDeletionTx 在收件事务内登记删除屏障；调用方必须同时保存事件且禁止网络调用。
-func RegisterEmbyDeletionTx(tx *gorm.DB, serverID string, itemIDs []string) (int64, error) {
-	state, err := lockEmbyIndexState(tx)
+func RegisterEmbyDeletionTx(tx *gorm.DB, kind MediaServerType, serverID string, itemIDs []string) (int64, error) {
+	state, err := lockEmbyIndexState(tx, kind)
 	if err != nil {
 		return 0, err
 	}
@@ -284,11 +300,11 @@ func RegisterEmbyDeletionTx(tx *gorm.DB, serverID string, itemIDs []string) (int
 		return 0, err
 	}
 	for _, id := range itemIDs {
-		if _, err := parseEmbyItemID(id); err != nil {
+		if _, err := parseMediaLibraryItemID(kind, id); err != nil {
 			return 0, err
 		}
-		record := EmbyItemState{ServerID: serverID, ItemID: id, Deleted: true, Revision: state.Revision}
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.Assignments(map[string]any{"deleted": true, "revision": state.Revision})}).Create(&record).Error; err != nil {
+		record := EmbyItemState{MediaServerType: kind, ServerID: serverID, ItemID: id, Deleted: true, Revision: state.Revision}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "media_server_type"}, {Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.Assignments(map[string]any{"deleted": true, "revision": state.Revision})}).Create(&record).Error; err != nil {
 			return 0, err
 		}
 	}
@@ -297,15 +313,15 @@ func RegisterEmbyDeletionTx(tx *gorm.DB, serverID string, itemIDs []string) (int
 
 // AdmitEmbyItemGenerationTx 只允许核验后的调用方释放对应屏障；每次释放仍递增全局版本。
 // expectedRevision 防止旧任务释放较新删除；存活原对象可复用代际，新身份由下一快照递增。
-func AdmitEmbyItemGenerationTx(tx *gorm.DB, serverID, itemID string, expectedRevision int64) error {
-	state, err := lockEmbyIndexState(tx)
+func AdmitEmbyItemGenerationTx(tx *gorm.DB, kind MediaServerType, serverID, itemID string, expectedRevision int64) error {
+	state, err := lockEmbyIndexState(tx, kind)
 	if err != nil {
 		return err
 	}
 	if state.ServerID != serverID {
 		return ErrEmbySnapshotStale
 	}
-	result := tx.Model(&EmbyItemState{}).Where("server_id = ? AND item_id = ? AND revision = ? AND deleted = ?", serverID, itemID, expectedRevision, true).Update("deleted", false)
+	result := tx.Model(&EmbyItemState{}).Where("media_server_type = ? AND server_id = ? AND item_id = ? AND revision = ? AND deleted = ?", kind, serverID, itemID, expectedRevision, true).Update("deleted", false)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -328,7 +344,7 @@ func ApplyEmbySnapshotsContext(ctx context.Context, token EmbyIndexToken, snapsh
 // ApplyEmbySnapshotGroupsContext 在有界事务内提交多个独立物理组，组内成员完整性分别判断。
 func ApplyEmbySnapshotGroupsContext(ctx context.Context, token EmbyIndexToken, groups [][]EmbyItemSnapshot, forceExclusive bool) error {
 	if len(groups) > 4 {
-		return errors.New("Emby 批事务最多提交四个物理组")
+		return errors.New("媒体服务器批事务最多提交四个物理组")
 	}
 	exclusive := forceExclusive
 	var snapshots []EmbyItemSnapshot
@@ -349,7 +365,7 @@ func ApplyEmbySnapshotGroupsContext(ctx context.Context, token EmbyIndexToken, g
 			if err != nil {
 				return err
 			}
-			if err := lockEmbyApplyItems(tx, snapshots); err != nil {
+			if err := lockEmbyApplyItems(tx, token.MediaServerType, snapshots); err != nil {
 				return err
 			}
 			cache := newEmbyApplyCache(config)
@@ -438,7 +454,7 @@ func applyEmbySnapshotGroupTx(tx *gorm.DB, token EmbyIndexToken, snapshots []Emb
 func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaItem, field string) error {
 	previousSnapshotID := member.SnapshotID
 	var state EmbyItemState
-	if err := tx.Where("server_id = ? AND item_id = ?", token.ServerID, member.ItemId).First(&state).Error; err != nil {
+	if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", token.MediaServerType, token.ServerID, member.ItemId).First(&state).Error; err != nil {
 		return err
 	}
 	if state.Deleted {
@@ -485,7 +501,7 @@ func detachEmbyMembership(tx *gorm.DB, token EmbyIndexToken, member EmbyMediaIte
 	if err := tx.Model(&EmbyMediaItem{}).Where("id = ?", member.ID).Updates(map[string]any{field: "", "snapshot_id": evidence.ID}).Error; err != nil {
 		return err
 	}
-	if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ? AND snapshot_id = ?", member.ItemId, member.SnapshotID).Update("snapshot_id", evidence.ID).Error; err != nil {
+	if err := tx.Model(&EmbyMediaSyncFile{}).Where("media_server_type = ? AND emby_item_id = ? AND snapshot_id = ?", token.MediaServerType, member.ItemId, member.SnapshotID).Update("snapshot_id", evidence.ID).Error; err != nil {
 		return err
 	}
 	if err := tx.Model(&state).Updates(map[string]any{"snapshot_id": evidence.ID, "revision": token.Revision}).Error; err != nil {
@@ -516,7 +532,7 @@ func applyEmbySnapshot(tx *gorm.DB, token EmbyIndexToken, snapshot *EmbyItemSnap
 	if err != nil {
 		return err
 	}
-	item.ItemIdInt, item.ServerId = id, token.ServerID
+	item.ItemIdInt, item.ServerId, item.MediaServerType = id, token.ServerID, token.MediaServerType
 	cache := embyApplyCacheFrom(tx)
 	state := cache.states[item.ItemId]
 	previousState := state
@@ -562,8 +578,9 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	if cache != nil {
 		config = cache.config
 	} else {
-		config = &EmbyConfig{}
-		if err := tx.First(config).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		var err error
+		config, err = readMediaLibraryConfigTx(tx, token.MediaServerType)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return EmbyItemEvidence{}, nil, err
 		}
 	}
@@ -590,7 +607,7 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 				current = EmbyMediaItem{}
 			}
 		} else {
-			err := tx.Where("item_id = ? AND server_id = ?", item.ItemId, token.ServerID).First(&current).Error
+			err := tx.Where("media_server_type = ? AND item_id = ? AND server_id = ?", token.MediaServerType, item.ItemId, token.ServerID).First(&current).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return EmbyItemEvidence{}, nil, err
 			}
@@ -604,7 +621,7 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 	}
 
 	if state.ID == 0 {
-		*state = EmbyItemState{ServerID: token.ServerID, ItemID: item.ItemId}
+		*state = EmbyItemState{MediaServerType: token.MediaServerType, ServerID: token.ServerID, ItemID: item.ItemId}
 	}
 	if state.IdentityKey != identityKey {
 		state.Generation++
@@ -621,6 +638,7 @@ func buildEmbySnapshotEvidence(tx *gorm.DB, token EmbyIndexToken, snapshot *Emby
 		safeSources[i].PickCode = sanitizeEmbyEvidencePath(safeSources[i].PickCode)
 	}
 	evidence := EmbyItemEvidence{
+		MediaServerType: token.MediaServerType,
 		ServerID:        token.ServerID,
 		ConfigKey:       token.ConfigKey,
 		ServerConfigKey: token.ServerConfigKey,
@@ -925,7 +943,10 @@ func embyRemotePathWithin(source SourceType, root, remote string) bool {
 
 func upsertEmbyMediaItem(tx *gorm.DB, item *EmbyMediaItem) error {
 	var existing EmbyMediaItem
-	err := tx.Where("item_id = ?", item.ItemId).First(&existing).Error
+	if err := item.MediaServerType.Validate(); err != nil {
+		return err
+	}
+	err := tx.Where("media_server_type = ? AND item_id = ?", item.MediaServerType, item.ItemId).First(&existing).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return tx.Create(item).Error
 	}
@@ -972,14 +993,14 @@ func upsertEmbyMediaItem(tx *gorm.DB, item *EmbyMediaItem) error {
 // CleanupEmbyLibrarySnapshot 清理当前索引但保留不可变证据；失败或删除交错禁止清理。
 func CleanupEmbyLibrarySnapshot(token EmbyIndexToken, libraryID, syncRunID string) error {
 	if libraryID == "" || syncRunID == "" {
-		return errors.New("Emby 清理缺少媒体库或批次")
+		return errors.New("媒体服务器清理缺少媒体库或批次")
 	}
 	return db.Db.Transaction(func(tx *gorm.DB) error {
 		if err := checkEmbyToken(tx, token); err != nil {
 			return err
 		}
 		var ids []uint
-		if err := tx.Model(&EmbyMediaItem{}).
+		if err := tx.Model(&EmbyMediaItem{}).Where("media_server_type = ?", token.MediaServerType).
 			Where("library_id = ? AND (last_seen_sync_run IS NULL OR last_seen_sync_run != ?)", libraryID, syncRunID).
 			Pluck("id", &ids).Error; err != nil {
 			return err
@@ -991,7 +1012,7 @@ func CleanupEmbyLibrarySnapshot(token EmbyIndexToken, libraryID, syncRunID strin
 		}
 		for batch := range slices.Chunk(ids, batchSize) {
 			items := tx.Model(&EmbyMediaItem{}).Select("item_id").Where("id IN ?", batch)
-			if err := tx.Where("emby_item_id IN (?)", items).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND emby_item_id IN (?)", token.MediaServerType, items).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 				return err
 			}
 			if err := tx.Where("id IN ?", batch).Delete(&EmbyMediaItem{}).Error; err != nil {
@@ -1010,7 +1031,7 @@ func parseEmbyItemID(id string) (int64, error) {
 	return value, nil
 }
 
-// parseEmbySnapshotItemID 仅扩展索引身份，删除和 Webhook 入口仍要求原数字 ID。
+// parseEmbySnapshotItemID 接受原数字 ID 和 Jellyfin GUID，保持两端物理身份规则一致。
 func parseEmbySnapshotItemID(id string) (int64, error) {
 	// UUID 也可能全为数字，不能先按十进制解析。
 	if len(id) == 32 || len(id) == 36 {
@@ -1057,6 +1078,9 @@ func sanitizeEmbyEvidencePath(value string) string {
 
 // FinishEmbyIndexSyncRun 将成功水位和版本校验放入同一事务，空扫描也不能绕过屏障。
 func FinishEmbyIndexSyncRun(token EmbyIndexToken, mode string, processed, finishedAt, cursorAt int64, runErr error) error {
+	if err := token.MediaServerType.Validate(); err != nil {
+		return err
+	}
 	var validationErr error
 	err := db.Db.Transaction(func(tx *gorm.DB) error {
 		if runErr == nil {
@@ -1081,7 +1105,7 @@ func FinishEmbyIndexSyncRun(token EmbyIndexToken, mode string, processed, finish
 				updates["last_saved_cursor_at"] = gorm.Expr("CASE WHEN COALESCE(last_saved_cursor_at, 0) < ? THEN ? ELSE last_saved_cursor_at END", cursorAt, cursorAt)
 			}
 		}
-		return tx.Model(&EmbyConfig{}).Where("id > 0").Updates(updates).Error
+		return tx.Table(mediaLibraryConfigTable(token.MediaServerType)).Where("id > 0").Updates(updates).Error
 	})
 	return errors.Join(validationErr, err)
 }
@@ -1092,4 +1116,11 @@ func redactEmbySnapshotError(message string) string {
 	return embyErrorURLPattern.ReplaceAllStringFunc(message, func(value string) string {
 		return sanitizeEmbyEvidencePath(value)
 	})
+}
+
+func parseMediaLibraryItemID(kind MediaServerType, id string) (int64, error) {
+	if err := kind.Validate(); err != nil {
+		return 0, err
+	}
+	return parseEmbySnapshotItemID(id)
 }

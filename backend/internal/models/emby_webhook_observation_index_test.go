@@ -134,7 +134,7 @@ func assertEmbyObservedIndexBatches(t *testing.T, token EmbyIndexToken, count in
 	if err := db.Db.Callback().Query().After("gorm:query").Register("test:observation_batches", func(tx *gorm.DB) {
 		if tx.Statement.Table == "emby_webhook_records" || tx.Statement.Table == "emby_item_evidences" || tx.Statement.Table == "emby_item_states" {
 			batchQueries[tx.Statement.Table]++
-			if len(tx.Statement.Vars) > embyObservationBatchSize+1 {
+			if len(tx.Statement.Vars) > embyObservationBatchSize+2 {
 				t.Errorf("unbounded IN query: table=%s vars=%d", tx.Statement.Table, len(tx.Statement.Vars))
 			}
 		}
@@ -142,7 +142,7 @@ func assertEmbyObservedIndexBatches(t *testing.T, token EmbyIndexToken, count in
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Db.Callback().Query().Remove("test:observation_batches") })
-	batch, err := loadEmbyObservedBatchTx(db.Db, EmbyWebhookRecord{ServerID: token.ServerID, ServerConfigKey: token.ServerConfigKey, ItemID: "200", ItemType: "Season"})
+	batch, err := loadEmbyObservedBatchTx(db.Db, EmbyWebhookRecord{MediaServerType: token.MediaServerType, ServerID: token.ServerID, ServerConfigKey: token.ServerConfigKey, ItemID: "200", ItemType: "Season"})
 	if err != nil || len(batch.refs) != count+1 || len(batch.evidence) != count {
 		t.Fatalf("count=%d refs=%d evidence=%d err=%v", count, len(batch.refs), len(batch.evidence), err)
 	}
@@ -176,7 +176,7 @@ func TestEmbyObservedIndexLatestInvalidDoesNotHideValid(t *testing.T) {
 	if err := db.Db.Model(&record).Update("observation_json", embyJSON(refs)).Error; err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: token.ServerID, ItemID: "200", ItemType: "Season", Source: "official"})
+	deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: token.ServerID, ItemID: "200", ItemType: "Season", Source: "official"})
 	if err != nil {
 		t.Fatal(err)
 	}

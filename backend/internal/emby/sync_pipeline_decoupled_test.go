@@ -12,7 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 

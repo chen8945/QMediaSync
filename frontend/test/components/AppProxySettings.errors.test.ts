@@ -133,7 +133,7 @@ describe('代理设置请求反馈', () => {
     const { wrapper, reply, act } = await mountSettings()
     reply.mockRejectedValueOnce(rejectedRequest(code))
     await act('测试')
-    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
+    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMediaSync 拒绝')
     expect(wrapper.get('.proxy-status').text()).toContain(message)
     expect(wrapper.get('.proxy-status').text()).not.toMatch(
       /无法连接|检查网络连接和代理设置|private/,
@@ -165,7 +165,7 @@ describe('代理设置请求反馈', () => {
 
   it('初始读取失败显示安全原因', async () => {
     const { wrapper } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
-    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
+    expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMediaSync 拒绝')
     expect(wrapper.get('.proxy-status').text()).toContain('访问地址校验失败')
     expect(wrapper.get('.proxy-status').text()).not.toContain('private')
   })
@@ -177,7 +177,7 @@ describe('代理设置请求反馈', () => {
       getReply.mockRejectedValueOnce(rejectedRequest(code))
       await act('保存')
       expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存，但刷新失败')
-      expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMS 拒绝')
+      expect(wrapper.get('.proxy-status').text()).toContain('请求被 QMediaSync 拒绝')
       expect(wrapper.get('.proxy-status').text()).toContain('校验失败')
     },
   )

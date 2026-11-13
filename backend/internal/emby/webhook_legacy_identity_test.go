@@ -185,6 +185,9 @@ func TestWebhookLegacyIntegerPlanSaveImmutable(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 		t.Fatal(err)
 	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+		t.Fatal(err)
+	}
 	plan, err := models.BuildEmbyDeletionPlan(t.Context(), input, f.worker.provider, f.worker.verify)
 	if err != nil {
 		t.Fatal(err)

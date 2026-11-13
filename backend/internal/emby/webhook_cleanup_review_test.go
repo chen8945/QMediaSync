@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -302,7 +302,7 @@ func TestWebhookCleanupMixedOwnersKeepConflictAndDeleteIndependentBatch(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "102", Type: "Episode", Path: other.LocalFilePath, PickCode: other.PickCode, SeriesId: "300", SeasonId: "301"}, Sources: []models.EmbySnapshotSource{{ID: "source-102", ItemID: "102", Path: "http://qms/stream?pickcode=p2", PickCode: "p2"}}, MembersComplete: true}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "102", Type: "Episode", Path: other.LocalFilePath, PickCode: other.PickCode, SeriesId: "300", SeasonId: "301"}, Sources: []models.EmbySnapshotSource{{ID: "source-102", ItemID: "102", Path: "http://qms/stream?pickcode=p2", PickCode: "p2"}}, MembersComplete: true}
 			if err := models.ApplyEmbySnapshots(token, []models.EmbyItemSnapshot{snapshot}); err != nil {
 				t.Fatal(err)
 			}
@@ -589,7 +589,7 @@ func TestWebhookCleanupInitialMissingParentAllowsIndependentDirectory(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "102", Type: "Episode", Path: other.LocalFilePath, PickCode: other.PickCode, SeriesId: "300", SeasonId: "301"}, Sources: []models.EmbySnapshotSource{{ID: "source-102", ItemID: "102", Path: "http://qms/stream?pickcode=p2", PickCode: "p2"}}, MembersComplete: true}
+	snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "102", Type: "Episode", Path: other.LocalFilePath, PickCode: other.PickCode, SeriesId: "300", SeasonId: "301"}, Sources: []models.EmbySnapshotSource{{ID: "source-102", ItemID: "102", Path: "http://qms/stream?pickcode=p2", PickCode: "p2"}}, MembersComplete: true}
 	if err := models.ApplyEmbySnapshots(token, []models.EmbyItemSnapshot{snapshot}); err != nil {
 		t.Fatal(err)
 	}

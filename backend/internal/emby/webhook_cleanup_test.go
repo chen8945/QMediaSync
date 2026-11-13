@@ -21,8 +21,8 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -519,6 +519,9 @@ func TestWebhookCleanupRejectsUnsupportedPoliciesWithoutCloudWrites(t *testing.T
 				if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 					t.Fatal(err)
 				}
+				if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+					t.Fatal(err)
+				}
 				var plan models.EmbyDeletionPlan
 				if savedPlan {
 					var err error
@@ -580,6 +583,9 @@ func TestWebhookCleanupRejectsInvalidSavedInputAndPlan(t *testing.T) {
 			record := claimWebhookTest(t)
 			var input models.EmbyDeletionInput
 			if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+				t.Fatal(err)
+			}
+			if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 				t.Fatal(err)
 			}
 			updates := map[string]any{}
@@ -650,6 +656,9 @@ func TestWebhookCleanupUnauthorizedInvalidMetadataPreservesIndex(t *testing.T) {
 			record := claimWebhookTest(t)
 			var input models.EmbyDeletionInput
 			if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+				t.Fatal(err)
+			}
+			if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 				t.Fatal(err)
 			}
 			if record.Authorized || input.Authorized || len(input.Owners) != 1 {
@@ -886,7 +895,7 @@ func TestWebhookCleanupDuplicateEventsNeverReplayCompletedGeneration(t *testing.
 					t.Fatalf("重见拒绝必须落终态 unresolved：status=%s reason=%s", state.Status, state.Reason)
 				}
 				// 确定性拒绝不能在退避后被再次领取或重放写请求。
-				again, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Add(time.Hour).Unix())
+				again, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(time.Hour).Unix())
 				if err != nil || again != nil {
 					t.Fatalf("终态重见拒绝仍可领取: %+v %v", again, err)
 				}
@@ -911,8 +920,13 @@ func TestWebhookCleanupPerTargetLogsCarryNameAndFile(t *testing.T) {
 	f.worker.process(t.Context(), claimWebhookTest(t))
 	assertCleanupWorkerDone(t, record.ID)
 	output := buf.String()
-	if !strings.Contains(output, `（测试电影）`) {
+	if !strings.Contains(output, "测试电影（ItemId "+record.ItemID+"）") {
 		t.Fatalf("日志缺少条目标签: %q", output)
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.Contains(line, "删除文件结果") && strings.Count(line, "ItemId ") != 1 {
+			t.Fatalf("逐目标日志重复或缺少 ItemId: %q", line)
+		}
 	}
 	if !strings.Contains(output, fmt.Sprintf("文件 %q", f.file.FileName)) || !strings.Contains(output, "结果：已删除") {
 		t.Fatalf("日志缺少逐目标结果: %q", output)

@@ -15,8 +15,8 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -33,7 +33,7 @@ func setupSnapshotTestTables(t *testing.T) {
 	if err := models.MigrateEmbyDeletionSchema(db.Db); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}, &models.Media{}, &models.ScrapePath{}, &models.SyncRootEvidence{}); err != nil {
+	if err := db.Db.AutoMigrate(&models.EmbyConfig{}, &models.JellyfinConfig{}, &models.EmbyLibrary{}, &models.EmbyLibrarySyncPath{}, &models.SyncFile{}, &models.SyncPath{}, &models.Account{}, &models.Media{}, &models.ScrapePath{}, &models.SyncRootEvidence{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -42,7 +42,7 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 	for _, mode := range []string{"full", "incremental"} {
 		for _, failure := range []string{"link", "parts", "empty_page", "delete_race"} {
 			t.Run(mode+"_"+failure, func(t *testing.T) {
-				previousDB, previousLogger, previousConfig := db.Db, helpers.AppLogger, models.GlobalEmbyConfig
+				previousDB, previousLogger := db.Db, helpers.AppLogger
 				helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 				// 取消事务可能丢弃物理连接；文件库让重连后仍可核对失败前状态。
 				conn, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "snapshot.db")), &gorm.Config{})
@@ -55,14 +55,13 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 				}
 				t.Cleanup(func() {
 					SetEmbySyncRunning(false)
-					db.Db, helpers.AppLogger, models.GlobalEmbyConfig = previousDB, previousLogger, previousConfig
+					db.Db, helpers.AppLogger = previousDB, previousLogger
 					_ = sqlDB.Close()
 				})
 				db.Db = conn
-				models.GlobalEmbyConfig = nil
 				SetEmbySyncRunning(false)
 				setupSnapshotTestTables(t)
-				old := models.EmbyMediaItem{ItemId: "999", ItemIdInt: 999, LibraryId: "lib", LastSeenSyncRun: "old"}
+				old := models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "999", ItemIdInt: 999, LibraryId: "lib", LastSeenSyncRun: "old"}
 				if err := conn.Create(&old).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -80,7 +79,7 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 					case "/emby/Items":
 						if failure == "delete_race" {
 							if err := conn.Transaction(func(tx *gorm.DB) error {
-								_, err := models.RegisterEmbyDeletionTx(tx, "server-a", []string{"101"})
+								_, err := models.RegisterEmbyDeletionTx(tx, models.MediaServerEmby, "server-a", []string{"101"})
 								return err
 							}); err != nil {
 								t.Error(err)
@@ -105,7 +104,7 @@ func TestEmbySnapshotDependencyFailuresDoNotAdvanceOrClean(t *testing.T) {
 					}
 				}))
 				defer server.Close()
-				config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "test", SyncEnabled: 1, SyncAllLibraries: 1, LastSavedCursorAt: 100, LastFullSyncAt: 50}
+				config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "test", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, LastSavedCursorAt: 100, LastFullSyncAt: 50}
 				if err := conn.Create(&config).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -196,8 +195,8 @@ func TestEmbySnapshotAdditionalPartsOnlySupplementMissingFields(t *testing.T) {
 
 func TestEmbySnapshotVersionsUseStableRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/System/Info/Public" {
-			fmt.Fprint(w, `{"Id":"emby-test","ProductName":"Emby"}`)
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
 			return
 		}
 		id := r.URL.Query().Get("Ids")
@@ -227,8 +226,8 @@ func TestEmbySnapshotVersionsUseStableRoot(t *testing.T) {
 func TestEmbySnapshotOmittedSourcesCannotClearSnapshot(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/System/Info/Public" {
-			fmt.Fprint(w, `{"Id":"emby-test","ProductName":"Emby"}`)
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
 			return
 		}
 		calls++

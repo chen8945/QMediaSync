@@ -9,14 +9,13 @@ import (
 	"sync"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 )
 
 const webhookMaxAttempts = 4
 
-var ErrWebhookUnavailable = errors.New("Emby 通知接收暂时停止，请稍后重试")
+var ErrWebhookUnavailable = errors.New("媒体服务器通知接收暂时停止，请稍后重试")
 
 var webhookLifecycle struct {
 	sync.Mutex
@@ -33,13 +32,13 @@ var receiptGate struct {
 }
 
 type webhookWorker struct {
-	cancel   context.CancelFunc
-	done     chan struct{}
-	wake     chan struct{}
-	observe  func(context.Context, models.EmbyWebhookRecord) error
-	syncItem func(context.Context, string) (bool, error)
-	verify   models.EmbyDeletionVerifier
-	provider models.EmbyDeleteProviderFactory
+	cancel      context.CancelFunc
+	done        chan struct{}
+	serviceWake map[models.MediaServerType]chan struct{}
+	observe     func(context.Context, models.EmbyWebhookRecord) error
+	syncItem    func(context.Context, *models.EmbyConfig, string, string) (bool, error)
+	verify      models.EmbyDeletionVerifier
+	provider    models.EmbyDeleteProviderFactory
 }
 
 // ReceiveWebhook 仅在事务保存后确认接收，不把网络处理绑定到 HTTP 请求。
@@ -62,7 +61,8 @@ func ReceiveWebhook(ctx context.Context, envelope models.EmbyWebhookEnvelope) (m
 	}
 	receiptGate.Unlock()
 	if err == nil {
-		WakeWebhookWorker()
+		// 保存已经验证归属；唤醒只影响此通知所属端。
+		_ = WakeMediaLibraryWebhookWorker(record.MediaServerType)
 	}
 	return record, err
 }
@@ -100,9 +100,10 @@ func StartWebhookWorker() error {
 		cancel()
 		return err
 	}
-	worker := &webhookWorker{cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1),
-		observe: observeEmbyWebhook, syncItem: SyncEmbyItemByIDContext,
+	worker := &webhookWorker{cancel: cancel, done: make(chan struct{}),
+		observe: observeEmbyWebhook, syncItem: syncMediaItemByIDWithConfig,
 		verify: verifyEmbyDeletion, provider: models.NewEmbyDeleteProvider}
+	worker.serviceWake = map[models.MediaServerType]chan struct{}{models.MediaServerEmby: make(chan struct{}, 1), models.MediaServerJellyfin: make(chan struct{}, 1)}
 	webhookLifecycle.worker = worker
 	receiptGate.Lock()
 	receiptGate.blocked = false
@@ -154,30 +155,55 @@ func WakeWebhookWorker() {
 	webhookLifecycle.Lock()
 	defer webhookLifecycle.Unlock()
 	if worker := webhookLifecycle.worker; worker != nil {
-		select {
-		case worker.wake <- struct{}{}:
-		default:
+		for _, wake := range worker.serviceWake {
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
 
+// WakeMediaLibraryWebhookWorker 在配置提交后唤醒本端保留的待办。
+func WakeMediaLibraryWebhookWorker(kind models.MediaServerType) error {
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	webhookLifecycle.Lock()
+	defer webhookLifecycle.Unlock()
+	if worker := webhookLifecycle.worker; worker != nil {
+		select {
+		case worker.serviceWake[kind] <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
 func (worker *webhookWorker) run(ctx context.Context) {
 	defer close(worker.done)
+	var lanes sync.WaitGroup
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		lanes.Go(func() { worker.runService(ctx, kind, worker.serviceWake[kind]) })
+	}
+	lanes.Wait()
+}
+func (worker *webhookWorker) runService(ctx context.Context, kind models.MediaServerType, wake <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
-		record, err := models.ClaimEmbyWebhook(ctx, time.Now().Unix())
+		record, err := models.ClaimEmbyWebhook(ctx, kind, time.Now().Unix())
 		if err == nil && record != nil {
 			worker.process(ctx, *record)
 			continue
 		}
 		if err != nil && ctx.Err() == nil && helpers.AppLogger != nil {
-			helpers.AppLogger.Warnf("读取待处理的 Emby 通知失败，稍后自动重试：%v", err)
+			helpers.AppLogger.Warnf("读取媒体通知失败，稍后自动重试：%v", err)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-worker.wake:
+		case <-wake:
 		case <-ticker.C:
 		}
 	}
@@ -197,6 +223,13 @@ func (worker *webhookWorker) process(ctx context.Context, record models.EmbyWebh
 	if ctx.Err() != nil {
 		return
 	}
+	// 配置可能在远端读取或执行前核验期间关闭；暂停不消耗原任务的失败次数。
+	if config, readErr := models.ReadMediaLibraryConfigSnapshot(record.MediaServerType); readErr == nil && !config.Enabled {
+		if finishErr := finishEmbyWebhook(ctx, record, models.EmbyWebhookRetry, "service_disabled", time.Now().Add(time.Second).Unix(), false); finishErr != nil && helpers.AppLogger != nil {
+			helpers.AppLogger.Warnf("保存媒体通知暂停进度失败，通知会在重启后自动恢复：%v", finishErr)
+		}
+		return
+	}
 	refreshingRead := record.Event == "library.new" || record.Event == "library.modified"
 	consume := !errors.Is(err, ErrEmbySyncBusy) && !(refreshingRead && errors.Is(err, models.ErrEmbySnapshotStale))
 	status, nextAt := models.EmbyWebhookRetry, time.Now().Add(time.Second).Unix()
@@ -207,17 +240,23 @@ func (worker *webhookWorker) process(ctx context.Context, record models.EmbyWebh
 		}
 	}
 	if finishErr := finishEmbyWebhook(ctx, record, status, err.Error(), nextAt, consume); finishErr != nil && helpers.AppLogger != nil {
-		helpers.AppLogger.Warnf("保存 Emby 通知处理进度失败，通知会保留并在重启后自动恢复：%v", finishErr)
+		helpers.AppLogger.Warnf("保存媒体服务器通知处理进度失败，通知会保留并在重启后自动恢复：%v", finishErr)
 	}
 }
 
 func (worker *webhookWorker) processSync(ctx context.Context, record models.EmbyWebhookRecord) error {
-	config, err := models.ReadEmbyConfigSnapshot()
+	config, err := models.ReadMediaLibraryConfigSnapshot(record.MediaServerType)
 	if err != nil {
 		return err
 	}
+	if !config.Enabled {
+		return finishEmbyWebhook(ctx, record, models.EmbyWebhookRetry, "service_disabled", time.Now().Add(time.Second).Unix(), false)
+	}
 	if config.SyncEnabled != 1 || models.EmbyServerConfigIdentity(config) != record.ServerConfigKey {
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "sync_disabled_or_connection_changed", 0, false)
+	}
+	if record.ItemType == "Series" || record.ItemType == "Season" || record.ItemType == "Folder" || record.ItemType == "Playlist" {
+		return finishEmbyWebhook(ctx, record, models.EmbyWebhookDone, "nonphysical_item_skipped", 0, false)
 	}
 	if record.ObservationJSON == "" {
 		if err := worker.observe(ctx, record); err != nil {
@@ -231,14 +270,14 @@ func (worker *webhookWorker) processSync(ctx context.Context, record models.Emby
 			return err
 		}
 	}
-	serverID, err := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey).GetServerID(ctx)
+	serverID, err := config.Client().GetServerID(ctx)
 	if err != nil {
 		return err
 	}
 	if serverID != record.ServerID {
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "server_instance_changed", 0, false)
 	}
-	_, err = worker.syncItem(ctx, record.ItemID)
+	_, err = worker.syncItem(ctx, config, record.ItemID, record.ServerID)
 	if err != nil {
 		return err
 	}
@@ -246,14 +285,14 @@ func (worker *webhookWorker) processSync(ctx context.Context, record models.Emby
 }
 
 func observeEmbyWebhook(ctx context.Context, record models.EmbyWebhookRecord) error {
-	config, err := models.ReadEmbyConfigSnapshot()
+	config, err := models.ReadMediaLibraryConfigSnapshot(record.MediaServerType)
 	if err != nil {
 		return err
 	}
-	if models.EmbyServerConfigIdentity(config) != record.ServerConfigKey {
+	if !config.Enabled || models.EmbyServerConfigIdentity(config) != record.ServerConfigKey {
 		return models.ErrEmbySnapshotStale
 	}
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
 	serverID, err := client.GetServerID(ctx)
 	if err != nil {
 		return err
@@ -291,6 +330,9 @@ func observeEmbyWebhook(ctx context.Context, record models.EmbyWebhookRecord) er
 	if err != nil {
 		return err
 	}
+	for i := range snapshots {
+		snapshots[i].Item.MediaServerType = record.MediaServerType
+	}
 	ids := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		ids = append(ids, snapshot.Item.ItemId)
@@ -314,6 +356,16 @@ func (worker *webhookWorker) processDeletion(ctx context.Context, record models.
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 		return err
 	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+		return err
+	}
+	config, err := models.ReadMediaLibraryConfigSnapshot(record.MediaServerType)
+	if err != nil {
+		return err
+	}
+	if !config.Enabled {
+		return finishEmbyWebhook(ctx, record, models.EmbyWebhookRetry, "service_disabled", time.Now().Add(time.Second).Unix(), false)
+	}
 	if len(input.Owners) == 0 {
 		if record.DeletionRevision != 0 {
 			err := verifyEmbyLocalDeletion(ctx, input, []string{input.ItemID})
@@ -329,10 +381,6 @@ func (worker *webhookWorker) processDeletion(ctx context.Context, record models.
 	}
 	if err := models.ValidateEmbyDeletionInputMetadata(input); err != nil {
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "invalid_metadata_evidence", 0, false)
-	}
-	config, err := models.ReadEmbyConfigSnapshot()
-	if err != nil {
-		return err
 	}
 	if models.EmbyServerConfigIdentity(config) != record.ServerConfigKey {
 		return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "connection_changed", 0, false)
@@ -400,12 +448,16 @@ func finishEmbyWebhook(ctx context.Context, record models.EmbyWebhookRecord, sta
 		if reasonLabel != "" {
 			reasonLabel = "，原因：" + reasonLabel
 		}
-		helpers.AppLogger.Infof("Emby 通知处理：通知 #%d，事件 %s，ItemId %s，结果：%s%s", record.ID, record.Event, embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record)), embyWebhookStatusLabel(status), reasonLabel)
+		if reason == "nonphysical_item_skipped" {
+			helpers.AppLogger.Debugf("%s 媒体通知：%s，%s", mediaServerName(record.MediaServerType), embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record)), "条目同步"+embyWebhookReasonLabel(reason))
+		} else {
+			helpers.AppLogger.Infof("%s 媒体通知：%s，%s%s", mediaServerName(record.MediaServerType), embyWebhookLogItem(record.ItemID, embyWebhookRecordLabel(record)), embyWebhookStatusLabel(record.Event, status), reasonLabel)
+		}
 	}
 	return err
 }
 
-// embyWebhookRecordLabel 容错解析已保存信封并返回日志用条目标签；解析失败不影响处理。
+// embyWebhookRecordLabel 返回日志标签；删除通知仅从本次冻结输入补缺，不读取当前索引或远端。
 func embyWebhookRecordLabel(record models.EmbyWebhookRecord) string {
 	if record.PayloadJSON == "" {
 		return ""
@@ -413,6 +465,74 @@ func embyWebhookRecordLabel(record models.EmbyWebhookRecord) string {
 	var envelope models.EmbyWebhookEnvelope
 	if err := json.Unmarshal([]byte(record.PayloadJSON), &envelope); err != nil {
 		return ""
+	}
+	if envelope.ItemType == "" {
+		envelope.ItemType = record.ItemType
+	}
+	if record.Event != "library.deleted" && record.Event != "deep.delete" {
+		return envelope.DisplayLabel()
+	}
+	var input models.EmbyDeletionInput
+	if json.Unmarshal([]byte(record.InputJSON), &input) != nil || input.ServerID != record.ServerID || input.ItemID != record.ItemID || input.ItemType != record.ItemType || input.ServerConfigKey != record.ServerConfigKey {
+		return envelope.DisplayLabel()
+	}
+	var history *models.EmbyMediaItem
+	var nameConflict, seriesConflict, seasonConflict, episodeConflict bool
+	for _, owner := range input.Owners {
+		item := owner.Item
+		if item.ServerId != record.ServerID {
+			continue
+		}
+		if record.ItemType == "Season" || record.ItemType == "Series" {
+			// 隐藏分段的季集字段可能全为零，只采用对应主 Episode 的资料。
+			if item.Type != "Episode" || record.ItemType == "Season" && item.SeasonId != record.ItemID || record.ItemType == "Series" && item.SeriesId != record.ItemID {
+				continue
+			}
+		} else if item.ItemId != record.ItemID || item.Type != record.ItemType {
+			continue
+		}
+		if history == nil {
+			history = &item
+			continue
+		}
+		if item.Name != "" {
+			nameConflict = nameConflict || history.Name != "" && history.Name != item.Name
+			history.Name = item.Name
+		}
+		if item.SeriesName != "" {
+			seriesConflict = seriesConflict || history.SeriesName != "" && history.SeriesName != item.SeriesName
+			history.SeriesName = item.SeriesName
+		}
+		seasonConflict = seasonConflict || history.ParentIndexNumber != item.ParentIndexNumber
+		episodeConflict = episodeConflict || history.IndexNumber != item.IndexNumber
+	}
+	if history == nil {
+		return envelope.DisplayLabel()
+	}
+	if envelope.SeriesName == "" && !seriesConflict {
+		envelope.SeriesName = history.SeriesName
+	}
+	switch record.ItemType {
+	case "Season":
+		if envelope.IndexNumber == nil && envelope.ParentIndexNumber == nil && !seasonConflict && history.ParentIndexNumber >= 0 {
+			envelope.ParentIndexNumber = &history.ParentIndexNumber
+		}
+	case "Series":
+		if envelope.ItemName == "" && !seriesConflict {
+			envelope.ItemName = history.SeriesName
+		}
+	default:
+		if envelope.ItemName == "" && !nameConflict {
+			envelope.ItemName = history.Name
+		}
+		if history.Type == "Episode" {
+			if envelope.ParentIndexNumber == nil && !seasonConflict && (history.ParentIndexNumber > 0 || history.ParentIndexNumber == 0 && history.SeasonId != "") {
+				envelope.ParentIndexNumber = &history.ParentIndexNumber
+			}
+			if envelope.IndexNumber == nil && !episodeConflict && history.IndexNumber > 0 {
+				envelope.IndexNumber = &history.IndexNumber
+			}
+		}
 	}
 	return envelope.DisplayLabel()
 }

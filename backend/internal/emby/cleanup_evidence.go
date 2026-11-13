@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -95,7 +95,7 @@ func (c *embyCleanupEvidenceCollector) enrich(ctx context.Context, client *embyc
 					return embyAncestorObservation{}, ctx.Err()
 				}
 				if err != nil {
-					helpers.AppLogger.Debugf("Emby 条目 %s 读取媒体目录归属失败，本轮不做目录级清理", snapshot.Item.ItemId)
+					helpers.AppLogger.Debugf("媒体条目 %s 读取媒体目录归属失败，本轮不做目录级清理", snapshot.Item.ItemId)
 					return embyAncestorObservation{At: time.Now(), Failed: true}, nil
 				}
 				return embyAncestorObservation{Directories: embyAncestorDirectories(snapshot.Item, fetched), At: time.Now()}, nil
@@ -113,9 +113,9 @@ func (c *embyCleanupEvidenceCollector) enrich(ctx context.Context, client *embyc
 			// 祖先失败时仍准备实际 STRM 引用；空目录观察不会产生目录清理权限。
 			ancestors = embySnapshotDirectories(snapshot.Item, observation.Directories)
 		}
-		if err := c.local.Enrich(ctx, snapshot, ancestors); err != nil {
+		if err := c.local.Enrich(ctx, snapshot.Item.MediaServerType, snapshot, ancestors); err != nil {
 			// 本地读取失败必须保留整组旧快照，不能当成缺资料提交空目录能力。
-			return fmt.Errorf("读取 Emby 条目 %s 的本地目录资料失败：%w", snapshot.Item.ItemId, err)
+			return fmt.Errorf("读取媒体条目 %s 的本地目录资料失败：%w", snapshot.Item.ItemId, err)
 		}
 	}
 	return nil

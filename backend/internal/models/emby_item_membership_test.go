@@ -177,7 +177,7 @@ func TestEmbyItemMembershipFollowsSnapshotAndHistoricalDetach(t *testing.T) {
 			}
 			if blocked {
 				if err := db.Db.Transaction(func(tx *gorm.DB) error {
-					_, err := RegisterEmbyDeletionTx(tx, token.ServerID, []string{"102"})
+					_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, []string{"102"})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -201,7 +201,7 @@ func TestEmbyItemMembershipFollowsSnapshotAndHistoricalDetach(t *testing.T) {
 			var input EmbyDeletionInput
 			if err := db.Db.Transaction(func(tx *gorm.DB) error {
 				var err error
-				input, err = CaptureEmbyDeletionTx(tx, token.ServerID, "101", "Movie")
+				input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, "101", "Movie")
 				return err
 			}); err != nil {
 				t.Fatal(err)

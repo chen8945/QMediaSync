@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"qmediasync/internal/backup"
 	"qmediasync/internal/controllers"
@@ -21,6 +22,7 @@ import (
 	"qmediasync/internal/emby302/web/webport"
 	"qmediasync/internal/fnosproxy"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
 
@@ -184,6 +186,15 @@ func (app *App) startEmby302() {
 		app.stopEmbyPreload()
 		app.stopEmbyPreload = nil
 	}
+	embyConfig, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
+	if err != nil {
+		helpers.AppLogger.Warnf("读取 Emby 302 启动配置失败：%v", err)
+		return
+	}
+	if !embyConfig.Enabled || strings.TrimSpace(embyConfig.EmbyUrl) == "" || strings.TrimSpace(embyConfig.EmbyApiKey) == "" {
+		helpers.AppLogger.Debugf("Emby 302 未启用或连接配置不完整，跳过启动")
+		return
+	}
 	dataRoot := helpers.ConfigDir
 	data, err := fs.ReadFile(build.Resources, "assets/emby302.yaml")
 	if err != nil {
@@ -192,17 +203,13 @@ func (app *App) startEmby302() {
 	if err := config.ReadFromFile(data); err != nil {
 		log.Fatal(err)
 	}
-	if models.GlobalEmbyConfig == nil || models.GlobalEmbyConfig.EmbyUrl == "" {
-		helpers.AppLogger.Warnf("Emby 302 未配置 Emby 地址，跳过启动 Emby 302 服务")
-		return
-	}
 	emby302https.ConfigureClient(emby302https.ClientOptions{
 		InsecureSkipVerify: helpers.GlobalConfig.Emby302.InsecureSkipVerify,
 	})
 	if helpers.GlobalConfig.Emby302.InsecureSkipVerify {
 		helpers.AppLogger.RequiredWarnf("Emby 302 已开启 insecure_skip_verify，出站 HTTPS 请求将跳过证书校验，存在中间人攻击风险，仅建议在受控内网自签名证书场景临时使用")
 	}
-	config.C.Emby.Host = models.GlobalEmbyConfig.EmbyUrl
+	config.C.Emby.Host = embyConfig.EmbyUrl
 	config.C.Emby.ImagesOriginal = helpers.GlobalConfig.Emby302.ImagesOriginal
 	config.C.Emby.EpisodesUnplayPrior = false // 关闭剧集排序
 	certFile := filepath.Join(dataRoot, "server.crt")
@@ -222,10 +229,32 @@ func (app *App) startEmby302() {
 		Resolve: app.newEmbyPlaybackPreload, Coordinator: playback.DefaultPreloader,
 		Account: app.playbackPreloadAccount,
 	})
+	embypreload.PublishPreloadingEnabled(embyConfig.Enabled)
+	guard := newEmby302Guard(embyConfig.EmbyUrl, embyConfig.EmbyApiKey)
 	go func() {
-		if err := web.Listen(); err != nil {
+		if err := web.Listen(guard, embyConfig.EmbyApiKey); err != nil {
 			log.Fatal(colors.ToRed(err.Error()))
 		}
 	}()
 
+}
+
+func newEmby302Guard(serverURL, apiKey string) gin.HandlerFunc {
+	client := embyclientrestgo.NewClientForProduct(serverURL, apiKey, embyclientrestgo.ProductEmby)
+	return func(c *gin.Context) {
+		release, admitted := backup.AcquireRuntimeRequest()
+		if !admitted {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "数据库恢复维护中，请重启应用后再试"})
+			return
+		}
+		current, err := models.ReadMediaLibraryConfigSnapshot(models.MediaServerEmby)
+		release()
+		if err != nil || !current.Enabled {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "Emby 服务未启用或配置暂不可用"})
+			return
+		}
+		if _, err := client.CheckConnection(c.Request.Context()); err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": err.Error()})
+		}
+	}
 }

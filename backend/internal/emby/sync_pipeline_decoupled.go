@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 

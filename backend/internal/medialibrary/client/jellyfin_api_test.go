@@ -27,6 +27,10 @@ func TestJellyfinNativeManagement(t *testing.T) {
 			// 子路径末尾的 emby 是用户配置的一部分，不能按产品名删掉。
 			const base = "/proxy/emby"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == base+"/System/Ping" {
+					fmt.Fprintf(w, "%q", serverInfo.product)
+					return
+				}
 				if r.URL.Path == base+"/System/Info/Public" {
 					probes++
 					fmt.Fprintf(w, `{"Id":"server-1","ProductName":%q,"Version":%q}`, serverInfo.product, serverInfo.version)
@@ -55,7 +59,7 @@ func TestJellyfinNativeManagement(t *testing.T) {
 					}
 					fmt.Fprintf(w, `{"TotalRecordCount":2,"Items":[{"Id":%q,"Type":"Movie","ParentId":%q,"Path":"/media/test.strm","DateCreated":"2026-01-01T00:00:00Z","MediaSources":[{"Id":%q,"Type":%q,"Path":"https://media.test/stream"}]}]}`, strings.ToUpper(id), jellyfinTestLibrary, strings.ToUpper(id), sourceType)
 				case base + "/Videos/" + jellyfinTestItem + "/AdditionalParts":
-					if r.URL.Query().Get("Fields") != jellyfinSnapshotFields {
+					if r.URL.Query().Has("Fields") {
 						t.Error("分段未请求 Jellyfin 快照字段")
 					}
 					fmt.Fprintf(w, `{"TotalRecordCount":1,"Items":[{"Id":%q,"Type":"Movie","MediaSources":[{"Id":%q,"Type":"Default"}]}]}`, jellyfinTestVersion, jellyfinTestVersion)
@@ -157,6 +161,8 @@ func TestServerDetectionFailureAndCompatibility(t *testing.T) {
 				case "/emby/System/Info/Public":
 					fallback++
 					fmt.Fprint(w, `{"Id":"server-1","ProductName":"Emby"}`)
+				case "/System/Ping":
+					fmt.Fprint(w, "Other")
 				case "/emby/Items":
 					items++
 					if r.URL.Query().Get("api_key") != "test-key" {
@@ -337,6 +343,8 @@ func TestJellyfinHiddenVersionDetail(t *testing.T) {
 			var users, details int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
+				case "/System/Ping":
+					fmt.Fprint(w, `"Jellyfin Server"`)
 				case "/System/Info/Public":
 					fmt.Fprint(w, `{"Id":"server-1","ProductName":"Jellyfin Server"}`)
 				case "/Items":
@@ -406,5 +414,86 @@ func TestRefreshLookupRejectsIgnoredFilters(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestJellyfinFiltersPlaylistCollectionByType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Ping":
+			fmt.Fprint(w, `"Jellyfin Server"`)
+		case "/Library/MediaFolders":
+			fmt.Fprintf(w, `{"Items":[{"Id":%q,"Name":"Playlists","Type":"CollectionFolder","CollectionType":"movies"},{"Id":%q,"Name":"播放列表","Type":"ManualPlaylistsFolder"},{"Id":"ignored","Name":"Lists","CollectionType":"playlists"}]}`, jellyfinTestLibrary, jellyfinTestVersion)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	libs, err := NewClient(server.URL, "key").GetAllMediaLibraries()
+	if err != nil || len(libs) != 1 || libs[0].ID != jellyfinTestLibrary || libs[0].Name != "Playlists" {
+		t.Fatalf("libraries=%+v err=%v", libs, err)
+	}
+}
+
+func TestJellyfinSTRMDetailFallbackIsConditionalAndChecksIdentity(t *testing.T) {
+	for _, mode := range []string{"native", "detail", "still-local", "changed-path", "failed"} {
+		t.Run(mode, func(t *testing.T) {
+			requests := 0
+			const local = "/media/movie.strm"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/System/Ping":
+					fmt.Fprint(w, `"Jellyfin Server"`)
+				case "/Users":
+					fmt.Fprintf(w, `[{"Id":%q,"Policy":{"EnableAllFolders":true}}]`, jellyfinTestVersion)
+				case "/Items/" + jellyfinTestItem:
+					requests++
+					if mode == "failed" {
+						http.Error(w, "unavailable", 503)
+						return
+					}
+					path, source := local, "https://qms/115/newurl?userid=owner&pickcode=code"
+					if mode == "still-local" {
+						source = local
+					}
+					if mode == "changed-path" {
+						path = "/media/replaced.strm"
+					}
+					fmt.Fprintf(w, `{"Id":%q,"Type":"Movie","Path":%q,"MediaSources":[{"Id":%q,"Type":"Default","Path":%q}]}`, jellyfinTestItem, path, jellyfinTestItem, source)
+				default:
+					t.Errorf("unexpected %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client := NewClient(server.URL, "key")
+			if _, err := client.CheckConnection(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			item := BaseItemDtoV2{Id: jellyfinTestItem, Type: "Movie", Path: local, MediaSources: []MediaSource{{ID: jellyfinTestItem, ItemID: jellyfinTestItem, Type: "Default", Path: local}}}
+			if mode == "native" {
+				item.MediaSources[0].Path = "https://native/stream"
+			}
+			err := client.CompleteSTRMSources(t.Context(), &item)
+			if mode == "changed-path" || mode == "failed" {
+				if err == nil {
+					t.Fatal("bad detail accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "native" && requests != 0 {
+				t.Fatal("normal source fetched detail")
+			}
+			if mode == "detail" && !strings.HasPrefix(item.MediaSources[0].Path, "https://qms/") {
+				t.Fatal("detail source not recovered")
+			}
+			if mode == "still-local" && item.MediaSources[0].Path != local {
+				t.Fatal("local source invented")
+			}
+		})
 	}
 }

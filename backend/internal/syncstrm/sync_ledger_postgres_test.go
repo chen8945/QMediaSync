@@ -69,7 +69,7 @@ func TestSyncLedgerPostgresSerializesBeforeSourceRows(t *testing.T) {
 			account := models.Account{BaseModel: models.BaseModel{ID: 7}, SourceType: models.SourceType115, UserId: "ledger-owner"}
 			root := models.SyncPath{BaseModel: models.BaseModel{ID: 1}, SourceType: account.SourceType, AccountId: account.ID,
 				BaseCid: "root", LocalPath: t.TempDir(), RemotePath: "/movies"}
-			config := models.EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "test-key", SyncEnabled: 1}
 			for _, row := range []any{&account, &root, &config} {
 				if err := conn.Create(row).Error; err != nil {
 					t.Fatal(err)
@@ -99,13 +99,13 @@ func TestSyncLedgerPostgresSerializesBeforeSourceRows(t *testing.T) {
 				t.Fatal(err)
 			}
 			snapshot := models.EmbyItemSnapshot{
-				Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", LibraryId: "lib", Path: video.LocalFilePath},
+				Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ServerId: "ledger-server", ItemId: "101", Type: "Movie", LibraryId: "lib", Path: video.LocalFilePath},
 				Sources: []models.EmbySnapshotSource{{ID: "video-source", ItemID: "101", PickCode: video.PickCode,
 					Path: "http://qms.fixture/stream?pickcode=" + video.PickCode}},
 				MembersComplete: true,
 			}
 			collector := models.EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &snapshot, []models.EmbyMediaDirectory{{ItemID: "101", MediaType: "Movie", LocalPath: directory.LocalFilePath}}); err != nil {
+			if err := collector.Enrich(t.Context(), models.MediaServerEmby, &snapshot, []models.EmbyMediaDirectory{{ItemID: "101", MediaType: "Movie", LocalPath: directory.LocalFilePath}}); err != nil {
 				t.Fatal(err)
 			}
 			if len(snapshot.DirectoryScopes) != 1 {

@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -183,7 +183,7 @@ func TestSnapshotSingleRecoveryConcurrentDeleteBoundsReread(t *testing.T) {
 					return
 				}
 				if err := db.Db.Transaction(func(tx *gorm.DB) error {
-					_, err := models.RegisterEmbyDeletionTx(tx, "server-a", []string{"101", "102"})
+					_, err := models.RegisterEmbyDeletionTx(tx, models.MediaServerEmby, "server-a", []string{"101", "102"})
 					return err
 				}); err != nil {
 					t.Error(err)

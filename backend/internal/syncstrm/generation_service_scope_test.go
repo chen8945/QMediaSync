@@ -69,7 +69,7 @@ func TestStrmGenerationScopeValidatesRemotePaths(t *testing.T) {
 				syncer.SyncDriver = &fakeDirectoryScanDriver{strmContent: content}
 				return syncer, err
 			}
-			service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 			task := generationScopeTask(account, syncPath)
 			task.Path = tt.filePath
 			_, err := service.Generate(t.Context(), StrmGenerationInput{Task: task})
@@ -431,7 +431,7 @@ func TestStrmGenerationScopeRejectsSymlinkOutsideRoot(t *testing.T) {
 	service.processStrmFile = func(syncer *SyncStrm, file *SyncFileCache) error {
 		return os.WriteFile(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath), []byte("错误覆盖"), 0o600)
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	task := generationScopeTask(account, syncPath)
 	task.Path += "/linked"
 	if _, err := service.Generate(t.Context(), StrmGenerationInput{Task: task}); err == nil {

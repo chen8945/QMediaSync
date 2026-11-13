@@ -191,10 +191,10 @@ const showProxyFailure = (error: unknown, title: string, preserveTitle = false) 
   console.error(title, failure.diagnostics)
   const qmsRejected = failure.kind === 'origin' || failure.kind === 'csrf'
   proxyStatus.value = {
-    title: !preserveTitle && qmsRejected ? '请求被 QMS 拒绝' : title,
+    title: !preserveTitle && qmsRejected ? '请求被 QMediaSync 拒绝' : title,
     type: 'error',
     description:
-      preserveTitle && qmsRejected ? `请求被 QMS 拒绝：${failure.message}` : failure.message,
+      preserveTitle && qmsRejected ? `请求被 QMediaSync 拒绝：${failure.message}` : failure.message,
   }
 }
 

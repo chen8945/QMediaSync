@@ -45,12 +45,18 @@ type PreloadOptions struct {
 }
 
 type embyPreloader struct {
-	options PreloadOptions
-	mu      sync.Mutex
-	devices map[string]*preloadDevice
-	stopped atomic.Bool
-	serial  atomic.Uint64
-	uas     playback.PreloadUAMappings
+	options   PreloadOptions
+	mu        sync.Mutex
+	devices   map[string]*preloadDevice
+	stopped   atomic.Bool
+	serial    atomic.Uint64
+	admission atomic.Pointer[preloadAdmission]
+	uas       playback.PreloadUAMappings
+}
+
+type preloadAdmission struct {
+	enabled    bool
+	generation uint64
 }
 
 type preloadDevice struct {
@@ -100,6 +106,7 @@ type preloadDevice struct {
 }
 
 type preloadRequest struct {
+	enableEpoch    uint64
 	scope          string
 	weakIdentity   bool
 	token          string
@@ -222,12 +229,33 @@ func ConfigurePreloading(options PreloadOptions) func() {
 		}
 	}
 	next := &embyPreloader{options: options, devices: make(map[string]*preloadDevice)}
+	next.admission.Store(&preloadAdmission{enabled: true})
 	if previous := activeEmbyPreloader.Swap(next); previous != nil {
 		previous.stop()
 	}
 	return func() {
 		activeEmbyPreloader.CompareAndSwap(next, nil)
 		next.stop()
+	}
+}
+
+// PublishPreloadingEnabled 发布已提交的本端开关，失活关闭前的观察和作业。
+func PublishPreloadingEnabled(enabled bool) {
+	p := activeEmbyPreloader.Load()
+	if p == nil || p.stopped.Load() {
+		return
+	}
+	p.mu.Lock()
+	if p.admission.Load().enabled == enabled {
+		p.mu.Unlock()
+		return
+	}
+	p.admission.Store(&preloadAdmission{enabled: enabled, generation: p.serial.Add(1)})
+	p.devices = make(map[string]*preloadDevice)
+	p.uas.Clear()
+	p.mu.Unlock()
+	if !enabled {
+		p.options.Coordinator.CancelInstance(p.options.Instance)
 	}
 }
 
@@ -248,8 +276,9 @@ func PreloadObserver() gin.HandlerFunc {
 		if p == nil || p.stopped.Load() || p.options.Resolve == nil {
 			return
 		}
+		admission := p.admission.Load()
 		enabled, generation := p.options.Enabled()
-		if !enabled || !p.options.Coordinator.Enabled() {
+		if !admission.enabled || !enabled || !p.options.Coordinator.Enabled() {
 			return
 		}
 		kind, item, user, prefix := preloadRoute(c.Request.Method, c.Request.URL.Path)
@@ -261,6 +290,7 @@ func PreloadObserver() gin.HandlerFunc {
 			return
 		}
 		request.item = item
+		request.enableEpoch = admission.generation
 		if kind == "items" {
 			request.fromItems = true
 			query := c.Request.URL.Query()
@@ -404,8 +434,9 @@ func PreloadObserver() gin.HandlerFunc {
 }
 
 func (p *embyPreloader) valid(request preloadRequest) bool {
+	admission := p.admission.Load()
 	enabled, generation := p.options.Enabled()
-	return !p.stopped.Load() && enabled && generation == request.generation
+	return !p.stopped.Load() && admission.enabled && admission.generation == request.enableEpoch && enabled && generation == request.generation
 }
 
 var preloadIDPattern = regexp.MustCompile(`^(?:[0-9]+|[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)

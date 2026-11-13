@@ -105,7 +105,7 @@ func assertEmbyObservedCurrentMembership(t *testing.T, config *EmbyConfig, seed 
 			}
 			collector := EmbyDirectoryEvidenceCollector{}
 			seasonNumber := 1
-			if err := collector.Enrich(t.Context(), &snapshot, []EmbyMediaDirectory{
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, []EmbyMediaDirectory{
 				{ItemID: "201", MediaType: "Season", LocalPath: filepath.Dir(file.LocalFilePath), SeasonNumber: &seasonNumber},
 				{ItemID: "201", MediaType: "Series", LocalPath: filepath.Dir(poster.LocalFilePath)},
 			}); err != nil {
@@ -139,7 +139,7 @@ func assertEmbyObservedCurrentMembership(t *testing.T, config *EmbyConfig, seed 
 	}
 	var baseline EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		baseline, err = CaptureEmbyDeletionTx(tx, "server-a", "201", itemType)
+		baseline, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, "server-a", "201", itemType)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -188,7 +188,7 @@ func assertEmbyObservedCurrentMembership(t *testing.T, config *EmbyConfig, seed 
 	if err := db.Db.Where("server_id = ? AND item_id = ?", "server-a", "101").First(&beforeItem).Error; err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: "201", ItemType: itemType, Source: "official"})
+	deleted, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: "201", ItemType: itemType, Source: "official"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func assertEmbyObservedCurrentMembership(t *testing.T, config *EmbyConfig, seed 
 
 func saveEmbyMembershipObservation(t *testing.T, token EmbyIndexToken, snapshot EmbyItemSnapshot) EmbyWebhookRecord {
 	t.Helper()
-	if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.modified", ServerID: token.ServerID, ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"}); err != nil {
+	if _, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.modified", ServerID: token.ServerID, ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"}); err != nil {
 		t.Fatal(err)
 	}
 	record := webhookModelClaim(t)

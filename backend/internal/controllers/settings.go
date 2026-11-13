@@ -69,15 +69,6 @@ func currentLogSettingResponse() LogSettingResponse {
 // 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "Emby URL 已更新", Data: nil})
 // }
 
-// func GetEmby(c *gin.Context) {
-// 	// 获取设置
-// 	models.LoadSettings() // 确保设置已加载
-// 	emby := make(map[string]string)
-// 	emby["emby_url"] = models.GlobalEmbyConfig.EmbyUrl
-// 	emby["emby_api_key"] = models.GlobalEmbyConfig.EmbyApiKey
-// 	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 Emby 设置成功", Data: emby})
-// }
-
 // GetLogSetting 获取日志设置。
 // @Summary 获取日志设置
 // @Description 获取当前运行日志等级
@@ -165,16 +156,26 @@ func UpdateLogSetting(c *gin.Context) {
 // @Router /setting/emby/parse [post]
 // @Security JwtAuth
 // @Security ApiKeyAuth
-func ParseEmby(c *gin.Context) {
-	if models.GlobalEmbyConfig.EmbyUrl == "" || models.GlobalEmbyConfig.EmbyApiKey == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请先填写 Emby URL 和 Emby API Key，才能提取媒体信息", Data: nil})
+func ParseEmby(c *gin.Context) { parseMediaLibrary(c, models.MediaServerEmby) }
+
+// ParseJellyfin 手动解析 Jellyfin 媒体信息。
+// @Summary 解析 Jellyfin 媒体信息
+// @Description 手动触发 Jellyfin 媒体信息解析任务
+// @Tags 系统设置
+// @Accept json
+// @Produce json
+// @Success 200 {object} object
+// @Failure 200 {object} object
+// @Router /setting/jellyfin/parse [post]
+// @Security JwtAuth
+// @Security ApiKeyAuth
+func ParseJellyfin(c *gin.Context) { parseMediaLibrary(c, models.MediaServerJellyfin) }
+func parseMediaLibrary(c *gin.Context, kind models.MediaServerType) {
+	if !emby.StartParseMediaLibraryInfo(kind) {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请先启用并配置媒体库，或等待正在运行的任务完成"})
 		return
 	}
-	if !emby.StartParseEmbyMediaInfo() {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "Emby 媒体信息解析任务正在运行，请稍后再试", Data: nil})
-		return
-	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "Emby 媒体信息解析任务已开始", Data: nil})
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "媒体信息提取任务已开始"})
 }
 
 // // UpdateTelegram 更新 Telegram Bot 配置

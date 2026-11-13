@@ -30,7 +30,7 @@ const (
 // EmbyWebhookMaxStoredBytes 低于备份 JSON Lines 的 16 MiB 单行限制，覆盖 JSON 转义开销。
 const EmbyWebhookMaxStoredBytes = 8 << 20
 
-var ErrEmbyWebhookClaimLost = errors.New("Emby 通知已由其他任务处理，跳过本次")
+var ErrEmbyWebhookClaimLost = errors.New("媒体服务器通知已由其他任务处理，跳过本次")
 
 // EmbyWebhookCandidate 仅保存脱敏候选，不能替代独立历史身份。
 type EmbyWebhookCandidate struct {
@@ -40,6 +40,7 @@ type EmbyWebhookCandidate struct {
 
 // EmbyWebhookEnvelope 是受支持通知的有限字段；不保存原始正文或用户凭据。
 type EmbyWebhookEnvelope struct {
+	MediaServerType   MediaServerType        `json:"-"`
 	Event             string                 `json:"event"`
 	ServerID          string                 `json:"server_id"`
 	ItemServerID      string                 `json:"item_server_id,omitempty"`
@@ -67,6 +68,7 @@ type EmbyWebhookEnvelope struct {
 
 // EmbyWebhookRecord 每次接收独立保存，接收时授权、删除输入及计划不可提升或替换。
 type EmbyWebhookRecord struct {
+	MediaServerType MediaServerType `json:"media_server_type" gorm:"not null;default:emby;index:idx_emby_webhook_service_queue,priority:1"`
 	BaseModel
 	Event            string `json:"event"`
 	ServerID         string `json:"server_id" gorm:"index:idx_emby_webhook_server,priority:1"`
@@ -105,22 +107,25 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 	if !slices.Contains([]string{"library.new", "library.modified", "library.deleted", "deep.delete"}, envelope.Event) {
 		return record, ErrEmbyDeleteUnsupported
 	}
-	if _, err := parseEmbyItemID(envelope.ItemID); err != nil {
+	if err := envelope.MediaServerType.Validate(); err != nil {
+		return record, err
+	}
+	if _, err := parseEmbySnapshotItemID(envelope.ItemID); err != nil {
 		return record, err
 	}
 	envelope = sanitizeEmbyWebhookEnvelope(envelope)
 	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		state, err := lockEmbyIndexState(tx)
+		state, err := lockEmbyIndexState(tx, envelope.MediaServerType)
 		if err != nil {
 			return err
 		}
-		var config EmbyConfig
-		if err := tx.First(&config).Error; err != nil {
+		config, err := readMediaLibraryConfigTx(tx, envelope.MediaServerType)
+		if err != nil {
 			return err
 		}
-		record = EmbyWebhookRecord{Event: envelope.Event, ServerID: envelope.ServerID, ServerConfigKey: EmbyServerConfigIdentity(&config), ItemID: envelope.ItemID, ItemType: envelope.ItemType, Authorized: config.SyncEnabled == 1 && config.EnableDeleteNetdisk == 1, PayloadJSON: embyJSON(envelope), Status: EmbyWebhookPending}
+		record = EmbyWebhookRecord{MediaServerType: envelope.MediaServerType, Event: envelope.Event, ServerID: envelope.ServerID, ServerConfigKey: EmbyServerConfigIdentity(config), ItemID: envelope.ItemID, ItemType: envelope.ItemType, Authorized: config.Enabled && config.SyncEnabled == 1 && config.EnableDeleteNetdisk == 1, PayloadJSON: embyJSON(envelope), Status: EmbyWebhookPending}
 		if envelope.Event == "library.deleted" || envelope.Event == "deep.delete" {
-			input := EmbyDeletionInput{ServerID: record.ServerID, ServerConfigKey: record.ServerConfigKey, ItemID: record.ItemID, ItemType: record.ItemType, Authorized: record.Authorized}
+			input := EmbyDeletionInput{MediaServerType: record.MediaServerType, ServerID: record.ServerID, ServerConfigKey: record.ServerConfigKey, ItemID: record.ItemID, ItemType: record.ItemType, Authorized: record.Authorized}
 			if envelope.Blocked || state.ServerID != record.ServerID || state.ServerConfigKey != record.ServerConfigKey || record.ServerID == "" {
 				input.Issues = []string{"receipt_identity_unverified"}
 			} else if !slices.Contains([]string{"Movie", "Episode", "Video", "Season", "Series"}, record.ItemType) {
@@ -130,7 +135,7 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 				if err != nil {
 					return err
 				}
-				input, err = captureEmbyDeletionTx(tx, record.ServerID, record.ItemID, record.ItemType, excluded)
+				input, err = captureEmbyDeletionTx(tx, record.MediaServerType, record.ServerID, record.ItemID, record.ItemType, excluded)
 				if err != nil {
 					return err
 				}
@@ -154,7 +159,7 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 				}
 				slices.Sort(ids)
 				if record.Status != EmbyWebhookUnresolved {
-					record.DeletionRevision, err = RegisterEmbyDeletionTx(tx, record.ServerID, slices.Compact(ids))
+					record.DeletionRevision, err = RegisterEmbyDeletionTx(tx, record.MediaServerType, record.ServerID, slices.Compact(ids))
 					if err != nil {
 						return err
 					}
@@ -163,6 +168,9 @@ func SaveEmbyWebhook(ctx context.Context, envelope EmbyWebhookEnvelope) (record 
 			record.InputJSON = embyJSON(input)
 		} else if envelope.Blocked {
 			record.Status, record.Reason = EmbyWebhookUnresolved, "receipt_identity_unverified"
+		}
+		if !config.Enabled {
+			record.Status, record.Reason = EmbyWebhookUnresolved, "service_disabled_at_receipt"
 		}
 		if err := checkEmbyWebhookSize(record); err != nil {
 			return err
@@ -209,7 +217,20 @@ func sanitizeEmbyWebhookName(value string) string {
 
 // DisplayLabel 返回日志用条目标签；名称缺失时为空串，仅用于诊断展示。
 func (envelope EmbyWebhookEnvelope) DisplayLabel() string {
-	series := strings.TrimSpace(envelope.SeriesName)
+	series := sanitizeEmbyWebhookName(envelope.SeriesName)
+	name := sanitizeEmbyWebhookName(envelope.ItemName)
+	if envelope.ItemType == "Season" {
+		season := envelope.IndexNumber
+		if season == nil {
+			season = envelope.ParentIndexNumber
+		}
+		if season != nil && *season >= 0 {
+			return strings.TrimSpace(fmt.Sprintf("%s S%02d", series, *season))
+		}
+		if series != "" {
+			return strings.TrimSpace(series + " " + name)
+		}
+	}
 	switch {
 	case series != "" && envelope.ParentIndexNumber != nil && envelope.IndexNumber != nil:
 		return fmt.Sprintf("%s S%02dE%02d", series, *envelope.ParentIndexNumber, *envelope.IndexNumber)
@@ -217,21 +238,28 @@ func (envelope EmbyWebhookEnvelope) DisplayLabel() string {
 		return fmt.Sprintf("%s E%02d", series, *envelope.IndexNumber)
 	case series != "" && envelope.ParentIndexNumber != nil:
 		return fmt.Sprintf("%s S%02d", series, *envelope.ParentIndexNumber)
-	case strings.TrimSpace(envelope.ItemName) != "":
-		return strings.TrimSpace(envelope.ItemName)
+	case name != "":
+		return name
 	default:
 		return series
 	}
 }
 
 // ClaimEmbyWebhook 优先尚未观察的新事件，领取与同步提交共享 SQL 锁；不永久去重 item。
-func ClaimEmbyWebhook(ctx context.Context, now int64) (record *EmbyWebhookRecord, err error) {
+func ClaimEmbyWebhook(ctx context.Context, kind MediaServerType, now int64) (record *EmbyWebhookRecord, err error) {
 	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := lockEmbyIndexState(tx); err != nil {
+		if _, err := lockEmbyIndexState(tx, kind); err != nil {
 			return err
 		}
+		config, err := readMediaLibraryConfigTx(tx, kind)
+		if err != nil {
+			return err
+		}
+		if !config.Enabled {
+			return nil
+		}
 		var next EmbyWebhookRecord
-		err := tx.Where("status IN ? AND next_attempt_at <= ?", []string{EmbyWebhookPending, EmbyWebhookRetry}, now).
+		err = tx.Where("media_server_type = ? AND status IN ? AND next_attempt_at <= ?", kind, []string{EmbyWebhookPending, EmbyWebhookRetry}, now).
 			Order("CASE WHEN event IN ('library.new','library.modified') AND observed_at = 0 THEN 0 ELSE 1 END").Order("id").First(&next).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -260,11 +288,11 @@ func RecoverEmbyWebhookWork(ctx context.Context) error {
 }
 
 func lockEmbyWebhookClaim(tx *gorm.DB, record EmbyWebhookRecord) (*EmbyWebhookRecord, error) {
-	if _, err := lockEmbyIndexState(tx); err != nil {
+	if _, err := lockEmbyIndexState(tx, record.MediaServerType); err != nil {
 		return nil, err
 	}
 	var current EmbyWebhookRecord
-	if err := tx.Where("id = ? AND claim_token = ? AND status = ?", record.ID, record.ClaimToken, EmbyWebhookRunning).First(&current).Error; err != nil {
+	if err := tx.Where("media_server_type = ? AND id = ? AND claim_token = ? AND status = ?", record.MediaServerType, record.ID, record.ClaimToken, EmbyWebhookRunning).First(&current).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrEmbyWebhookClaimLost
 		}
@@ -364,7 +392,7 @@ func FindEmbyWebhookSuccess(ctx context.Context, record EmbyWebhookRecord, targe
 		return nil, nil
 	}
 	var prior EmbyWebhookTarget
-	err := db.Db.WithContext(ctx).Where("server_id = ? AND server_config_key = ? AND target_key = ? AND outcome IN ?", record.ServerID, record.ServerConfigKey, target.Key, []EmbyDeletionOutcome{EmbyDeletionDeleted, EmbyDeletionAlreadyAbsent}).Order("id").First(&prior).Error
+	err := db.Db.WithContext(ctx).Where("record_id IN (?)", db.Db.Model(&EmbyWebhookRecord{}).Select("id").Where("media_server_type = ?", record.MediaServerType)).Where("server_id = ? AND server_config_key = ? AND target_key = ? AND outcome IN ?", record.ServerID, record.ServerConfigKey, target.Key, []EmbyDeletionOutcome{EmbyDeletionDeleted, EmbyDeletionAlreadyAbsent}).Order("id").First(&prior).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -405,7 +433,7 @@ func AdmitEmbyWebhookSurvivors(ctx context.Context, record EmbyWebhookRecord, it
 		}
 		for _, id := range itemIDs {
 			var state EmbyItemState
-			if err := tx.Where("server_id = ? AND item_id = ?", current.ServerID, id).First(&state).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", current.MediaServerType, current.ServerID, id).First(&state).Error; err != nil {
 				return err
 			}
 			if !state.Deleted {
@@ -422,7 +450,7 @@ func AdmitEmbyWebhookSurvivors(ctx context.Context, record EmbyWebhookRecord, it
 			if id != current.ItemID && !slices.ContainsFunc(input.Owners, func(owner EmbyDeletionOwner) bool { return owner.Item.ItemId == id }) {
 				return ErrEmbyIdentityAmbiguous
 			}
-			if err := AdmitEmbyItemGenerationTx(tx, current.ServerID, id, current.DeletionRevision); err != nil {
+			if err := AdmitEmbyItemGenerationTx(tx, current.MediaServerType, current.ServerID, id, current.DeletionRevision); err != nil {
 				return err
 			}
 		}
@@ -442,15 +470,18 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 		if err := json.Unmarshal([]byte(current.InputJSON), &input); err != nil {
 			return err
 		}
-		var config EmbyConfig
-		if err := tx.First(&config).Error; err != nil {
+		config, err := readMediaLibraryConfigTx(tx, current.MediaServerType)
+		if err != nil {
 			return err
 		}
-		if EmbyServerConfigIdentity(&config) != current.ServerConfigKey {
+		if !config.Enabled {
+			return ErrEmbyDeleteDisabled
+		}
+		if EmbyServerConfigIdentity(config) != current.ServerConfigKey {
 			return ErrEmbySnapshotStale
 		}
 		var index EmbyIndexState
-		if err := tx.First(&index, 1).Error; err != nil {
+		if err := tx.Where("media_server_type = ?", current.MediaServerType).First(&index).Error; err != nil {
 			return err
 		}
 		if index.ServerID != current.ServerID || index.ServerConfigKey != current.ServerConfigKey {
@@ -466,7 +497,7 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 				continue
 			}
 			var state EmbyItemState
-			if err := tx.Where("server_id = ? AND item_id = ?", current.ServerID, owner.Item.ItemId).First(&state).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", current.MediaServerType, current.ServerID, owner.Item.ItemId).First(&state).Error; err != nil {
 				return err
 			}
 			if state.SnapshotID != owner.Evidence.ID || state.Generation != owner.Evidence.Generation || state.Revision != current.DeletionRevision || !state.Deleted {
@@ -476,15 +507,15 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 			if err := tx.First(&evidence, owner.Evidence.ID).Error; err != nil {
 				return err
 			}
-			if evidence != owner.Evidence || evidence.ServerID != current.ServerID || evidence.ServerConfigKey != current.ServerConfigKey {
+			if !sameEmbyFrozenEvidence(evidence, owner.Evidence, current.MediaServerType) || evidence.ServerID != current.ServerID || evidence.ServerConfigKey != current.ServerConfigKey {
 				return ErrEmbyIdentityAmbiguous
 			}
 			for _, link := range owner.Links {
-				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemId, owner.Evidence.ID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				if err := tx.Where("media_server_type = ? AND id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", current.MediaServerType, link.ID, owner.Item.ItemId, owner.Evidence.ID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 					return err
 				}
 			}
-			if err := tx.Where("server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", current.ServerID, owner.Item.ItemId, owner.Evidence.ID, owner.Evidence.Generation).Delete(&EmbyMediaItem{}).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", current.MediaServerType, current.ServerID, owner.Item.ItemId, owner.Evidence.ID, owner.Evidence.Generation).Delete(&EmbyMediaItem{}).Error; err != nil {
 				return err
 			}
 		}
@@ -493,7 +524,7 @@ func FinalizeEmbyWebhookLocal(ctx context.Context, record EmbyWebhookRecord, ite
 }
 
 // ErrEmbyWebhookTooLarge 表示冻结证据超出持久边界，重试相同内容无法恢复。
-var ErrEmbyWebhookTooLarge = errors.New("Emby 通知证据超过持久记录大小限制")
+var ErrEmbyWebhookTooLarge = errors.New("媒体服务器通知证据超过持久记录大小限制")
 
 func checkEmbyWebhookSize(value any) error {
 	encoded, err := json.Marshal(value)

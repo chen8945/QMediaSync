@@ -29,7 +29,7 @@ const routeViewFiles = [
   'views/settings/AppUserSettings.vue',
   'views/settings/AppApiKeys.vue',
   'views/settings/AppNotificationChannels.vue',
-  'views/settings/AppEmbySettings.vue',
+  'views/settings/AppMediaLibrarySettings.vue',
   'views/settings/AppThreadSettings.vue',
   'views/settings/AppLogSettings.vue',
   'views/settings/AppProxySettings.vue',
@@ -62,7 +62,7 @@ describe('页面头部统一契约', () => {
       )
     }
 
-    const embySource = readSource('src/views/settings/AppEmbySettings.vue')
+    const embySource = readSource('src/components/media-library/MediaServerSettings.vue')
     expect(embySource).toContain('background: transparent;')
     expect(embySource).not.toContain('linear-gradient(135deg, #f5f7fa 0%, #e4e7ed 100%)')
   })
@@ -78,17 +78,19 @@ describe('页面头部统一契约', () => {
   })
 
   it('Emby 保留页面级 h1、内容级 h2/h3 和静止卡片边界', () => {
-    const source = readSource('src/views/settings/AppEmbySettings.vue')
+    const source = readSource('src/components/media-library/MediaServerSettings.vue')
 
-    expect(source).toContain('<PageHeader />')
-    expect(source).toContain('<h2 class="card-title">Emby 服务器配置</h2>')
-    expect(source).toContain('<h3 class="card-title">通知链接配置</h3>')
+    expect(readSource('src/views/settings/AppMediaLibrarySettings.vue')).toContain('<PageHeader />')
+    expect(source).toContain('<h2 class="card-title">{{ productName }} 服务器配置</h2>')
+    expect(readSource('src/components/media-library/MediaWebhookSettings.vue')).toContain(
+      '<h3 class="card-title">通知链接配置</h3>',
+    )
     expect(source).not.toContain('<h1 class="card-title">')
     expect(source).toMatch(
-      /\.settings-card,\s*\.sync-management-card\s*\{[\s\S]*?border:\s*1px solid var\(--el-border-color\);[\s\S]*?box-shadow:/,
+      /\.settings-card\s*\{[\s\S]*?border:\s*1px solid var\(--el-border-color\);[\s\S]*?box-shadow:/,
     )
     expect(source).toMatch(
-      /\.settings-card :deep\(\.el-card__header\),\s*\.sync-management-card :deep\(\.el-card__header\)\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--el-border-color\);/,
+      /\.settings-card :deep\(\.el-card__header\)\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--el-border-color\);/,
     )
   })
 

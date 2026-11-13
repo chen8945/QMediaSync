@@ -3,6 +3,9 @@ package models
 import (
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"qmediasync/internal/db"
@@ -19,9 +22,8 @@ func TestInitEmbyConfig默认开启Webhook鉴权(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
 
@@ -43,7 +45,6 @@ func TestEmbyConfig状态字段迁移默认值(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
 	if err := db.Db.Exec(`
 		CREATE TABLE emby_config (
@@ -66,7 +67,7 @@ func TestEmbyConfig状态字段迁移默认值(t *testing.T) {
 		t.Fatalf("插入旧 EmbyConfig 失败: %v", err)
 	}
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
 
@@ -95,12 +96,11 @@ func TestEmbySyncRunStateLifecycle(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
-	config := &EmbyConfig{SyncEnabled: 1, SyncCron: "0 * * * *"}
+	config := &EmbyConfig{Enabled: true, SyncEnabled: 1, SyncCron: "0 * * * *"}
 	if err := db.Db.Create(config).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
@@ -151,12 +151,11 @@ func TestEmbySyncRunFailureState(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyConfig{SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&EmbyConfig{Enabled: true, SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 	if started, err := StartEmbySyncRun(EmbySyncModeIncremental, 300); err != nil || !started {
@@ -189,9 +188,8 @@ func TestResetStaleEmbySyncRunOnStartup清理遗留运行标记且不推进游�
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
 	if err := db.Db.Create(&EmbyConfig{
@@ -238,12 +236,11 @@ func TestFinishEmbyIncrementalSyncRun推进游标(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyConfig{SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
+	if err := db.Db.Create(&EmbyConfig{Enabled: true, SyncEnabled: 1, SyncCron: "0 * * * *"}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 	if started, err := StartEmbySyncRun(EmbySyncModeIncremental, 500); err != nil || !started {
@@ -273,12 +270,11 @@ func TestFinishEmbyIncrementalSyncRun失败不推进游标(t *testing.T) {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
 	db.Db = testDb
-	GlobalEmbyConfig = nil
 
-	if err := db.Db.AutoMigrate(&EmbyConfig{}); err != nil {
+	if err := db.Db.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
 		t.Fatalf("迁移 EmbyConfig 失败: %v", err)
 	}
-	if err := db.Db.Create(&EmbyConfig{SyncEnabled: 1, SyncCron: "0 * * * *", LastSavedCursorAt: 123}).Error; err != nil {
+	if err := db.Db.Create(&EmbyConfig{Enabled: true, SyncEnabled: 1, SyncCron: "0 * * * *", LastSavedCursorAt: 123}).Error; err != nil {
 		t.Fatalf("创建 EmbyConfig 失败: %v", err)
 	}
 	if started, err := StartEmbySyncRun(EmbySyncModeIncremental, 500); err != nil || !started {
@@ -305,4 +301,76 @@ type errTestEmbySyncFailure struct{}
 
 func (errTestEmbySyncFailure) Error() string {
 	return "同步失败"
+}
+
+func TestMediaLibraryConfigClientRejectsInvalidOwner(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	for _, kind := range []MediaServerType{"", "other"} {
+		config := &EmbyConfig{MediaServerType: kind, EmbyUrl: server.URL, EmbyApiKey: "key"}
+		if _, err := config.Client().CheckConnection(t.Context()); err == nil {
+			t.Fatalf("invalid owner %q silently used Emby", kind)
+		}
+		if _, err := config.Client().GetServerID(t.Context()); err == nil {
+			t.Fatalf("invalid owner %q queried a server identity", kind)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatal("invalid owner reached a remote server")
+	}
+}
+
+func TestMediaLibrarySyncRunIsolatedAndGated(t *testing.T) {
+	connection, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := db.Db
+	db.Db = connection
+	t.Cleanup(func() { db.Db = previous })
+	if err := connection.AutoMigrate(&EmbyConfig{}, &JellyfinConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Create(&EmbyConfig{Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Create(&JellyfinConfig{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if started, err := StartMediaLibrarySyncRun(MediaServerJellyfin, EmbySyncModeFull, 100); err != nil || started {
+		t.Fatalf("disabled service started: %v %v", started, err)
+	}
+	if started, err := StartMediaLibrarySyncRun(MediaServerEmby, EmbySyncModeFull, 101); err != nil || !started {
+		t.Fatalf("enabled Emby did not start: %v %v", started, err)
+	}
+	if err := connection.Model(&JellyfinConfig{}).Where("id > 0").Updates(map[string]any{"enabled": true, "sync_enabled": 0}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if started, err := StartMediaLibrarySyncRun(MediaServerJellyfin, EmbySyncModeFull, 102); err != nil || started {
+		t.Fatalf("disabled sync started: %v %v", started, err)
+	}
+	if err := connection.Model(&JellyfinConfig{}).Where("id > 0").Update("sync_enabled", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if started, err := StartMediaLibrarySyncRun(MediaServerJellyfin, EmbySyncModeIncremental, 103); err != nil || !started {
+		t.Fatalf("Emby running blocked independent Jellyfin: %v %v", started, err)
+	}
+	if err := FinishMediaLibrarySyncRun(MediaServerEmby, EmbySyncModeFull, 7, 200, errTestEmbySyncFailure{}); err != nil {
+		t.Fatal(err)
+	}
+	embyConfig, err := ReadMediaLibraryConfigSnapshot(MediaServerEmby)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jellyfin, err := ReadMediaLibraryConfigSnapshot(MediaServerJellyfin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embyConfig.IsRunning || embyConfig.LastProcessedCount != 7 || embyConfig.LastError == "" || !jellyfin.IsRunning || jellyfin.StartedAt != 103 || jellyfin.SyncMode != EmbySyncModeIncremental || jellyfin.LastError != "" {
+		t.Fatalf("run state crossed owners: Emby=%+v Jellyfin=%+v", embyConfig, jellyfin)
+	}
 }

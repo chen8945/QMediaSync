@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -23,7 +23,7 @@ import (
 type embySurvivingItemsError struct{ IDs []string }
 
 func (e *embySurvivingItemsError) Error() string {
-	return "Emby 原条目仍存在，保留原索引及文件"
+	return "原媒体条目仍存在，保留原索引及文件"
 }
 
 // embyProtectedOwnersError 只来自完整存活清单中明确的新 ID/共享来源证据。
@@ -31,18 +31,18 @@ func (e *embySurvivingItemsError) Error() string {
 type embyProtectedOwnersError struct{ IDs []string }
 
 func (e *embyProtectedOwnersError) Error() string {
-	return "Emby 新条目仍使用原文件，保留网盘并清理已失效的旧关联"
+	return "新媒体条目仍使用原文件，保留网盘并清理已失效的旧关联"
 }
 
 func verifyEmbyLocalDeletion(ctx context.Context, input models.EmbyDeletionInput, ownerIDs []string) error {
-	config, err := models.ReadEmbyConfigSnapshot()
+	config, err := models.ReadMediaLibraryConfigSnapshot(input.MediaServerType)
 	if err != nil {
 		return err
 	}
-	if input.ServerID == "" || input.ServerConfigKey != models.EmbyServerConfigIdentity(config) {
+	if !config.Enabled || input.ServerID == "" || input.ServerConfigKey != models.EmbyServerConfigIdentity(config) {
 		return models.ErrEmbySnapshotStale
 	}
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
 	serverID, err := client.GetServerID(ctx)
 	if err != nil {
 		return err
@@ -132,12 +132,12 @@ func invalidateEmbyDeletionVerification(ctx context.Context) {
 func readEmbyDeletionVerificationStamp(ctx context.Context, input models.EmbyDeletionInput) (embyDeletionVerificationStamp, error) {
 	var stamp embyDeletionVerificationStamp
 	err := db.Db.WithContext(ctx).Model(&models.EmbyIndexState{}).
-		Select("server_id, server_config_key, config_key, revision, (SELECT COALESCE(MAX(id), 0) FROM emby_item_evidences) AS evidence_id").
-		Where("id = ?", 1).Take(&stamp).Error
+		Select("server_id, server_config_key, config_key, revision, (SELECT COALESCE(MAX(id), 0) FROM emby_item_evidences WHERE media_server_type = ?) AS evidence_id", input.MediaServerType).
+		Where("media_server_type = ?", input.MediaServerType).Take(&stamp).Error
 	if err != nil {
 		return stamp, err
 	}
-	config, err := models.ReadEmbyConfigSnapshot()
+	config, err := models.ReadMediaLibraryConfigSnapshot(input.MediaServerType)
 	if err != nil {
 		return stamp, err
 	}
@@ -146,7 +146,7 @@ func readEmbyDeletionVerificationStamp(ctx context.Context, input models.EmbyDel
 	}
 	stamp.CurrentConfig = models.EmbyConfigIdentity(config)
 	stamp.DeletionEnabled = int64(config.EnableDeleteNetdisk)
-	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
+	if !config.Enabled || config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
 		return stamp, models.ErrEmbyDeleteDisabled
 	}
 	return stamp, nil
@@ -158,7 +158,7 @@ func embyDeletionLiveSnapshots(ctx context.Context, input models.EmbyDeletionInp
 		if models.IsEmbyDeletionFinalGuard(ctx) {
 			return nil, models.ErrEmbySnapshotStale
 		}
-		return loadEmbyDeletionLiveSnapshots(ctx, client)
+		return loadEmbyDeletionLiveSnapshots(ctx, input.MediaServerType, client)
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -179,7 +179,7 @@ func embyDeletionLiveSnapshots(ctx context.Context, input models.EmbyDeletionInp
 	startedAt := cache.now()
 	collectionCtx, cancel := context.WithTimeout(ctx, embyDeletionCollectionBudget)
 	defer cancel()
-	snapshots, err := loadEmbyDeletionLiveSnapshots(collectionCtx, client)
+	snapshots, err := loadEmbyDeletionLiveSnapshots(collectionCtx, input.MediaServerType, client)
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +220,13 @@ func embyDeletionVerificationStillCurrent(ctx context.Context, input models.Emby
 	return ctx.Err()
 }
 
-func loadEmbyDeletionLiveSnapshots(ctx context.Context, client *embyclientrestgo.Client) ([]models.EmbyItemSnapshot, error) {
+func loadEmbyDeletionLiveSnapshots(ctx context.Context, kind models.MediaServerType, client *embyclientrestgo.Client) ([]models.EmbyItemSnapshot, error) {
 	items, err := client.GetDeletionVerificationItems(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 	var snapshots []models.EmbyItemSnapshot
+	var sourceRecovery models.EmbyDirectoryEvidenceCollector
 	for _, item := range items {
 		if item.Type != "Movie" && item.Type != "Episode" && item.Type != "Video" {
 			return nil, models.ErrEmbyIdentityAmbiguous
@@ -234,13 +235,22 @@ func loadEmbyDeletionLiveSnapshots(ctx context.Context, client *embyclientrestgo
 		if err != nil {
 			return nil, err
 		}
-		for _, member := range members {
+		for i := range members {
+			member := &members[i]
+			member.Item.MediaServerType = kind
+			unresolvedManaged, err := sourceRecovery.RecoverJellyfinSTRMSources(ctx, member)
+			if err != nil {
+				return nil, err
+			}
+			if unresolvedManaged {
+				return nil, errors.New("Jellyfin 存活条目的受管 STRM 来源未能核验，无法排除共享文件")
+			}
 			if member.Item.Path == "" || len(member.Sources) == 0 {
-				return nil, errors.New("Emby 存活条目缺少物理来源，无法排除共享文件")
+				return nil, errors.New("媒体服务器存活条目缺少物理来源，无法排除共享文件")
 			}
 			for _, source := range member.Sources {
 				if source.Path == "" {
-					return nil, errors.New("Emby 存活来源缺少路径")
+					return nil, errors.New("媒体服务器存活来源缺少路径")
 				}
 			}
 		}
@@ -252,16 +262,16 @@ func loadEmbyDeletionLiveSnapshots(ctx context.Context, client *embyclientrestgo
 // verifyEmbyDeletion 复用有界完整清单，但每次仍检查服务、原 ID 与原 STRM。
 // 这里不修改索引，也不持有数据库事务；调用者已经获得 syncscope。
 func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, target models.EmbyDeletionTarget) error {
-	config, err := models.ReadEmbyConfigSnapshot()
+	config, err := models.ReadMediaLibraryConfigSnapshot(input.MediaServerType)
 	if err != nil {
 		invalidateEmbyDeletionVerification(ctx)
 		return err
 	}
-	if input.ServerID == "" || input.ServerConfigKey != models.EmbyServerConfigIdentity(config) {
+	if !config.Enabled || input.ServerID == "" || input.ServerConfigKey != models.EmbyServerConfigIdentity(config) {
 		invalidateEmbyDeletionVerification(ctx)
 		return models.ErrEmbySnapshotStale
 	}
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
 	serverID, err := client.GetServerID(ctx)
 	if err != nil {
 		invalidateEmbyDeletionVerification(ctx)
@@ -287,17 +297,84 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 	if len(owners) == 0 {
 		return models.ErrEmbyDeleteUnverified
 	}
-	existing, err := client.GetDeletionVerificationItems(ctx, strings.Join(ids, ","))
+	queryIDs := slices.Clone(ids)
+	partMains := map[string]string{}
+	if input.MediaServerType == models.MediaServerJellyfin {
+		for _, owner := range owners {
+			if owner.Item.Type != "Video" || owner.Item.PartOfItemID == "" {
+				continue
+			}
+			if !slices.ContainsFunc(input.Owners, func(main models.EmbyDeletionOwner) bool {
+				return main.Item.ItemId == owner.Item.PartOfItemID && (main.Item.Type == "Movie" || main.Item.Type == "Episode")
+			}) {
+				continue
+			}
+			partMains[owner.Item.ItemId] = owner.Item.PartOfItemID
+			if !slices.Contains(queryIDs, owner.Item.PartOfItemID) {
+				queryIDs = append(queryIDs, owner.Item.PartOfItemID)
+			}
+		}
+	}
+	existing, err := client.GetDeletionVerificationItems(ctx, strings.Join(queryIDs, ","))
 	if err != nil {
 		invalidateEmbyDeletionVerification(ctx)
 		return err
 	}
 	var surviving []string
 	for _, item := range existing {
-		if !slices.Contains(ids, item.Id) {
+		if !slices.Contains(queryIDs, item.Id) {
 			return models.ErrEmbyIdentityAmbiguous
 		}
-		surviving = append(surviving, item.Id)
+		if slices.Contains(ids, item.Id) {
+			surviving = append(surviving, item.Id)
+		}
+	}
+	var snapshots []models.EmbyItemSnapshot
+	loadedSnapshots := false
+	for _, owner := range owners {
+		mainID := partMains[owner.Item.ItemId]
+		if mainID == "" || !slices.Contains(surviving, owner.Item.ItemId) ||
+			slices.ContainsFunc(existing, func(item embyclientrestgo.BaseItemDtoV2) bool { return item.Id == mainID }) ||
+			!slices.ContainsFunc(existing, func(item embyclientrestgo.BaseItemDtoV2) bool {
+				return item.Id == owner.Item.ItemId && item.Type == "Video" && item.Path == owner.Item.Path && strings.EqualFold(filepath.Ext(item.Path), ".strm")
+			}) {
+			continue
+		}
+		if !loadedSnapshots {
+			snapshots, err = embyDeletionLiveSnapshots(ctx, input, client)
+			if err != nil {
+				return err
+			}
+			loadedSnapshots = true
+		}
+		if slices.ContainsFunc(snapshots, func(snapshot models.EmbyItemSnapshot) bool {
+			return snapshot.Item.ItemId == owner.Item.ItemId || slices.ContainsFunc(snapshot.Sources, func(source models.EmbySnapshotSource) bool {
+				return source.ItemID == owner.Item.ItemId || source.ID == owner.Item.ItemId
+			})
+		}) {
+			continue
+		}
+		files, err := embyOwnerVerificationFiles(owner, target)
+		if err != nil {
+			return err
+		}
+		if slices.ContainsFunc(files, func(file models.EmbyFrozenFile) bool { return file.SyncFileID == 0 }) {
+			continue
+		}
+		for _, file := range files {
+			if err := verifyEmbyFileReference(ctx, config, owner, file); err != nil {
+				return err
+			}
+			root, original := file.LocalRoot, owner.Item.Path
+			if file.Reference.EmbyPath != "" {
+				root, original = file.Reference.LocalRoot, file.Reference.LocalPath
+			}
+			if err := embyOriginalPathAbsent(root, original, file.Reference.AutoSyncPathID != 0); err != nil {
+				return err
+			}
+		}
+		// Jellyfin 可保留已删主项的孤儿分段详情；既有共享来源及发送前核验仍须执行。
+		surviving = slices.DeleteFunc(surviving, func(id string) bool { return id == owner.Item.ItemId })
 	}
 	if len(surviving) > 0 {
 		invalidateEmbyDeletionVerification(ctx)
@@ -316,9 +393,11 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 		}
 		filesByOwner[owner.Item.ItemId] = files
 	}
-	snapshots, err := embyDeletionLiveSnapshots(ctx, input, client)
-	if err != nil {
-		return err
+	if !loadedSnapshots {
+		snapshots, err = embyDeletionLiveSnapshots(ctx, input, client)
+		if err != nil {
+			return err
+		}
 	}
 	historicalByOwner := make([][]models.EmbySnapshotSource, len(owners))
 	if len(snapshots) > 0 {
@@ -339,7 +418,7 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 			}
 			for _, source := range snapshot.Sources {
 				if source.Path == "" {
-					return errors.New("Emby 存活来源缺少路径")
+					return errors.New("媒体服务器存活来源缺少路径")
 				}
 				for _, file := range filesByOwner[owner.Item.ItemId] {
 					if source.ID != "" && source.ID == file.SourceID ||
@@ -401,7 +480,7 @@ func verifyEmbyDeletion(ctx context.Context, input models.EmbyDeletionInput, tar
 			}
 		}
 		if len(protectedKeys) > 0 {
-			return &models.EmbyDeletionTargetConflict{Keys: protectedKeys, Err: errors.New("Emby 本季仍有存活成员，保留季级元数据")}
+			return &models.EmbyDeletionTargetConflict{Keys: protectedKeys, Err: errors.New("媒体服务器本季仍有存活成员，保留季级元数据")}
 		}
 	}
 	if target.Directory != nil {
@@ -548,18 +627,21 @@ func verifyEmbyDirectoryLiveItems(ctx context.Context, scope models.EmbyDirector
 	remoteRoot := path.Join("/", scope.Root.Path, scope.Root.FileName)
 	for _, snapshot := range snapshots {
 		if _, valid := (models.EmbyPathMapping{EmbyRoot: snapshot.Item.Path}).RelativePath(snapshot.Item.Path); !valid {
-			return errors.New("Emby 存活条目的目录位置无法核验")
+			return errors.New("媒体服务器存活条目的目录位置无法核验")
 		}
 		if _, inside := mediaDirectory.RelativePath(snapshot.Item.Path); inside {
-			return errors.New("Emby 存活条目仍位于待删除媒体目录")
+			return errors.New("媒体服务器存活条目仍位于待删除媒体目录")
 		}
 		for _, source := range snapshot.Sources {
 			_, localSource := (models.EmbyPathMapping{EmbyRoot: source.Path}).RelativePath(source.Path)
 			if source.PickCode == "" && localSource {
+				if snapshot.Item.MediaServerType == models.MediaServerJellyfin && strings.EqualFold(filepath.Ext(source.Path), ".strm") {
+					return errors.New("媒体服务器存活来源的远端位置无法核验，保留媒体目录")
+				}
 				// 本地物理媒体源可以直接核对；远端命名空间不能用本地目录排除。
 				_, inside := mediaDirectory.RelativePath(source.Path)
 				if inside || embyVerificationPathWithin(remoteRoot, source.Path) {
-					return errors.New("Emby 存活来源仍位于待删除媒体目录")
+					return errors.New("媒体服务器存活来源仍位于待删除媒体目录")
 				}
 				continue
 			}
@@ -579,26 +661,26 @@ func verifyEmbyDirectoryLiveItems(ctx context.Context, scope models.EmbyDirector
 					physicalID = file.PickCode
 				}
 				if physicalID != "" && physicalIDs[physicalID] {
-					return errors.New("Emby 存活来源仍使用待删除目录中的文件")
+					return errors.New("媒体服务器存活来源仍使用待删除目录中的文件")
 				}
 				if file.Path == "" || file.FileName == "" {
-					return errors.New("Emby 存活来源的记录位置不完整")
+					return errors.New("媒体服务器存活来源的记录位置不完整")
 				}
 				if embyVerificationPathWithin(remoteRoot, path.Join("/", file.Path, file.FileName)) {
-					return errors.New("Emby 存活来源仍使用待删除目录中的文件")
+					return errors.New("媒体服务器存活来源仍使用待删除目录中的文件")
 				}
 			}
 			if sourceCodes[canonicalEmbySource(source.PickCode)] {
 				// 直接子项已经提供稳定身份，无需再请求该存活来源的详情。
-				return errors.New("Emby 存活来源仍使用待删除目录中的文件")
+				return errors.New("媒体服务器存活来源仍使用待删除目录中的文件")
 			}
 			if len(matches) == 0 {
 				read, err := embyDirectorySourceLocation(ctx, scope.Root, source)
 				if err != nil {
-					return errors.New("Emby 存活来源的远端位置无法核验，保留媒体目录")
+					return errors.New("媒体服务器存活来源的远端位置无法核验，保留媒体目录")
 				}
 				if embyVerificationPathWithin(remoteRoot, read.path) {
-					return errors.New("Emby 存活来源仍使用待删除目录中的文件")
+					return errors.New("媒体服务器存活来源仍使用待删除目录中的文件")
 				}
 				sourceReads = append(sourceReads, embySourceLocationUse{read: read, source: source})
 			}

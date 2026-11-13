@@ -15,15 +15,16 @@ const embyObservationBatchSize = 500
 // RefIndex 保留每个原始引用的位置，同一条目的多份预期状态不能提前合并。
 type EmbyObservedEvidenceIndex struct {
 	BaseModel
-	RecordID        uint   `json:"record_id" gorm:"uniqueIndex:idx_emby_observed_ref,priority:1"`
-	RefIndex        int    `json:"ref_index" gorm:"uniqueIndex:idx_emby_observed_ref,priority:2"`
-	EvidenceID      uint   `json:"evidence_id"`
-	ServerID        string `json:"server_id" gorm:"index:idx_emby_observed_item,priority:1;index:idx_emby_observed_part,priority:1;index:idx_emby_observed_season,priority:1;index:idx_emby_observed_series,priority:1"`
-	ServerConfigKey string `json:"server_config_key" gorm:"index:idx_emby_observed_item,priority:2;index:idx_emby_observed_part,priority:2;index:idx_emby_observed_season,priority:2;index:idx_emby_observed_series,priority:2"`
-	ItemID          string `json:"item_id" gorm:"index:idx_emby_observed_item,priority:3"`
-	PartOfItemID    string `json:"part_of_item_id" gorm:"index:idx_emby_observed_part,priority:3"`
-	SeasonID        string `json:"season_id" gorm:"index:idx_emby_observed_season,priority:3"`
-	SeriesID        string `json:"series_id" gorm:"index:idx_emby_observed_series,priority:3"`
+	MediaServerType MediaServerType `json:"-" gorm:"not null;default:emby;index:idx_emby_observed_item,priority:0;index:idx_emby_observed_part,priority:0;index:idx_emby_observed_season,priority:0;index:idx_emby_observed_series,priority:0"`
+	RecordID        uint            `json:"record_id" gorm:"uniqueIndex:idx_emby_observed_ref,priority:1"`
+	RefIndex        int             `json:"ref_index" gorm:"uniqueIndex:idx_emby_observed_ref,priority:2"`
+	EvidenceID      uint            `json:"evidence_id"`
+	ServerID        string          `json:"server_id" gorm:"index:idx_emby_observed_item,priority:1;index:idx_emby_observed_part,priority:1;index:idx_emby_observed_season,priority:1;index:idx_emby_observed_series,priority:1"`
+	ServerConfigKey string          `json:"server_config_key" gorm:"index:idx_emby_observed_item,priority:2;index:idx_emby_observed_part,priority:2;index:idx_emby_observed_season,priority:2;index:idx_emby_observed_series,priority:2"`
+	ItemID          string          `json:"item_id" gorm:"index:idx_emby_observed_item,priority:3"`
+	PartOfItemID    string          `json:"part_of_item_id" gorm:"index:idx_emby_observed_part,priority:3"`
+	SeasonID        string          `json:"season_id" gorm:"index:idx_emby_observed_season,priority:3"`
+	SeriesID        string          `json:"series_id" gorm:"index:idx_emby_observed_series,priority:3"`
 }
 
 func embyObservedEvidenceItem(evidence EmbyItemEvidence, serverID, serverConfigKey string) (EmbyMediaItem, error) {
@@ -37,6 +38,7 @@ func embyObservedEvidenceItem(evidence EmbyItemEvidence, serverID, serverConfigK
 	if err := validateEmbyEvidenceItem(evidence, item); err != nil {
 		return item, err
 	}
+	item.MediaServerType = evidence.MediaServerType
 	return item, nil
 }
 
@@ -49,12 +51,15 @@ func validateEmbyEvidenceItem(evidence EmbyItemEvidence, item EmbyMediaItem) err
 }
 
 func makeEmbyObservedIndex(record EmbyWebhookRecord, refIndex int, evidence EmbyItemEvidence) (EmbyObservedEvidenceIndex, error) {
+	if record.MediaServerType != evidence.MediaServerType {
+		return EmbyObservedEvidenceIndex{}, ErrEmbyIdentityAmbiguous
+	}
 	item, err := embyObservedEvidenceItem(evidence, record.ServerID, record.ServerConfigKey)
 	if err != nil {
 		return EmbyObservedEvidenceIndex{}, err
 	}
 	return EmbyObservedEvidenceIndex{
-		RecordID: record.ID, RefIndex: refIndex, EvidenceID: evidence.ID,
+		MediaServerType: record.MediaServerType, RecordID: record.ID, RefIndex: refIndex, EvidenceID: evidence.ID,
 		ServerID: record.ServerID, ServerConfigKey: record.ServerConfigKey,
 		ItemID: evidence.ItemID, PartOfItemID: item.PartOfItemID, SeasonID: item.SeasonId, SeriesID: item.SeriesId,
 	}, nil
@@ -64,7 +69,7 @@ func loadEmbyObservedEvidenceTx(tx *gorm.DB, ids []uint) (map[uint]EmbyItemEvide
 	result := make(map[uint]EmbyItemEvidence, len(ids))
 	for batch := range slices.Chunk(ids, embyObservationBatchSize) {
 		var rows []EmbyItemEvidence
-		if err := tx.Select("id", "server_id", "server_config_key", "item_id", "generation", "identity_key", "item_json").Where("id IN ?", batch).Find(&rows).Error; err != nil {
+		if err := tx.Select("id", "media_server_type", "server_id", "server_config_key", "item_id", "generation", "identity_key", "item_json").Where("id IN ?", batch).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
@@ -79,7 +84,7 @@ func loadEmbyObservedEvidenceTx(tx *gorm.DB, ids []uint) (map[uint]EmbyItemEvide
 func RebuildEmbyObservedEvidenceIndex(conn *gorm.DB) error {
 	return conn.Transaction(func(tx *gorm.DB) error {
 		// 与正常观察保存共用索引版本写锁；空库不创建虚构的服务器状态。
-		if err := tx.Model(&EmbyIndexState{}).Where("id = ?", 1).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
+		if err := tx.Model(&EmbyIndexState{}).Where("media_server_type IN ?", []MediaServerType{MediaServerEmby, MediaServerJellyfin}).UpdateColumn("revision", gorm.Expr("revision + 0")).Error; err != nil {
 			return err
 		}
 		if err := tx.AutoMigrate(&EmbyObservedEvidenceIndex{}); err != nil {
@@ -91,7 +96,7 @@ func RebuildEmbyObservedEvidenceIndex(conn *gorm.DB) error {
 		var afterID uint
 		for {
 			var records []EmbyWebhookRecord
-			if err := tx.Select("id", "server_id", "server_config_key", "observation_json").
+			if err := tx.Select("id", "media_server_type", "server_id", "server_config_key", "observation_json").
 				Where("id > ? AND observed_at > 0 AND observation_json <> ''", afterID).
 				Order("id").Limit(100).Find(&records).Error; err != nil {
 				return err
@@ -104,7 +109,7 @@ func RebuildEmbyObservedEvidenceIndex(conn *gorm.DB) error {
 			for _, record := range records {
 				var refs []embyObservedRef
 				if err := json.Unmarshal([]byte(record.ObservationJSON), &refs); err != nil {
-					return fmt.Errorf("解析 Emby 观察 %d: %w", record.ID, err)
+					return fmt.Errorf("解析媒体服务器观察 %d: %w", record.ID, err)
 				}
 				refsByRecord[record.ID] = refs
 				for _, ref := range refs {
@@ -120,11 +125,11 @@ func RebuildEmbyObservedEvidenceIndex(conn *gorm.DB) error {
 				for position, ref := range refsByRecord[record.ID] {
 					entry, ok := evidence[ref.EvidenceID]
 					if !ok {
-						return fmt.Errorf("Emby 观察 %d 缺少证据 %d: %w", record.ID, ref.EvidenceID, gorm.ErrRecordNotFound)
+						return fmt.Errorf("媒体服务器观察 %d 缺少证据 %d: %w", record.ID, ref.EvidenceID, gorm.ErrRecordNotFound)
 					}
 					row, err := makeEmbyObservedIndex(record, position, entry)
 					if err != nil {
-						return fmt.Errorf("重建 Emby 观察 %d: %w", record.ID, err)
+						return fmt.Errorf("重建媒体服务器观察 %d: %w", record.ID, err)
 					}
 					rows = append(rows, row)
 				}
@@ -154,8 +159,8 @@ func embyObservationScopeID(item EmbyMediaItem, itemType string) string {
 
 func embyObservedIndexQuery(tx *gorm.DB, record EmbyWebhookRecord) *gorm.DB {
 	return tx.Model(&EmbyObservedEvidenceIndex{}).Table("emby_observed_evidence_indices AS o").
-		Joins("JOIN emby_webhook_records AS r ON r.id = o.record_id AND r.server_id = o.server_id AND r.server_config_key = o.server_config_key").
-		Where("o.server_id = ? AND o.server_config_key = ? AND r.observed_at > 0 AND r.observation_json <> ''", record.ServerID, record.ServerConfigKey)
+		Joins("JOIN emby_webhook_records AS r ON r.media_server_type = o.media_server_type AND r.id = o.record_id AND r.server_id = o.server_id AND r.server_config_key = o.server_config_key").
+		Where("o.media_server_type = ? AND o.server_id = ? AND o.server_config_key = ? AND r.observed_at > 0 AND r.observation_json <> ''", record.MediaServerType, record.ServerID, record.ServerConfigKey)
 }
 
 func embyObservedCandidateIDsTx(tx *gorm.DB, record EmbyWebhookRecord) ([]string, error) {
@@ -181,7 +186,7 @@ func embyObservedCandidateIDsTx(tx *gorm.DB, record EmbyWebhookRecord) ([]string
 	}
 	// 普通同步的旧成员也可能只有一份已移出的观察；查询 state 的持久成员投影，
 	// 并纳入历史观察父项的当前分段，不读取无关条目的 JSON。
-	currentIDs, err := embyStateEvidenceCandidateIDsTx(tx, record.ServerID, record.ServerConfigKey, record.ItemID, record.ItemType, historicalIDs)
+	currentIDs, err := embyStateEvidenceCandidateIDsTx(tx, record.MediaServerType, record.ServerID, record.ServerConfigKey, record.ItemID, record.ItemType, historicalIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -222,11 +227,11 @@ func loadEmbyObservedBatchTx(tx *gorm.DB, record EmbyWebhookRecord) (embyObserve
 	refsByRecord := map[uint][]embyObservedRef{}
 	for ids := range slices.Chunk(slices.Sorted(maps.Keys(recordIDs)), embyObservationBatchSize) {
 		var records []EmbyWebhookRecord
-		if err := tx.Select("id", "server_id", "server_config_key", "observed_at", "observation_json").Where("id IN ?", ids).Find(&records).Error; err != nil {
+		if err := tx.Select("id", "media_server_type", "server_id", "server_config_key", "observed_at", "observation_json").Where("id IN ?", ids).Find(&records).Error; err != nil {
 			return result, err
 		}
 		for _, observed := range records {
-			if observed.ServerID != record.ServerID || observed.ServerConfigKey != record.ServerConfigKey || observed.ObservedAt <= 0 {
+			if observed.MediaServerType != record.MediaServerType || observed.ServerID != record.ServerID || observed.ServerConfigKey != record.ServerConfigKey || observed.ObservedAt <= 0 {
 				return result, ErrEmbyIdentityAmbiguous
 			}
 			var refs []embyObservedRef
@@ -250,7 +255,7 @@ func loadEmbyObservedBatchTx(tx *gorm.DB, record EmbyWebhookRecord) (embyObserve
 		if !ok {
 			return result, gorm.ErrRecordNotFound
 		}
-		if evidence.ItemID != row.ItemID || evidence.ServerID != record.ServerID || evidence.ServerConfigKey != record.ServerConfigKey {
+		if evidence.MediaServerType != record.MediaServerType || evidence.ItemID != row.ItemID || evidence.ServerID != record.ServerID || evidence.ServerConfigKey != record.ServerConfigKey {
 			return result, ErrEmbyIdentityAmbiguous
 		}
 		result.refs = append(result.refs, refs[row.RefIndex])
@@ -258,7 +263,7 @@ func loadEmbyObservedBatchTx(tx *gorm.DB, record EmbyWebhookRecord) (embyObserve
 	}
 	for ids := range slices.Chunk(slices.Sorted(maps.Keys(observedItemIDs)), embyObservationBatchSize) {
 		var states []EmbyItemState
-		if err := tx.Where("server_id = ? AND item_id IN ?", record.ServerID, ids).Find(&states).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id IN ?", record.MediaServerType, record.ServerID, ids).Find(&states).Error; err != nil {
 			return result, err
 		}
 		for _, state := range states {

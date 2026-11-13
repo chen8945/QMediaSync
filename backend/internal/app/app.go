@@ -43,6 +43,9 @@ type App struct {
 }
 
 func (app *App) Start() {
+	if err := controllers.StartMediaLibraryNotifications(); err != nil {
+		helpers.AppLogger.Warnf("媒体库通知未能启动：%v", err)
+	}
 	app.startPlaybackPreloading(context.Background())
 	// 启动外网 302 服务
 	app.startEmby302()
@@ -93,11 +96,17 @@ func (app *App) Stop() {
 		cancel()
 	}
 	app.shutdownHTTPServers()
+	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := controllers.StopMediaLibraryNotifications(notificationCtx); err != nil {
+		helpers.AppLogger.Warnf("等待媒体库通知发送结束失败：%v", err)
+	}
+	cancelNotifications()
 	webhookCtx, cancelWebhook := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := emby.ShutdownWebhookWorker(webhookCtx); err != nil {
-		helpers.AppLogger.Warnf("等待 Emby 通知后台处理结束失败：%v", err)
+		helpers.AppLogger.Warnf("等待媒体库通知后台处理结束失败：%v", err)
 	}
 	cancelWebhook()
+	models.StopEmbyLibraryRefreshCoordinator()
 	// 关闭同步任务执行队列
 	synccron.PauseAllNewSyncQueues()
 	// 已交接账本使用独立生命周期；在日志关闭前有界取消和保存已知退出结果。

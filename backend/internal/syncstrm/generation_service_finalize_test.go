@@ -44,7 +44,7 @@ func standaloneFinalizationFixture(t *testing.T, account *models.Account, sp *mo
 		}
 		return syncer, err
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	oldCleanup := cleanupSourceAfterStrmSuccess
 	cleanupSourceAfterStrmSuccess = func(uint) error { return os.Remove(source) }
 	t.Cleanup(func() { cleanupSourceAfterStrmSuccess = oldCleanup })
@@ -64,7 +64,8 @@ func testStandaloneFinalizationFailure(t *testing.T, account *models.Account, sp
 	t.Helper()
 	task, service, source := standaloneFinalizationFixture(t, account, sp)
 	generated := false
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { generated = true; return nil }
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error { generated = true; return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	originalErr := errors.New("temporary finalization failure")
 	saveErr := errors.New("cannot save finalization failure")
 	faults := 0
@@ -159,7 +160,7 @@ func TestStandaloneFinalizationCancellation(t *testing.T) {
 	task, service, source := standaloneFinalizationFixture(t, account, sp)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { cancel(); return nil }
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error { cancel(); return nil }
 	if n, err := ProcessPendingStrmGenerationTasks(ctx, service, 5); n != 1 || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: n=%d err=%v", n, err)
 	}
@@ -190,7 +191,8 @@ func testStandaloneFinalizationChangedState(t *testing.T, account *models.Accoun
 	t.Helper()
 	task, service, source := standaloneFinalizationFixture(t, account, sp)
 	generated := false
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { generated = true; return nil }
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error { generated = true; return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	originalErr := errors.New("scope unavailable after task state changed")
 	if err := db.Db.Callback().Query().Before("gorm:query").Register("finalize:changed-state", func(tx *gorm.DB) {
 		if !generated || tx.Statement.Table != "sync_paths" {

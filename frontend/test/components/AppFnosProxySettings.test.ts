@@ -2,7 +2,7 @@ import axios, { AxiosError } from 'axios'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import AppFnosProxySettings from '@/views/settings/AppFnosProxySettings.vue'
+import AppFnosProxySettings from '@/components/media-library/FnosProxySettings.vue'
 import type { FnosProxySettings } from '@/api/fnosProxy'
 import type { APIResponse } from '@/api/types'
 import { httpKey } from '@/http/client'
@@ -108,7 +108,7 @@ describe('飞牛影视反代设置', () => {
     expect(write).toHaveBeenCalledTimes(1)
   })
 
-  it('保存后更新页头状态，只提交三个配置字段，保存按钮不附带说明面板', async () => {
+  it('保存后更新运行状态，只提交三个配置字段，保存按钮不附带说明面板', async () => {
     const current = settings()
     Object.assign(current.config, { id: 1, created_at: 123, updated_at: 123 })
     const saved = settings()
@@ -138,7 +138,7 @@ describe('飞牛影视反代设置', () => {
     expect(wrapper.find('.restart-notice').exists()).toBe(false)
     const actions = wrapper.get('.fnos-save-actions')
     expect(actions.element.nextElementSibling).toBe(feedback.element)
-    expect(wrapper.get('.qms-page-header__stats .runtime-status').text()).toBe('运行中')
+    expect(wrapper.get('.fnos-status .runtime-status').text()).toBe('运行中')
     expect(
       wrapper.get('.fnos-status').element.compareDocumentPosition(wrapper.get('form').element) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -328,5 +328,13 @@ describe('飞牛影视反代设置', () => {
     await flushPromises()
     expect(button(wrapper, '添加路径映射').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('input[aria-label="飞牛影视地址"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('表单校验完成前卸载页面，不再提交保存请求', async () => {
+    const { wrapper, write } = await mountSettings()
+    wrapper.get('form').element.dispatchEvent(new Event('submit', { cancelable: true }))
+    wrapper.unmount()
+    await flushPromises()
+    expect(write).not.toHaveBeenCalled()
   })
 })

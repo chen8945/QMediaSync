@@ -32,8 +32,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 )
@@ -196,7 +196,7 @@ func runEmbySyncPerformance(t *testing.T, setup func(*testing.T) (*gorm.DB, *emb
 				t.Fatal(err)
 			}
 			account.Get115Client().SetTransport(embyPerformanceTransport{target: cloudURL, base: transport})
-			config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: tc.deleteEnabled}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, EnableDeleteNetdisk: tc.deleteEnabled}
 			if err := conn.Create(&config).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -331,12 +331,12 @@ func setupEmbyPerformanceDatabase(t *testing.T, conn *gorm.DB, sqlDB *sql.DB, co
 	t.Helper()
 	pool := embyPerformancePool{DB: sqlDB, counter: counter}
 	conn.ConnPool, conn.Statement.ConnPool = pool, pool
-	previousDB, previousConfig := db.Db, models.GlobalEmbyConfig
-	db.Db, models.GlobalEmbyConfig = conn, nil
+	previousDB := db.Db
+	db.Db = conn
 	SetEmbySyncRunning(false)
 	t.Cleanup(func() {
 		SetEmbySyncRunning(false)
-		db.Db, models.GlobalEmbyConfig = previousDB, previousConfig
+		db.Db = previousDB
 		if err := sqlDB.Close(); err != nil {
 			t.Error(err)
 		}
@@ -588,7 +588,7 @@ func runEmbyIndexPerformance(t *testing.T, setup func(*testing.T) (*gorm.DB, *em
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() { helpers.AppLogger = previousLog })
 	conn, counter := setup(t)
-	config := models.EmbyConfig{EmbyUrl: "http://cleanup-fixture", EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1}
+	config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: "http://cleanup-fixture", EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1}
 	if err := conn.Create(&config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func runEmbyIndexPerformance(t *testing.T, setup func(*testing.T) (*gorm.DB, *em
 		if os.Getenv("QMS_PERF_ID_KIND") == "guid" {
 			legacyID = 0
 		}
-		items = append(items, models.EmbyMediaItem{BaseModel: models.BaseModel{ID: rowID}, ItemId: itemID, ItemIdInt: legacyID, ServerId: "cleanup-server", LibraryId: library, LastSeenSyncRun: run, SnapshotID: rowID})
+		items = append(items, models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, BaseModel: models.BaseModel{ID: rowID}, ItemId: itemID, ItemIdInt: legacyID, ServerId: "cleanup-server", LibraryId: library, LastSeenSyncRun: run, SnapshotID: rowID})
 		links = append(links, models.EmbyMediaSyncFile{BaseModel: models.BaseModel{ID: rowID}, EmbyItemId: itemID, SyncFileId: rowID, SyncPathId: 1, SnapshotID: rowID, SourceID: "source-" + strconv.Itoa(number)})
 		files = append(files, models.SyncFile{BaseModel: models.BaseModel{ID: rowID}, SyncPathId: 1, FileId: strconv.Itoa(1_000_000 + i), FileName: strconv.Itoa(number) + ".mkv", Path: "/movies", IsVideo: true})
 		evidence = append(evidence, models.EmbyItemEvidence{BaseModel: models.BaseModel{ID: rowID}, ServerID: "cleanup-server", ItemID: itemID, Generation: 1, ItemJSON: fmt.Sprintf(`{"item_id":%q}`, itemID), SourcesJSON: "[]", FilesJSON: "[]", SidecarsJSON: `{"sentinel":true}`})

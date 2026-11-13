@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +20,7 @@ import (
 )
 
 func TestPerformEmbyFullSyncAdvancesIncrementalCursorWithOverlap(t *testing.T) {
-	previousDB, previousLogger, previousConfig := db.Db, helpers.AppLogger, models.GlobalEmbyConfig
+	previousDB, previousLogger := db.Db, helpers.AppLogger
 	conn, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -32,11 +31,10 @@ func TestPerformEmbyFullSyncAdvancesIncrementalCursorWithOverlap(t *testing.T) {
 	}
 	db.Db = conn
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	models.GlobalEmbyConfig = nil
 	SetEmbySyncRunning(false)
 	t.Cleanup(func() {
 		SetEmbySyncRunning(false)
-		db.Db, helpers.AppLogger, models.GlobalEmbyConfig = previousDB, previousLogger, previousConfig
+		db.Db, helpers.AppLogger = previousDB, previousLogger
 		_ = sqlDB.Close()
 	})
 	setupSnapshotTestTables(t)
@@ -69,8 +67,8 @@ func TestPerformEmbyFullSyncAdvancesIncrementalCursorWithOverlap(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	config := models.EmbyConfig{
-		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1,
+	config := models.EmbyConfig{MediaServerType: models.MediaServerEmby,
+		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true,
 		LastSavedCursorAt: 100, LastIncrementalSyncAt: 50,
 	}
 	if err := conn.Create(&config).Error; err != nil {
@@ -149,46 +147,5 @@ func TestPerformEmbyFullSyncAdvancesIncrementalCursorWithOverlap(t *testing.T) {
 	want := time.Unix(scanStarted.Load()-600, 0).UTC().Format(time.RFC3339)
 	if cursor := <-queries; cursor != want {
 		t.Fatalf("后续增量未保留十分钟重叠：cursor=%q want=%q", cursor, want)
-	}
-}
-
-func TestStartParseEmbyMediaInfoRunsOneAtATime(t *testing.T) {
-	oldLogger, oldConfig := helpers.AppLogger, models.GlobalEmbyConfig
-	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-	// 首轮扫描阻塞在读取媒体库，模拟提取仍在后台运行。
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseServer := func() { releaseOnce.Do(func() { close(release) }) }
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		<-release
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	models.GlobalEmbyConfig = &models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "key"}
-	waitIdle := func() bool {
-		deadline := time.Now().Add(5 * time.Second)
-		for embyMediaInfoRunning.Load() == 1 {
-			if time.Now().After(deadline) {
-				return false
-			}
-			time.Sleep(time.Millisecond)
-		}
-		return true
-	}
-	t.Cleanup(func() {
-		releaseServer()
-		waitIdle()
-		server.Close()
-		helpers.AppLogger, models.GlobalEmbyConfig = oldLogger, oldConfig
-	})
-
-	if !StartParseEmbyMediaInfo() {
-		t.Fatal("首次提取应启动")
-	}
-	if StartParseEmbyMediaInfo() {
-		t.Fatal("提取运行期间不能再启动一轮")
-	}
-	releaseServer()
-	if !waitIdle() {
-		t.Fatal("后台提取结束后没有释放运行标记")
 	}
 }

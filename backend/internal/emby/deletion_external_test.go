@@ -211,7 +211,7 @@ func (f *externalDeletionFixture) snapshot(itemID, fileID string) models.EmbyIte
 func externalDeletionSnapshot(account models.Account, itemID, fileID string) models.EmbyItemSnapshot {
 	code := "external-" + fileID
 	return models.EmbyItemSnapshot{
-		Item:            models.EmbyMediaItem{ItemId: itemID, Type: "Movie", Path: path.Join("/emby-external", itemID+".strm"), PickCode: code},
+		Item:            models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: itemID, Type: "Movie", Path: path.Join("/emby-external", itemID+".strm"), PickCode: code},
 		Sources:         []models.EmbySnapshotSource{{ID: "source-" + itemID, ItemID: itemID, PickCode: code, Path: "http://qms/115/url/video.mkv?pickcode=" + code + "&userid=" + account.UserId}},
 		MembersComplete: true,
 	}
@@ -247,6 +247,9 @@ func TestPrepareEmbyDeletionSupplementsReusesCompleteManagedIdentity(t *testing.
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 		t.Fatal(err)
 	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+		t.Fatal(err)
+	}
 	before, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +283,9 @@ func TestPrepareEmbyDeletionSupplementsReusesExistingCompleteListing(t *testing.
 	record := f.receive(t)
 	var input models.EmbyDeletionInput
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	ctx, release, err := models.BeginEmbyDeletionExecution(t.Context())
@@ -334,6 +340,9 @@ func TestPrepareEmbyDeletionSupplementsKeepsUnboundOtherAccount(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
 		t.Fatal(err)
 	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
+		t.Fatal(err)
+	}
 	if len(input.Owners) != 1 || len(input.Owners[0].Files) != 1 {
 		t.Fatalf("夹具应仅绑定受管账号：%+v", input.Owners)
 	}
@@ -375,6 +384,9 @@ func TestEmbySourceIdentityCacheInvalidatesAfter115Write(t *testing.T) {
 	record := f.receive(t)
 	var input models.EmbyDeletionInput
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	ctx, release, err := models.BeginEmbyDeletionExecution(t.Context())
@@ -431,6 +443,9 @@ func TestPrepareEmbyDeletionSupplementsRepeatedSourceIDKeepsObjectBindings(t *te
 	record := f.receive(t)
 	var input models.EmbyDeletionInput
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	if len(input.Owners) != 1 || len(input.Owners[0].Files) != 1 {

@@ -37,7 +37,7 @@ func (app *App) StartDatabase() error {
 		if err := models.Migrate(); err != nil {
 			return err
 		}
-		if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
+		if err := models.ResetStaleMediaLibrarySyncRunOnStartup(); err != nil {
 			return err
 		}
 		return nil
@@ -63,7 +63,7 @@ func (app *App) StartDatabase() error {
 	if err := models.Migrate(); err != nil {
 		return err
 	}
-	if err := models.ResetStaleEmbySyncRunOnStartup(); err != nil {
+	if err := models.ResetStaleMediaLibrarySyncRunOnStartup(); err != nil {
 		return err
 	}
 	return nil
@@ -123,7 +123,6 @@ func initOthers() {
 	models.InitUQ()                      // 初始化上传队列
 	models.InitNotificationManager()     // 初始化通知管理器
 	controllers.StartListenTelegramBot() // 初始化 Telegram Bot 监听
-	models.GetEmbyConfig()               // 加载 Emby 配置
 	helpers.SubscribeSync(helpers.V115TokenInValidEvent, models.HandleV115TokenInvalid)
 	helpers.SubscribeSync(helpers.SaveOpenListTokenEvent, models.HandleOpenListTokenSaveSync)
 	models.FailAllRunningSyncTasks() // 将所有运行中的同步任务设置为失败状态
@@ -280,7 +279,7 @@ func initEnv() bool {
 	initOthers()
 	// 托盘和 HTTP 启动前完成恢复，失败时清理已启动的队列并交给主流程退出。
 	if err := emby.StartWebhookWorker(); err != nil {
-		helpers.AppLogger.Errorf("启动 Emby 通知后台处理失败：%v", err)
+		helpers.AppLogger.Errorf("启动媒体通知后台处理失败：%v", err)
 		QMSApp.Stop()
 		return false
 	}

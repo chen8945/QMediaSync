@@ -185,28 +185,28 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 		return ErrEmbyIdentityAmbiguous
 	}
 	conn := db.Db.WithContext(ctx)
-	var config EmbyConfig
-	if err := conn.First(&config).Error; err != nil {
+	config, configErr := readMediaLibraryConfigTx(conn, plan.Input.MediaServerType)
+	if err := configErr; err != nil {
 		return err
 	}
-	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
+	if !config.Enabled || config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
 		return ErrEmbyDeleteDisabled
 	}
 	if scope.Root.Reference.EmbyPath != "" {
-		if err := validateEmbySTRMReferenceTx(conn, &config, scope.Root.Reference); err != nil {
+		if err := validateEmbySTRMReferenceTx(conn, config, scope.Root.Reference); err != nil {
 			return err
 		}
 	} else {
-		currentReference := ResolveEmbySTRMReference(&config, scope.LocalPath)
+		currentReference := ResolveEmbySTRMReference(config, scope.LocalPath)
 		if currentReference.LocalRoot != "" || currentReference.Reason != "" {
 			return ErrEmbySnapshotStale
 		}
 	}
 	var index EmbyIndexState
-	if err := conn.First(&index, 1).Error; err != nil {
+	if err := conn.Where("media_server_type = ?", plan.Input.MediaServerType).First(&index).Error; err != nil {
 		return err
 	}
-	if plan.Input.ServerID == "" || index.ServerID != plan.Input.ServerID || index.ServerConfigKey != plan.Input.ServerConfigKey || EmbyServerConfigIdentity(&config) != plan.Input.ServerConfigKey {
+	if plan.Input.ServerID == "" || index.ServerID != plan.Input.ServerID || index.ServerConfigKey != plan.Input.ServerConfigKey || EmbyServerConfigIdentity(config) != plan.Input.ServerConfigKey {
 		return ErrEmbySnapshotStale
 	}
 	var account Account
@@ -250,7 +250,7 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 		}
 		owner := plan.Input.Owners[ownerIndex]
 		var state EmbyItemState
-		if err := conn.Where("server_id = ? AND item_id = ?", plan.Input.ServerID, ref.ItemID).First(&state).Error; err != nil {
+		if err := conn.Where("media_server_type = ? AND server_id = ? AND item_id = ?", plan.Input.MediaServerType, plan.Input.ServerID, ref.ItemID).First(&state).Error; err != nil {
 			return err
 		}
 		if state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation {
@@ -260,7 +260,7 @@ func validateEmbyDirectoryTarget(ctx context.Context, plan EmbyDeletionPlan, tar
 		if err := conn.First(&evidence, ref.SnapshotID).Error; err != nil {
 			return err
 		}
-		if evidence != owner.Evidence || evidence.ServerID != plan.Input.ServerID || evidence.ServerConfigKey != plan.Input.ServerConfigKey || evidence.ItemID != ref.ItemID || evidence.Generation != ref.Generation || embyJSON(owner.Files) != evidence.FilesJSON {
+		if !sameEmbyFrozenEvidence(evidence, owner.Evidence, plan.Input.MediaServerType) || evidence.ServerID != plan.Input.ServerID || evidence.ServerConfigKey != plan.Input.ServerConfigKey || evidence.ItemID != ref.ItemID || evidence.Generation != ref.Generation || embyJSON(owner.Files) != evidence.FilesJSON {
 			return ErrEmbyIdentityAmbiguous
 		}
 		metadata, err := DecodeEmbyMetadata(evidence.SidecarsJSON)
@@ -319,9 +319,10 @@ func embyCheckDirectoryRetainers(ctx context.Context, input EmbyDeletionInput, t
 	query := db.Db.WithContext(ctx).Table("sync_files AS f").
 		Select("f.*, e.item_id AS user_item_id, e.server_id AS user_server_id, e.server_config_key AS user_config_key, r.snapshot_id AS user_snapshot_id, e.generation AS user_generation, s.snapshot_id AS current_snapshot_id, s.generation AS current_generation, s.deleted AS owner_deleted, i.snapshot_id AS live_snapshot_id, i.generation AS live_generation, i.server_id AS live_server_id").
 		Joins("JOIN emby_media_sync_files AS r ON r.sync_file_id = f.id").
-		Joins("LEFT JOIN emby_media_items AS i ON i.item_id = r.emby_item_id").
-		Joins("LEFT JOIN emby_item_evidences AS e ON e.id = r.snapshot_id").
-		Joins("LEFT JOIN emby_item_states AS s ON s.server_id = e.server_id AND s.item_id = e.item_id")
+		Where("r.media_server_type = ?", input.MediaServerType).
+		Joins("LEFT JOIN emby_media_items AS i ON i.item_id = r.emby_item_id AND i.media_server_type = r.media_server_type").
+		Joins("LEFT JOIN emby_item_evidences AS e ON e.id = r.snapshot_id AND e.media_server_type = r.media_server_type").
+		Joins("LEFT JOIN emby_item_states AS s ON s.server_id = e.server_id AND s.item_id = e.item_id AND s.media_server_type = e.media_server_type")
 	if err := embyDirectorySubtreeQuery(query, *target.Directory).Scan(&users).Error; err != nil {
 		return err
 	}
@@ -335,7 +336,7 @@ func embyCheckDirectoryRetainers(ctx context.Context, input EmbyDeletionInput, t
 		}
 		// 仅被标记删除的同代际旧关联可以借用持久结果；新的使用者始终保留。
 		if !current || !user.OwnerDeleted {
-			return errors.New("媒体目录仍被其他 Emby 条目使用")
+			return errors.New("媒体目录仍被其他媒体条目使用")
 		}
 		file := EmbyFrozenFile{SourceType: user.SourceType, AccountID: user.AccountId, AccountIdentity: target.File.AccountIdentity, FileID: user.FileId, PickCode: sanitizeEmbyEvidencePath(user.PickCode), Path: user.Path, FileName: user.FileName, SHA1: user.Sha1, OpenlistObjectID: user.OpenlistObjectId, OpenlistSHA1: user.OpenlistSHA1, OpenlistMD5: user.OpenlistMD5, FileSize: user.FileSize, MTime: user.MTime}
 		key := EmbyDeletionFileKey(file)
@@ -351,6 +352,7 @@ func embyCheckDirectoryRetainers(ctx context.Context, input EmbyDeletionInput, t
 		var batch []string
 		end := min(start+500, len(pendingKeys))
 		if err := db.Db.WithContext(ctx).Model(&EmbyWebhookTarget{}).
+			Where("record_id IN (?)", db.Db.Model(&EmbyWebhookRecord{}).Select("id").Where("media_server_type = ?", input.MediaServerType)).
 			Where("server_id = ? AND server_config_key = ? AND target_key IN ? AND outcome IN ?", input.ServerID, input.ServerConfigKey, pendingKeys[start:end], []EmbyDeletionOutcome{EmbyDeletionDeleted, EmbyDeletionAlreadyAbsent}).
 			Distinct("target_key").Pluck("target_key", &batch).Error; err != nil {
 			return err
@@ -505,6 +507,7 @@ func embyVerifyCompletedDirectoryMembers(ctx context.Context, input EmbyDeletion
 		end := min(start+500, len(keys))
 		var successes []string
 		if err := db.Db.WithContext(ctx).Model(&EmbyWebhookTarget{}).
+			Where("record_id IN (?)", db.Db.Model(&EmbyWebhookRecord{}).Select("id").Where("media_server_type = ?", input.MediaServerType)).
 			Where("server_id = ? AND server_config_key = ? AND target_key IN ? AND outcome IN ?", input.ServerID, input.ServerConfigKey, keys[start:end], []EmbyDeletionOutcome{EmbyDeletionDeleted, EmbyDeletionAlreadyAbsent}).
 			Distinct("target_key").Pluck("target_key", &successes).Error; err != nil {
 			return err
@@ -593,7 +596,7 @@ func validateEmbyScopedDeletionTarget(ctx context.Context, plan EmbyDeletionPlan
 		return ErrEmbyIdentityAmbiguous
 	}
 	var users []EmbyMediaItem
-	if err := db.Db.WithContext(ctx).Where("server_id = ? AND season_id IN ?", plan.Input.ServerID, seasonIDs).Find(&users).Error; err != nil {
+	if err := db.Db.WithContext(ctx).Where("media_server_type = ? AND server_id = ? AND season_id IN ?", plan.Input.MediaServerType, plan.Input.ServerID, seasonIDs).Find(&users).Error; err != nil {
 		return err
 	}
 	for _, user := range users {

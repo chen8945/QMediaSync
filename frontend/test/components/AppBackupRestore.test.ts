@@ -155,7 +155,7 @@ describe('恢复结果与重启服务交互', () => {
     expect(wrapper.text()).toContain('正在检查服务状态')
     expect(button(wrapper, '正在重启服务')).toBeUndefined()
     await vi.advanceTimersByTimeAsync(3000)
-    expect(wrapper.text()).toContain('请先重启 QMS 服务后再检查')
+    expect(wrapper.text()).toContain('请先重启 QMediaSync 服务后再检查')
     expect(router.currentRoute.value.path).toBe('/')
     expect(store.showProgressDialog).toBe(true)
     expect(reload).not.toHaveBeenCalled()

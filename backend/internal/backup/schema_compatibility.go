@@ -93,6 +93,12 @@ func supportsLogicalSchemaVersion(version int) bool {
 // logicalTablesForSchemaVersion 只回退明确新增的表和列，其他清单、行及文件校验保持原样。
 func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logicalTable {
 	if version < 71 {
+		tables = slices.DeleteFunc(tables, func(table logicalTable) bool { return table.Name == "jellyfin_config" })
+		for i := range tables {
+			tables[i].Columns = slices.DeleteFunc(tables[i].Columns, func(column logicalColumn) bool {
+				return slices.Contains(mediaLibraryAddedColumns(tables[i].Name), column.Name)
+			})
+		}
 		for i := range tables {
 			if tables[i].Name == "emby_media_sync_files" {
 				for j := range tables[i].Columns {
@@ -232,6 +238,64 @@ func adaptEmbySyncRestorePlan(database *gorm.DB, plan *restorePlan) error {
 				plan.tables = append(plan.tables, entry)
 			}
 		}
+	}
+	return nil
+}
+
+// mediaLibraryAddedColumns 是 70→71 的新增列，旧清单只能退回这些已知差异。
+func mediaLibraryAddedColumns(table string) []string {
+	switch table {
+	case "emby_config":
+		return []string{"enabled"}
+	case "db_download_tasks":
+		return []string{"media_server_id"}
+	case "emby_library_refresh_tasks":
+		return []string{"media_server_type", "server_id"}
+	case "emby_media_items", "emby_media_sync_files", "emby_libraries", "emby_library_sync_paths", "emby_index_states", "emby_item_states", "emby_item_evidences", "emby_item_memberships", "emby_observed_evidence_indices", "emby_webhook_records":
+		return []string{"media_server_type"}
+	}
+	return nil
+}
+
+// adaptMediaLibraryRestorePlan 只为受支持旧包补默认归属，不改冻结 JSON 或摘要。
+func adaptMediaLibraryRestorePlan(database *gorm.DB, plan *restorePlan) error {
+	hasEmbyConfig := false
+	for i := range plan.tables {
+		table := &plan.tables[i]
+		if table.schema.Table == "emby_config" {
+			hasEmbyConfig = true
+		}
+		readRows, name := table.readRows, table.schema.Table
+		if readRows == nil {
+			continue
+		}
+		table.readRows = func(consume func(map[string]any) error) error {
+			return readRows(func(row map[string]any) error {
+				if name == "emby_config" {
+					row["enabled"], row["enable_media_notification"] = true, int64(1)
+				}
+				if slices.Contains(mediaLibraryAddedColumns(name), "media_server_type") {
+					row["media_server_type"] = string(models.MediaServerEmby)
+				}
+				return consume(row)
+			})
+		}
+	}
+	// 部分旧恢复只有实际恢复 Emby 配置时才初始化新增端，避免修改无关目标配置。
+	for _, model := range models.AllTables {
+		if !hasEmbyConfig || models.GetTableName(model) != "jellyfin_config" {
+			continue
+		}
+		entry, err := newRestoreTable(database, model)
+		if err != nil {
+			return err
+		}
+		entry.rowCount = 1
+		entry.readRows = func(consume func(map[string]any) error) error {
+			return consume(map[string]any{"id": int64(1), "enabled": false, "sync_enabled": int64(0), "enable_media_notification": int64(0), "sync_cron": "0 * * * *", "enable_auth": int64(1), "enable_daily_first_full_sync": int64(1), "sync_mode": models.EmbySyncModeIdle, "sync_all_libraries": int64(1), "selected_libraries": "[]", "path_mappings_json": "[]"})
+		}
+		plan.tables = append(plan.tables, entry)
+		break
 	}
 	return nil
 }

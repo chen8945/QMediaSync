@@ -43,7 +43,7 @@ func TestEmbyLocalDirectoryColdEvidenceRepeatsWithoutHTTP(t *testing.T) {
 	snapshot, roles := localEpisodeSnapshot(file)
 	for range 2 {
 		collector := EmbyDirectoryEvidenceCollector{}
-		if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+		if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 			t.Fatal(err)
 		}
 		if len(snapshot.DirectoryScopes) != 2 {
@@ -70,7 +70,7 @@ func TestEmbyLocalDirectoryUsesOnlyMatchingCurrentEvidence(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			token, file, collector := setupEmbyDirectoryObservation(t)
 			snapshot, roles := localEpisodeSnapshot(file)
-			if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
@@ -83,7 +83,7 @@ func TestEmbyLocalDirectoryUsesOnlyMatchingCurrentEvidence(t *testing.T) {
 			}
 			switch scenario {
 			case "sync_scope_changed", "connection_changed":
-				var config EmbyConfig
+				config := EmbyConfig{MediaServerType: MediaServerEmby}
 				if err := db.Db.First(&config).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -120,7 +120,7 @@ func TestEmbyLocalDirectoryUsesOnlyMatchingCurrentEvidence(t *testing.T) {
 				}
 			}
 			collector = EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			want := 0
@@ -146,7 +146,7 @@ func TestEmbyLocalDirectoryTransactionRejectsPreparedDirectoryChanges(t *testing
 		t.Run(change, func(t *testing.T) {
 			token, file, collector := setupEmbyDirectoryObservation(t)
 			snapshot, roles := localEpisodeSnapshot(file)
-			if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			switch change {
@@ -196,7 +196,7 @@ func TestEmbyLocalDirectoryTransactionRejectsPreparedDirectoryChanges(t *testing
 func TestEmbyLocalDirectoryReadFailurePreservesEvidence(t *testing.T) {
 	token, file, collector := setupEmbyDirectoryObservation(t)
 	snapshot, roles := localEpisodeSnapshot(file)
-	if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
@@ -217,7 +217,7 @@ func TestEmbyLocalDirectoryReadFailurePreservesEvidence(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Db.Callback().Query().Remove(callback) })
 	collector = EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &snapshot, roles); !errors.Is(err, injected) {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); !errors.Is(err, injected) {
 		t.Fatalf("查询错误被吞：%v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestEmbyLocalDirectoryReadFailurePreservesEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector = EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
@@ -271,7 +271,7 @@ func TestEmbySeasonPosterQueryUsesExactDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 		t.Fatal(err)
 	}
 	const callback = "test:scoped-poster-query"
@@ -314,7 +314,7 @@ func TestEmbyLocalDirectoryKeepsRolesWithoutFileAndUsesExplicitMapping(t *testin
 			mapped := mode != "unmapped"
 			_, file, _ := setupEmbyDirectoryObservation(t)
 			setupEmbySourceSettings(t, "https://qms.test")
-			var config EmbyConfig
+			config := EmbyConfig{MediaServerType: MediaServerEmby}
 			if err := db.Db.First(&config).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -351,7 +351,7 @@ func TestEmbyLocalDirectoryKeepsRolesWithoutFileAndUsesExplicitMapping(t *testin
 				roles[1].LocalPath = "/external/Show/Unknown"
 			}
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			if len(snapshot.MediaDirectories) != 2 || len(snapshot.cleanupFiles) != 0 {
@@ -403,7 +403,7 @@ func TestEmbyLocalDirectorySameCodeDifferentAccountKeepsUnboundScope(t *testing.
 	if err := db.Db.Save(&file).Error; err != nil {
 		t.Fatal(err)
 	}
-	var config EmbyConfig
+	config := EmbyConfig{MediaServerType: MediaServerEmby}
 	if err := db.Db.First(&config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestEmbyLocalDirectorySameCodeDifferentAccountKeepsUnboundScope(t *testing.
 		roles[i].LocalPath = strings.Replace(roles[i].LocalPath, "/strm/movies", "/external", 1)
 	}
 	collector := EmbyDirectoryEvidenceCollector{}
-	if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshot.DirectoryScopes) != 2 {
@@ -533,7 +533,7 @@ func TestEmbyLocalBaiduDirectoryReusesHistoricalFSIDsWithoutHTTP(t *testing.T) {
 			}
 			reads := forbidEmbyObservationHTTP(t)
 			collector := EmbyDirectoryEvidenceCollector{}
-			if err := collector.Enrich(t.Context(), &snapshot, roles); err != nil {
+			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}
 			want := 0

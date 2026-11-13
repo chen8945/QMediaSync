@@ -16,8 +16,8 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 )
@@ -29,6 +29,11 @@ func TestEmbyCleanupAncestorsBoundedReuseAndPhysicalRoots(t *testing.T) {
 	t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
 	reads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		reads++
 		fmt.Fprint(w, `[{"Id":"200","Type":"Series","Path":"/media/Show","IsFolder":true},{"Id":"201","Type":"Season","Path":"/media/Show/Specials","IndexNumber":0,"IsFolder":true}]`)
 	}))
@@ -36,8 +41,8 @@ func TestEmbyCleanupAncestorsBoundedReuseAndPhysicalRoots(t *testing.T) {
 	client := embyclientrestgo.NewClient(server.URL, "test")
 	collector := embyCleanupEvidenceCollector{}
 	snapshots := []models.EmbyItemSnapshot{
-		{Item: models.EmbyMediaItem{ItemId: "101", Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: "/media/Show/Specials/one.strm"}},
-		{Item: models.EmbyMediaItem{ItemId: "102", Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: "/media/Show/Specials/two.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: "/media/Show/Specials/one.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "102", Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: "/media/Show/Specials/two.strm"}},
 	}
 	if err := collector.enrich(t.Context(), client, snapshots); err != nil || reads != 1 {
 		t.Fatalf("同物理季中的集没有复用祖先读取：reads=%d err=%v", reads, err)
@@ -67,6 +72,11 @@ func TestEmbyCleanupAncestorFailureDoesNotRepeatPerEpisode(t *testing.T) {
 	t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
 	reads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		reads++
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
@@ -75,7 +85,7 @@ func TestEmbyCleanupAncestorFailureDoesNotRepeatPerEpisode(t *testing.T) {
 	client := embyclientrestgo.NewClient(server.URL, "test")
 	var snapshots []models.EmbyItemSnapshot
 	for i := 0; i < 20; i++ {
-		snapshots = append(snapshots, models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: fmt.Sprint(i + 100), Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: fmt.Sprintf("/media/Show/Specials/%d.strm", i)}})
+		snapshots = append(snapshots, models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: fmt.Sprint(i + 100), Type: "Episode", ParentId: "201", SeriesId: "200", SeasonId: "201", Path: fmt.Sprintf("/media/Show/Specials/%d.strm", i)}})
 	}
 	if err := collector.enrich(t.Context(), client, snapshots); err != nil || reads != 1 {
 		t.Fatalf("失败祖先读取按集重复：reads=%d err=%v", reads, err)
@@ -93,7 +103,12 @@ func TestEmbyCleanupAncestorWithoutParentDoesNotShare(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
 	var reads atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		reads.Add(1)
 		fmt.Fprint(w, `[{"Id":"200","Type":"Series","Path":"/media/Show","IsFolder":true},{"Id":"201","Type":"Season","Path":"/media/Show/Season 1","IsFolder":true}]`)
 	}))
@@ -102,7 +117,7 @@ func TestEmbyCleanupAncestorWithoutParentDoesNotShare(t *testing.T) {
 	shared := &embyAncestorCache{}
 	for _, id := range []string{"101", "102"} {
 		collector := embyCleanupEvidenceCollector{ancestors: shared}
-		snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{
+		snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby,
 			ItemId: id, Type: "Episode", SeriesId: "200", SeasonId: "201", Path: "/media/Show/Season 1/" + id + ".strm",
 		}}}
 		if err := collector.enrich(t.Context(), client, snapshots); err != nil {
@@ -122,6 +137,11 @@ func TestEmbyCleanupAncestorCancellationReachesHTTPAndAllowsRetry(t *testing.T) 
 	var reads atomic.Int32
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		if reads.Add(1) == 1 {
 			close(started)
 			select {
@@ -139,7 +159,7 @@ func TestEmbyCleanupAncestorCancellationReachesHTTPAndAllowsRetry(t *testing.T) 
 	}()
 	client := embyclientrestgo.NewClient(server.URL, "test")
 	collector := embyCleanupEvidenceCollector{}
-	snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Work/movie.strm"}}}
+	snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Work/movie.strm"}}}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -175,6 +195,11 @@ func TestEmbyMovieAncestorEvidenceBindsPerVersionAndReusesFolder(t *testing.T) {
 	t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
 	reads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		reads++
 		fmt.Fprint(w, `[{"Id":"3","Type":"CollectionFolder","IsFolder":true},{"Id":"7","Type":"Folder","Path":"/media/Movies/Work","IsFolder":true}]`)
 	}))
@@ -184,8 +209,8 @@ func TestEmbyMovieAncestorEvidenceBindsPerVersionAndReusesFolder(t *testing.T) {
 	collector := embyCleanupEvidenceCollector{ancestors: shared}
 	other := embyCleanupEvidenceCollector{ancestors: shared}
 	snapshots := []models.EmbyItemSnapshot{
-		{Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}},
-		{Item: models.EmbyMediaItem{ItemId: "102", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/two.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "102", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/two.strm"}},
 	}
 	if err := collector.enrich(t.Context(), client, snapshots[:1]); err != nil {
 		t.Fatal(err)
@@ -224,10 +249,16 @@ func TestEmbyMovieAncestorEvidenceFiltering(t *testing.T) {
 			db.Db = nil
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 			t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, body) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/System/Ping" {
+					fmt.Fprint(w, "Emby Server")
+					return
+				}
+				fmt.Fprint(w, body)
+			}))
 			defer server.Close()
 			collector := embyCleanupEvidenceCollector{}
-			snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}}}
+			snapshots := []models.EmbyItemSnapshot{{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}}}
 			if err := collector.enrich(t.Context(), embyclientrestgo.NewClient(server.URL, "test"), snapshots); err != nil {
 				t.Fatal(err)
 			}
@@ -248,7 +279,12 @@ func TestEmbyMovieAncestorFailureDoesNotRepeatPerFolder(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	t.Cleanup(func() { db.Db, helpers.AppLogger = previousDB, previousLogger })
 	reads := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		reads++
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
@@ -256,9 +292,9 @@ func TestEmbyMovieAncestorFailureDoesNotRepeatPerFolder(t *testing.T) {
 	collector := embyCleanupEvidenceCollector{}
 	client := embyclientrestgo.NewClient(server.URL, "test")
 	snapshots := []models.EmbyItemSnapshot{
-		{Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}},
-		{Item: models.EmbyMediaItem{ItemId: "102", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/two.strm"}},
-		{Item: models.EmbyMediaItem{ItemId: "103", Type: "Movie", ParentId: "8", Path: "/media/Movies/Other/three.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/one.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "102", Type: "Movie", ParentId: "7", Path: "/media/Movies/Work/two.strm"}},
+		{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "103", Type: "Movie", ParentId: "8", Path: "/media/Movies/Other/three.strm"}},
 	}
 	if err := collector.enrich(t.Context(), client, snapshots); err != nil || reads != 2 {
 		t.Fatalf("失败祖先读取按同父目录重复：reads=%d err=%v", reads, err)
@@ -275,7 +311,7 @@ func TestEmbySnapshotDirectoriesPreservesTVRoles(t *testing.T) {
 		{ItemID: "201", MediaType: "Series", LocalPath: "/media/Show"},
 		{ItemID: "202", MediaType: "Season", LocalPath: "/media/Show/Season 1"},
 	}
-	item := models.EmbyMediaItem{ItemId: "9001", Type: "Episode", SeriesId: "201", SeasonId: "202"}
+	item := models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9001", Type: "Episode", SeriesId: "201", SeasonId: "202"}
 	directories := embySnapshotDirectories(item, observed)
 	if len(directories) != 2 || directories[0].ItemID != "201" || directories[1].ItemID != "202" ||
 		directories[0].MediaType != "Series" || directories[1].MediaType != "Season" {
@@ -301,7 +337,7 @@ func TestEmbyAncestorDirectoriesPreservesWindowsAndUNCRoles(t *testing.T) {
 		{"native newline filename", "Movie", "/media/Film/movie\npart.strm", "/media/Film", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			item := models.EmbyMediaItem{ItemId: "101", Type: "Movie", ParentId: "7", Path: tc.itemPath}
+			item := models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", ParentId: "7", Path: tc.itemPath}
 			ancestorType := "Folder"
 			if tc.mediaType != "Movie" {
 				item.Type, item.SeriesId, item.SeasonId = "Episode", "7", "7"
@@ -362,6 +398,11 @@ func TestEmbyWebhookEarlyObservationUsesLocalDirectoryWithoutCloudHTTP(t *testin
 		http.Error(w, "unexpected cloud access", http.StatusBadRequest)
 	}))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Ping" {
+			fmt.Fprint(w, "Emby Server")
+			return
+		}
+
 		switch r.URL.Path {
 		case "/emby/System/Info/Public":
 			fmt.Fprint(w, `{"Id":"server-a"}`)

@@ -358,9 +358,6 @@ func TestBackgroundServiceStopHasBoundedWait(t *testing.T) {
 
 func TestBackgroundLoggerWaitsForExistingDownstreamCallback(t *testing.T) {
 	s := newBackgroundTestSync(t)
-	oldEmby := models.GlobalEmbyConfig
-	models.GlobalEmbyConfig = nil
-	t.Cleanup(func() { models.GlobalEmbyConfig = oldEmby })
 	s.NewStrm = 1
 	if err := s.completeSync(); err != nil {
 		t.Fatal(err)

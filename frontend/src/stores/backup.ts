@@ -113,7 +113,7 @@ export const useBackupStore = defineStore('backup', () => {
           stopProgressPolling()
           restartPhase.value = 'idle'
           restartError.value = manuallyChecking
-            ? '服务仍处于恢复维护状态，请先重启 QMS 服务后再检查。'
+            ? '服务仍处于恢复维护状态，请先重启 QMediaSync 服务后再检查。'
             : '重启尚未执行，请重试；若持续失败，请手动重启服务。'
         } else {
           restartError.value = ''

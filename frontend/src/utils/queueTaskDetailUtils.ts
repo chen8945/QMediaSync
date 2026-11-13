@@ -98,7 +98,7 @@ export const getDownloadQueueLocationSummary = (
   if (task.source_type === 'local') {
     return targetPath ? `下载至 ${targetPath}` : ''
   }
-  if (task.source_type === 'emby_media') {
+  if (task.source_type === 'emby_media' || task.source_type === 'jellyfin_media') {
     return ''
   }
 
@@ -121,7 +121,7 @@ export const getUploadQueueLocationSummary = (task: UploadQueueLocationSummaryIn
     }
     return sourcePath || targetPath
   }
-  if (task.source_type === 'emby_media') {
+  if (task.source_type === 'emby_media' || task.source_type === 'jellyfin_media') {
     return ''
   }
 
@@ -353,7 +353,10 @@ export const buildDownloadTaskDetailGroups = (
   }
 
   const locationFields: QueueTaskDetailField[] = []
-  const hasRemoteIdentity = task.source_type !== 'local' && task.source_type !== 'emby_media'
+  const hasRemoteIdentity =
+    task.source_type !== 'local' &&
+    task.source_type !== 'emby_media' &&
+    task.source_type !== 'jellyfin_media'
   if (hasRemoteIdentity) {
     if (hasText(task.remote_file_id)) {
       locationFields.push({
@@ -503,7 +506,10 @@ export const buildUploadTaskDetailGroups = (
       fullWidth: true,
     })
   }
-  const hasRemoteIdentity = task.source_type !== 'local' && task.source_type !== 'emby_media'
+  const hasRemoteIdentity =
+    task.source_type !== 'local' &&
+    task.source_type !== 'emby_media' &&
+    task.source_type !== 'jellyfin_media'
   if (hasRemoteIdentity && hasText(task.remote_full_path)) {
     locationFields.push({
       key: 'remote-full-path',

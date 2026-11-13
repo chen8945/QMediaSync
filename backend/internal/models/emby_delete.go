@@ -18,9 +18,9 @@ import (
 
 var (
 	ErrEmbyRemoteFileAbsent   = errors.New("远端已确认不存在原文件")
-	ErrEmbyDeleteUnverified   = errors.New("Emby 删除等待身份或原条目核验")
-	ErrEmbyDeleteUnsupported  = errors.New("该来源不支持 Emby 联动删除")
-	ErrEmbyDeleteDisabled     = errors.New("Emby 联动删除未获授权")
+	ErrEmbyDeleteUnverified   = errors.New("媒体服务器删除等待身份或原条目核验")
+	ErrEmbyDeleteUnsupported  = errors.New("该来源不支持媒体服务器联动删除")
+	ErrEmbyDeleteDisabled     = errors.New("媒体服务器联动删除未获授权")
 	ErrEmbyDeletionReappeared = errors.New("该文件此前已确认删除，同一位置又出现同名文件；为防误删已保留，等待再次核验")
 )
 
@@ -61,6 +61,7 @@ type EmbyDeletionOwner struct {
 
 // EmbyDeletionInput 必须在收件事务中冻结，不能在重试时重新按路径建立身份。
 type EmbyDeletionInput struct {
+	MediaServerType MediaServerType      `json:"-"`
 	CleanupPolicy   EmbyCleanupPolicy    `json:"cleanup_policy,omitzero"`
 	DirectoryScopes []EmbyDirectoryScope `json:"directory_scopes,omitempty"`
 	ScopedFiles     []EmbyScopedFile     `json:"scoped_files,omitempty"`
@@ -124,13 +125,13 @@ type EmbyDeletionResult struct {
 type EmbyDeletionVerifier func(context.Context, EmbyDeletionInput, EmbyDeletionTarget) error
 
 // CaptureEmbyDeletionTx 与收件和 RegisterEmbyDeletionTx 使用同一事务；这里只冻结证据，不调用远端。
-func CaptureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string) (EmbyDeletionInput, error) {
-	return captureEmbyDeletionTx(tx, serverID, itemID, itemType, nil)
+func CaptureEmbyDeletionTx(tx *gorm.DB, kind MediaServerType, serverID, itemID, itemType string) (EmbyDeletionInput, error) {
+	return captureEmbyDeletionTx(tx, kind, serverID, itemID, itemType, nil)
 }
 
-func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, excluded map[string]bool) (EmbyDeletionInput, error) {
-	input := EmbyDeletionInput{ServerID: serverID, ItemID: itemID, ItemType: itemType, CleanupPolicy: CurrentEmbyCleanupPolicy()}
-	if _, err := parseEmbyItemID(itemID); err != nil {
+func captureEmbyDeletionTx(tx *gorm.DB, kind MediaServerType, serverID, itemID, itemType string, excluded map[string]bool) (EmbyDeletionInput, error) {
+	input := EmbyDeletionInput{MediaServerType: kind, ServerID: serverID, ItemID: itemID, ItemType: itemType, CleanupPolicy: CurrentEmbyCleanupPolicy()}
+	if _, err := parseEmbySnapshotItemID(itemID); err != nil {
 		return input, err
 	}
 	switch itemType {
@@ -138,21 +139,21 @@ func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, exclu
 	default:
 		return input, ErrEmbyDeleteUnsupported
 	}
-	state, err := lockEmbyIndexState(tx)
+	state, err := lockEmbyIndexState(tx, kind)
 	if err != nil {
 		return input, err
 	}
-	var config EmbyConfig
-	if err := tx.First(&config).Error; err != nil {
+	config, err := readMediaLibraryConfigTx(tx, kind)
+	if err != nil {
 		return input, err
 	}
-	input.ServerConfigKey = EmbyServerConfigIdentity(&config)
-	input.Authorized = config.SyncEnabled == 1 && config.EnableDeleteNetdisk == 1
+	input.ServerConfigKey = EmbyServerConfigIdentity(config)
+	input.Authorized = config.Enabled && config.SyncEnabled == 1 && config.EnableDeleteNetdisk == 1
 	if serverID == "" || serverID != state.ServerID || state.ServerConfigKey != input.ServerConfigKey {
 		return input, ErrEmbyIdentityAmbiguous
 	}
 	// 当前索引可能已由完整扫描清理；保留的 state→evidence 仍是唯一可用的历史身份。
-	evidence, err := loadEmbyScopeEvidenceTx(tx, serverID, input.ServerConfigKey, itemID, itemType, excluded)
+	evidence, err := loadEmbyScopeEvidenceTx(tx, kind, serverID, input.ServerConfigKey, itemID, itemType, excluded)
 	if err != nil {
 		return input, err
 	}
@@ -165,11 +166,12 @@ func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, exclu
 		}
 		owner := EmbyDeletionOwner{Evidence: entry}
 		if err := json.Unmarshal([]byte(entry.ItemJSON), &owner.Item); err != nil {
-			return input, fmt.Errorf("解析 Emby 历史条目失败，ItemId %s: %w", entry.ItemID, err)
+			return input, fmt.Errorf("解析媒体历史条目失败，ItemId %s: %w", entry.ItemID, err)
 		}
 		if err := json.Unmarshal([]byte(entry.FilesJSON), &owner.Files); err != nil {
-			return input, fmt.Errorf("解析 Emby 历史文件 %s: %w", entry.ItemID, err)
+			return input, fmt.Errorf("解析媒体历史文件 %s: %w", entry.ItemID, err)
 		}
+		owner.Item.MediaServerType = kind
 		owner.Item.SnapshotID = entry.ID
 		match := owner.Item.ItemId == itemID && owner.Item.Type == itemType
 		if itemType == "Season" {
@@ -193,7 +195,7 @@ func captureEmbyDeletionTx(tx *gorm.DB, serverID, itemID, itemType string, exclu
 		if !selected[owner.Item.ItemId] {
 			continue
 		}
-		if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", owner.Item.ItemId, owner.Evidence.ID).Find(&owner.Links).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND emby_item_id = ? AND snapshot_id = ?", kind, owner.Item.ItemId, owner.Evidence.ID).Find(&owner.Links).Error; err != nil {
 			return input, err
 		}
 		for i := range owner.Links {
@@ -805,7 +807,8 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 	// 从物理文件查所有当前使用者，覆盖重叠同步目录、其他版本/季和共享目标。
 	var users []EmbyMediaItem
 	if err := conn.Table("emby_media_items AS i").Select("DISTINCT i.*").
-		Joins("JOIN emby_media_sync_files AS r ON r.emby_item_id = i.item_id").
+		Joins("JOIN emby_media_sync_files AS r ON r.emby_item_id = i.item_id AND r.media_server_type = i.media_server_type").
+		Where("i.media_server_type = ?", plan.Input.MediaServerType).
 		Joins("JOIN sync_files AS f ON f.id = r.sync_file_id").
 		Where("f.source_type = ? AND f.account_id = ? AND (f.file_id = ? OR (f.path = ? AND f.file_name = ?))", file.SourceType, file.AccountID, file.FileID, file.Path, file.FileName).
 		Find(&users).Error; err != nil {
@@ -813,7 +816,7 @@ func validateEmbyDeletionTarget(ctx context.Context, plan EmbyDeletionPlan, targ
 	}
 	for _, user := range users {
 		if user.ServerId != plan.Input.ServerID || !slices.Contains(target.Owners, EmbyDeletionOwnerRef{ItemID: user.ItemId, SnapshotID: user.SnapshotID, Generation: user.Generation}) {
-			return fmt.Errorf("%w: 文件仍被其他 Emby 条目使用", ErrEmbyDeleteUnverified)
+			return fmt.Errorf("%w: 文件仍被其他媒体条目使用", ErrEmbyDeleteUnverified)
 		}
 	}
 	return nil
@@ -826,18 +829,18 @@ func FinalizeEmbyDeletionPlan(ctx context.Context, plan EmbyDeletionPlan, result
 		completed[result.Key] = result.Outcome == EmbyDeletionDeleted || result.Outcome == EmbyDeletionAlreadyAbsent
 	}
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		state, err := lockEmbyIndexState(tx)
+		state, err := lockEmbyIndexState(tx, plan.Input.MediaServerType)
 		if err != nil {
 			return err
 		}
 		if state.ServerID != plan.Input.ServerID || state.ServerConfigKey != plan.Input.ServerConfigKey {
 			return ErrEmbySnapshotStale
 		}
-		var config EmbyConfig
-		if err := tx.First(&config).Error; err != nil {
+		config, err := readMediaLibraryConfigTx(tx, plan.Input.MediaServerType)
+		if err != nil {
 			return err
 		}
-		if EmbyServerConfigIdentity(&config) != plan.Input.ServerConfigKey {
+		if EmbyServerConfigIdentity(config) != plan.Input.ServerConfigKey {
 			return ErrEmbySnapshotStale
 		}
 		for _, owner := range plan.Input.Owners {
@@ -859,7 +862,7 @@ func FinalizeEmbyDeletionPlan(ctx context.Context, plan EmbyDeletionPlan, result
 				continue
 			}
 			var current EmbyItemState
-			if err := tx.Where("server_id = ? AND item_id = ?", plan.Input.ServerID, ref.ItemID).First(&current).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", plan.Input.MediaServerType, plan.Input.ServerID, ref.ItemID).First(&current).Error; err != nil {
 				return err
 			}
 			if !current.Deleted || current.SnapshotID != ref.SnapshotID || current.Generation != ref.Generation {
@@ -869,22 +872,22 @@ func FinalizeEmbyDeletionPlan(ctx context.Context, plan EmbyDeletionPlan, result
 			if err := tx.First(&evidence, ref.SnapshotID).Error; err != nil {
 				return err
 			}
-			if evidence != owner.Evidence || evidence.ServerID != plan.Input.ServerID || evidence.ServerConfigKey != plan.Input.ServerConfigKey || current.IdentityKey != evidence.IdentityKey {
+			if !sameEmbyFrozenEvidence(evidence, owner.Evidence, plan.Input.MediaServerType) || evidence.ServerID != plan.Input.ServerID || evidence.ServerConfigKey != plan.Input.ServerConfigKey || current.IdentityKey != evidence.IdentityKey {
 				return ErrEmbyIdentityAmbiguous
 			}
 			for _, link := range owner.Links {
-				if err := tx.Where("id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", link.ID, owner.Item.ItemId, ref.SnapshotID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+				if err := tx.Where("media_server_type = ? AND id = ? AND emby_item_id = ? AND snapshot_id = ? AND sync_file_id = ?", plan.Input.MediaServerType, link.ID, owner.Item.ItemId, ref.SnapshotID, link.SyncFileId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 					return err
 				}
 			}
 			var remaining int64
-			if err := tx.Model(&EmbyMediaSyncFile{}).Where("emby_item_id = ?", owner.Item.ItemId).Count(&remaining).Error; err != nil {
+			if err := tx.Model(&EmbyMediaSyncFile{}).Where("media_server_type = ? AND emby_item_id = ?", plan.Input.MediaServerType, owner.Item.ItemId).Count(&remaining).Error; err != nil {
 				return err
 			}
 			if remaining != 0 {
 				continue
 			}
-			if err := tx.Where("server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", plan.Input.ServerID, ref.ItemID, ref.SnapshotID, ref.Generation).Delete(&EmbyMediaItem{}).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", plan.Input.MediaServerType, plan.Input.ServerID, ref.ItemID, ref.SnapshotID, ref.Generation).Delete(&EmbyMediaItem{}).Error; err != nil {
 				return err
 			}
 		}

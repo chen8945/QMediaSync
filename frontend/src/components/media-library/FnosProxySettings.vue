@@ -10,7 +10,6 @@ import {
   type FnosProxyRuntime,
   type FnosProxySettings,
 } from '@/api/fnosProxy'
-import PageHeader from '@/components/common/PageHeader.vue'
 import FnosPathMappings from '@/components/fnos-proxy/FnosPathMappings.vue'
 import FnosProxyStatus from '@/components/fnos-proxy/FnosProxyStatus.vue'
 import { useDeviceType } from '@/composables/useDeviceType'
@@ -18,6 +17,7 @@ import { useFeedbackScroll } from '@/composables/useFeedbackScroll'
 import { useHttpClient } from '@/http/client'
 import { parseHttpError } from '@/http/errors'
 
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
 const http = useHttpClient()
 const { isMobile } = useDeviceType()
 const formRef = useTemplateRef<FormInstance>('formRef')
@@ -38,9 +38,9 @@ const feedback = shallowRef<{
 } | null>(null)
 const { feedbackRef, revealFeedback } = useFeedbackScroll(feedback)
 const disabled = computed(() => !loaded.value || loading.value || saving.value)
-let active = true
+let mounted = true
 onBeforeUnmount(() => {
-  active = false
+  mounted = false
 })
 
 const applySettings = (settings: FnosProxySettings) => {
@@ -64,13 +64,13 @@ const load = async () => {
   feedback.value = null
   try {
     const result = await fetchFnosProxySettings(http)
-    if (!active) return
+    if (!mounted) return
     applySettings(result)
     loaded.value = true
   } catch (error) {
-    if (active) showFailure(error, '读取设置失败')
+    if (mounted) showFailure(error, '读取设置失败')
   } finally {
-    if (active) loading.value = false
+    if (mounted) loading.value = false
   }
 }
 
@@ -105,9 +105,10 @@ const save = async () => {
   try {
     await formRef.value.validate()
   } catch {
-    saving.value = false
+    if (mounted) saving.value = false
     return
   }
+  if (!mounted) return
   feedback.value = null
   try {
     const result = await saveFnosProxySettings(http, {
@@ -115,7 +116,7 @@ const save = async () => {
       fnos_url: form.fnos_url.trim(),
       path_mappings: form.path_mappings.map((row) => ({ ...row })),
     })
-    if (!active) return
+    if (!mounted) return
     applySettings(result)
     feedback.value =
       result.runtime.last_error || result.runtime.restart_required
@@ -126,11 +127,11 @@ const save = async () => {
           }
         : { title: '保存成功', type: 'success', description: '设置已保存并应用' }
   } catch (error) {
-    if (active) showFailure(error, '保存失败')
+    if (mounted) showFailure(error, '保存失败')
   } finally {
-    if (active) {
+    if (mounted) {
       saving.value = false
-      void revealFeedback()
+      if (props.active !== false) void revealFeedback()
     }
   }
 }
@@ -139,12 +140,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="main-content-container fnos-proxy-content">
-    <PageHeader>
-      <template #stats>
-        <FnosProxyStatus :runtime="runtime" :saved-enabled="savedEnabled" />
-      </template>
-    </PageHeader>
+  <div class="fnos-proxy-content">
+    <FnosProxyStatus :runtime="runtime" :saved-enabled="savedEnabled" />
     <div class="fnos-settings-wrapper">
       <div v-if="!loaded" class="load-state">
         <p>

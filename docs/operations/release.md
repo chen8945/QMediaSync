@@ -32,9 +32,9 @@ CI 另有 `release-scripts` job，在 Linux 运行安装、发版、fnpack 获�
 
 公共 HTTP 错误分类、业务响应校验和认证请求的兼容性与安全回归沿用上述 Vitest 命令；刮削及账号授权请求迁移同时验证失败反馈、成功判定、第三方连接测试结果和授权生命周期，覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
-设置页回归同时覆盖 Emby、代理、通知、STRM、线程、日志和用户安全设置的失败保护、初次加载保存门槛、Cron 时序、专用成功码与敏感数据处理，沿用上述 Vitest 和类型检查入口。
+设置页回归同时覆盖媒体库三个标签页、代理、通知、STRM、线程、日志和用户安全设置的失败保护、初次加载保存门槛、Cron 时序、专用成功码与敏感数据处理，沿用上述 Vitest 和类型检查入口。媒体库状态查询失败及恢复不得覆盖保存后的应用警告与重启提示；下载重试的调度隔离和执行授权按 [双端媒体库验证](../engineering/verification.md#双端媒体库验证) 检查。
 
-Emby 设置页暂不挂载手工 STRM 映射组件；入口隐藏、隐藏组件不发起目录加载、普通设置保存保留既有映射及失败保护随 Vitest 执行。后端另验证 QMS／外部 STRM 自动定位、冻结路径与账号校验、空库 STRM → 重启 → Emby → 联动删除、schema 67 → 68 和旧备份恢复。隔离 PostgreSQL、race 与两万条数据的受控性能对照不由普通 CI 自动覆盖，发布前按 [Emby 本地资料与外部 STRM 验证](../engineering/verification.md#emby-本地资料与外部-strm-验证) 执行。
+Emby/Jellyfin 设置面板暂不挂载手工 STRM 映射组件；入口隐藏、隐藏组件不发起目录加载、普通设置保存保留既有映射及失败保护随 Vitest 执行。后端另验证 QMediaSync／外部 STRM 自动定位、冻结路径与账号校验、空库 STRM → 重启 → Emby → 联动删除、schema 67 → 68 和旧备份恢复。隔离 PostgreSQL、race 与两万条数据的受控性能对照不由普通 CI 自动覆盖，发布前按 [Emby 本地资料与外部 STRM 验证](../engineering/verification.md#emby-本地资料与外部-strm-验证) 执行。
 
 同步目录和队列领域请求的回归沿用同一入口，保护聚合字段错误、警告、幂等键，以及写入成功后刷新失败的反馈；队列统计、请求合并和生命周期测试继续执行。目录表单的桌面／移动端禁用、整理方式联动、来源／账号切换及编辑回填保护同样纳入 Vitest，覆盖边界见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。
 
@@ -175,7 +175,7 @@ Beta 打包使用不带 `v` 的完整 Beta 版本，先校验两份源码 manife
 
 正式 workflow 设置 `REQUIRE_FNPACK=1`，要求两个 FPK 都生成；缺工具或缺产物使发布失败。手工脚本保留缺工具可选跳过模式，需要严格验证时也设置该变量。临时文件不放入源码模板，局部职责见 [原生包说明](../../packaging/fnos/README.md)。
 
-FPK 与其余附件统一写入 `checksums.txt`，用户可手工核对 SHA-256。QMS 网页不在原生 fnOS 下载或安装更新；平台更新使用自身生命周期，不读取这份 GitHub 清单。构建成功不代表应用商店已提供该版本，实际平台安装、升级与保留数据重装另行验收。脚本和平台验证入口见 [验证说明](../engineering/verification.md#数据库启动与部署验证)。
+FPK 与其余附件统一写入 `checksums.txt`，用户可手工核对 SHA-256。QMediaSync 网页不在原生 fnOS 下载或安装更新；平台更新使用自身生命周期，不读取这份 GitHub 清单。构建成功不代表应用商店已提供该版本，实际平台安装、升级与保留数据重装另行验收。脚本和平台验证入口见 [验证说明](../engineering/verification.md#数据库启动与部署验证)。
 调整 changelog 的分组、过滤规则可编辑仓库根目录的 `cliff.toml`。
 
 ## Wiki 发布

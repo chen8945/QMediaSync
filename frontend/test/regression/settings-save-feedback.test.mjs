@@ -77,15 +77,6 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     throw new Error(`${functionName} body should close`)
   }
 
-  const embySource = readSource('src/views/settings/AppEmbySettings.vue')
-  const saveEmbyConfigBody = getLocalFunctionBody(embySource, 'saveEmbyConfig')
-
-  assert.doesNotMatch(
-    saveEmbyConfigBody,
-    /ElMessage\.success\(\s*['"]Emby 配置已成功保存['"]\s*\)/,
-    'AppEmbySettings.vue save success should use the inline status instead of a duplicate toast',
-  )
-
   const userSource = readSource('src/views/settings/AppUserSettings.vue')
   const saveSettingsBody = getLocalFunctionBody(userSource, 'saveSettings')
 
@@ -209,12 +200,6 @@ test('设置页操作反馈和按钮语义保持一致', () => {
     updateToolbarBlock,
     /<el-button\b[^>]*\bround\b[^>]*>[\s\S]*?刷新[\s\S]*?<\/el-button>/,
     'AppUpdate.vue refresh button should not use round styling next to the segmented channel selector',
-  )
-
-  assert.ok(
-    embySource.indexOf('class="emby-status-alert"') <
-      embySource.indexOf('class="sync-management-card"'),
-    'AppEmbySettings.vue save status should appear before the sync management card',
   )
 
   const twoFactorSource = readSource('src/components/user-settings/TwoFactorSettings.vue')

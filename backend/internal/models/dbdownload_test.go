@@ -3,42 +3,12 @@ package models
 import (
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"qmediasync/internal/db"
 )
-
-type trackingReadCloser struct {
-	io.Reader
-	closed bool
-}
-
-func (body *trackingReadCloser) Close() error {
-	body.closed = true
-	return nil
-}
-
-func TestCloseEmbyResponseBodyDrainsAndClosesResponse(t *testing.T) {
-	body := &trackingReadCloser{Reader: strings.NewReader("response")}
-	closeEmbyResponseBody(&http.Response{Body: body})
-
-	if !body.closed {
-		t.Fatal("Emby 响应体应被关闭")
-	}
-	remaining, err := io.ReadAll(body)
-	if err != nil {
-		t.Fatalf("读取已排空响应体失败: %v", err)
-	}
-	if len(remaining) != 0 {
-		t.Fatalf("响应体未被排空: %q", remaining)
-	}
-
-	closeEmbyResponseBody(nil)
-}
 
 func TestAddDownloadTaskFromSyncFileSeparatesRemoteIdentity(t *testing.T) {
 	tests := []struct {
@@ -193,12 +163,6 @@ func TestDownloadTasksWithoutStableIDDeduplicateByHiddenLocator(t *testing.T) {
 		t.Fatal("相同 OpenList 下载直链应被去重")
 	}
 
-	if err := AddDownloadTaskFromEmbyMedia("https://emby.example/extract", "emby-item-id", "movie.mkv"); err != nil {
-		t.Fatalf("创建 Emby 下载任务失败: %v", err)
-	}
-	if err := AddDownloadTaskFromEmbyMedia("https://emby.example/extract", "emby-item-id", "movie.mkv"); err == nil {
-		t.Fatal("相同 Emby 提取地址应被去重")
-	}
 }
 
 func TestAddDownloadTaskFromSyncFileDeduplicatesWithinRemoteScope(t *testing.T) {
@@ -451,7 +415,7 @@ func TestCreateDownloadTaskWithDBAllowsTasksWithoutReliableLocator(t *testing.T)
 }
 
 func TestRetryFailedDownloadTasksSkipsTaskWithActiveTarget(t *testing.T) {
-	setupQueueStatusTestDB(t)
+	setupMediaDownloadTestDB(t)
 	if err := ensureActiveDownloadTaskUniqueIndex(db.Db); err != nil {
 		t.Fatalf("创建活跃下载任务唯一索引失败: %v", err)
 	}

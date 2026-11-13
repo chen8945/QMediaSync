@@ -7,6 +7,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -47,7 +48,7 @@ func TestCleanupStaleEmbyMediaItemsByLibrarySyncRun只清理当前库旧批次(t
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
-	if err := CleanupStaleEmbyMediaItemsByLibrarySyncRun("lib-a", "run-new"); err != nil {
+	if err := CleanupStaleEmbyMediaItemsByLibrarySyncRun(MediaServerEmby, "lib-a", "run-new"); err != nil {
 		t.Fatalf("CleanupStaleEmbyMediaItemsByLibrarySyncRun() error = %v", err)
 	}
 
@@ -86,7 +87,7 @@ func TestCreateOrUpdateEmbyMediaItem写入LastSeen字段且不触发清理(t *te
 		t.Fatalf("创建同库其他 EmbyMediaItem 失败: %v", err)
 	}
 
-	err := CreateOrUpdateEmbyMediaItem(&EmbyMediaItem{
+	err := CreateOrUpdateEmbyMediaItem(MediaServerEmby, &EmbyMediaItem{
 		ItemId:            "101",
 		ItemIdInt:         101,
 		LibraryId:         "lib-a",
@@ -128,7 +129,7 @@ func TestDeleteLocalEmbyItemByID删除Item和关联(t *testing.T) {
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
-	if err := DeleteLocalEmbyItemByID("101"); err != nil {
+	if err := DeleteLocalEmbyItemByID(MediaServerEmby, "101"); err != nil {
 		t.Fatalf("DeleteLocalEmbyItemByID() error = %v", err)
 	}
 
@@ -162,7 +163,7 @@ func TestDeleteLocalEmbyItemsBySeasonID删除季内条目和关联(t *testing.T)
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
-	if err := DeleteLocalEmbyItemsBySeasonID("season-a"); err != nil {
+	if err := DeleteLocalEmbyItemsBySeasonID(MediaServerEmby, "season-a"); err != nil {
 		t.Fatalf("DeleteLocalEmbyItemsBySeasonID() error = %v", err)
 	}
 
@@ -199,7 +200,7 @@ func TestDeleteLocalEmbyItemsBySeriesID删除剧内条目和关联(t *testing.T)
 		t.Fatalf("创建 EmbyMediaSyncFile 失败: %v", err)
 	}
 
-	if err := DeleteLocalEmbyItemsBySeriesID("series-a"); err != nil {
+	if err := DeleteLocalEmbyItemsBySeriesID(MediaServerEmby, "series-a"); err != nil {
 		t.Fatalf("DeleteLocalEmbyItemsBySeriesID() error = %v", err)
 	}
 
@@ -216,5 +217,83 @@ func TestDeleteLocalEmbyItemsBySeriesID删除剧内条目和关联(t *testing.T)
 	}
 	if len(remainingRelations) != 1 || remainingRelations[0].EmbyItemId != "201" {
 		t.Fatalf("remainingRelations = %+v, want only 201", remainingRelations)
+	}
+}
+
+func TestEmbyMediaQueriesIsolateServices(t *testing.T) {
+	for _, cleanup := range []struct {
+		name string
+		run  func(MediaServerType) error
+	}{
+		{"stale batch", func(kind MediaServerType) error {
+			return CleanupStaleEmbyMediaItemsByLibrarySyncRun(kind, "lib", "new")
+		}},
+		{"unselected library", func(kind MediaServerType) error { return CleanupUnselectedEmbyLibraryData(kind, []string{"keep"}) }},
+		{"all libraries", CleanupAllEmbyLibraryData},
+	} {
+		t.Run(cleanup.name, func(t *testing.T) {
+			setupEmbyMediaTestDB(t)
+			if err := db.Db.AutoMigrate(&EmbyLibrary{}, &EmbyLibrarySyncPath{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+				if err := UpsertEmbyLibraries(kind, []embyclientrestgo.EmbyLibrary{{ID: "lib", Name: string(kind)}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := CreateOrUpdateEmbyMediaItem(kind, &EmbyMediaItem{ItemId: "101", ServerId: "same-server", LibraryId: "lib", Name: string(kind), LastSeenSyncRun: "old"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := CreateOrUpdateEmbyLibrarySyncPath(kind, "lib", 1, string(kind)); err != nil {
+					t.Fatal(err)
+				}
+				if err := CreateEmbyMediaSyncFile(kind, "101", 1, "same-code", 1); err != nil {
+					t.Fatal(err)
+				}
+				count, err := GetEmbyMediaItemsCount(kind)
+				if err != nil || count != 1 {
+					t.Fatalf("%s item count=%d err=%v", kind, count, err)
+				}
+			}
+			// Both types use the same IDs; updating one must preserve the other's projection.
+			if err := UpsertEmbyLibraries(MediaServerEmby, []embyclientrestgo.EmbyLibrary{{ID: "lib", Name: "updated"}}); err != nil {
+				t.Fatal(err)
+			}
+			libs, err := GetAllEmbyLibraries(MediaServerJellyfin)
+			if err != nil || len(libs) != 1 || libs[0].Name != "jellyfin" {
+				t.Fatalf("other service libraries=%+v err=%v", libs, err)
+			}
+			for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+				mappings, err := GetEmbyLibraryIdsBySyncPathId(kind, 1)
+				if err != nil || mappings["lib"] != string(kind) {
+					t.Fatalf("%s mapping=%v err=%v", kind, mappings, err)
+				}
+			}
+			if err := cleanup.run(MediaServerEmby); err != nil {
+				t.Fatal(err)
+			}
+			var items []EmbyMediaItem
+			if err := db.Db.Find(&items).Error; err != nil || len(items) != 1 || items[0].MediaServerType != MediaServerJellyfin || items[0].Name != "jellyfin" {
+				t.Fatalf("remaining items=%+v err=%v", items, err)
+			}
+			var links []EmbyMediaSyncFile
+			if err := db.Db.Find(&links).Error; err != nil || len(links) != 1 || links[0].MediaServerType != MediaServerJellyfin {
+				t.Fatalf("remaining links=%+v err=%v", links, err)
+			}
+		})
+	}
+}
+
+func TestEmbyMediaQueriesRejectInvalidService(t *testing.T) {
+	setupEmbyMediaTestDB(t)
+	for _, kind := range []MediaServerType{"", "other"} {
+		if _, err := GetEmbyMediaItemsCount(kind); err == nil {
+			t.Fatalf("count accepted invalid type %q", kind)
+		}
+		if _, err := GetEmbyLibraryIdsBySyncPathId(kind, 1); err == nil {
+			t.Fatalf("mapping query accepted invalid type %q", kind)
+		}
+		if err := CleanupAllEmbyLibraryData(kind); err == nil {
+			t.Fatalf("cleanup accepted invalid type %q", kind)
+		}
 	}
 }

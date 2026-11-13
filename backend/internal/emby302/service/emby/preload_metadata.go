@@ -63,7 +63,7 @@ func (p *embyPreloader) submit(request preloadRequest, item preloadItem, ua stri
 			}
 		}
 	}
-	key := preloadHash(request.scope, item.ID, strconv.Itoa(int(kind)), strconv.FormatUint(revision, 10), association, job.nextID, ua, strconv.FormatUint(request.generation, 10))
+	key := preloadHash(request.scope, item.ID, strconv.Itoa(int(kind)), strconv.FormatUint(revision, 10), association, job.nextID, ua, strconv.FormatUint(request.generation, 10), strconv.FormatUint(request.enableEpoch, 10))
 	job.key = key
 	candidate := playback.PreloadCandidate{
 		Key: key, Scope: request.scope, Instance: p.options.Instance, Source: job.identity, Account: account, Kind: kind, Enriched: enriched, Run: job.run,

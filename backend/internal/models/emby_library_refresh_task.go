@@ -1,8 +1,10 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"sync"
@@ -12,8 +14,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 )
 
 const (
@@ -34,20 +36,22 @@ const (
 	EmbyRefreshItemAggregationThreshold = 10
 )
 
-var errEmbyRefreshTasksChanged = errors.New("Emby 刷新任务已发生变化")
+var errEmbyRefreshTasksChanged = errors.New("媒体库刷新任务已发生变化")
+var errMediaLibraryRefreshConfigChanged = errors.New("媒体库配置变化，等待使用当前连接重试")
 
 var IsStrmSyncTaskActiveFunc func(syncPathId uint) bool
 var embyRefreshCheckChan = make(chan struct{}, 1)
 var embyRefreshCoordinatorOnce sync.Once
+var embyRefreshCoordinatorState = struct {
+	sync.Mutex
+	stop chan struct{}
+	done chan struct{}
+}{}
+var mediaRefreshExecutionLocks = map[MediaServerType]*sync.Mutex{MediaServerEmby: {}, MediaServerJellyfin: {}}
 var embyRefreshDownloadEventBatch = &downloadEventBatch{
 	syncPathIds: make(map[uint]struct{}),
 	syncFileIds: make(map[uint]struct{}),
 }
-var embyRefreshScannerConfigState = struct {
-	sync.Mutex
-	initialized bool
-	enabled     bool
-}{}
 var embyRefreshTaskMutationMutex sync.Mutex
 var embyRefreshTimerState = struct {
 	sync.Mutex
@@ -87,8 +91,10 @@ type downloadEventBatch struct {
 
 type EmbyLibraryRefreshTask struct {
 	BaseModel
+	MediaServerType MediaServerType `json:"media_server_type" gorm:"type:varchar(16);default:emby;uniqueIndex:idx_emby_library_refresh_tasks_task_key,priority:1"`
+	ServerID        string          `json:"server_id" gorm:"type:varchar(128);not null;default:'';uniqueIndex:idx_emby_library_refresh_tasks_task_key,priority:2"`
 	// TaskKey 用于刷新任务的唯一去重，不承载媒体库 ID 语义。
-	TaskKey             string `json:"task_key" gorm:"uniqueIndex:idx_emby_library_refresh_tasks_task_key;type:varchar(160)"`
+	TaskKey             string `json:"task_key" gorm:"uniqueIndex:idx_emby_library_refresh_tasks_task_key,priority:3;type:varchar(160)"`
 	LibraryId           string `json:"library_id" gorm:"index:idx_emby_library_refresh_tasks_library_id;type:varchar(128)"`
 	LibraryName         string `json:"library_name" gorm:"type:text"`
 	SyncPathIdsStr      string `json:"-" gorm:"type:text;default:'[]'"`
@@ -116,7 +122,7 @@ func (t *EmbyLibraryRefreshTask) GetSyncPathIds() []uint {
 		return ids
 	}
 	if err := json.Unmarshal([]byte(t.SyncPathIdsStr), &ids); err != nil {
-		helpers.AppLogger.Warnf("解析 Emby 媒体库刷新任务 sync_path_ids 失败：%v", err)
+		helpers.AppLogger.Warnf("解析 媒体库刷新任务 sync_path_ids 失败：%v", err)
 		return []uint{}
 	}
 	slices.Sort(ids)
@@ -139,7 +145,7 @@ func (t *EmbyLibraryRefreshTask) GetItemIds() []string {
 		return ids
 	}
 	if err := json.Unmarshal([]byte(t.ItemIdsStr), &ids); err != nil {
-		helpers.AppLogger.Warnf("解析 Emby 条目刷新任务 item_ids 失败：%v", err)
+		helpers.AppLogger.Warnf("解析 媒体条目刷新任务 item_ids 失败：%v", err)
 		return []string{}
 	}
 	sort.Strings(ids)
@@ -196,16 +202,18 @@ func mergeStringIds(left []string, right []string) []string {
 	return ids
 }
 
-func newPendingEmbyLibraryRefreshTask(libraryId string, libraryName string, syncPathIds []uint, now int64) *EmbyLibraryRefreshTask {
+func newPendingEmbyLibraryRefreshTask(libraryId string, libraryName string, syncPathIds []uint, now int64, scopes ...EmbyRefreshTarget) *EmbyLibraryRefreshTask {
 	task := &EmbyLibraryRefreshTask{
-		TaskKey:        embyLibraryRefreshTaskKey(libraryId),
-		LibraryId:      libraryId,
-		LibraryName:    libraryName,
-		TargetType:     EmbyLibraryRefreshTargetTypeLibrary,
-		Status:         EmbyLibraryRefreshStatusPending,
-		LastEventAt:    now,
-		RefreshAfterAt: now + DefaultEmbyRefreshDebounceSeconds,
-		DeadlineAt:     now + DefaultEmbyRefreshMaxWaitSeconds,
+		MediaServerType: refreshTargetServerType(refreshScope(scopes...)),
+		ServerID:        refreshScope(scopes...).ServerID,
+		TaskKey:         embyLibraryRefreshTaskKey(libraryId),
+		LibraryId:       libraryId,
+		LibraryName:     libraryName,
+		TargetType:      EmbyLibraryRefreshTargetTypeLibrary,
+		Status:          EmbyLibraryRefreshStatusPending,
+		LastEventAt:     now,
+		RefreshAfterAt:  now + DefaultEmbyRefreshDebounceSeconds,
+		DeadlineAt:      now + DefaultEmbyRefreshMaxWaitSeconds,
 	}
 	task.SetSyncPathIds(syncPathIds)
 	return task
@@ -215,34 +223,39 @@ func embyLibraryRefreshTaskKey(libraryId string) string {
 	return "library:" + libraryId
 }
 
-func isEmbyLibraryRefreshEnabled() bool {
-	return GlobalEmbyConfig != nil &&
-		GlobalEmbyConfig.EmbyUrl != "" &&
-		GlobalEmbyConfig.EmbyApiKey != "" &&
-		GlobalEmbyConfig.EnableRefreshLibrary != 0
+func isEmbyLibraryRefreshEnabled() bool { return isMediaLibraryRefreshEnabled(MediaServerEmby) }
+
+func isMediaLibraryRefreshEnabled(kind MediaServerType) bool {
+	if db.Db == nil || db.IsMaintenance(db.Db) {
+		return false
+	}
+	config, err := ReadMediaLibraryConfigSnapshot(kind)
+	return err == nil && config.Enabled && config.EmbyUrl != "" && config.EmbyApiKey != "" && config.EnableRefreshLibrary != 0
 }
 
-func markEmbyRefreshScannerConfigState(enabled bool) bool {
-	embyRefreshScannerConfigState.Lock()
-	defer embyRefreshScannerConfigState.Unlock()
-
-	shouldLogDisabledTransition := embyRefreshScannerConfigState.initialized &&
-		embyRefreshScannerConfigState.enabled &&
-		!enabled
-	embyRefreshScannerConfigState.initialized = true
-	embyRefreshScannerConfigState.enabled = enabled
-	return shouldLogDisabledTransition
+func enabledMediaLibraryRefreshTypes() []MediaServerType {
+	var kinds []MediaServerType
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		if isMediaLibraryRefreshEnabled(kind) {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
 }
 
-func resetEmbyRefreshScannerConfigStateForTest() {
-	embyRefreshScannerConfigState.Lock()
-	defer embyRefreshScannerConfigState.Unlock()
-
-	embyRefreshScannerConfigState.initialized = false
-	embyRefreshScannerConfigState.enabled = false
+func refreshScope(scopes ...EmbyRefreshTarget) EmbyRefreshTarget {
+	if len(scopes) == 0 {
+		return EmbyRefreshTarget{MediaServerType: MediaServerEmby}
+	}
+	return scopes[0]
 }
 
-func resetEmbyRefreshTimerStateForTest() {
+func refreshTaskScopeQuery(tx *gorm.DB, scopes ...EmbyRefreshTarget) *gorm.DB {
+	scope := refreshScope(scopes...)
+	return tx.Where("media_server_type = ? AND server_id = ?", refreshTargetServerType(scope), scope.ServerID)
+}
+
+func resetEmbyRefreshTimerState() {
 	embyRefreshTimerState.Lock()
 	defer embyRefreshTimerState.Unlock()
 
@@ -256,10 +269,10 @@ func resetEmbyRefreshTimerStateForTest() {
 
 func RequestEmbyLibraryRefreshBySyncPathId(syncPathId uint) error {
 	if syncPathId == 0 {
-		helpers.AppLogger.Infof("临时同步路径不触发 Emby 媒体库刷新")
+		helpers.AppLogger.Infof("临时同步路径不触发 媒体库刷新")
 		return nil
 	}
-	if GlobalEmbyConfig == nil || GlobalEmbyConfig.EmbyUrl == "" || GlobalEmbyConfig.EmbyApiKey == "" || GlobalEmbyConfig.EnableRefreshLibrary == 0 {
+	if !isMediaLibraryRefreshEnabled(MediaServerEmby) {
 		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
 		return nil
 	}
@@ -289,45 +302,79 @@ func RequestEmbyLibraryRefreshBySyncPathId(syncPathId uint) error {
 
 // RequestEmbyRefreshTargets 批量提交已解析的 Emby 刷新目标。
 func RequestEmbyRefreshTargets(syncPathId uint, targets []EmbyRefreshTarget) error {
-	if syncPathId == 0 {
-		helpers.AppLogger.Infof("临时同步路径不触发 Emby 媒体库刷新")
-		return nil
+	for i := range targets {
+		if targets[i].MediaServerType == "" {
+			targets[i].MediaServerType = MediaServerEmby
+		}
 	}
-	if !isEmbyLibraryRefreshEnabled() {
-		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
-		return nil
-	}
-	targets = expandEmbyRefreshLibraryTargets(syncPathId, targets)
-	targets = normalizeEmbyRefreshTargets(targets)
-	if len(targets) == 0 {
-		return nil
-	}
+	return RequestMediaLibraryRefreshTargets(syncPathId, targets)
+}
 
+// RequestMediaLibraryRefreshTargets 提交各端目标；失败只影响该端。
+func RequestMediaLibraryRefreshTargets(syncPathID uint, targets []EmbyRefreshTarget) error {
+	if syncPathID == 0 {
+		return nil
+	}
+	var errs []error
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		selected := make([]EmbyRefreshTarget, 0, len(targets))
+		for _, target := range targets {
+			if err := target.MediaServerType.Validate(); err != nil {
+				return err
+			}
+			if target.MediaServerType == kind {
+				selected = append(selected, target)
+			}
+		}
+		if len(selected) == 0 {
+			continue
+		}
+		if err := requestMediaLibraryRefreshTargets(kind, syncPathID, selected); err != nil {
+			errs = append(errs, fmt.Errorf("%s 刷新提交失败：%w", kind.DisplayName(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func requestMediaLibraryRefreshTargets(kind MediaServerType, syncPathID uint, targets []EmbyRefreshTarget) error {
+	if db.Db == nil || db.IsMaintenance(db.Db) {
+		return nil
+	}
+	config, err := ReadMediaLibraryConfigSnapshot(kind)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !config.Enabled || config.EmbyUrl == "" || config.EmbyApiKey == "" || config.EnableRefreshLibrary == 0 {
+		return nil
+	}
+	serverID := ""
+	for i := range targets {
+		if targets[i].ServerID == "" {
+			if serverID == "" {
+				serverID, err = config.Client().GetServerID(context.Background())
+				if err != nil {
+					return err
+				}
+			}
+			targets[i].ServerID = serverID
+		}
+		if err := validateEmbyRefreshIndexServer(db.Db, targets[i]); err != nil {
+			return err
+		}
+	}
+	targets = normalizeEmbyRefreshTargets(expandEmbyRefreshLibraryTargets(syncPathID, targets, kind))
 	now := nowUnix()
 	for _, target := range targets {
 		if target.TargetType == EmbyRefreshTargetTypeItem && target.ItemID != "" {
-			if err := upsertEmbyItemRefreshTask(target, syncPathId, now); err != nil {
-				return err
-			}
-			continue
+			err = upsertEmbyItemRefreshTask(target, syncPathID, now)
+		} else if target.FallbackLibraryId != "" {
+			err = upsertEmbyLibraryRefreshTask(target.FallbackLibraryId, target.FallbackLibraryName, syncPathID, now, target)
 		}
-
-		if target.FallbackLibraryId != "" {
-			if err := upsertEmbyLibraryRefreshTask(target.FallbackLibraryId, target.FallbackLibraryName, syncPathId, now); err != nil {
-				return err
-			}
-			continue
-		}
-
-		libraries := GetEmbyLibraryIdsBySyncPathId(syncPathId)
-		if len(libraries) == 0 {
-			helpers.AppLogger.Infof("同步目录 %d 未关联 Emby 媒体库，跳过提交刷新任务", syncPathId)
-			continue
-		}
-		for libraryID, libraryName := range libraries {
-			if err := upsertEmbyLibraryRefreshTask(libraryID, libraryName, syncPathId, now); err != nil {
-				return err
-			}
+		if err != nil {
+			return err
 		}
 	}
 	if err := reconcilePendingEmbyRefreshTasks(now); err != nil {
@@ -338,8 +385,11 @@ func RequestEmbyRefreshTargets(syncPathId uint, targets []EmbyRefreshTarget) err
 	return nil
 }
 
-func expandEmbyRefreshLibraryTargets(syncPathId uint, targets []EmbyRefreshTarget) []EmbyRefreshTarget {
-	libraries := GetEmbyLibraryIdsBySyncPathId(syncPathId)
+func expandEmbyRefreshLibraryTargets(syncPathId uint, targets []EmbyRefreshTarget, kinds ...MediaServerType) []EmbyRefreshTarget {
+	libraries, err := GetEmbyLibraryIdsBySyncPathId(refreshServerType(kinds...), syncPathId)
+	if err != nil {
+		return targets
+	}
 	if len(libraries) == 0 {
 		return targets
 	}
@@ -360,6 +410,8 @@ func expandEmbyRefreshLibraryTargets(syncPathId uint, targets []EmbyRefreshTarge
 		}
 		for _, libraryID := range libraryIDs {
 			expanded = append(expanded, EmbyRefreshTarget{
+				MediaServerType:     refreshTargetServerType(target),
+				ServerID:            target.ServerID,
 				TargetType:          EmbyRefreshTargetTypeLibrary,
 				FallbackLibraryId:   libraryID,
 				FallbackLibraryName: libraries[libraryID],
@@ -377,11 +429,24 @@ type embyRefreshLibraryGroup struct {
 }
 
 func reconcilePendingEmbyRefreshTasks(now int64) error {
+	enabledKinds := enabledMediaLibraryRefreshTypes()
 	return withEmbyRefreshTaskMutationLock(db.Db, func() error {
 		for range 2 {
 			regrouped := false
 			err := db.Db.Transaction(func(tx *gorm.DB) error {
-				return reconcilePendingEmbyRefreshTasksWithDB(tx, now, &regrouped)
+				var scopes []EmbyLibraryRefreshTask
+				if err := tx.Model(&EmbyLibraryRefreshTask{}).Select("media_server_type, server_id").Distinct().Where("status = ?", EmbyLibraryRefreshStatusPending).Find(&scopes).Error; err != nil {
+					return err
+				}
+				for _, task := range scopes {
+					if !slices.Contains(enabledKinds, task.MediaServerType) {
+						continue
+					}
+					if err := reconcilePendingEmbyRefreshTasksWithDB(tx, now, &regrouped, EmbyRefreshTarget{MediaServerType: task.MediaServerType, ServerID: task.ServerID}); err != nil {
+						return err
+					}
+				}
+				return nil
 			})
 			if errors.Is(err, errEmbyRefreshTasksChanged) {
 				TriggerEmbyLibraryRefreshCheck()
@@ -413,7 +478,7 @@ func repairPendingEmbyGroupItemFallbackLibrariesWithDB(tx *gorm.DB, items []*Emb
 		resolvedLibraryIDs := []string{}
 		resolvedLibraryNames := make(map[string]string)
 		for _, itemID := range task.GetItemIds() {
-			resolution, err := resolveEmbyTargetLibraryWithDB(tx, EmbyRefreshTarget{
+			resolution, err := resolveEmbyTargetLibraryWithDB(tx, EmbyRefreshTarget{MediaServerType: task.MediaServerType, ServerID: task.ServerID,
 				TargetType:          EmbyRefreshTargetTypeItem,
 				ItemID:              itemID,
 				FallbackLibraryId:   task.FallbackLibraryId,
@@ -437,7 +502,7 @@ func repairPendingEmbyGroupItemFallbackLibrariesWithDB(tx *gorm.DB, items []*Emb
 			fallbackLibraryID = resolvedLibraryIDs[0]
 			resolvedLibraryName := resolvedLibraryNames[fallbackLibraryID]
 			if resolvedLibraryName == "" {
-				resolvedLibraryName = embyLibraryNameWithDB(tx, fallbackLibraryID, "")
+				resolvedLibraryName = embyLibraryNameWithDB(tx, fallbackLibraryID, "", task.MediaServerType)
 			}
 			if resolvedLibraryName != "" || fallbackLibraryID != task.FallbackLibraryId {
 				fallbackLibraryName = resolvedLibraryName
@@ -476,22 +541,22 @@ func repairPendingEmbyGroupItemFallbackLibrariesWithDB(tx *gorm.DB, items []*Emb
 	return keptItems, regrouped, nil
 }
 
-func reconcilePendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64, regrouped *bool) error {
+func reconcilePendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64, regrouped *bool, scopes ...EmbyRefreshTarget) error {
 	if tx == nil {
 		return nil
 	}
-	if err := cancelExpiredPendingEmbyRefreshTasksWithDB(tx, now); err != nil {
+	if err := cancelExpiredPendingEmbyRefreshTasksWithDB(tx, now, scopes...); err != nil {
 		return err
 	}
-	libraryIDs, err := getActivePendingEmbyRefreshLibraryIDsWithDB(tx, now)
+	libraryIDs, err := getActivePendingEmbyRefreshLibraryIDsWithDB(tx, now, scopes...)
 	if err != nil || len(libraryIDs) == 0 {
 		return err
 	}
-	libraryTasks, err := findEmbyRefreshLibraryTasksWithDB(tx, libraryIDs)
+	libraryTasks, err := findEmbyRefreshLibraryTasksWithDB(tx, libraryIDs, scopes...)
 	if err != nil {
 		return err
 	}
-	items, err := findActivePendingEmbyItemRefreshTasksWithDB(tx, now, libraryIDs)
+	items, err := findActivePendingEmbyItemRefreshTasksWithDB(tx, now, libraryIDs, scopes...)
 	if err != nil {
 		return err
 	}
@@ -588,7 +653,7 @@ func reconcilePendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64, regrouped *b
 			target = group.existingLibraryTask
 			preservePendingTimes = target.Status == EmbyLibraryRefreshStatusPending
 		} else {
-			target = newPendingEmbyLibraryRefreshTask(libraryID, group.items[0].FallbackLibraryName, nil, now)
+			target = newPendingEmbyLibraryRefreshTask(libraryID, group.items[0].FallbackLibraryName, nil, now, scopes...)
 		}
 		if err := mergePendingEmbyItemsIntoLibraryTask(target, group.items, now, preservePendingTimes); err != nil {
 			return err
@@ -600,7 +665,7 @@ func reconcilePendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64, regrouped *b
 				return createErr
 			}
 			if !created {
-				if err := lockEmbyRefreshTaskQuery(tx).Where("task_key = ?", target.TaskKey).First(target).Error; err != nil {
+				if err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, scopes...)).Where("task_key = ?", target.TaskKey).First(target).Error; err != nil {
 					return err
 				}
 				if target.Status == EmbyLibraryRefreshStatusRefreshing {
@@ -634,12 +699,12 @@ func maxEmbyRefreshAfterAt(items []*EmbyLibraryRefreshTask) int64 {
 	return maxRefreshAfter
 }
 
-func getActivePendingEmbyRefreshLibraryIDsWithDB(tx *gorm.DB, now int64) ([]string, error) {
+func getActivePendingEmbyRefreshLibraryIDsWithDB(tx *gorm.DB, now int64, scopes ...EmbyRefreshTarget) ([]string, error) {
 	if tx == nil {
 		return nil, nil
 	}
 	var libraryIDs []string
-	err := tx.Model(&EmbyLibraryRefreshTask{}).
+	err := refreshTaskScopeQuery(tx, scopes...).Model(&EmbyLibraryRefreshTask{}).
 		Where("status = ? AND target_type = ? AND fallback_library_id <> ''", EmbyLibraryRefreshStatusPending, EmbyLibraryRefreshTargetTypeItem).
 		Where("deadline_at = 0 OR deadline_at > ?", now).
 		Distinct("fallback_library_id").
@@ -650,7 +715,7 @@ func getActivePendingEmbyRefreshLibraryIDsWithDB(tx *gorm.DB, now int64) ([]stri
 	return mergeStringIds(libraryIDs, nil), nil
 }
 
-func findEmbyRefreshLibraryTasksWithDB(tx *gorm.DB, libraryIDs []string) ([]EmbyLibraryRefreshTask, error) {
+func findEmbyRefreshLibraryTasksWithDB(tx *gorm.DB, libraryIDs []string, scopes ...EmbyRefreshTarget) ([]EmbyLibraryRefreshTask, error) {
 	if tx == nil || len(libraryIDs) == 0 {
 		return nil, nil
 	}
@@ -659,19 +724,19 @@ func findEmbyRefreshLibraryTasksWithDB(tx *gorm.DB, libraryIDs []string) ([]Emby
 		keys = append(keys, embyLibraryRefreshTaskKey(libraryID))
 	}
 	var tasks []EmbyLibraryRefreshTask
-	err := lockEmbyRefreshTaskQuery(tx).
+	err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, scopes...)).
 		Where("task_key IN ?", keys).
 		Order("task_key ASC").
 		Find(&tasks).Error
 	return tasks, err
 }
 
-func findActivePendingEmbyItemRefreshTasksWithDB(tx *gorm.DB, now int64, libraryIDs []string) ([]EmbyLibraryRefreshTask, error) {
+func findActivePendingEmbyItemRefreshTasksWithDB(tx *gorm.DB, now int64, libraryIDs []string, scopes ...EmbyRefreshTarget) ([]EmbyLibraryRefreshTask, error) {
 	if tx == nil || len(libraryIDs) == 0 {
 		return nil, nil
 	}
 	var tasks []EmbyLibraryRefreshTask
-	err := lockEmbyRefreshTaskQuery(tx).
+	err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, scopes...)).
 		Where("status = ? AND target_type = ? AND fallback_library_id IN ?", EmbyLibraryRefreshStatusPending, EmbyLibraryRefreshTargetTypeItem, libraryIDs).
 		Where("deadline_at = 0 OR deadline_at > ?", now).
 		Order("id ASC").
@@ -679,11 +744,11 @@ func findActivePendingEmbyItemRefreshTasksWithDB(tx *gorm.DB, now int64, library
 	return tasks, err
 }
 
-func cancelExpiredPendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64) error {
+func cancelExpiredPendingEmbyRefreshTasksWithDB(tx *gorm.DB, now int64, scopes ...EmbyRefreshTarget) error {
 	if tx == nil {
 		return nil
 	}
-	return tx.Model(&EmbyLibraryRefreshTask{}).
+	return refreshTaskScopeQuery(tx, scopes...).Model(&EmbyLibraryRefreshTask{}).
 		Where("status = ?", EmbyLibraryRefreshStatusPending).
 		Where("deadline_at > 0 AND deadline_at <= ?", now).
 		Updates(map[string]any{
@@ -709,6 +774,11 @@ func absorbPendingEmbyItemsIntoLibraryWithDB(tx *gorm.DB, libraryTask *EmbyLibra
 func mergePendingEmbyItemsIntoLibraryTask(libraryTask *EmbyLibraryRefreshTask, items []*EmbyLibraryRefreshTask, now int64, preservePendingTimes bool) error {
 	if libraryTask == nil || len(items) == 0 {
 		return nil
+	}
+	for _, item := range items {
+		if item != nil && (item.MediaServerType != libraryTask.MediaServerType || item.ServerID != libraryTask.ServerID) {
+			return errors.New("不能合并不同媒体服务器的刷新任务")
+		}
 	}
 	if libraryTask.LibraryId == "" {
 		libraryTask.LibraryId = items[0].FallbackLibraryId
@@ -801,39 +871,36 @@ func RequestEmbyRefreshBySyncFile(syncFile *SyncFile) error {
 	if syncFile == nil {
 		return nil
 	}
-	if !isEmbyLibraryRefreshEnabled() {
-		helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，跳过提交刷新任务")
-		return nil
-	}
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {
 		return err
 	}
-	if target.TargetType != EmbyRefreshTargetTypeItem || target.ItemID == "" {
-		return RequestEmbyLibraryRefreshBySyncPathId(syncFile.SyncPathId)
-	}
-	if err := upsertEmbyItemRefreshTask(target, syncFile.SyncPathId, nowUnix()); err != nil {
-		return err
-	}
-	ScheduleNextEmbyLibraryRefreshCheck()
-	TriggerEmbyLibraryRefreshCheck()
-	return nil
+	return RequestEmbyRefreshTargets(syncFile.SyncPathId, []EmbyRefreshTarget{target})
 }
 
-func upsertEmbyLibraryRefreshTask(libraryId string, libraryName string, syncPathId uint, now int64) error {
+// RequestMediaLibraryRefreshBySyncFile 从普通 STRM 后处理提交两端刷新。
+func RequestMediaLibraryRefreshBySyncFile(syncFile *SyncFile) error {
+	if syncFile == nil {
+		return nil
+	}
+	targets, resolveErr := ResolveMediaLibraryRefreshTargets(syncFile)
+	return errors.Join(resolveErr, RequestMediaLibraryRefreshTargets(syncFile.SyncPathId, targets))
+}
+
+func upsertEmbyLibraryRefreshTask(libraryId string, libraryName string, syncPathId uint, now int64, scopes ...EmbyRefreshTarget) error {
 	return withEmbyRefreshTaskMutationLock(db.Db, func() error {
 		return db.Db.Transaction(func(tx *gorm.DB) error {
-			return upsertEmbyLibraryRefreshTaskWithDB(tx, libraryId, libraryName, syncPathId, now)
+			return upsertEmbyLibraryRefreshTaskWithDB(tx, libraryId, libraryName, syncPathId, now, scopes...)
 		})
 	})
 }
 
-func upsertEmbyLibraryRefreshTaskWithDB(tx *gorm.DB, libraryId string, libraryName string, syncPathId uint, now int64) error {
+func upsertEmbyLibraryRefreshTaskWithDB(tx *gorm.DB, libraryId string, libraryName string, syncPathId uint, now int64, scopes ...EmbyRefreshTarget) error {
 	var task EmbyLibraryRefreshTask
 	taskKey := embyLibraryRefreshTaskKey(libraryId)
-	err := lockEmbyRefreshTaskQuery(tx).Where("task_key = ?", taskKey).First(&task).Error
+	err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, scopes...)).Where("task_key = ?", taskKey).First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		task = *newPendingEmbyLibraryRefreshTask(libraryId, libraryName, []uint{syncPathId}, now)
+		task = *newPendingEmbyLibraryRefreshTask(libraryId, libraryName, []uint{syncPathId}, now, scopes...)
 		created, err := createEmbyLibraryRefreshTaskIfAbsent(tx, &task)
 		if err != nil {
 			return err
@@ -841,7 +908,7 @@ func upsertEmbyLibraryRefreshTaskWithDB(tx *gorm.DB, libraryId string, libraryNa
 		if created {
 			return nil
 		}
-		if err := lockEmbyRefreshTaskQuery(tx).Where("task_key = ?", taskKey).First(&task).Error; err != nil {
+		if err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, scopes...)).Where("task_key = ?", taskKey).First(&task).Error; err != nil {
 			return err
 		}
 	}
@@ -869,6 +936,8 @@ func upsertEmbyLibraryRefreshTaskWithDB(tx *gorm.DB, libraryId string, libraryNa
 
 func newPendingEmbyItemRefreshTask(target EmbyRefreshTarget, syncPathId uint, now int64) *EmbyLibraryRefreshTask {
 	task := &EmbyLibraryRefreshTask{
+		MediaServerType:     refreshTargetServerType(target),
+		ServerID:            target.ServerID,
 		TaskKey:             embyItemRefreshTaskKey(target.ItemID),
 		LibraryId:           target.FallbackLibraryId,
 		LibraryName:         target.ItemName,
@@ -902,7 +971,7 @@ func upsertEmbyItemRefreshTaskWithDB(tx *gorm.DB, target EmbyRefreshTarget, sync
 	target = ensureEmbyItemRefreshTargetFallbackLibrary(tx, target, syncPathId)
 	key := embyItemRefreshTaskKey(target.ItemID)
 	var task EmbyLibraryRefreshTask
-	err := lockEmbyRefreshTaskQuery(tx).Where("task_key = ?", key).First(&task).Error
+	err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, target)).Where("task_key = ?", key).First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		task = *newPendingEmbyItemRefreshTask(target, syncPathId, now)
 		created, err := createEmbyLibraryRefreshTaskIfAbsent(tx, &task)
@@ -912,7 +981,7 @@ func upsertEmbyItemRefreshTaskWithDB(tx *gorm.DB, target EmbyRefreshTarget, sync
 		if created {
 			return nil
 		}
-		if err := lockEmbyRefreshTaskQuery(tx).Where("task_key = ?", key).First(&task).Error; err != nil {
+		if err := lockEmbyRefreshTaskQuery(refreshTaskScopeQuery(tx, target)).Where("task_key = ?", key).First(&task).Error; err != nil {
 			return err
 		}
 	}
@@ -997,7 +1066,7 @@ func cancelPendingEmbyLibraryRefreshTasksBySyncPathIdsWithDB(tx *gorm.DB, syncPa
 		}).Error
 }
 
-// CancelPendingEmbyLibraryRefreshTasksBySyncPathIds 按同步目录取消待执行的 Emby 媒体库刷新任务。
+// CancelPendingEmbyLibraryRefreshTasksBySyncPathIds 按同步目录取消待执行的 媒体库刷新任务。
 func CancelPendingEmbyLibraryRefreshTasksBySyncPathIds(syncPathIds []uint, reason string) error {
 	return withEmbyRefreshTaskMutationLock(db.Db, func() error {
 		return db.Db.Transaction(func(tx *gorm.DB) error {
@@ -1008,10 +1077,10 @@ func CancelPendingEmbyLibraryRefreshTasksBySyncPathIds(syncPathIds []uint, reaso
 
 func createEmbyLibraryRefreshTaskIfAbsent(tx *gorm.DB, task *EmbyLibraryRefreshTask) (bool, error) {
 	if tx == nil || task == nil {
-		return false, errors.New("Emby 媒体库刷新任务为空")
+		return false, errors.New("媒体库刷新任务为空")
 	}
 	result := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "task_key"}},
+		Columns:   []clause.Column{{Name: "media_server_type"}, {Name: "server_id"}, {Name: "task_key"}},
 		DoNothing: true,
 	}).Create(task)
 	if result.Error != nil {
@@ -1038,7 +1107,7 @@ func TriggerEmbyLibraryRefreshCheck() {
 func nextPendingEmbyLibraryRefreshCheckAt(now int64) (int64, bool, error) {
 	var task EmbyLibraryRefreshTask
 	err := db.Db.Select("refresh_after_at").
-		Where("status = ?", EmbyLibraryRefreshStatusPending).
+		Where("status = ? AND media_server_type IN ?", EmbyLibraryRefreshStatusPending, schedulableMediaLibraryRefreshTypes()).
 		Where("refresh_after_at > ?", now).
 		Order("refresh_after_at ASC").
 		First(&task).Error
@@ -1054,7 +1123,7 @@ func nextPendingEmbyLibraryRefreshCheckAt(now int64) (int64, bool, error) {
 func hasDueUncheckedEmbyLibraryRefreshTask(now int64) (bool, error) {
 	var count int64
 	err := db.Db.Model(&EmbyLibraryRefreshTask{}).
-		Where("status = ?", EmbyLibraryRefreshStatusPending).
+		Where("status = ? AND media_server_type IN ?", EmbyLibraryRefreshStatusPending, schedulableMediaLibraryRefreshTypes()).
 		Where("refresh_after_at <= ?", now).
 		Where("(last_checked_at = 0 OR last_checked_at < refresh_after_at)").
 		Count(&count).Error
@@ -1111,7 +1180,7 @@ func setNextEmbyLibraryRefreshCheckTimer(nextCheckAt int64, hasNext bool) {
 	embyRefreshTimerState.nextCheckAt = nextCheckAt
 }
 
-// ScheduleNextEmbyLibraryRefreshCheck 调度最近一个未来的 Emby 媒体库刷新检查。
+// ScheduleNextEmbyLibraryRefreshCheck 调度最近一个未来的 媒体库刷新检查。
 func ScheduleNextEmbyLibraryRefreshCheck() {
 	if db.Db == nil {
 		return
@@ -1119,12 +1188,12 @@ func ScheduleNextEmbyLibraryRefreshCheck() {
 	now := nowUnix()
 	dueUnchecked, err := hasDueUncheckedEmbyLibraryRefreshTask(now)
 	if err != nil {
-		helpers.AppLogger.Errorf("查询已到期 Emby 媒体库刷新任务失败：%v", err)
+		helpers.AppLogger.Errorf("查询已到期 媒体库刷新任务失败：%v", err)
 		return
 	}
 	nextCheckAt, hasNext, err := nextPendingEmbyLibraryRefreshCheckAt(now)
 	if err != nil {
-		helpers.AppLogger.Errorf("调度下一次 Emby 媒体库刷新检查失败：%v", err)
+		helpers.AppLogger.Errorf("调度下一次 媒体库刷新检查失败：%v", err)
 		return
 	}
 	setNextEmbyLibraryRefreshCheckTimer(nextCheckAt, hasNext)
@@ -1165,7 +1234,7 @@ func HasActiveStrmSyncTask(syncPathIds []uint) bool {
 func getEmbyRefreshTaskLibraryIds(task *EmbyLibraryRefreshTask) []string {
 	libraryIds, err := getEmbyRefreshTaskLibraryIdsWithDB(db.Db, task)
 	if err != nil {
-		helpers.AppLogger.Errorf("查询 Emby 刷新任务真实媒体库失败：%v", err)
+		helpers.AppLogger.Errorf("查询媒体库刷新任务真实媒体库失败：%v", err)
 		return []string{}
 	}
 	return libraryIds
@@ -1184,7 +1253,7 @@ func getEmbyRefreshTaskLibraryIdsWithDB(tx *gorm.DB, task *EmbyLibraryRefreshTas
 	}
 	libraryIDs := make([]string, 0, len(itemIds))
 	for _, itemId := range itemIds {
-		resolution, err := resolveEmbyTargetLibraryWithDB(tx, EmbyRefreshTarget{
+		resolution, err := resolveEmbyTargetLibraryWithDB(tx, EmbyRefreshTarget{MediaServerType: task.MediaServerType, ServerID: task.ServerID,
 			TargetType:          EmbyRefreshTargetTypeItem,
 			ItemID:              itemId,
 			FallbackLibraryId:   task.FallbackLibraryId,
@@ -1200,11 +1269,11 @@ func getEmbyRefreshTaskLibraryIdsWithDB(tx *gorm.DB, task *EmbyLibraryRefreshTas
 	return mergeStringIds(libraryIDs, nil), nil
 }
 
-// GetEmbySyncPathIdsByLibraryIds 查询多个 Emby 媒体库关联的同步目录。
+// GetEmbySyncPathIdsByLibraryIds 查询多个 媒体库关联的同步目录。
 func GetEmbySyncPathIdsByLibraryIds(libraryIds []string) []uint {
 	syncPathIds, err := getEmbySyncPathIdsByLibraryIdsWithDB(db.Db, libraryIds)
 	if err != nil {
-		helpers.AppLogger.Errorf("查询 Emby 媒体库关联同步目录失败：%v", err)
+		helpers.AppLogger.Errorf("查询 媒体库关联同步目录失败：%v", err)
 		return []uint{}
 	}
 	return syncPathIds
@@ -1214,7 +1283,7 @@ func GetEmbySyncPathIdsByLibraryId(libraryId string) []uint {
 	return GetEmbySyncPathIdsByLibraryIds([]string{libraryId})
 }
 
-func getEmbySyncPathIdsByLibraryIdsWithDB(tx *gorm.DB, libraryIds []string) ([]uint, error) {
+func getEmbySyncPathIdsByLibraryIdsWithDB(tx *gorm.DB, libraryIds []string, kinds ...MediaServerType) ([]uint, error) {
 	if tx == nil {
 		return []uint{}, nil
 	}
@@ -1223,7 +1292,7 @@ func getEmbySyncPathIdsByLibraryIdsWithDB(tx *gorm.DB, libraryIds []string) ([]u
 		return []uint{}, nil
 	}
 	var relations []EmbyLibrarySyncPath
-	if err := tx.Where("library_id IN ?", libraryIds).Find(&relations).Error; err != nil {
+	if err := tx.Where("media_server_type = ?", refreshServerType(kinds...)).Where("library_id IN ?", libraryIds).Find(&relations).Error; err != nil {
 		return nil, err
 	}
 	ids := make([]uint, 0, len(relations))
@@ -1238,13 +1307,13 @@ func getEmbySyncPathIdsByLibraryIdsWithDB(tx *gorm.DB, libraryIds []string) ([]u
 func getEmbyLibraryIdsBySyncPathIds(syncPathIds []uint) []string {
 	libraryIds, err := getEmbyLibraryIdsBySyncPathIdsWithDB(db.Db, syncPathIds)
 	if err != nil {
-		helpers.AppLogger.Errorf("查询同步目录关联 Emby 媒体库失败：%v", err)
+		helpers.AppLogger.Errorf("查询同步目录关联 媒体库失败：%v", err)
 		return []string{}
 	}
 	return libraryIds
 }
 
-func getEmbyLibraryIdsBySyncPathIdsWithDB(tx *gorm.DB, syncPathIds []uint) ([]string, error) {
+func getEmbyLibraryIdsBySyncPathIdsWithDB(tx *gorm.DB, syncPathIds []uint, kinds ...MediaServerType) ([]string, error) {
 	if tx == nil {
 		return []string{}, nil
 	}
@@ -1253,7 +1322,7 @@ func getEmbyLibraryIdsBySyncPathIdsWithDB(tx *gorm.DB, syncPathIds []uint) ([]st
 		return []string{}, nil
 	}
 	var relations []EmbyLibrarySyncPath
-	if err := tx.Where("sync_path_id IN ?", syncPathIds).Find(&relations).Error; err != nil {
+	if err := tx.Where("media_server_type = ?", refreshServerType(kinds...)).Where("sync_path_id IN ?", syncPathIds).Find(&relations).Error; err != nil {
 		return nil, err
 	}
 	libraryIds := make([]string, 0, len(relations))
@@ -1292,7 +1361,14 @@ func getPendingEmbyRefreshTaskIdsByScopeWithDB(tx *gorm.DB, syncPathIDs []uint, 
 		if err != nil {
 			return nil, err
 		}
-		if hasStringIntersection(taskLibraryIds, libraryIds) {
+		taskRelatedLibraryIDs, err := getEmbyLibraryIdsBySyncPathIdsWithDB(tx, syncPathIDs, tasks[i].MediaServerType)
+		if err != nil {
+			return nil, err
+		}
+		if len(syncPathIDs) == 0 && tasks[i].MediaServerType == MediaServerEmby {
+			taskRelatedLibraryIDs = libraryIds
+		}
+		if hasStringIntersection(taskLibraryIds, taskRelatedLibraryIDs) {
 			taskIds = append(taskIds, tasks[i].ID)
 		}
 	}
@@ -1357,7 +1433,7 @@ func IsEmbyLibraryRefreshTaskReady(task *EmbyLibraryRefreshTask, now int64) (boo
 	if err != nil {
 		return false, "library_query_error", err
 	}
-	librarySyncPathIds, err := getEmbySyncPathIdsByLibraryIdsWithDB(db.Db, libraryIds)
+	librarySyncPathIds, err := getEmbySyncPathIdsByLibraryIdsWithDB(db.Db, libraryIds, task.MediaServerType)
 	if err != nil {
 		return false, "library_query_error", err
 	}
@@ -1510,24 +1586,54 @@ func flushPendingEmbyRefreshDownloadTaskChanges() error {
 	return nil
 }
 
-func runEmbyLibraryRefreshDownloadEventBatcher() {
+func runEmbyLibraryRefreshDownloadEventBatcher(stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(DefaultEmbyRefreshDownloadEventBatchSeconds) * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := flushPendingEmbyRefreshDownloadTaskChanges(); err != nil {
-			helpers.AppLogger.Errorf("批量处理下载任务状态变化事件失败：%v", err)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := flushPendingEmbyRefreshDownloadTaskChanges(); err != nil {
+				helpers.AppLogger.Errorf("批量处理下载任务状态变化事件失败：%v", err)
+			}
 		}
 	}
 }
 
+// InitEmbyLibraryRefreshCoordinator 恢复任务后启动共享管理者及两个有界执行分支。
 func InitEmbyLibraryRefreshCoordinator() {
-	embyRefreshCoordinatorOnce.Do(func() {
-		resetRefreshingEmbyLibraryRefreshTasks()
-		helpers.Subscribe(helpers.DownloadTaskStatusChangedEvent, HandleDownloadTaskStatusChanged)
-		go runEmbyLibraryRefreshDownloadEventBatcher()
-		go runEmbyLibraryRefreshScanner()
-		ScheduleNextEmbyLibraryRefreshCheck()
-	})
+	embyRefreshCoordinatorState.Lock()
+	defer embyRefreshCoordinatorState.Unlock()
+	if embyRefreshCoordinatorState.stop != nil {
+		return
+	}
+	resetRefreshingEmbyLibraryRefreshTasks()
+	embyRefreshCoordinatorOnce.Do(func() { helpers.Subscribe(helpers.DownloadTaskStatusChangedEvent, HandleDownloadTaskStatusChanged) })
+	stop, done := make(chan struct{}), make(chan struct{})
+	embyRefreshCoordinatorState.stop, embyRefreshCoordinatorState.done = stop, done
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); runEmbyLibraryRefreshDownloadEventBatcher(stop) }()
+		go func() { defer wg.Done(); runEmbyLibraryRefreshScanner(stop) }()
+		wg.Wait()
+		close(done)
+	}()
+	ScheduleNextEmbyLibraryRefreshCheck()
+}
+
+// StopEmbyLibraryRefreshCoordinator 等待全部在途刷新退出，再允许恢复或重新启动。
+func StopEmbyLibraryRefreshCoordinator() {
+	embyRefreshCoordinatorState.Lock()
+	defer embyRefreshCoordinatorState.Unlock()
+	if embyRefreshCoordinatorState.stop == nil {
+		return
+	}
+	close(embyRefreshCoordinatorState.stop)
+	<-embyRefreshCoordinatorState.done
+	resetEmbyRefreshTimerState()
+	embyRefreshCoordinatorState.stop, embyRefreshCoordinatorState.done = nil, nil
 }
 
 func resetRefreshingEmbyLibraryRefreshTasks() {
@@ -1540,7 +1646,7 @@ func resetRefreshingEmbyLibraryRefreshTasks() {
 			"refresh_after_at": now + DefaultEmbyRefreshDebounceSeconds,
 			"error":            "服务重启后重置刷新中任务",
 		}).Error; err != nil {
-		helpers.AppLogger.Errorf("重置 Emby 媒体库刷新中任务失败：%v", err)
+		helpers.AppLogger.Errorf("重置 媒体库刷新中任务失败：%v", err)
 	}
 }
 
@@ -1569,93 +1675,178 @@ func updatePendingEmbyRefreshTaskCheckResult(task *EmbyLibraryRefreshTask, now i
 	})
 }
 
-func runEmbyLibraryRefreshScanner() {
+func runEmbyLibraryRefreshScanner(stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(DefaultEmbyRefreshScanSeconds) * time.Second)
 	defer ticker.Stop()
+	workers := map[MediaServerType]chan struct{}{MediaServerEmby: make(chan struct{}, 1), MediaServerJellyfin: make(chan struct{}, 1)}
+	var wg sync.WaitGroup
+	for kind, wake := range workers {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				case <-wake:
+					if isMediaLibraryRefreshEnabled(kind) {
+						checkPendingMediaLibraryRefreshTasks(kind, nowUnix(), stop)
+					}
+					ScheduleNextEmbyLibraryRefreshCheck()
+				}
+			}
+		})
+	}
+	defer wg.Wait()
 	for {
 		select {
+		case <-stop:
+			return
 		case <-embyRefreshCheckChan:
-			CheckPendingEmbyLibraryRefreshTasks()
 		case <-ticker.C:
-			CheckPendingEmbyLibraryRefreshTasks()
+		}
+		if db.IsMaintenance(db.Db) {
+			continue
+		}
+		if err := flushPendingEmbyRefreshDownloadTaskChanges(); err != nil {
+			helpers.AppLogger.Errorf("处理下载变化失败：%v", err)
+		}
+		if err := reconcilePendingEmbyRefreshTasks(nowUnix()); err != nil {
+			helpers.AppLogger.Errorf("协调媒体库刷新任务失败：%v", err)
+			continue
+		}
+		for kind, wake := range workers {
+			if !isMediaLibraryRefreshEnabled(kind) {
+				continue
+			}
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
 
-func CheckPendingEmbyLibraryRefreshTasks() {
-	if !isEmbyLibraryRefreshEnabled() {
-		if markEmbyRefreshScannerConfigState(false) {
-			helpers.AppLogger.Infof("Emby 未配置或未启用刷新媒体库，暂停待刷新任务扫描")
+func schedulableMediaLibraryRefreshTypes() []MediaServerType {
+	var kinds []MediaServerType
+	for _, kind := range enabledMediaLibraryRefreshTypes() {
+		lock := mediaRefreshExecutionLocks[kind]
+		if lock.TryLock() {
+			lock.Unlock()
+			kinds = append(kinds, kind)
 		}
+	}
+	return kinds
+}
+
+func CheckPendingEmbyLibraryRefreshTasks() {
+	kinds := enabledMediaLibraryRefreshTypes()
+	if len(kinds) == 0 {
 		return
 	}
-	markEmbyRefreshScannerConfigState(true)
 	defer ScheduleNextEmbyLibraryRefreshCheck()
 	if err := flushPendingEmbyRefreshDownloadTaskChanges(); err != nil {
-		helpers.AppLogger.Errorf("扫描 Emby 媒体库刷新任务前批量处理下载事件失败：%v", err)
+		helpers.AppLogger.Errorf("处理下载变化失败：%v", err)
 	}
-
 	now := nowUnix()
 	if err := reconcilePendingEmbyRefreshTasks(now); err != nil {
-		helpers.AppLogger.Errorf("协调 Emby 媒体库 pending 刷新任务失败：%v", err)
+		helpers.AppLogger.Errorf("协调媒体库刷新任务失败：%v", err)
 		return
 	}
+	var wg sync.WaitGroup
+	for _, kind := range kinds {
+		wg.Go(func() { checkPendingMediaLibraryRefreshTasks(kind, now, nil) })
+	}
+	wg.Wait()
+}
+
+func checkPendingMediaLibraryRefreshTasks(kind MediaServerType, now int64, stop <-chan struct{}) {
+	lock := mediaRefreshExecutionLocks[kind]
+	if lock == nil || !lock.TryLock() {
+		return
+	}
+	defer lock.Unlock()
 
 	var tasks []EmbyLibraryRefreshTask
-	if err := db.Db.Where("status = ?", EmbyLibraryRefreshStatusPending).
+	if err := db.Db.Where("status = ? AND media_server_type = ?", EmbyLibraryRefreshStatusPending, kind).
 		Where("refresh_after_at <= ? OR deadline_at <= ?", now, now).
 		Order("updated_at ASC").
 		Find(&tasks).Error; err != nil {
-		helpers.AppLogger.Errorf("查询 Emby 媒体库待刷新任务失败：%v", err)
+		helpers.AppLogger.Errorf("查询 媒体库待刷新任务失败：%v", err)
 		return
 	}
 
 	for i := range tasks {
+		select {
+		case <-stop:
+			return
+		default:
+		}
 		task := tasks[i]
 		ready, reason, err := IsEmbyLibraryRefreshTaskReady(&task, now)
 		if err != nil {
 			if updateErr := updatePendingEmbyRefreshTaskCheckResult(&task, now, err); updateErr != nil {
-				helpers.AppLogger.Errorf("记录 Emby 媒体库 %s 刷新任务检查错误失败：%v", task.LibraryName, updateErr)
+				helpers.AppLogger.Errorf("记录 媒体库 %s 刷新任务检查错误失败：%v", task.LibraryName, updateErr)
 			}
 			continue
 		}
 		if reason == "deadline_expired" {
 			if err := markEmbyRefreshTaskCancelled(&task, "等待超过最大时长，取消刷新"); err != nil {
-				helpers.AppLogger.Errorf("取消 Emby 媒体库 %s 刷新任务失败：%v", task.LibraryName, err)
+				helpers.AppLogger.Errorf("取消 媒体库 %s 刷新任务失败：%v", task.LibraryName, err)
 				continue
 			}
 			if task.Status == EmbyLibraryRefreshStatusCancelled {
-				helpers.AppLogger.Warnf("Emby 媒体库 %s 等待超过最大时长，取消刷新", task.LibraryName)
+				helpers.AppLogger.Warnf("媒体库 %s 等待超过最大时长，取消刷新", task.LibraryName)
 			}
 			continue
 		}
 		if !ready {
 			if updateErr := updatePendingEmbyRefreshTaskCheckResult(&task, now, nil); updateErr != nil {
-				helpers.AppLogger.Errorf("记录 Emby 媒体库 %s 刷新任务检查时间失败：%v", task.LibraryName, updateErr)
+				helpers.AppLogger.Errorf("记录 媒体库 %s 刷新任务检查时间失败：%v", task.LibraryName, updateErr)
 			}
-			helpers.AppLogger.Debugf("Emby 媒体库 %s 暂不刷新，原因：%s", task.LibraryName, reason)
+			helpers.AppLogger.Debugf("媒体库 %s 暂不刷新，原因：%s", task.LibraryName, reason)
 			continue
 		}
 		if err := refreshEmbyLibraryTask(&task); err != nil {
-			helpers.AppLogger.Errorf("刷新 Emby 媒体库 %s 失败：%v", task.LibraryName, err)
+			helpers.AppLogger.Errorf("刷新 媒体库 %s 失败：%v", task.LibraryName, err)
 		}
 	}
 }
 
 func refreshEmbyLibraryTask(task *EmbyLibraryRefreshTask) error {
-	if GlobalEmbyConfig == nil || GlobalEmbyConfig.EmbyUrl == "" || GlobalEmbyConfig.EmbyApiKey == "" || GlobalEmbyConfig.EnableRefreshLibrary == 0 {
+	if task == nil || !isMediaLibraryRefreshEnabled(task.MediaServerType) {
 		return nil
 	}
-	if task == nil {
+	var current EmbyLibraryRefreshTask
+	if err := db.Db.First(&current, task.ID).Error; err != nil {
+		return err
+	}
+	if current.Status != EmbyLibraryRefreshStatusPending || current.RefreshAfterAt > nowUnix() || (current.DeadlineAt > 0 && current.DeadlineAt <= nowUnix()) {
 		return nil
 	}
-	claimed, err := claimEmbyRefreshTaskForExecution(task)
+	*task = current
+	config, err := ReadMediaLibraryConfigSnapshot(task.MediaServerType)
+	if err != nil {
+		return err
+	}
+	client := config.Client()
+	// 旧任务没有可信服务器身份，不能用新连接补造原目标。
+	if task.ServerID == "" {
+		return cancelEmbyRefreshTaskForIdentity(task, "刷新任务缺少原服务器身份，请重新提交")
+	}
+	serverID, err := client.GetServerID(context.Background())
+	if err != nil {
+		return updatePendingEmbyRefreshTaskCheckResult(task, nowUnix(), err)
+	}
+	if serverID != task.ServerID {
+		return cancelEmbyRefreshTaskForIdentity(task, "刷新目标所属服务器已变更")
+	}
+	claimed, err := claimEmbyRefreshTaskForExecution(task, config)
 	if err != nil || !claimed {
 		return err
 	}
-
-	client := embyclientrestgo.NewClient(GlobalEmbyConfig.EmbyUrl, GlobalEmbyConfig.EmbyApiKey)
-	if executeErr := executeEmbyRefreshTask(client, task); executeErr != nil {
+	if executeErr := executeEmbyRefreshTask(client, task, config); executeErr != nil {
+		if errors.Is(executeErr, errMediaLibraryRefreshConfigChanged) {
+			return db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ? AND status = ?", task.ID, EmbyLibraryRefreshStatusRefreshing).Updates(map[string]any{"status": EmbyLibraryRefreshStatusPending, "last_checked_at": nowUnix(), "error": ""}).Error
+		}
 		if markErr := markEmbyRefreshTaskFailed(task, executeErr.Error()); markErr != nil {
 			return errors.Join(executeErr, markErr)
 		}
@@ -1664,7 +1855,7 @@ func refreshEmbyLibraryTask(task *EmbyLibraryRefreshTask) error {
 	return markEmbyRefreshTaskCompleted(task)
 }
 
-func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask) (bool, error) {
+func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask, expectedConfigs ...*EmbyConfig) (bool, error) {
 	if task == nil || task.ID == 0 {
 		return false, nil
 	}
@@ -1678,6 +1869,27 @@ func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask) (bool, error
 					return nil
 				}
 				return err
+			}
+			if err := current.MediaServerType.Validate(); err != nil {
+				return err
+			}
+			var config struct {
+				Enabled              bool
+				EnableRefreshLibrary int
+				URL                  string
+				APIKey               string
+			}
+			kind := string(current.MediaServerType)
+			configErr := tx.Table(mediaLibraryConfigTable(current.MediaServerType)).
+				Select("enabled, enable_refresh_library, " + kind + "_url AS url, " + kind + "_api_key AS api_key").Order("id ASC").Take(&config).Error
+			if configErr != nil {
+				return configErr
+			}
+			if len(expectedConfigs) > 0 && (config.URL != expectedConfigs[0].EmbyUrl || config.APIKey != expectedConfigs[0].EmbyApiKey) {
+				return nil
+			}
+			if !config.Enabled || config.EnableRefreshLibrary == 0 || db.IsMaintenance(tx) {
+				return nil
 			}
 			if current.Status != EmbyLibraryRefreshStatusPending ||
 				current.RefreshAfterAt > now ||
@@ -1706,15 +1918,48 @@ func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask) (bool, error
 	return claimed, err
 }
 
-func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRefreshTask) error {
+func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRefreshTask, configs ...*EmbyConfig) error {
+	checkConfig := func() error {
+		if len(configs) == 0 {
+			return nil
+		}
+		if err := task.MediaServerType.Validate(); err != nil {
+			return err
+		}
+		if db.IsMaintenance(db.Db) {
+			return errMediaLibraryRefreshConfigChanged
+		}
+		var current struct {
+			Enabled              bool
+			EnableRefreshLibrary int
+			URL                  string
+			APIKey               string
+		}
+		kind := string(task.MediaServerType)
+		err := db.Db.Table(mediaLibraryConfigTable(task.MediaServerType)).
+			Select("enabled, enable_refresh_library, " + kind + "_url AS url, " + kind + "_api_key AS api_key").Order("id ASC").Take(&current).Error
+		if err != nil {
+			return err
+		}
+		if !current.Enabled || current.EnableRefreshLibrary == 0 || current.URL != configs[0].EmbyUrl || current.APIKey != configs[0].EmbyApiKey {
+			return errMediaLibraryRefreshConfigChanged
+		}
+		return nil
+	}
+	if err := checkConfig(); err != nil {
+		return err
+	}
 	if task.TargetType == EmbyLibraryRefreshTargetTypeItem {
 		itemIds := task.GetItemIds()
 		if len(itemIds) == 0 {
-			return errors.New("Emby item 刷新任务缺少 item ID")
+			return errors.New("媒体条目 刷新任务缺少 item ID")
 		}
 		for _, itemId := range itemIds {
+			if err := checkConfig(); err != nil {
+				return err
+			}
 			if err := client.RefreshItem(itemId, task.LibraryName, task.ItemRecursive); err != nil {
-				resolution, resolveErr := resolveEmbyTargetLibraryWithDB(db.Db, EmbyRefreshTarget{
+				resolution, resolveErr := resolveEmbyTargetLibraryWithDB(db.Db, EmbyRefreshTarget{MediaServerType: task.MediaServerType, ServerID: task.ServerID,
 					TargetType:          EmbyRefreshTargetTypeItem,
 					ItemID:              itemId,
 					FallbackLibraryId:   task.FallbackLibraryId,
@@ -1723,8 +1968,11 @@ func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRe
 				if resolveErr != nil {
 					return errors.Join(err, resolveErr)
 				}
+				if err := checkConfig(); err != nil {
+					return err
+				}
 				if !resolution.Resolved {
-					resolution = resolveEmbyTargetLibraryRemote(EmbyRefreshTarget{TargetType: EmbyRefreshTargetTypeItem, ItemID: itemId})
+					resolution = resolveEmbyTargetLibraryRemote(EmbyRefreshTarget{MediaServerType: task.MediaServerType, ServerID: task.ServerID, TargetType: EmbyRefreshTargetTypeItem, ItemID: itemId}, configs...)
 				}
 				if !resolution.Resolved {
 					return err
@@ -1736,6 +1984,9 @@ func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRe
 					"fallback_library_name": task.FallbackLibraryName,
 				}).Error; saveErr != nil {
 					return errors.Join(err, saveErr)
+				}
+				if err := checkConfig(); err != nil {
+					return err
 				}
 				return client.RefreshLibrary(task.FallbackLibraryId, task.FallbackLibraryName)
 			}
@@ -1829,4 +2080,8 @@ func uniqueUintIds(ids []uint) []uint {
 
 func nowUnix() int64 {
 	return time.Now().Unix()
+}
+
+func cancelEmbyRefreshTaskForIdentity(task *EmbyLibraryRefreshTask, reason string) error {
+	return db.Db.Model(&EmbyLibraryRefreshTask{}).Where("id = ? AND status = ? AND server_id = ? AND last_event_at = ?", task.ID, EmbyLibraryRefreshStatusPending, task.ServerID, task.LastEventAt).Updates(map[string]any{"status": EmbyLibraryRefreshStatusCancelled, "error": reason, "last_checked_at": nowUnix()}).Error
 }

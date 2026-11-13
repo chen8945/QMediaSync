@@ -10,14 +10,14 @@ import (
 	"testing"
 	"testing/synctest"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
 func pipelineSnapshots(ids ...string) []models.EmbyItemSnapshot {
 	snapshots := make([]models.EmbyItemSnapshot, 0, len(ids))
 	for _, id := range ids {
-		snapshots = append(snapshots, models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: id}})
+		snapshots = append(snapshots, models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: id}})
 	}
 	return snapshots
 }

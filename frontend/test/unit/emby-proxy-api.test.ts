@@ -1,15 +1,15 @@
 import axios, { AxiosError, CanceledError, type AxiosInstance } from 'axios'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  embyPublicMessages,
-  extractEmbyMediaInfo,
-  fetchEmbyConfig,
-  fetchEmbyLibraries,
-  fetchEmbySyncStatus,
-  saveEmbyConfig,
-  startEmbySync,
-  type EmbyConfig,
-} from '@/api/emby'
+  mediaLibraryPublicMessages,
+  extractMediaLibraryMediaInfo,
+  fetchMediaLibraryConfig,
+  fetchMediaLibraryLibraries,
+  fetchMediaLibrarySyncStatus,
+  saveMediaLibraryConfig,
+  startMediaLibrarySync,
+  type MediaLibraryConfig,
+} from '@/api/mediaLibrary'
 import {
   fetchProxySettings,
   proxySettingsPublicMessages,
@@ -18,9 +18,11 @@ import {
 } from '@/api/proxySettings'
 import { HttpResponseError, markAuthInvalidationHandled, parseHttpError } from '@/http/errors'
 
-const emby: EmbyConfig = {
-  emby_url: 'http://emby:8096',
-  emby_api_key: 'private-key',
+const emby: MediaLibraryConfig = {
+  enabled: true,
+  enable_media_notification: 0,
+  server_url: 'http://emby:8096',
+  api_key: 'private-key',
   sync_enabled: 1,
   sync_cron: '0 * * * *',
   enable_refresh_library: 1,
@@ -34,17 +36,20 @@ const emby: EmbyConfig = {
   enable_playback_progress: 0,
   path_mappings: [],
 }
+const embyDTO = { ...emby, emby_url: emby.server_url, emby_api_key: emby.api_key }
+delete (embyDTO as Partial<typeof embyDTO>).server_url
+delete (embyDTO as Partial<typeof embyDTO>).api_key
 const proxy = {
   http_proxy: 'http://user:private-password@proxy:8080',
   preserve_proxy_credentials: false,
 }
 const operations: [string, (http: AxiosInstance) => Promise<unknown>][] = [
-  ['Emby config', fetchEmbyConfig],
-  ['save Emby', (http) => saveEmbyConfig(http, emby)],
-  ['libraries', fetchEmbyLibraries],
-  ['extract', (http) => extractEmbyMediaInfo(http)],
-  ['sync start', startEmbySync],
-  ['sync status', fetchEmbySyncStatus],
+  ['Emby config', (http) => fetchMediaLibraryConfig(http, 'emby')],
+  ['save Emby', (http) => saveMediaLibraryConfig(http, 'emby', emby)],
+  ['libraries', (http) => fetchMediaLibraryLibraries(http, 'emby')],
+  ['extract', (http) => extractMediaLibraryMediaInfo(http, 'emby')],
+  ['sync start', (http) => startMediaLibrarySync(http, 'emby')],
+  ['sync status', (http) => fetchMediaLibrarySyncStatus(http, 'emby')],
   ['proxy settings', fetchProxySettings],
   ['save proxy', (http) => saveProxySettings(http, proxy)],
   ['test proxy', (http) => testProxyConnection(http, proxy)],
@@ -60,7 +65,9 @@ describe('Emby 与代理 API', () => {
       data: {
         code: 200,
         data: config.url.endsWith('/emby-config')
-          ? { exists: true, config: emby }
+          ? config.method === 'post'
+            ? { warnings: [], restart_required: false }
+            : { exists: true, config: embyDTO }
           : config.url.endsWith('/emby/libraries')
             ? []
             : { http_proxy: '', credentials_masked: '0' },
@@ -80,7 +87,7 @@ describe('Emby 与代理 API', () => {
       ['post', '/api/setting/http-proxy'],
       ['post', '/api/setting/test-http-proxy'],
     ])
-    expect(JSON.parse(configs[1].data)).toEqual(emby)
+    expect(JSON.parse(configs[1].data)).toEqual(embyDTO)
     expect(configs[3].data).toBeUndefined()
     expect(configs[4].data).toBeUndefined()
     for (const index of [1, 7, 8])
@@ -108,7 +115,7 @@ describe('Emby 与代理 API', () => {
     expect(failure).toBeInstanceOf(HttpResponseError)
     expect(failure).toMatchObject({ response: { data: body } })
     const parsed = parseHttpError(failure, {
-      publicMessages: { ...embyPublicMessages, ...proxySettingsPublicMessages },
+      publicMessages: { ...mediaLibraryPublicMessages, ...proxySettingsPublicMessages },
     })
     expect(JSON.stringify(parsed.diagnostics)).not.toContain('private')
   })
@@ -128,9 +135,9 @@ describe('Emby 与代理 API', () => {
       headers: {},
     }))
     const http = axios.create({ adapter })
-    await expect(fetchEmbyConfig(http)).resolves.toEqual({ exists: false })
-    await expect(fetchEmbySyncStatus(http)).resolves.toEqual({ exists: false })
-    await expect(fetchEmbyLibraries(http)).resolves.toEqual([])
+    await expect(fetchMediaLibraryConfig(http, 'emby')).resolves.toEqual({ exists: false })
+    await expect(fetchMediaLibrarySyncStatus(http, 'emby')).resolves.toEqual({ exists: false })
+    await expect(fetchMediaLibraryLibraries(http, 'emby')).resolves.toEqual([])
     await expect(
       saveProxySettings(http, { http_proxy: '', preserve_proxy_credentials: false }),
     ).resolves.toBeUndefined()
@@ -138,7 +145,7 @@ describe('Emby 与代理 API', () => {
       http_proxy: '',
       preserve_proxy_credentials: false,
     })
-    await expect(extractEmbyMediaInfo(http)).resolves.toBeUndefined()
+    await expect(extractMediaLibraryMediaInfo(http, 'emby')).resolves.toBeUndefined()
     await expect(testProxyConnection(http, proxy)).resolves.toBeUndefined()
   })
 
@@ -167,7 +174,7 @@ describe('Emby 与代理 API', () => {
           data: { code: 200, data },
         }),
       })
-      await expect(fetchEmbyConfig(http)).rejects.toBeInstanceOf(HttpResponseError)
+      await expect(fetchMediaLibraryConfig(http, 'emby')).rejects.toBeInstanceOf(HttpResponseError)
     },
   )
 
@@ -187,7 +194,10 @@ describe('Emby 与代理 API', () => {
         data: { code: 200, data },
       }),
     })
-    await expect(fetchEmbyConfig(http)).resolves.toEqual(data)
+    await expect(fetchMediaLibraryConfig(http, 'emby')).resolves.toEqual({
+      ...data,
+      config: { ...data.config, server_url: undefined, api_key: undefined },
+    })
   })
 
   it.each([
@@ -214,7 +224,7 @@ describe('Emby 与代理 API', () => {
         data: { code: 200, data: { exists: true, config: { path_mappings: mappings } } },
       }),
     })
-    await expect(fetchEmbyConfig(http)).rejects.toBeInstanceOf(HttpResponseError)
+    await expect(fetchMediaLibraryConfig(http, 'emby')).rejects.toBeInstanceOf(HttpResponseError)
   })
 
   it('取消、已处理 401 和写入超时保留原错误且不重试', async () => {
@@ -236,7 +246,9 @@ describe('Emby 与代理 API', () => {
   it('来源错误优先于第三方连接说明', () => {
     const message = '已有 Emby 条目同步任务正在运行，请稍后再试'
     const failure = { response: { status: 200, data: { code: 500, message } } }
-    expect(parseHttpError(failure, { publicMessages: embyPublicMessages }).message).toBe(message)
+    expect(parseHttpError(failure, { publicMessages: mediaLibraryPublicMessages }).message).toBe(
+      message,
+    )
     const origin = {
       response: {
         status: 403,

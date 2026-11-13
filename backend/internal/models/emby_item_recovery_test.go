@@ -81,7 +81,7 @@ func TestEmbyItemRecoveryReadIDsRejectStaleToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		_, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101"})
+		_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101"})
 		return err
 	}); err != nil {
 		t.Fatal(err)

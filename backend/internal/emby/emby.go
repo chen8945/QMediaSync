@@ -11,15 +11,23 @@ import (
 	"sync/atomic"
 	"time"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
 var embySyncRunning atomic.Int32
+var jellyfinSyncRunning atomic.Int32
+
+func mediaSyncRunning(kind models.MediaServerType) *atomic.Int32 {
+	if kind == models.MediaServerJellyfin {
+		return &jellyfinSyncRunning
+	}
+	return &embySyncRunning
+}
 
 // ErrEmbySyncBusy 让持久 Webhook 工作保留待处理状态。
-var ErrEmbySyncBusy = errors.New("Emby 条目同步任务已在运行")
+var ErrEmbySyncBusy = errors.New("媒体库条目同步任务已在运行")
 
 const (
 	embyIncrementalCursorOverlapSeconds int64 = 600
@@ -28,71 +36,94 @@ const (
 
 // IsEmbySyncRunning 检查是否有 Emby 条目同步任务正在运行。
 func IsEmbySyncRunning() bool {
-	return embySyncRunning.Load() == 1 || models.IsEmbySyncRunningInDB()
+	return IsMediaLibrarySyncRunning(models.MediaServerEmby)
+}
+
+// IsMediaLibrarySyncRunning 读取所属端的同步状态。
+func IsMediaLibrarySyncRunning(kind models.MediaServerType) bool {
+	if kind.Validate() != nil {
+		return false
+	}
+	return mediaSyncRunning(kind).Load() == 1 || models.IsMediaLibrarySyncRunningInDB(kind)
 }
 
 func SetEmbySyncRunning(running bool) {
-	if running {
-		embySyncRunning.Store(1)
-	} else {
-		embySyncRunning.Store(0)
+	_ = SetMediaLibrarySyncRunning(models.MediaServerEmby, running)
+}
+
+// SetMediaLibrarySyncRunning 在维护期间设置本端运行门禁。
+func SetMediaLibrarySyncRunning(kind models.MediaServerType, running bool) error {
+	if err := kind.Validate(); err != nil {
+		return err
 	}
+	if running {
+		mediaSyncRunning(kind).Store(1)
+	} else {
+		mediaSyncRunning(kind).Store(0)
+	}
+	return nil
 }
 
 // PerformEmbySync 全量同步 Emby 条目到本地数据库。
-func PerformEmbySync() (result int, err error) {
+func PerformEmbySync() (int, error) { return PerformMediaLibrarySync(models.MediaServerEmby) }
+
+// PerformMediaLibrarySync 同步所属端的全部条目。
+func PerformMediaLibrarySync(kind models.MediaServerType) (result int, err error) {
+	if err := kind.Validate(); err != nil {
+		return 0, err
+	}
 	startedAt := time.Now()
 	// 检查是否已有任务在运行，避免并发执行
-	if IsEmbySyncRunning() {
-		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+	if IsMediaLibrarySyncRunning(kind) {
+		helpers.AppLogger.Warnf("已有 %s 条目同步任务正在运行，跳过本次执行", kind.DisplayName())
 		return 0, nil
 	}
-	config, cerr := models.ReadEmbyConfigSnapshot()
+	config, cerr := models.ReadMediaLibraryConfigSnapshot(kind)
 	if cerr != nil {
 		return 0, cerr
 	}
 	if config.EmbyUrl == "" || config.EmbyApiKey == "" {
-		return 0, errors.New("Emby URL 或 API Key 为空")
+		return 0, fmt.Errorf("%s URL 或 API Key 为空", kind.DisplayName())
 	}
-	if config.SyncEnabled != 1 {
-		return 0, errors.New("Emby 条目同步未启用")
+	if !config.Enabled || config.SyncEnabled != 1 {
+		return 0, fmt.Errorf("%s 条目同步未启用", kind.DisplayName())
 	}
-	if !embySyncRunning.CompareAndSwap(0, 1) {
-		return 0, errors.New("Emby 条目同步任务已在运行")
+	if !mediaSyncRunning(kind).CompareAndSwap(0, 1) {
+		return 0, fmt.Errorf("%s 条目同步任务已在运行", kind.DisplayName())
 	}
 	scanStartedAt := helpers.NowUnix()
-	started, serr := models.StartEmbySyncRun(models.EmbySyncModeFull, scanStartedAt)
+	started, serr := models.StartMediaLibrarySyncRun(kind, models.EmbySyncModeFull, scanStartedAt)
 	if serr != nil {
-		embySyncRunning.Store(0)
+		mediaSyncRunning(kind).Store(0)
 		return 0, serr
 	}
 	if !started {
-		embySyncRunning.Store(0)
-		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+		mediaSyncRunning(kind).Store(0)
+		helpers.AppLogger.Warnf("已有 %s 条目同步任务正在运行，跳过本次执行", kind.DisplayName())
 		return 0, nil
 	}
 	var processed int64
-	var token models.EmbyIndexToken
+	token := models.EmbyIndexToken{MediaServerType: kind}
 	completed := false
 	selectedLibrariesComplete := true
 	defer func() {
-		defer embySyncRunning.Store(0)
+		defer mediaSyncRunning(kind).Store(0)
 		var cursorAt int64
 		if completed && selectedLibrariesComplete {
 			cursorAt = scanStartedAt
 		}
 		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeFull, processed, helpers.NowUnix(), cursorAt, err); ferr != nil {
-			helpers.AppLogger.Warnf("更新 Emby 同步状态失败：%v", ferr)
+			helpers.AppLogger.Warnf("更新媒体服务器同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
 			}
 		}
 		if completed && err == nil {
-			helpers.AppLogger.Infof("全量同步 Emby 条目到本地完成，处理 %d 个项目，耗时 %s，网盘查询 0 次", processed, time.Since(startedAt).Round(time.Millisecond))
+			helpers.AppLogger.Infof("%s 媒体库全量同步完成，共处理 %d 个条目，耗时 %s，网盘查询 0 次", mediaServerName(kind), processed, time.Since(startedAt).Round(time.Millisecond))
 		}
 	}()
 
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
 	if _, err = client.GetServerID(context.Background()); err != nil {
 		return 0, err
 	}
@@ -101,7 +132,7 @@ func PerformEmbySync() (result int, err error) {
 		return 0, err
 	}
 	if len(users) == 0 {
-		return 0, errors.New("没有找到可访问全部媒体库的 Emby 用户")
+		return 0, errors.New("没有找到可访问全部媒体库的媒体服务器用户")
 	}
 
 	libs, err := client.GetAllMediaLibraries()
@@ -109,9 +140,9 @@ func PerformEmbySync() (result int, err error) {
 		return 0, err
 	}
 	if len(libs) == 0 {
-		return 0, errors.New("未获取到任何 Emby 媒体库")
+		return 0, errors.New("未获取到任何媒体库")
 	}
-	if err := models.UpsertEmbyLibraries(libs); err != nil {
+	if err := models.UpsertEmbyLibraries(kind, libs); err != nil {
 		return 0, err
 	}
 
@@ -190,58 +221,69 @@ func buildMinDateLastSaved(cursor int64, overlapSeconds int64) string {
 }
 
 // PerformEmbyIncrementalSync 增量同步 Emby 条目到本地数据库。
-func PerformEmbyIncrementalSync() (result int, err error) {
+func PerformEmbyIncrementalSync() (int, error) {
+	return PerformMediaLibraryIncrementalSync(models.MediaServerEmby)
+}
+
+// PerformMediaLibraryIncrementalSync 增量同步所属端的条目。
+func PerformMediaLibraryIncrementalSync(kind models.MediaServerType) (result int, err error) {
+	if err := kind.Validate(); err != nil {
+		return 0, err
+	}
 	startedAt := time.Now()
-	if IsEmbySyncRunning() {
-		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+	if IsMediaLibrarySyncRunning(kind) {
+		helpers.AppLogger.Warnf("已有 %s 条目同步任务正在运行，跳过本次执行", kind.DisplayName())
 		return 0, nil
 	}
-	config, cerr := models.ReadEmbyConfigSnapshot()
+	config, cerr := models.ReadMediaLibraryConfigSnapshot(kind)
 	if cerr != nil {
 		return 0, cerr
 	}
 	if config.EmbyUrl == "" || config.EmbyApiKey == "" {
-		return 0, errors.New("Emby URL 或 API Key 为空")
+		return 0, fmt.Errorf("%s URL 或 API Key 为空", kind.DisplayName())
 	}
-	if config.SyncEnabled != 1 {
-		return 0, errors.New("Emby 条目同步未启用")
+	if !config.Enabled || config.SyncEnabled != 1 {
+		return 0, fmt.Errorf("%s 条目同步未启用", kind.DisplayName())
 	}
-	if !embySyncRunning.CompareAndSwap(0, 1) {
-		return 0, errors.New("Emby 条目同步任务已在运行")
+	if !mediaSyncRunning(kind).CompareAndSwap(0, 1) {
+		return 0, fmt.Errorf("%s 条目同步任务已在运行", kind.DisplayName())
 	}
 	scanStartedAt := helpers.NowUnix()
-	started, serr := models.StartEmbySyncRun(models.EmbySyncModeIncremental, scanStartedAt)
+	started, serr := models.StartMediaLibrarySyncRun(kind, models.EmbySyncModeIncremental, scanStartedAt)
 	if serr != nil {
-		embySyncRunning.Store(0)
+		mediaSyncRunning(kind).Store(0)
 		return 0, serr
 	}
 	if !started {
-		embySyncRunning.Store(0)
-		helpers.AppLogger.Warnf("已有 Emby 条目同步任务正在运行，跳过本次执行")
+		mediaSyncRunning(kind).Store(0)
+		helpers.AppLogger.Warnf("已有 %s 条目同步任务正在运行，跳过本次执行", kind.DisplayName())
 		return 0, nil
 	}
 	var processed int64
-	var token models.EmbyIndexToken
+	token := models.EmbyIndexToken{MediaServerType: kind}
 	completed := false
 	defer func() {
-		defer embySyncRunning.Store(0)
+		defer mediaSyncRunning(kind).Store(0)
 		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeIncremental, processed, helpers.NowUnix(), scanStartedAt, err); ferr != nil {
-			helpers.AppLogger.Warnf("更新 Emby 增量同步状态失败：%v", ferr)
+			helpers.AppLogger.Warnf("更新媒体服务器增量同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
 			}
 		}
 		if completed && err == nil {
-			helpers.AppLogger.Infof("增量同步 Emby 条目到本地完成，处理 %d 个项目，耗时 %s，网盘查询 0 次", processed, time.Since(startedAt).Round(time.Millisecond))
+			helpers.AppLogger.Infof("%s 媒体库增量同步完成，共处理 %d 个条目，耗时 %s，网盘查询 0 次", mediaServerName(kind), processed, time.Since(startedAt).Round(time.Millisecond))
 		}
 	}()
 
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
+	if _, err = client.GetServerID(context.Background()); err != nil {
+		return 0, err
+	}
 	libs, err := client.GetAllMediaLibraries()
 	if err != nil {
 		return 0, err
 	}
-	if err := models.UpsertEmbyLibraries(libs); err != nil {
+	if err := models.UpsertEmbyLibraries(kind, libs); err != nil {
 		return 0, err
 	}
 	if config.SyncAllLibraries == 0 {
@@ -304,52 +346,80 @@ func SyncEmbyItemByID(itemID string) (changed bool, err error) {
 }
 
 // SyncEmbyItemByIDContext 允许后台服务停止时取消远端单条同步。
-func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, err error) {
+func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (bool, error) {
+	return SyncMediaItemByIDContext(ctx, models.MediaServerEmby, itemID)
+}
+
+// SyncMediaItemByIDContext 按所属端同步单项，并支持停止取消。
+func SyncMediaItemByIDContext(ctx context.Context, kind models.MediaServerType, itemID string) (changed bool, err error) {
+	if err := kind.Validate(); err != nil {
+		return false, err
+	}
+	config, err := models.ReadMediaLibraryConfigSnapshot(kind)
+	if err != nil {
+		return false, err
+	}
+	return syncMediaItemByIDWithConfig(ctx, config, itemID, "")
+}
+
+func syncMediaItemByIDWithConfig(ctx context.Context, config *models.EmbyConfig, itemID, expectedServerID string) (changed bool, err error) {
+	if config == nil {
+		return false, errors.New("媒体库配置不存在")
+	}
+	kind := config.MediaServerType
+	if err := kind.Validate(); err != nil {
+		return false, err
+	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(itemID) == "" {
 		return false, nil
 	}
-	if IsEmbySyncRunning() {
+	if IsMediaLibrarySyncRunning(kind) {
 		return false, ErrEmbySyncBusy
-	}
-	config, cerr := models.ReadEmbyConfigSnapshot()
-	if cerr != nil {
-		return false, cerr
 	}
 	if config.EmbyUrl == "" || config.EmbyApiKey == "" {
-		return false, errors.New("Emby URL 或 API Key 为空")
+		return false, fmt.Errorf("%s URL 或 API Key 为空", kind.DisplayName())
 	}
-	if config.SyncEnabled != 1 {
-		return false, errors.New("Emby 条目同步未启用")
+	if !config.Enabled || config.SyncEnabled != 1 {
+		return false, fmt.Errorf("%s 条目同步未启用", kind.DisplayName())
 	}
-	if !embySyncRunning.CompareAndSwap(0, 1) {
+	if !mediaSyncRunning(kind).CompareAndSwap(0, 1) {
 		return false, ErrEmbySyncBusy
 	}
-	started, serr := models.StartEmbySyncRun(models.EmbySyncModeWebhook, helpers.NowUnix())
+	started, serr := models.StartMediaLibrarySyncRun(kind, models.EmbySyncModeWebhook, helpers.NowUnix())
 	if serr != nil {
-		embySyncRunning.Store(0)
+		mediaSyncRunning(kind).Store(0)
 		return false, serr
 	}
 	if !started {
-		embySyncRunning.Store(0)
+		mediaSyncRunning(kind).Store(0)
 		return false, ErrEmbySyncBusy
 	}
 
 	var processed int64
-	var token models.EmbyIndexToken
+	token := models.EmbyIndexToken{MediaServerType: kind}
 	defer func() {
-		embySyncRunning.Store(0)
+		mediaSyncRunning(kind).Store(0)
 		if ferr := models.FinishEmbyIndexSyncRun(token, models.EmbySyncModeWebhook, processed, helpers.NowUnix(), 0, err); ferr != nil {
-			helpers.AppLogger.Warnf("更新 Emby Webhook 同步状态失败：%v", ferr)
+			helpers.AppLogger.Warnf("更新媒体服务器 Webhook 同步状态失败：%v", ferr)
 			if err == nil {
 				err = ferr
 			}
 		}
 	}()
 
-	client := embyclientrestgo.NewClient(config.EmbyUrl, config.EmbyApiKey)
+	client := config.Client()
+	if expectedServerID != "" {
+		serverID, err := client.GetServerID(ctx)
+		if err != nil {
+			return false, err
+		}
+		if serverID != expectedServerID {
+			return false, models.ErrEmbyIdentityAmbiguous
+		}
+	}
 	var snapshots []models.EmbyItemSnapshot
 	var rootID string
 	token, rootID, snapshots, err = prepareEmbyItemSnapshots(ctx, client, config, itemID)
@@ -357,7 +427,7 @@ func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, 
 		return false, err
 	}
 	if len(snapshots) == 0 {
-		helpers.AppLogger.Warnf("Webhook 单条同步未找到 Emby 条目：%s", itemID)
+		helpers.AppLogger.Debugf("%s 单条同步未返回物理文件条目：%s", mediaServerName(kind), itemID)
 		return false, nil
 	}
 	libraryID, libraryName, err := resolveEmbyItemLibraryContext(ctx, client, rootID)
@@ -365,12 +435,13 @@ func SyncEmbyItemByIDContext(ctx context.Context, itemID string) (changed bool, 
 		return false, err
 	}
 	if !isEmbyLibrarySelected(config, libraryID) {
-		helpers.AppLogger.Infof("Webhook 单条同步跳过未选择的 Emby 媒体库：Item ID=%s，Library ID=%s", itemID, libraryID)
+		helpers.AppLogger.Debugf("%s 单项同步跳过未选择的媒体库：Item ID=%s，Library ID=%s", mediaServerName(kind), itemID, libraryID)
 		return false, nil
 	}
 
 	seenAt := helpers.NowUnix()
 	for i := range snapshots {
+		snapshots[i].Item.MediaServerType = kind
 		snapshots[i].Item.LibraryId = libraryID
 		snapshots[i].LibraryName = libraryName
 		snapshots[i].Item.LastSeenAt = seenAt
@@ -416,10 +487,10 @@ func resolveEmbyItemLibraryContext(ctx context.Context, client *embyclientrestgo
 		return ids[0], names[ids[0]], nil
 	}
 	if len(ids) > 1 {
-		helpers.AppLogger.Warnf("Webhook 单条同步解析到多个 Emby 媒体库候选，保留条目但不写入 LibraryId：Item ID=%s，候选=%v", itemID, ids)
+		helpers.AppLogger.Warnf("Webhook 单条同步解析到多个媒体库候选，保留条目但不写入 LibraryId：Item ID=%s，候选=%v", itemID, ids)
 		return "", "", nil
 	}
-	return "", "", fmt.Errorf("未找到 Emby 条目 %s 所属的媒体库", itemID)
+	return "", "", fmt.Errorf("未找到媒体条目 %s 所属的媒体库", itemID)
 }
 
 func isEmbyLibrarySelected(config *models.EmbyConfig, libraryID string) bool {
@@ -431,7 +502,7 @@ func isEmbyLibrarySelected(config *models.EmbyConfig, libraryID string) bool {
 	}
 	var selectedLibraryIDs []string
 	if err := json.Unmarshal([]byte(config.SelectedLibraries), &selectedLibraryIDs); err != nil {
-		helpers.AppLogger.Warnf("解析已选择 Emby 媒体库失败，跳过 Webhook 单条同步：%v", err)
+		helpers.AppLogger.Warnf("解析已选择媒体库失败，跳过 Webhook 单条同步：%v", err)
 		return false
 	}
 	return slices.Contains(selectedLibraryIDs, libraryID)
@@ -481,68 +552,4 @@ func extractPickCodeFromPath(path string) string {
 	// 	return path
 	// }
 	return path
-}
-
-var embyMediaInfoRunning atomic.Int32
-
-// StartParseEmbyMediaInfo 在后台提取 Emby 媒体信息；缺少配置或已有提取任务运行时返回 false。
-func StartParseEmbyMediaInfo() bool {
-	if models.GlobalEmbyConfig.EmbyUrl == "" || models.GlobalEmbyConfig.EmbyApiKey == "" {
-		helpers.AppLogger.Info("Emby URL 或 API Key 为空，无法提取 Emby 媒体信息")
-		return false
-	}
-	// 运行标记随后台协程结束才释放，避免重复触发时并发扫描全部媒体库。
-	if !embyMediaInfoRunning.CompareAndSwap(0, 1) {
-		helpers.AppLogger.Info("Emby 媒体信息提取任务已在运行")
-		return false
-	}
-	go func() {
-		defer embyMediaInfoRunning.Store(0)
-		tasks := embyclientrestgo.ProcessLibraries(models.GlobalEmbyConfig.EmbyUrl, models.GlobalEmbyConfig.EmbyApiKey, []string{})
-		helpers.AppLogger.Infof("Emby 库收集媒体信息已完成，共发现 %d 个影视剧需要提取媒体信息", len(tasks))
-		for _, itemTask := range tasks {
-			err := models.AddDownloadTaskFromEmbyMedia(itemTask["url"], itemTask["item_id"], itemTask["item_name"])
-			if errors.Is(err, models.ErrActiveDownloadTaskExists) {
-				helpers.AppLogger.Infof("Emby 媒体信息提取已在操作队列中：Emby Item ID：%s，名称：%s", itemTask["item_id"], itemTask["item_name"])
-				continue
-			}
-			if err != nil {
-				helpers.AppLogger.Errorf("添加 Emby 媒体信息提取任务失败：Emby Item ID：%s，名称：%s，原因：%v", itemTask["item_id"], itemTask["item_name"], err)
-				continue
-			}
-			helpers.AppLogger.Infof("Emby 媒体信息提取已加入操作队列：Emby Item ID：%s，名称：%s", itemTask["item_id"], itemTask["item_name"])
-		}
-	}()
-	return true
-}
-
-var embyUserId string = ""
-
-// 查询 Emby 媒体详情
-func GetEmbyItemDetail(itemId string) *embyclientrestgo.BaseItemDtoV2 {
-	if models.GlobalEmbyConfig.EmbyUrl == "" || models.GlobalEmbyConfig.EmbyApiKey == "" {
-		helpers.AppLogger.Info("Emby URL 或 API Key 为空，无法查询 Emby 媒体详情")
-		return nil
-	}
-	client := embyclientrestgo.NewClient(models.GlobalEmbyConfig.EmbyUrl, models.GlobalEmbyConfig.EmbyApiKey)
-	if embyUserId == "" {
-		// 获取有权限的用户
-		users, err := client.GetUsersWithAllLibrariesAccess()
-		if err != nil {
-			helpers.AppLogger.Errorf("获取用户失败：%v", err)
-			return nil
-		}
-		if len(users) == 0 {
-			helpers.AppLogger.Errorf("没有找到可以访问所有媒体库的用户")
-			return nil
-		}
-		// 使用第一个有权限的用户
-		embyUserId = users[0].ID
-	}
-	item, err := client.GetItemDetailByUser(itemId, embyUserId)
-	if err != nil {
-		helpers.AppLogger.Errorf("获取 Emby 媒体 %s 用户 ID %s 详情失败：%s", itemId, embyUserId, err.Error())
-		return nil
-	}
-	return item
 }

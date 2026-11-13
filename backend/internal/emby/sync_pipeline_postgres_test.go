@@ -17,8 +17,8 @@ import (
 
 	"gorm.io/gorm"
 
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -57,8 +57,8 @@ func TestEmbySnapshotPipelineThreeCommitWorkersPostgresDML(t *testing.T) {
 		fmt.Fprint(w, `],"TotalRecordCount":12}`)
 	}))
 	t.Cleanup(server.Close)
-	config := &models.EmbyConfig{
-		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1,
+	config := &models.EmbyConfig{MediaServerType: models.MediaServerEmby,
+		EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1,
 	}
 	if err := conn.Create(config).Error; err != nil {
 		t.Fatal(err)

@@ -74,7 +74,7 @@ func seedCleanupPersistence(t *testing.T, conn *gorm.DB) (EmbyIndexToken, EmbyIt
 	if err := MigrateEmbyDeletionSchema(conn); err != nil {
 		t.Fatal(err)
 	}
-	config := EmbyConfig{EmbyUrl: "http://emby.invalid", EmbyApiKey: "cleanup-test-key", SyncEnabled: 1, EnableDeleteNetdisk: 1}
+	config := EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "http://emby.invalid", EmbyApiKey: "cleanup-test-key", SyncEnabled: 1, EnableDeleteNetdisk: 1}
 	account := Account{SourceType: SourceType115, UserId: "cleanup-test-user"}
 	for _, value := range []any{&config, &account} {
 		if err := conn.Create(value).Error; err != nil {
@@ -112,7 +112,7 @@ func seedCleanupPersistence(t *testing.T, conn *gorm.DB) (EmbyIndexToken, EmbyIt
 
 func cleanupPersistenceReceipt(t *testing.T, snapshot EmbyItemSnapshot) EmbyWebhookRecord {
 	t.Helper()
-	_, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"})
+	_, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func testCleanupPersistence(t *testing.T, setup cleanupPersistenceDatabase) {
 				if err := conn.First(&before).Error; err != nil {
 					t.Fatal(err)
 				}
-				_, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{Event: "library.deleted", ServerID: "server-a", ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"})
+				_, err := SaveEmbyWebhook(t.Context(), EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: "library.deleted", ServerID: "server-a", ItemID: snapshot.Item.ItemId, ItemType: snapshot.Item.Type, ItemPath: snapshot.Item.Path, Source: "official"})
 				if err == nil {
 					t.Fatal("unsupported metadata admitted deletion work")
 				}

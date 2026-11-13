@@ -10,7 +10,7 @@
 - [实时事件（SSE）](architecture/realtime-events.md)：全局事件、日志流、任务详情快照和回放边界。
 - [上传与 STRM 处理](architecture/upload-and-strm-processing.md)：115 上传、目录监控、STRM 后处理与直链解析、源文件清理、上传后刷新和多端播放副本。
 - [STRM 同步调度与任务记录](architecture/sync-orchestration.md)：同步目录、Cron、按来源队列、`sync` 记录、取消和完成后的下游协作。
-- [Emby 媒体库同步](architecture/emby-library-sync.md)：Emby 刷新、条目同步、Webhook 同步和协调器边界。
+- [媒体库同步](architecture/emby-library-sync.md)：Emby/Jellyfin 独立配置、刷新、条目同步、Webhook 和联动删除边界。
 
 ## 工程维护
 

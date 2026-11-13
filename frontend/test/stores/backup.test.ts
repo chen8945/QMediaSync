@@ -565,7 +565,7 @@ describe('backup store 进度轮询', () => {
     expect(store.restartPhase).toBe('checking')
     await vi.advanceTimersByTimeAsync(3000)
     expect(store.restartPhase).toBe('idle')
-    expect(store.restartError).toContain('请先重启 QMS 服务后再检查')
+    expect(store.restartError).toContain('请先重启 QMediaSync 服务后再检查')
     expect(store.progress).toEqual(result)
     expect(store.showProgressDialog).toBe(true)
     expect(http.post).not.toHaveBeenCalled()

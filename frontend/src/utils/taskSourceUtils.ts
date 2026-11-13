@@ -2,6 +2,7 @@ export const downloadSourceNameMap: Record<string, string> = {
   strm_sync: 'STRM 同步',
   local_file: '本地文件',
   emby_media: 'Emby 媒体信息提取',
+  jellyfin_media: 'Jellyfin 媒体信息提取',
 }
 
 export const uploadSourceNameMap: Record<string, string> = {
@@ -22,6 +23,7 @@ const taskSourceTypeNameMap: Record<string, string> = {
   openlist: 'OpenList',
   local: '本地文件',
   emby_media: 'Emby 媒体信息提取',
+  jellyfin_media: 'Jellyfin 媒体信息提取',
 }
 
 const taskSourceTypeTagTypeMap: Record<string, string> = {
@@ -30,6 +32,7 @@ const taskSourceTypeTagTypeMap: Record<string, string> = {
   openlist: 'success',
   local: 'warning',
   emby_media: 'info',
+  jellyfin_media: 'info',
 }
 
 export const getDownloadSourceName = (source: string): string => {

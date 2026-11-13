@@ -25,11 +25,11 @@ func setupEmbyWebhookModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, SyncF
 }
 
 func webhookModelEnvelope(event string, file SyncFile) EmbyWebhookEnvelope {
-	return EmbyWebhookEnvelope{Event: event, ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: file.LocalFilePath, Source: "official"}
+	return EmbyWebhookEnvelope{MediaServerType: MediaServerEmby, Event: event, ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: file.LocalFilePath, Source: "official"}
 }
 func webhookModelClaim(t *testing.T) EmbyWebhookRecord {
 	t.Helper()
-	record, err := ClaimEmbyWebhook(t.Context(), time.Now().Unix()+10)
+	record, err := ClaimEmbyWebhook(t.Context(), MediaServerEmby, time.Now().Unix()+10)
 	if err != nil || record == nil {
 		t.Fatalf("claim: %+v %v", record, err)
 	}
@@ -39,6 +39,9 @@ func webhookModelInput(t *testing.T, record EmbyWebhookRecord) EmbyDeletionInput
 	t.Helper()
 	var input EmbyDeletionInput
 	if err := json.Unmarshal([]byte(record.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if err := input.BindMediaServerType(record.MediaServerType); err != nil {
 		t.Fatal(err)
 	}
 	return input
@@ -616,12 +619,35 @@ func TestEmbyWebhookNameSanitizationAndDisplayLabel(t *testing.T) {
 	}{
 		{EmbyWebhookEnvelope{SeriesName: "Show", IndexNumber: &episode}, "Show E05"},
 		{EmbyWebhookEnvelope{SeriesName: "Show", ParentIndexNumber: &season}, "Show S02"},
+		{EmbyWebhookEnvelope{ItemType: "Season", SeriesName: "Show", IndexNumber: &season}, "Show S02"},
+		{EmbyWebhookEnvelope{ItemType: "Season", SeriesName: "Show", ParentIndexNumber: &season}, "Show S02"},
+		{EmbyWebhookEnvelope{ItemType: "Season", ItemName: "可靠季名", SeriesName: "Show"}, "Show 可靠季名"},
+		{EmbyWebhookEnvelope{ItemType: "Season", ItemName: "可靠季名"}, "可靠季名"},
 		{EmbyWebhookEnvelope{ItemName: "Movie"}, "Movie"},
 		{EmbyWebhookEnvelope{}, ""},
 	} {
 		if got := tc.envelope.DisplayLabel(); got != tc.want {
 			t.Fatalf("DisplayLabel(%+v)=%q want %q", tc.envelope, got, tc.want)
 		}
+	}
+}
+
+func TestEmbyWebhookSeasonLabelPrefersNativeIndexAndKeepsSpecials(t *testing.T) {
+	one, zero, largeEpisode := 1, 0, 111
+	for _, tc := range []struct {
+		name     string
+		envelope EmbyWebhookEnvelope
+		want     string
+	}{
+		{"native_season", EmbyWebhookEnvelope{ItemType: "Season", SeriesName: "Show", IndexNumber: &one, ParentIndexNumber: &zero}, "Show S01"},
+		{"special_season", EmbyWebhookEnvelope{ItemType: "Season", SeriesName: "Show", IndexNumber: &zero}, "Show S00"},
+		{"special_episode", EmbyWebhookEnvelope{ItemType: "Episode", SeriesName: "Show", IndexNumber: &largeEpisode, ParentIndexNumber: &zero}, "Show S00E111"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.envelope.DisplayLabel(); got != tc.want {
+				t.Fatalf("DisplayLabel(%+v)=%q want %q", tc.envelope, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -682,11 +708,11 @@ func TestEmbyWebhookObservationCannotCrossSameItemBarrierAdmission(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		revision, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101"})
+		revision, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101"})
 		if err != nil {
 			return err
 		}
-		return AdmitEmbyItemGenerationTx(tx, "server-a", "101", revision)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, "server-a", "101", revision)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -718,11 +744,11 @@ func TestEmbyWebhookObservationCannotCrossExistingStateBarrierAdmission(t *testi
 		t.Fatal(err)
 	}
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
-		revision, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101"})
+		revision, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101"})
 		if err != nil {
 			return err
 		}
-		return AdmitEmbyItemGenerationTx(tx, "server-a", "101", revision)
+		return AdmitEmbyItemGenerationTx(tx, MediaServerEmby, "server-a", "101", revision)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +774,10 @@ func TestEmbyWebhookLocalFinalizationIsExplicitAndConditional(t *testing.T) {
 		{name: "no implicit scope", wantItems: 1},
 		{name: "unknown ID", ids: []string{"102"}, wantError: true, wantItems: 1},
 		{name: "later barrier", ids: []string{"101"}, wantItems: 1, mutate: func(t *testing.T, _ EmbyWebhookRecord) {
-			if err := db.Db.Transaction(func(tx *gorm.DB) error { _, err := RegisterEmbyDeletionTx(tx, "server-a", []string{"101"}); return err }); err != nil {
+			if err := db.Db.Transaction(func(tx *gorm.DB) error {
+				_, err := RegisterEmbyDeletionTx(tx, MediaServerEmby, "server-a", []string{"101"})
+				return err
+			}); err != nil {
 				t.Fatal(err)
 			}
 		}},

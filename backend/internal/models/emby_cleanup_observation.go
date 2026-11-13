@@ -14,7 +14,7 @@ import (
 	"qmediasync/internal/db"
 )
 
-// EmbyMediaDirectory 是 Emby 实际祖先响应里的媒体目录角色（电影为其父文件夹），尚未取得云端删除能力。
+// EmbyMediaDirectory 记录由原生祖先或受管文件证据确认的媒体目录角色，尚未取得云端删除能力。
 type EmbyMediaDirectory struct {
 	ItemID       string `json:"item_id"`
 	MediaType    string `json:"media_type"`
@@ -23,7 +23,7 @@ type EmbyMediaDirectory struct {
 	EvidenceKind string `json:"evidence_kind,omitempty"`
 }
 
-// embyDirectoryCandidate 记录目录角色的证据来源；同一目录两种来源并存时物理祖先优先。
+// embyDirectoryCandidate 记录目录角色的证据来源；同一目录多种来源并存时物理祖先优先。
 type embyDirectoryCandidate struct {
 	directory EmbyMediaDirectory
 	kind      string
@@ -37,8 +37,12 @@ type EmbyDirectoryEvidenceCollector struct {
 	pathConfig *EmbyConfig
 }
 
-// Enrich 保存可验证的季剧祖先、电影物理父目录或 QMS 电影输出目录；缺少能力时保留原文件快照。
-func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *EmbyItemSnapshot, ancestors []EmbyMediaDirectory) error {
+// Enrich 保存可验证的季剧祖先、电影物理父目录或受管电影输出目录；缺少能力时保留原文件快照。
+func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, kind MediaServerType, snapshot *EmbyItemSnapshot, ancestors []EmbyMediaDirectory) error {
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	snapshot.Item.MediaServerType = kind
 	snapshot.MediaDirectories = nil
 	snapshot.preparedSTRMReferences, snapshot.frozenSources = nil, nil
 	for _, directory := range ancestors {
@@ -50,14 +54,18 @@ func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *E
 	if db.Db == nil {
 		return nil
 	}
-	if c.pathConfig == nil {
-		c.pathConfig = &EmbyConfig{}
-		if err := db.Db.WithContext(ctx).First(c.pathConfig).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			c.pathConfig = nil
-			return err
-		}
+	if err := c.loadPathConfig(ctx, kind); err != nil {
+		return err
 	}
+
 	snapshot.pathConfig = c.pathConfig
+	unresolvedManaged, err := c.RecoverJellyfinSTRMSources(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	if unresolvedManaged {
+		return errors.New("Jellyfin 受管 STRM 来源未能核验，保留已有条目")
+	}
 	files, err := resolveEmbySnapshotFiles(db.Db.WithContext(ctx), *snapshot)
 	if err != nil {
 		return err
@@ -83,6 +91,14 @@ func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *E
 		candidates := make([]embyDirectoryCandidate, 0, len(ancestors)+1)
 		for _, ancestor := range ancestors {
 			candidates = append(candidates, embyDirectoryCandidate{directory: ancestor, kind: "emby_physical_ancestor"})
+		}
+		// Jellyfin 的电影树会省略真实电影文件夹；受管文件的映射及稳定根链补证物理目录。
+		if kind == MediaServerJellyfin && snapshot.Item.Type == "Movie" && file.SyncFileID != 0 && file.Reference.Reason == "" {
+			movie := EmbyMediaDirectory{ItemID: snapshot.Item.ItemId, MediaType: "Movie", LocalPath: filepath.Dir(file.LocalFilePath), EvidenceKind: "jellyfin_managed_movie"}
+			if validEmbyObservedLocalDirectory(file, movie.LocalPath) {
+				snapshot.MediaDirectories = append(snapshot.MediaDirectories, movie)
+				candidates = append(candidates, embyDirectoryCandidate{directory: movie, kind: movie.EvidenceKind})
+			}
 		}
 		if snapshot.Item.Type == "Movie" && file.SyncFileID != 0 {
 			movie, err := embyScrapedMovieDirectory(ctx, file, snapshot.Item.ItemId)
@@ -149,6 +165,20 @@ func (c *EmbyDirectoryEvidenceCollector) Enrich(ctx context.Context, snapshot *E
 	slices.SortFunc(snapshot.DirectoryScopes, func(a, b EmbyDirectoryScope) int {
 		return strings.Compare(EmbyDirectoryScopeKey(a), EmbyDirectoryScopeKey(b))
 	})
+	return nil
+}
+
+func (c *EmbyDirectoryEvidenceCollector) loadPathConfig(ctx context.Context, kind MediaServerType) error {
+	if c.pathConfig == nil || c.pathConfig.MediaServerType != kind {
+		config, err := readMediaLibraryConfigTx(db.Db.WithContext(ctx), kind)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if config == nil {
+			config = &EmbyConfig{MediaServerType: kind}
+		}
+		c.pathConfig = config
+	}
 	return nil
 }
 

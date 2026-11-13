@@ -141,7 +141,8 @@ func seedEmbyMigrationVersion65(t *testing.T, conn *gorm.DB) ([]EmbyMediaItem, [
 	if err := conn.Create(&items).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Create(&links).Error; err != nil {
+	legacyLinks := []legacyEmbyMediaSyncFile{{BaseModel: links[0].BaseModel, EmbyItemId: 9101, SyncFileId: links[0].SyncFileId, SyncPathId: links[0].SyncPathId, PickCode: links[0].PickCode}}
+	if err := conn.Create(&legacyLinks).Error; err != nil {
 		t.Fatal(err)
 	}
 	// 去掉本次新增列，保留真实旧版的远端数值 ID 与媒体字段。
@@ -291,15 +292,24 @@ func assertEmbyMigrationLegacyRows(t *testing.T, conn *gorm.DB, wantItems []Emby
 	// 同一连接跨越 DDL 后仍按实际结构显式选列，避免 PostgreSQL 复用旧 SELECT * 的返回类型。
 	itemQuery := conn.Session(&gorm.Session{QueryFields: true})
 	linkQuery := conn.Session(&gorm.Session{QueryFields: true})
+	if !conn.Migrator().HasColumn(&EmbyMediaSyncFile{}, "MediaServerType") {
+		linkQuery = linkQuery.Omit("MediaServerType")
+	}
 	if !conn.Migrator().HasColumn(&EmbyMediaItem{}, "SnapshotID") {
 		itemQuery = itemQuery.Omit("PartCount", "PartOfItemID", "VersionOfItemID", "SnapshotID", "Generation")
-		linkQuery = linkQuery.Omit("SnapshotID", "SourceID")
+		linkQuery = linkQuery.Omit("MediaServerType", "SnapshotID", "SourceID")
 	}
 	if err := itemQuery.Order("id").Find(&items).Error; err != nil {
 		t.Fatalf("read historical media rows: %v", err)
 	}
 	if err := linkQuery.Order("id").Find(&links).Error; err != nil {
 		t.Fatalf("read historical media links: %v", err)
+	}
+	if conn.Migrator().HasColumn(&EmbyMediaSyncFile{}, "MediaServerType") {
+		wantLinks = append([]EmbyMediaSyncFile(nil), wantLinks...)
+		for i := range wantLinks {
+			wantLinks[i].MediaServerType = MediaServerEmby
+		}
 	}
 	if !reflect.DeepEqual(items, wantItems) || !reflect.DeepEqual(links, wantLinks) {
 		t.Fatalf("migration changed historical rows: items=%+v links=%+v", items, links)
@@ -311,7 +321,7 @@ func assertEmbyMigrationLegacyRows(t *testing.T, conn *gorm.DB, wantItems []Emby
 	}
 	// 显式使用不冲突的本地主键，确保失败来自旧 item_id 唯一约束；只写两个旧版字段。
 	err := conn.Table("emby_media_items").Create(map[string]any{"id": 99, "item_id": wantItems[0].ItemId}).Error
-	wantConstraint := "UNIQUE constraint failed: emby_media_items.item_id"
+	wantConstraint := "UNIQUE constraint failed: emby_media_items.media_server_type, emby_media_items.item_id"
 	if conn.Dialector.Name() == "postgres" {
 		wantConstraint = "idx_emby_item_id"
 	}

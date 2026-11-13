@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -37,6 +39,119 @@ type deletionVerificationFixture struct {
 	badPage        atomic.Bool
 	scanDelay      atomic.Int64
 	changeRevision atomic.Bool
+}
+
+func TestJellyfinLiveInventoryRecoversManagedSTRMAndProtectsDirectory(t *testing.T) {
+	for _, mode := range []string{"file", "http", "unreadable"} {
+		t.Run(mode, func(t *testing.T) {
+			nativeFixed := mode == "http"
+			f := newDeletionVerificationFixture(t)
+			if err := f.conn.AutoMigrate(&models.JellyfinConfig{}, &models.Account{}, &models.SyncPath{}, &models.Settings{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.conn.Create(&models.Settings{SettingStrm: models.SettingStrm{StrmBaseUrl: "https://qms.test"}}).Error; err != nil {
+				t.Fatal(err)
+			}
+			account := models.Account{SourceType: models.SourceType115, UserId: "live-owner"}
+			if err := f.conn.Create(&account).Error; err != nil {
+				t.Fatal(err)
+			}
+			root := models.SyncPath{SourceType: account.SourceType, AccountId: account.ID, BaseCid: "live-root", RemotePath: "cloud", LocalPath: t.TempDir()}
+			if err := f.conn.Create(&root).Error; err != nil {
+				t.Fatal(err)
+			}
+			otherSTRM := filepath.Join(root.GetFullLocalPath(), "Other", "renamed-part.strm")
+			sharedURL := "https://qms.test/115/newurl?userid=live-owner&pickcode=original"
+			if err := os.MkdirAll(filepath.Dir(otherSTRM), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "file" {
+				if err := os.WriteFile(otherSTRM, []byte(sharedURL), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			file := models.SyncFile{SyncPathId: root.ID, AccountId: account.ID, SourceType: account.SourceType, FileId: "original-file", ParentId: "movie-dir", Path: "/cloud/Movie", FileName: "original.mkv", PickCode: "original", LocalFilePath: otherSTRM, IsVideo: true}
+			if err := f.conn.Create(&file).Error; err != nil {
+				t.Fatal(err)
+			}
+			main := embyclientrestgo.BaseItemDtoV2{Id: jellyfinVersionA, Type: "Movie", Path: "/media/Other/main.mkv", PartCount: 2, MediaSources: []embyclientrestgo.MediaSource{{ID: jellyfinVersionA, Type: "Default", Path: "/media/Other/main.mkv"}}}
+			part := embyclientrestgo.BaseItemDtoV2{Id: jellyfinPart, Type: "Video", Path: otherSTRM, MediaSources: []embyclientrestgo.MediaSource{{ID: jellyfinPart, Type: "Default", Path: otherSTRM, Protocol: "File"}}}
+			if nativeFixed {
+				part.MediaSources[0].Path, part.MediaSources[0].Protocol = sharedURL, "Http"
+			}
+			var details atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/System/Ping":
+					fmt.Fprint(w, `"Jellyfin Server"`)
+				case "/System/Info/Public":
+					fmt.Fprint(w, `{"Id":"server-a","ProductName":"Jellyfin Server"}`)
+				case "/Items":
+					if r.URL.Query().Get("Ids") == jellyfinVersionB {
+						fmt.Fprint(w, `{"Items":[],"TotalRecordCount":0}`)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(embyclientrestgo.QueryResultBaseItemDto{Items: []embyclientrestgo.BaseItemDtoV2{main}, TotalRecordCount: 1})
+				case "/Videos/" + jellyfinVersionA + "/AdditionalParts":
+					_ = json.NewEncoder(w).Encode(embyclientrestgo.QueryResultBaseItemDto{Items: []embyclientrestgo.BaseItemDtoV2{part}, TotalRecordCount: 1})
+				case "/Users":
+					fmt.Fprintf(w, `[{"Id":%q,"Policy":{"EnableAllFolders":true}}]`, jellyfinLibrary)
+				case "/Items/" + jellyfinPart:
+					details.Add(1)
+					_ = json.NewEncoder(w).Encode(part)
+				case "/Items/" + jellyfinVersionB:
+					w.WriteHeader(http.StatusNotFound)
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			client := embyclientrestgo.NewClientForProduct(server.URL, "fixture", embyclientrestgo.ProductJellyfin)
+			snapshots, err := loadEmbyDeletionLiveSnapshots(t.Context(), models.MediaServerJellyfin, client)
+			if mode == "unreadable" {
+				if err == nil || !strings.Contains(err.Error(), "受管 STRM 来源未能核验") || len(snapshots) != 0 {
+					t.Fatalf("unreadable managed STRM did not fail live verification: snapshots=%+v err=%v", snapshots, err)
+				}
+				return
+			}
+			if err != nil || len(snapshots) != 2 {
+				t.Fatalf("live snapshots=%+v err=%v", snapshots, err)
+			}
+			if source := snapshots[1].Sources[0]; source.PickCode != "original" || source.Path != sharedURL {
+				t.Fatalf("managed hidden survivor source was not recovered: %+v", source)
+			}
+			if nativeFixed && details.Load() != 0 || !nativeFixed && details.Load() != 1 {
+				t.Fatalf("detail fallbacks=%d", details.Load())
+			}
+			scope := models.EmbyDirectoryScope{LocalPath: "/media/Movie", Root: models.EmbyFrozenFile{SourceType: models.SourceType115, AccountID: account.ID, Path: "/cloud", FileName: "Movie"}}
+			provider := &webhookTestProvider{files: map[string]models.EmbyRemoteFile{file.FileId: {FileID: file.FileId, Path: file.Path, FileName: file.FileName, PickCode: file.PickCode}}}
+			ctx := models.WithEmbyDirectoryProvider(t.Context(), provider)
+			wantReason := "存活来源仍使用待删除目录中的文件"
+			if err := verifyEmbyDirectoryLiveItems(ctx, scope, snapshots); err == nil || !strings.Contains(err.Error(), wantReason) {
+				t.Fatalf("new hidden GUID at another STRM path did not protect shared cloud file: %v", err)
+			}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerJellyfin, EmbyUrl: server.URL, EmbyApiKey: "fixture", Enabled: true, SyncEnabled: 1, EnableDeleteNetdisk: 1}
+			stored := models.JellyfinConfig(config)
+			if err := f.conn.Create(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			config = models.EmbyConfig(stored)
+			f.input.MediaServerType = models.MediaServerJellyfin
+			f.input.ServerConfigKey = models.EmbyServerConfigIdentity(&config)
+			f.input.ItemID = jellyfinVersionB
+			f.input.Owners[0].Item.MediaServerType = models.MediaServerJellyfin
+			f.input.Owners[0].Item.ItemId = jellyfinVersionB
+			f.input.Owners[0].Files[0].SourceType = account.SourceType
+			f.input.Owners[0].Files[0].AccountID = account.ID
+			f.input.Owners[0].Files[0].AccountIdentity = models.EmbyAccountIdentity(account)
+			f.target.Owners[0].ItemID = jellyfinVersionB
+			fileErr := verifyEmbyDeletion(ctx, f.input, f.target)
+			if _, protected := errors.AsType[*embyProtectedOwnersError](fileErr); !protected {
+				t.Fatalf("hidden survivor did not protect individual cloud file: %v", fileErr)
+			}
+		})
+	}
 }
 
 func newDeletionVerificationFixture(t *testing.T) *deletionVerificationFixture {
@@ -64,7 +179,7 @@ func newDeletionVerificationFixture(t *testing.T) *deletionVerificationFixture {
 		switch r.URL.Path {
 		case "/System/Info/Public", "/emby/System/Info/Public":
 			f.servers.Add(1)
-			fmt.Fprint(w, `{"Id":"server-a"}`)
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby Server"}`)
 		case "/emby/Items":
 			if r.URL.Query().Get("Ids") != "" {
 				f.ids.Add(1)
@@ -111,7 +226,7 @@ func newDeletionVerificationFixture(t *testing.T) *deletionVerificationFixture {
 		}
 	}))
 	t.Cleanup(server.Close)
-	f.config = models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, EnableDeleteNetdisk: 1}
+	f.config = models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, EnableDeleteNetdisk: 1}
 	if err := conn.Create(&f.config).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +239,11 @@ func newDeletionVerificationFixture(t *testing.T) *deletionVerificationFixture {
 		t.Fatal(err)
 	}
 	owner := models.EmbyDeletionOwner{
-		Item:     models.EmbyMediaItem{ItemId: "1", Path: original},
+		Item:     models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "1", Path: original},
 		Evidence: models.EmbyItemEvidence{BaseModel: models.BaseModel{ID: 1}, Generation: 1, SourcesJSON: string(sources)},
 		Files:    []models.EmbyFrozenFile{{LocalRoot: root, LocalFilePath: original, PickCode: "original", SourceID: "original-source"}},
 	}
-	f.input = models.EmbyDeletionInput{ServerID: "server-a", ServerConfigKey: state.ServerConfigKey, ItemID: "1", ItemType: "Movie", Owners: []models.EmbyDeletionOwner{owner}, CleanupPolicy: models.CurrentEmbyCleanupPolicy()}
+	f.input = models.EmbyDeletionInput{MediaServerType: models.MediaServerEmby, ServerID: "server-a", ServerConfigKey: state.ServerConfigKey, ItemID: "1", ItemType: "Movie", Owners: []models.EmbyDeletionOwner{owner}, CleanupPolicy: models.CurrentEmbyCleanupPolicy()}
 	f.target = models.EmbyDeletionTarget{Owners: []models.EmbyDeletionOwnerRef{{ItemID: "1", SnapshotID: 1, Generation: 1}}}
 	return f
 }
@@ -304,7 +419,7 @@ func TestEmbyDirectoryLiveRetentionChecksPhysicalAndSourceScope(t *testing.T) {
 				}
 			}
 			scope := models.EmbyDirectoryScope{LocalPath: "/media/Show", Root: models.EmbyFrozenFile{SourceType: models.SourceType115, AccountID: 1, Path: "/cloud", FileName: "Show"}}
-			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: test.local}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=live", PickCode: "live"}}}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9", Path: test.local}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=live", PickCode: "live"}}}
 			if test.physical != "" {
 				snapshot.Sources[0] = models.EmbySnapshotSource{Path: test.physical}
 			}
@@ -456,7 +571,7 @@ func TestEmbyDirectoryLiveRetentionPreservesLedgerQueryFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := models.EmbyDirectoryScope{LocalPath: "/media/Show", Root: models.EmbyFrozenFile{SourceType: models.SourceType115, AccountID: 1, Path: "/cloud", FileName: "Show"}}
-	snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: "/media/Other/live.strm"}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=live", PickCode: "live"}}}
+	snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9", Path: "/media/Other/live.strm"}, Sources: []models.EmbySnapshotSource{{Path: "http://qms/stream?pickcode=live", PickCode: "live"}}}
 	if err := verifyEmbyDirectoryLiveItems(models.WithEmbyDirectoryProvider(t.Context(), &webhookTestProvider{}), scope, []models.EmbyItemSnapshot{snapshot}); err == nil {
 		t.Fatal("ledger query failure treated as no retained users")
 	}
@@ -505,7 +620,7 @@ func TestEmbyDirectoryLiveRetentionRejectsUnresolvedSourcesDespiteBindings(t *te
 				}
 			}
 			scope := models.EmbyDirectoryScope{LocalPath: "/media/Show", Root: models.EmbyFrozenFile{SourceType: models.SourceType115, AccountID: 1, Path: "/cloud", FileName: "Show"}}
-			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "9", Path: test.local}, Sources: []models.EmbySnapshotSource{{Path: "http://playback/live", PickCode: test.code}}}
+			snapshot := models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "9", Path: test.local}, Sources: []models.EmbySnapshotSource{{Path: "http://playback/live", PickCode: test.code}}}
 			err := verifyEmbyDirectoryLiveItems(models.WithEmbyDirectoryProvider(t.Context(), &webhookTestProvider{}), scope, []models.EmbyItemSnapshot{snapshot})
 			if err == nil {
 				t.Fatal("STRM binding was used to exclude an unresolved playback source")

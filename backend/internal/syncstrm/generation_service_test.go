@@ -121,9 +121,9 @@ func TestStrmGenerationServiceGenerateUpsertsSyncFileAndProcessesStrm(t *testing
 		return nil
 	}
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.requestEmbyRefreshBySyncFile = func(syncFile *models.SyncFile) error {
+	service.resolveRefreshTargets = func(syncFile *models.SyncFile) ([]models.EmbyRefreshTarget, error) {
 		refreshSyncFile = syncFile
-		return nil
+		return nil, nil
 	}
 
 	result, err := service.Generate(context.Background(), StrmGenerationInput{
@@ -190,7 +190,7 @@ func TestStrmGenerationServiceGenerateCompletesDetailByFileID(t *testing.T) {
 		return nil
 	}
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	if _, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{SyncPathId: syncPath.ID, AccountId: account.ID, FileId: "file-2"},
@@ -261,7 +261,7 @@ func TestStrmGenerationServiceGenerateUsesFullPathLocatorForPathBasedSources(t *
 			}
 			service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 			service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
-			service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 			if _, err := service.Generate(context.Background(), StrmGenerationInput{
 				Task: &models.StrmGenerationTask{
@@ -320,7 +320,7 @@ func TestStrmGenerationServiceGenerateSkipsDetailForCompleteBaiduUpload(t *testi
 	}
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	if _, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -381,7 +381,7 @@ func TestStrmGenerationServiceGenerateUsesFullPathWhenBaiduMtimeIsMissing(t *tes
 	}
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	if _, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -436,7 +436,7 @@ func TestStrmGenerationServiceGenerateUsesFullPathWhenOpenListObjectIDIsAbsent(t
 	}
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	if _, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -495,7 +495,7 @@ func TestStrmGenerationServiceGenerateCompletesRemoteDetailWhenMtimeMissing(t *t
 	}
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	if _, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -533,7 +533,7 @@ func TestStrmGenerationServiceGenerateSkipsRefreshWhenStrmUnchanged(t *testing.T
 	var refreshCalled bool
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error {
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
 		refreshCalled = true
 		return nil
 	}
@@ -564,9 +564,15 @@ func TestStrmGenerationServiceDownloadsMatchedMetadata(t *testing.T) {
 	account, syncPath := setupStrmGenerationServiceTestDB(t)
 	syncPath.MetaExtArr = []string{".nfo", ".jpg"}
 	service := newTestGenerationService(t, syncPath, account)
-	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
+	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { t.Fatal("元数据更新不应重写 STRM"); return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
+	refreshes := 0
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) {
+		return []models.EmbyRefreshTarget{{MediaServerType: models.MediaServerEmby, ServerID: "original-server", TargetType: models.EmbyRefreshTargetTypeLibrary}}, nil
+	}
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error { refreshes++; return nil }
+
 	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
@@ -616,7 +622,7 @@ func TestStrmGenerationServiceDownloadsMatchedMetadata(t *testing.T) {
 		}, nil
 	}
 
-	_, err := service.Generate(context.Background(), StrmGenerationInput{
+	result, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
 			Source:       models.StrmGenerationSourceWebhook,
 			TaskType:     models.StrmGenerationTaskTypeFile,
@@ -628,10 +634,14 @@ func TestStrmGenerationServiceDownloadsMatchedMetadata(t *testing.T) {
 			Path:         "/remote",
 			FileName:     "movie.mkv",
 			DownloadMeta: true,
+			RefreshEmby:  true,
 		},
 	})
 	if err != nil {
 		t.Fatalf("生成 STRM 失败: %v", err)
+	}
+	if result.Changed || result.NewMeta != 2 || refreshes != 1 {
+		t.Fatalf("元数据新增未触发一次刷新: result=%+v refreshes=%d", result, refreshes)
 	}
 	var downloads []models.DbDownloadTask
 	if err := db.Db.Order("file_name ASC").Find(&downloads).Error; err != nil {
@@ -653,7 +663,7 @@ func TestStrmGenerationServiceIgnoresDownloadMetaForNonWebhookTask(t *testing.T)
 	service := newTestGenerationService(t, syncPath, account)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	service.buildSyncer = func(_ *models.SyncPath, _ *models.Account, _ *SyncStrmConfig) (*SyncStrm, error) {
 		return &SyncStrm{
 			Account:      account,
@@ -717,12 +727,14 @@ func TestStrmGenerationServiceIgnoresDownloadMetaForNonWebhookTask(t *testing.T)
 
 func TestStrmGenerationServiceWebhookRefreshRequiresEnabledChangeOrNewMetadata(t *testing.T) {
 	tests := []struct {
-		name        string
-		refreshEmby bool
-		compare     int
+		name         string
+		refreshEmby  bool
+		downloadMeta bool
+		compare      int
 	}{
 		{name: "刷新开关关闭时 STRM 变更也不刷新", refreshEmby: false, compare: 0},
 		{name: "刷新开关开启但 STRM 未变且无新增元数据时不刷新", refreshEmby: true, compare: 1},
+		{name: "元数据下载开启但无匹配文件时不受远端离线影响", refreshEmby: true, downloadMeta: true, compare: 1},
 	}
 
 	for _, tt := range tests {
@@ -731,13 +743,15 @@ func TestStrmGenerationServiceWebhookRefreshRequiresEnabledChangeOrNewMetadata(t
 			service := newTestGenerationService(t, syncPath, account)
 			service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return tt.compare }
 			service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-			service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error {
+			service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
 				t.Fatal("Webhook file 不应走旧逐文件 Emby 刷新入口")
 				return nil
 			}
-			service.resolveRefreshTarget = func(*models.SyncFile) (models.EmbyRefreshTarget, error) {
-				t.Fatal("未满足刷新条件时不应解析 Emby 刷新目标")
-				return models.EmbyRefreshTarget{}, nil
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) {
+				if !tt.refreshEmby {
+					t.Fatal("关闭刷新时不应解析目标")
+				}
+				return nil, errors.New("无变化时不应受远端解析失败影响")
 			}
 			service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
 				t.Fatal("未满足刷新条件时不应提交 Emby 刷新目标")
@@ -746,16 +760,17 @@ func TestStrmGenerationServiceWebhookRefreshRequiresEnabledChangeOrNewMetadata(t
 
 			if _, err := service.Generate(context.Background(), StrmGenerationInput{
 				Task: &models.StrmGenerationTask{
-					Source:      models.StrmGenerationSourceWebhook,
-					TaskType:    models.StrmGenerationTaskTypeFile,
-					SyncPathId:  syncPath.ID,
-					AccountId:   account.ID,
-					FileId:      "file-gate",
-					ParentId:    "parent-gate",
-					PickCode:    "pick-gate",
-					Path:        "/remote",
-					FileName:    "movie.mkv",
-					RefreshEmby: tt.refreshEmby,
+					Source:       models.StrmGenerationSourceWebhook,
+					TaskType:     models.StrmGenerationTaskTypeFile,
+					SyncPathId:   syncPath.ID,
+					AccountId:    account.ID,
+					FileId:       "file-gate",
+					ParentId:     "parent-gate",
+					PickCode:     "pick-gate",
+					Path:         "/remote",
+					FileName:     "movie.mkv",
+					RefreshEmby:  tt.refreshEmby,
+					DownloadMeta: tt.downloadMeta,
 				},
 			}); err != nil {
 				t.Fatalf("生成 STRM 失败: %v", err)
@@ -772,7 +787,7 @@ func TestStrmGenerationServiceDefaultBuilderDoesNotCreateSyncRecord(t *testing.T
 		t.Fatal("STRM 无变化时不应写入文件")
 		return nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error {
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
 		t.Fatal("STRM 无变化时不应提交 Emby 刷新")
 		return nil
 	}
@@ -820,7 +835,7 @@ func TestStrmGenerationServiceDefaultWriterComparesStrmOnce(t *testing.T) {
 	}
 
 	service := NewStrmGenerationService()
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	result, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -884,7 +899,7 @@ func TestStrmGenerationServiceCleansOldStrmAfterRemotePathChanges(t *testing.T) 
 		return os.WriteFile(newStrmPath, []byte("new"), 0o644)
 	}
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	result, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -944,7 +959,7 @@ func TestStrmGenerationServiceKeepsNewStrmWhenOldPathCleanupFails(t *testing.T) 
 		return os.WriteFile(newStrmPath, []byte("new"), 0o644)
 	}
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	_, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
@@ -990,7 +1005,7 @@ func TestProcessPendingStrmGenerationTasksMarksCompletedAndFailed(t *testing.T) 
 		}
 		return nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	completed, err := models.EnqueueStrmGenerationTask(&models.StrmGenerationTask{
 		Source:     models.StrmGenerationSourceUploadCompleted,
@@ -1250,19 +1265,19 @@ func TestProcessPendingStrmGenerationTasksDelaysParentRefreshUntilAllChildrenDon
 	service := newTestGenerationService(t, syncPath, account)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error {
+	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
 		t.Fatal("Webhook 父任务路径不应逐文件提交 Emby 刷新")
 		return nil
 	}
-	service.resolveRefreshTarget = func(_ *models.SyncFile) (models.EmbyRefreshTarget, error) {
-		return models.EmbyRefreshTarget{
+	service.resolveRefreshTargets = func(_ *models.SyncFile) ([]models.EmbyRefreshTarget, error) {
+		return []models.EmbyRefreshTarget{{
 			TargetType:        models.EmbyRefreshTargetTypeItem,
 			ItemID:            "season-1",
 			ItemName:          "第一季",
 			ItemType:          "Season",
 			Recursive:         true,
 			FallbackLibraryId: "lib-tv",
-		}, nil
+		}}, nil
 	}
 	var submitted int
 	service.requestEmbyRefreshTargets = func(_ uint, targets []models.EmbyRefreshTarget) error {
@@ -1325,12 +1340,12 @@ func TestProcessPendingStrmGenerationTasksKeepsChildRetryableWhenParentRefreshFa
 	service := newTestGenerationService(t, syncPath, account)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.resolveRefreshTarget = func(_ *models.SyncFile) (models.EmbyRefreshTarget, error) {
-		return models.EmbyRefreshTarget{
+	service.resolveRefreshTargets = func(_ *models.SyncFile) ([]models.EmbyRefreshTarget, error) {
+		return []models.EmbyRefreshTarget{{
 			TargetType:        models.EmbyRefreshTargetTypeItem,
 			ItemID:            "season-refresh-fails",
 			FallbackLibraryId: "lib-tv",
-		}, nil
+		}}, nil
 	}
 	refreshAttempts := 0
 	service.requestEmbyRefreshTargets = func(uint, []models.EmbyRefreshTarget) error {
@@ -1791,7 +1806,7 @@ func TestProcessPendingStrmGenerationTasksCallsSourceCleanupAfterCompletedUpload
 	service := newTestGenerationService(t, syncPath, account)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	var cleanupUploadTaskIDs []uint
 	oldCleanup := cleanupSourceAfterStrmSuccess
@@ -1833,7 +1848,7 @@ func TestProcessPendingStrmGenerationTasksCleansOnlyStrmTaskUploadID(t *testing.
 	service := newTestGenerationService(t, syncPath, account)
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 1 }
 	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error { return nil }
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	var cleanupUploadTaskIDs []uint
 	oldCleanup := cleanupSourceAfterStrmSuccess
@@ -1892,7 +1907,7 @@ func TestProcessPendingStrmGenerationTasksCopiesDirectoryUploadMetadataBeforeCle
 		t.Fatal("元数据后处理不应写入 STRM 文件")
 		return nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	sourceDir := t.TempDir()
 	sourcePath := filepath.Join(sourceDir, "show", "Season 01", "episode.nfo")
@@ -2005,7 +2020,7 @@ func TestProcessPendingStrmGenerationTasksSkipsCleanupWhenFailedOrNoUploadTask(t
 		}
 		return nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
 	cleanupCalled := false
 	oldCleanup := cleanupSourceAfterStrmSuccess

@@ -9,7 +9,6 @@ import (
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
-	"qmediasync/internal/emby"
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/notificationmanager"
@@ -105,25 +104,6 @@ func cleanup115PlaybackDirectories(ctx context.Context) {
 			helpers.AppLogger.Warnf("115 多端播放定时清理失败：账号=%d，错误=%v", account.ID, err)
 		}
 	}
-}
-
-func selectScheduledEmbySyncMode(config *models.EmbyConfig, now time.Time) string {
-	if config == nil || config.EnableDailyFirstFullSync != 1 {
-		return models.EmbySyncModeIncremental
-	}
-	if config.LastFullSyncAt <= 0 {
-		return models.EmbySyncModeFull
-	}
-
-	loc := now.Location()
-	lastFullSyncAt := time.Unix(config.LastFullSyncAt, 0).In(loc)
-	now = now.In(loc)
-	nowYear, nowMonth, nowDay := now.Date()
-	lastYear, lastMonth, lastDay := lastFullSyncAt.Date()
-	if nowYear == lastYear && nowMonth == lastMonth && nowDay == lastDay {
-		return models.EmbySyncModeIncremental
-	}
-	return models.EmbySyncModeFull
 }
 
 func StartSyncCron() {
@@ -508,27 +488,13 @@ func InitCron() {
 		// helpers.AppLogger.Info("启动刮削任务")
 		startScrapeCron()
 	})
-	if config, err := models.GetEmbyConfig(); err == nil {
-		if config.EmbyApiKey != "" && config.EmbyUrl != "" && config.SyncEnabled == 1 {
-			GlobalCron.AddFunc(config.SyncCron, func() {
-				config, err := models.GetEmbyConfigFromDB()
-				if err != nil {
-					helpers.AppLogger.Errorf("获取 Emby 配置失败：%v", err)
-					return
-				}
-				switch selectScheduledEmbySyncMode(config, time.Now()) {
-				case models.EmbySyncModeFull:
-					if _, err := emby.PerformEmbySync(); err != nil {
-						helpers.AppLogger.Errorf("每日首次全量同步 Emby 条目到本地失败：%v", err)
-					}
-				default:
-					if _, err := emby.PerformEmbyIncrementalSync(); err != nil {
-						helpers.AppLogger.Errorf("增量同步 Emby 条目到本地失败：%v", err)
-					}
-				}
-			})
+	mediaLibraryCronEntries = make(map[models.MediaServerType]cron.EntryID)
+	for _, kind := range []models.MediaServerType{models.MediaServerEmby, models.MediaServerJellyfin} {
+		if err := updateMediaLibraryCronLocked(kind); err != nil {
+			helpers.AppLogger.Warnf("更新 %s 定时同步失败：%v", kind.DisplayName(), err)
 		}
 	}
+
 	GlobalCron.AddFunc("*/2 * * * *", func() {
 		// helpers.AppLogger.Info("启动刮削回滚任务")
 		StartScrapeRollbackCron()

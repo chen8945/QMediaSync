@@ -30,17 +30,19 @@ var embyWebhookReasonLabels = map[string]string{
 	"original_directory_id_absent":            "原目录在网盘上已不存在",
 	"received_without_deletion_authorization": "已收到通知；联动删除未开启，仅同步条目、不删文件",
 	"deletion_disabled":                       "联动删除开关未开启",
+	"nonphysical_item_skipped":                "已跳过，无需建立物理文件索引",
+	"service_disabled":                        "此媒体服务器已关闭，待办将在启用后继续处理",
 	"unsupported_cleanup_policy":              "清理策略缺失或版本不受支持，已保留原始记录和文件",
 	"invalid_metadata_evidence":               "元数据证据格式无效，已保留原始记录和文件",
-	"sync_disabled_or_connection_changed":     "Emby 同步已停用或连接信息已变化，无法确认文件身份",
-	"connection_changed":                      "Emby 连接信息已变化，无法确认文件身份",
-	"server_instance_changed":                 "Emby 服务器标识已变化，无法确认是同一台服务器",
+	"sync_disabled_or_connection_changed":     "媒体库同步已停用或连接信息已变化，无法确认文件身份",
+	"connection_changed":                      "媒体服务器连接信息已变化，无法确认文件身份",
+	"server_instance_changed":                 "媒体服务器标识已变化，无法确认是同一台服务器",
 	"no_confirmed_historical_identity":        "没有可确认的历史身份记录，无法核实文件归属",
 	"source_identity_unconfirmed":             "来源或网盘账号身份不明确",
 	"strm_reference_unverified":               "STRM 路径映射已变化或无法确认",
 	"source_account_changed":                  "网盘账号身份已变化",
 	"source_account_missing":                  "网盘账号已不存在",
-	"source_owner_conflict":                   "Emby 条目或共享引用仍需保留",
+	"source_owner_conflict":                   "媒体条目或共享引用仍需保留",
 	"source_identity_conflict":                "文件身份与已保存记录不一致",
 	"source_lookup_retries_exhausted":         fmt.Sprintf("文件信息查询仍失败，已用完 %d 次处理机会并停止本次重试", webhookMaxAttempts),
 }
@@ -110,19 +112,23 @@ func embyDeletionSupplementRetentionLabel(issues []string) string {
 	return fmt.Sprintf("；%d 个来源已保留（%s）", total, strings.Join(labels, "；"))
 }
 
-func embyWebhookStatusLabel(status string) string {
-	if label, ok := embyWebhookStatusLabels[status]; ok {
-		return label
+func embyWebhookStatusLabel(event, status string) string {
+	action := "条目同步"
+	if event == "library.deleted" || event == "deep.delete" {
+		action = "删除处理"
 	}
-	return status
+	if label, ok := embyWebhookStatusLabels[status]; ok {
+		return action + label
+	}
+	return action + status
 }
 
-// embyWebhookLogItem 拼接日志用 ItemId 标识，名称缺失时不输出空括号。
+// embyWebhookLogItem 优先展示名称，将明确的 ItemId 标识放入括号。
 func embyWebhookLogItem(itemID, label string) string {
 	if label == "" {
-		return itemID
+		return "ItemId " + itemID
 	}
-	return fmt.Sprintf("%s（%s）", itemID, label)
+	return fmt.Sprintf("%s（ItemId %s）", label, itemID)
 }
 
 // embyDeletionTargetNoun 返回日志用目标类型名词：目录目标显示“目录”，其余显示“文件”。
@@ -131,4 +137,8 @@ func embyDeletionTargetNoun(kind string) string {
 		return "目录"
 	}
 	return "文件"
+}
+
+func mediaServerName(kind models.MediaServerType) string {
+	return kind.DisplayName()
 }

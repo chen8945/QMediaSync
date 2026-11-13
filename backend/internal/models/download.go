@@ -102,11 +102,9 @@ func (dq *DQ) Stop() {
 		return
 	}
 	dq.running = false
+	close(dq.tasks)
 	dq.mutex.Unlock()
 	realtime.BroadcastQueueStatusChanged(realtime.EventDownloadQueueStatusChanged, false)
-
-	// 关闭 tasks 通道
-	close(dq.tasks)
 
 	helpers.AppLogger.Info("下载队列已停止")
 }
@@ -197,31 +195,43 @@ func (dq *DQ) moveTasksToChannel() {
 	dq.mutex.RUnlock()
 
 	// 获取一些任务加入到通道
-	dq.mutex.Lock()
-	defer dq.mutex.Unlock()
-
 	// 查询待下载的总量
 	var total int64
-	db.Db.Model(&DbDownloadTask{}).Where("status = ?", DownloadStatusPending).Count(&total)
+	runnableDownloadTaskQuery(db.Db.Model(&DbDownloadTask{})).Where("status = ?", DownloadStatusPending).Count(&total)
 	if total == 0 {
+		dq.mutex.Lock()
 		if dq.retryTriggered {
+			dq.mutex.Unlock()
 			return
 		}
+		dq.retryTriggered = true
+		dq.mutex.Unlock()
 		if GetDownloadingCount() > 0 {
+			dq.mutex.Lock()
+			dq.retryTriggered = false
+			dq.mutex.Unlock()
 			return
 		}
 		if err := RetryFailedDownloadTasks(DefaultQueueRetryMax); err != nil {
 			helpers.AppLogger.Errorf("下载队列自动重试失败任务失败：%v", err)
+			dq.mutex.Lock()
+			dq.retryTriggered = false
+			dq.mutex.Unlock()
 			return
 		}
 		TriggerEmbyLibraryRefreshCheck()
-		dq.retryTriggered = true
+		return
+	}
+	dq.mutex.Lock()
+	if !dq.running {
+		dq.mutex.Unlock()
 		return
 	}
 	dq.retryTriggered = false
 	// 计算需要移动的任务数量
 	availableSpace := cap(dq.tasks) - len(dq.tasks)
 	tasksToMove := min(availableSpace, int(total))
+	dq.mutex.Unlock()
 	// helpers.AppLogger.Infof("任务调度器：队列容量 %d，当前队列长度 %d，可用空间 %d，待移动任务数 %d", cap(dq.tasks), len(dq.tasks), availableSpace, tasksToMove)
 	// 移动任务到通道
 	// 从数据库中查询 tasksToMove 条待下载的记录
@@ -229,23 +239,49 @@ func (dq *DQ) moveTasksToChannel() {
 	if len(tasks) == 0 {
 		return
 	}
-	movedCount := 0
-outer:
-	for _, task := range tasks {
-		// 尝试将任务发送到通道
-		select {
-		case dq.tasks <- task:
-			movedCount++
-			// 将任务标记为下载中， 防止重复添加
-			task.Downloading()
-		default:
-			// 通道已满，停止移动任务
-			break outer
-		}
+	dq.mutex.Lock()
+	if !dq.running {
+		dq.mutex.Unlock()
+		return
 	}
-	// if movedCount > 0 {
-	// 	helpers.AppLogger.Debugf("已将 %d 个任务添加到下载通道", movedCount)
-	// }
+	var moved []DbDownloadTask
+	var claimErr error
+	for _, task := range tasks {
+		if len(dq.tasks) == cap(dq.tasks) {
+			break
+		}
+		startedAt := time.Now().Unix()
+		// 锁外查询可能读到相同待办；只有条件领取成功的调度者可以入队。
+		result := db.Db.Model(&DbDownloadTask{}).Where("id = ? AND status = ?", task.ID, DownloadStatusPending).
+			Updates(map[string]any{"status": DownloadStatusDownloading, "start_time": startedAt})
+		if result.Error != nil {
+			claimErr = result.Error
+			break
+		}
+		if result.RowsAffected == 0 {
+			continue
+		}
+		task.Status, task.StartTime = DownloadStatusDownloading, startedAt
+		moved = append(moved, *task)
+		dq.tasks <- task
+	}
+	dq.mutex.Unlock()
+	for i := range moved {
+		publishDownloadQueueChanged(&moved[i], "status_changed")
+	}
+	if claimErr != nil {
+		helpers.AppLogger.Errorf("下载任务领取失败：%v", claimErr)
+	}
+}
+
+// TriggerMediaLibraryDownloadCheck 重新检查启用端的失败提取任务，调度仍由原队列负责。
+func TriggerMediaLibraryDownloadCheck() {
+	if GlobalDownloadQueue == nil {
+		return
+	}
+	GlobalDownloadQueue.mutex.Lock()
+	GlobalDownloadQueue.retryTriggered = false
+	GlobalDownloadQueue.mutex.Unlock()
 }
 
 // 执行下载任务

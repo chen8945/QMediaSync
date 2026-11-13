@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 
 	"github.com/glebarez/sqlite"
@@ -60,7 +60,7 @@ func setupAuditCorpus(t *testing.T) *auditCorpusReplay {
 		t.Fatal("unexpected audited fixture version or physical file count")
 	}
 
-	previousDB, previousConfig, previousLogger := db.Db, models.GlobalEmbyConfig, helpers.AppLogger
+	previousDB, previousLogger := db.Db, helpers.AppLogger
 	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
@@ -70,12 +70,12 @@ func setupAuditCorpus(t *testing.T) *auditCorpusReplay {
 		t.Fatal(err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	db.Db, models.GlobalEmbyConfig = testDB, nil
+	db.Db = testDB
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
 	SetEmbySyncRunning(false)
 	t.Cleanup(func() {
 		SetEmbySyncRunning(false)
-		db.Db, models.GlobalEmbyConfig, helpers.AppLogger = previousDB, previousConfig, previousLogger
+		db.Db, helpers.AppLogger = previousDB, previousLogger
 		_ = sqlDB.Close()
 	})
 	setupSnapshotTestTables(t)
@@ -105,8 +105,8 @@ func setupAuditCorpus(t *testing.T) *auditCorpusReplay {
 
 	server := httptest.NewServer(http.HandlerFunc(replay.serveHTTP))
 	t.Cleanup(server.Close)
-	if err := db.Db.Create(&models.EmbyConfig{
-		EmbyUrl: server.URL, EmbyApiKey: "offline-fixture-only", SyncEnabled: 1, SyncAllLibraries: 1,
+	if err := db.Db.Create(&models.EmbyConfig{MediaServerType: models.MediaServerEmby,
+		EmbyUrl: server.URL, EmbyApiKey: "offline-fixture-only", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1,
 		LastSavedCursorAt: 1782698400,
 	}).Error; err != nil {
 		t.Fatal(err)

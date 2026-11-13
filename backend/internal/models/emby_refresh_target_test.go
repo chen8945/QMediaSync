@@ -36,6 +36,7 @@ func createEmbyRefreshSyncFile(t *testing.T, syncPathID uint, path, fileName, pi
 func createEmbyRefreshItem(t *testing.T, itemID string, itemType string, seasonID string, seriesID string) {
 	t.Helper()
 	if err := db.Db.Create(&EmbyMediaItem{
+		ServerId:   "refresh-test",
 		ItemId:     itemID,
 		ItemIdInt:  helpersStringToInt64ForTest(itemID),
 		Name:       "item-" + itemID,
@@ -139,7 +140,9 @@ func TestResolveEmbyTargetLibraryRemoteCachesAndCoalescesSameItem(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	const callers = 10
 	start := make(chan struct{})
@@ -325,7 +328,9 @@ func TestResolveEmbyRefreshTargetFallsBackToPathLookupWhenLocalRelationIsStale(t
 		fmt.Fprint(w, `{"Items":[{"Id":"501","Name":"path movie","Type":"Movie","Path":"`+syncFile.LocalFilePath+`"}],"TotalRecordCount":1}`)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {
@@ -358,7 +363,9 @@ func TestResolveEmbyRefreshTargetPathLookupUsesAncestorsInMultipleLibrarySyncPat
 		}
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {
@@ -390,7 +397,9 @@ func TestResolveEmbyRefreshTargetPathLookupPrefersAncestorsOverUniqueSyncPathLib
 		}
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {
@@ -442,7 +451,9 @@ func TestResolveEmbyRefreshTargetResolvesSiblingSeasonLibraryConflictFromAncesto
 		}
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(newEpisode)
 	if err != nil {
@@ -481,7 +492,9 @@ func TestResolveEmbyRefreshTargetPathLookupPrefersSiblingLibraryOverAncestors(t 
 		}
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {
@@ -512,7 +525,9 @@ func TestResolveEmbyRefreshTargetUsesCachedItemWithoutNetworkValidation(t *testi
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	target, err := ResolveEmbyRefreshTarget(syncFile)
 	if err != nil {

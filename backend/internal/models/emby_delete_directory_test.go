@@ -103,7 +103,7 @@ func setupEmbyDirectoryTest(t *testing.T, itemType string) (EmbyDeletionInput, *
 	var input EmbyDeletionInput
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		input, err = CaptureEmbyDeletionTx(tx, token.ServerID, itemID, itemType)
+		input, err = CaptureEmbyDeletionTx(tx, MediaServerEmby, token.ServerID, itemID, itemType)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,11 @@ func addEmbyDirectoryRetainedUser(t *testing.T, input EmbyDeletionInput, complet
 		t.Fatal(err)
 	}
 	if completed {
-		success := EmbyWebhookTarget{RecordID: 999, ServerID: input.ServerID, ServerConfigKey: input.ServerConfigKey, TargetKey: EmbyDeletionFileKey(file), Outcome: EmbyDeletionDeleted}
+		parent := EmbyWebhookRecord{BaseModel: BaseModel{ID: 999}, MediaServerType: input.MediaServerType, ServerID: input.ServerID, ServerConfigKey: input.ServerConfigKey, ItemID: "999", Status: EmbyWebhookDone}
+		if err := db.Db.Create(&parent).Error; err != nil {
+			t.Fatal(err)
+		}
+		success := EmbyWebhookTarget{RecordID: parent.ID, ServerID: input.ServerID, ServerConfigKey: input.ServerConfigKey, TargetKey: EmbyDeletionFileKey(file), Outcome: EmbyDeletionDeleted}
 		if err := db.Db.Create(&success).Error; err != nil {
 			t.Fatal(err)
 		}

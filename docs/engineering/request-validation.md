@@ -217,15 +217,15 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 
 本地新建目录的 `/api/path/create` 响应 `id` 使用 `/` 作为路径分隔符，与 `/api/path/list` 中该目录的 `id` 一致；Windows 同样遵循此约定，确保创建后刷新仍能选中新目录。
 
-115 目录列表按原始条目推进 offset，并过滤目录类型；`stdir=1` 不是仅目录筛选。显式置顶时可以在读到文件后结束目录前缀读取，跟随网盘时须继续读取；`count` 已包含系统目录，不再累加 `sys_count`。根目录系统文件夹可先于普通目录，不能据全局时间不单调重排或自动更换字段。类型排序采用上游规则，不以扩展名或 QMS 分类重建。
+115 目录列表按原始条目推进 offset，并过滤目录类型；`stdir=1` 不是仅目录筛选。显式置顶时可以在读到文件后结束目录前缀读取，跟随网盘时须继续读取；`count` 已包含系统目录，不再累加 `sys_count`。根目录系统文件夹可先于普通目录，不能据全局时间不单调重排或自动更换字段。类型排序采用上游规则，不以扩展名或 QMediaSync 分类重建。
 
 百度目录使用 `folder=1` 和普通 `list` 分页，不使用递归 `listall` 替代当前层读取。OpenList 目录复用 `/api/fs/dirs`；显式刷新先通过 `/api/fs/list` 的 `refresh=true` 刷新路径，再读目录，刷新失败返回错误。显式刷新传递调用方上下文，取消后不继续普通重试或等待重试间隔；取消一个共享认证等待者不取消其他请求的认证恢复。普通共享缓存读取的取消规则见下文。
 
-目录分页、刷新或解析失败不能作为完整目录成功返回。远程列表只保序、过滤及分页，不在 QMS 中重排；缓存和请求合并身份区分字段、方向、置顶和跟随网盘，各种排序共用现有父目录／子树失效规则。交互和偏好规则见 [前端开发约定](frontend-development.md#目录浏览排序与偏好)。
+目录分页、刷新或解析失败不能作为完整目录成功返回。远程列表只保序、过滤及分页，不在 QMediaSync 中重排；缓存和请求合并身份区分字段、方向、置顶和跟随网盘，各种排序共用现有父目录／子树失效规则。交互和偏好规则见 [前端开发约定](frontend-development.md#目录浏览排序与偏好)。
 
 ### 文件与目录共享浏览缓存
 
-`/api/path/files` 与远程 `/api/path/list` 复用进程内 `netFileCache`，最多保留 200 个批次，有效期为写入后 **180 秒**，命中不续期，进程重启即清空。本地目录不加入缓存。键包含来源、账号、规范化路径、排序字段／方向、文件夹置顶、筛选语义及批次范围；切换排序仍请求 QMS，只有对应缓存未命中、过期或显式刷新时才读取网盘。
+`/api/path/files` 与远程 `/api/path/list` 复用进程内 `netFileCache`，最多保留 200 个批次，有效期为写入后 **180 秒**，命中不续期，进程重启即清空。本地目录不加入缓存。键包含来源、账号、规范化路径、排序字段／方向、文件夹置顶、筛选语义及批次范围；切换排序仍请求 QMediaSync，只有对应缓存未命中、过期或显式刷新时才读取网盘。
 
 - 115：相同参数、相同范围的原始列表批次共用一份缓存，保留条目类型、计数、路径及祖先链。文件视图投影文件项，目录视图按原始顺序过滤目录；当前层无类型筛选的两入口统一省略 `stdir`。目录显式名称／时间排序与相同排序且置顶的文件视图可互相命中；未指定排序的旧目录调用保留独立身份，不误用名称升序缓存。
 - 百度：文件 `folder=0` 与目录 `folder=1` 共用缓存机制，但以不同筛选身份隔离数据，不能互相替代。
@@ -256,6 +256,22 @@ OSS multipart 的 part size 必须由后端计算，不接受外部传入：默�
 
 STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 [STRM Webhook](../reference/strm-webhook.md) 维护；本文只约束其控制器使用的输入校验边界。
 
+## 媒体服务器配置与提取
+
+媒体类型由固定路由确定，非法媒体类型不得默认为 Emby。连接与开关字段见 [媒体服务器配置](../operations/configuration.md#媒体服务器连接)，两端共用字段校验、独立持久化，不能互相继承连接或开关。
+
+| 功能 | Emby | Jellyfin |
+| --- | --- | --- |
+| 配置 | `GET/POST /api/setting/emby-config` | `GET/POST /api/setting/jellyfin-config` |
+| 媒体库列表 | `GET /api/emby/libraries` | `GET /api/jellyfin/libraries` |
+| 手动全量／状态 | `POST /api/emby/sync/start`、`GET /api/emby/sync/status` | `POST /api/jellyfin/sync/start`、`GET /api/jellyfin/sync/status` |
+| 手动提取 | `POST /api/setting/emby/parse` | `POST /api/setting/jellyfin/parse` |
+| 外部 Webhook | `POST /emby/webhook` | `POST /jellyfin/webhook` |
+
+`enabled` 与 `enable_media_notification` 支持旧请求省略或 `null` 时保留现值，显式 `false`／`0` 仍保存；新配置默认关闭。读取返回 `data={exists, config}`。保存只做本地字段校验，允许离线保存；提交成功返回 `code=200`，`data.warnings: string[]` 和 `data.restart_required: boolean` 表示提交后的应用结果；Jellyfin 的 `restart_required` 固定为 false，Emby 按已启动代理的连接／启用变更判断。应用失败不变成未保存，回读失败也不等同于配置提交失败；完整契约见 [独立配置与入口](../architecture/emby-library-sync.md#独立配置与入口)。
+
+手动提取使用无 body 的 `POST /api/setting/{emby|jellyfin}/parse`，要求本端总开关、连接、全部媒体库及播放权限，不受 `enable_extract_media_info` 和同步选库限制。该分项只控制入库自动提取。手动全量仍要求本端总开关与 `sync_enabled=1`；媒体库列表只读查询允许总开关关闭。
+
 ## Emby Webhook 入站边界
 
 `POST /emby/webhook` 沿用 `EnableAuth` 和现有 API Key 鉴权，优先 `X-API-Key` 请求头，兼容 `api_key` 查询参数。鉴权后读取最多 `4 MiB` 的 JSON，使用 `requests.ParseEmbyWebhook` 进行严格解析；该入口需要检查重复键，不能直接用会静默覆盖同名键的普通绑定代替。关键字段名沿用 Emby 原始大小写；重复键、关键字段类型错误、非法条目 ID、多份 JSON、超过 64 层嵌套或无效编码都被拒绝。日期支持 RFC3339Nano，仅用于诊断。
@@ -263,6 +279,14 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 官方 `library.new`、兼容的 `library.modified`、`library.deleted` 和受支持的 `deep.delete` 保存为有限、脱敏的持久输入。缺少服务器身份、服务器字段冲突或删除通知缺少原始路径时，记录阻断原因，不把它们升级为可执行删除。`Item.Path` 保留文件名内真实换行和空格；增强通知正文的目录路径不能覆盖 JSON 文件路径。只从已识别的单行完整 Mount Paths 提取未核验候选，多行或不受支持正文仅保存原因，不盲拆文件或保留可能含凭据的自由文本。不记录原始 body，URL 用户信息、认证查询参数和片段不进入新收件记录；pickcode 作为独立候选字段保留。
 
 持久保存成功后维持 HTTP `200`、`{"message":"webhook"}` 响应，表示已保存，后续同步和删除由应用生命周期内的 worker 处理。JSON 格式错误返回 `400`，超过大小限制返回 `413`；配置不完整、读取／保存失败或备份恢复期间暂停收件返回 `503`，不确认已接收。未配置连接时，无关事件沿用忽略并返回 `200` 的旧行为；启用的鉴权仍先于请求体解析。原有新增通知、媒体信息提取和播放通知路径保留。服务器身份、接收时删除授权、历史文件代际和执行前核验属于模型／服务层，不由解析器裁定；完整行为见 [Emby 媒体库同步](../architecture/emby-library-sync.md)。
+
+## Jellyfin Webhook 入站边界
+
+`POST /jellyfin/webhook` 使用本端配置与同一 QMediaSync API Key 鉴权，优先 `X-API-Key`，兼容 `api_key` 查询参数。正式插件指导使用 Generic Destination、Send All Properties 标准 JSON 和 `Content-Type: application/json`。内部入口可解析合法 JSON 的 `text/plain`，不以 MIME 放宽大小、重复键、嵌套、编码或身份校验，也不维护自定义模板。
+
+`requests.ParseJellyfinWebhook` 读取官方 v21／v22 的原字段：`ItemAdded`→`library.new`、`ItemDeleted`→`library.deleted`、`PlaybackStart`→`playback.start`、`PlaybackStop`→`playback.stop`。条目及可选季／剧 GUID 规范化为 32 位小写非零 ID；身份字段不接受错类型或 null。插件不提供原 `Path`／`ParentId`，不能伪造，也不能因此套用 Emby 缺路径拒绝规则。新增通过本端实际详情建立索引；删除仅使用本端核验的历史证据，没有证据时保留未解决结果。未知事件不转换为更新、暂停或深删。
+
+受支持媒体事件持久保存后才确认收件；认证、格式、维护及保存失败沿用现有响应边界。接收时授权、ServerID 核验、删除屏障和冻结计划仍由服务／模型裁定，GUID 和插件事件本身不提供删除授权。两端通知共用既有渠道事件机器值，`enable_media_notification` 只控制本端发送。
 
 ## 当前例外
 

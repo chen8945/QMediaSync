@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -261,7 +261,7 @@ func TestWebhookCleanupExternalPartialSuccessReopensOriginalPlan(t *testing.T) {
 	f.remote.mu.Lock()
 	f.remote.partial = false
 	f.remote.mu.Unlock()
-	f.worker = &webhookWorker{observe: observeEmbyWebhook, syncItem: SyncEmbyItemByIDContext, verify: verifyEmbyDeletion, provider: models.NewEmbyDeleteProvider}
+	f.worker = &webhookWorker{observe: observeEmbyWebhook, syncItem: syncMediaItemByIDWithConfig, verify: verifyEmbyDeletion, provider: models.NewEmbyDeleteProvider}
 	if err := models.RecoverEmbyWebhookWork(t.Context()); err != nil {
 		t.Fatal(err)
 	}

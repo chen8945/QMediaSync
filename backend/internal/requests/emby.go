@@ -9,11 +9,12 @@ import (
 
 // UpdateEmbyConfigRequest 更新 Emby 配置请求。
 type UpdateEmbyConfigRequest struct {
+	Enabled                  *bool                     `json:"enabled"`
+	EnableMediaNotification  *int                      `json:"enable_media_notification"`
 	EmbyURL                  string                    `json:"emby_url"`
 	EmbyAPIKey               string                    `json:"emby_api_key"`
 	EnableDeleteNetdisk      int                       `json:"enable_delete_netdisk"`
 	EnableRefreshLibrary     int                       `json:"enable_refresh_library"`
-	EnableMediaNotification  int                       `json:"enable_media_notification"`
 	EnableExtractMediaInfo   int                       `json:"enable_extract_media_info"`
 	EnableAuth               int                       `json:"enable_auth"`
 	SyncEnabled              int                       `json:"sync_enabled"`
@@ -28,6 +29,11 @@ type UpdateEmbyConfigRequest struct {
 
 // Validate 校验 Emby 配置请求。
 func (r UpdateEmbyConfigRequest) Validate() error {
+	if r.EnableMediaNotification != nil {
+		if err := validation.OneOfInt("enable_media_notification", *r.EnableMediaNotification, []int{0, 1}); err != nil {
+			return err
+		}
+	}
 	if err := validation.HTTPURL("emby_url", r.EmbyURL, true); err != nil {
 		return err
 	}
@@ -37,7 +43,6 @@ func (r UpdateEmbyConfigRequest) Validate() error {
 	for field, value := range map[string]int{
 		"enable_delete_netdisk":     r.EnableDeleteNetdisk,
 		"enable_refresh_library":    r.EnableRefreshLibrary,
-		"enable_media_notification": r.EnableMediaNotification,
 		"enable_extract_media_info": r.EnableExtractMediaInfo,
 		"enable_auth":               r.EnableAuth,
 		"sync_enabled":              r.SyncEnabled,

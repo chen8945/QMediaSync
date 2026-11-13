@@ -20,6 +20,37 @@ import (
 	syncscope "qmediasync/internal/strm/scope"
 )
 
+func TestGenerationRefreshResolutionFailurePreventsFileChanges(t *testing.T) {
+	for _, parentTaskID := range []uint{0, 1} {
+		t.Run(fmt.Sprintf("parent=%d", parentTaskID), func(t *testing.T) {
+			account, syncPath := setupStrmGenerationServiceTestDB(t)
+			service := newTestGenerationService(t, syncPath, account)
+			service.compareStrm = func(*SyncStrm, *SyncFileCache) int { return 0 }
+			service.processStrmFile = func(*SyncStrm, *SyncFileCache) error { t.Fatal("解析失败前不应写入 STRM"); return nil }
+			resolutionErr := errors.New("Emby identity unavailable")
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) {
+				return []models.EmbyRefreshTarget{{MediaServerType: models.MediaServerJellyfin, ServerID: "jellyfin-server", TargetType: models.EmbyRefreshTargetTypeItem, ItemID: "season-1"}}, resolutionErr
+			}
+			submitted := 0
+			service.requestEmbyRefreshTargets = func(id uint, targets []models.EmbyRefreshTarget) error {
+				submitted++
+				if id != syncPath.ID || len(targets) != 1 || targets[0].MediaServerType != models.MediaServerJellyfin || targets[0].ServerID != "jellyfin-server" {
+					t.Fatalf("有效另一端的目标丢失：syncPath=%d targets=%+v", id, targets)
+				}
+				return nil
+			}
+			_, err := service.Generate(t.Context(), StrmGenerationInput{Task: &models.StrmGenerationTask{
+				Source: models.StrmGenerationSourceWebhook, TaskType: models.StrmGenerationTaskTypeFile,
+				SyncPathId: syncPath.ID, AccountId: account.ID, ParentTaskId: parentTaskID,
+				FileId: "file", ParentId: "directory", PickCode: "pick", Path: "/remote", FileName: "movie.mkv", RefreshEmby: true,
+			}})
+			if !errors.Is(err, resolutionErr) || submitted != 0 {
+				t.Fatalf("解析失败应保留且没有变化可刷新：err=%v submitted=%d", err, submitted)
+			}
+		})
+	}
+}
+
 func TestProcessStrmFileReleasesTargetBeforeEmby(t *testing.T) {
 	for _, collision := range []bool{false, true} {
 		t.Run(fmt.Sprintf("collision=%v", collision), func(t *testing.T) {
@@ -31,6 +62,9 @@ func TestProcessStrmFileReleasesTargetBeforeEmby(t *testing.T) {
 				s, _ := service.buildSyncer(sp, account, nil)
 				s.Context = t.Context()
 				s.Sync = &models.Sync{Logger: helpers.AppLogger}
+				s.refreshScopesOnce.Do(func() {
+					s.refreshScopes = []models.EmbyRefreshTarget{{MediaServerType: models.MediaServerEmby, ServerID: "fixture-server"}}
+				})
 				s.SyncDriver = &fakeDirectoryScanDriver{strmContent: "http://qms.local/movie"}
 				entered, resume := make(chan struct{}), make(chan struct{})
 				var calls atomic.Int32
@@ -150,13 +184,13 @@ func TestGenerateReleasesTargetButKeepsScopeDuringFollowup(t *testing.T) {
 					syncer = s
 					return s, err
 				}
-				service.resolveRefreshTarget = func(sf *models.SyncFile) (models.EmbyRefreshTarget, error) {
+				service.resolveRefreshTargets = func(sf *models.SyncFile) ([]models.EmbyRefreshTarget, error) {
 					close(entered)
 					<-resume
 					if step == "emby-error" {
-						return models.EmbyRefreshTarget{}, errFollowup
+						return nil, errFollowup
 					}
-					return models.EmbyRefreshTarget{TargetType: models.EmbyRefreshTargetTypeItem, ItemID: "season-1", ItemType: "Season", Recursive: true}, nil
+					return []models.EmbyRefreshTarget{{TargetType: models.EmbyRefreshTargetTypeItem, ItemID: "season-1", ItemType: "Season", Recursive: true}}, nil
 				}
 				task := &models.StrmGenerationTask{Source: models.StrmGenerationSourceWebhook, TaskType: models.StrmGenerationTaskTypeFile, SyncPathId: sp.ID, AccountId: account.ID, FileId: "video", PickCode: "pick", ParentId: "parent", Path: "/remote", FileName: "movie.mkv", FileSize: 100, Mtime: 100, Sha1: "sha", DownloadMeta: step == "metadata" || step == "cancel", RefreshEmby: step == "emby" || step == "emby-error", ParentTaskId: 99}
 				ctx, cancel := context.WithCancel(t.Context())
@@ -187,11 +221,14 @@ func TestGenerateReleasesTargetButKeepsScopeDuringFollowup(t *testing.T) {
 					t.Fatalf("范围提前释放: %v", err)
 				}
 				var row models.SyncFile
-				if err := db.Db.Where("file_id = ?", "video").First(&row).Error; err != nil {
-					t.Fatal(err)
-				}
-				if _, err := os.Stat(target); err != nil {
-					t.Fatal(err)
+				rowErr := db.Db.Where("file_id = ?", "video").First(&row).Error
+				_, fileErr := os.Stat(target)
+				if step == "emby" || step == "emby-error" {
+					if !errors.Is(rowErr, gorm.ErrRecordNotFound) || !os.IsNotExist(fileErr) {
+						t.Fatalf("身份解析前发生文件或账本写入：row=%v file=%v", rowErr, fileErr)
+					}
+				} else if rowErr != nil || fileErr != nil {
+					t.Fatalf("生成结果丢失：row=%v file=%v", rowErr, fileErr)
 				}
 				if step == "cancel" {
 					cancel()
@@ -215,34 +252,5 @@ func TestGenerateReleasesTargetButKeepsScopeDuringFollowup(t *testing.T) {
 				release()
 			})
 		})
-	}
-}
-
-func TestGenerateResolvesEmbyOnlyOnce(t *testing.T) {
-	account, sp := setupStrmGenerationServiceTestDB(t)
-	sqlDB, _ := db.Db.DB()
-	defer sqlDB.Close()
-	service := newTestGenerationService(t, sp, account)
-	build := service.buildSyncer
-	service.buildSyncer = func(p *models.SyncPath, a *models.Account, c *SyncStrmConfig) (*SyncStrm, error) {
-		s, err := build(p, a, c)
-		s.Sync = &models.Sync{Logger: helpers.AppLogger}
-		s.SyncDriver = &fakeDirectoryScanDriver{strmContent: "http://qms.local/movie"}
-		return s, err
-	}
-	calls := 0
-	failed := errors.New("lookup failed")
-	if err := db.Db.Callback().Query().Before("gorm:query").Register("test:count_emby", func(tx *gorm.DB) {
-		if tx.Statement.Table == "emby_media_sync_files" {
-			calls++
-			tx.AddError(failed)
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	task := &models.StrmGenerationTask{Source: models.StrmGenerationSourceWebhook, TaskType: models.StrmGenerationTaskTypeFile, SyncPathId: sp.ID, AccountId: account.ID, FileId: "video", PickCode: "pick", ParentId: "parent", Path: "/remote", FileName: "movie.mkv", FileSize: 100, Mtime: 100, Sha1: "sha", RefreshEmby: true}
-	_, err := service.Generate(t.Context(), StrmGenerationInput{Task: task})
-	if !errors.Is(err, failed) || calls != 1 {
-		t.Fatalf("解析次数=%d err=%v", calls, err)
 	}
 }

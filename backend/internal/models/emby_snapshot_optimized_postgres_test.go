@@ -41,7 +41,7 @@ func TestEmbySnapshotOptimizedPostgresGroupsRollbackAndBound(t *testing.T) {
 }
 
 // holdOptimizedSnapshotEvidence 暂停在真实 INSERT 成功后，尚未执行其余投影和 COMMIT。
-func holdOptimizedSnapshotEvidence(t *testing.T, conn *gorm.DB, itemID string) (<-chan int, func()) {
+func holdOptimizedSnapshotEvidence(t *testing.T, conn *gorm.DB, kind MediaServerType, itemID string) (<-chan int, func()) {
 	t.Helper()
 	entered := make(chan int, 1)
 	release := make(chan struct{})
@@ -53,7 +53,7 @@ func holdOptimizedSnapshotEvidence(t *testing.T, conn *gorm.DB, itemID string) (
 			return
 		}
 		evidence, ok := tx.Statement.Dest.(*EmbyItemEvidence)
-		if !ok || evidence.ItemID != itemID || evidence.ItemJSON == "" {
+		if !ok || evidence.MediaServerType != kind || evidence.ItemID != itemID || evidence.ItemJSON == "" {
 			return
 		}
 		var pid int
@@ -79,11 +79,37 @@ func holdOptimizedSnapshotEvidence(t *testing.T, conn *gorm.DB, itemID string) (
 }
 
 func TestEmbySnapshotOptimizedPostgresIndependentWritesProgress(t *testing.T) {
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		t.Run(string(kind), func(t *testing.T) { testEmbySnapshotIndependentWritesProgress(t, kind) })
+	}
+}
+
+func testEmbySnapshotIndependentWritesProgress(t *testing.T, secondKind MediaServerType) {
+	t.Helper()
 	conn, _ := setupEmbySnapshotPostgres(t)
-	_, token, template := seedEmbyPostgresSnapshot(t, conn)
+	config, token, template := seedEmbyPostgresSnapshot(t, conn)
 	first := optimizedSnapshotFixture(template, "9201", "first still uncommitted")
-	second := optimizedSnapshotFixture(template, "9202", "second committed")
-	entered, release := holdOptimizedSnapshotEvidence(t, conn, first.Item.ItemId)
+	first.Item.MediaServerType = token.MediaServerType
+	secondID, secondToken := "9202", token
+	if secondKind == MediaServerJellyfin {
+		if err := conn.AutoMigrate(&JellyfinConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Create(&JellyfinConfig{Enabled: true, SyncEnabled: 1, EmbyUrl: config.EmbyUrl, EmbyApiKey: config.EmbyApiKey}).Error; err != nil {
+			t.Fatal(err)
+		}
+		secondConfig, err := ReadMediaLibraryConfigSnapshot(secondKind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondToken, err = BeginEmbyIndexRead(token.ServerID, secondConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondID = first.Item.ItemId
+	}
+	second := optimizedSnapshotFixture(template, secondID, "second committed")
+	entered, release := holdOptimizedSnapshotEvidence(t, conn, token.MediaServerType, first.Item.ItemId)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	firstResult := make(chan error, 1)
@@ -104,7 +130,7 @@ func TestEmbySnapshotOptimizedPostgresIndependentWritesProgress(t *testing.T) {
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
-		secondResult <- ApplyEmbySnapshotsContext(ctx, token, []EmbyItemSnapshot{second})
+		secondResult <- ApplyEmbySnapshotsContext(ctx, secondToken, []EmbyItemSnapshot{second})
 	}()
 	defer func() { release(); waitEmbyPostgresFinished(t, secondDone) }()
 	select {
@@ -116,11 +142,11 @@ func TestEmbySnapshotOptimizedPostgresIndependentWritesProgress(t *testing.T) {
 		t.Fatal("independent group could not COMMIT while the first group held a successful INSERT")
 	}
 	var persisted EmbyMediaItem
-	if err := conn.Where("item_id = ?", second.Item.ItemId).First(&persisted).Error; err != nil || persisted.Name != second.Item.Name {
+	if err := conn.Where("media_server_type = ? AND item_id = ?", secondKind, second.Item.ItemId).First(&persisted).Error; err != nil || persisted.Name != second.Item.Name {
 		t.Fatalf("second group not externally visible before first COMMIT: %+v, %v", persisted, err)
 	}
 	var firstEvidenceCount int64
-	if err := conn.Model(&EmbyItemEvidence{}).Where("item_id = ?", first.Item.ItemId).Count(&firstEvidenceCount).Error; err != nil || firstEvidenceCount != 0 {
+	if err := conn.Model(&EmbyItemEvidence{}).Where("media_server_type = ? AND item_id = ?", token.MediaServerType, first.Item.ItemId).Count(&firstEvidenceCount).Error; err != nil || firstEvidenceCount != 0 {
 		t.Fatalf("first group unexpectedly committed: count=%d err=%v", firstEvidenceCount, err)
 	}
 	release()
@@ -134,7 +160,9 @@ func TestEmbySnapshotOptimizedPostgresFirstInsertSerializes(t *testing.T) {
 	_, token, template := seedEmbyPostgresSnapshot(t, conn)
 	first := optimizedSnapshotFixture(template, "9203", "first")
 	second := optimizedSnapshotFixture(template, "9203", "second")
-	entered, release := holdOptimizedSnapshotEvidence(t, conn, first.Item.ItemId)
+	// 归属由 token 决定，已准备和未填类型的快照必须取得同一条目锁。
+	first.Item.MediaServerType = token.MediaServerType
+	entered, release := holdOptimizedSnapshotEvidence(t, conn, token.MediaServerType, first.Item.ItemId)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	firstResult := make(chan error, 1)

@@ -27,27 +27,27 @@ func validateEmbyDeletionContext(conn *gorm.DB, input EmbyDeletionInput) (*EmbyC
 	if !input.Authorized {
 		return nil, ErrEmbyDeleteDisabled
 	}
-	var config EmbyConfig
-	if err := conn.First(&config).Error; err != nil {
+	config, configErr := readMediaLibraryConfigTx(conn, input.MediaServerType)
+	if err := configErr; err != nil {
 		return nil, err
 	}
-	if config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
+	if !config.Enabled || config.SyncEnabled != 1 || config.EnableDeleteNetdisk != 1 {
 		return nil, ErrEmbyDeleteDisabled
 	}
 	var index EmbyIndexState
-	if err := conn.First(&index, 1).Error; err != nil {
+	if err := conn.Where("media_server_type = ?", input.MediaServerType).First(&index).Error; err != nil {
 		return nil, err
 	}
-	if input.ServerID == "" || index.ServerID != input.ServerID || index.ServerConfigKey != input.ServerConfigKey || EmbyServerConfigIdentity(&config) != input.ServerConfigKey {
+	if input.ServerID == "" || index.ServerID != input.ServerID || index.ServerConfigKey != input.ServerConfigKey || EmbyServerConfigIdentity(config) != input.ServerConfigKey {
 		return nil, ErrEmbySnapshotStale
 	}
-	return &config, nil
+	return config, nil
 }
 
 func validateEmbyDeletionOwnerEvidence(conn *gorm.DB, input EmbyDeletionInput, owner EmbyDeletionOwner, requireDeleted bool) error {
 	ref := embyOwnerRef(owner)
 	var state EmbyItemState
-	if err := conn.Where("server_id = ? AND item_id = ?", input.ServerID, ref.ItemID).First(&state).Error; err != nil {
+	if err := conn.Where("media_server_type = ? AND server_id = ? AND item_id = ?", input.MediaServerType, input.ServerID, ref.ItemID).First(&state).Error; err != nil {
 		return err
 	}
 	if state.SnapshotID != ref.SnapshotID || state.Generation != ref.Generation || requireDeleted && !state.Deleted {
@@ -57,7 +57,7 @@ func validateEmbyDeletionOwnerEvidence(conn *gorm.DB, input EmbyDeletionInput, o
 	if err := conn.First(&evidence, ref.SnapshotID).Error; err != nil {
 		return err
 	}
-	if evidence != owner.Evidence || evidence.ServerID != input.ServerID || evidence.ServerConfigKey != input.ServerConfigKey || state.IdentityKey != evidence.IdentityKey ||
+	if !sameEmbyFrozenEvidence(evidence, owner.Evidence, input.MediaServerType) || evidence.ServerID != input.ServerID || evidence.ServerConfigKey != input.ServerConfigKey || state.IdentityKey != evidence.IdentityKey ||
 		embyJSON(owner.Files) != evidence.FilesJSON || owner.Item.ItemId != evidence.ItemID || owner.Item.Generation != evidence.Generation {
 		return ErrEmbyIdentityAmbiguous
 	}
@@ -272,9 +272,9 @@ func validateEmbyDeletionSupplement(conn *gorm.DB, config *EmbyConfig, owner Emb
 // ValidateEmbyDeletionSupplement 在远端补查结果进入首次计划前核验其来源和当前账号。
 func ValidateEmbyDeletionSupplement(ctx context.Context, owner EmbyDeletionOwner, supplement EmbyDeletionSupplement) error {
 	conn := db.Db.WithContext(ctx)
-	var config EmbyConfig
-	if err := conn.First(&config).Error; err != nil {
+	config, configErr := readMediaLibraryConfigTx(conn, owner.Evidence.MediaServerType)
+	if err := configErr; err != nil {
 		return err
 	}
-	return validateEmbyDeletionSupplement(conn, &config, owner, supplement)
+	return validateEmbyDeletionSupplement(conn, config, owner, supplement)
 }

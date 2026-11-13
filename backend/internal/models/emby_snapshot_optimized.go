@@ -15,7 +15,7 @@ import (
 	"qmediasync/internal/db"
 )
 
-var errEmbyApplyNeedsExclusive = errors.New("Emby 旧成员需要排他提交")
+var errEmbyApplyNeedsExclusive = errors.New("媒体服务器旧成员需要排他提交")
 
 const embyApplyCacheKey = "qms:emby-apply-cache"
 
@@ -90,12 +90,12 @@ func lockEmbyApplyGuard(tx *gorm.DB, token EmbyIndexToken, exclusive bool) (*Emb
 		if exclusive {
 			strength = "UPDATE"
 		}
-		if err := tx.Clauses(clause.Locking{Strength: strength}).First(&state, 1).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: strength}).Where("media_server_type = ?", token.MediaServerType).First(&state).Error; err != nil {
 			return nil, err
 		}
 	} else {
 		// Begin 已创建 state；RETURNING 同时取得 writer 保护和状态，省去冲突插入及随后 SELECT。
-		result := tx.Model(&state).Clauses(clause.Returning{}).Where("id = ?", 1).UpdateColumn("revision", gorm.Expr("revision + 0"))
+		result := tx.Model(&state).Clauses(clause.Returning{}).Where("media_server_type = ?", token.MediaServerType).UpdateColumn("revision", gorm.Expr("revision + 0"))
 		if result.Error != nil {
 			return nil, result.Error
 		}
@@ -106,14 +106,14 @@ func lockEmbyApplyGuard(tx *gorm.DB, token EmbyIndexToken, exclusive bool) (*Emb
 	if state.ServerID != token.ServerID || state.ConfigKey != token.ConfigKey || state.ServerConfigKey != token.ServerConfigKey || state.Revision != token.Revision {
 		return nil, ErrEmbySnapshotStale
 	}
-	var config EmbyConfig
-	if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&config).Error; err != nil {
+	config, err := readMediaLibraryConfigTx(tx.Clauses(clause.Locking{Strength: "SHARE"}), token.MediaServerType)
+	if err != nil {
 		return nil, err
 	}
-	if config.SyncEnabled != 1 || EmbyConfigIdentity(&config) != token.ConfigKey {
+	if !config.Enabled || config.SyncEnabled != 1 || EmbyConfigIdentity(config) != token.ConfigKey {
 		return nil, ErrEmbySnapshotStale
 	}
-	return &config, nil
+	return config, nil
 }
 
 // LoadEmbySnapshotSerialItems 一次读取旧成员边，供执行器保留冲突组的枚举顺序。
@@ -124,7 +124,7 @@ func LoadEmbySnapshotSerialItems(ctx context.Context, token EmbyIndexToken) (map
 			return err
 		}
 		var rows []EmbyMediaItem
-		if err := tx.Select("item_id", "part_of_item_id", "version_of_item_id").Where("part_of_item_id <> '' OR version_of_item_id <> ''").Find(&rows).Error; err != nil {
+		if err := tx.Where("media_server_type = ?", token.MediaServerType).Select("item_id", "part_of_item_id", "version_of_item_id").Where("part_of_item_id <> '' OR version_of_item_id <> ''").Find(&rows).Error; err != nil {
 			return err
 		}
 		for _, row := range rows {
@@ -141,14 +141,14 @@ func LoadEmbySnapshotSerialItems(ctx context.Context, token EmbyIndexToken) (map
 	return ids, err
 }
 
-func lockEmbyApplyItems(tx *gorm.DB, snapshots []EmbyItemSnapshot) error {
+func lockEmbyApplyItems(tx *gorm.DB, kind MediaServerType, snapshots []EmbyItemSnapshot) error {
 	if tx.Dialector.Name() != "postgres" {
 		return nil
 	}
 	keys := make([]int64, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		// 媒体 item_id 是全局唯一；锁不依赖尚未存在的 state 行，也不按服务器拆开。
-		sum := sha256.Sum256([]byte("qms:emby:item:" + snapshot.Item.ItemId))
+		// 同端 item_id 唯一；按实际写入的 token 归属加锁，不依赖尚未存在的 state 行。
+		sum := sha256.Sum256([]byte("qms:emby:item:" + string(kind) + ":" + snapshot.Item.ItemId))
 		keys = append(keys, int64(binary.BigEndian.Uint64(sum[:8])))
 	}
 	slices.Sort(keys)
@@ -177,9 +177,9 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		queries := make([]*gorm.DB, 0, 3*len(ids))
 		for _, id := range ids {
 			queries = append(queries,
-				tx.Where("item_id = ?", id),
-				tx.Where("server_id = ? AND part_of_item_id = ?", token.ServerID, id),
-				tx.Where("server_id = ? AND version_of_item_id = ?", token.ServerID, id))
+				tx.Where("media_server_type = ? AND item_id = ?", token.MediaServerType, id),
+				tx.Where("media_server_type = ? AND server_id = ? AND part_of_item_id = ?", token.MediaServerType, token.ServerID, id),
+				tx.Where("media_server_type = ? AND server_id = ? AND version_of_item_id = ?", token.MediaServerType, token.ServerID, id))
 		}
 		for _, query := range queries {
 			var media []EmbyMediaItem
@@ -192,7 +192,7 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		}
 	} else {
 		var media []EmbyMediaItem
-		if err := tx.Where("item_id IN ? OR (server_id = ? AND (part_of_item_id IN ? OR version_of_item_id IN ?))", ids, token.ServerID, ids, ids).Order("id").Find(&media).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND (item_id IN ? OR (server_id = ? AND (part_of_item_id IN ? OR version_of_item_id IN ?)))", token.MediaServerType, ids, token.ServerID, ids, ids).Order("id").Find(&media).Error; err != nil {
 			return err
 		}
 		for _, row := range media {
@@ -204,7 +204,7 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		var memberships []embyApplyMembershipRow
 		if err := tx.Model(&EmbyItemMembership{}).
 			Select("emby_item_memberships.*, (server_config_key IS NULL OR snapshot_id IS NULL OR item_type IS NULL OR part_of_item_id IS NULL OR season_id IS NULL OR series_id IS NULL) AS has_null").
-			Where("server_id = ? AND item_id IN ?", token.ServerID, ids).Find(&memberships).Error; err != nil {
+			Where("media_server_type = ? AND server_id = ? AND item_id IN ?", token.MediaServerType, token.ServerID, ids).Find(&memberships).Error; err != nil {
 			return err
 		}
 		cache.memberships = make(map[string]embyApplyMembershipRow, len(memberships))
@@ -213,7 +213,7 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		}
 	}
 	var states []EmbyItemState
-	if err := tx.Where("server_id = ? AND item_id IN ?", token.ServerID, ids).Find(&states).Error; err != nil {
+	if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id IN ?", token.MediaServerType, token.ServerID, ids).Find(&states).Error; err != nil {
 		return err
 	}
 	evidenceIDs := []uint{}
@@ -238,7 +238,7 @@ func loadEmbyApplyItems(tx *gorm.DB, token EmbyIndexToken, snapshots []EmbyItemS
 		}
 	}
 	var links []EmbyMediaSyncFile
-	if err := tx.Where("emby_item_id IN ?", ids).Order("id").Find(&links).Error; err != nil {
+	if err := tx.Where("media_server_type = ? AND emby_item_id IN ?", token.MediaServerType, ids).Order("id").Find(&links).Error; err != nil {
 		return err
 	}
 	for _, link := range links {
@@ -542,7 +542,7 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 			}
 			cache.files[current.ID] = current
 		}
-		desired = append(desired, EmbyMediaSyncFile{EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: current.PickCode, SnapshotID: item.SnapshotID, SourceID: file.SourceID})
+		desired = append(desired, EmbyMediaSyncFile{MediaServerType: item.MediaServerType, EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: current.PickCode, SnapshotID: item.SnapshotID, SourceID: file.SourceID})
 	}
 	current := cache.links[item.ItemId]
 	sortLinks := func(rows []EmbyMediaSyncFile) {
@@ -572,7 +572,7 @@ func replaceEmbyLinks(tx *gorm.DB, item *EmbyMediaItem, files []EmbyFrozenFile, 
 		return nil
 	}
 	if len(current) > 0 {
-		if err := tx.Where("emby_item_id = ?", item.ItemId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND emby_item_id = ?", item.MediaServerType, item.ItemId).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 			return err
 		}
 	}
@@ -605,7 +605,7 @@ func saveEmbyApplyMembership(tx *gorm.DB, state EmbyItemState, evidence EmbyItem
 	for _, name := range columns {
 		conditions = append(conditions, clause.Expr{SQL: "? IS DISTINCT FROM ?", Vars: []any{clause.Column{Table: "emby_item_memberships", Name: name}, clause.Column{Table: "excluded", Name: name}}})
 	}
-	err = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.AssignmentColumns(append(columns, "updated_at")), Where: clause.Where{Exprs: []clause.Expression{clause.Or(conditions...)}}}).Create(&row).Error
+	err = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "media_server_type"}, {Name: "server_id"}, {Name: "item_id"}}, DoUpdates: clause.AssignmentColumns(append(columns, "updated_at")), Where: clause.Where{Exprs: []clause.Expression{clause.Or(conditions...)}}}).Create(&row).Error
 	if err == nil && cache != nil && cache.memberships != nil {
 		cache.memberships[row.ItemID] = embyApplyMembershipRow{EmbyItemMembership: row}
 	}
@@ -617,7 +617,7 @@ func saveEmbyApplyLibraryRelations(tx *gorm.DB, snapshots []EmbyItemSnapshot, ca
 	for _, snapshot := range snapshots {
 		if snapshot.Item.LibraryId != "" {
 			for _, file := range cache.links[snapshot.Item.ItemId] {
-				row := EmbyLibrarySyncPath{LibraryId: snapshot.Item.LibraryId, SyncPathId: file.SyncPathId, LibraryName: snapshot.LibraryName}
+				row := EmbyLibrarySyncPath{MediaServerType: snapshot.Item.MediaServerType, LibraryId: snapshot.Item.LibraryId, SyncPathId: file.SyncPathId, LibraryName: snapshot.LibraryName}
 				relations[embyJSON([]any{row.LibraryId, row.SyncPathId})] = row
 			}
 		}
@@ -631,7 +631,7 @@ func saveEmbyApplyLibraryRelations(tx *gorm.DB, snapshots []EmbyItemSnapshot, ca
 			args = append(args, row.LibraryId, row.SyncPathId)
 		}
 		var existing []EmbyLibrarySyncPath
-		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Select("library_id", "sync_path_id").Where(strings.Join(predicates, " OR "), args...).Find(&existing).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("media_server_type = ?", cache.config.MediaServerType).Select("library_id", "sync_path_id").Where(strings.Join(predicates, " OR "), args...).Find(&existing).Error; err != nil {
 			return err
 		}
 		for _, row := range existing {

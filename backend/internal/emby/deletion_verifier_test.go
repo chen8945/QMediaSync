@@ -123,13 +123,13 @@ func TestVerifyEmbyDeletionProtectsSurvivorsAndUnknownInventory(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 0, SelectedLibraries: `["unrelated"]`}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 0, SelectedLibraries: `["unrelated"]`}
 			if err := conn.Create(&config).Error; err != nil {
 				t.Fatal(err)
 			}
 			sources, _ := json.Marshal([]models.EmbySnapshotSource{{ID: "old", Path: "http://qms/stream?pickcode=pc"}})
-			owner := models.EmbyDeletionOwner{Item: models.EmbyMediaItem{ItemId: "1", Path: original}, Evidence: models.EmbyItemEvidence{BaseModel: models.BaseModel{ID: 1}, Generation: 1, SourcesJSON: string(sources)}, Files: []models.EmbyFrozenFile{{LocalRoot: root, LocalFilePath: original, PickCode: "pc", SourceID: "old"}}}
-			input := models.EmbyDeletionInput{ServerID: "server-a", ServerConfigKey: models.EmbyServerConfigIdentity(&config), ItemID: "1", ItemType: "Movie", Owners: []models.EmbyDeletionOwner{owner}}
+			owner := models.EmbyDeletionOwner{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "1", Path: original}, Evidence: models.EmbyItemEvidence{BaseModel: models.BaseModel{ID: 1}, Generation: 1, SourcesJSON: string(sources)}, Files: []models.EmbyFrozenFile{{LocalRoot: root, LocalFilePath: original, PickCode: "pc", SourceID: "old"}}}
+			input := models.EmbyDeletionInput{MediaServerType: models.MediaServerEmby, ServerID: "server-a", ServerConfigKey: models.EmbyServerConfigIdentity(&config), ItemID: "1", ItemType: "Movie", Owners: []models.EmbyDeletionOwner{owner}}
 			target := models.EmbyDeletionTarget{Owners: []models.EmbyDeletionOwnerRef{{ItemID: "1", SnapshotID: 1, Generation: 1}}}
 			err = verifyEmbyDeletion(t.Context(), input, target)
 			if (err == nil) != (name == "absent") {

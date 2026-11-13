@@ -66,27 +66,27 @@ func DecodeEmbyMetadata(raw string) (EmbyMetadataEnvelope, error) {
 	var envelope EmbyMetadataEnvelope
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return envelope, errors.New("Emby 元数据证据为空")
+		return envelope, errors.New("媒体元数据证据为空")
 	}
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
 		return envelope, err
 	}
 	if envelope.Version != 2 || envelope.ExclusiveFiles == nil || envelope.ScopedFiles == nil || envelope.DirectoryScopes == nil {
-		return EmbyMetadataEnvelope{}, errors.New("Emby 元数据证据版本或集合无效")
+		return EmbyMetadataEnvelope{}, errors.New("媒体元数据证据版本或集合无效")
 	}
 	for _, directory := range envelope.MediaDirectories {
 		if !validEmbyMediaDirectory(directory) {
-			return EmbyMetadataEnvelope{}, errors.New("Emby 媒体目录角色无效")
+			return EmbyMetadataEnvelope{}, errors.New("媒体目录角色无效")
 		}
 	}
 	for _, scope := range envelope.DirectoryScopes {
 		if !validEmbyDirectoryScope(scope) {
-			return EmbyMetadataEnvelope{}, errors.New("Emby 历史媒体目录证据不完整")
+			return EmbyMetadataEnvelope{}, errors.New("历史媒体目录证据不完整")
 		}
 	}
 	for _, file := range envelope.ScopedFiles {
 		if file.ScopeType != "Season" || file.ScopeItemID == "" || file.ScopeDirectoryKey == "" || file.File.FileID == "" {
-			return EmbyMetadataEnvelope{}, errors.New("Emby 历史作用域元数据证据不完整")
+			return EmbyMetadataEnvelope{}, errors.New("媒体历史作用域元数据证据不完整")
 		}
 	}
 	return envelope, nil
@@ -107,13 +107,16 @@ func validEmbyDirectoryScope(scope EmbyDirectoryScope) bool {
 	if scope.MediaType != "Movie" && scope.MediaType != "Season" && scope.MediaType != "Series" {
 		return false
 	}
-	if _, err := parseEmbyItemID(scope.ItemID); err != nil {
+	if _, err := parseEmbySnapshotItemID(scope.ItemID); err != nil {
 		return false
 	}
 	if file.Reason != "" || file.FileID == "" || file.ParentID == "" || file.SyncPathID == 0 || file.AccountID == 0 || file.AccountIdentity == "" || scope.LocalPath == "" || scope.LocalPath != file.LocalFilePath || !embyDeleteBasename(file.FileName) {
 		return false
 	}
-	if scope.EvidenceKind != "emby_physical_ancestor" && scope.EvidenceKind != "qms_scrape_output" {
+	if scope.EvidenceKind == "jellyfin_managed_movie" && scope.MediaType != "Movie" {
+		return false
+	}
+	if scope.EvidenceKind != "emby_physical_ancestor" && scope.EvidenceKind != "qms_scrape_output" && scope.EvidenceKind != "jellyfin_managed_movie" {
 		return false
 	}
 	parentPath, ok := embyRemoteDirectory(file.Path)
@@ -179,10 +182,10 @@ func validEmbyMediaDirectory(directory EmbyMediaDirectory) bool {
 	if directory.MediaType != "Movie" && directory.MediaType != "Season" && directory.MediaType != "Series" {
 		return false
 	}
-	if _, err := parseEmbyItemID(directory.ItemID); err != nil {
+	if _, err := parseEmbySnapshotItemID(directory.ItemID); err != nil {
 		return false
 	}
 	_, _, err := normalizeEmbyMappingPath(directory.LocalPath)
 	return (err == nil || filepath.IsAbs(directory.LocalPath) && filepath.Clean(directory.LocalPath) == directory.LocalPath) &&
-		(directory.EvidenceKind == "" || directory.EvidenceKind == "emby_physical_ancestor" || directory.EvidenceKind == "qms_scrape_output")
+		(directory.EvidenceKind == "" || directory.EvidenceKind == "emby_physical_ancestor" || directory.EvidenceKind == "qms_scrape_output" || directory.EvidenceKind == "jellyfin_managed_movie")
 }

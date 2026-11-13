@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
@@ -53,6 +53,9 @@ func syncEmbyLibrary(ctx context.Context, client *embyclientrestgo.Client, query
 			snapshots, err := collectEmbySnapshots(ctx, client, item, query.LibraryID, libraryName, runID, seenAt)
 			if err != nil {
 				return nil, err
+			}
+			for i := range snapshots {
+				snapshots[i].Item.MediaServerType = token.MediaServerType
 			}
 			if err := collector.enrich(ctx, client, snapshots); err != nil {
 				return nil, err

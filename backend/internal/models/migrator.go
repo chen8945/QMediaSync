@@ -36,7 +36,7 @@ var AllTables = []any{
 	SyncPath{}, SyncFile{}, SyncRootEvidence{}, SyncPathScrapePath{}, DirectoryUploadRule{}, DirectoryUploadProcessedFile{}, SyncPathIdempotencyRecord{},
 	ScrapeSettings{}, ScrapePath{}, MovieCategory{}, TvShowCategory{}, ScrapePathCategory{},
 	ScrapeMediaFile{}, Media{}, MediaSeason{}, MediaEpisode{}, ScrapeStrmPath{},
-	RequestStat{}, EmbyConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
+	RequestStat{}, EmbyConfig{}, JellyfinConfig{}, EmbyMediaItem{}, EmbyMediaSyncFile{}, EmbyLibrary{}, EmbyLibrarySyncPath{}, EmbyLibraryRefreshTask{},
 	EmbyIndexState{}, EmbyItemState{}, EmbyItemEvidence{}, EmbyWebhookRecord{}, EmbyWebhookTarget{}, EmbyObservedEvidenceIndex{}, EmbyItemMembership{},
 	DbDownloadTask{}, DbUploadTask{}, UploadSession{}, StrmGenerationTask{}, NotificationChannel{}, TelegramChannelConfig{}, MeoWChannelConfig{}, BarkChannelConfig{},
 	ServerChanChannelConfig{}, CustomWebhookChannelConfig{}, NotificationRule{},
@@ -66,7 +66,6 @@ func Migrate() error {
 }
 
 func migrateExistingDB(migrator Migrator) (migrationErr error) {
-	db.Db.Statement.PrepareStmt = true
 	if migrator.VersionCode == 1 {
 		// 数据库版本低于最大版本，需要升级
 		db.Db.AutoMigrate(DbDownloadTask{}, DbUploadTask{}, SyncPath{}, Sync{})
@@ -867,6 +866,9 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 			if err := migrateEmbyIdentity(tx); err != nil {
 				return err
 			}
+			if err := migrateMediaLibrarySchema(tx); err != nil {
+				return err
+			}
 			return tx.Model(&migrator).Update("version_code", 71).Error
 		}); err != nil {
 			return fmt.Errorf("迁移媒体条目关联失败：%w", err)
@@ -1422,7 +1424,7 @@ func migrateEmbyLibraryRefreshTaskKeys(dbConn *gorm.DB) error {
 		}
 	}
 	if !dbConn.Migrator().HasIndex(&EmbyLibraryRefreshTask{}, "idx_emby_library_refresh_tasks_task_key") {
-		if err := dbConn.Migrator().CreateIndex(&EmbyLibraryRefreshTask{}, "idx_emby_library_refresh_tasks_task_key"); err != nil {
+		if err := dbConn.Exec("CREATE UNIQUE INDEX idx_emby_library_refresh_tasks_task_key ON emby_library_refresh_tasks(task_key)").Error; err != nil {
 			return fmt.Errorf("创建 emby_library_refresh_tasks.task_key 唯一索引失败：%w", err)
 		}
 	}
@@ -1441,7 +1443,6 @@ func BatchCreateTable() error {
 
 // 空库事务遇错立即返回；公开修复入口仍尝试其余表并返回最后一项错误。
 func batchCreateTable(conn *gorm.DB, stopOnError bool) error {
-	conn.Statement.PrepareStmt = true
 
 	var err error
 	var lastErr error
@@ -1534,6 +1535,9 @@ func InitDB() (existing bool, err error) {
 		}
 		if err := initEmbyConfig(tx); err != nil {
 			return fmt.Errorf("初始化 Emby 配置失败：%w", err)
+		}
+		if err := initJellyfinConfig(tx); err != nil {
+			return fmt.Errorf("初始化 Jellyfin 配置失败：%w", err)
 		}
 		if err := initMigrationTable(tx, MaxVersionCode); err != nil {
 			return fmt.Errorf("初始化数据库版本表失败：%w", err)
@@ -1897,7 +1901,13 @@ func initEmbyConfig(conn *gorm.DB) error {
 		LastSyncTime:             0,
 		SyncMode:                 EmbySyncModeIdle,
 	}
-	return conn.Save(embyConfig).Error
+	// map 写入保留关闭值，GORM 的结构体默认值不能覆盖新配置的同步开关。
+	return conn.Model(&EmbyConfig{}).Create(map[string]any{
+		"enabled": false, "emby_url": "", "emby_api_key": "", "sync_enabled": embyConfig.SyncEnabled,
+		"enable_media_notification": 0, "sync_cron": embyConfig.SyncCron, "enable_auth": embyConfig.EnableAuth,
+		"enable_daily_first_full_sync": embyConfig.EnableDailyFirstFullSync, "sync_mode": embyConfig.SyncMode,
+		"sync_all_libraries": 1, "selected_libraries": "[]", "path_mappings_json": "[]",
+	}).Error
 }
 
 func migrateEmbyConfig(dbConn *gorm.DB) {

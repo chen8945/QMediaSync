@@ -29,7 +29,7 @@ describe('getEmbyRefreshDecision', () => {
       hasRefreshRelatedChanges: true,
       label: '有刷新相关变更',
       type: 'warning',
-      reason: '实际刷新需满足 Emby 已启用且同步目录已关联媒体库',
+      reason: '实际刷新需满足媒体服务器已启用且同步目录已关联媒体库',
     })
   })
 
@@ -38,7 +38,7 @@ describe('getEmbyRefreshDecision', () => {
       hasRefreshRelatedChanges: true,
       label: '检测到刷新相关变更',
       type: 'warning',
-      reason: '任务完成后会由后端根据 Emby 配置和媒体库关联判断是否刷新',
+      reason: '任务完成后会根据各媒体服务器的配置和媒体库关联判断是否刷新',
     })
   })
 

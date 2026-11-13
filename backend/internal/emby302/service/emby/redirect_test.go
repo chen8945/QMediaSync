@@ -215,7 +215,7 @@ func TestRedirect2OpenlistLinkQMS115Failures(t *testing.T) {
 			if cdnRequests.Load() != 0 {
 				t.Fatalf("CDN requests = %d, want 0", cdnRequests.Load())
 			}
-			if !strings.Contains(output, "QMS 115 取链失败，回退原始链接") || !strings.Contains(output, fmt.Sprintf("接口状态=%d", tt.wantStatus)) {
+			if !strings.Contains(output, "QMediaSync 115 取链失败，回退原始链接") || !strings.Contains(output, fmt.Sprintf("接口状态=%d", tt.wantStatus)) {
 				t.Fatalf("missing truthful fallback log: %s", output)
 			}
 			if strings.Contains(output, "获取最终重定向链接成功") || strings.Contains(output, "http://") || strings.Contains(output, "https://") {

@@ -16,7 +16,7 @@ import (
 const EmbyWebhookTargetMaxAttempts = 4
 
 // ErrEmbyWebhookAttemptLimit 表示至少一个实际参与目标已不能登记新的删除发送。
-var ErrEmbyWebhookAttemptLimit = errors.New("Emby 删除目标发送次数已达上限")
+var ErrEmbyWebhookAttemptLimit = errors.New("媒体服务器删除目标发送次数已达上限")
 
 // EmbyDeletionAttempt 在发送前持久登记；一次共同写入共用同一个 ID。
 type EmbyDeletionAttempt struct {

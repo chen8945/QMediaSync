@@ -105,7 +105,7 @@ const messages: Record<HttpErrorKind, string> = {
   'method-not-allowed': '请求方式不受支持',
   'rate-limit': '请求过于频繁，请稍后重试',
   server: '服务器处理请求失败。如问题持续，请查看服务日志',
-  maintenance: '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMS 服务后重新登录',
+  maintenance: '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMediaSync 服务后重新登录',
   application: '操作失败，请稍后重试',
   unknown: '请求失败，请稍后重试',
 }

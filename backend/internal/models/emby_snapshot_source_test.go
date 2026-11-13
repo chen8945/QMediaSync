@@ -150,7 +150,7 @@ func TestEmbySnapshotSourceAccountScopesCandidates(t *testing.T) {
 }
 
 func TestEmbyConfigMappingIdentityAndLegacySourceCompatibility(t *testing.T) {
-	config := &EmbyConfig{EmbyUrl: "https://emby.test", EmbyApiKey: "key", SyncEnabled: 1, SyncAllLibraries: 1}
+	config := &EmbyConfig{MediaServerType: MediaServerEmby, Enabled: true, EmbyUrl: "https://emby.test", EmbyApiKey: "key", SyncEnabled: 1, SyncAllLibraries: 1}
 	legacy := embyDigest([]any{EmbyServerConfigIdentity(config), 1, 1, ""})
 	if EmbyConfigIdentity(config) != legacy {
 		t.Fatal("empty mapping changed legacy identity")

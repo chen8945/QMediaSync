@@ -1,12 +1,12 @@
 import axios, { AxiosError } from 'axios'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppEmbySettings from '@/views/settings/AppEmbySettings.vue'
-import type { EmbyPathMapping } from '@/api/emby'
+import MediaServerSettings from '@/components/media-library/MediaServerSettings.vue'
+import type { MediaLibraryPathMapping } from '@/api/mediaLibrary'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 
-const originalMapping: EmbyPathMapping = {
+const originalMapping: MediaLibraryPathMapping = {
   emby_root: '/emby/strm',
   local_root: '/mnt/strm',
   sync_path_id: 9,
@@ -16,7 +16,11 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
   const list = vi.fn(async () => {
     throw new AxiosError('unavailable', 'ERR_NETWORK')
   })
-  const save = vi.fn(async () => ({ code: 200, message: '', data: null }))
+  const save = vi.fn<() => Promise<{ code: number; message: string; data: unknown }>>(async () => ({
+    code: 200,
+    message: '',
+    data: { warnings: [], restart_required: false },
+  }))
   const adapter = vi.fn(async (config) => {
     let data: unknown
     if (config.method === 'post') {
@@ -34,6 +38,7 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
         data: {
           exists: true,
           config: {
+            enabled: true,
             emby_url: 'http://emby:8096',
             emby_api_key: 'key',
             sync_enabled: syncEnabled,
@@ -49,7 +54,8 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
     }
     return { config, status: 200, statusText: 'OK', headers: {}, data }
   })
-  const wrapper = mount(AppEmbySettings, {
+  const wrapper = mount(MediaServerSettings, {
+    props: { serverType: 'emby', active: true },
     attachTo: document.body,
     global: {
       provide: { [httpKey]: axios.create({ adapter }) },
@@ -144,11 +150,11 @@ describe('Emby 手工 STRM 路径映射入口隐藏', () => {
 
   it('保存成功后的回读失败不会清空后续保存中的映射', async () => {
     const { wrapper, save, adapter, storedConfig } = await mountSettings([originalMapping])
-    const pending = createDeferred<{ code: number; message: string; data: null }>()
+    const pending = createDeferred<{ code: number; message: string; data: unknown }>()
     save.mockReturnValueOnce(pending.promise)
     await click(wrapper, '保存设置')
     adapter.mockRejectedValueOnce(new AxiosError('unavailable', 'ERR_NETWORK'))
-    pending.resolve({ code: 200, message: '', data: null })
+    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
     await flushPromises()
     expect(wrapper.text()).toContain('Emby 配置已保存，但刷新失败')
     await click(wrapper, '保存设置')

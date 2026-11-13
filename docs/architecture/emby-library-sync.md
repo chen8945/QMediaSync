@@ -1,52 +1,74 @@
-# Emby 媒体库同步
+# 媒体库同步
 
-> 职责：定义 Emby 刷新、条目同步、Webhook 持久处理、联动删除和运行状态的边界。
+> 职责：定义 Emby、Jellyfin 的独立设置、刷新、条目同步、Webhook 持久处理、联动删除和运行状态边界。
 >
-> 权威范围：本文档维护 Emby 两条同步链路和刷新协调器；时间策略见 [数据库 schema 与迁移](../reference/database-schema.md#时间字段策略)，Cron 校验见 [请求校验约定](../engineering/request-validation.md#cron-表达式边界)。
+> 权威范围：本文档维护媒体服务器两条同步链路和刷新协调器；时间策略见 [数据库 schema 与迁移](../reference/database-schema.md#时间字段策略)，配置与路径字段见 [配置说明](../operations/configuration.md#媒体服务器连接)，Cron 校验见 [请求校验约定](../engineering/request-validation.md#cron-表达式边界)。
 >
-> 修改时机：修改 Emby 刷新入口、条目同步、刷新任务状态、目标解析、去抖或 Webhook 行为时必须更新本文档。
+> 修改时机：修改媒体服务器设置、刷新入口、条目同步、任务状态、目标解析、去抖或 Webhook 行为时必须更新本文档。
 >
-> 相关代码：`backend/internal/emby/`、`backend/internal/models/emby_*.go`、`backend/internal/synccron/`、`backend/internal/controllers/emby*.go`、`frontend/src/views/settings/AppEmbySettings.vue`。
+> 相关代码：`backend/internal/medialibrary/client/`、`backend/internal/emby/`、`backend/internal/models/media_library*.go`、`backend/internal/models/emby_*.go`、`backend/internal/models/jellyfin_config.go`、`backend/internal/synccron/`、`backend/internal/controllers/media_library*.go`、`backend/internal/controllers/emby*.go`、`backend/internal/requests/jellyfin_webhook.go`、`frontend/src/components/media-library/`。
 
-实现细节以 `backend/internal/emby`、`backend/internal/models`、`backend/internal/synccron` 和 `frontend/src/views/settings/AppEmbySettings.vue` 为准。
+## 独立配置与入口
+
+“系统设置 → 媒体库”包含 Emby、Jellyfin 和飞牛影视三个标签。Emby 与 Jellyfin 各配置一台服务器，可以同时启用，分别保存连接、总开关、功能开关、选库、Cron、路径映射和同步状态。两端分别使用 `emby_config` 与 `jellyfin_config`；业务沿用原媒体表，以固定的 `media_server_type=emby|jellyfin` 隔离。来源存储类型与媒体服务器类型是不同概念。
+
+新配置的 `enabled` 默认关闭。关闭总开关保留设置，阻止本端新的同步、刷新、Webhook 业务和提取执行；另一端不受影响。`enable_media_notification` 只控制本端媒体通知发送，关闭它不停止索引、提取或已授权的删除处理。`enable_extract_media_info` 只控制新增媒体的自动入队；手动“提取媒体信息”和已入队任务仍按总开关、原服务器身份和播放权限执行。
+
+每轮业务读取并传递本端配置快照，普通查询必须携带合法类型；不能从全局 Emby 配置或当前 UI 标签推断归属。条目、成员、关联、版本屏障、收件、刷新目标和缓存均在本端范围内查询；已核验的父记录可向子记录传递归属。两端可以有相同远端 item/library ID，不能互相覆盖索引、同步水位或删除证据。物理来源锁和恢复维护门禁仍共用。
+
+刷新／提取执行前的开关与连接检查只读取所需列，不解码无关路径映射。索引提交的配置摘要包含规范化映射，仍须完整读取配置并核验摘要，不能套用这类窄查询。
+
+失败提取任务的重试调度仅核对本地总开关、来源、连接完整性、去重和重试上限，不同步访问媒体服务器。远端原 ServerID 和用户权限在提取执行入口核验，旧 URL 任务不能借用新凭据。关闭端保留任务且不消耗重试；远端失败沿用队列的有限重试。媒体服务器故障不能占住共享调度器，阻止另一端或普通下载入队。
+
+共享下载队列在空闲时安排失败任务重试；查询或更新遇到临时数据库错误后，后续空闲调度仍可继续尝试，数据库恢复后无需新任务或手动操作才能恢复。读取任一端配置失败也按查询失败处理，不能当作该端未启用后报告重试成功；配置行不存在仍按未配置处理。成功安排任务才增加其重试次数，既有重试上限不变；成功且无可重试任务时，同一空闲周期不反复扫描。
+
+连接与开关字段见 [配置说明](../operations/configuration.md#媒体服务器连接)，固定路由、读取／保存响应和省略字段语义见 [配置与提取请求](../engineering/request-validation.md#媒体服务器配置与提取)。保存允许离线操作，只更新配置字段，不覆盖并发同步状态。提交前失败保留原配置；提交后的应用失败保留已保存值并提示警告，同配置再次保存可重试应用。回读失败与应用警告分别展示，实际 Emby 监听变更仍保留重启边界。
+
+条目全量、增量和单项同步在准备期间遇到连接失败或配置变化时，也必须按固定入口收尾本端运行状态，保留错误且不推进成功水位。失败的索引令牌只保留本端类型，不授予提交资格；收尾入口拒绝空或非法类型，不能默认清理 Emby 状态。
 
 ## Jellyfin 适用范围
 
-沿用“系统设置 → Emby”的单服务器配置、选库、手动／Cron 全量与增量索引、路径映射和刷新协调器。普通 Movie、Episode、Video 的静态多版本和服务器已识别的分段复用同一快照流程；不按名称自动合并媒体。Jellyfin 不接入 Emby 302 或页面代理。
+Jellyfin 使用独立标签与原生管理接口，支持选库、手动／Cron 全量及增量本地索引、静态多版本、服务器已识别的分段、路径映射、同步后刷新、官方 Webhook 插件事件、媒体通知、主动提取和基于真实历史证据的联动删除。页面和播放访问 Jellyfin 本身；不提供 Emby 的 302、视频／字幕代理、页面脚本或 CSS 注入、代理响应增强及代理观察预加载。
 
-客户端按需读取 `System/Info/Public`，在当前实例内复用成功结果。`ProductName` 为 `Jellyfin` 或 `Jellyfin Server` 时使用原生管理路由及 `Authorization: MediaBrowser … Token="…"`；Emby 和未知产品保留既有 Emby 请求方式。公开信息只有明确 404 才尝试 Emby 前缀，认证、网络和解码错误直接返回。配置的反向代理子路径保留。旧 Jellyfin 同样使用原生管理接口，不按版本分流，也不因原生请求失败自动切回兼容接口。
+客户端位于 `internal/medialibrary/client`，共用传输与分页，`emby.go`／`jellyfin.go` 封装协议差异。只需判断产品时请求 `/System/Ping`；业务需要真实 ServerID 时按需请求 `/System/Info/Public`，复用明确产品，Public 未识别时补 Ping。Ping 支持 Emby 的纯文本与 Jellyfin 的 JSON 字符串标识。反向代理子路径保留，只有明确 404 才尝试 Emby 前缀；不按版本分流，不因原生业务请求失败自动切换协议。
 
-Jellyfin Items 显式请求 `DateCreated,ParentId,Path,MediaSources`，分页按 `DateCreated,SortName` 排序，增量仍使用 `MinDateLastSaved` 和 600 秒重叠窗口；成功游标取扫描起始时间。总数变化、重复身份、提前空页或不完整组失败时不清旧、不推进成功水位。该分页机制不提供远端事务快照。
+明确识别为另一产品的连接不能执行本标签业务，Jellyfin 不能接入 Emby 代理。产品探测失败保留“未确认”及诊断、不缓存失败，也不单独阻断既有业务；最终未知产品沿用原 Emby 协议。需要身份、详情或用户权限的操作仍须完成实际业务核验。并发合并 Ping 或 Public 探测时，发起者取消或超时不会使其他有效请求失败；等待者按自己的上下文重新探测，自身取消则及时退出。Emby 代理启动不等待远端探测，远端暂不可用不阻止本地监听；后续请求重试核验。实际监听配置变更保留重启边界。
 
-Jellyfin UUID 在分页去重前规范化为 32 位小写非零值。静态 `MediaSources[].Id` 经来源类型和条目归属核对后补入既有 `ItemID`，来源自身的 ID 和播放 URL 保留原义；Grouping 版本可关联，频道与占位来源不推断物理归属。数字 Emby 保留原数值稳定根，Jellyfin 版本组按规范化 GUID 取稳定根。分段仍使用 AdditionalParts；缺详情、缺成员或跨组冲突使整组失败。
+Jellyfin 使用原生管理路由及 `Authorization: MediaBrowser … Token="…"`。Items 显式请求 `DateCreated,ParentId,Path,MediaSources`，分页按 `DateCreated,SortName` 排序，增量使用 `MinDateLastSaved` 和 600 秒重叠窗口；成功游标取扫描起始时间。总数变化、重复身份、提前空页或不完整组失败时不清旧、不推进成功水位。该分页机制不提供远端事务快照。
 
-合并后的隐藏版本可能不出现在 `Items?Ids=...`，此时通过具备全部媒体库权限的用户，调用 `Items/{id}?UserId=...` 补查详情。旧版隐藏版本详情可能仅声明自身来源，按完整主项声明的成员核对；声明冲突或缺少详情仍使整组失败。
+Jellyfin UUID 在分页去重前规范化为 32 位小写非零值。静态 `MediaSources[].Id` 经来源类型和条目归属核对后补入既有 `ItemID`，来源自身的 ID 和播放 URL 保留原义；Grouping 版本可关联，频道与占位来源不推断物理归属。数字 Emby 保留原数值稳定根，Jellyfin 版本组按规范化 GUID 取稳定根，不按标题合并。分段使用 AdditionalParts；缺详情、缺成员或跨组冲突使整组失败。
 
-Jellyfin 不使用 Emby 的远端 `Path` 查询；刷新按本地 item、同季／同剧及已有媒体库关联解析。原生 `POST /Items/{id}/Refresh` 显式设置 `MetadataRefreshMode=Default`、`ImageRefreshMode=Default`，不发送 Emby 的 Fields／Recursive，不强制替换元数据。HTTP 成功只表示已接受任务，新增剧集和图片是否生效需观察服务器扫描结果。
+合集库通过 `CollectionType=boxsets` 从两端共用的媒体库入口排除；Jellyfin 系统播放列表集合还通过 `Type=ManualPlaylistsFolder` 或 `CollectionType=playlists` 排除。这些逻辑集合不参与 QMediaSync 的选库、索引或媒体信息提取，其中引用的影片仍通过原电影或电视剧库处理。普通媒体库即使同名为“合集”或 Playlists 也保留，不按名称、普通 `CollectionFolder` 类型或目录列表是否为空过滤。
 
-本次未新增 Jellyfin 原生 Webhook、播放通知、主动媒体信息提取或网盘联动删除适配。已有入口不因产品名被禁用，原输入、鉴权、数字删除资格和冻结证据校验继续执行；GUID 能写入索引不构成删除授权。后文 Webhook 和联动删除约定仍描述现有 Emby 契约。
+STRM 原生 HTTP 来源直接使用。Jellyfin 返回本地 STRM 来源时，先有界补读有权限用户的同一条目详情，核对条目类型、实际路径和来源归属；仍未提供 URL 的受管 STRM，利用已有同步文件与可信路径对应只读本地内容，再交给现有来源及账号身份解析。不会访问播放 URL、查询网盘或根据文件名猜测身份；正常原生来源不产生这类补读，也不按 Jellyfin 版本分流。该兼容只补足 QMediaSync 的来源关联，不修改 Jellyfin 数据库或修复其媒体探测。
+
+已精确识别的受管 STRM 若读取失败、内容与账号或文件标识不符，普通同步不提交该组，保留原有正确关联并报告失败。删除前的完整本端存活清单也复用来源兼容，以识别另一路径或新条目 ID 对同一云盘文件的引用；已确认受管但来源未能恢复时，本次删除核验失败，不发送网盘删除请求，也不把通知标记为删除处理成功。即使该存活条目的新 ID 尚未入索引，也不能仅凭本地路径位于待删目录外就断言云端文件无关。原生 HTTP 来源及可正常恢复的 STRM 继续按实际来源判断共享关系。
+
+合并后的隐藏版本可能不出现在 `Items?Ids=...`，通过具备全部媒体库权限的用户调用 `Items/{id}?UserId=...` 补查详情。隐藏版本只声明自身来源时，按完整主项声明核对成员；冲突或缺详情仍使整组失败。公共详情、图片和通知用户查询保留原全部媒体库权限规则，`EnableMediaPlayback` 只用于提取候选用户。
+
+Jellyfin 不使用 Emby 远端 `Path` 查询；刷新按本端本地 item、同季／同剧及媒体库关联解析。原生 `POST /Items/{id}/Refresh` 设置 `MetadataRefreshMode=Default`、`ImageRefreshMode=Default`，不发送 Emby 的 Fields／Recursive，不强制替换元数据。HTTP 成功只表示已接受任务，新增剧集和图片是否生效需观察服务器扫描结果。官方插件及删除边界见下文；GUID 本身不构成删除授权。
 
 ## 两条链路
 
-Emby 相关任务分为两条独立链路，不能混用。
+每端均有两条独立链路，不能混用。后文保留原 Emby 模型与函数名；公共调度入口按类型分别处理启用的 Emby、Jellyfin。
 
-### 链路 A：通知 Emby 刷新
+### 链路 A：通知媒体服务器刷新
 
-含义：QMediaSync 通知 Emby 刷新已有 item 或重新扫描它自己的媒体库。
+含义：QMediaSync 通知本端媒体服务器刷新已有 item 或重新扫描它自己的媒体库。
 
 刷新功能需要满足以下前置条件：
 
-- 已配置 Emby URL 和 API Key，并启用 `enable_refresh_library`。
+- 本端总开关已启用，已配置 URL 和 API Key，并启用 `enable_refresh_library`。
 - 刷新来源必须属于已保存的同步目录，临时同步目录不提交刷新。
-- 建议先完成一次链路 B 的 Emby 条目同步，用于建立 `emby_media_items`、`emby_media_sync_files` 和 `emby_library_sync_paths` 关联。没有 item 关联时会尝试回退媒体库刷新；同步目录也没有媒体库关联时会跳过提交。
+- 建议先完成一次本端链路 B 的条目同步，用于建立 `emby_media_items`、`emby_media_sync_files` 和 `emby_library_sync_paths` 关联。没有 item 关联时会尝试回退媒体库刷新；同步目录也没有媒体库关联时会跳过提交。
 
 #### 当前有效入口
 
 | 入口 | 上游触发方式 | 提交条件 | 提交函数 |
 | --- | --- | --- | --- |
-| 常规 STRM 同步 | 全局同步、单同步目录同步、115 全量同步、全局或目录自定义 Cron、Telegram `/strm_inc` 和 `/strm_sync` | 非临时同步目录成功完成，且新增 STRM 或新增元数据下载任务 | `models.RequestEmbyRefreshTargets(...)` |
-| 上传完成后的 STRM 生成 | 目录监控上传完成、STRM 上传完成或远端文件已存在 | 非 Webhook 文件任务的 STRM 实际新增或更新 | `models.RequestEmbyRefreshBySyncFile(...)` |
-| STRM Webhook | `POST /api/strm/webhook` 的单文件、批量文件或目录扫描请求 | 显式设置 `refresh_emby=true`，并且 STRM 发生变化或新增元数据下载任务 | `models.RequestEmbyRefreshTargets(...)` |
+| 常规 STRM 同步 | 全局同步、单同步目录同步、115 全量同步、全局或目录自定义 Cron、Telegram `/strm_inc` 和 `/strm_sync` | 非临时同步目录成功完成，且新增 STRM 或新增元数据下载任务 | `models.RequestMediaLibraryRefreshTargets(...)` |
+| 上传完成后的 STRM 生成 | 目录监控上传完成、STRM 上传完成或远端文件已存在 | 非 Webhook 文件任务的 STRM 实际新增或更新 | `models.RequestMediaLibraryRefreshTargets(...)` |
+| STRM Webhook | `POST /api/strm/webhook` 的单文件、批量文件或目录扫描请求 | 显式设置 `refresh_emby=true`，并且 STRM 发生变化或新增元数据下载任务 | `models.RequestMediaLibraryRefreshTargets(...)` |
 
 常规 STRM 同步包括以下管理入口：
 
@@ -56,25 +78,31 @@ Emby 相关任务分为两条独立链路，不能混用。
 - 全局同步 Cron 和同步目录自定义 Cron。
 - Telegram `/strm_inc`、`/strm_sync`。
 
-`new_meta` 表示已创建元数据下载任务，不表示元数据已经下载完成。常规同步完成后先提交刷新任务，刷新协调器再等待这些下载任务结束。
+`new_meta` 表示已创建元数据下载任务，不表示元数据已经下载完成。常规同步完成后先提交刷新任务，刷新协调器再等待这些下载任务结束。目标已冻结真实 ServerID 时，提交前核验本地索引归属即可持久入队，不以媒体服务当前在线为前提；服务离线时保留原目标，恢复后由协调器核验远端真实实例再执行，无需再次生成文件。缺少 ServerID 的目标仍须先取得真实身份，不能离线补造。
 
 `POST /api/sync/manual` 使用临时同步目录，不提交 Emby 刷新任务。
 
-上传完成、远端已存在等非 Webhook STRM 任务由 `strm_generation_tasks` worker 处理。只有 STRM 内容实际变化时才提交刷新；STRM 内容不变时只确认或更新 `sync_files`，不创建新的刷新任务。
+上传完成、远端已存在等非 Webhook STRM 任务由 `strm_generation_tasks` worker 处理。只有 STRM 内容实际变化时才提交刷新；STRM 内容不变时只确认或更新 `sync_files`，不创建新的刷新任务。普通上传在写入前冻结目标，可复用与当前连接对应的本端索引中已确认的真实 ServerID；媒体服务暂时离线时仍可生成 STRM，持久提交失败则保存原目标并等待重试。新连接没有可靠原身份且远端身份查询失败时，只在确有待写变化时中止，恢复后可重新提交。提交时保留并核对原目标的本地归属，执行前校验远端真实实例，不把旧连接的索引身份用于新连接。
 
-完整同步在 STRM 写入成功并释放目标锁后收集刷新目标，解析失败仍记录告警并回退媒体库目标。单文件后处理由服务按任务来源处理刷新，不在底层写文件时重复解析；解析或提交失败仍返回任务重试。两条入口都等待自己负责的刷新处理结束，提交成功不代表 Emby 已扫库完成。
+完整同步在 STRM 写入成功并释放目标锁后收集刷新目标，解析失败仍记录告警并回退媒体库目标。单文件后处理由服务按任务来源处理刷新，不在底层写文件时重复解析；写入后的提交失败保存原目标，进入既有收尾重试。两条入口都等待自己负责的刷新处理结束，提交成功不代表 Emby 已扫库完成。
 
 STRM Webhook 的具体规则：
 
-- `refresh_emby` 默认关闭，调用方必须显式设置为 `true`。
+- `refresh_emby` 保留历史字段名、默认关闭，调用方必须显式设置为 `true`；它分别向本端总开关与刷新开关均开启的 Emby／Jellyfin 提交。
 - 单文件任务只有在 STRM 变化或新增元数据下载任务时提交刷新。
 - 批量文件和目录扫描先由子任务累计刷新目标。
 - 只有父任务全部子任务成功、计数满足且存在 STRM 或元数据变化时，才统一提交一次刷新。
-- 任一子任务失败时父任务失败，不提交刷新。
+- 任一子任务失败时父任务失败，不提交父任务累计的完整刷新集合。
+
+请求刷新的 Webhook 文件任务在产生 STRM 或元数据变化前先解析并冻结各启用端的类型和真实 ServerID；解析失败不先写入这些变化，修复连接后可重新提交，避免重试时把已写入文件误判为“无变化”而丢失刷新。没有 STRM 变化，且元数据无匹配项、本地已存在或已有同目标的活跃下载时，不会仅因解析失败而阻止完成。写入后独立任务的刷新提交失败会保存目标并进入 `finalizing`，恢复时只重试原目标，不重新生成；批任务仍由父任务累计目标、子任务收尾重试。两端提交分别处理，单端失败不阻止另一端已冻结目标入队。首次提交和收尾重试均按端保存进度：现有目标 JSON 仅保留尚未成功提交端的原目标，全部完成后置已提交；独立文件和批任务均在重载后只重试剩余端，避免每 5 秒重提健康端而反复推迟其 10 秒防抖时间。新的 STRM 或元数据变化仍正常重设刷新防抖，去重、等待和实例身份核验保持。普通无变化任务不新增刷新。
+
+刷新提交时，配置读取失败会返回该端错误，收尾任务保留该端原目标并在数据库恢复后重试；其他端可继续提交。配置不存在、连接信息不完整或已明确关闭刷新时，仍按原规则跳过。读取失败不能当作关闭，也不能据此清空待办目标或标记已提交。
+
+升级或恢复备份后，STRM 批任务持久目标缺少 `MediaServerType` 时，仅在历史读取边界按 Emby 解释；显式类型保持原值，公共刷新入口仍要求合法类型。关闭刷新时旧任务可以正常收尾；开启时仍核验真实服务器身份和当前索引，不将旧目标发送给 Jellyfin。
 
 #### 当前不是刷新入口的功能
 
-- `POST /api/emby/sync/start`、Emby 条目同步 Cron 和 `POST /emby/webhook` 属于链路 B，只维护 QMediaSync 本地 Emby 索引，不调用刷新接口。
+- 两端的 `/api/{emby|jellyfin}/sync/start`、条目同步 Cron 和 `/{emby|jellyfin}/webhook` 属于链路 B，只维护 QMediaSync 本端索引，不调用刷新接口。
 - 前端当前只有“同步后刷新媒体库”开关，没有“立即刷新媒体库”按钮，也没有独立的刷新 API。
 - `models.RefreshEmbyLibraryBySyncPathId(...)` 是直接请求 Emby 的旧函数，当前没有生产调用方；当前刷新统一经过任务协调器。
 - Telegram `strm_scrape` 对应的同步、刮削后刷新代码仍存在，但命令注册已注释，不属于当前有效入口。
@@ -86,7 +114,7 @@ STRM Webhook 的具体规则：
 常规 STRM 同步 / 上传后处理 / STRM Webhook
                     │
                     ▼
-            解析 Emby 刷新目标
+            按本端解析刷新目标
             item 优先，媒体库兜底
                     │
                     ▼
@@ -97,14 +125,14 @@ STRM Webhook 的具体规则：
       等待相关 STRM 同步和下载任务结束
                     │
                     ▼
-       按 item 或媒体库调用 Emby Refresh API
+       按本端 item 或媒体库调用 Refresh API
 ```
 
 完整流程如下：
 
 1. 上游任务确认存在 STRM 或元数据变化。
-2. 调用 `ResolveEmbyRefreshTarget(...)` 解析 item 或媒体库目标。
-3. 调用 `RequestEmbyRefreshTargets(...)`、`RequestEmbyRefreshBySyncFile(...)` 或内部回退函数 `RequestEmbyLibraryRefreshBySyncPathId(...)`。
+2. 调用 `ResolveMediaLibraryRefreshTargets(...)` 分别解析启用端的 item 或媒体库目标。
+3. 调用 `RequestMediaLibraryRefreshTargets(...)` 提交已冻结目标；旧固定 Emby wrapper 保留，公共入口不省略类型。
 4. 创建或合并 `EmbyLibraryRefreshTask`，将任务状态设置为 `pending`，刷新时间设置为最后事件时间加 10 秒；提交后协调器会重新检查所有 pending 任务。
 5. 全局 timer 指向最早的 `pending.refresh_after_at`，到期后唤醒协调器；60 秒 ticker 作为兜底扫描。
 6. 协调器先按真实媒体库归并 pending item，再逐条判断同步目录和下载队列是否稳定。
@@ -124,7 +152,9 @@ STRM Webhook 的具体规则：
 
 远端 Ancestors 解析按 Emby 服务、凭据和 item ID 缓存 30 秒。同一 item 的并发解析会合并为一次请求，远端失败结果不缓存。
 
-item 级刷新任务使用 `task_key=item:<item_id>` 去重，媒体库刷新任务使用 `task_key=library:<library_id>` 去重。`library_id` 只保存真实媒体库 ID 或为空；`fallback_library_id` 只保存当前解析出的有效媒体库或旧任务 hint。解析优先级为本地 item、Season/Series sibling Episode、Emby Ancestors、同步路径唯一关联媒体库和仍属于候选集合的旧 hint。多库且没有可靠证据时保持 unresolved，不会任选第一个媒体库。某组即将被已有 pending library 吸收或达到阈值转换时，协调器会在同一个聚合事务中使用当前本地索引重新校验该组 hint；如果本地 item、sibling Episode 或唯一同步目录给出更强证据，会先修复持久化归属，并把归属变化的 item 留到重新分组后再处理。该校验不会调用 Emby HTTP API，本地没有更强证据时保留可能来自 Ancestors 的旧 hint。未达到吸收或转换条件的普通 pending 组不会执行逐 item 复核，避免连续提交时产生重复全量查询。
+item 级刷新目标使用 `item:<item_id>`，媒体库刷新目标使用 `library:<library_id>`；持久任务以 `(media_server_type, server_id, task_key)` 去重，不能按相同目标 ID 合并不同端或实例。原 ServerID 为空的旧任务不补造身份，扫描时取消并要求重新提交；当前 ServerID 改变也取消，同端同 ID 可轮换当前地址／密钥执行。`library_id` 只保存真实媒体库 ID 或为空；`fallback_library_id` 只保存当前解析出的有效媒体库或旧任务 hint。解析优先级为本地 item、Season/Series sibling Episode、Emby Ancestors、同步路径唯一关联媒体库和仍属于候选集合的旧 hint。多库且没有可靠证据时保持 unresolved，不会任选第一个媒体库。某组即将被已有 pending library 吸收或达到阈值转换时，协调器会在同一个聚合事务中使用当前本地索引重新校验该组 hint；如果本地 item、sibling Episode 或唯一同步目录给出更强证据，会先修复持久化归属，并把归属变化的 item 留到重新分组后再处理。该校验不会调用 Emby HTTP API，本地没有更强证据时保留可能来自 Ancestors 的旧 hint。未达到吸收或转换条件的普通 pending 组不会执行逐 item 复核，避免连续提交时产生重复全量查询。
+
+刷新解析保留旧 item／同季同剧条目的原 ServerID，并与本端索引状态和当前实例核对；不一致时拒绝新绑定，不能把旧索引重标为新实例。旧 pending 任务的媒体库回退复核也限定原 ServerID，不能用新实例关联改写。关闭总开关不暂停刷新任务的原绝对截止时间。
 
 批量目标会在提交前去重。通用 library fallback 会先展开为同步目录关联的精确 `library:<library_id>` 目标，再覆盖同库 item；不同媒体库的目标互不影响。
 
@@ -176,6 +206,8 @@ SQLite 刷新任务写锁假设同一个 SQLite 数据库文件由单个 QMediaS
 此前“通用 library fallback 与同库 item 同时存在”的重复刷新问题由两层逻辑解决：提交批次先展开并归一化精确 library target，协调器再对数据库内所有 pending 任务做跨批次聚合。
 
 #### 协调器等待和调度
+
+停止协调器时，各端执行分支在处理下一条任务前检查停止信号，不继续执行已读批次的剩余待办。已开始的单条任务按原请求超时和状态规则收尾，停止等待其退出；未执行任务保留原状态，重新启动后继续正常检查。
 
 每个任务独立维护以下时间：
 
@@ -233,7 +265,7 @@ POST /emby/Items/{libraryId}/Refresh
 - 不建立 PickCode 和 `sync_files` 关联。
 - 不和链路 B 串成一个长任务。
 
-### 链路 B：同步 Emby 条目到本地
+### 链路 B：同步媒体条目到本地
 
 含义：QMediaSync 从 Emby 拉取媒体条目，写入本地数据库，用于建立 Emby item、PickCode 和同步文件之间的关联。
 
@@ -280,9 +312,11 @@ POST /emby/Items/{libraryId}/Refresh
 
 ### 本地文件和目录资料
 
-普通全量、增量、单条同步及 Webhook 早期观察只向 Emby 读取媒体信息，不主动查询网盘，也不安排后台网盘预采集。文件身份和根下目录关系复用 `SyncFile`；115 同步根及根外祖先由[正常 STRM 同步](sync-orchestration.md#生成结果与后台账本)保存。目录信息只随已确认的同步结果更新，不以固定时间清空。
+普通全量、增量、单条同步及 Webhook 早期观察读取本端媒体信息和必要的本地 STRM，不主动查询网盘，也不安排后台网盘预采集。全量与增量完成日志保留当前处理量和耗时文案，并追加“网盘查询 0 次”。文件身份和根下目录关系复用 `SyncFile`；115 同步根及根外祖先由[正常 STRM 同步](sync-orchestration.md#生成结果与后台账本)保存。目录信息只随已确认的同步结果更新，不以固定时间清空。
 
-Emby 的全部来源、实际 STRM 路径和 Movie／Season／Series 媒体目录角色独立保存；没有文件关联时也保留已知信息。Windows／UNC 的原始媒体路径按 Emby 路径规则处理，不受 QMS 所在系统的路径格式限制。已经证明的物理目录链、有效同步根及媒体角色在本地组合成目录范围，再按原规则冻结普通附件和季海报。季海报查询在 SQL 内限定来源、账号、目录及文件名，同时核对 Season、Series 和季号。准备期文件与事务中冻结的文件必须一致，不能将旧目录观察绑定到新的文件身份。
+Emby 的全部来源、实际 STRM 路径和 Movie／Season／Series 媒体目录角色独立保存；没有文件关联时也保留已知信息。Windows／UNC 的原始媒体路径按 Emby 路径规则处理，不受 QMediaSync 所在系统的路径格式限制。已经证明的物理目录链、有效同步根及媒体角色在本地组合成目录范围，再按原规则冻结普通附件和季海报。季海报查询在 SQL 内限定来源、账号、目录及文件名，同时核对 Season、Series 和季号。准备期文件与事务中冻结的文件必须一致，不能将旧目录观察绑定到新的文件身份。
+
+Jellyfin 将电影物理文件夹从原生祖先树中省略时，已确认关联的受管 `SyncFile` 可提供电影父目录角色，记为 `jellyfin_managed_movie`。本地文件与同步根的路径对应、账号主体、云端目录稳定身份链仍须成立；无需先执行刮削。仅有任意条目路径、外部未关联 STRM 或同步根本身不产生该资格。Movie 的目录角色随后复用现有目录计划、完整本端存活清单和共享成员保护；Season／Series 继续使用真实祖先角色。新同步形成的新证据不回写旧收件的冻结授权。
 
 每组提交仍在原事务内重新核对当前根链及涉及的目录：按稳定对象 ID 检查移动或改名，按原父路径与名称检查同名替换。名称查询使用[同步文件索引](../reference/database-schema.md#sync_files)缩小读取范围，不以准备期缓存代替提交校验；账号、同步根和路径表示的原有隔离规则保持一致。
 
@@ -294,9 +328,9 @@ SQLite 将目录身份与路径／名称候选分开读取，稳定身份逐 ID 
 
 ### 外部 STRM 来源和路径映射
 
-Emby 返回的来源继续作为媒体来源依据，唯一、可靠的已有文件绑定优先。来源类型、可确定的账号主体和稳定对象键在 URL 脱敏前单独保存；相同 PickCode 或重复来源 ID 仍须按对象和账号分别匹配，不能串用绑定或丢弃未绑定来源。账号不明或多候选冲突时保留原因，不能遍历账号试探。实际 STRM 引用路径与 QMS 管理路径分别冻结，不能覆盖其中一个来制造路径相等。
+Emby 返回的来源继续作为媒体来源依据，唯一、可靠的已有文件绑定优先。来源类型、可确定的账号主体和稳定对象键在 URL 脱敏前单独保存；相同 PickCode 或重复来源 ID 仍须按对象和账号分别匹配，不能串用绑定或丢弃未绑定来源。账号不明或多候选冲突时保留原因，不能遍历账号试探。实际 STRM 引用路径与 QMediaSync 管理路径分别冻结，不能覆盖其中一个来制造路径相等。
 
-QMS 生成和外部 STRM 共用自动路径推导：从已确认的本地存放根与 STRM 路径计算完整相对路径，再与 Emby 路径按组件比对，确认只差挂载前缀时保存该条目的对应关系。Windows／UNC 与 POSIX 分别遵循原有路径语义，不使用普通字符串后缀匹配跨目录。一个条目即可确定自身对应，不能把它推定为所有未知文件的根映射。
+QMediaSync 生成和外部 STRM 共用自动路径推导：从已确认的本地存放根与 STRM 路径计算完整相对路径，再与 Emby 路径按组件比对，确认只差挂载前缀时保存该条目的对应关系。Windows／UNC 与 POSIX 分别遵循原有路径语义，不使用普通字符串后缀匹配跨目录。一个条目即可确定自身对应，不能把它推定为所有未知文件的根映射。
 
 已有文件绑定直接复用本次读取的路径和根。没有文件绑定且没有明确映射时，在事务外从同来源、同账号的已知 STRM 同步根中尝试有限个候选路径，只读符合条件的本地 STRM 并核对来源；不递归枚举磁盘、不访问播放 URL、不请求网盘。准备期复用本轮所需的同步根，提交只复核原定位依据，不在事务中重新搜索文件。已有明确映射或可靠绑定不新增强制读取 STRM 内容的前提，外部文件内容始终不改写。
 
@@ -320,9 +354,9 @@ Emby 同步显式请求 Path、MediaSources、PartCount 及季／剧上下文字
 
 物理 `/Items` 枚举不会按名称或 TMDB ID 合并版本。额外来源明确指向其他 ItemId 时查询其物理详情，再独立建立关联；无 ItemId 的多个不同来源不会盲绑到外层条目。没有云端来源的完整响应仍保存媒体项并清除旧关联。快照更新允许空字符串、0 和 false，保留 CreatedAt；增量与单条同步不清全量批次标记。
 
-每轮远端条目读取前核验 `/System/Info/Public` 返回的实例 ID，获取持久版本。四个索引入口（全量、增量、单条及旧单条兼容函数）都使用同一事务提交，并核对配置范围和版本。数据库删除屏障登记、提交和成功游标／时间水位使用同一 SQL 锁；空扫描也核对版本。旧查询在屏障释放后仍会被拒绝，普通 UpdatedAt 不能替代代际。独立配置快照不改写旧全局缓存；设置页读取最新配置，保存只更新配置字段，不回写同步期间变化的游标／运行状态。服务地址、授权或有效选库范围改变时清除旧成功水位，重新建立范围内索引；仅通知选项变化不清游标。实际服务 ID 在原地址更换时也执行同样保护。
+每轮远端条目读取前核验 `/System/Info/Public` 返回的实例 ID，获取持久版本。四个索引入口（全量、增量、单条及旧单条兼容函数）都使用同一事务提交，并核对配置范围和版本。数据库删除屏障登记、提交和成功游标／时间水位使用同一 SQL 锁；空扫描也核对版本。旧查询在屏障释放后仍会被拒绝，普通 UpdatedAt 不能替代代际。配置快照只属于本端及当前批次；设置页读取最新配置，保存只更新配置字段，不回写同步期间变化的游标／运行状态。服务地址、授权或有效选库范围改变时清除旧成功水位，重新建立范围内索引；仅通知选项变化不清游标。实际服务 ID 在原地址更换时也执行同样保护。
 
-每批事务复用已经核验的配置、当前媒体和批量读取的来源、根、账号、状态、证据及成员资料。缓存只存活于这次事务，不能用准备期结果替代提交期身份核验；SQLite 可在同一个写事务内复用已经核验的相同范围。PostgreSQL 普通独立组使用共享索引保护与按稳定顺序取得的全局条目 ID 事务锁；发现旧成员关系时先回滚，再以排他保护重开事务。配置变更、删除和复杂组保留排他屏障。SQLite 继续单连接写入，用 `UPDATE … RETURNING` 一并取得写保护和状态。
+每批事务复用已经核验的配置、当前媒体和批量读取的来源、根、账号、状态、证据及成员资料。缓存只存活于这次事务，不能用准备期结果替代提交期身份核验；SQLite 可在同一个写事务内复用已经核验的相同范围。PostgreSQL 普通独立组使用共享索引保护与按稳定顺序取得的带媒体类型的条目 ID 事务锁；发现旧成员关系时先回滚，再以排他保护重开事务。配置变更、删除和复杂组保留排他屏障。SQLite 继续单连接写入，用 `UPDATE … RETURNING` 一并取得写保护和状态。
 
 PostgreSQL 删除同步目录和批量写入文件账本时，必须在修改任何来源记录前取得同一索引排他保护，避免它们与快照事务按相反顺序锁定文件、目录及旁车。仅更新账本时间的批次也遵循此顺序；这项协调不推进索引版本，SQLite 保持原有写事务。
 
@@ -334,7 +368,7 @@ SQLite 构建 membership 时可复用本次已构造的 evidence 条目，无法
 
 ### 手动全量同步
 
-手动同步用于低频校验或重建本地索引。
+手动同步用于低频校验或重建本地索引，同样要求本端 `enabled=true` 与 `sync_enabled=1`。总开关关闭仍可只读查询媒体库以准备配置。
 
 流程：
 
@@ -351,13 +385,13 @@ SQLite 构建 membership 时可复用本次已构造的 evidence 条目，无法
 
 ### 定时同步
 
-Cron 默认表达式为 `0 * * * *`，含义是每小时整点执行一次。
+两端各有独立固定 Cron EntryID。只有本端 `enabled` 和 `sync_enabled` 均启用时登记任务；默认表达式为 `0 * * * *`，含义是每小时整点执行一次。普通保存只替换本端媒体 Cron，不重建同步、预加载、备份等其他任务；全局初始化或恢复后重新登记两端。
 
 当 `enable_daily_first_full_sync=1` 时，每天第一次定时同步会执行全量同步；判断依据是 `last_full_sync_at` 是否属于服务器本地时区的当天。全量同步成功后会更新 `last_full_sync_at`，当天后续定时同步执行增量同步。如果当天首次全量失败，`last_full_sync_at` 不会推进，下一次定时同步仍会继续尝试全量。
 
 当 `enable_daily_first_full_sync=0` 时，Cron 每次都执行增量同步。
 
-保存 Emby 配置时，如果兼容客户端没有提交 `enable_daily_first_full_sync` 字段，后端会保留当前已有配置；只有显式提交 `0` 或 `1` 时才会修改该开关。
+保存本端配置时，如果兼容客户端没有提交 `enable_daily_first_full_sync` 字段，后端会保留当前已有配置；只有显式提交 `0` 或 `1` 时才会修改该开关。
 
 ### 定时增量同步
 
@@ -463,32 +497,53 @@ GET /emby/Users/{UserId}/Items/{itemId}?Fields=DateCreated,DateModified,Path,Med
 - 当 `sync_all_libraries=0` 时，解析出的媒体库 ID 不在 `selected_libraries` 中会跳过本次单条同步。
 - 解析到 PickCode 时建立 `emby_media_sync_files` 关联。
 - 空结果或不支持的类型只记录日志，不触发全量同步。
-- Webhook 单条同步不推进 `last_saved_cursor_at`。
+- Webhook 单条同步沿用本次核验的配置快照与父收件原 ServerID；地址或同地址实例变化都不能转投新服务器。它不推进 `last_saved_cursor_at`。
 - 同步忙时返回可识别的 `ErrEmbySyncBusy`；该结果与远端不存在不同，不声称条目已处理。
 
 ### Webhook 通知配置
 
-在 QMS 的 Emby 设置页保存服务器地址和 Emby API Key，启用条目同步，完成一次全量 Emby 条目同步，再配置通知。升级后也应先成功完成一次全量同步，补齐版本、分段和文件身份；它只能补全仍可查询的条目，不能恢复已消失且从未保存的历史身份。
+在 QMediaSync 的 Emby 设置页保存服务器地址和 Emby API Key，启用条目同步，完成一次全量 Emby 条目同步，再配置通知。升级后也应先成功完成一次全量同步，补齐版本、分段和文件身份；它只能补全仍可查询的条目，不能恢复已消失且从未保存的历史身份。
 
-1. 在 Emby 通知设置中新建 Webhook，填写 QMS 设置页显示的“Emby 通知链接”。启用“通知链接鉴权”时，使用 QMS API Key，通过 `X-API-Key` 请求头或链接的 `api_key` 查询参数传入；这里使用的不是 Emby API Key。
+1. 在 Emby 通知设置中新建 Webhook，填写 QMediaSync 设置页显示的“Emby 通知链接”。启用“通知链接鉴权”时，使用 QMediaSync API Key，通过 `X-API-Key` 请求头或链接的 `api_key` 查询参数传入；这里使用的不是 Emby API Key。
 2. 内容类型选择 **JSON（`application/json`）**，关闭分组（`GroupItems`）。不使用把 JSON 放在 `data` 字段中的 `multipart/form-data` 格式。关闭分组仍可能有 Emby 自身的通知缓冲，不保证即时投递。
-3. 按需要选择发送通知的媒体库，勾选“已添加新媒体”（`library.new`）和“媒体已移除”（`library.deleted`）。界面按库名选择；直接配置 Emby 通知 API 时，`LibraryIds` 使用库 Guid，不能填 QMS 索引中的数字 item ID。QMS 的同步选库只约束条目同步，不是独立的删除白名单。
-4. 如事件列表提供独立的移动、重命名、扫描失效或移除媒体库事件，不勾选它们用于联动删除。普通 `library.deleted` 也可能由重命名或扫描发现文件消失触发，不能仅靠取消独立事件排除误触发；QMS 仍会核验文件身份、原条目／STRM 及存活使用者。
-5. 确认通知所属用户和实际操作用户。通知所属用户与“用户事件过滤”是不同设置，管理员名下的通知不代表已覆盖其他用户的增强事件。用可丢弃的测试媒体验证实际操作能向 QMS 投递所选事件；验证投递时保持联动删除关闭，避免涉及网盘原片。
+3. 按需要选择发送通知的媒体库，勾选“已添加新媒体”（`library.new`）和“媒体已移除”（`library.deleted`）。界面按库名选择；直接配置 Emby 通知 API 时，`LibraryIds` 使用库 Guid，不能填 QMediaSync 索引中的数字 item ID。QMediaSync 的同步选库只约束条目同步，不是独立的删除白名单。
+4. 如事件列表提供独立的移动、重命名、扫描失效或移除媒体库事件，不勾选它们用于联动删除。普通 `library.deleted` 也可能由重命名或扫描发现文件消失触发，不能仅靠取消独立事件排除误触发；QMediaSync 仍会核验文件身份、原条目／STRM 及存活使用者。
+5. 确认通知所属用户和实际操作用户。通知所属用户与“用户事件过滤”是不同设置，管理员名下的通知不代表已覆盖其他用户的增强事件。用可丢弃的测试媒体验证实际操作能向 QMediaSync 投递所选事件；验证投递时保持联动删除关闭，避免涉及网盘原片。
 
-官方通知可独立使用，无需安装插件。使用神医助手或 MediaInfoKeeper 时，推荐只开启插件的**通知增强**，并在 Emby Webhook 中额外勾选“媒体深度删除”（`deep.delete`）；无需开启插件的物理深度删除。QMS 按受支持的事件和字段结构内置识别，不要求选择插件品牌或增加插件开关，也不会修改 Emby／插件配置。其他增强事件和分组描述不用于推断待删成员。增强通知只补充证据，即使收到 `deep.delete`，也不能认定原 STRM 已删除成功。
+官方通知可独立使用，无需安装插件。使用神医助手或 MediaInfoKeeper 时，推荐只开启插件的**通知增强**，并在 Emby Webhook 中额外勾选“媒体深度删除”（`deep.delete`）；无需开启插件的物理深度删除。QMediaSync 按受支持的事件和字段结构内置识别，不要求选择插件品牌或增加插件开关，也不会修改 Emby／插件配置。其他增强事件和分组描述不用于推断待删成员。增强通知只补充证据，即使收到 `deep.delete`，也不能认定原 STRM 已删除成功。
 
-需要联动删除网盘文件时，再在 QMS 中开启“删除时联动删除网盘文件”。官方与受支持增强通知共用此开关：接收成功只表示事件已保存，后台核验后才处理确定文件。条目或原 STRM 仍存在、来源共享、身份未知或查询失败时保留文件，未完成原因见服务日志。关闭期间收到的通知，以后启用也不追溯补删；执行和重试前仍检查开关及目标身份。
+需要联动删除网盘文件时，再在 QMediaSync 中开启“删除时联动删除网盘文件”。官方与受支持增强通知共用此开关：接收成功只表示事件已保存，后台核验后才处理确定文件。条目或原 STRM 仍存在、来源共享、身份未知或查询失败时保留文件，未完成原因见服务日志。关闭期间收到的通知，以后启用也不追溯补删；执行和重试前仍检查开关及目标身份。
 
 具体范围见下文[目录清理策略](#已采纳的目录清理策略)：Movie、Season、Series 已有可信媒体目录身份且没有明确保留成员时，可以整目录清理，包含陌生文件和未关联视频；证据或来源能力不足时退回明确文件。Episode 仍仅处理 part1 和明确专属旁车，Video 仅自身；保留的版本、分段、其他季、共享使用者及同步根受到保护。网盘删除后的本地 STRM 和 SyncFile 记录由后续符合条件的完整 STRM 对账收敛，不自动触发即时清理；完整对账资格见 [STRM 同步调度](sync-orchestration.md)。
 
+### Jellyfin 官方插件事件
+
+`POST /jellyfin/webhook` 使用本端总开关、连接及 Webhook 认证，接收官方插件 v21／v22 的 Send All Properties 标准 JSON。正式配置使用 Generic Destination、`Content-Type: application/json` 和 QMediaSync 的 `X-API-Key`；内部解析可兼容合法 JSON 的 `text/plain`，身份和大小限制不放宽，详见 [入站边界](../engineering/request-validation.md#jellyfin-webhook-入站边界)。
+
+| 官方 `NotificationType` | 内部事件 | 处理 |
+| --- | --- | --- |
+| `ItemAdded` | `library.new` | 本端读取真实详情，维护索引；按分项自动提取、发送新增通知 |
+| `ItemDeleted` | `library.deleted` | 固定接收时授权，使用本端历史证据构建删除工作 |
+| `PlaybackStart` | `playback.start` | 本端播放开始通知 |
+| `PlaybackStop` | `playback.stop` | 本端播放停止通知 |
+
+插件正文没有原始 `Path`／`ParentId`，不能伪造路径、合成 `ItemUpdated` 或 `deep.delete`；没有历史证据的移除不能提供网盘删除资格。UUID 支持只解决条目定位，真实 ServerID、原条目消失、STRM 与账号／文件身份及存活使用者核验仍须完成。两端新增缓冲、播放去重、详情与图片缓存分别隔离；渠道仍共用 `media_added`、`media_removed`、`playback_*` 等原机器值，正文标明产品。关闭本端 `enable_media_notification` 只停止发送，不取消已授权的业务和清理。
+
+媒体通知由 `StartMediaLibraryNotifications()` 启动两端本地聚合，不等待远端；`StopMediaLibraryNotifications(ctx)` 停止入队、取消并等待事件处理与发送，超时且旧工作未退出时不能重启。新增媒体先独立入队自动提取，再发送通知，慢／失败通知不阻挡提取；关闭发送分项不停止同步、提取或删除。删除消息优先使用本次收件冻结的本端名称／剧名，不借另一端或当前新索引改写历史展示。
+
+两端 Webhook 工作日志采用 `名称（ItemId ...）`：整季显示 `剧名 S01`，单集显示 `剧名 S01E06`，特殊季保留 `S00`。已有通知中的有效名称和编号直接使用；字段缺失时，只从本次收件冻结的本端删除输入补足对应主 Episode 的资料，整季按匹配的 SeasonId 汇总一致剧名和季号。隐藏分段默认零值不替代主集资料；不足或冲突时保留可靠的现成名称或条目 ID，不猜编号、不查询当前索引或远端。
+
+工作结果明确区分“条目同步已完成”和“删除处理已完成”，等待、重试及停止重试也保留对应动作。删除处理完成表示本次通知工作结束，实际云端对象是否删除以逐目标结果为准；联动删除关闭、跳过或原对象已不存在时不得写成新发送了网盘删除。名称格式只影响展示，不改变已冻结授权、删除范围或机器状态。
+
 ### 入库通知时间
 
-电影入库通知使用 Emby 媒体详情的 `DateCreated`。电视剧合并通知按本批新增单集 ID 批量查询 `DateCreated`，取本批单集添加时间的最大值，不使用整部剧的创建时间。缺失、零值、解析失败或查询失败的单集时间，依次回退到该条 `library.new` 的 `Date` 和 QMS 接收该事件的时间；电影使用相同的回退顺序。等待合并与发送通知不会改变这个时间。
+电影入库通知使用本端媒体详情的 `DateCreated`。电视剧合并通知按本批新增单集 ID 批量查询 `DateCreated`，取本批单集添加时间的最大值，不使用整部剧的创建时间。缺失、零值、解析失败或查询失败的单集时间，依次回退到该条 `library.new` 的 `Date` 和 QMediaSync 接收该事件的时间；电影使用相同的回退顺序。等待合并与发送通知不会改变这个时间。
 
-时间统一转换为程序本地时区（北京时间，UTC+8），以 `YYYY-MM-DD HH:mm:ss` 显示，支持 Emby 返回的 RFC3339 小数秒和时区偏移。单集查询只包含当前批次，每批最多 100 个 ID，整个批量查询最多等待 30 秒；未查到的单集继续使用各自的回退时间。
+时间统一转换为程序本地时区（北京时间，UTC+8），以 `YYYY-MM-DD HH:mm:ss` 显示，支持两端返回的 RFC3339 小数秒和时区偏移。单集查询只包含当前批次，每批最多 100 个 ID，整个批量查询最多等待 30 秒；未查到的单集继续使用各自的回退时间。
 
 ### Webhook 持久接收与后台处理
+
+收件共享原存储与管理器，按固定 Emby／Jellyfin 分支有界执行。同端保留原优先级和串行顺序，慢端不阻塞另一端。启动先恢复遗留工作再开放处理，关闭等待全部分支退出，旧执行者未退出前不能启动第二轮管理器。关闭总开关保留待处理工作并排除本端调度，重新启用时唤醒；不通过忙轮询或耗尽网络重试结束关闭期间任务。远端删除仍通过共享物理来源锁和数据库维护边界。
 
 `POST /emby/webhook` 保留现有鉴权、`X-API-Key` 与旧 `api_key` 查询参数兼容。官方教程使用 `application/json`。请求先校验体积、JSON 类型与关键字段，不记录原始正文或带凭据的播放 URL；关键字段冲突不生成删除工作。保存失败返回非成功响应，成功仍返回兼容的响应形状，仅表示事件已保存。
 
@@ -496,7 +551,7 @@ GET /emby/Users/{UserId}/Items/{itemId}?Fields=DateCreated,DateModified,Path,Med
 
 接收事务保存必要字段、服务器连接身份、接收时的删除授权及冻结输入，并原子登记删除屏障。每次通知独立保存，不按 ItemId 或事件 Date 永久去重。官方与增强通知通过同一物理文件代际的结果避免重复删除；后到通知仍可处理已由历史证据确认的范围。同步选库只约束索引同步，不作为删除白名单。
 
-应用启动后运行单一后台 worker，工作不绑定 Webhook HTTP 请求的取消。应用最终关闭后禁止再次启动 worker；普通备份使用数据库快照，不暂停 worker。新增／修改事件先尝试读取详情并保存早期不可变证据，即使全量同步正忙也不绕过锁写当前索引；后续仍通过普通同步入口更新索引。读取前同时记录已有证据水位，读取期间同条目的新快照会使旧观察失效；不同条目的更新不会互相废弃已保存证据。删除接收只在该条目的原状态未变化时采用这份证据。若官方缓冲通知到达时条目早已删除、此前也没有可靠身份，仅凭当前 Path 唯一命中不能补造旧文件身份，保留未完成原因。
+应用启动后运行共享管理器的两个固定后台分支，工作不绑定 Webhook HTTP 请求的取消。停止必须等旧分支全部退出后才允许新一轮启动；普通备份使用数据库快照，不暂停处理。新增／修改事件先尝试读取详情并保存早期不可变证据，即使全量同步正忙也不绕过锁写当前索引；后续仍通过普通同步入口更新索引。读取前同时记录已有证据水位，读取期间同条目的新快照会使旧观察失效；不同条目的更新不会互相废弃已保存证据。删除接收只在该条目的原状态未变化时采用这份证据。若官方缓冲通知到达时条目早已删除、此前也没有可靠身份，仅凭当前 Path 唯一命中不能补造旧文件身份，保留未完成原因。
 
 删除收件采用早期观察时，已有且匹配原状态的索引必须在同一事务内更新快照／代际，并按观察中冻结的文件重建关联，避免把自身旧索引误判为其他使用者；不能给旧文件关联直接换上新快照，也不能从当前账本补造身份。未建索引的条目仍不新增索引，展示字段、全量批次标记和同步水位仍由普通同步维护。任一步失败，身份更新与删除收件一起回滚；真实共享文件仍受删除前核验保护。
 
@@ -520,9 +575,15 @@ GET /emby/Users/{UserId}/Items/{itemId}?Fields=DateCreated,DateModified,Path,Med
 
 Webhook 删除事件不触发全量同步，也不调用刷新媒体库接口。删除前重新核验真实服务器、原条目 ID、原 STRM 路径及可访问的同步根；再枚举不受同步选库限制的完整物理清单、来源和 AdditionalParts，排除重命名、新 ID 和共享源。条目／STRM 仍存在、清单不完整或查询失败均不授权网盘删除；失败的深度删除通知不会清掉仍存活的正确索引。确认原条目存活时仅释放匹配的临时屏障，旧查询依然无权提交。
 
+Jellyfin 删除主项后，用户态详情可能继续返回已失去主项的附加 Video。仅当本次冻结的 `PartOfItemID` 明确指向同一删除输入内的主 Movie／Episode、该主项已不存在、详情仍为同一路径的 Video、完整当前清单没有重新认领或共享该来源、且受管原 STRM 经原根与路径核验明确不存在时，才兼容这种附加分段残留。单独的管理列表漏项或本地文件缺失都不足以放行；普通版本、其他存活条目、路径变更及读取失败仍沿用既有保护。该处理不修改 Jellyfin 数据库，也不提升旧通知的冻结授权。
+
 若先前删除因查询故障结束，后续同步和新的 Webhook 都能重新核验仍存活的主项及分段。全量、增量同步按每页 100 条核验已有屏障；单条同步仅严格读取目标及实际确认的版本／AdditionalParts，不遍历无关删除历史。隐藏分段可用该条目历史主项关系作为查询入口，但实际响应必须确认目标仍属于该组，不能凭历史关系恢复成员。解除屏障后，整组旧响应作废，重新取版本和读取；没有解除屏障时复用本轮读取。单条同步最多在本次调用内重新读取一次，之后的并发冲突交给既有重试；增量本轮需要恢复时从 Unix 0 查询现存条目，仍不进行全量清旧。此过程只恢复索引，不重启旧删除或提升旧事件授权。
 
+Jellyfin 隐藏 Video 即使可按自身 ID 读取，也可能没有祖先；单条同步先经历史主项入口核验当前 AdditionalParts 成员关系，以实际主项解析所属库，不把空祖先当作任意选库的依据。Series／Season／Folder 新增不建立物理文件索引，使用 `DEBUG` 明确记录跳过，不能误报“未找到条目”或当作已同步文件；相应删除事件仍按原范围处理。恢复入口和目录角色的条目 ID 校验统一支持已有十进制 Emby ID 与规范化 Jellyfin GUID。
+
 ### 精确文件联动删除
+
+Emby 与 Jellyfin 的删除保护均限于本端：另一端索引、成员、历史目标或共享引用不参与查询和授权。两端引用同一物理网盘文件时，用户需自行安排删除；共用物理来源锁只协调同时执行，不产生跨端引用保护。新设置与凭据不能扩大已冻结通知的原身份或授权。
 
 联动删除分为接收事务冻结、构建计划、执行和条件收尾四个步骤。接收事务读取不可变条目证据，保留当时的关联、来源／账号主体、同步根、物理文件代际及清理政策；当前索引已被完整扫描清理时，仍可使用保留下来的 state→evidence。同目录视频账本在接收时冻结；独立删除旁车必须已有正常同步或早期观察保存的历史身份。接收时的当前 SyncFile 不能替代这份历史证明，旧证据缺少旁车身份时保留元数据；重试不会选择同路径后来出现的文件。以下是文件级成员范围，目录权限另外按下一节核验。
 
@@ -560,7 +621,7 @@ Webhook 删除事件不触发全量同步，也不调用刷新媒体库接口。
 
 目录必须在删除前建立真实对象身份与媒体归属，不能以目录名或“没有其他 Emby 关联”反推归属。Movie／Season／Series 统一以可信目录范围授权，只有明确需要保留的版本、其他季／作品或共享使用者才构成成员阻挡；陌生归属本身不阻挡。所有同步根及祖先、嵌套同步根仍独立保护，Episode／Video 不自动获得父级目录权限。
 
-“最高合法剧根”从已有正向证据的候选中选择：正常同步／早期观察保存 Series／Season／Movie 的真实路径和祖先角色，经 SyncPath 映射并核对网盘目录 ID 与父链。Movie 使用条目真实父目录证据（Ancestors 中 ID 等于条目 ParentId、Path 等于条目文件所在目录的父文件夹），QMS 刮削已完成重命名的明确输出目录保留为回退来源；目录名或仅知道外部电影的文件路径不足以启用整删。验证当前事件范围、原目录身份、保留成员和根保护后，选择能够覆盖子操作的最高媒体目录，不逐级向分类目录试删。Season 只到季边界，Series 可用剧根覆盖全部季；跨账号／真实根分别处理，不取共同分类祖先。
+“最高合法剧根”从已有正向证据的候选中选择：正常同步／早期观察保存 Series／Season／Movie 的真实路径和祖先角色，经 SyncPath 映射并核对网盘目录 ID 与父链。Movie 使用条目真实父目录证据（Ancestors 中 ID 等于条目 ParentId、Path 等于条目文件所在目录的父文件夹），或前述 Jellyfin 受管电影目录证据；QMediaSync 刮削已完成重命名的明确输出目录也保留为回退来源。目录名或仅知道外部电影的文件路径不足以启用整删。验证当前事件范围、原目录身份、保留成员和根保护后，选择能够覆盖子操作的最高媒体目录，不逐级向分类目录试删。Season 只到季边界，Series 可用剧根覆盖全部季；跨账号／真实根分别处理，不取共同分类祖先。
 
 百度的刮削输出回退证据还要求历史 `Media.VideoPickCode` 中的 fsid 非空，并与本次视频的 fsid 一致；路径和文件名相同不足以证明仍是原文件。缺失或不匹配时仅弃用这份刮削证据，独立有效的 Emby 真实父目录证据仍可参与核验。
 
@@ -570,7 +631,7 @@ Webhook 删除事件不触发全量同步，也不调用刷新媒体库接口。
 
 这是一层额外保护，不逐一反查全库已命中账本的存活文件。用户在网盘外部移动文件、尚未同步更新账本，且文件被移入待删目录的更深子目录时，仍可能随整目录删除；此边界用于保留整删能力并控制请求量。同步根、已知保留成员和原目录身份等既有保护继续生效。
 
-发现存活 Emby 条目的网盘来源时，先核对一层清单并复用已有账本定位；清单和账本无法定位才尝试只读反查。当前仅支持与待删目录同来源、同账号，且播放地址匹配已配置 QMS STRM 基础地址与受支持路由的 115／百度来源；地址必须明确携带与当前账号主体一致的 `userid` 和对象标识。115 用 pickcode 取得文件 ID，再核验详情与真实父链；百度按 fsid 查询当前真实路径。反查只访问现有网盘客户端，不请求播放地址或下载影片，不凭本地 STRM 目录、URL 中的路径参数或陌生文件名推断真实位置。来源在目录内、账号或地址归属不明确、返回身份不符及查询失败都保留目录并退回明确文件；确认在目录外只解除这一处阻挡，其他目录授权与保护仍须通过。
+发现存活 Emby 条目的网盘来源时，先核对一层清单并复用已有账本定位；清单和账本无法定位才尝试只读反查。当前仅支持与待删目录同来源、同账号，且播放地址匹配已配置 QMediaSync STRM 基础地址与受支持路由的 115／百度来源；地址必须明确携带与当前账号主体一致的 `userid` 和对象标识。115 用 pickcode 取得文件 ID，再核验详情与真实父链；百度按 fsid 查询当前真实路径。反查只访问现有网盘客户端，不请求播放地址或下载影片，不凭本地 STRM 目录、URL 中的路径参数或陌生文件名推断真实位置。来源在目录内、账号或地址归属不明确、返回身份不符及查询失败都保留目录并退回明确文件；确认在目录外只解除这一处阻挡，其他目录授权与保护仍须通过。
 
 反查仅针对完整 Emby 清单中仍被使用、且位置未知的视频来源，包括已确认分段和版本；不逐个查询目录里的陌生视频、NFO、字幕、图片或 TXT。相同来源的结果在本轮执行内去重复用，失败也避免跨目录反复请求；成功结果受原读取时间及现有 30 秒核验窗口限制，命中不续期，并复核账号与地址配置。超时、释放范围或重领后不能继续使用旧结果。反查增加的读取随不同未知来源和所需接口调用增长；成功整删可能省去文件级列表／确认请求，总请求数取决于实际目录和文件规模。
 
@@ -598,7 +659,7 @@ Webhook 删除事件不触发全量同步，也不调用刷新媒体库接口。
 
 | 字段 | 含义 |
 | --- | --- |
-| `is_running` | 是否有 Emby 条目同步任务运行 |
+| `is_running` | 是否有本端条目同步任务运行 |
 | `sync_mode` | 当前或最近一次模式 |
 | `started_at` | 当前任务开始时间 |
 | `last_sync_time` | 最近一次成功同步时间 |
@@ -608,67 +669,42 @@ Webhook 删除事件不触发全量同步，也不调用刷新媒体库接口。
 | `last_saved_cursor_at` | 增量同步游标 |
 | `last_processed_count` | 最近一次处理数量 |
 | `last_error` | 最近一次失败原因 |
-| `total_items` | 本地已同步 Emby item 数 |
+| `total_items` | 本端本地已同步 item 数 |
 
 如果已有任务运行，定时任务直接跳过，不排队堆积。手动全量同步遇到运行中的任务时，前端应提示稍后再试。
 
-Web 设置页的配置、媒体库、提取和同步请求由 `api/emby.ts` 封装并判断业务结果，轮询仍保留页面可见性及过期请求保护。请求的来源、CSRF 和传输错误使用 [公共错误分类](../engineering/frontend-development.md#api-响应与请求错误)，配置保存失败保留表单输入；状态快照中的动态 `last_error` 不直接展示底层错误内容，页面提示查看服务日志。
+Web 设置页由 `api/mediaLibrary.ts` 封装两端配置、媒体库、提取和同步请求，`useMediaLibrarySyncStatus` 管理本端轮询与过期回调。隐藏标签暂停轮询，返回只重读状态，不覆盖草稿。保存失败保留输入，公共请求分类见 [前端开发约定](../engineering/frontend-development.md#api-响应与请求错误)；动态 `last_error` 不直接展示底层错误内容，页面提示查看服务日志。
 
-“提取媒体信息”在后台扫描全部媒体库并把缺少媒体信息的条目加入下载队列。同一时间只运行一轮，运行标记在后台扫描结束后才释放；期间再次触发返回“Emby 媒体信息解析任务正在运行，请稍后再试”。Emby Webhook 触发单条媒体信息提取时，仅忽略 `ErrActiveDownloadTaskExists` 表示的重复任务，其他入队错误必须记录日志。
+“提取媒体信息”扫描本端全部媒体库，不受索引选库范围和入库自动提取分项限制。每端同一时间只运行一轮，后台扫描结束才释放运行标记；用户必须具备全部媒体库与播放权限。缺少可用媒体流的条目进入原下载队列，来源为 `emby_media` 或 `jellyfin_media`。普通索引查询不增加提取专用媒体流字段。
 
-批量提取的媒体列表显式请求 `MediaStreams`，沿用非字幕流少于两个时入队的判断；已有完整音视频流的条目不会因查询漏字段而再次入队。普通索引快照查询不因此增加媒体流字段。
+新提取任务以 `source`／`source_type=emby_media|jellyfin_media` 保存归属，持久化隐藏的 `emby_item_id`、`media_server_id`，不保存新的地址／密钥；重试只允许同端同实例更换当前地址／密钥，不能把旧任务投向另一实例。旧任务无法证明原身份时不自动替换凭据。只有 HTTP 200、合法 JSON、无 `ErrorCode` 且具备适用主流 codec 才能完成；非成功 HTTP、JSON 错误及无可用媒体流不能标记提取成功；自动单条入队只忽略活跃重复任务，其他失败记录日志。队列字段见 [下载任务](../reference/database-schema.md#db_download_tasks)。
 
-程序启动并完成数据库迁移后，会清理上次进程异常退出遗留的 `is_running=true` 状态，避免全量、增量和 Webhook 单条同步长期被旧运行标记阻塞。该清理只复位 `is_running`、`sync_mode` 和 `started_at`，并写入 `last_error` 说明原因；不会推进或清空 `last_sync_time`、`last_full_sync_at`、`last_incremental_sync_at` 和 `last_saved_cursor_at`。
+程序启动并完成数据库迁移后，会分别清理两端上次进程异常退出遗留的 `is_running=true` 状态，避免全量、增量和 Webhook 单条同步长期被旧运行标记阻塞。该清理只复位 `is_running`、`sync_mode` 和 `started_at`，并写入 `last_error` 说明原因；不会推进或清空 `last_sync_time`、`last_full_sync_at`、`last_incremental_sync_at` 和 `last_saved_cursor_at`。
 
 ## 升级和迁移说明
 
-新增字段通过 GORM AutoMigrate 补齐，旧数据默认值保持兼容。
+当前 schema 为 71；媒体库结构变更与旧关联字符串转换一并在 70→71 事务中完成。新库直接建立两份默认关闭的配置；升级已有 Emby 配置设置 `enabled=true`、`enable_media_notification=1`，其他原连接及功能值保留，Jellyfin 默认关闭且不继承旧连接。旧 Emby 地址实际指向 Jellyfin 时不自动搬迁，用户需在对应标签手动配置。
 
-新增或扩展的字段：
-
-- `emby_config.last_full_sync_at`
-- `emby_config.last_incremental_sync_at`
-- `emby_config.last_saved_cursor_at`
-- `emby_config.last_processed_count`
-- `emby_config.last_success_sync_mode`
-- `emby_config.last_error`
-- `emby_config.is_running`
-- `emby_config.sync_mode`
-- `emby_config.started_at`
-- `emby_config.enable_daily_first_full_sync`
-- `emby_media_items.last_seen_sync_run`
-- `emby_media_items.last_seen_at`
+两端配置状态、业务归属与复合键见 [媒体业务归属](../reference/database-schema.md#媒体业务归属)，完整初始化、迁移及归档版本规则由数据库文档维护。
 
 版本 65→66 在一次事务中新增物理快照、成员、身份状态、旁车历史、持久收件和逐目标结果，保留旧媒体及关联记录；完整迁移与失败回滚约定见 [数据库 schema 与迁移](../reference/database-schema.md#迁移与初始化)。旧索引不从当前同名文件推断过去的删除身份。升级后建议先手动执行一次全量同步，用于建立本地索引和全量批次标记。默认启用每日首次定时全量同步，之后 Cron 会在每天首次成功全量后按增量同步兜底变更。
 
 ## 验证命令
 
-后端：
-
-```bash
-(cd backend && go test . ./internal/app ./internal/emby ./internal/emby/client ./internal/models ./internal/controllers ./internal/requests ./internal/backup ./internal/v115/openapi ./internal/openlist ./internal/baidupan)
-(cd backend && go test -race ./internal/emby ./internal/models ./internal/controllers ./internal/backup -run 'Emby|Webhook')
-(cd backend && go vet . ./internal/app ./internal/emby ./internal/emby/client ./internal/models ./internal/controllers ./internal/requests ./internal/backup)
-```
-
-前端：
-
-```bash
-(cd frontend && pnpm exec vitest run test/components/AppEmbySettings.sync-status.test.ts)
-(cd frontend && pnpm exec vitest run test/utils/timeUtils.test.ts)
-(cd frontend && pnpm run type-check)
-(cd frontend && pnpm run build)
-```
+后端普通／race／vet、两引擎 integration、前端组件／composable 与生产构建的实际命令集中见 [双端媒体库验证](../engineering/verification.md#双端媒体库验证)。当前产品实机闭环还须核验刷新、提取、通知、删除与重启的最终效果，孤立上游 API 实验不能替代。
 
 ## 不变量
 
-- 通知 Emby 刷新与同步 Emby 本地索引是两条独立链路，入口和状态不得混用。
+- 通知媒体服务器刷新与读取本端本地索引是两条独立链路，入口和状态不得混用。
+- 配置、索引、同步水位、刷新任务和删除证据按固定媒体类型隔离；普通查询不能省略或猜测类型。
+- 新配置默认关闭，关闭通知只停止发送；入库自动提取分项不能阻止手动提取。
+- 同类型原 ServerID 不匹配时不能向新实例重放旧提取、刷新或删除工作；冻结身份和授权不被新设置扩大。
 - 刷新统一写入 `emby_library_refresh_tasks` 并由协调器执行，生产链路不得直接调用旧的立即刷新函数。
 - 非 Webhook 任务仅在 STRM 实际变化后请求刷新；Webhook 默认不刷新，只有显式 `refresh_emby=true` 且满足变化条件时才提交。
-- 批量和目录扫描父任务只有在全部子任务成功并存在 STRM 或元数据变化时提交一次刷新；任一子任务失败时不得提交。
+- 批量和目录扫描父任务仅在全部子任务成功且有变化时提交累计集合；单项双端解析部分失败时，已核验的另一端可先经协调器投递，任务仍保留失败。
 - item 目标优先，可靠证据不足时才回退到关联媒体库；多库且无可靠证据时保持 unresolved，不任选媒体库。
 
 ## 验证方式
 
-- 运行本节列出的后端、前端命令；改动刷新协调器时至少覆盖 item 目标、媒体库回退、去抖、下载等待和父子任务失败场景。
+- 运行上述验证说明中的后端、前端命令；改动刷新协调器时至少覆盖 item 目标、媒体库回退、去抖、下载等待和父子任务失败场景。
 - 修改迁移字段时运行 `(cd backend && go test ./internal/models/)`，并核对 [数据库 schema 与迁移](../reference/database-schema.md) 的版本和字段说明。

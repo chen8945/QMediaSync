@@ -94,7 +94,7 @@ func TestGenerationMetadataSourceLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			service := newTestGenerationService(t, syncPath, account)
-			service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 			if mode == "retarget_before_publish" {
 				outside := filepath.Join(t.TempDir(), "outside.nfo")
 				if err := os.WriteFile(outside, []byte("new"), 0644); err != nil {

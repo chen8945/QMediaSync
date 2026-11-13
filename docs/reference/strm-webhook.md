@@ -70,7 +70,7 @@ API Key 在 Web 页面「系统设置 - API Key」中创建。完整密钥只会
 | `sync_path_id` | 否 | 同步目录 ID。显式提供时必须是 115 同步目录；缺省时按 115 远端路径自动匹配最具体的同步目录。 |
 | `action` | 否 | `file`、`batch_files` 或 `directory_scan`。 |
 | `download_meta` | 否 | 是否下载本次视频强相关的同名元数据，默认 `false`。 |
-| `refresh_emby` | 否 | 是否在 STRM 变更或新增元数据下载任务后提交 Emby 刷新目标，默认 `false`。 |
+| `refresh_emby` | 否 | 是否在 STRM 变更或新增元数据下载任务后提交媒体服务器刷新目标（保留历史字段名），默认 `false`。 |
 
 `download_meta` 和 `refresh_emby` 是请求级字段。`batch_files` 的 `items[]` 内禁止放这两个开关；如果任一 item 包含 `download_meta` 或 `refresh_emby`，整个请求返回 HTTP `400`。批量和目录扫描会按整个请求统一控制，所有子任务继承父任务开关。
 
@@ -138,17 +138,21 @@ Webhook 任务按实际处理批次使用配置，修改从下一小批生效；
 
 ## Emby 刷新
 
-`refresh_emby=true` 时，文件任务只有在 STRM 发生变更或新增元数据下载任务后才解析并向 Emby 刷新协调器提交刷新目标。
+`refresh_emby=true` 时，文件任务只有在 STRM 发生变更或新增元数据下载任务后才解析并按各端总开关和刷新开关，向 Emby／Jellyfin 的公共刷新协调器分别提交目标。
 
-- `file`：单文件任务完成后提交目标，但仍进入现有 Emby 刷新协调器防抖。
-- `batch_files`：所有子任务完成或跳过且存在 STRM / 元数据变化后，由批量父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
-- `directory_scan`：目录展开出的所有子任务完成或跳过且存在 STRM / 元数据变化后，由目录扫描父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交刷新。
+- `file`：单文件任务完成后提交目标，但仍进入公共刷新协调器防抖。
+- `batch_files`：所有子任务完成或跳过且存在 STRM / 元数据变化后，由批量父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交父任务累计集合。
+- `directory_scan`：目录展开出的所有子任务完成或跳过且存在 STRM / 元数据变化后，由目录扫描父任务统一提交一次已收集目标集合；任一子任务失败则父任务失败且不提交父任务累计集合。
+
+目标解析在 STRM 或元数据变化前完成；解析失败时不先写文件，恢复连接后可重新提交。写入成功后的独立任务提交失败会保存目标并进入 `finalizing`，由 worker 自动重试提交；批任务继续使用原有父目标累计与子任务收尾机制。提交时单端失败不阻止另一端有效目标入队，仍按原类型和 ServerID 核验；详见 [刷新流程](../architecture/emby-library-sync.md#当前有效入口)。
+
+`refresh_emby` 不新增 Jellyfin 专用开关。新目标冻结类型及原 ServerID，以 `(media_server_type, server_id, task_key)` 去重，同 ID 的不同端／实例不合并；旧任务缺原身份时取消并要求重新提交。
 
 刷新目标优先保持 item 精度。每个发生变化的文件会先解析为 Movie、Episode、Season、Series 等 item；解析不到可靠 item 时回退同步目录关联媒体库。目标集合会去重，同一媒体库内如果出现 library fallback，该媒体库内其他 item 目标会被覆盖，不再单独提交；不同媒体库互不影响。
 
-提交不在 STRM worker 内直接请求 Emby。只有 Emby 已配置、已启用且刷新目标能映射到关联媒体库时，协调器才会创建或合并 `emby_library_refresh_tasks`；其他情况会跳过刷新。防抖、同媒体库关联同步目录的等待范围、可重试失败下载和最长等待后取消等规则由 [Emby 媒体库同步](../architecture/emby-library-sync.md) 统一维护。
+提交不在 STRM worker 内直接请求媒体服务器。每端连接已配置、总开关与刷新开关开启且存在可靠关联目标时，协调器才会创建或合并 `emby_library_refresh_tasks`；其他情况会跳过刷新。两端按类型与原 ServerID 隔离目标；防抖、同媒体库关联同步目录的等待范围、可重试失败下载和最长等待后取消等规则由 [媒体库同步](../architecture/emby-library-sync.md) 统一维护。
 
-上传完成、远端已存在等非 Webhook STRM 任务保持原有行为：STRM 变更后可逐文件提交 Emby 刷新，不受 Webhook 默认开关影响。
+上传完成、远端已存在等非 Webhook STRM 任务保持原有行为：STRM 变更后可向各启用端逐文件提交刷新，不受 Webhook 默认开关影响。
 
 ## 响应
 

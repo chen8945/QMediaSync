@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,7 +131,7 @@ func setupWebhookWorkerTest(t *testing.T, indexed bool) *webhookFixture {
 		}
 	}))
 	t.Cleanup(server.Close)
-	f.config = models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
+	f.config = models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, EnableDeleteNetdisk: 1}
 	account := models.Account{SourceType: models.SourceType115, UserId: "fixture-owner"}
 	if err := conn.Create(&f.config).Error; err != nil {
 		t.Fatal(err)
@@ -159,27 +160,143 @@ func setupWebhookWorkerTest(t *testing.T, indexed bool) *webhookFixture {
 		}
 	}
 	f.provider = &webhookTestProvider{t: t, files: map[string]models.EmbyRemoteFile{"f1": {FileID: "f1", ParentID: "root", FileName: "movie.mkv", Path: "/movies", PickCode: "p1", SHA1: "sha1", FileSize: 100, MTime: 123}}}
-	f.worker = &webhookWorker{observe: observeEmbyWebhook, syncItem: SyncEmbyItemByIDContext, verify: verifyEmbyDeletion, provider: func(models.EmbyFrozenFile) (models.EmbyDeleteProvider, error) { return f.provider, nil }}
+	f.worker = &webhookWorker{observe: observeEmbyWebhook, syncItem: syncMediaItemByIDWithConfig, verify: verifyEmbyDeletion, provider: func(models.EmbyFrozenFile) (models.EmbyDeleteProvider, error) { return f.provider, nil }}
 	return f
 }
 
 func workerSnapshot(file models.SyncFile) models.EmbyItemSnapshot {
-	return models.EmbyItemSnapshot{Item: models.EmbyMediaItem{ItemId: "101", Type: "Movie", Path: file.LocalFilePath, PickCode: file.PickCode}, Sources: []models.EmbySnapshotSource{{ID: "source-101", ItemID: "101", Path: "http://qms/stream?pickcode=p1", PickCode: file.PickCode}}, MembersComplete: true}
+	return models.EmbyItemSnapshot{Item: models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "101", Type: "Movie", Path: file.LocalFilePath, PickCode: file.PickCode}, Sources: []models.EmbySnapshotSource{{ID: "source-101", ItemID: "101", Path: "http://qms/stream?pickcode=p1", PickCode: file.PickCode}}, MembersComplete: true}
 }
 func (f *webhookFixture) envelope(event string) models.EmbyWebhookEnvelope {
-	return models.EmbyWebhookEnvelope{Event: event, ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: f.file.LocalFilePath, Source: "fixture"}
+	return models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby, Event: event, ServerID: "server-a", ItemID: "101", ItemType: "Movie", ItemPath: f.file.LocalFilePath, Source: "fixture"}
 }
 func claimWebhookTest(t *testing.T) models.EmbyWebhookRecord {
 	t.Helper()
-	record, err := models.ClaimEmbyWebhook(t.Context(), time.Now().Add(time.Hour).Unix())
+	record, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(time.Hour).Unix())
 	if err != nil || record == nil {
 		t.Fatalf("claim: %+v %v", record, err)
 	}
 	return *record
 }
+
+func TestWebhookWorkerRetainsClaimWhenServiceDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		event   string
+		indexed bool
+	}{
+		{"sync", "library.new", true},
+		{"deletion", "library.deleted", true},
+		{"deletion_without_history", "library.deleted", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupWebhookWorkerTest(t, tc.indexed)
+			if _, err := models.SaveEmbyWebhook(t.Context(), f.envelope(tc.event)); err != nil {
+				t.Fatal(err)
+			}
+			record := claimWebhookTest(t)
+			if err := db.Db.Model(&models.EmbyConfig{}).Where("id = ?", f.config.ID).Update("enabled", false).Error; err != nil {
+				t.Fatal(err)
+			}
+			f.worker.process(t.Context(), record)
+			var saved models.EmbyWebhookRecord
+			if err := db.Db.First(&saved, record.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != models.EmbyWebhookRetry || saved.Attempts != 0 || saved.ClaimToken != "" || f.provider.calls != 0 {
+				t.Fatalf("关闭端消耗或丢失了待办：status=%s attempts=%d claim=%q provider=%d", saved.Status, saved.Attempts, saved.ClaimToken, f.provider.calls)
+			}
+			if next, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Add(time.Hour).Unix()); err != nil || next != nil {
+				t.Fatalf("关闭端仍领取待办：next=%+v err=%v", next, err)
+			}
+			if err := db.Db.Model(&models.EmbyConfig{}).Where("id = ?", f.config.ID).Update("enabled", true).Error; err != nil {
+				t.Fatal(err)
+			}
+			if resumed := claimWebhookTest(t); resumed.ID != record.ID || resumed.Attempts != 0 {
+				t.Fatalf("启用后未恢复原待办：id=%d attempts=%d", resumed.ID, resumed.Attempts)
+			}
+		})
+	}
+}
+
+func TestWebhookWorkerRetainsClaimWhenDisabledDuringExecution(t *testing.T) {
+	f := setupWebhookWorkerTest(t, false)
+	if _, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.new")); err != nil {
+		t.Fatal(err)
+	}
+	record := claimWebhookTest(t)
+	f.worker.observe = func(context.Context, models.EmbyWebhookRecord) error { return nil }
+	f.worker.syncItem = func(context.Context, *models.EmbyConfig, string, string) (bool, error) {
+		if err := db.Db.Model(&models.EmbyConfig{}).Where("id = ?", f.config.ID).Update("enabled", false).Error; err != nil {
+			return false, err
+		}
+		return false, errors.New("媒体库已关闭")
+	}
+	f.worker.process(t.Context(), record)
+	saved := readWebhookTest(t, record.ID)
+	if saved.Status != models.EmbyWebhookRetry || saved.Attempts != 0 || saved.ClaimToken != "" || saved.Reason != "service_disabled" {
+		t.Fatalf("执行中关闭仍消耗任务：status=%s attempts=%d claim=%q reason=%q", saved.Status, saved.Attempts, saved.ClaimToken, saved.Reason)
+	}
+}
+
+func TestWebhookWorkerServicesProgressIndependentlyAndStopTogether(t *testing.T) {
+	f := setupWebhookWorkerTest(t, false)
+	jellyfin := models.JellyfinConfig(f.config)
+	jellyfin.MediaServerType = models.MediaServerJellyfin
+	if err := db.Db.Create(&jellyfin).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.new")); err != nil {
+		t.Fatal(err)
+	}
+	envelope := f.envelope("library.new")
+	envelope.MediaServerType = models.MediaServerJellyfin
+	if _, err := models.SaveEmbyWebhook(t.Context(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	embyStarted, jellyfinStarted := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	worker := &webhookWorker{
+		done: make(chan struct{}),
+		serviceWake: map[models.MediaServerType]chan struct{}{
+			models.MediaServerEmby: make(chan struct{}, 1), models.MediaServerJellyfin: make(chan struct{}, 1),
+		},
+		observe: func(context.Context, models.EmbyWebhookRecord) error { return nil },
+		syncItem: func(ctx context.Context, config *models.EmbyConfig, _, _ string) (bool, error) {
+			if config.MediaServerType == models.MediaServerEmby {
+				close(embyStarted)
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			close(jellyfinStarted)
+			return true, nil
+		},
+	}
+	go worker.run(ctx)
+	t.Cleanup(func() { cancel(); <-worker.done })
+	for _, started := range []<-chan struct{}{embyStarted, jellyfinStarted} {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("一端慢请求阻止了另一端执行")
+		}
+	}
+	select {
+	case <-worker.done:
+		t.Fatal("执行分支未退出就结束了 worker")
+	default:
+	}
+	cancel()
+	select {
+	case <-worker.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("停止未等待两个执行分支退出")
+	}
+}
 func TestEmbyWebhookRecordLabelIsTolerant(t *testing.T) {
 	season, episode := 2, 5
-	payload, err := json.Marshal(models.EmbyWebhookEnvelope{SeriesName: "Show", ParentIndexNumber: &season, IndexNumber: &episode})
+	payload, err := json.Marshal(models.EmbyWebhookEnvelope{MediaServerType: models.MediaServerEmby, SeriesName: "Show", ParentIndexNumber: &season, IndexNumber: &episode})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +827,7 @@ func TestWebhookWorkerNewEventDuringSyncIsSeparateWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := claimWebhookTest(t)
-	f.worker.syncItem = func(ctx context.Context, _ string) (bool, error) {
+	f.worker.syncItem = func(ctx context.Context, _ *models.EmbyConfig, _, _ string) (bool, error) {
 		_, err := models.SaveEmbyWebhook(ctx, f.envelope("library.modified"))
 		return true, err
 	}
@@ -804,5 +921,139 @@ func TestWebhookWorkerObsoleteDeletionStopsRetrying(t *testing.T) {
 	}
 	if f.provider.calls != 1 {
 		t.Fatal("obsolete retry resent delete")
+	}
+}
+
+func TestWebhookWorkerConnectionSwitchCannotRetargetOldRecord(t *testing.T) {
+	f := setupWebhookWorkerTest(t, false)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var requests atomic.Int32
+	var identityEntered atomic.Bool
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/System/Info/Public") {
+			if identityEntered.CompareAndSwap(false, true) {
+				close(entered)
+			}
+			<-release
+			fmt.Fprint(w, `{"Id":"server-a","ProductName":"Emby Server"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(old.Close)
+	next := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/System/Info/Public") {
+			fmt.Fprint(w, `{"Id":"server-b","ProductName":"Emby Server"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(next.Close)
+	if err := models.UpdateMediaLibraryConfig(models.MediaServerEmby, map[string]any{"emby_url": old.URL}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Model(&models.EmbyWebhookRecord{}).Where("id = ?", record.ID).Update("observation_json", "{}").Error; err != nil {
+		t.Fatal(err)
+	}
+	record = claimWebhookTest(t)
+	done := make(chan struct{})
+	go func() { f.worker.process(t.Context(), record); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(release)
+		<-done
+		t.Fatal("old identity check did not start")
+	}
+	if err := models.UpdateMediaLibraryConfig(models.MediaServerEmby, map[string]any{"emby_url": next.URL}); err != nil {
+		close(release)
+		<-done
+		t.Fatal(err)
+	}
+	nextEnvelope := f.envelope("library.new")
+	nextEnvelope.ServerID = "server-b"
+	nextRecord, err := models.SaveEmbyWebhook(t.Context(), nextEnvelope)
+	if err != nil {
+		close(release)
+		<-done
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+	if requests.Load() != 0 {
+		t.Fatalf("old record queried new server %d times", requests.Load())
+	}
+	if fresh := readWebhookTest(t, record.ID); fresh.Status != models.EmbyWebhookRetry || fresh.Reason != models.ErrEmbySnapshotStale.Error() {
+		t.Fatalf("old record did not retry for stale configuration: %+v", fresh)
+	}
+	nextRecord = readWebhookTest(t, nextRecord.ID)
+	if nextRecord.ID == record.ID || nextRecord.ServerID != "server-b" || nextRecord.ItemID != record.ItemID || nextRecord.Status != models.EmbyWebhookPending {
+		t.Fatalf("new instance notification was absorbed by old work: %+v", nextRecord)
+	}
+}
+
+func TestWebhookWorkerRejectsChangedInstanceAtSameAddress(t *testing.T) {
+	f := setupWebhookWorkerTest(t, false)
+	var identities, itemReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/System/Info/Public") {
+			serverID := "server-a"
+			if identities.Add(1) > 1 {
+				serverID = "server-b"
+			}
+			fmt.Fprintf(w, `{"Id":%q,"ProductName":"Emby Server"}`, serverID)
+			return
+		}
+		itemReads.Add(1)
+		fmt.Fprint(w, `{"Items":[],"TotalRecordCount":0}`)
+	}))
+	t.Cleanup(server.Close)
+	if err := models.UpdateMediaLibraryConfig(models.MediaServerEmby, map[string]any{"emby_url": server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := models.SaveEmbyWebhook(t.Context(), f.envelope("library.new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Model(&models.EmbyWebhookRecord{}).Where("id = ?", record.ID).Update("observation_json", "{}").Error; err != nil {
+		t.Fatal(err)
+	}
+	f.worker.process(t.Context(), claimWebhookTest(t))
+	if itemReads.Load() != 0 || readWebhookTest(t, record.ID).Status == models.EmbyWebhookDone {
+		t.Fatalf("old notification used a changed instance: item reads=%d record=%+v", itemReads.Load(), readWebhookTest(t, record.ID))
+	}
+}
+
+func TestWebhookWorkerNonphysicalAddedSkipsOnlyFileIndex(t *testing.T) {
+	f := setupWebhookWorkerTest(t, false)
+	envelope := f.envelope("library.new")
+	envelope.ItemType = "Series"
+	record, err := models.SaveEmbyWebhook(t.Context(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := models.ClaimEmbyWebhook(t.Context(), models.MediaServerEmby, time.Now().Unix())
+	if err != nil || claimed == nil {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	f.worker.observe = func(context.Context, models.EmbyWebhookRecord) error {
+		t.Fatal("Series triggered physical observation")
+		return nil
+	}
+	f.worker.syncItem = func(context.Context, *models.EmbyConfig, string, string) (bool, error) {
+		t.Fatal("Series triggered physical index")
+		return false, nil
+	}
+	if err := f.worker.processSync(t.Context(), *claimed); err != nil {
+		t.Fatal(err)
+	}
+	current := readWebhookTest(t, record.ID)
+	if current.Status != models.EmbyWebhookDone || current.Reason != "nonphysical_item_skipped" || current.Attempts != 0 {
+		t.Fatalf("record=%+v", current)
 	}
 }

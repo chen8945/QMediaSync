@@ -66,7 +66,7 @@ owners:
 				retain("source_identity_unconfirmed")
 				continue
 			}
-			config, err := models.ReadEmbyConfigSnapshot()
+			config, err := models.ReadMediaLibraryConfigSnapshot(input.MediaServerType)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -150,7 +150,8 @@ owners:
 		}
 	}
 	if helpers.AppLogger != nil {
-		helpers.AppLogger.Infof("准备联动删除：%d 个来源使用已有文件记录，%d 个来源已补齐文件信息；本次已读详情和目录清单会复用%s", reused, missing, embyDeletionSupplementRetentionLabel(issues))
+		helpers.AppLogger.Infof("%s 联动删除：正在核验待删除文件%s", input.MediaServerType.DisplayName(), embyDeletionSupplementRetentionLabel(issues))
+		helpers.AppLogger.Debugf("%s 联动删除资料：复用已有记录的来源 %d 个，补齐文件信息的来源 %d 个；复用本轮详情与目录查询结果", input.MediaServerType.DisplayName(), reused, missing)
 	}
 	return supplements, issues, nil
 }

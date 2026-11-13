@@ -21,10 +21,10 @@ func NormalizeEmbyPathMappings(mappings []EmbyPathMapping) ([]EmbyPathMapping, e
 	for i, mapping := range mappings {
 		embyRoot, _, err := normalizeEmbyMappingPath(mapping.EmbyRoot)
 		if err != nil {
-			return nil, fmt.Errorf("第 %d 行 Emby 根目录：%w", i+1, err)
+			return nil, fmt.Errorf("第 %d 行媒体服务器根目录：%w", i+1, err)
 		}
 		if !filepath.IsAbs(mapping.LocalRoot) || invalidMappingComponents(filepath.ToSlash(mapping.LocalRoot)) {
-			return nil, fmt.Errorf("第 %d 行 QMS 可访问根目录必须是绝对路径，且不能包含 .、.. 或控制字符", i+1)
+			return nil, fmt.Errorf("第 %d 行 QMediaSync 可访问根目录必须是绝对路径，且不能包含 .、.. 或控制字符", i+1)
 		}
 		mapping.EmbyRoot = embyRoot
 		mapping.LocalRoot = filepath.Clean(mapping.LocalRoot)
@@ -32,7 +32,7 @@ func NormalizeEmbyPathMappings(mappings []EmbyPathMapping) ([]EmbyPathMapping, e
 			_, insidePrevious := previous.RelativePath(mapping.EmbyRoot)
 			_, containsPrevious := mapping.RelativePath(previous.EmbyRoot)
 			if insidePrevious || containsPrevious {
-				return nil, fmt.Errorf("第 %d 行 Emby 根目录与已有映射重复或重叠", i+1)
+				return nil, fmt.Errorf("第 %d 行媒体服务器根目录与已有映射重复或重叠", i+1)
 			}
 		}
 		normalized = append(normalized, mapping)

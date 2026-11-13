@@ -20,11 +20,12 @@ import (
 type SourceType string
 
 const (
-	SourceType115       SourceType = "115"
-	SourceTypeLocal     SourceType = "local"
-	SourceTypeOpenList  SourceType = "openlist"
-	SourceTypeBaiduPan  SourceType = "baidupan"
-	SourceTypeEmbyMedia SourceType = "emby_media" // Emby 媒体信息提取专用
+	SourceType115           SourceType = "115"
+	SourceTypeLocal         SourceType = "local"
+	SourceTypeOpenList      SourceType = "openlist"
+	SourceTypeBaiduPan      SourceType = "baidupan"
+	SourceTypeJellyfinMedia SourceType = "jellyfin_media"
+	SourceTypeEmbyMedia     SourceType = "emby_media" // Emby 媒体信息提取专用
 )
 
 func (s SourceType) String() string {
@@ -37,6 +38,8 @@ func (s SourceType) String() string {
 		return "OpenList"
 	case SourceTypeBaiduPan:
 		return "百度网盘"
+	case SourceTypeJellyfinMedia:
+		return "Jellyfin 媒体信息提取"
 	case SourceTypeEmbyMedia:
 		return "Emby 媒体信息提取"
 	default:

@@ -59,6 +59,9 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
 			return err
 		}
+		if err := plan.Input.BindMediaServerType(record.MediaServerType); err != nil {
+			return err
+		}
 		if !plan.Input.CleanupPolicy.AllowsJointBatch() {
 			return finishEmbyWebhook(ctx, record, models.EmbyWebhookUnresolved, "unsupported_cleanup_policy", 0, false)
 		}
@@ -124,15 +127,15 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 			for _, result := range results {
 				target := targets[result.Key]
 				if result.Outcome == models.EmbyDeletionFailed {
-					helpers.AppLogger.Warnf("Emby 删除诊断：通知 #%d，处理轮次=%d，账号=%d，来源=%q，file_id=%.128q，parent_id=%.128q，已发送次数=%d",
-						record.ID, record.Attempts+1, target.File.AccountID, target.File.SourceType,
+					helpers.AppLogger.Warnf("%s 删除诊断：通知 #%d，处理轮次=%d，账号=%d，来源=%q，file_id=%.128q，parent_id=%.128q，已发送次数=%d",
+						record.MediaServerType.DisplayName(), record.ID, record.Attempts+1, target.File.AccountID, target.File.SourceType,
 						webhookLogURL.ReplaceAllString(target.File.FileID, "[URL]"), webhookLogURL.ReplaceAllString(target.File.ParentID, "[URL]"), states[result.Key].Attempts)
 				}
 				reasonLabel := embyWebhookReasonLabel(webhookLogURL.ReplaceAllString(result.Reason, "[URL]"))
 				if reasonLabel != "" {
 					reasonLabel = "，原因：" + reasonLabel
 				}
-				helpers.AppLogger.Infof("Emby 删除文件结果：通知 #%d，ItemId %s，%s %q，结果：%s%s", record.ID, item, embyDeletionTargetNoun(target.Kind),
+				helpers.AppLogger.Infof("%s 删除文件结果：通知 #%d，%s，%s %q，结果：%s%s", mediaServerName(record.MediaServerType), record.ID, item, embyDeletionTargetNoun(target.Kind),
 					webhookLogURL.ReplaceAllString(target.File.FileName, "[URL]"), embyDeletionOutcomeLabel(result.Outcome), reasonLabel)
 			}
 		}
@@ -183,7 +186,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 	for _, target := range plan.Targets {
 		state, found := states[target.Key]
 		if !found {
-			return errors.New("Emby 删除目标尚未持久保存")
+			return errors.New("媒体删除目标尚未持久保存")
 		}
 		if target.Kind != "directory" || complete(target.Key) {
 			continue
@@ -421,7 +424,7 @@ func (worker *webhookWorker) processCleanupDeletion(ctx context.Context, record 
 		return err
 	}
 	if retry {
-		return errors.New("部分 Emby 删除目标未完成，保留身份并重新核验")
+		return errors.New("部分媒体删除目标未完成，保留身份并重新核验")
 	}
 	status, reason := models.EmbyWebhookDone, ""
 	if unresolved {

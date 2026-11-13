@@ -2,13 +2,14 @@ import axios, { AxiosError, CanceledError } from 'axios'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElMessage } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AppEmbySettings from '@/views/settings/AppEmbySettings.vue'
+import MediaServerSettings from '@/components/media-library/MediaServerSettings.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { APIResponse } from '@/api/types'
 import { createDeferred } from '../support/deferred'
 
 const settings = {
+  enabled: true,
   emby_url: 'http://emby:8096',
   emby_api_key: 'private-key',
   sync_enabled: 1,
@@ -24,13 +25,13 @@ const rejectedRequest = (errorCode: string, status = 403) =>
 const mountSettings = async (
   configError?: unknown,
   syncError = '',
-  config: typeof settings & { sync_all_libraries?: number } = settings,
+  config: (typeof settings & { sync_all_libraries?: number }) | null = settings,
   libraryError?: unknown,
 ) => {
   const getReply = vi.fn(async (url: string): Promise<APIResponse<unknown>> => {
     if (url.endsWith('/setting/emby-config')) {
       if (configError) throw configError
-      return { code: 200, message: '', data: { exists: true, config } }
+      return { code: 200, message: '', data: { exists: config !== null, config } }
     }
     if (url.endsWith('/emby/libraries')) {
       if (libraryError) throw libraryError
@@ -45,7 +46,7 @@ const mountSettings = async (
   })
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: null })
+    .mockResolvedValue({ code: 200, message: '', data: { warnings: [], restart_required: false } })
   const adapter = vi.fn(async (config) => ({
     config,
     status: 200,
@@ -53,7 +54,8 @@ const mountSettings = async (
     headers: {},
     data: config.method === 'get' ? await getReply(config.url) : await reply(),
   }))
-  const wrapper = mount(AppEmbySettings, {
+  const wrapper = mount(MediaServerSettings, {
+    props: { serverType: 'emby', active: true },
     global: {
       provide: { [httpKey]: axios.create({ adapter }) },
       stubs: { PageHeader: true, RouterLink: true },
@@ -88,6 +90,15 @@ afterEach(() => {
 })
 
 describe('Emby 设置请求反馈', () => {
+  it('尚未配置时同步默认关闭，首次保存不擅自开启', async () => {
+    const { wrapper, adapter, act } = await mountSettings(undefined, '', null)
+    expect(input(wrapper, '启用同步').element).toHaveProperty('checked', false)
+    await act('保存设置')
+    const post = adapter.mock.calls.find(([config]) => config.method === 'post')![0]
+    expect(JSON.parse(post.data)).toMatchObject({ enabled: false, sync_enabled: 0 })
+    expect(wrapper.get('.emby-status-alert').text()).toContain('保存成功')
+  })
+
   it('首次读取失败不能保存默认配置，重试读取成功后才允许保存', async () => {
     const { wrapper, reply, getReply, act } = await mountSettings(
       rejectedRequest('REQUEST_ORIGIN_INVALID'),
@@ -143,7 +154,7 @@ describe('Emby 设置请求反馈', () => {
     const { wrapper, reply, act } = await mountSettings()
     reply.mockRejectedValueOnce(rejectedRequest(code))
     await act('提取媒体信息')
-    expect(wrapper.get('.emby-status-alert').text()).toContain('请求被 QMS 拒绝')
+    expect(wrapper.get('.emby-status-alert').text()).toContain('请求被 QMediaSync 拒绝')
     expect(wrapper.get('.emby-status-alert').text()).toContain(message)
     expect(wrapper.get('.emby-status-alert').text()).not.toMatch(
       /无法连接|网络错误|提取媒体信息成功/,
@@ -156,9 +167,9 @@ describe('Emby 设置请求反馈', () => {
     await input(wrapper, 'Emby 服务器地址').setValue('http://changed:8096')
     getReply.mockRejectedValueOnce(new AxiosError('private-key', 'ERR_NETWORK'))
     await act('保存设置')
-    expect(wrapper.get('.emby-status-alert').text()).toContain('Emby 配置已保存，但刷新失败')
-    expect(wrapper.get('.emby-status-alert').text()).toContain('无法获取服务器响应')
-    expect(wrapper.get('.emby-status-alert').text()).not.toContain('保存成功')
+    expect(wrapper.get('.readback-failure').text()).toContain('Emby 配置已保存，但刷新失败')
+    expect(wrapper.get('.readback-failure').text()).toContain('无法获取服务器响应')
+    expect(wrapper.get('.emby-status-alert').text()).toContain('保存成功')
     expect((input(wrapper, 'Emby 服务器地址').element as HTMLInputElement).value).toBe(
       'http://changed:8096',
     )
@@ -200,12 +211,48 @@ describe('Emby 设置请求反馈', () => {
       return { code: 200, message: '', data: { exists: true, config } }
     })
     await act('保存设置')
-    const alert = wrapper.get('.emby-status-alert').text()
+    const alert = wrapper.get('.readback-failure').text()
     expect(alert).toContain('Emby 配置已保存，但无法获取媒体库')
     expect(alert).not.toContain('保存成功')
     expect(ElMessage.error).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(6000)
-    expect(wrapper.get('.emby-status-alert').text()).toContain('无法获取媒体库')
+    expect(wrapper.get('.readback-failure').text()).toContain('无法获取媒体库')
+  })
+
+  it('保存前的选库请求失败不能覆盖已提交配置的应用警告', async () => {
+    const { wrapper, getReply, reply, act } = await mountSettings()
+    const libraries = createDeferred<void>()
+    getReply.mockImplementationOnce(async () => {
+      await libraries.promise
+      throw new AxiosError('private-library-key', 'ERR_NETWORK')
+    })
+    await wrapper
+      .findAll('.el-radio')
+      .find((radio) => radio.text() === '指定媒体库')!
+      .get('input')
+      .setValue(true)
+    await flushPromises()
+    const readback = createDeferred<APIResponse<unknown>>()
+    getReply.mockReturnValueOnce(readback.promise)
+    reply.mockResolvedValueOnce({
+      code: 200,
+      message: '配置已保存',
+      data: { warnings: ['调度未应用，请重新保存'], restart_required: true },
+    })
+    await act('保存设置')
+    libraries.resolve()
+    await flushPromises()
+    const feedbackDuringReadback = wrapper.get('.emby-status-alert').text()
+    readback.resolve({
+      code: 200,
+      message: '',
+      data: { exists: true, config: { ...settings, sync_all_libraries: 0 } },
+    })
+    await flushPromises()
+    expect(feedbackDuringReadback).toContain('调度未应用，请重新保存')
+    expect(feedbackDuringReadback).toContain('需重启')
+    expect(wrapper.get('.emby-status-alert').text()).toContain('调度未应用，请重新保存')
+    expect(wrapper.find('.readback-failure').exists()).toBe(false)
   })
 
   it.each(['REQUEST_ORIGIN_INVALID', 'CSRF_TOKEN_INVALID'])(
@@ -214,42 +261,15 @@ describe('Emby 设置请求反馈', () => {
       const { wrapper, getReply, act } = await mountSettings()
       getReply.mockRejectedValueOnce(rejectedRequest(code))
       await act('保存设置')
-      expect(wrapper.get('.emby-status-alert').text()).toContain('Emby 配置已保存，但刷新失败')
-      expect(wrapper.get('.emby-status-alert').text()).toContain('请求被 QMS 拒绝')
-      expect(wrapper.get('.emby-status-alert').text()).toContain('校验失败')
+      expect(wrapper.get('.readback-failure').text()).toContain('Emby 配置已保存，但刷新失败')
+      expect(wrapper.get('.readback-failure').text()).toContain('请求被 QMediaSync 拒绝')
+      expect(wrapper.get('.readback-failure').text()).toContain('校验失败')
     },
   )
 
-  it('连续轮询失败仅提示一次，成功后复位并继续收敛运行状态', async () => {
-    const { wrapper, getReply, act } = await mountSettings()
-    const running = { code: 200, message: '', data: { is_running: true } }
-    getReply.mockResolvedValueOnce(running)
-    await act('启动全量同步')
-    getReply.mockRejectedValue(new AxiosError('unavailable', 'ERR_NETWORK'))
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(wrapper.get('.emby-status-alert').text()).toContain('查询 Emby 同步状态失败')
-    await wrapper.get('.emby-status-alert .el-alert__close-btn').trigger('click')
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(wrapper.find('.emby-status-alert').exists()).toBe(false)
-    expect(console.error).toHaveBeenCalledTimes(1)
-    getReply.mockResolvedValueOnce(running)
-    await vi.advanceTimersByTimeAsync(3000)
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(wrapper.get('.emby-status-alert').text()).toContain('查询 Emby 同步状态失败')
-    expect(console.error).toHaveBeenCalledTimes(2)
-    getReply.mockResolvedValueOnce({ code: 200, message: '', data: { is_running: false } })
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(
-      wrapper
-        .findAll('button')
-        .find((button) => button.text() === '启动全量同步')!
-        .attributes('disabled'),
-    ).toBeUndefined()
-  })
-
   it('首次加载失败可见且不透传内部异常', async () => {
     const { wrapper } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
-    expect(wrapper.get('.emby-status-alert').text()).toContain('请求被 QMS 拒绝')
+    expect(wrapper.get('.emby-status-alert').text()).toContain('请求被 QMediaSync 拒绝')
     expect(wrapper.get('.emby-status-alert').text()).toContain('访问地址校验失败')
     expect(ElMessage.error).not.toHaveBeenCalled()
   })
@@ -303,7 +323,7 @@ describe('Emby 设置请求反馈', () => {
     reply.mockReturnValueOnce(pending.promise)
     await act('保存设置')
     expect(sync().attributes('disabled')).toBeDefined()
-    pending.resolve({ code: 200, message: '', data: null })
+    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
     await flushPromises()
     expect(sync().attributes('disabled')).toBeUndefined()
   })
@@ -317,7 +337,7 @@ describe('Emby 设置请求反馈', () => {
     await act('启动全量同步')
     expect(button('保存设置').attributes('disabled')).toBeDefined()
     expect(button('提取媒体信息').attributes('disabled')).toBeDefined()
-    pending.resolve({ code: 200, message: '', data: null })
+    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
     await flushPromises()
     expect(button('保存设置').attributes('disabled')).toBeUndefined()
     expect(button('提取媒体信息').attributes('disabled')).toBeUndefined()
@@ -373,42 +393,5 @@ describe('Emby 设置请求反馈', () => {
     const { wrapper } = await mountSettings(undefined, 'GET http://emby?api_key=private-key failed')
     expect(wrapper.get('.error-card').text()).toContain('上次同步失败，请查看服务日志')
     expect(wrapper.get('.error-card').text()).not.toContain('private-key')
-  })
-
-  it('卸载后在途状态成功响应不能重新创建轮询', async () => {
-    const { wrapper, getReply, act } = await mountSettings()
-    const pending = createDeferred<APIResponse<unknown>>()
-    getReply.mockReturnValueOnce(pending.promise)
-    await act('启动全量同步')
-    const reads = getReply.mock.calls.length
-    wrapper.unmount()
-    pending.resolve({ code: 200, message: '', data: { is_running: true } })
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(9000)
-    expect(getReply).toHaveBeenCalledTimes(reads)
-    expect(console.error).not.toHaveBeenCalled()
-  })
-
-  it('运行中隐藏页面暂停状态轮询，恢复后立即刷新且请求不重叠', async () => {
-    const { getReply, act } = await mountSettings()
-    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    getReply.mockResolvedValue({ code: 200, message: '', data: { is_running: true } })
-    await act('启动全量同步')
-    const reads = getReply.mock.calls.length
-    hidden.mockReturnValue(true)
-    document.dispatchEvent(new Event('visibilitychange'))
-    await vi.advanceTimersByTimeAsync(9000)
-    expect(getReply).toHaveBeenCalledTimes(reads)
-    const pending = createDeferred<APIResponse<unknown>>()
-    getReply.mockReturnValueOnce(pending.promise)
-    hidden.mockReturnValue(false)
-    document.dispatchEvent(new Event('visibilitychange'))
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(getReply).toHaveBeenCalledTimes(reads + 1)
-    pending.resolve({ code: 200, message: '', data: { is_running: false } })
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(getReply).toHaveBeenCalledTimes(reads + 1)
   })
 })

@@ -118,6 +118,8 @@ type SyncStrm struct {
 
 	memSyncCache *MemorySyncCache // 同步缓存
 
+	refreshScopesOnce    sync.Once
+	refreshScopes        []models.EmbyRefreshTarget
 	embyRefreshTargetsMu sync.Mutex
 	embyRefreshTargets   []models.EmbyRefreshTarget
 }
@@ -708,12 +710,26 @@ func (s *SyncStrm) recordEmbyRefreshTarget(syncFile *models.SyncFile) {
 	if s == nil || syncFile == nil {
 		return
 	}
-	target, err := models.ResolveEmbyRefreshTarget(syncFile)
-	if err != nil {
-		s.Sync.Logger.Warnf("解析 Emby 刷新目标失败: sync_file_id=%d err=%v", syncFile.ID, err)
-		target = models.EmbyRefreshTarget{TargetType: models.EmbyRefreshTargetTypeLibrary}
+	s.refreshScopesOnce.Do(func() {
+		var err error
+		s.refreshScopes, err = models.ResolveMediaLibraryRefreshTargets(nil)
+		if err != nil {
+			effectiveSyncLogger().Warnf("读取媒体刷新连接失败：%v", err)
+		}
+	})
+	for _, scope := range s.refreshScopes {
+		target, err := models.ResolveMediaLibraryRefreshTarget(scope.MediaServerType, syncFile)
+		if err != nil {
+			effectiveSyncLogger().Warnf("解析媒体刷新目标失败：%v", err)
+			target = models.EmbyRefreshTarget{TargetType: models.EmbyRefreshTargetTypeLibrary}
+		}
+		if target.ServerID != "" && target.ServerID != scope.ServerID {
+			effectiveSyncLogger().Warn("媒体刷新目标所属服务器已变更，跳过旧目标")
+			continue
+		}
+		target.MediaServerType, target.ServerID = scope.MediaServerType, scope.ServerID
+		s.appendEmbyRefreshTarget(target)
 	}
-	s.appendEmbyRefreshTarget(target)
 }
 
 func (s *SyncStrm) appendEmbyRefreshTarget(target models.EmbyRefreshTarget) {

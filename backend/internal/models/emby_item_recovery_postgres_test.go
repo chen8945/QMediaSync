@@ -19,7 +19,7 @@ func TestEmbyItemRecoveryPostgresHiddenHintSurvivesAdmissionAndIndexCleanup(t *t
 		t.Fatal(err)
 	}
 	if err := conn.Transaction(func(tx *gorm.DB) error {
-		_, err := RegisterEmbyDeletionTx(tx, token.ServerID, []string{"9101"})
+		_, err := RegisterEmbyDeletionTx(tx, token.MediaServerType, token.ServerID, []string{"9101"})
 		return err
 	}); err != nil {
 		t.Fatal(err)

@@ -1,7 +1,6 @@
 package models
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -18,15 +17,15 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
-	embyclientrestgo "qmediasync/internal/emby/client"
 	"qmediasync/internal/helpers"
+	embyclientrestgo "qmediasync/internal/medialibrary/client"
 )
 
 func setupEmbyRefreshTestDB(t *testing.T) {
 	t.Helper()
-	resetEmbyRefreshTimerStateForTest()
+	resetEmbyRefreshTimerState()
 	drainEmbyRefreshCheckChan()
-	t.Cleanup(resetEmbyRefreshTimerStateForTest)
+	t.Cleanup(resetEmbyRefreshTimerState)
 	t.Cleanup(drainEmbyRefreshCheckChan)
 	if helpers.AppLogger == nil {
 		helpers.AppLogger = &helpers.QLogger{
@@ -37,9 +36,17 @@ func setupEmbyRefreshTestDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
+	sqlDB, err := testDb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close() })
 	db.Db = testDb
 	if err := db.Db.AutoMigrate(
 		&EmbyConfig{},
+		&JellyfinConfig{},
+		&EmbyIndexState{},
 		&EmbyMediaItem{},
 		&EmbyMediaSyncFile{},
 		&EmbyLibrarySyncPath{},
@@ -49,11 +56,22 @@ func setupEmbyRefreshTestDB(t *testing.T) {
 	); err != nil {
 		t.Fatalf("迁移测试表失败: %v", err)
 	}
-	GlobalEmbyConfig = &EmbyConfig{
-		EmbyUrl:              "http://emby.local:8096",
-		EmbyApiKey:           "test-key",
-		EnableRefreshLibrary: 1,
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/System/Info/Public") {
+			io.WriteString(w, `{"Id":"refresh-test","ProductName":"Emby Server"}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/System/Ping") {
+			io.WriteString(w, "Emby Server")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	if err := db.Db.Create(&EmbyConfig{Enabled: true, EmbyUrl: server.URL, EmbyApiKey: "test-key", EnableRefreshLibrary: 1}).Error; err != nil {
+		t.Fatal(err)
 	}
+
 	IsStrmSyncTaskActiveFunc = nil
 	embyRefreshDownloadEventBatch.mutex.Lock()
 	embyRefreshDownloadEventBatch.syncPathIds = make(map[uint]struct{})
@@ -238,7 +256,9 @@ func TestRequestEmbyLibraryRefreshMergesSameLibrary(t *testing.T) {
 
 func TestRequestEmbyLibraryRefreshSkipsDisabledConfig(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
-	GlobalEmbyConfig.EnableRefreshLibrary = 0
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("enable_refresh_library", 0).Error; err != nil {
+		t.Fatal(err)
+	}
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-movie", LibraryName: "电影", SyncPathId: 10})
 
 	if err := RequestEmbyLibraryRefreshBySyncPathId(10); err != nil {
@@ -249,45 +269,6 @@ func TestRequestEmbyLibraryRefreshSkipsDisabledConfig(t *testing.T) {
 	db.Db.Model(&EmbyLibraryRefreshTask{}).Count(&total)
 	if total != 0 {
 		t.Fatalf("关闭刷新时不应创建任务，实际 %d", total)
-	}
-}
-
-func setEmbyRefreshTestLogger(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	helpers.AppLogger = &helpers.QLogger{
-		Logger: log.New(&buf, "", 0),
-	}
-	return &buf
-}
-
-func TestCheckPendingEmbyLibraryRefreshTasksLogsDisabledTransitionOnce(t *testing.T) {
-	setupEmbyRefreshTestDB(t)
-	buf := setEmbyRefreshTestLogger(t)
-	resetEmbyRefreshScannerConfigStateForTest()
-
-	GlobalEmbyConfig.EnableRefreshLibrary = 0
-	CheckPendingEmbyLibraryRefreshTasks()
-	CheckPendingEmbyLibraryRefreshTasks()
-	if strings.Contains(buf.String(), "暂停待刷新任务扫描") {
-		t.Fatalf("启动时未启用刷新不应写扫描暂停日志，实际日志：%s", buf.String())
-	}
-
-	GlobalEmbyConfig.EnableRefreshLibrary = 1
-	CheckPendingEmbyLibraryRefreshTasks()
-	GlobalEmbyConfig.EnableRefreshLibrary = 0
-	CheckPendingEmbyLibraryRefreshTasks()
-	CheckPendingEmbyLibraryRefreshTasks()
-	if got := strings.Count(buf.String(), "暂停待刷新任务扫描"); got != 1 {
-		t.Fatalf("启用变为未启用时应只写 1 条暂停日志，实际 %d，日志：%s", got, buf.String())
-	}
-
-	GlobalEmbyConfig.EnableRefreshLibrary = 1
-	CheckPendingEmbyLibraryRefreshTasks()
-	GlobalEmbyConfig.EnableRefreshLibrary = 0
-	CheckPendingEmbyLibraryRefreshTasks()
-	if got := strings.Count(buf.String(), "暂停待刷新任务扫描"); got != 2 {
-		t.Fatalf("重新启用后再次关闭应再写 1 条暂停日志，实际 %d，日志：%s", got, buf.String())
 	}
 }
 
@@ -581,7 +562,7 @@ func TestRefreshItemFailureRepairsIncorrectFallbackBeforeLibraryRefresh(t *testi
 	setupEmbyRefreshTestDB(t)
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-movie", LibraryName: "电影", SyncPathId: 10})
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-tv", LibraryName: "剧集", SyncPathId: 10})
-	db.Db.Create(&EmbyMediaItem{ItemId: "301", ItemIdInt: 301, LibraryId: "lib-tv", Name: "第 1 集", Type: "Episode"})
+	db.Db.Create(&EmbyMediaItem{ServerId: "server-a", ItemId: "301", ItemIdInt: 301, LibraryId: "lib-tv", Name: "第 1 集", Type: "Episode"})
 	requestedLibrary := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/System/Info/Public" {
@@ -601,9 +582,12 @@ func TestRefreshItemFailureRepairsIncorrectFallbackBeforeLibraryRefresh(t *testi
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	task := newPendingEmbyItemRefreshTask(EmbyRefreshTarget{
+		ServerID:            "server-a",
 		TargetType:          EmbyRefreshTargetTypeItem,
 		ItemID:              "301",
 		ItemName:            "第 1 集",
@@ -643,9 +627,11 @@ func TestExecuteEmbyRefreshTaskDoesNotUseFallbackWithoutItemIDs(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
-	client := embyclientrestgo.NewClient(server.URL, GlobalEmbyConfig.EmbyApiKey)
+	client := embyclientrestgo.NewClient(server.URL, "test-key")
 	err := executeEmbyRefreshTask(client, &EmbyLibraryRefreshTask{
 		TargetType:          EmbyLibraryRefreshTargetTypeItem,
 		FallbackLibraryId:   "lib-movie",
@@ -690,6 +676,7 @@ func TestScheduleNextEmbyLibraryRefreshCheckUsesEarliestFuturePendingTask(t *tes
 	setupEmbyRefreshTestDB(t)
 	now := nowUnix()
 	dueTask := newPendingEmbyLibraryRefreshTask("lib-due", "已到期", []uint{10}, now)
+	dueTask.ServerID = "server-a"
 	dueTask.RefreshAfterAt = now - 1
 	firstFutureTask := newPendingEmbyLibraryRefreshTask("lib-first", "最早未来任务", []uint{11}, now)
 	firstFutureTask.RefreshAfterAt = now + 10
@@ -899,10 +886,13 @@ func TestCheckPendingEmbyLibraryRefreshTasksRefreshesOnlyDueLibraries(t *testing
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	now := nowUnix()
 	dueTask := newPendingEmbyLibraryRefreshTask("lib-due", "已到期媒体库", []uint{10}, now-100)
+	dueTask.ServerID = "server-a"
 	dueTask.RefreshAfterAt = now - 1
 	futureTask := newPendingEmbyLibraryRefreshTask("lib-future", "未来媒体库", []uint{11}, now)
 	futureTask.RefreshAfterAt = now + 10
@@ -1105,7 +1095,9 @@ func TestRefreshTaskCancelsAfterDeadline(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	now := nowUnix()
 	task := newPendingEmbyLibraryRefreshTask("lib-movie", "电影", []uint{10}, now-DefaultEmbyRefreshMaxWaitSeconds-1)
@@ -2286,7 +2278,9 @@ func TestRefreshEmbyLibraryTaskDoesNotClaimExtendedDebounceTask(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	GlobalEmbyConfig.EmbyUrl = server.URL
+	if err := db.Db.Model(&EmbyConfig{}).Where("id > 0").Update("emby_url", server.URL).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	now := nowUnix()
 	task := newPendingEmbyLibraryRefreshTask("lib-movie", "电影库", []uint{10}, now-100)

@@ -663,6 +663,60 @@ func TestPreloadObserverPreservesBytesAndDisabledPath(t *testing.T) {
 	})
 }
 
+func TestPreloadServerToggleRejectsOldWorkAndRecovers(t *testing.T) {
+	for _, phase := range []string{"queued", "completed", "late response"} {
+		runEmbyPreloadCase(t, phase, func(t *testing.T) {
+			h := newEmbyPreloadTestHarness(t)
+			h.nodes["20"] = preloadTestItem("20", "Movie")
+			if phase != "late response" {
+				h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+				if phase == "completed" {
+					h.waitResolved()
+					synctest.Wait()
+				}
+				PublishPreloadingEnabled(false)
+				PublishPreloadingEnabled(false)
+			} else {
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				router := gin.New()
+				router.Use(PreloadObserver())
+				router.GET("/Users/10/Items/20", func(c *gin.Context) {
+					close(entered)
+					<-release
+					c.JSON(http.StatusOK, h.nodes["20"])
+				})
+				original := h.router
+				h.router = router
+				go func() { h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil); close(done) }()
+				<-entered
+				PublishPreloadingEnabled(false)
+				PublishPreloadingEnabled(true)
+				close(release)
+				<-done
+				h.router = original
+			}
+			synctest.Sleep(3 * time.Second)
+			if len(h.resolved) != 0 || h.metadata.Load() != 0 {
+				t.Fatal("disabled or stale observation still performed preload")
+			}
+			PublishPreloadingEnabled(false)
+			response := h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"Id":"20"`) {
+				t.Fatal("disabled preload changed the ordinary response")
+			}
+			synctest.Sleep(3 * time.Second)
+			if len(h.resolved) != 0 || h.metadata.Load() != 0 {
+				t.Fatal("disabled server admitted a new candidate")
+			}
+			PublishPreloadingEnabled(true)
+			h.request("GET", "/Users/10/Items/20", "device", "Fixture App", "Control/1", nil)
+			if result := h.waitResolved(); result.path != h.nodes["20"].MediaSources[0].Path {
+				t.Fatalf("reenabled server resolved %q", result.path)
+			}
+		})
+	}
+}
+
 func TestPreloadRepeatedNaturalResponsesDoNotResetMetadataBudget(t *testing.T) {
 	runEmbyPreloadTest(t, func(t *testing.T) {
 		h := newEmbyPreloadTestHarness(t)

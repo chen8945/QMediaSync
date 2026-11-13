@@ -1,4 +1,4 @@
-import { createRouter, type RouteRecordRaw } from 'vue-router'
+import { createRouter, type RouteLocationGeneric, type RouteRecordRaw } from 'vue-router'
 import { createQMediaSyncHashHistory } from './history'
 import { createAsyncRouteComponent } from './asyncRoute'
 import { useAuthStore } from '@/stores/auth'
@@ -15,13 +15,9 @@ const AppStrmSettings = createAsyncRouteComponent(
   'AppStrmSettings',
   () => import('@/views/sync/AppStrmSettings.vue'),
 )
-const AppEmbySettings = createAsyncRouteComponent(
-  'AppEmbySettings',
-  () => import('@/views/settings/AppEmbySettings.vue'),
-)
-const AppFnosProxySettings = createAsyncRouteComponent(
-  'AppFnosProxySettings',
-  () => import('@/views/settings/AppFnosProxySettings.vue'),
+const AppMediaLibrarySettings = createAsyncRouteComponent(
+  'AppMediaLibrarySettings',
+  () => import('@/views/settings/AppMediaLibrarySettings.vue'),
 )
 const AppSyncRecords = createAsyncRouteComponent(
   'AppSyncRecords',
@@ -644,13 +640,13 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/settings/emby',
-    name: 'settings-emby',
-    component: AppEmbySettings,
+    path: '/settings/media-library',
+    name: 'settings-media-library',
+    component: AppMediaLibrarySettings,
     meta: {
-      title: 'Emby',
+      title: '媒体库',
       page: {
-        description: '配置 Emby 服务器、通知链接和同步行为',
+        description: '配置 Emby、Jellyfin 和飞牛影视',
         icon: 'VideoPlay',
         variant: 'settings',
       },
@@ -660,23 +656,16 @@ const routes: RouteRecordRaw[] = [
       showInMenu: true,
     },
   },
-  {
-    path: '/settings/fnos-proxy',
-    name: 'settings-fnos-proxy',
-    component: AppFnosProxySettings,
-    meta: {
-      title: '飞牛影视',
-      page: {
-        description: '设置飞牛影视连接和 STRM 路径映射',
-        icon: 'VideoPlay',
-        variant: 'settings',
-      },
-      requiresAuth: true,
-      parent: 'settings',
-      icon: 'VideoPlay',
-      showInMenu: true,
-    },
-  },
+  ...(['emby', 'jellyfin', 'fnos-proxy'] as const).map((product) => ({
+    path: `/settings/${product}`,
+    name: `settings-${product}`,
+    redirect: (to: RouteLocationGeneric) => ({
+      path: '/settings/media-library',
+      query: to.query,
+      hash: product === 'fnos-proxy' ? '#fnos' : `#${product}`,
+    }),
+    meta: { title: '媒体库', requiresAuth: true, showInMenu: false },
+  })),
   {
     path: '/settings/threads',
     name: 'settings-threads',

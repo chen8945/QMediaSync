@@ -33,7 +33,7 @@ func LoadEmbyDeletionBarriers(ctx context.Context, token EmbyIndexToken, afterID
 		if err := checkEmbyToken(tx, token); err != nil {
 			return err
 		}
-		return tx.Where("server_id = ? AND deleted = ? AND id > ?", token.ServerID, true, afterID).Order("id").Limit(limit).Find(&states).Error
+		return tx.Where("media_server_type = ? AND server_id = ? AND deleted = ? AND id > ?", token.MediaServerType, token.ServerID, true, afterID).Order("id").Limit(limit).Find(&states).Error
 	})
 	return states, err
 }
@@ -46,7 +46,7 @@ func LoadEmbyDeletionBarrierReadIDs(ctx context.Context, token EmbyIndexToken, b
 			return err
 		}
 		appendID := func(id string) {
-			if _, err := parseEmbyItemID(id); err == nil && !slices.Contains(ids, id) {
+			if _, err := parseMediaLibraryItemID(token.MediaServerType, id); err == nil && !slices.Contains(ids, id) {
 				ids = append(ids, id)
 			}
 		}
@@ -55,7 +55,7 @@ func LoadEmbyDeletionBarrierReadIDs(ctx context.Context, token EmbyIndexToken, b
 			if err := tx.First(&current, barrier.ID).Error; err != nil {
 				return err
 			}
-			if current != barrier || !current.Deleted || current.ServerID != token.ServerID || current.SnapshotID > token.EvidenceHighWatermark {
+			if current != barrier || !current.Deleted || current.MediaServerType != token.MediaServerType || current.ServerID != token.ServerID || current.SnapshotID > token.EvidenceHighWatermark {
 				return ErrEmbySnapshotStale
 			}
 			appendID(current.ItemID)
@@ -69,7 +69,7 @@ func LoadEmbyDeletionBarrierReadIDs(ctx context.Context, token EmbyIndexToken, b
 				}
 				return err
 			}
-			if evidence.ServerID != token.ServerID || evidence.ServerConfigKey != token.ServerConfigKey || evidence.ItemID != current.ItemID || evidence.Generation != current.Generation || evidence.IdentityKey != current.IdentityKey {
+			if evidence.MediaServerType != token.MediaServerType || evidence.ServerID != token.ServerID || evidence.ServerConfigKey != token.ServerConfigKey || evidence.ItemID != current.ItemID || evidence.Generation != current.Generation || evidence.IdentityKey != current.IdentityKey {
 				continue
 			}
 			var item EmbyMediaItem
@@ -101,7 +101,7 @@ func AdmitEmbyObservedSurvivors(ctx context.Context, record EmbyWebhookRecord, t
 		if current.Event != "library.new" && current.Event != "library.modified" || !slices.Contains(itemIDs, current.ItemID) {
 			return ErrEmbyIdentityAmbiguous
 		}
-		if current.ServerID != token.ServerID || current.ServerConfigKey != token.ServerConfigKey {
+		if current.MediaServerType != token.MediaServerType || current.ServerID != token.ServerID || current.ServerConfigKey != token.ServerConfigKey {
 			return ErrEmbySnapshotStale
 		}
 		admitted, err = admitEmbyVerifiedSurvivorsTx(tx, token, itemIDs)
@@ -133,7 +133,7 @@ func admitEmbyVerifiedSurvivorsTx(tx *gorm.DB, token EmbyIndexToken, itemIDs []s
 	var states []EmbyItemState
 	seen := map[string]bool{}
 	for _, itemID := range itemIDs {
-		if _, err := parseEmbyItemID(itemID); err != nil {
+		if _, err := parseMediaLibraryItemID(token.MediaServerType, itemID); err != nil {
 			return false, err
 		}
 		if seen[itemID] {
@@ -141,7 +141,7 @@ func admitEmbyVerifiedSurvivorsTx(tx *gorm.DB, token EmbyIndexToken, itemIDs []s
 		}
 		seen[itemID] = true
 		var state EmbyItemState
-		if err := tx.Where("server_id = ? AND item_id = ?", token.ServerID, itemID).First(&state).Error; err != nil {
+		if err := tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", token.MediaServerType, token.ServerID, itemID).First(&state).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				continue
 			}
@@ -167,7 +167,7 @@ func admitEmbyVerifiedSurvivorsTx(tx *gorm.DB, token EmbyIndexToken, itemIDs []s
 			return false, ErrEmbySnapshotStale
 		}
 	}
-	result := tx.Model(&EmbyIndexState{}).Where("id = 1 AND revision = ?", token.Revision).UpdateColumn("revision", gorm.Expr("revision + 1"))
+	result := tx.Model(&EmbyIndexState{}).Where("media_server_type = ? AND revision = ?", token.MediaServerType, token.Revision).UpdateColumn("revision", gorm.Expr("revision + 1"))
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -187,7 +187,7 @@ func SaveEmbyObservedEvidence(ctx context.Context, record EmbyWebhookRecord, tok
 		if current.Event != "library.new" && current.Event != "library.modified" {
 			return ErrEmbyIdentityAmbiguous
 		}
-		if current.ServerID != token.ServerID || current.ServerConfigKey != token.ServerConfigKey {
+		if current.MediaServerType != token.MediaServerType || current.ServerID != token.ServerID || current.ServerConfigKey != token.ServerConfigKey {
 			return ErrEmbySnapshotStale
 		}
 		if err := checkEmbyToken(tx, token); err != nil {
@@ -197,13 +197,13 @@ func SaveEmbyObservedEvidence(ctx context.Context, record EmbyWebhookRecord, tok
 		var indexed []EmbyObservedEvidenceIndex
 		for i := range snapshots {
 			snapshot := snapshots[i]
-			id, err := parseEmbyItemID(snapshot.Item.ItemId)
+			id, err := parseMediaLibraryItemID(token.MediaServerType, snapshot.Item.ItemId)
 			if err != nil {
 				return err
 			}
-			snapshot.Item.ItemIdInt, snapshot.Item.ServerId = id, token.ServerID
+			snapshot.Item.ItemIdInt, snapshot.Item.ServerId, snapshot.Item.MediaServerType = id, token.ServerID, token.MediaServerType
 			var state EmbyItemState
-			err = tx.Where("server_id = ? AND item_id = ?", token.ServerID, snapshot.Item.ItemId).First(&state).Error
+			err = tx.Where("media_server_type = ? AND server_id = ? AND item_id = ?", token.MediaServerType, token.ServerID, snapshot.Item.ItemId).First(&state).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
@@ -282,7 +282,7 @@ func adoptEmbyObservedEvidenceTx(tx *gorm.DB, index *EmbyIndexState, record Emby
 		}
 		// 收件只协调已有索引的身份，不改播放字段或普通同步水位。
 		result := tx.Model(&EmbyMediaItem{}).
-			Where("server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", record.ServerID, evidence.ItemID, state.SnapshotID, state.Generation).
+			Where("media_server_type = ? AND server_id = ? AND item_id = ? AND snapshot_id = ? AND generation = ?", record.MediaServerType, record.ServerID, evidence.ItemID, state.SnapshotID, state.Generation).
 			Updates(map[string]any{"snapshot_id": evidence.ID, "generation": evidence.Generation})
 		if result.Error != nil {
 			return nil, result.Error
@@ -296,17 +296,17 @@ func adoptEmbyObservedEvidenceTx(tx *gorm.DB, index *EmbyIndexState, record Emby
 			if err := json.Unmarshal([]byte(evidence.FilesJSON), &files); err != nil {
 				return nil, err
 			}
-			if err := tx.Where("emby_item_id = ? AND snapshot_id = ?", item.ItemId, state.SnapshotID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
+			if err := tx.Where("media_server_type = ? AND emby_item_id = ? AND snapshot_id = ?", record.MediaServerType, item.ItemId, state.SnapshotID).Delete(&EmbyMediaSyncFile{}).Error; err != nil {
 				return nil, err
 			}
 			for _, file := range files {
-				link := EmbyMediaSyncFile{EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: file.PickCode, SnapshotID: evidence.ID, SourceID: file.SourceID}
+				link := EmbyMediaSyncFile{MediaServerType: record.MediaServerType, EmbyItemId: item.ItemId, SyncFileId: file.SyncFileID, SyncPathId: file.SyncPathID, PickCode: file.PickCode, SnapshotID: evidence.ID, SourceID: file.SourceID}
 				if err := tx.Create(&link).Error; err != nil {
 					return nil, err
 				}
 			}
 		}
-		state.ServerID, state.ItemID = record.ServerID, evidence.ItemID
+		state.ServerID, state.ItemID, state.MediaServerType = record.ServerID, evidence.ItemID, record.MediaServerType
 		state.IdentityKey, state.Generation, state.SnapshotID, state.Revision = evidence.IdentityKey, evidence.Generation, evidence.ID, index.Revision
 		if err := tx.Save(&state).Error; err != nil {
 			return nil, err

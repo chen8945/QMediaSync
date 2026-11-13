@@ -43,16 +43,15 @@ func testEmbySnapshotPipelineDeletionDuringParallelPreparation(t *testing.T, set
 	t.Helper()
 	for _, mode := range []string{"full", "incremental"} {
 		t.Run(mode, func(t *testing.T) {
-			previousDB, previousLogger, previousConfig := db.Db, helpers.AppLogger, models.GlobalEmbyConfig
+			previousDB, previousLogger := db.Db, helpers.AppLogger
 			t.Cleanup(func() {
-				db.Db, helpers.AppLogger, models.GlobalEmbyConfig = previousDB, previousLogger, previousConfig
+				db.Db, helpers.AppLogger = previousDB, previousLogger
 				SetEmbySyncRunning(false)
 			})
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
-			models.GlobalEmbyConfig = nil
 			SetEmbySyncRunning(false)
 			conn := setupDatabase(t)
-			if err := conn.Create(&models.EmbyMediaItem{ItemId: "999", ItemIdInt: 999, LibraryId: "lib", LastSeenSyncRun: "previous"}).Error; err != nil {
+			if err := conn.Create(&models.EmbyMediaItem{MediaServerType: models.MediaServerEmby, ItemId: "999", ItemIdInt: 999, LibraryId: "lib", LastSeenSyncRun: "previous"}).Error; err != nil {
 				t.Fatal(err)
 			}
 			ready, release := make(chan struct{}, 2), make(chan struct{})
@@ -94,7 +93,7 @@ func testEmbySnapshotPipelineDeletionDuringParallelPreparation(t *testing.T, set
 			}))
 			t.Cleanup(server.Close)
 			t.Cleanup(unblock)
-			config := models.EmbyConfig{EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, SyncAllLibraries: 1, LastSavedCursorAt: 100, LastFullSyncAt: 50}
+			config := models.EmbyConfig{MediaServerType: models.MediaServerEmby, EmbyUrl: server.URL, EmbyApiKey: "fixture", SyncEnabled: 1, Enabled: true, SyncAllLibraries: 1, LastSavedCursorAt: 100, LastFullSyncAt: 50}
 			if err := conn.Create(&config).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +119,7 @@ func testEmbySnapshotPipelineDeletionDuringParallelPreparation(t *testing.T, set
 				}
 			}
 			if err := conn.Transaction(func(tx *gorm.DB) error {
-				_, err := models.RegisterEmbyDeletionTx(tx, "server-a", []string{"101"})
+				_, err := models.RegisterEmbyDeletionTx(tx, models.MediaServerEmby, "server-a", []string{"101"})
 				return err
 			}); err != nil {
 				t.Fatal(err)

@@ -44,7 +44,7 @@ func TestGenerationBatchConfigBoundary(t *testing.T) {
 		t.Fatal("完整夹具不应请求网盘")
 		return nil, nil
 	}
-	service.requestEmbyRefreshBySyncFile = func(*models.SyncFile) error { return nil }
+	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 	service.acquireRefreshSubmission = func(context.Context) (func(), error) { return func() {}, nil }
 	service.resolveStrmOwner = func(context.Context, *SyncStrm, *SyncFileCache, *generationDirectory) (bool, error) { return true, nil }
 	var urls []string

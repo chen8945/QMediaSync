@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/db"
@@ -122,6 +122,37 @@ func TestBackupFileRoutesRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestMediaLibraryRoutesRequireAuthentication(t *testing.T) {
+	root := t.TempDir()
+	previousRoot := helpers.RootDir
+	helpers.RootDir = root
+	t.Cleanup(func() { helpers.RootDir = previousRoot })
+	if err := os.MkdirAll(filepath.Join(root, "web_statics"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web_statics", "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	setRouter(router)
+	for _, kind := range []string{"emby", "jellyfin"} {
+		for _, endpoint := range []struct{ method, path string }{
+			{http.MethodGet, "/api/setting/" + kind + "-config"},
+			{http.MethodPost, "/api/setting/" + kind + "-config"},
+			{http.MethodGet, "/api/" + kind + "/libraries"},
+			{http.MethodGet, "/api/" + kind + "/sync/status"},
+			{http.MethodPost, "/api/" + kind + "/sync/start"},
+			{http.MethodPost, "/api/setting/" + kind + "/parse"},
+		} {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(endpoint.method, endpoint.path, nil))
+			if response.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s: status=%d", endpoint.method, endpoint.path, response.Code)
+			}
+		}
+	}
+}
+
 func TestConfigureInitialAdminSetup在Error日志等级仍输出初始化码(t *testing.T) {
 	buf := setupInitialAdminLogTest(t)
 
@@ -202,6 +233,8 @@ func TestInitialDatabaseConfigSelection(t *testing.T) {
 }
 
 func TestInitEnvRejectsLegacyDatabaseState(t *testing.T) {
+	const childEnv = "QMS_TEST_INIT_ENV_REJECTS_LEGACY_DATABASE_STATE"
+	childCase := os.Getenv(childEnv)
 	for _, tc := range []struct {
 		name       string
 		config     string
@@ -228,10 +261,22 @@ func TestInitEnvRejectsLegacyDatabaseState(t *testing.T) {
 			name: "unknown engine", config: "db:\n  engine: unknown\n", wantError: "不支持的数据库引擎",
 		},
 	} {
+		if childCase != "" && childCase != tc.name {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
+			// initEnv 修改全局时区；各用例独立运行，避免与父进程后台定时器竞争。
+			if childCase == "" {
+				command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestInitEnvRejectsLegacyDatabaseState$", "-test.timeout=30s", "-test.v")
+				command.Env = append(os.Environ(), childEnv+"="+tc.name)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("旧数据库状态启动检查失败：%v\n%s", err, output)
+				}
+				return
+			}
 			oldRoot, oldDir, oldConfig := helpers.RootDir, helpers.ConfigDir, helpers.GlobalConfig
 			oldLock, oldDB, oldFirstRun := instanceLock, db.Db, helpers.IsFirstRun
-			oldOutput, oldTimeZone := log.Writer(), time.Local
+			oldOutput := log.Writer()
 			t.Cleanup(func() {
 				if instanceLock != nil && instanceLock != oldLock {
 					instanceLock.Close()
@@ -239,7 +284,6 @@ func TestInitEnvRejectsLegacyDatabaseState(t *testing.T) {
 				helpers.RootDir, helpers.ConfigDir, helpers.GlobalConfig = oldRoot, oldDir, oldConfig
 				instanceLock, db.Db, helpers.IsFirstRun = oldLock, oldDB, oldFirstRun
 				log.SetOutput(oldOutput)
-				time.Local = oldTimeZone
 			})
 			t.Setenv("TRIM_PKGETC", "")
 			t.Setenv("TRIM_DATA_SHARE_PATHS", "")

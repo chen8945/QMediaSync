@@ -11,6 +11,7 @@ describe('taskSourceUtils', () => {
     expect(getDownloadSourceName('strm_sync')).toBe('STRM 同步')
     expect(getDownloadSourceName('local_file')).toBe('本地文件')
     expect(getDownloadSourceName('emby_media')).toBe('Emby 媒体信息提取')
+    expect(getDownloadSourceName('jellyfin_media')).toBe('Jellyfin 媒体信息提取')
   })
 
   it('formats upload source storage values', () => {
@@ -30,6 +31,7 @@ describe('taskSourceUtils', () => {
     expect(getTaskSourceTypeName('openlist')).toBe('OpenList')
     expect(getTaskSourceTypeName('local')).toBe('本地文件')
     expect(getTaskSourceTypeName('emby_media')).toBe('Emby 媒体信息提取')
+    expect(getTaskSourceTypeName('jellyfin_media')).toBe('Jellyfin 媒体信息提取')
   })
 
   it('keeps unknown task source values visible', () => {
