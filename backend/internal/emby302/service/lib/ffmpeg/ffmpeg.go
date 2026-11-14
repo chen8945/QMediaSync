@@ -52,10 +52,13 @@ func InspectMusic(path string) (Music, error) {
 		return Music{}, errors.New(string(outputBytes[bytes.Index(outputBytes, []byte(OpenError)):]))
 	}
 
+	return parseMusicMetadata(string(outputBytes)), nil
+}
+
+func parseMusicMetadata(output string) Music {
 	m := Music{}
 	wg := sync.WaitGroup{}
-	output := string(outputBytes)
-	wg.Add(11)
+	wg.Add(10)
 
 	go func() {
 		defer wg.Done()
@@ -83,11 +86,7 @@ func InspectMusic(path string) (Music, error) {
 		if dateReg.MatchString(output) {
 			m.Date = dateReg.FindStringSubmatch(output)[1]
 		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		if tdorReg.MatchString(output) {
+		if m.Date == "" && tdorReg.MatchString(output) {
 			m.Date = tdorReg.FindStringSubmatch(output)[1]
 		}
 	}()
@@ -125,7 +124,10 @@ func InspectMusic(path string) (Music, error) {
 	}()
 
 	wg.Wait()
-	return m, nil
+	if albumArtistReg.MatchString(output) {
+		m.AlbumArtist = albumArtistReg.FindStringSubmatch(output)[1]
+	}
+	return m
 }
 
 // ExtractMusicCover 解析音乐海报

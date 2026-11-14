@@ -9,20 +9,22 @@ import (
 )
 
 var (
-	durationReg   = regexp.MustCompile(`Duration: (\d+):(\d+):(\d+\.\d+)`)
-	albumReg      = regexp.MustCompile(`(?mi)album\s*:\s*(.+?)\s*$`)
-	artistReg     = regexp.MustCompile(`(?mi)artist\s*:\s*(.+?)\s*$`)
-	commentReg    = regexp.MustCompile(`(?mi)comment\s*:\s*(.+?)\s*$`)
-	dateReg       = regexp.MustCompile(`(?mi)date\s*:\s*(.+?)\s*$`)
-	titleReg      = regexp.MustCompile(`(?mi)title\s*:\s*(.+?)\s*$`)
-	titleTiReg    = regexp.MustCompile(`(?mi):\s*\[ti:(.*?)\]\s*$`)
-	trackReg      = regexp.MustCompile(`(?mi)track\s*:\s*(.+?)\s*$`)
-	trackTotalReg = regexp.MustCompile(`(?mi)tracktotal\s*:\s*(.+?)\s*$`)
-	discReg       = regexp.MustCompile(`(?mi)disc\s*:\s*(.+?)\s*$`)
-	discTotalReg  = regexp.MustCompile(`(?mi)disctotal\s*:\s*(.+?)\s*$`)
-	genreReg      = regexp.MustCompile(`(?mi)genre\s*:\s*(.+?)\s*$`)
-	tdorReg       = regexp.MustCompile(`(?mi)tdor\s*:\s*(.+?)\s*$`)
-	lyricsReg     = regexp.MustCompile(`(?mi):\s*(\[.*?\].*?)\s*$`)
+	durationReg    = regexp.MustCompile(`Duration: (\d+):(\d+):(\d+\.\d+)`)
+	streamReg      = regexp.MustCompile(`(?m)^[ \t]*Stream #[^\r\n]*`)
+	albumReg       = regexp.MustCompile(`(?mi)^[ \t]*album[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	artistReg      = regexp.MustCompile(`(?mi)^[ \t]*artist[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	albumArtistReg = regexp.MustCompile(`(?mi)^[ \t]*album_artist[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	commentReg     = regexp.MustCompile(`(?mi)^[ \t]*comment[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	dateReg        = regexp.MustCompile(`(?mi)^[ \t]*date[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	titleReg       = regexp.MustCompile(`(?mi)^[ \t]*title[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	titleTiReg     = regexp.MustCompile(`(?mi):\s*\[ti:(.*?)\]\s*$`)
+	trackReg       = regexp.MustCompile(`(?mi)^[ \t]*track[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	trackTotalReg  = regexp.MustCompile(`(?mi)^[ \t]*tracktotal[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	discReg        = regexp.MustCompile(`(?mi)^[ \t]*disc[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	discTotalReg   = regexp.MustCompile(`(?mi)^[ \t]*disctotal[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	genreReg       = regexp.MustCompile(`(?mi)^[ \t]*genre[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	tdorReg        = regexp.MustCompile(`(?mi)^[ \t]*tdor[ \t]*:[ \t]*([^\r\n]*?)[ \t]*\r?$`)
+	lyricsReg      = regexp.MustCompile(`(?mi):\s*(\[.*?\].*?)\s*$`)
 )
 
 // resolveDuration 解析 FFmpeg 的 Duration 参数
@@ -70,7 +72,7 @@ func resolveTrack(raw string) string {
 	}
 
 	track := strings.TrimSpace(trackReg.FindStringSubmatch(raw)[1])
-	if strings.Contains(track, "/") {
+	if track == "" || strings.Contains(track, "/") {
 		return track
 	}
 
@@ -79,6 +81,9 @@ func resolveTrack(raw string) string {
 		return track
 	}
 	trackTotal := strings.TrimSpace(trackTotalReg.FindStringSubmatch(raw)[1])
+	if trackTotal == "" {
+		return track
+	}
 	return fmt.Sprintf("%s/%s", track, trackTotal)
 }
 
@@ -89,7 +94,7 @@ func resolveDisc(raw string) string {
 	}
 
 	disc := strings.TrimSpace(discReg.FindStringSubmatch(raw)[1])
-	if strings.Contains(disc, "/") {
+	if disc == "" || strings.Contains(disc, "/") {
 		return disc
 	}
 
@@ -98,30 +103,39 @@ func resolveDisc(raw string) string {
 		return disc
 	}
 	discTotal := strings.TrimSpace(discTotalReg.FindStringSubmatch(raw)[1])
+	if discTotal == "" {
+		return disc
+	}
 	return fmt.Sprintf("%s/%s", disc, discTotal)
 }
 
 // resolveTitle 解析 FFmpeg 的 title 参数
 func resolveTitle(raw string) string {
-	// 移除 Duration 字段之后的信息, 防止匹配到干扰字段
-	if durationReg.MatchString(raw) {
-		loc := durationReg.FindStringIndex(raw)
-		if len(loc) > 0 {
-			raw = raw[:loc[1]]
+	// 保留容器和音频流元数据，避免封面或字幕的标题、歌词参与回退。
+	metadata := []string{raw}
+	streams := streamReg.FindAllStringIndex(raw, -1)
+	if len(streams) > 0 {
+		metadata[0] = raw[:streams[0][0]]
+		for i, loc := range streams {
+			if !strings.Contains(raw[loc[0]:loc[1]], ": Audio:") {
+				continue
+			}
+			end := len(raw)
+			if i+1 < len(streams) {
+				end = streams[i+1][0]
+			}
+			metadata = append(metadata, raw[loc[1]:end])
 		}
 	}
 
-	// 优先匹配 title
-	if titleReg.MatchString(raw) {
-		res := strings.TrimSpace(titleReg.FindStringSubmatch(raw)[1])
-		if res != "" {
-			return res
+	for _, reg := range []*regexp.Regexp{titleReg, titleTiReg} {
+		for _, section := range metadata {
+			for _, match := range reg.FindAllStringSubmatch(section, -1) {
+				if title := strings.TrimSpace(match[1]); title != "" {
+					return title
+				}
+			}
 		}
-	}
-
-	// title 为空时, 从歌词中的 ti 属性提取
-	if titleTiReg.MatchString(raw) {
-		return strings.TrimSpace(titleTiReg.FindStringSubmatch(raw)[1])
 	}
 
 	return ""

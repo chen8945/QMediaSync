@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/emby302/model"
@@ -188,6 +189,12 @@ func FetchContext(ctx context.Context, client *http.Client, uri, method string, 
 	header.Set("Content-Type", "application/json;charset=utf-8")
 	header.Set("Authorization", token)
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	holder := https.Request(method, host+uri).Context(ctx).Header(header).Body(https.MapBody(body))
 	if client != nil {
 		holder.Client(client)
@@ -197,7 +204,7 @@ func FetchContext(ctx context.Context, client *http.Client, uri, method string, 
 	}
 	resp, err := holder.Do()
 	if err != nil {
-		return fmt.Errorf("Fetch 请求失败: %v", err)
+		return fmt.Errorf("Fetch 请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -207,7 +214,7 @@ func FetchContext(ctx context.Context, client *http.Client, uri, method string, 
 	// 2 检测响应状态是否正常
 	resBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("Fetch 请求读取响应失败: %v", err)
+		return fmt.Errorf("Fetch 请求读取响应失败: %w", err)
 	}
 
 	var res RemoteCommonResult
