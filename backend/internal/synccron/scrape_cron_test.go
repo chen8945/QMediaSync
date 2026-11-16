@@ -256,6 +256,7 @@ func TestScrapeGlobalCronOnlyAdmitsEnabledPathsWithoutCustomExpression(t *testin
 		db.Db, GlobalNewSyncQueueManager, helpers.AppLogger = oldDB, oldManager, oldLogger
 		models.PauseSyncQueuesFunc, models.ResumeSyncQueuesFunc, models.IsStrmSyncTaskActiveFunc = oldPause, oldResume, oldActive
 	})
+	cleanupTestSyncQueue(t, manager.getQueue(models.SourceTypeLocal))
 	paths := []*models.ScrapePath{
 		{SourceType: models.SourceTypeLocal, EnableCron: true},
 		{SourceType: models.SourceTypeLocal, EnableCron: true, CronExpression: "0 0 1 1 *"},

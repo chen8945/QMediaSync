@@ -11,11 +11,26 @@ import (
 	"qmediasync/internal/models"
 )
 
+func cleanupTestSyncQueue(t *testing.T, queue *NewSyncQueuePerType) {
+	t.Helper()
+	t.Cleanup(func() {
+		queue.Stop()
+		deadline := time.Now().Add(5 * time.Second)
+		for queue.runningFlag.Load() != 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("队列处理器未在清理后退出")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+}
+
 func TestNewSyncQueuePerType(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
 	if queue == nil {
 		t.Fatal("Failed to create queue")
 	}
+	cleanupTestSyncQueue(t, queue)
 	if queue.sourceType != models.SourceType115 {
 		t.Errorf("Expected source type %s, got %s", models.SourceType115, queue.sourceType)
 	}
@@ -37,7 +52,7 @@ func TestAddTask(t *testing.T) {
 			t.Run(test.name+"/"+state, func(t *testing.T) {
 				queue := NewQueuePerType(models.SourceType115)
 				queue.Pause()
-				t.Cleanup(queue.Stop)
+				cleanupTestSyncQueue(t, queue)
 				task := test.task
 				if state == "waiting" {
 					if err := queue.AddTask(&task); err != nil {
@@ -91,7 +106,7 @@ func TestAddTask(t *testing.T) {
 func TestAddTaskQueueFullIsNotDuplicate(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
 	queue.Pause()
-	t.Cleanup(queue.Stop)
+	cleanupTestSyncQueue(t, queue)
 	for id := uint(1); id <= 50; id++ {
 		if err := queue.AddTask(&NewSyncTask{ID: id, TaskType: SyncTaskTypeStrm}); err != nil {
 			t.Fatal(err)
@@ -108,6 +123,7 @@ func TestAddTaskQueueFullIsNotDuplicate(t *testing.T) {
 
 func TestTaskStatus(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
+	cleanupTestSyncQueue(t, queue)
 
 	status := queue.CheckTaskStatus(1, SyncTaskTypeStrm)
 	if status != TaskStatusNone {
@@ -132,6 +148,7 @@ func TestTaskStatus(t *testing.T) {
 
 func TestAddStrmTaskReportsWaitingStatus(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
+	cleanupTestSyncQueue(t, queue)
 	task := &NewSyncTask{ID: 7, TaskType: SyncTaskTypeStrm}
 
 	if err := queue.AddTask(task); err != nil {
@@ -204,6 +221,7 @@ func TestStrmQueuedBroadcasterUsesNonBlockingBroadcast(t *testing.T) {
 
 func TestCancelTask(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
+	cleanupTestSyncQueue(t, queue)
 
 	task := &NewSyncTask{
 		ID:       1,
@@ -233,6 +251,7 @@ func TestCancelTask(t *testing.T) {
 
 func TestPauseResume(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
+	cleanupTestSyncQueue(t, queue)
 
 	task := &NewSyncTask{
 		ID:       1,
@@ -293,7 +312,7 @@ func TestNewSyncQueueManager(t *testing.T) {
 	}
 
 	queue := manager.getQueue(models.SourceType115)
-	t.Cleanup(queue.Stop)
+	cleanupTestSyncQueue(t, queue)
 	// 此处只验证入队状态，暂停领取以免后台协程抢先执行任务。
 	queue.Pause()
 	err := queue.AddTask(task)
@@ -308,6 +327,17 @@ func TestNewSyncQueueManager(t *testing.T) {
 }
 
 func TestPauseResumeAll(t *testing.T) {
+	previousManager := GlobalNewSyncQueueManager
+	previousPause := models.PauseSyncQueuesFunc
+	previousResume := models.ResumeSyncQueuesFunc
+	previousIsActive := models.IsStrmSyncTaskActiveFunc
+	GlobalNewSyncQueueManager = nil
+	t.Cleanup(func() {
+		GlobalNewSyncQueueManager = previousManager
+		models.PauseSyncQueuesFunc = previousPause
+		models.ResumeSyncQueuesFunc = previousResume
+		models.IsStrmSyncTaskActiveFunc = previousIsActive
+	})
 	manager := InitNewSyncQueueManager()
 
 	task1 := &NewSyncTask{
@@ -321,6 +351,8 @@ func TestPauseResumeAll(t *testing.T) {
 
 	queue115 := manager.getQueue(models.SourceType115)
 	queueLocal := manager.getQueue(models.SourceTypeLocal)
+	cleanupTestSyncQueue(t, queue115)
+	cleanupTestSyncQueue(t, queueLocal)
 
 	queue115.AddTask(task1)
 	queueLocal.AddTask(task2)
@@ -423,6 +455,7 @@ func TestNewSyncTaskKeyUsesMachineTaskTypeValue(t *testing.T) {
 
 func TestQueueStatusReturnsMachineTaskTypeValue(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
+	cleanupTestSyncQueue(t, queue)
 	queue.currentTask = &NewSyncTask{ID: 8, TaskType: SyncTaskTypeStrm}
 
 	status := queue.GetStatus()
