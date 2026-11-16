@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,69 @@ func TestGetOpenListFileURLPropagatesCancellation(t *testing.T) {
 			}
 			if response.Code == http.StatusFound || response.Header().Get("Location") != "" {
 				t.Fatal("取消后仍返回播放直链")
+			}
+			wantStatus, wantCode := http.StatusServiceUnavailable, "REQUEST_CANCELED"
+			if deadline {
+				wantStatus, wantCode = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+			}
+			result := decodeAPIMessage(t, response.Body)
+			if response.Code != wantStatus || result.ErrorCode != wantCode {
+				t.Fatalf("取链取消或超时分类错误：%d %+v", response.Code, result)
+			}
+		})
+	}
+}
+
+func TestOpenListCredentialRefusalDoesNotExpireQMSSession(t *testing.T) {
+	account := setupOpenListFileOperationTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"code":401,"message":"upstream credential-secret invalid"}`)
+	})
+	previousLogger := helpers.AppLogger
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
+	router := gin.New()
+	router.GET("/openlist/url", GetOpenListFileUrl)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/openlist/url?account_id="+strconv.Itoa(int(account.ID))+"&path=/movie.mp4", nil))
+	response := decodeAPIMessage(t, w.Body)
+	if w.Code != http.StatusBadRequest || response.Status != w.Code || response.ErrorCode != "UPSTREAM_CREDENTIALS_INVALID" ||
+		response.Instance == "" || response.Message == "" || strings.Contains(response.Message, "credential-secret") {
+		t.Fatalf("OpenList 凭据拒绝被误分类或泄露上游消息: HTTP=%d response=%+v", w.Code, response)
+	}
+}
+
+func TestCloudBrowseAndManualSyncClassifyUpstreamCredentials(t *testing.T) {
+	for _, test := range []struct {
+		name, method string
+		handler      gin.HandlerFunc
+	}{
+		{"directories", http.MethodGet, GetPathList},
+		{"files", http.MethodGet, GetNetFileList},
+		{"manual sync", http.MethodPost, ManualSync},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			account := setupOpenListFileOperationTest(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"code":401,"message":"private upstream refusal"}`)
+			})
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			router := gin.New()
+			router.Handle(test.method, "/operation", test.handler)
+			query := "/operation?account_id=" + strconv.Itoa(int(account.ID)) + "&source_type=openlist&parent_id=/&path_id=/movie.mp4"
+			body := `{"account_id":` + strconv.Itoa(int(account.ID)) + `,"path_id":"/movie.mp4","target_path":"/tmp/fixture-target"}`
+			request := httptest.NewRequest(test.method, query, strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			result := decodeAPIMessage(t, response.Body)
+			if response.Code != http.StatusBadRequest || result.Status != response.Code || result.ErrorCode != "UPSTREAM_CREDENTIALS_INVALID" || result.Data != nil {
+				t.Fatalf("网盘凭据拒绝被误分类：%d %+v", response.Code, result)
+			}
+			if strings.Contains(response.Body.String(), "private upstream refusal") || response.Header().Get("WWW-Authenticate") != "" {
+				t.Fatal("上游拒绝不得泄露原文或声明 QMediaSync 认证失效")
 			}
 		})
 	}

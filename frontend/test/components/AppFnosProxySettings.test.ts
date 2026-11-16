@@ -28,23 +28,26 @@ const button = (wrapper: VueWrapper, label: string) =>
 
 const mountSettings = async (initial = settings(), failLoad = false) => {
   const read = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: initial,
   })
   if (failLoad) read.mockRejectedValueOnce(new AxiosError('unavailable', 'ERR_NETWORK'))
   const write = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: initial,
   })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'post' ? await write() : await read(),
-  }))
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'post' ? await write() : await read()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -77,6 +80,27 @@ afterEach(() => {
 })
 
 describe('飞牛影视反代设置', () => {
+  it('保存消息与应用警告到达原反馈，保留已保存的配置', async () => {
+    const data = settings()
+    const { wrapper, write, save } = await mountSettings(data)
+    const message = '服务器确认已保存飞牛测试配置'
+    write.mockResolvedValueOnce({ status: 200, data, message })
+    await save()
+    expect(wrapper.get('.settings-feedback').text()).toContain(message)
+    const warning = '测试代理应用需要重试'
+    write.mockResolvedValueOnce({ status: 200, data, message, warnings: [warning] })
+    await save()
+    const feedback = wrapper.get('.settings-feedback')
+    expect(feedback.text()).toContain(message)
+    expect(feedback.text()).toContain(warning)
+    expect(
+      wrapper
+        .findAllComponents({ name: 'ElAlert' })
+        .find((alert) => alert.text().includes(warning))!
+        .props('type'),
+    ).toBe('warning')
+  })
+
   it('预加载仅引导到 STRM 设置，不增加独立开关、请求或保存字段', async () => {
     const { wrapper, router, adapter, write } = await mountSettings()
     expect(wrapper.text()).toContain('想减少播放等待？可前往 STRM 设置开启预加载')
@@ -120,7 +144,7 @@ describe('飞牛影视反代设置', () => {
     saved.runtime = { ...saved.runtime, running: true, listen_port: 9005 }
     const { wrapper, write, adapter, read, save } = await mountSettings(current)
     const scroll = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
-    write.mockResolvedValueOnce({ code: 200, message: '', data: saved })
+    write.mockResolvedValueOnce({ status: 200, message: '', data: saved })
     await wrapper.findAll('.el-switch')[0]!.trigger('click')
     await wrapper.get('input[aria-label="飞牛影视地址"]').setValue('http://fnos:8005')
     await save()
@@ -192,7 +216,7 @@ describe('飞牛影视反代设置', () => {
       last_error: 'HTTPS 证书无效',
     }
     const { wrapper, write, read, save } = await mountSettings()
-    write.mockResolvedValueOnce({ code: 200, message: '已保存但未能完全应用', data: current })
+    write.mockResolvedValueOnce({ status: 200, message: '已保存但未能完全应用', data: current })
     await wrapper.find('.el-switch').trigger('click')
     await wrapper.get('input[aria-label="飞牛影视地址"]').setValue('http://fnos:8005')
     await save()
@@ -204,7 +228,8 @@ describe('飞牛影视反代设置', () => {
         .props('type'),
     ).toBe('warning')
     expect(feedback.get('.el-alert__title').text()).toBe('设置未完全应用')
-    expect(feedback.get('.el-alert__description').text()).toBe(
+    expect(feedback.get('.el-alert__description').text()).toContain('已保存但未能完全应用')
+    expect(feedback.get('.el-alert__description').text()).toContain(
       '设置已保存，请检查运行状态后重新保存',
     )
     expect(wrapper.get('.fnos-save-actions').element.nextElementSibling).toBe(feedback.element)
@@ -222,7 +247,7 @@ describe('飞牛影视反代设置', () => {
       restart_required: false,
       last_error: '',
     }
-    write.mockResolvedValueOnce({ code: 200, message: '', data: recovered })
+    write.mockResolvedValueOnce({ status: 200, message: '', data: recovered })
     await save()
     expect(wrapper.get('.runtime-status').text()).toBe('运行中')
     expect(wrapper.find('.runtime-error').exists()).toBe(false)
@@ -258,7 +283,13 @@ describe('飞牛影视反代设置', () => {
     const current = settings()
     current.config.path_mappings = [{ fnos_root: '/vol1/strm', local_root: '/media/strm' }]
     const { wrapper, write, read, save } = await mountSettings(current)
-    write.mockResolvedValueOnce({ code: 500, message: '设置暂时无法保存', data: null })
+    write.mockResolvedValueOnce({
+      status: 500,
+      message: '设置暂时无法保存',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await wrapper.get('input[aria-label="飞牛影视地址"]').setValue('http://new-fnos:8005')
     await save()
     expect(wrapper.text()).toContain('设置暂时无法保存')
@@ -294,8 +325,14 @@ describe('飞牛影视反代设置', () => {
       if (title === '设置未完全应用') result.runtime.last_error = 'HTTPS 证书无效'
       write.mockResolvedValueOnce(
         title === '保存失败'
-          ? { code: 500, message: '设置暂时无法保存', data: null }
-          : { code: 200, message: '', data: result },
+          ? {
+              status: 500,
+              message: '设置暂时无法保存',
+              data: null,
+              error_code: 'TEST_REQUEST_FAILED',
+              instance: '/request-errors/ComponentTestFailure0001',
+            }
+          : { status: 200, message: '', data: result },
       )
       vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
         this: HTMLElement,
@@ -324,7 +361,7 @@ describe('飞牛影视反代设置', () => {
     expect(wrapper.get('input[aria-label="飞牛影视地址"]').attributes('disabled')).toBeDefined()
     await save()
     expect(write).toHaveBeenCalledTimes(1)
-    pending.resolve({ code: 200, message: '', data: settings() })
+    pending.resolve({ status: 200, message: '', data: settings() })
     await flushPromises()
     expect(button(wrapper, '添加路径映射').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('input[aria-label="飞牛影视地址"]').attributes('disabled')).toBeUndefined()

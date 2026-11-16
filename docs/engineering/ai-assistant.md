@@ -49,7 +49,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 
 | 改动范围 | 必读和必更新的权威文档 |
 | --- | --- |
-| 请求 DTO、参数校验、控制器响应、API 兼容性 | [请求校验约定](request-validation.md)；同步目录聚合写入同时查看 [同步目录聚合 API](../reference/sync-path-api.md)，STRM Webhook 同时查看 [STRM Webhook](../reference/strm-webhook.md) |
+| 请求 DTO、参数校验、控制器响应、API 兼容性 | [请求校验约定](request-validation.md) 和 [API 响应与请求错误](../reference/api-response.md)；同步目录聚合写入同时查看 [同步目录聚合 API](../reference/sync-path-api.md)，STRM Webhook 同时查看 [STRM Webhook](../reference/strm-webhook.md) |
 | 配置字段、第三方密钥、部署参数 | [配置](../operations/configuration.md) 和 [部署与持久化](../operations/deployment.md)；认证或 Cookie 同时查看 [认证会话](../architecture/authentication-sessions.md) |
 | 数据模型、迁移、时间字段、SQLite / PostgreSQL 差异 | [数据库 schema 与迁移](../reference/database-schema.md) 和 [数据库运维](../operations/database.md) |
 | SSE、快照、事件回放、日志流或同步任务流 | [实时事件](../architecture/realtime-events.md) 和 [反向代理](../operations/reverse-proxy.md) |
@@ -79,13 +79,13 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 - 导出类型和函数使用 `PascalCase`，未导出标识符使用 `camelCase`。常见 initialism 使用 `ID`、`URL`、`API`、`HTTP`、`JSON`、`SQL`、`OAuth` 等 Go 约定形式。
 - 接口按行为或职责命名，例如 `Reader`、`Writer`、`EventHandler`、`Scraper`、`Driver`；不强制使用 `Impl` 后缀。
 - 布尔字段优先使用自然状态名，例如 `IsRunning`、`HasRemoteSeasonPath`、`CronEnabled`。存量 `EnableXxx` 命名不做无关批量修改。
-- 所有 Go 标识符使用英文，中文只出现在注释和字符串字面量中。注释默认使用中文；导出函数使用中文文档注释，Swagger 使用英文标签和中文描述。详细边界见 [注释规范](comment-guidelines.md)。
+- 所有 Go 标识符使用英文，中文只出现在注释和字符串字面量中。注释默认使用中文；导出函数使用中文文档注释。详细边界见 [注释规范](comment-guidelines.md)。
 
 ### 错误、响应和请求绑定
 
 - `panic` 仅用于不可恢复的启动错误。常规数据库和业务错误按所在模块既有的返回和日志模式处理。
 - 生产与测试代码统一使用 `errors.AsType[T]` 进行错误类型匹配；SQLite、OSS 等错误码能力接口显式嵌入 `error`。迁移时检查实际错误类型及自定义 `As(any)` 适配是否支持目标类型，保留错误链匹配顺序、短路判断、错误码和重试语义。
-- 控制器修改必须保持所在控制器的响应风格。多数业务接口使用 `APIResponse[T]` 的 `Code` 表达业务状态；认证、参数、文件和部分历史接口可能直接返回 HTTP `400`、`401`、`404` 或 `409`。
+- 自有普通 JSON API 通过 `internal/httpapi` 输出统一 `APIResponse[T]`，正文 `status` 与真实 HTTP 状态一致；请求错误、任务结果和提交后应用警告遵循 [公共响应契约](../reference/api-response.md)。SSE、下载、Range/HEAD、重定向和第三方协议保留原生出口。
 - 查询参数使用 `c.ShouldBindQuery(&req)` 和 `form` 标签；JSON Body 使用 `c.ShouldBindJSON(&req)` 和 `json` 标签；路径参数使用 `c.Param("id")`。
 
 ### 数据模型
@@ -121,7 +121,8 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 
 - [文档治理](documentation-governance.md)：文档职责、命名、契约和迁移规则。
 - [前端开发约定](frontend-development.md)：HTTP 客户端、状态刷新、路由、响应式布局和交互反馈。
-- [注释规范](comment-guidelines.md)：注释、Swagger 和验证代码注释边界。
+- [注释规范](comment-guidelines.md)：源码和验证代码的注释边界。
+- [API 响应与请求错误](../reference/api-response.md)：公共包络、状态、错误与诊断关联。
 - [验证说明](verification.md)：改动类型到最小验证的映射。
 - [请求校验约定](request-validation.md)：Request DTO、校验和控制器边界。
 - [实时事件](../architecture/realtime-events.md)：SSE、快照和回放边界。

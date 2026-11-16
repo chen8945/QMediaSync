@@ -7,8 +7,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { createDeferred } from '../support/deferred'
 
 const searchResponse = (appId: string, total = 1) => ({
+  status: 200,
   data: {
-    code: 200,
+    status: 200,
     data: {
       items: [{ app_id: appId, app_name: `应用${appId}`, display_name: `应用${appId}` }],
       total,
@@ -19,8 +20,9 @@ const searchResponse = (appId: string, total = 1) => ({
 describe('useV115AppIdSearch', () => {
   it('不会把可调用的 axios 实例当作 getter 执行', async () => {
     const get = vi.fn().mockResolvedValue({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: {
           items: [{ app_id: '1001', app_name: '应用1', display_name: '应用1' }],
           total: 1,
@@ -48,8 +50,9 @@ describe('useV115AppIdSearch', () => {
     const get = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             items: [{ app_id: '1001', app_name: '应用1', display_name: '应用1' }],
             total: 2,
@@ -57,8 +60,9 @@ describe('useV115AppIdSearch', () => {
         },
       })
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             items: [{ app_id: '1002', app_name: '应用2', display_name: '应用2' }],
             total: 2,
@@ -94,7 +98,13 @@ describe('useV115AppIdSearch', () => {
       {
         response: {
           status: 403,
-          data: { code: 500, error_code: 'REQUEST_ORIGIN_INVALID', message: 'private-token' },
+          data: {
+            data: null,
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 403,
+            error_code: 'REQUEST_ORIGIN_INVALID',
+            message: 'private-token',
+          },
         },
       },
       '访问地址校验失败',
@@ -123,7 +133,16 @@ describe('useV115AppIdSearch', () => {
     const get = vi
       .fn()
       .mockResolvedValueOnce(searchResponse('old-1', 2))
-      .mockResolvedValueOnce({ data: { code: 500, data: null } })
+      .mockResolvedValueOnce({
+        status: 400,
+        data: {
+          message: '测试搜索拒绝',
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+          status: 400,
+          data: null,
+        },
+      })
       .mockResolvedValueOnce(searchResponse('new-1', 2))
       .mockResolvedValueOnce(searchResponse('new-2', 2))
     http.get = get
@@ -137,7 +156,7 @@ describe('useV115AppIdSearch', () => {
     expect(get).toHaveBeenCalledTimes(2)
     expect(search.items.value).toEqual([])
     expect(search.hasMore.value).toBe(false)
-    expect(search.errorMessage.value).toBe('搜索 APP ID 失败')
+    expect(search.errorMessage.value).toBe('测试搜索拒绝')
 
     await search.search()
     expect(get).toHaveBeenLastCalledWith(`${SERVER_URL}/115/appids`, {
@@ -172,7 +191,14 @@ describe('useV115AppIdSearch', () => {
       .fn()
       .mockResolvedValueOnce(searchResponse('1001', 2))
       .mockResolvedValueOnce({
-        data: { code: 500, message: 'APP ID 服务暂不可用', data: null },
+        status: 400,
+        data: {
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+          status: 400,
+          message: 'APP ID 服务暂不可用',
+          data: null,
+        },
       })
       .mockResolvedValueOnce(searchResponse('1002', 2))
     http.get = get
@@ -194,7 +220,9 @@ describe('useV115AppIdSearch', () => {
   })
 
   it('取消和已处理认证错误都不会显示搜索错误', async () => {
-    const handled = { response: { status: 401, data: { code: 500, message: 'private-token' } } }
+    const handled = {
+      response: { status: 401, data: { data: null, status: 401, message: 'private-token' } },
+    }
     markAuthInvalidationHandled(handled)
     const http = axios.create()
     http.get = vi
@@ -227,7 +255,7 @@ describe('useV115AppIdSearch', () => {
     oldRequest.resolve(
       result === 'success'
         ? searchResponse('old')
-        : { data: { code: 500, message: 'private-token', data: null } },
+        : { status: 400, data: { status: 400, message: 'private-token', data: null } },
     )
     await oldSearch
     expect(search.items.value.map((item) => item.app_id)).toEqual(['new'])

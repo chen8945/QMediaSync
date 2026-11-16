@@ -23,6 +23,7 @@ import (
 	"qmediasync/internal/emby302"
 	"qmediasync/internal/emby302/config"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -313,8 +314,8 @@ func TestRestoreWaitsForCommittedSettingsAfterBrowserCancellation(t *testing.T) 
 		t.Fatalf("accepted local application lost its SQL/cancellation permit: %v", err)
 	}
 	response := <-saved
-	var result controllers.APIResponse[json.RawMessage]
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Code != controllers.Success {
+	var result httpapi.APIResponse[json.RawMessage]
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Status != http.StatusOK {
 		t.Fatalf("committed save failed: %s (%v)", response.Body, err)
 	}
 	if err := <-restored; err != nil {

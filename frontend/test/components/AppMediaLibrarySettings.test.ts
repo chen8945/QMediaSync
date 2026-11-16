@@ -13,7 +13,7 @@ import { copyText } from '@/utils/clipboard'
 
 vi.mock('@/utils/clipboard', () => ({ copyText: vi.fn() }))
 
-const setup = async (hash = '#emby', existing = true) => {
+const setup = async (hash = '#emby', existing = true, initialLibraries?: APIResponse<unknown>) => {
   const configs: Record<string, Record<string, unknown>> = {
     emby: {
       enabled: existing,
@@ -21,6 +21,7 @@ const setup = async (hash = '#emby', existing = true) => {
       emby_api_key: existing ? 'emby-key' : '',
       enable_media_notification: existing ? 1 : 0,
       sync_enabled: 1,
+      sync_all_libraries: initialLibraries ? 0 : 1,
     },
     jellyfin: {
       enabled: false,
@@ -28,36 +29,49 @@ const setup = async (hash = '#emby', existing = true) => {
       jellyfin_api_key: '',
       enable_media_notification: 0,
       sync_enabled: 1,
+      sync_all_libraries: initialLibraries ? 0 : 1,
     },
   }
-  const saveReply = vi
-    .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: { warnings: [], restart_required: false } })
+  const saveReply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
+    status: 200,
+    message: '',
+    data: { restart_required: false },
+    warnings: [],
+  })
   const statusReply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: { is_running: false } })
+    .mockResolvedValue({ status: 200, message: '', data: { is_running: false } })
+  const libraryReply = vi
+    .fn<() => Promise<APIResponse<unknown>>>()
+    .mockResolvedValue(initialLibraries ?? { status: 200, data: [] })
   const adapter = vi.fn(async (config) => {
     const product = config.url.includes('jellyfin') ? 'jellyfin' : 'emby'
     let data: APIResponse<unknown>
     if (config.method === 'post') {
       data = await saveReply()
-      if (data.code === 200 && config.url.endsWith('-config'))
+      if (data.status === 200 && config.url.endsWith('-config'))
         configs[product] = JSON.parse(config.data)
     } else if (config.url.endsWith('-config'))
-      data = { code: 200, message: '', data: { exists: true, config: configs[product] } }
+      data = { status: 200, message: '', data: { exists: true, config: configs[product] } }
     else if (config.url.endsWith('/fnos-proxy'))
       data = {
-        code: 200,
+        status: 200,
         message: '',
         data: {
           config: { enabled: false, fnos_url: '', path_mappings: [] },
           runtime: { running: false, restart_required: false, last_error: '' },
         },
       }
-    else if (config.url.endsWith('/libraries')) data = { code: 200, message: '', data: [] }
+    else if (config.url.endsWith('/libraries')) data = await libraryReply()
     else if (config.url.endsWith('/sync/status')) data = await statusReply()
-    else data = { code: 200, message: '', data: { is_running: false } }
-    return { config, status: 200, statusText: 'OK', headers: {}, data }
+    else data = { status: 200, message: '', data: { is_running: false } }
+    return {
+      config,
+      status: (data as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data,
+    }
   })
   const router = createRouter({
     history: createMemoryHistory(),
@@ -89,13 +103,21 @@ const setup = async (hash = '#emby', existing = true) => {
       .trigger('click')
     await flushPromises()
   }
-  return { wrapper, router, configs, adapter, saveReply, statusReply, panel, tab }
+  return { wrapper, router, configs, adapter, saveReply, statusReply, libraryReply, panel, tab }
 }
 const act = async (wrapper: VueWrapper, text: string) => {
   await wrapper
     .findAll('button')
     .find((item) => item.text() === text)!
     .trigger('click')
+  await flushPromises()
+}
+const selectSyncMode = async (wrapper: VueWrapper, label: string) => {
+  await wrapper
+    .findAll('.el-radio')
+    .find((radio) => radio.text() === label)!
+    .get('input')
+    .setValue(true)
   await flushPromises()
 }
 enableAutoUnmount(afterEach)
@@ -107,6 +129,114 @@ afterEach(() => {
 })
 
 describe('媒体库标签与独立表单', () => {
+  it.each(['emby', 'jellyfin'] as const)('%s 初次选库展示列表和清理警告', async (serverType) => {
+    const warning = '媒体库列表已更新，部分清理尚未完成'
+    const { panel } = await setup(`#${serverType}`, true, {
+      status: 200,
+      data: [{ library_id: 'movies', name: '当前电影库' }],
+      warnings: [warning],
+    })
+    const settings = panel(serverType)
+    expect(settings.get('.library-checkbox').text()).toBe('当前电影库')
+    expect(settings.find('.emby-status-alert').exists()).toBe(true)
+    expect(settings.get('.emby-status-alert').find('.el-alert--warning').exists()).toBe(true)
+    expect(settings.get('.emby-status-alert').text()).toContain(warning)
+    expect(settings.get('.emby-status-alert').text()).not.toContain('已保存')
+    expect(settings.find('.readback-failure').exists()).toBe(false)
+  })
+
+  it.each(
+    (['emby', 'jellyfin'] as const).flatMap((serverType) =>
+      [[], ['通知应用尚待完成']].map((saveWarnings) => ({ serverType, saveWarnings })),
+    ),
+  )(
+    '$serverType 保存后追加清理警告并保留保存反馈 $saveWarnings',
+    async ({ serverType, saveWarnings }) => {
+      const { panel, saveReply, libraryReply } = await setup(`#${serverType}`, true, {
+        status: 200,
+        data: null,
+      })
+      const settings = panel(serverType)
+      const message = '本轮配置已保存'
+      const cleanupWarning = '媒体库列表已更新，部分清理尚未完成'
+      expect(settings.find('.emby-status-alert').exists()).toBe(false)
+      saveReply.mockResolvedValueOnce({ status: 200, data: null, message, warnings: saveWarnings })
+      libraryReply.mockResolvedValue({
+        status: 200,
+        data: [{ library_id: 'movies', name: '当前电影库' }],
+        warnings: [cleanupWarning],
+      })
+      await act(settings, '保存设置')
+      const feedback = settings.get('.emby-status-alert').text()
+      expect(feedback).toContain(message)
+      expect(feedback).toContain(cleanupWarning)
+      for (const warning of saveWarnings) expect(feedback).toContain(warning)
+      expect(settings.get('.emby-status-alert').find('.el-alert--warning').exists()).toBe(true)
+      expect(settings.find('.readback-failure').exists()).toBe(false)
+      expect(settings.get('.library-checkbox').text()).toBe('当前电影库')
+
+      libraryReply.mockResolvedValue({ status: 200, data: [] })
+      await selectSyncMode(settings, '全部媒体库')
+      await selectSyncMode(settings, '指定媒体库')
+      expect(settings.findAll('.library-checkbox')).toHaveLength(0)
+      expect(settings.get('.emby-status-alert').text()).toBe(feedback)
+    },
+  )
+
+  it('保存前的迟到选库警告不能覆盖新列表和保存警告', async () => {
+    const { panel, saveReply, libraryReply } = await setup()
+    const settings = panel('emby')
+    const pending = createDeferred<APIResponse<unknown>>()
+    libraryReply.mockReturnValueOnce(pending.promise)
+    await selectSyncMode(settings, '指定媒体库')
+    saveReply.mockResolvedValueOnce({
+      status: 200,
+      data: null,
+      message: '本轮配置已保存',
+      warnings: ['通知应用尚待完成'],
+    })
+    libraryReply.mockResolvedValue({
+      status: 200,
+      data: [{ library_id: 'current', name: '当前媒体库' }],
+    })
+    await act(settings, '保存设置')
+    const feedback = settings.get('.emby-status-alert').text()
+    pending.resolve({
+      status: 200,
+      data: [{ library_id: 'old', name: '过期媒体库' }],
+      warnings: ['过期清理警告'],
+    })
+    await flushPromises()
+    expect(settings.get('.emby-status-alert').text()).toBe(feedback)
+    expect(settings.get('.library-checkbox').text()).toBe('当前媒体库')
+    expect(settings.text()).not.toContain('过期')
+  })
+
+  it('选库请求之后开始提取时，迟到警告不能覆盖提取反馈', async () => {
+    const { panel, saveReply, libraryReply } = await setup()
+    const settings = panel('emby')
+    const pending = createDeferred<APIResponse<unknown>>()
+    libraryReply.mockReturnValueOnce(pending.promise)
+    await selectSyncMode(settings, '指定媒体库')
+    saveReply.mockResolvedValueOnce({
+      status: 202,
+      data: null,
+      message: '本轮提取已受理',
+      warnings: ['提取稍后完成'],
+    })
+    await act(settings, '提取媒体信息')
+    const feedback = settings.get('.emby-status-alert').text()
+    expect(feedback).toContain('本轮提取已受理')
+    expect(feedback).toContain('提取稍后完成')
+    pending.resolve({
+      status: 200,
+      data: [{ library_id: 'old', name: '过期媒体库' }],
+      warnings: ['过期清理警告'],
+    })
+    await flushPromises()
+    expect(settings.get('.emby-status-alert').text()).toBe(feedback)
+  })
+
   it('首次访问才挂载，切换保留各端草稿、开关与 query，不重读配置', async () => {
     const { wrapper, router, panel, tab, adapter } = await setup()
     expect(wrapper.findAllComponents(MediaServerSettings)).toHaveLength(1)
@@ -151,9 +281,10 @@ describe('媒体库标签与独立表单', () => {
     // Fail only the committed save's readback, without touching the other panel.
     adapter.mockRejectedValueOnce(new Error('read unavailable'))
     pending.resolve({
-      code: 200,
+      status: 200,
       message: '配置已保存',
-      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
+      data: { restart_required: false },
+      warnings: ['代理未应用，请重新保存'],
     })
     await flushPromises()
     await tab('Emby')
@@ -189,9 +320,10 @@ describe('媒体库标签与独立表单', () => {
     await act(emby, '保存设置')
     adapter.mockRejectedValueOnce(new axios.AxiosError('private-readback-key', 'ERR_NETWORK'))
     saved.resolve({
-      code: 200,
+      status: 200,
       message: '配置已保存',
-      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
+      data: { restart_required: false },
+      warnings: ['代理未应用，请重新保存'],
     })
     await flushPromises()
     expect(statusReply).toHaveBeenCalledTimes(2)
@@ -266,15 +398,22 @@ describe('媒体库标签与独立表单', () => {
     const { panel, saveReply, adapter } = await setup()
     await panel('emby').get('input[aria-label="Emby 服务器地址"]').setValue('http://unsaved:8096')
     saveReply.mockResolvedValueOnce({
-      code: 500,
+      status: 500,
       message: '连接的是 Jellyfin，请手动调整服务器配置',
       data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await act(panel('emby'), '提取媒体信息')
     expect(panel('emby').text()).toContain('请手动调整服务器配置')
     expect(adapter.mock.calls.at(-1)?.[0].data).toBeUndefined()
+    const message = '服务器受理测试媒体提取'
+    const warning = '测试媒体提取尚待完成'
+    saveReply.mockResolvedValueOnce({ status: 202, data: null, message, warnings: [warning] })
     await act(panel('emby'), '提取媒体信息')
-    expect(panel('emby').text()).toContain('触发提取媒体信息成功')
+    expect(panel('emby').text()).toContain(message)
+    expect(panel('emby').text()).toContain(warning)
+    expect(panel('emby').find('.el-alert--warning').exists()).toBe(true)
     expect(panel('emby').get('input[aria-label="Emby 服务器地址"]').element).toHaveProperty(
       'value',
       'http://unsaved:8096',

@@ -15,6 +15,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/directoryupload"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -91,8 +92,8 @@ func TestListDirectoryUploadRulesReturnsIgnorePatterns(t *testing.T) {
 	}
 
 	var response struct {
-		Code int `json:"code"`
-		Data struct {
+		Status int `json:"status"`
+		Data   struct {
 			List []struct {
 				IgnorePatterns []string `json:"ignore_patterns"`
 			} `json:"list"`
@@ -101,7 +102,7 @@ func TestListDirectoryUploadRulesReturnsIgnorePatterns(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("解析规则列表响应失败: %v, body=%s", err, w.Body.String())
 	}
-	if response.Code != int(Success) || len(response.Data.List) != 1 {
+	if response.Status != http.StatusOK || len(response.Data.List) != 1 {
 		t.Fatalf("规则列表响应 = %+v，期望返回 1 条成功数据", response)
 	}
 	want := []string{"**/sample/**", "*.tmp"}
@@ -208,8 +209,8 @@ func TestScanDirectoryUploadSyncPathRulesScansAllEnabledRules(t *testing.T) {
 	}
 
 	var response struct {
-		Code int `json:"code"`
-		Data struct {
+		Status int `json:"status"`
+		Data   struct {
 			Accepted int `json:"accepted"`
 			Items    []struct {
 				RuleID   uint `json:"rule_id"`
@@ -220,7 +221,7 @@ func TestScanDirectoryUploadSyncPathRulesScansAllEnabledRules(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("解析批量扫描响应失败: %v, body=%s", err, w.Body.String())
 	}
-	if response.Code != int(Success) || response.Data.Accepted != 2 || len(response.Data.Items) != 2 {
+	if response.Status != http.StatusOK || response.Data.Accepted != 2 || len(response.Data.Items) != 2 {
 		t.Fatalf("批量扫描响应 = %+v，期望只扫描 2 条启用规则并加入 2 个候选文件", response)
 	}
 }
@@ -252,21 +253,21 @@ func TestScanDirectoryUploadSyncPathRulesUsesRequestContext(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("取消请求扫描 HTTP 状态异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var response struct {
-		Code int `json:"code"`
-		Data struct {
+		Status int `json:"status"`
+		Data   struct {
 			Accepted int `json:"accepted"`
 		} `json:"data"`
-		Message string `json:"message"`
+		ErrorCode string `json:"error_code"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("解析取消请求扫描响应失败: %v, body=%s", err, w.Body.String())
 	}
-	if response.Code != int(BadRequest) || response.Data.Accepted != 0 || !strings.Contains(response.Message, context.Canceled.Error()) {
-		t.Fatalf("取消请求扫描响应 = %+v，期望使用请求 context 并返回 context canceled", response)
+	if response.Status != http.StatusInternalServerError || response.Data.Accepted != 0 || response.ErrorCode != "INTERNAL_ERROR" {
+		t.Fatalf("取消请求扫描响应 = %+v，期望使用请求 context 且未受理扫描", response)
 	}
 }
 
@@ -304,8 +305,8 @@ func TestDirectoryUploadRuntimeStatusReturnsItems(t *testing.T) {
 	}
 
 	var response struct {
-		Code int `json:"code"`
-		Data struct {
+		Status int `json:"status"`
+		Data   struct {
 			Items []struct {
 				RuleID         uint   `json:"rule_id"`
 				ConfiguredMode string `json:"configured_mode"`
@@ -317,7 +318,7 @@ func TestDirectoryUploadRuntimeStatusReturnsItems(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("解析运行状态响应失败: %v, body=%s", err, w.Body.String())
 	}
-	if response.Code != int(Success) || len(response.Data.Items) != 1 {
+	if response.Status != http.StatusOK || len(response.Data.Items) != 1 {
 		t.Fatalf("运行状态响应 = %+v，期望返回 1 条成功数据", response)
 	}
 	item := response.Data.Items[0]
@@ -357,9 +358,8 @@ func TestScanDirectoryUploadSyncPathRulesRejectsDisabledRules(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/sync-paths/%d/scan", syncPath.ID), nil)
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), `"code":500`) ||
-		!strings.Contains(w.Body.String(), "未启用") {
+	if w.Code != http.StatusConflict ||
+		!strings.Contains(w.Body.String(), `"error_code":"DIRECTORY_UPLOAD_DISABLED"`) {
 		t.Fatalf("停用规则扫描响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
@@ -416,5 +416,63 @@ func TestDirectoryUploadRuleScanIgnoresFutureMtime(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted":1`) {
 		t.Fatalf("扫描响应异常: code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestScanDirectoryUploadRulesPreservesPartialAcceptance(t *testing.T) {
+	router, syncPath := setupDirectoryUploadControllerTest(t)
+	monitorPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(monitorPath, "movie.mkv"), []byte("movie"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rules := []models.DirectoryUploadRule{
+		{SyncPathId: syncPath.ID, AccountId: syncPath.AccountId, Enabled: true, MonitorPath: monitorPath, RemoteRootPath: "/remote", RemoteRootId: "root", Recursive: true, WatchMode: models.DirectoryUploadWatchModePolling, ProcessedCacheTTLSeconds: 600},
+		{SyncPathId: syncPath.ID, AccountId: syncPath.AccountId, Enabled: true, MonitorPath: filepath.Join(t.TempDir(), "missing"), RemoteRootPath: "/remote", RemoteRootId: "root", Recursive: true, WatchMode: models.DirectoryUploadWatchModePolling, ProcessedCacheTTLSeconds: 600},
+	}
+	for i := range rules {
+		if err := db.Db.Create(&rules[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, fmt.Sprintf("/sync-paths/%d/scan", syncPath.ID), nil))
+	var response httpapi.APIResponse[struct {
+		Accepted int                           `json:"accepted"`
+		Items    []directoryUploadRuleScanItem `json:"items"`
+	}]
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusInternalServerError || response.ErrorCode != "DIRECTORY_SCAN_FAILED" || response.Data.Accepted != 1 || len(response.Data.Items) != 2 || response.Instance == "" {
+		t.Fatalf("partial scan result lost: HTTP=%d body=%s", w.Code, w.Body.String())
+	}
+	var accepted, rejected int
+	for _, item := range response.Data.Items {
+		accepted += item.Accepted
+		if item.Error != "" {
+			rejected++
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("partial scan items: %+v", response.Data.Items)
+	}
+	if strings.Contains(w.Body.String(), rules[1].MonitorPath) {
+		t.Fatalf("internal file error leaked: %s", w.Body.String())
+	}
+}
+
+func TestDirectoryUploadScanDoesNotMisclassifyDatabaseFailure(t *testing.T) {
+	router, syncPath := setupDirectoryUploadControllerTest(t)
+	if err := db.Db.Migrator().DropTable(&models.SyncPath{}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, fmt.Sprintf("/sync-paths/%d/scan", syncPath.ID), nil))
+	var response httpapi.APIResponse[any]
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusInternalServerError || response.ErrorCode != "INTERNAL_ERROR" || response.Data != nil {
+		t.Fatalf("database failure was treated as missing path: HTTP=%d body=%s", w.Code, w.Body.String())
 	}
 }

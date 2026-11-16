@@ -26,7 +26,7 @@ const createWrapper = async () => {
     global: {
       plugins: [pinia, router],
       provide: {
-        [httpKey]: { get: async () => ({ data: { code: 200 } }) },
+        [httpKey]: { get: async () => ({ data: { status: 200, data: null }, status: 200 }) },
       },
       stubs: {
         ElForm: { template: '<form><slot /></form>' },

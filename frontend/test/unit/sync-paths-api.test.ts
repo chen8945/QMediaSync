@@ -2,6 +2,8 @@ import axios, { AxiosError, CanceledError } from 'axios'
 import { describe, expect, it, vi } from 'vitest'
 import {
   deleteSyncPath,
+  directoryUploadScanResult,
+  syncPathFieldErrors,
   fetchDirectoryUploadRules,
   fetchSyncPath,
   fetchSyncPaths,
@@ -14,7 +16,7 @@ import {
   toggleSyncPathCron,
   type SaveSyncPathPayload,
 } from '@/api/syncPaths'
-import { HttpResponseError } from '@/http/errors'
+import { HttpResponseError, parseHttpError } from '@/http/errors'
 
 const payload: SaveSyncPathPayload = {
   sync_path: {
@@ -48,20 +50,36 @@ const saved = {
   directory_upload: { enabled: false, rules: [] },
   warnings: ['同步目录已保存，但重载定时同步任务失败'],
 }
-const createHTTP = (data: unknown = null, code = 200) => {
+const createHTTP = (data: unknown = null, status = 200, warnings?: unknown, message?: string) => {
   const adapter = vi.fn(async (config) => ({
     config,
-    status: 200,
-    statusText: 'OK',
+    status,
+    statusText: '',
     headers: {},
-    data: { code, message: 'private token=http://secret', data },
+    data: {
+      status,
+      data,
+      warnings,
+      ...(message === undefined ? {} : { message }),
+      ...(status >= 400
+        ? {
+            message: message ?? '测试失败',
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          }
+        : {}),
+    },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
 
 describe('同步目录领域 API', () => {
   it('聚合保存保留载荷与警告，仅新增传递原始幂等键', async () => {
-    const { http, adapter } = createHTTP(saved)
+    const { http, adapter } = createHTTP(
+      { sync_path: saved.sync_path, directory_upload: saved.directory_upload },
+      200,
+      saved.warnings,
+    )
     expect(await saveSyncPathAggregate(http, 0, payload, 'same-key')).toEqual(saved)
     expect(await saveSyncPathAggregate(http, 12, payload, 'unused-key')).toEqual(saved)
     const [create, update] = adapter.mock.calls.map(([config]) => config)
@@ -76,7 +94,11 @@ describe('同步目录领域 API', () => {
   })
 
   it('写入超时不重试，调用方显式重试仍可复用原键', async () => {
-    const { http, adapter } = createHTTP(saved)
+    const { http, adapter } = createHTTP(
+      { sync_path: saved.sync_path, directory_upload: saved.directory_upload },
+      200,
+      saved.warnings,
+    )
     adapter.mockRejectedValueOnce(new AxiosError('private', 'ETIMEDOUT'))
     await expect(saveSyncPathAggregate(http, 0, payload, 'same-key')).rejects.toBeInstanceOf(
       AxiosError,
@@ -114,15 +136,19 @@ describe('同步目录领域 API', () => {
     ['定时开关', toggleSyncPathCron, '/sync/path/toggle-cron'],
   ])('%s 保留 JSON 载荷和成功 null', async (_, run, path) => {
     const { http, adapter } = createHTTP()
-    await expect(run(http, 12)).resolves.toBeUndefined()
+    await expect(run(http, 12)).resolves.toEqual({ warnings: [] })
     expect(adapter.mock.calls[0]![0].url).toBe(`/api${path}`)
     expect(adapter.mock.calls[0]![0].headers.get('Content-Type')).toBe('application/json')
     expect(JSON.parse(adapter.mock.calls[0]![0].data)).toEqual({ id: 12 })
   })
 
   it('运行、扫描、关联保留各自响应和请求形式', async () => {
-    const { http, adapter } = createHTTP({ is_running: 2, accepted: 3 })
-    expect(await startSyncPath(http, 12)).toMatchObject({ is_running: 2 })
+    const { http, adapter } = createHTTP({
+      is_running: 2,
+      accepted: 3,
+      items: [{ rule_id: 7, accepted: 3 }],
+    })
+    expect((await startSyncPath(http, 12)).data).toMatchObject({ is_running: 2 })
     await startSyncPath(http, 12, true)
     expect(await scanSyncPathDirectoryUpload(http, 12)).toMatchObject({ accepted: 3 })
     await saveSyncPathScrapeRelations(http, 12, [5, 6])
@@ -154,14 +180,9 @@ describe('同步目录领域 API', () => {
     (http: ReturnType<typeof axios.create>) => fetchSyncPathScrapeRelations(http, 12),
     (http: ReturnType<typeof axios.create>) => saveSyncPathScrapeRelations(http, 12, []),
   ])('业务失败拒绝并保留原始响应；取消保留原错误引用 %#', async (run) => {
-    const { http, adapter } = createHTTP(
-      { field_errors: [{ field: 'local_path', message: '不能为空' }] },
-      500,
-    )
+    const { http, adapter } = createHTTP(null, 400)
     await expect(run(http)).rejects.toMatchObject({
-      response: {
-        data: { code: 500, data: { field_errors: [{ field: 'local_path', message: '不能为空' }] } },
-      },
+      response: { status: 400, data: { status: 400, data: null, error_code: 'INVALID_REQUEST' } },
     })
     const cancelled = new CanceledError()
     adapter.mockRejectedValueOnce(cancelled)
@@ -169,13 +190,17 @@ describe('同步目录领域 API', () => {
   })
 
   it('保存保留警告且不要求未使用字段，读取仍拒绝无效集合', async () => {
-    for (const data of [null, { warnings: 'invalid' }, { warnings: [1] }]) {
+    for (const [data, warnings] of [
+      [null, undefined],
+      [{}, 'invalid'],
+      [{}, [1]],
+    ]) {
       await expect(
-        saveSyncPathAggregate(createHTTP(data).http, 0, payload, 'key'),
+        saveSyncPathAggregate(createHTTP(data, 200, warnings).http, 0, payload, 'key'),
       ).rejects.toBeInstanceOf(HttpResponseError)
     }
     await expect(
-      saveSyncPathAggregate(createHTTP({ warnings: ['后续服务重载失败'] }).http, 0, payload, 'key'),
+      saveSyncPathAggregate(createHTTP({}, 200, ['后续服务重载失败']).http, 0, payload, 'key'),
     ).resolves.toEqual({ warnings: ['后续服务重载失败'] })
     for (const data of [null, {}, { list: {} }]) {
       await expect(fetchSyncPaths(createHTTP(data).http)).rejects.toBeInstanceOf(HttpResponseError)
@@ -183,5 +208,58 @@ describe('同步目录领域 API', () => {
         HttpResponseError,
       )
     }
+  })
+  it('扫描部分失败保留实际受理结果，且不自动重发', async () => {
+    const data = {
+      accepted: 1,
+      items: [
+        { rule_id: 7, accepted: 1 },
+        { rule_id: 8, accepted: 0, error: '测试拒绝' },
+      ],
+    }
+    const { http, adapter } = createHTTP(data, 500)
+    const failure = await scanSyncPathDirectoryUpload(http, 12).catch((error: unknown) => error)
+    expect(directoryUploadScanResult(parseHttpError(failure))).toEqual(data)
+    expect(adapter).toHaveBeenCalledOnce()
+    expect(directoryUploadScanResult(parseHttpError(new Error('no response')))).toBeUndefined()
+    expect(
+      directoryUploadScanResult(
+        parseHttpError(
+          new HttpResponseError({
+            status: 500,
+            data: {
+              status: 500,
+              data: { accepted: -1, items: [] },
+              message: '测试拒绝',
+              error_code: 'INVALID_REQUEST',
+              instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            },
+          }),
+        ),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('顶层字段错误保留规则定位，动态正则详情使用安全原因', () => {
+    const error = parseHttpError(
+      new HttpResponseError({
+        status: 400,
+        data: {
+          status: 400,
+          data: null,
+          message: '测试拒绝',
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          field_errors: [
+            { field: 'monitor_path', message: '不能为空', client_id: 'rule-7' },
+            { field: 'exclude_name_regex_arr[0]', message: 'secret regexp error' },
+          ],
+        },
+      }),
+    )
+    expect(syncPathFieldErrors(error)).toEqual([
+      { field: 'monitor_path', message: '不能为空', client_id: 'rule-7' },
+      { field: 'exclude_name_regex_arr[0]', message: '正则表达式无效' },
+    ])
   })
 })

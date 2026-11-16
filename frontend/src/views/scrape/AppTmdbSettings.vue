@@ -262,12 +262,14 @@ async function saveSettings() {
       payload.local_max_threads = 5
     }
 
-    await saveTmdbSettings(http, payload)
+    const result = await saveTmdbSettings(http, payload)
 
     saveStatus.value = {
-      title: '保存成功',
-      type: 'success',
-      description: '刮削设置已成功保存',
+      title: result.warnings.length ? '设置已保存，尚未完全生效' : '保存成功',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || '刮削设置已成功保存',
     }
 
     const status = saveStatus.value
@@ -307,17 +309,22 @@ async function testConnection() {
     const connected = await testTmdbConnection(http, payload)
 
     // 根据接口返回结果显示不同的状态
-    if (connected) {
+    if (connected.data) {
       testStatus.value = {
         title: '连接成功',
-        type: 'success',
-        description: 'TMDB 连通性测试成功',
+        type: connected.warnings.length ? 'warning' : 'success',
+        description: connected.warnings.length
+          ? [connected.message?.trim(), ...connected.warnings].filter(Boolean).join('；')
+          : connected.message?.trim() || 'TMDB 连通性测试成功',
       }
     } else {
       testStatus.value = {
         title: '连接失败',
         type: 'error',
-        description: 'TMDB 连通性测试失败，请检查设置',
+        description: [
+          connected.message?.trim() || 'TMDB 连通性测试失败，请检查设置',
+          ...connected.warnings,
+        ].join('；'),
       }
       return
     }

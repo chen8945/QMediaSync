@@ -21,6 +21,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/fnosproxy"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 
@@ -251,11 +252,15 @@ func TestGet115UrlByPickCode获取缓存锁超时时返回错误响应(t *testin
 
 	Get115UrlByPickCode(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusServiceUnavailable)
 	}
-	if body := w.Body.String(); !strings.Contains(body, "获取 115 下载链接超时") {
-		t.Fatalf("响应体 = %q，期望包含锁超时错误", body)
+	var response httpapi.APIResponse[any]
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != w.Code || response.ErrorCode != "RESOURCE_BUSY" || response.Message == "" || w.Header().Get("Location") != "" {
+		t.Fatalf("未返回缓存锁占用错误: %+v", response)
 	}
 }
 
@@ -428,11 +433,15 @@ func TestGet115URLCancelsCachedHEADWithoutInvalidation(t *testing.T) {
 			if string(db.Cache.Get(cacheKey)) != cachedURL || apiCalls.Load() != 0 {
 				t.Error("取消 HEAD 校验不应删除已有缓存或重新取链")
 			}
-			var response APIResponse[any]
+			var response httpapi.APIResponse[any]
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatal(err)
 			}
-			if w.Code != http.StatusOK || response.Code != BadRequest || response.Message != "获取 115 下载链接失败" || w.Header().Get("Location") != "" {
+			wantStatus, wantCode := http.StatusServiceUnavailable, "REQUEST_CANCELED"
+			if tc.deadline {
+				wantStatus, wantCode = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+			}
+			if w.Code != wantStatus || response.Status != w.Code || response.ErrorCode != wantCode || response.Message == "" || w.Header().Get("Location") != "" {
 				t.Fatalf("取消后应沿用失败响应且不能跳转：HTTP=%d response=%+v", w.Code, response)
 			}
 		})
@@ -556,5 +565,67 @@ func TestFnosApplyCancels115CachedHEAD(t *testing.T) {
 	body, err := io.ReadAll(response.Body)
 	if err != nil || string(body) != "new-instance" {
 		t.Fatalf("新实例未提供服务：body=%q err=%v", body, err)
+	}
+}
+
+func TestGet115URLMissPreservesSDKFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		status      int
+		code        string
+		deadline    bool
+		credentials bool
+	}{
+		{name: "credentials", status: http.StatusBadRequest, code: "UPSTREAM_CREDENTIALS_INVALID"},
+		{name: "upstream", status: http.StatusBadGateway, code: "UPSTREAM_ERROR", credentials: true},
+		{name: "timeout", status: http.StatusGatewayTimeout, code: "UPSTREAM_TIMEOUT", credentials: true, deadline: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router, requestURL, cacheKey, _ := setup115URLValidityPlayback(t, "")
+			executor := v115open.GetGlobalExecutor()
+			executor.Start()
+			t.Cleanup(executor.Stop)
+			client := v115open.GetClient(115999, "", "", "")
+			t.Cleanup(func() { v115open.GetClient(115999, "", "", "") })
+			var logs bytes.Buffer
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+			const token, refresh = "old-private-115-token", "private-115-refresh"
+			if tt.credentials {
+				if err := db.Db.Model(&models.Account{}).Where("id = ?", 115999).Updates(map[string]any{"token": token, "refresh_token": refresh}).Error; err != nil {
+					t.Fatal(err)
+				}
+				client = v115open.GetClient(115999, "", token, refresh)
+				client.SetTransport(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if tt.deadline {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"state":false,"code":90001,"message":"private upstream cause ` + token + ` ` + refresh + `"}`))}, nil
+				}))
+			}
+			request := httptest.NewRequest(http.MethodGet, requestURL, nil)
+			request.Header.Set("User-Agent", urlValidityTestUA)
+			if tt.deadline {
+				ctx, cancel := context.WithTimeout(request.Context(), 50*time.Millisecond)
+				defer cancel()
+				request = request.WithContext(ctx)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assertScrapeFailure(t, response, tt.status, tt.code)
+			if response.Header().Get("Location") != "" || len(db.Cache.Get(cacheKey)) != 0 {
+				t.Fatal("failure must not redirect or populate cache")
+			}
+			var result httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logs.String(), result.Instance) || strings.Contains(response.Body.String(), token) || strings.Contains(logs.String(), token) || strings.Contains(logs.String(), refresh) {
+				t.Fatalf("unsafe or uncorrelated failure: %s; %s", response.Body, &logs)
+			}
+			if tt.name == "upstream" && !strings.Contains(logs.String(), "private upstream cause") {
+				t.Fatalf("SDK cause lost: %s", &logs)
+			}
+		})
 	}
 }

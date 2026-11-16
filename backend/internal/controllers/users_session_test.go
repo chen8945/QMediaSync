@@ -10,6 +10,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -76,18 +77,13 @@ func TestSessionAction_FromCookie(t *testing.T) {
 	if !strings.Contains(body, `"csrf_token"`) || !strings.Contains(body, `"username":"admin"`) {
 		t.Fatalf("响应未返回用户和 csrf: %s", body)
 	}
-	var response sessionActionResponse
+	var response httpapi.APIResponse[sessionActionResponseData]
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("解析会话响应失败: %v", err)
 	}
-	if !response.Data.Authenticated {
+	if response.Status != w.Code || !response.Data.Authenticated {
 		t.Fatalf("有效会话应返回 authenticated=true: %s", body)
 	}
-}
-
-type sessionActionResponse struct {
-	Code APIResponseCode           `json:"code"`
-	Data sessionActionResponseData `json:"data"`
 }
 
 type sessionActionResponseData struct {
@@ -231,11 +227,11 @@ func TestSessionAction_ReportsAnonymousStateForMissingAndInvalidSessions(t *test
 			if cacheControl := w.Header().Get("Cache-Control"); cacheControl != "no-store, private" {
 				t.Fatalf("Cache-Control = %q，期望 no-store, private", cacheControl)
 			}
-			var response sessionActionResponse
+			var response httpapi.APIResponse[sessionActionResponseData]
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("解析会话响应失败: %v", err)
 			}
-			if response.Code != Success || response.Data.Authenticated {
+			if response.Status != http.StatusOK || response.Data.Authenticated {
 				t.Fatalf("会话响应 = %+v，期望成功匿名状态", response)
 			}
 			if got := hasClearedSessionCookies(w.Result().Cookies()); got != tt.wantCleared {
@@ -273,6 +269,13 @@ func TestSessionAction_ReturnsServerErrorForDatabaseFailure(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("HTTP 状态码 = %d，期望 %d，body=%s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	var response httpapi.APIResponse[any]
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != w.Code || response.ErrorCode != "INTERNAL_ERROR" || response.Instance == "" || response.Data != nil {
+		t.Fatalf("数据库故障应返回内部错误: %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), `"authenticated":false`) {
 		t.Fatalf("数据库故障不能伪装成匿名状态: %s", w.Body.String())

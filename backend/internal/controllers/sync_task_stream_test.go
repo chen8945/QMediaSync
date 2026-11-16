@@ -3,6 +3,7 @@ package controllers
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/logstream"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
@@ -113,6 +115,13 @@ func TestSyncTaskStreamReturnsHTTPErrorWhenTaskQueryFails(t *testing.T) {
 	if response.StatusCode != http.StatusInternalServerError {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("查询同步任务失败时 status = %d，期望 %d，body = %q", response.StatusCode, http.StatusInternalServerError, body)
+	}
+	var failure httpapi.APIResponse[any]
+	if err := json.NewDecoder(response.Body).Decode(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Status != http.StatusInternalServerError || failure.ErrorCode != "INTERNAL_ERROR" || failure.Instance == "" || failure.Data != nil {
+		t.Fatalf("pre-stream failure: %+v", failure)
 	}
 }
 

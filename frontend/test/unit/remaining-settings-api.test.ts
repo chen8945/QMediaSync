@@ -43,7 +43,7 @@ describe('设置、分类和首页领域 API', () => {
       status: 200,
       statusText: 'OK',
       headers: {},
-      data: { code: 200, data: null },
+      data: { status: 200, data: null },
     }))
     const http = axios.create({ adapter, timeout: 5432, withCredentials: true })
     for (const [, , request] of operations) await request(http)
@@ -71,17 +71,14 @@ describe('设置、分类和首页领域 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data },
+        data: { status: 200, data },
       }),
     })
-    for (const request of [
-      () => updateApiKeyStatus(http, 4, false),
-      () => deleteApiKey(http, 4),
-      () => saveScrapeCategory(http, 'movie', movie),
-      () => deleteScrapeCategory(http, 'tvshow', 3),
-      () => repairDatabase(http),
-    ])
-      await expect(request()).resolves.toBeUndefined()
+    for (const request of [() => updateApiKeyStatus(http, 4, false), () => deleteApiKey(http, 4)])
+      await expect(request()).resolves.toEqual({ warnings: [] })
+    await expect(deleteScrapeCategory(http, 'tvshow', 3)).resolves.toEqual({ warnings: [] })
+    await expect(repairDatabase(http)).resolves.toEqual({ warnings: [] })
+    await expect(saveScrapeCategory(http, 'movie', movie)).resolves.toEqual({ warnings: [] })
     expect(await fetchHourlyStats(http)).toBe(data)
     expect(await fetchQueueStats(http)).toBe(data)
     if (data === null) {
@@ -103,7 +100,11 @@ describe('设置、分类和首页领域 API', () => {
     [200, 0],
     [503, 200],
   ])('所有操作拒绝 HTTP %s 业务码 %s，保留原始失败响应', async (status, code) => {
-    const body = { code, message: 'SQL internal secret', data: { field_errors: ['secret'] } }
+    const body = {
+      status: code,
+      message: 'SQL internal secret',
+      data: { field_errors: ['secret'] },
+    }
     const http = axios.create({
       adapter: async (config) => ({
         config,
@@ -121,9 +122,9 @@ describe('设置、分类和首页领域 API', () => {
     }
   })
 
-  it('公告兼容原始数组和业务包络，原始数组同样拒绝失败 HTTP 状态', async () => {
+  it('公告读取成功包络，HTTP 失败仍被拒绝', async () => {
     const announcements = [{ id: 1, time: '2026-09-20', title: '公告', content: '内容' }]
-    for (const data of [announcements, { code: 200, data: announcements }]) {
+    for (const data of [{ status: 200, data: announcements }]) {
       const http = axios.create({
         adapter: async (config) => ({ config, status: 200, statusText: 'OK', headers: {}, data }),
       })
@@ -156,10 +157,10 @@ describe('设置、分类和首页领域 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data: key },
+        data: { status: 200, data: key },
       }),
     })
-    expect(await createApiKey(http, 'CI')).toEqual(key)
+    expect(await createApiKey(http, 'CI')).toMatchObject({ data: key, warnings: [] })
     const adapter = vi.fn(async (config) => {
       throw new AxiosError('secret', 'ETIMEDOUT', config)
     })

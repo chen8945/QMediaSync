@@ -21,7 +21,10 @@ const rows = [
 
 describe('STRM 后处理结果', () => {
   it('按目录读取结果，展示独立计数并能查看跳过子项', async () => {
-    get.mockResolvedValueOnce({ status: 200, data: { code: 200, data: { items: rows, total: 1 } } })
+    get.mockResolvedValueOnce({
+      status: 200,
+      data: { status: 200, data: { items: rows, total: 1 } },
+    })
     const wrapper = mount(StrmResultsDialog, {
       props: { modelValue: true, syncPathId: 8 },
       global: {
@@ -68,7 +71,7 @@ describe('STRM 后处理结果', () => {
     get.mockResolvedValueOnce({
       status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: {
           items: [
             {
@@ -96,7 +99,7 @@ describe('STRM 后处理结果', () => {
     get.mockResolvedValueOnce({
       status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: { items: [{ id: 6, task_type: 'directory_scan', status: 'future' }], total: 1 },
       },
     })
@@ -107,7 +110,7 @@ describe('STRM 后处理结果', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('未知状态（future）')
     expect(wrapper.text()).toContain('总计 未记录，完成 未记录，失败 未记录，跳过 未记录')
-    get.mockResolvedValueOnce({ status: 200, data: { code: 200, data: { items: [], total: 0 } } })
+    get.mockResolvedValueOnce({ status: 200, data: { status: 200, data: { items: [], total: 0 } } })
     await wrapper
       .findAll('button')
       .find((button) => button.text() === '返回任务列表')!

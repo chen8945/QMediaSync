@@ -3,13 +3,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { parseHttpError, type ParsedHttpError } from '@/http/errors'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
+import type { SettingsSaveResult } from '@/api/types'
 import type { QueueMutationContextSnapshot } from './useQueueMutationContext'
 
 export type QueueSnapshotResult =
   { status: 'loaded' } | { status: 'stale' } | { status: 'failed'; error: ParsedHttpError }
 
 export interface QueueMutationOperationOptions {
-  execute: () => Promise<void>
+  execute: () => Promise<SettingsSaveResult>
   confirm?: {
     message: string
     title?: string
@@ -84,13 +85,15 @@ export function useQueueMutations(options: UseQueueMutationsOptions) {
       if (!isCurrent()) return
 
       // 领域 API 在返回前完成业务成功校验。
-      await operation.execute()
+      const result = await operation.execute()
       if (!isCurrent()) return
 
       if (clearPending) {
         options.onClearPendingSuccess?.()
       }
-      ElMessage.success(operation.successMessage)
+      const message = result.message?.trim() || operation.successMessage
+      if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+      else ElMessage.success(message)
 
       snapshotContext.value = context
       try {

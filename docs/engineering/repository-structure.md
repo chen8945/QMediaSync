@@ -20,6 +20,10 @@ qmediasync/
 │   ├── go.sum
 │   ├── internal/
 │   │   ├── app/                     # 启动、生命周期、路由和代理组装
+│   │   ├── httpapi/                 # 自有 JSON 公共响应与请求失败诊断
+│   │   ├── controllers/             # HTTP 绑定、校验、业务调用与结果投影
+│   │   ├── notification/            # 通知配置类型与共用纯校验
+│   │   │   └── config/              # 通知配置写入、事务与应用编排
 │   │   ├── v115/
 │   │   │   ├── auth/                # 115 授权来源和会话
 │   │   │   └── openapi/             # 115 API 客户端
@@ -78,6 +82,10 @@ qmediasync/
 ```
 
 根包向 `internal/app` 传入构建默认值和嵌入资源，应用组装调用现有业务模块；业务模块不反向依赖 app。同一供应商下的子目录仍是独立 Go 包，现有包名保留。`models`、`helpers`、`syncstrm` 等业务职责仍以当前实现为准。
+
+普通 JSON 由 `httpapi` 统一写出，协议边界见 [公共响应契约](../reference/api-response.md)。通知配置的依赖方向为 `controllers → notification/config → models/notificationmanager`；应用服务不依赖 HTTP DTO、Gin 或包络，模型和 manager 不反向依赖 config。共用纯校验归 notification 根包，事务与后台生命周期仍由原拥有者维护。
+
+认证/CORS、下载代理和系统入口分别位于同一 controllers 包的 `auth_middleware.go`、`download_proxy.go` 和 `system.go`；按文件职责定位，函数和路由身份保持。
 
 fnOS 模板和生命周期脚本的局部约束见 [原生包说明](../../packaging/fnos/README.md)，二进制与前端只在临时目录组包。
 

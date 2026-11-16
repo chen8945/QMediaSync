@@ -11,9 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"qmediasync/internal/helpers"
-
 	"github.com/gin-gonic/gin"
+
+	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 )
 
 func setupLogSettingControllerTest(t *testing.T) (*gin.Engine, *bytes.Buffer) {
@@ -72,12 +73,12 @@ func TestGetLogSetting返回当前日志等级(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[LogSettingResponse]
+	var resp httpapi.APIResponse[LogSettingResponse]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d, want %d", resp.Code, Success)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Code = %d, want %d", resp.Status, http.StatusOK)
 	}
 	if resp.Data.Level != "warn" {
 		t.Fatalf("level = %q, want warn", resp.Data.Level)
@@ -102,12 +103,12 @@ func TestUpdateLogSetting保存后立即生效(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[LogSettingResponse]
+	var resp httpapi.APIResponse[LogSettingResponse]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d, message=%s", resp.Code, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Code = %d, message=%s", resp.Status, resp.Message)
 	}
 	if helpers.GlobalConfig.Log.Level != "debug" {
 		t.Fatalf("GlobalConfig.Log.Level = %q, want debug", helpers.GlobalConfig.Log.Level)
@@ -153,12 +154,12 @@ func TestUpdateLogSetting兼容仅提交日志等级(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[LogSettingResponse]
+	var resp httpapi.APIResponse[LogSettingResponse]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d, message=%s", resp.Code, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Code = %d, message=%s", resp.Status, resp.Message)
 	}
 	if helpers.GlobalConfig.Log.Level != "debug" {
 		t.Fatalf("GlobalConfig.Log.Level = %q, want debug", helpers.GlobalConfig.Log.Level)
@@ -187,15 +188,15 @@ func TestUpdateLogSetting拒绝非法日志等级(t *testing.T) {
 
 			r.ServeHTTP(w, req)
 
-			if w.Code != http.StatusOK {
+			if w.Code != http.StatusBadRequest {
 				t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 			}
-			var resp APIResponse[any]
+			var resp httpapi.APIResponse[any]
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("解析响应失败: %v", err)
 			}
-			if resp.Code != BadRequest {
-				t.Fatalf("Code = %d, want %d", resp.Code, BadRequest)
+			if resp.Status != http.StatusBadRequest {
+				t.Fatalf("Code = %d, want %d", resp.Status, http.StatusBadRequest)
 			}
 			if helpers.GlobalConfig.Log.Level != "info" {
 				t.Fatalf("非法保存不应修改日志等级，got %q", helpers.GlobalConfig.Log.Level)
@@ -224,15 +225,15 @@ func TestUpdateLogSetting拒绝非法轮转参数(t *testing.T) {
 
 			r.ServeHTTP(w, req)
 
-			if w.Code != http.StatusOK {
+			if w.Code != http.StatusBadRequest {
 				t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 			}
-			var resp APIResponse[any]
+			var resp httpapi.APIResponse[any]
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("解析响应失败: %v", err)
 			}
-			if resp.Code != BadRequest {
-				t.Fatalf("Code = %d, want %d", resp.Code, BadRequest)
+			if resp.Status != http.StatusBadRequest {
+				t.Fatalf("Code = %d, want %d", resp.Status, http.StatusBadRequest)
 			}
 			if helpers.GlobalConfig.Log.MaxSizeMB != 10 || helpers.GlobalConfig.Log.MaxBackups != 3 || helpers.GlobalConfig.Log.MaxAgeDays != 7 {
 				t.Fatalf("非法保存不应修改轮转参数: %+v", helpers.GlobalConfig.Log)

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"qmediasync/internal/httpapi"
 )
 
 func setupCronControllerTest() *gin.Engine {
@@ -29,12 +31,12 @@ func TestValidateCron使用规范化表达式生成描述(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[map[string]string]
+	var resp httpapi.APIResponse[map[string]string]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d, message=%s", resp.Code, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Code = %d, message=%s", resp.Status, resp.Message)
 	}
 	if resp.Data["description"] == "无效的 Cron 表达式" {
 		t.Fatalf("Cron 描述未使用规范化表达式: %+v", resp.Data)
@@ -51,12 +53,12 @@ func TestGetCronNextTime使用规范化表达式(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[[]string]
+	var resp httpapi.APIResponse[[]string]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d, message=%s", resp.Code, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Code = %d, message=%s", resp.Status, resp.Message)
 	}
 	if len(resp.Data) != 5 {
 		t.Fatalf("下次执行时间数量 = %d, want 5", len(resp.Data))

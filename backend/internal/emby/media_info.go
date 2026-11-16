@@ -3,37 +3,49 @@ package emby
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
+
+	"gorm.io/gorm"
 
 	"qmediasync/internal/helpers"
 	embyclientrestgo "qmediasync/internal/medialibrary/client"
 	"qmediasync/internal/models"
 )
 
+// ErrMediaLibraryUnavailable 表示本端未配置、未启用或已有提取任务。
+var ErrMediaLibraryUnavailable = errors.New("media library unavailable")
+
 var embyMediaInfoRunning atomic.Int32
 var jellyfinMediaInfoRunning atomic.Int32
 
 // StartParseEmbyMediaInfo 保留原 Emby 提取入口。
 func StartParseEmbyMediaInfo() bool {
-	return StartParseMediaLibraryInfo(models.MediaServerEmby)
+	return StartParseMediaLibraryInfo(models.MediaServerEmby) == nil
 }
 
 // StartParseMediaLibraryInfo 分别收集两端需要提取的条目，同端同时只允许一轮扫描。
-func StartParseMediaLibraryInfo(kind models.MediaServerType) bool {
+func StartParseMediaLibraryInfo(kind models.MediaServerType) error {
 	if err := kind.Validate(); err != nil {
-		return false
+		return err
 	}
 	config, err := models.ReadMediaLibraryConfigSnapshot(kind)
-	if err != nil || !config.Enabled || config.EmbyUrl == "" || config.EmbyApiKey == "" {
-		return false
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("%w：%w", ErrMediaLibraryUnavailable, err)
+	}
+	if err != nil {
+		return fmt.Errorf("读取 %s 媒体库配置失败：%w", kind, err)
+	}
+	if !config.Enabled || config.EmbyUrl == "" || config.EmbyApiKey == "" {
+		return ErrMediaLibraryUnavailable
 	}
 	running := &embyMediaInfoRunning
 	if kind == models.MediaServerJellyfin {
 		running = &jellyfinMediaInfoRunning
 	}
 	if !running.CompareAndSwap(0, 1) {
-		return false
+		return ErrMediaLibraryUnavailable
 	}
 	product := "Emby"
 	if kind == models.MediaServerJellyfin {
@@ -48,7 +60,7 @@ func StartParseMediaLibraryInfo(kind models.MediaServerType) bool {
 		}
 		helpers.AppLogger.Infof("%s 媒体信息提取已加入下载队列，共 %d 项", product, count)
 	}()
-	return true
+	return nil
 }
 
 func collectMediaLibraryInfo(ctx context.Context, config *models.EmbyConfig) (int, error) {

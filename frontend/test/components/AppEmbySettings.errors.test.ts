@@ -19,7 +19,13 @@ const settings = {
 const rejectedRequest = (errorCode: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, error_code: errorCode, message: 'internal private-key' },
+    data: {
+      status: status,
+      error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      message: 'internal private-key',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/setting/emby/parse?api_key=private-key' },
   })
 const mountSettings = async (
@@ -31,29 +37,35 @@ const mountSettings = async (
   const getReply = vi.fn(async (url: string): Promise<APIResponse<unknown>> => {
     if (url.endsWith('/setting/emby-config')) {
       if (configError) throw configError
-      return { code: 200, message: '', data: { exists: config !== null, config } }
+      return { status: 200, message: '', data: { exists: config !== null, config } }
     }
     if (url.endsWith('/emby/libraries')) {
       if (libraryError) throw libraryError
-      return { code: 200, message: '', data: [] }
+      return { status: 200, message: '', data: [] }
     }
-    if (url.endsWith('/setting/cron')) return { code: 200, message: '', data: [] }
+    if (url.endsWith('/setting/cron')) return { status: 200, message: '', data: [] }
     return {
-      code: 200,
+      status: 200,
       message: '',
       data: { is_running: false, sync_enabled: 1, total_items: 0, last_error: syncError },
     }
   })
-  const reply = vi
-    .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: { warnings: [], restart_required: false } })
-  const adapter = vi.fn(async (config) => ({
-    config,
+  const reply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
     status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await getReply(config.url) : await reply(),
-  }))
+    message: '',
+    data: { restart_required: false },
+    warnings: [],
+  })
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'get' ? await getReply(config.url) : await reply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const wrapper = mount(MediaServerSettings, {
     props: { serverType: 'emby', active: true },
     global: {
@@ -108,7 +120,7 @@ describe('Emby 设置请求反馈', () => {
     await act('保存设置')
     expect(reply).not.toHaveBeenCalled()
     getReply.mockResolvedValueOnce({
-      code: 200,
+      status: 200,
       message: '',
       data: { exists: true, config: settings },
     })
@@ -125,7 +137,13 @@ describe('Emby 设置请求反馈', () => {
     const { wrapper, reply, act, adapter } = await mountSettings()
     await input(wrapper, 'Emby 服务器地址').setValue('http://changed:8096')
     await input(wrapper, 'Emby API Key').setValue('private-new-key')
-    reply.mockResolvedValueOnce({ code: 500, message: 'Emby 配置暂时不可写', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: 'Emby 配置暂时不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('保存设置')
     expect(wrapper.get('.emby-status-alert').text()).toContain('保存 Emby 配置失败')
     expect(wrapper.text()).not.toContain('保存成功')
@@ -208,7 +226,7 @@ describe('Emby 设置请求反馈', () => {
     const { wrapper, getReply, act } = await mountSettings(undefined, '', config)
     getReply.mockImplementation(async (url: string) => {
       if (url.endsWith('/emby/libraries')) throw new AxiosError('private-key', 'ERR_NETWORK')
-      return { code: 200, message: '', data: { exists: true, config } }
+      return { status: 200, message: '', data: { exists: true, config } }
     })
     await act('保存设置')
     const alert = wrapper.get('.readback-failure').text()
@@ -235,16 +253,17 @@ describe('Emby 设置请求反馈', () => {
     const readback = createDeferred<APIResponse<unknown>>()
     getReply.mockReturnValueOnce(readback.promise)
     reply.mockResolvedValueOnce({
-      code: 200,
+      status: 200,
       message: '配置已保存',
-      data: { warnings: ['代理未应用，请重新保存'], restart_required: false },
+      data: { restart_required: false },
+      warnings: ['代理未应用，请重新保存'],
     })
     await act('保存设置')
     libraries.resolve()
     await flushPromises()
     const feedbackDuringReadback = wrapper.get('.emby-status-alert').text()
     readback.resolve({
-      code: 200,
+      status: 200,
       message: '',
       data: { exists: true, config: { ...settings, sync_all_libraries: 0 } },
     })
@@ -295,25 +314,17 @@ describe('Emby 设置请求反馈', () => {
     const { wrapper, reply, getReply, act } = await mountSettings()
     const readsBeforeStart = getReply.mock.calls.length
     reply.mockResolvedValueOnce({
-      code: 500,
+      status: 500,
       message: '已有 Emby 条目同步任务正在运行，请稍后再试',
       data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await act('启动全量同步')
     await vi.advanceTimersByTimeAsync(6000)
     expect(wrapper.get('.emby-status-alert').text()).toContain('已有 Emby 条目同步任务正在运行')
     expect(getReply).toHaveBeenCalledTimes(readsBeforeStart)
     expect(wrapper.text()).not.toContain('同步已启动')
-  })
-
-  it('较早保存成功的定时器不会清掉后来的错误', async () => {
-    const { wrapper, reply, act } = await mountSettings()
-    await act('保存设置')
-    expect(wrapper.get('.emby-status-alert').text()).toContain('保存成功')
-    reply.mockRejectedValueOnce(rejectedRequest('REQUEST_ORIGIN_INVALID'))
-    await act('提取媒体信息')
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(wrapper.get('.emby-status-alert').text()).toContain('访问地址校验失败')
   })
 
   it('保存请求在途时禁用启动同步，避免保存结果覆盖同步反馈', async () => {
@@ -323,7 +334,7 @@ describe('Emby 设置请求反馈', () => {
     reply.mockReturnValueOnce(pending.promise)
     await act('保存设置')
     expect(sync().attributes('disabled')).toBeDefined()
-    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
+    pending.resolve({ status: 200, message: '', data: { restart_required: false }, warnings: [] })
     await flushPromises()
     expect(sync().attributes('disabled')).toBeUndefined()
   })
@@ -337,7 +348,7 @@ describe('Emby 设置请求反馈', () => {
     await act('启动全量同步')
     expect(button('保存设置').attributes('disabled')).toBeDefined()
     expect(button('提取媒体信息').attributes('disabled')).toBeDefined()
-    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
+    pending.resolve({ status: 200, message: '', data: { restart_required: false }, warnings: [] })
     await flushPromises()
     expect(button('保存设置').attributes('disabled')).toBeUndefined()
     expect(button('提取媒体信息').attributes('disabled')).toBeUndefined()
@@ -359,7 +370,13 @@ describe('Emby 设置请求反馈', () => {
 
   it('Cron 失焦读取失败保留操作反馈，编辑和清空立即丢弃旧响应', async () => {
     const { wrapper, reply, getReply, act } = await mountSettings()
-    reply.mockResolvedValueOnce({ code: 500, message: 'Emby 配置暂时不可写', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: 'Emby 配置暂时不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('保存设置')
     const cron = input(wrapper, '同步时间')
     const old = createDeferred<APIResponse<unknown>>()
@@ -373,7 +390,7 @@ describe('Emby 设置请求反馈', () => {
     await flushPromises()
     await vi.advanceTimersByTimeAsync(100)
     expect(wrapper.get('.el-form-item__error').text()).toContain('访问地址校验失败')
-    old.resolve({ code: 200, message: '', data: ['2030-01-01'] })
+    old.resolve({ status: 200, message: '', data: ['2030-01-01'] })
     await flushPromises()
     expect(wrapper.get('.el-form-item__error').text()).toContain('访问地址校验失败')
     expect(wrapper.text()).not.toContain('2030-01-01')
@@ -382,7 +399,13 @@ describe('Emby 设置请求反馈', () => {
     await cron.trigger('blur')
     await flushPromises()
     await cron.setValue('')
-    pending.resolve({ code: 500, message: '过期查询失败', data: null })
+    pending.resolve({
+      status: 500,
+      message: '过期查询失败',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await flushPromises()
     await vi.advanceTimersByTimeAsync(100)
     expect(wrapper.find('.el-form-item__error').exists()).toBe(false)

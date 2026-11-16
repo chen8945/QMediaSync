@@ -9,7 +9,7 @@ describe('LoginSessions', () => {
     const http = {
       get: vi.fn().mockResolvedValue({
         data: {
-          code: 200,
+          status: 200,
           data: [
             {
               session_id: 'sid-current',
@@ -22,6 +22,7 @@ describe('LoginSessions', () => {
             },
           ],
         },
+        status: 200,
       }),
       delete: vi.fn(),
       post: vi.fn(),

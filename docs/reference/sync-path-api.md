@@ -135,26 +135,25 @@
 
 ## 响应与错误
 
-成功时返回 HTTP `200`：
+创建成功返回 HTTP `201` 和资源 `Location`；相同幂等键重放原创建成功响应，仍为 `201`。更新成功返回 `200`。创建示例：
 
 ```json
 {
-  "code": 200,
+  "status": 201,
   "message": "添加同步目录成功",
   "data": {
     "sync_path": {},
     "directory_upload": {
       "enabled": true,
       "rules": []
-    },
-    "warnings": []
+    }
   }
 }
 ```
 
-更新成功时 `message` 为「保存同步目录成功」。`warnings` 说明事务已成功、但本地目录创建或运行态服务重载未完成，调用方应提示并结合日志排查。
+更新成功时 `message` 为「保存同步目录成功」。顶层 `warnings` 说明事务已成功、但本地目录创建或运行态服务重载未完成，调用方应提示并结合日志排查。
 
-错误响应同样使用 `APIResponse` 包络。当前 JSON `code` 固定为 `500`，必须以 HTTP 状态、`data.error_code` 和 `data.field_errors` 判断失败原因：
+成功与请求错误统一使用 [公共响应包络](api-response.md)。请求失败原因从真实 HTTP 状态、顶层 `error_code` 和条件性 `field_errors` 读取，`instance` 用于诊断关联：
 
 | HTTP 状态 | `error_code` | 说明 |
 | --- | --- | --- |
@@ -167,9 +166,9 @@
 | `409` | `IDEMPOTENCY_CONFLICT` | 相同创建幂等键仍在处理。 |
 | `500` | `DATABASE_SAVE_FAILED` | 数据库或未分类保存错误。 |
 
-`field_errors` 是数组，每项包含 `field`、`message`，规则错误可额外包含暂存用 `client_id`。基础字段错误没有 `client_id`。
+字段定位和 `client_id` 的公共结构见 [字段契约](api-response.md#范围与包络)；基础字段错误没有规则 `client_id`。
 
-前端领域 API 保留原始错误响应，保存逻辑通过公共解析器兼容顶层及旧嵌套错误码。可展示的字段原因使用核验后的固定文案，未知原因回退为安全说明，同时保留 `field` 和 `client_id` 的定位。保存成功仍返回聚合和警告；警告不得改判为保存失败，也不得丢失条目。
+前端领域 API 保留原始错误响应，保存逻辑通过公共解析器读取顶层错误和字段定位。可展示的字段原因使用核验后的固定文案，未知原因回退为安全说明，同时保留 `field` 和 `client_id` 的定位。保存成功仍返回聚合和警告；警告不得改判为保存失败，也不得丢失条目。
 
 ## 不变量
 
@@ -184,4 +183,4 @@
 - 修改接口或聚合保存逻辑后，运行 `(cd backend && go test ./internal/controllers/ -run 'Test(Create|Update)SyncPathAggregate')`。
 - 修改事务、幂等或规则归属后，运行 `(cd backend && go test ./internal/strm/config/)` 与 `(cd backend && go test ./internal/models/ -run TestMigrateVersion59AddsSyncPathIdempotencyTableAndEmbyTaskKey)`。
 - 修改前端表单或字段定位后，运行 `(cd frontend && pnpm run type-check)`。
-- 前端 API、保存流程和组件回归随 `(cd frontend && pnpm run test)` 执行，覆盖 HTTP 成功但业务失败、来源／CSRF、字段定位、成功警告、失败保留输入、幂等键复用，以及详情或关联读取失败不提交默认空值。
+- 前端 API、保存流程和组件回归随 `(cd frontend && pnpm run test)` 执行，覆盖真实请求失败、来源／CSRF、字段定位、成功警告、失败保留输入、幂等键复用，以及详情或关联读取失败不提交默认空值。

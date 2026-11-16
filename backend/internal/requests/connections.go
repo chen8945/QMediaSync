@@ -167,9 +167,9 @@ func (r Proxy115Request) Validate() error {
 
 // QueueRateLimitRequest 请求队列限流配置。
 type QueueRateLimitRequest struct {
-	QPS int `json:"qps" binding:"required"`
-	QPM int `json:"qpm" binding:"required"`
-	QPH int `json:"qph" binding:"required"`
+	QPS int `json:"qps"`
+	QPM int `json:"qpm"`
+	QPH int `json:"qph"`
 }
 
 // Validate 校验请求队列限流配置。
@@ -185,7 +185,7 @@ func (r QueueRateLimitRequest) Validate() error {
 
 // CleanRequestStatsRequest 清理请求统计请求。
 type CleanRequestStatsRequest struct {
-	Days int `json:"days" binding:"required"`
+	Days int `json:"days"`
 }
 
 // Validate 校验清理请求统计请求。

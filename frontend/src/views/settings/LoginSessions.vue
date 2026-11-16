@@ -13,11 +13,18 @@ import {
 import { formatDateTime } from '@/utils/timeUtils'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
+import type { SettingsSaveResult } from '@/api/types'
 import PageHeader from '@/components/common/PageHeader.vue'
 
 const http = useHttpClient()
 const sessions = shallowRef<LoginSession[]>([])
 const loading = shallowRef(false)
+
+const showOperationResult = (result: SettingsSaveResult, fallback: string) => {
+  const message = result.message?.trim() || fallback
+  if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+  else ElMessage.success(message)
+}
 
 const reportError = (error: unknown, fallbackMessage: string) => {
   if (isMessageBoxCancelError(error)) return
@@ -49,8 +56,8 @@ const revokeSession = async (session: LoginSession) => {
       confirmButtonText: '撤销',
       cancelButtonText: '取消',
     })
-    await revokeLoginSession(http, session.session_id)
-    ElMessage.success('登录设备已撤销')
+    const result = await revokeLoginSession(http, session.session_id)
+    showOperationResult(result, '登录设备已撤销')
     await loadSessions()
   } catch (error) {
     reportError(error, '撤销登录设备失败')
@@ -64,8 +71,8 @@ const revokeOthers = async () => {
       confirmButtonText: '撤销',
       cancelButtonText: '取消',
     })
-    await revokeOtherLoginSessions(http)
-    ElMessage.success('其他登录设备已撤销')
+    const result = await revokeOtherLoginSessions(http)
+    showOperationResult(result, '其他登录设备已撤销')
     await loadSessions()
   } catch (error) {
     reportError(error, '撤销其他登录设备失败')

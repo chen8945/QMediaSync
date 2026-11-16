@@ -236,11 +236,13 @@ const testProxy = async () => {
       preserve_proxy_credentials: shouldPreserveProxyCredentials(),
     }
 
-    await testProxyConnection(http, requestData)
+    const result = await testProxyConnection(http, requestData)
     proxyStatus.value = {
       title: '代理测试成功',
-      type: 'success',
-      description: '代理服务器连接正常，可以正常使用',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || '代理服务器连接正常，可以正常使用',
     }
   } catch (error) {
     showProxyFailure(error, '代理测试失败')
@@ -278,7 +280,7 @@ const saveProxy = async () => {
       proxyStatus.value = {
         title: '代理设置已保存，尚未完全生效',
         type: 'warning',
-        description: result.warnings.join('；'),
+        description: [result.message?.trim(), ...result.warnings].filter(Boolean).join('；'),
       }
     }
     // 脱敏回读失败保留用户输入和已提交配置的应用警告。
@@ -287,7 +289,9 @@ const saveProxy = async () => {
     proxyStatus.value = {
       title: '代理设置已保存',
       type: 'success',
-      description: proxyData.proxy_url ? '已设置代理服务器' : '已清除代理设置，使用直连网络',
+      description:
+        result.message?.trim() ||
+        (proxyData.proxy_url ? '已设置代理服务器' : '已清除代理设置，使用直连网络'),
     }
   } catch (error) {
     showProxyFailure(error, '保存代理设置失败')

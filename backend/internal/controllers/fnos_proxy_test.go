@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 )
@@ -37,7 +38,7 @@ func TestFnosProxyConfigController(t *testing.T) {
 	router := gin.New()
 	router.GET("/config", controller.GetConfig)
 	router.POST("/config", controller.SaveConfig)
-	send := func(method, body string) (int, APIResponse[struct {
+	send := func(method, body string) (int, httpapi.APIResponse[struct {
 		Config  models.FnosProxyConfig        `json:"config"`
 		Runtime models.FnosProxyRuntimeStatus `json:"runtime"`
 	}]) {
@@ -46,7 +47,7 @@ func TestFnosProxyConfigController(t *testing.T) {
 		request := httptest.NewRequest(method, "/config", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(recorder, request)
-		var response APIResponse[struct {
+		var response httpapi.APIResponse[struct {
 			Config  models.FnosProxyConfig        `json:"config"`
 			Runtime models.FnosProxyRuntimeStatus `json:"runtime"`
 		}]
@@ -56,7 +57,7 @@ func TestFnosProxyConfigController(t *testing.T) {
 		return recorder.Code, response
 	}
 	_, response := send(http.MethodGet, "")
-	if response.Code != Success || response.Data.Config.Enabled || response.Data.Config.PathMappings == nil {
+	if response.Status != http.StatusOK || response.Data.Config.Enabled || response.Data.Config.PathMappings == nil {
 		t.Fatalf("default read: %+v", response)
 	}
 	var count int64
@@ -64,7 +65,7 @@ func TestFnosProxyConfigController(t *testing.T) {
 		t.Fatalf("GET must not insert: %d %v", count, err)
 	}
 	_, response = send(http.MethodPost, `{"enabled":true,"fnos_url":"http://fnos.invalid:8005/","path_mappings":[]}`)
-	if response.Code != Success || !response.Data.Config.Enabled || response.Data.Config.FnosURL != "http://fnos.invalid:8005" || response.Data.Runtime.RestartRequired || applyCalls != 1 || response.Data.Runtime.ListenPort != 9005 {
+	if response.Status != http.StatusOK || !response.Data.Config.Enabled || response.Data.Config.FnosURL != "http://fnos.invalid:8005" || response.Data.Runtime.RestartRequired || applyCalls != 1 || response.Data.Runtime.ListenPort != 9005 {
 		t.Fatalf("save must return saved and actual configurations separately: %+v", response)
 	}
 	for _, body := range []string{
@@ -73,27 +74,30 @@ func TestFnosProxyConfigController(t *testing.T) {
 		`{"enabled":true,"fnos_url":"http://[::1]:12333"}`,
 		`{"enabled":true,"fnos_url":"http://:9005"}`,
 		`{"enabled":1}`,
-		`{"fnos_url":"` + strings.Repeat("a", requests.MaxFnosProxyConfigBodyBytes) + `"}`,
 	} {
 		status, response := send(http.MethodPost, body)
-		if status != http.StatusBadRequest || response.Code == Success {
+		if status != http.StatusBadRequest || response.Status == http.StatusOK {
 			t.Fatalf("invalid request accepted: status=%d response=%+v", status, response)
 		}
+	}
+	status, oversized := send(http.MethodPost, `{"fnos_url":"`+strings.Repeat("a", requests.MaxFnosProxyConfigBodyBytes)+`"}`)
+	if status != http.StatusRequestEntityTooLarge || oversized.Status != status {
+		t.Fatalf("oversized request: status=%d response=%+v", status, oversized)
 	}
 	_, response = send(http.MethodGet, "")
 	if response.Data.Config.FnosURL != "http://fnos.invalid:8005" || !response.Data.Config.Enabled || applyCalls != 1 {
 		t.Fatal("validation failure changed saved config")
 	}
 	_, response = send(http.MethodPost, `{}`)
-	if response.Code != Success || response.Data.Config.Enabled || applied.Enabled || applyCalls != 2 {
+	if response.Status != http.StatusOK || response.Data.Config.Enabled || applied.Enabled || applyCalls != 2 {
 		t.Fatalf("zero values not saved: %+v", response)
 	}
 	if err := conn.Exec("DROP TABLE fnos_proxy_config").Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		_, response := send(method, `{}`)
-		if response.Code == Success || strings.Contains(response.Message, "no such table") || applyCalls != 2 {
+		status, response := send(method, `{}`)
+		if status != http.StatusInternalServerError || response.Status != status || strings.Contains(response.Message, "no such table") || applyCalls != 2 {
 			t.Fatalf("query error turned into defaults or leaked SQL: %+v", response)
 		}
 	}
@@ -142,14 +146,14 @@ func TestFnosProxyConfigApplyFailureStillReturnsSavedConfiguration(t *testing.T)
 	request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(`{"enabled":true,"fnos_url":"http://fnos.invalid:8005"}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
-	var response APIResponse[struct {
+	var response httpapi.APIResponse[struct {
 		Config  models.FnosProxyConfig        `json:"config"`
 		Runtime models.FnosProxyRuntimeStatus `json:"runtime"`
 	}]
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if recorder.Code != http.StatusOK || response.Code != Success || !response.Data.Config.Enabled || response.Data.Config.FnosURL != "http://fnos.invalid:8005" || response.Data.Runtime.Running || response.Data.Runtime.LastError != runtimeError || !response.Data.Runtime.RestartRequired || !strings.Contains(response.Message, "已保存") || !strings.Contains(response.Message, "未能完全应用") {
+	if recorder.Code != http.StatusOK || response.Status != http.StatusOK || !response.Data.Config.Enabled || response.Data.Config.FnosURL != "http://fnos.invalid:8005" || response.Data.Runtime.Running || response.Data.Runtime.LastError != runtimeError || !response.Data.Runtime.RestartRequired || len(response.Warnings) != 1 {
 		t.Fatalf("应用失败丢失已保存配置或实际状态：%d %+v", recorder.Code, response)
 	}
 }

@@ -26,7 +26,7 @@ export const proxySettingsPublicMessages: Readonly<Record<string, string>> = {
 
 export async function fetchProxySettings(http: AxiosInstance): Promise<ProxySettings> {
   const response = await http.get<APIResponse<ProxySettings>>(`${SERVER_URL}/setting/http-proxy`)
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   // 保存后的回读必须拿到实际脱敏地址，空响应不能被当成清空代理成功。
   if (!data || typeof data.http_proxy !== 'string') throw new HttpResponseError(response)
   return data
@@ -39,15 +39,14 @@ export async function saveProxySettings(
   const response = await http.post<APIResponse<null>>(`${SERVER_URL}/setting/http-proxy`, payload, {
     headers: { 'Content-Type': 'application/json' },
   })
-  unwrapResponse(response)
   return getSettingsSaveResult(response)
 }
 
 export async function testProxyConnection(
   http: AxiosInstance,
   payload: ProxySettingsPayload,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/setting/test-http-proxy`, payload, {
       headers: { 'Content-Type': 'application/json' },
     }),

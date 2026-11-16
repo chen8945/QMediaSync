@@ -1,9 +1,10 @@
 import { SERVER_URL } from '@/const'
 import type { AxiosInstance } from 'axios'
 import { HttpResponseError, type ParsedHttpError } from '@/http/errors'
+import { isAPIResponse } from '@/http/envelope'
 import type { DirectoryUploadRule } from '@/types/directoryUpload'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIFieldError, APIResponse, SettingsSaveResult } from './types'
 
 export interface SyncPathSettingPayload {
   local_proxy: number
@@ -57,14 +58,16 @@ export interface SaveSyncPathPayload {
   }
 }
 
-export interface SyncPathFieldError {
-  client_id?: string
-  field: string
-  message: string
-}
+export type SyncPathFieldError = APIFieldError
 
 export interface SaveSyncPathResponseData {
   warnings: string[]
+  message?: string
+}
+
+export interface DirectoryUploadScanResult {
+  accepted: number
+  items: { rule_id: number; accepted: number; error?: string }[]
 }
 
 export interface SyncPath extends Omit<SyncPathPayload, 'setting'>, SyncPathSettingPayload {
@@ -145,7 +148,9 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
 export function syncPathFieldErrors(error: ParsedHttpError): SyncPathFieldError[] {
   if (error.kind !== 'application') return []
   const body = asRecord(error.response?.data)
-  const fields = body?.field_errors ?? asRecord(error.details)?.field_errors
+  if (!error.response || error.response.status < 400 || !isAPIResponse(error.response) || !body)
+    return []
+  const fields = body.field_errors
   if (!Array.isArray(fields)) return []
   return fields.flatMap((value) => {
     const item = asRecord(value)
@@ -184,26 +189,22 @@ export async function saveSyncPathAggregate(
 ): Promise<SaveSyncPathResponseData> {
   const response =
     id > 0
-      ? await http.put<APIResponse<SaveSyncPathResponseData>>(
+      ? await http.put<APIResponse<Record<string, unknown>>>(
           `${SERVER_URL}/sync/paths/${id}`,
           payload,
         )
-      : await http.post<APIResponse<SaveSyncPathResponseData>>(
-          `${SERVER_URL}/sync/paths`,
-          payload,
-          {
-            headers: { 'Idempotency-Key': idempotencyKey },
-          },
-        )
-  const data = unwrapResponse(response)
-  if (
-    !asRecord(data) ||
-    (data.warnings != null &&
-      (!Array.isArray(data.warnings) || !data.warnings.every((item) => typeof item === 'string')))
-  ) {
+      : await http.post<APIResponse<Record<string, unknown>>>(`${SERVER_URL}/sync/paths`, payload, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+        })
+  const result = unwrapResponse(response)
+  if (!asRecord(result.data)) {
     throw new HttpResponseError(response)
   }
-  return { ...data, warnings: data.warnings ?? [] }
+  return {
+    ...result.data,
+    warnings: result.warnings,
+    ...(result.message !== undefined ? { message: result.message } : {}),
+  }
 }
 
 export async function fetchSyncPaths(
@@ -215,7 +216,7 @@ export async function fetchSyncPaths(
     ...options,
     params,
   })
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (!asRecord(data) || (data.list !== null && !Array.isArray(data.list)))
     throw new HttpResponseError(response)
   return { ...data, list: data.list ?? [], total: data.total ?? 0 }
@@ -223,7 +224,7 @@ export async function fetchSyncPaths(
 
 export async function fetchSyncPath(http: AxiosInstance, id: number): Promise<SyncPath> {
   const response = await http.get<APIResponse<SyncPath>>(`${SERVER_URL}/sync/path/${id}`)
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (!data?.id) throw new HttpResponseError(response)
   return data
 }
@@ -236,7 +237,7 @@ export async function fetchDirectoryUploadRules(
     `${SERVER_URL}/directory-upload/rules`,
     syncPathId === undefined ? undefined : { params: { sync_path_id: syncPathId } },
   )
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (!asRecord(data) || (data.list !== null && !Array.isArray(data.list)))
     throw new HttpResponseError(response)
   return data.list ?? []
@@ -244,8 +245,8 @@ export async function fetchDirectoryUploadRules(
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
-export async function deleteSyncPath(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(
+export async function deleteSyncPath(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post(`${SERVER_URL}/sync/path-delete`, { id }, { headers: jsonHeaders }),
   )
 }
@@ -254,9 +255,9 @@ export async function startSyncPath(
   http: AxiosInstance,
   id: number,
   full = false,
-): Promise<{ is_running?: number } | null> {
+): Promise<SettingsSaveResult & { data: { is_running?: number } | null }> {
   return unwrapResponse(
-    await http.post(
+    await http.post<APIResponse<{ is_running?: number } | null>>(
       `${SERVER_URL}/sync/path/${full ? 'full-start' : 'start'}`,
       { id },
       { headers: jsonHeaders },
@@ -264,12 +265,17 @@ export async function startSyncPath(
   )
 }
 
-export async function stopSyncPath(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.post(`${SERVER_URL}/sync/path/stop`, { id }, { headers: jsonHeaders }))
+export async function stopSyncPath(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post(`${SERVER_URL}/sync/path/stop`, { id }, { headers: jsonHeaders }),
+  )
 }
 
-export async function toggleSyncPathCron(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(
+export async function toggleSyncPathCron(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post(`${SERVER_URL}/sync/path/toggle-cron`, { id }, { headers: jsonHeaders }),
   )
 }
@@ -277,8 +283,48 @@ export async function toggleSyncPathCron(http: AxiosInstance, id: number): Promi
 export async function scanSyncPathDirectoryUpload(
   http: AxiosInstance,
   id: number,
-): Promise<{ accepted?: number } | null> {
-  return unwrapResponse(await http.post(`${SERVER_URL}/directory-upload/sync-paths/${id}/scan`))
+): Promise<DirectoryUploadScanResult & SettingsSaveResult> {
+  const response = await http.post<APIResponse<DirectoryUploadScanResult>>(
+    `${SERVER_URL}/directory-upload/sync-paths/${id}/scan`,
+  )
+  const data = readDirectoryUploadScanResult(unwrapResponse(response).data)
+  if (!data) throw new HttpResponseError(response)
+  return { ...data, ...getSettingsSaveResult(response) }
+}
+
+function readDirectoryUploadScanResult(value: unknown): DirectoryUploadScanResult | undefined {
+  const data = asRecord(value)
+  if (
+    !data ||
+    typeof data.accepted !== 'number' ||
+    !Number.isSafeInteger(data.accepted) ||
+    data.accepted < 0 ||
+    !Array.isArray(data.items) ||
+    !data.items.every((value): value is DirectoryUploadScanResult['items'][number] => {
+      const item = asRecord(value)
+      return (
+        item !== undefined &&
+        typeof item.rule_id === 'number' &&
+        Number.isSafeInteger(item.rule_id) &&
+        item.rule_id > 0 &&
+        typeof item.accepted === 'number' &&
+        Number.isSafeInteger(item.accepted) &&
+        item.accepted >= 0 &&
+        (item.error === undefined || typeof item.error === 'string')
+      )
+    })
+  )
+    return undefined
+  return { accepted: data.accepted, items: data.items }
+}
+
+export function directoryUploadScanResult(
+  error: ParsedHttpError,
+): DirectoryUploadScanResult | undefined {
+  const body = asRecord(error.response?.data)
+  if (!error.response || error.response.status < 400 || !isAPIResponse(error.response) || !body)
+    return undefined
+  return readDirectoryUploadScanResult(body.data)
 }
 
 export async function fetchSyncPathScrapeRelations(
@@ -288,7 +334,7 @@ export async function fetchSyncPathScrapeRelations(
   const response = await http.get<APIResponse<number[] | null>>(
     `${SERVER_URL}/sync/path/${id}/scrape-paths`,
   )
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (data !== null && (!Array.isArray(data) || !data.every((item) => typeof item === 'number')))
     throw new HttpResponseError(response)
   return data ?? []
@@ -298,8 +344,8 @@ export async function saveSyncPathScrapeRelations(
   http: AxiosInstance,
   id: number,
   scrapePathIds: number[],
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post(`${SERVER_URL}/sync/path/scrape-paths`, { id, scrape_path_id: scrapePathIds }),
   )
 }

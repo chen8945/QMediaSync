@@ -31,14 +31,20 @@ const DialogStub = defineComponent({
 const rejection = (code: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, error_code: code, message: 'private token' },
+    data: {
+      status: status,
+      error_code: code ?? 'TEST_REQUEST_FAILED',
+      message: 'private token',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/sync/path/start?token=private' },
   })
 const mountDirectories = async (running = 0, directoryIds = [12]) => {
   const getReply = vi.fn(async (url: string): Promise<APIResponse<unknown>> => {
     if (url.endsWith('/sync/path-list'))
       return {
-        code: 200,
+        status: 200,
         message: '',
         data: {
           list: directoryIds.map((id) => ({
@@ -58,7 +64,7 @@ const mountDirectories = async (running = 0, directoryIds = [12]) => {
       }
     if (url.endsWith('/directory-upload/rules'))
       return {
-        code: 200,
+        status: 200,
         message: '',
         data: {
           list: [
@@ -74,19 +80,22 @@ const mountDirectories = async (running = 0, directoryIds = [12]) => {
         },
       }
     if (url.endsWith('/scrape/pathes'))
-      return { code: 200, message: '', data: [{ id: 5, source_path: '/scrape' }] }
-    return { code: 200, message: '', data: [5] }
+      return { status: 200, message: '', data: [{ id: 5, source_path: '/scrape' }] }
+    return { status: 200, message: '', data: [5] }
   })
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: null })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await getReply(config.url) : await reply(),
-  }))
+    .mockResolvedValue({ status: 200, message: '', data: null })
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'get' ? await getReply(config.url) : await reply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/', component: { template: '<div />' } }],
@@ -114,14 +123,16 @@ const dialogButton = (wrapper: VueWrapper, label: string) =>
     .find((button) => button.text() === label)!
 
 const relationSuccess = (data: unknown = null): APIResponse<unknown> => ({
-  code: 200,
+  status: 200,
   message: '',
   data,
 })
 const relationFailure = (): APIResponse<unknown> => ({
-  code: 500,
+  status: 500,
   message: '同步目录操作失败，请稍后重试',
   data: null,
+  error_code: 'TEST_REQUEST_FAILED',
+  instance: '/request-errors/ComponentTestFailure0001',
 })
 const relationCandidates = (ids = [5, 6, 7]) =>
   relationSuccess(ids.map((id) => ({ id, source_path: `/scrape/${id}` })))
@@ -131,20 +142,43 @@ beforeEach(() => {
   events.clear()
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => vi.restoreAllMocks())
 
 describe('同步目录列表请求行为', () => {
-  it.each(['增量同步', '全量同步', '删除同步目录', '目录监控扫描'])(
+  it.each(['增量同步', '全量同步'])(
+    '%s 的受理反馈保留 message/warnings 和排队状态',
+    async (action) => {
+      const { wrapper, reply, act } = await mountDirectories()
+      const message = '服务器已受理测试同步请求'
+      const warning = '测试同步请求尚待处理'
+      reply.mockResolvedValueOnce({
+        status: 202,
+        data: { is_running: 1 },
+        message,
+        warnings: [warning],
+      })
+      await act(action)
+      expect(wrapper.find('.is-waiting').exists()).toBe(true)
+      expect(wrapper.find('.is-running').exists()).toBe(false)
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+      expect(ElMessage.success).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['增量同步', '全量同步', '删除同步目录'])(
     '%s 业务失败不改变卡片、不刷新或报成功',
     async (action) => {
       const { wrapper, reply, getReply, act } = await mountDirectories()
       reply.mockResolvedValueOnce({
-        code: 500,
+        status: 500,
         message: '同步目录操作失败，请稍后重试',
         data: { is_running: 2, accepted: 1 },
+        error_code: 'TEST_REQUEST_FAILED',
+        instance: '/request-errors/ComponentTestFailure0001',
       })
       const reads = getReply.mock.calls.length
       await act(action)
@@ -159,6 +193,32 @@ describe('同步目录列表请求行为', () => {
       expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
     },
   )
+
+  it('目录监控扫描部分加入时报告数量与安全失败信息，不重发或显示成功', async () => {
+    const { wrapper, reply, getReply, act } = await mountDirectories()
+    reply.mockResolvedValueOnce({
+      status: 500,
+      data: {
+        accepted: 1,
+        items: [
+          { rule_id: 1, accepted: 1 },
+          { rule_id: 2, accepted: 0, error: '规则扫描失败' },
+        ],
+      },
+      message: '目录监控扫描未全部完成',
+      error_code: 'DIRECTORY_UPLOAD_SCAN_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
+    const reads = getReply.mock.calls.length
+    await act('目录监控扫描')
+    expect(reply).toHaveBeenCalledTimes(1)
+    expect(getReply).toHaveBeenCalledTimes(reads)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
+      '已加入 1 个候选文件；目录监控扫描未全部完成',
+    )
+    expect(wrapper.find('.directory-card').exists()).toBe(true)
+  })
 
   it.each(['success', 'failure'])('新列表开始后忽略旧列表的 %s 结果', async (outcome) => {
     const { wrapper, getReply } = await mountDirectories()
@@ -248,7 +308,7 @@ describe('同步目录列表请求行为', () => {
 
   it('成功启动应用服务端运行状态；停止失败保持运行状态', async () => {
     const { wrapper, reply, act } = await mountDirectories()
-    reply.mockResolvedValueOnce({ code: 200, message: '', data: { is_running: 2 } })
+    reply.mockResolvedValueOnce({ status: 200, message: '', data: { is_running: 2 } })
     await act('增量同步')
     expect(wrapper.get('.directory-card').classes()).toContain('is-running')
     vi.mocked(ElMessage.success).mockClear()
@@ -309,7 +369,7 @@ describe('同步目录列表请求行为', () => {
   it('已有关联读取失败阻止保存空集合', async () => {
     const { wrapper, getReply, reply, act } = await mountDirectories()
     getReply
-      .mockResolvedValueOnce({ code: 200, message: '', data: [] })
+      .mockResolvedValueOnce({ status: 200, message: '', data: [] })
       .mockRejectedValueOnce(rejection('REQUEST_ORIGIN_INVALID'))
     await act('关联刮削目录')
     const confirm = wrapper

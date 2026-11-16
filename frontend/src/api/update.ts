@@ -1,8 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import type { ParsedHttpError } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface UpdateInfo {
   version: string
@@ -15,7 +14,8 @@ export interface UpdateInfo {
 }
 
 export type UpdateChannel = 'github' | 'gitee'
-export type UpdateStatus = 'downloading' | 'install' | 'completed' | 'failed' | 'cancelled' | ''
+export type UpdateStatus =
+  'idle' | 'downloading' | 'install' | 'completed' | 'failed' | 'cancelled' | ''
 
 export interface UpdateProgress {
   progress: number
@@ -33,23 +33,6 @@ export const updatePublicMessages: Readonly<Record<string, string>> = {
   'channel：不是允许的取值': '更新渠道无效',
 }
 
-export function isUpdateNotStarted(error: ParsedHttpError): boolean {
-  const response = error.response
-  const body = response?.data
-  return (
-    error.kind === 'application' &&
-    response?.status === 200 &&
-    body !== null &&
-    typeof body === 'object' &&
-    'code' in body &&
-    body.code === 500 &&
-    'message' in body &&
-    body.message === '未开始更新' &&
-    'data' in body &&
-    body.data === null
-  )
-}
-
 export async function fetchUpdateList(
   http: AxiosInstance,
   channel: UpdateChannel,
@@ -59,13 +42,13 @@ export async function fetchUpdateList(
     await http.get<APIResponse<UpdateInfo[]>>(
       `${SERVER_URL}/update/last?channel=${channel}${force ? '&force=1' : ''}`,
     ),
-  )
+  ).data
 }
 
 export async function fetchUpdateProgress(http: AxiosInstance): Promise<UpdateProgress | null> {
   return unwrapResponse(
     await http.get<APIResponse<UpdateProgress | null>>(`${SERVER_URL}/update/progress`),
-  )
+  ).data
 }
 
 export async function startUpdate(
@@ -81,10 +64,12 @@ export async function startUpdate(
   )
 }
 
-export async function cancelUpdate(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<UpdateProgress>>(`${SERVER_URL}/update/cancel`))
+export async function cancelUpdate(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<UpdateProgress>>(`${SERVER_URL}/update/cancel`),
+  )
 }
 
 export async function fetchIsFnOS(http: AxiosInstance): Promise<boolean> {
-  return unwrapResponse(await http.get<APIResponse<boolean>>(`${SERVER_URL}/path/is-fn-os`))
+  return unwrapResponse(await http.get<APIResponse<boolean>>(`${SERVER_URL}/path/is-fn-os`)).data
 }

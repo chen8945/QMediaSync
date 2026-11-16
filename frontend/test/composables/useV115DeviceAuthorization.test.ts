@@ -19,14 +19,17 @@ const createClient = (post: AxiosInstance['post']) => {
 }
 
 const qrResponse = (uid = 'qr-uid') => ({
+  status: 200,
   data: {
-    code: 200,
+    status: 200,
     data: { uid, time: 1, sign: 'private-sign', qrcode: '115://auth', expires: 300 },
   },
 })
 
 const handledUnauthorized = () => {
-  const error = { response: { status: 401, data: { code: 500, message: 'private-token' } } }
+  const error = {
+    response: { status: 401, data: { data: null, status: 401, message: 'private-token' } },
+  }
   markAuthInvalidationHandled(error)
   return error
 }
@@ -50,8 +53,9 @@ describe('useV115DeviceAuthorization', () => {
     const post = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             uid: 'qr-uid',
             time: 1,
@@ -62,8 +66,9 @@ describe('useV115DeviceAuthorization', () => {
         },
       })
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             status: 'waiting',
             tip: '等待扫码',
@@ -103,8 +108,9 @@ describe('useV115DeviceAuthorization', () => {
     const post = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             uid: 'qr-uid',
             time: 1,
@@ -115,8 +121,9 @@ describe('useV115DeviceAuthorization', () => {
         },
       })
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: { status: 'waiting', tip: '等待扫码' },
         },
       })
@@ -164,8 +171,9 @@ describe('useV115DeviceAuthorization', () => {
     const post = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             uid: 'qr-uid',
             time: 1,
@@ -176,8 +184,9 @@ describe('useV115DeviceAuthorization', () => {
         },
       })
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: { status: 'waiting', tip: '等待扫码' },
         },
       })
@@ -230,8 +239,9 @@ describe('useV115DeviceAuthorization', () => {
     const startPromise = authorization!.startAuthorization(12, 'change-session')
     authorization!.stopPolling()
     resolveOpen?.({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: { uid: 'late-qr', time: 1, sign: 'sign', qrcode: '115://auth', expires: 300 },
       },
     })
@@ -251,13 +261,15 @@ describe('useV115DeviceAuthorization', () => {
     const post = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: { uid: 'qr-uid', time: 1, sign: 'sign', qrcode: '115://auth', expires: 300 },
         },
       })
       .mockResolvedValueOnce({
-        data: { code: 200, data: { status: 'expired', tip: '二维码已过期' } },
+        status: 200,
+        data: { status: 200, data: { status: 'expired', tip: '二维码已过期' } },
       })
     const scope = effectScope()
     const authorization = scope.run(() => useV115DeviceAuthorization(createClient(post)))
@@ -279,16 +291,19 @@ describe('useV115DeviceAuthorization', () => {
     const post = vi
       .fn()
       .mockResolvedValueOnce({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: { uid: 'qr-uid', time: 1, sign: 'sign', qrcode: '115://auth', expires: 300 },
         },
       })
       .mockResolvedValueOnce({
-        data: { code: 200, data: { status: 'waiting', tip: '等待扫码' } },
+        status: 200,
+        data: { status: 200, data: { status: 'waiting', tip: '等待扫码' } },
       })
       .mockResolvedValueOnce({
-        data: { code: 200, data: { status: 'scanned', tip: '已扫码，请在 115 客户端确认' } },
+        status: 200,
+        data: { status: 200, data: { status: 'scanned', tip: '已扫码，请在 115 客户端确认' } },
       })
 
     const scope = effectScope()
@@ -318,13 +333,33 @@ describe('useV115DeviceAuthorization', () => {
     [
       'HTTP 200 业务失败',
       {
-        response: { status: 200, data: { code: 500, message: '获取二维码失败：授权服务暂不可用' } },
+        response: {
+          status: 400,
+          data: {
+            data: null,
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 400,
+            message: '获取二维码失败：授权服务暂不可用',
+          },
+        },
       },
       '获取二维码失败',
     ],
     [
       '来源校验失败',
-      { response: { status: 403, data: { code: 500, error_code: 'REQUEST_ORIGIN_INVALID' } } },
+      {
+        response: {
+          status: 403,
+          data: {
+            data: null,
+            message: '请求未完成',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 403,
+            error_code: 'REQUEST_ORIGIN_INVALID',
+          },
+        },
+      },
       '访问地址校验失败',
     ],
     ['无响应', new AxiosError('private-token', 'ERR_NETWORK'), '无法获取服务器响应'],
@@ -372,8 +407,11 @@ describe('useV115DeviceAuthorization', () => {
       .fn()
       .mockResolvedValueOnce(qrResponse())
       .mockResolvedValueOnce({
+        status: 400,
         data: {
-          code: 500,
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+          status: 400,
           message: '保存 115 授权失败：授权会话不存在、已过期或已取消',
           data: null,
         },
@@ -443,7 +481,8 @@ describe('useV115DeviceAuthorization', () => {
       .mockReturnValueOnce(oldPoll.promise)
       .mockResolvedValueOnce(qrResponse('new-uid'))
       .mockResolvedValueOnce({
-        data: { code: 200, data: { status: 'scanned', tip: '已扫码，请确认' } },
+        status: 200,
+        data: { status: 200, data: { status: 'scanned', tip: '已扫码，请确认' } },
       })
     const scope = effectScope()
     const authorization = scope.run(() => useV115DeviceAuthorization(createClient(post)))!
@@ -452,8 +491,17 @@ describe('useV115DeviceAuthorization', () => {
     await flushPromises()
     oldPoll.resolve(
       result === 'success'
-        ? { data: { code: 200, data: { status: 'confirmed', tip: '授权成功' } } }
-        : { data: { code: 500, message: '授权会话不存在或已过期', data: null } },
+        ? { status: 200, data: { status: 200, data: { status: 'confirmed', tip: '授权成功' } } }
+        : {
+            status: 400,
+            data: {
+              error_code: 'INVALID_REQUEST',
+              instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+              status: 400,
+              message: '授权会话不存在或已过期',
+              data: null,
+            },
+          },
     )
     await flushPromises()
     expect(authorization.qrCode.value?.uid).toBe('new-uid')
@@ -491,7 +539,10 @@ describe('useV115DeviceAuthorization', () => {
     visibilityHandler?.()
     expect(post).toHaveBeenCalledTimes(2)
     scope.stop()
-    pending.resolve({ data: { code: 200, data: { status: 'scanned', tip: '已扫码' } } })
+    pending.resolve({
+      status: 200,
+      data: { status: 200, data: { status: 'scanned', tip: '已扫码' } },
+    })
     await flushPromises()
     expect(authorization.isPolling.value).toBe(false)
     expect(authorization.status.value).toBe('waiting')

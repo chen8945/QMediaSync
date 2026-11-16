@@ -14,13 +14,31 @@ import {
 import { HttpResponseError } from '@/http/errors'
 import type { ChannelType } from '@/utils/notificationUtils'
 
-const createHTTP = (code = 0, data: unknown = null, status = 200, warnings?: unknown) => {
+const createHTTP = (
+  status = 200,
+  data: unknown = null,
+  httpStatus = status,
+  warnings?: unknown,
+  message?: string,
+) => {
   const adapter = vi.fn(async (config) => ({
     config,
-    status,
+    status: httpStatus,
     statusText: '',
     headers: {},
-    data: { code, message: 'internal token=private', data, warnings },
+    data: {
+      status,
+      data,
+      warnings,
+      ...(message === undefined ? {} : { message }),
+      ...(status >= 400
+        ? {
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            message: '请求失败',
+          }
+        : {}),
+    },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
@@ -33,7 +51,7 @@ describe('通知渠道 API', () => {
         channel: { id: 7, channel_type: type },
         config: { endpoint: 'https://notify.example', headers: { Authorization: 'private' } },
       }
-      const { http, adapter } = createHTTP(0, detail)
+      const { http, adapter } = createHTTP(200, detail)
       expect(await fetchNotificationChannel(http, type, 7)).toEqual(detail)
       const payload = { channel_name: '通知', ...detail.config }
       await createNotificationChannel(http, type, payload)
@@ -50,7 +68,7 @@ describe('通知渠道 API', () => {
 
   it('查询账号渠道和规则保留服务端数据与渠道筛选', async () => {
     const rows = [{ id: 7, channel_id: 5, is_enabled: false }]
-    const { http, adapter } = createHTTP(0, rows)
+    const { http, adapter } = createHTTP(200, rows)
     expect(await fetchNotificationChannels(http)).toEqual(rows)
     expect(await fetchNotificationRules(http, 5)).toEqual(rows)
     expect(adapter.mock.calls[0]![0].url).toBe('/api/setting/notification/channels')
@@ -60,7 +78,7 @@ describe('通知渠道 API', () => {
     })
   })
 
-  it('状态、测试、删除和规则保存接受 code=0 的空结果，保留 false', async () => {
+  it('状态、测试、删除和规则保存接受成功空结果，保留 false', async () => {
     const { http, adapter } = createHTTP()
     await setNotificationChannelEnabled(http, 7, false)
     await testNotificationChannel(http, 7)
@@ -111,9 +129,9 @@ describe('通知渠道 API', () => {
     operations.filter(([name]) =>
       ['create', 'update', 'enable', 'delete', 'saveRule'].includes(name),
     ),
-  )('%s 返回已提交后的应用警告，兼容旧响应缺省警告', async (_, operation) => {
+  )('%s 返回已提交后的应用警告，缺省警告为空', async (_, operation) => {
     const warnings = ['通知设置已保存，但应用失败，请重新保存']
-    await expect(operation(createHTTP(0, { id: 7 }, 200, warnings).http)).resolves.toEqual({
+    await expect(operation(createHTTP(200, { id: 7 }, 200, warnings).http)).resolves.toEqual({
       warnings,
     })
     await expect(operation(createHTTP().http)).resolves.toEqual({ warnings: [] })
@@ -121,25 +139,34 @@ describe('通知渠道 API', () => {
 
   it.each([null, '应用失败', [123]])('拒绝损坏的应用警告 %j', async (warnings) => {
     await expect(
-      createNotificationChannel(createHTTP(0, null, 200, warnings).http, 'telegram', {
+      createNotificationChannel(createHTTP(200, null, 200, warnings).http, 'telegram', {
         channel_name: '通知',
       }),
     ).rejects.toBeInstanceOf(HttpResponseError)
   })
 
-  it.each(operations)('%s 拒绝 HTTP 200/code=1，不因 data 为真误判成功', async (_, operation) => {
-    const { http } = createHTTP(1, true)
+  it.each(operations)('%s 拒绝 HTTP 400，不因 data 为真误判成功', async (_, operation) => {
+    const { http } = createHTTP(400, true)
     await expect(operation(http)).rejects.toMatchObject({
-      response: { status: 200, data: { code: 1, data: true } },
+      response: {
+        status: 400,
+        data: {
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 400,
+          data: true,
+        },
+      },
     })
   })
 
-  it('通知专用 code=0 判定不接受 code=200，且业务成功不能覆盖 HTTP 失败', async () => {
-    await expect(testNotificationChannel(createHTTP(200).http, 7)).rejects.toBeInstanceOf(
-      HttpResponseError,
-    )
-    await expect(testNotificationChannel(createHTTP(0, null, 403).http, 7)).rejects.toMatchObject({
-      response: { status: 403 },
-    })
+  it('保存反馈保留成功消息和警告', async () => {
+    await expect(
+      createNotificationChannel(
+        createHTTP(200, null, 200, ['测试警告'], '测试反馈').http,
+        'telegram',
+        { channel_name: '渠道' },
+      ),
+    ).resolves.toEqual({ warnings: ['测试警告'], message: '测试反馈' })
   })
 })

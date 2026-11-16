@@ -50,6 +50,8 @@ Jellyfin UUID 在分页去重前规范化为 32 位小写非零值。静态 `Med
 
 合集库通过 `CollectionType=boxsets` 从两端共用的媒体库入口排除；Jellyfin 系统播放列表集合还通过 `Type=ManualPlaylistsFolder` 或 `CollectionType=playlists` 排除。这些逻辑集合不参与 QMediaSync 的选库、索引或媒体信息提取，其中引用的影片仍通过原电影或电视剧库处理。普通媒体库即使同名为“合集”或 Playlists 也保留，不按名称、普通 `CollectionFolder` 类型或目录列表是否为空过滤。
 
+查询媒体库得到完整成功的空 `Items`，或排除逻辑集合后已无普通媒体库时，清理当前端的 `emby_libraries` 缓存及 `emby_library_sync_paths` 关联，并返回空列表；另一端的库和关联保留。失败、缺失/null `Items` 或损坏响应不触发清理。非空清单只清理已不在本端清单中的库，媒体条目、同步配置和持久任务不扩大级联；清理数据库失败仍返回 `200`、成功清单和顶层 `warnings`。Emby/Jellyfin 设置页保留清单并展示清理警告，保存后刷新追加警告且保留已保存说明和原应用警告；请求失效边界见 [前端开发](../engineering/frontend-development.md#媒体库设置)。
+
 STRM 原生 HTTP 来源直接使用。Jellyfin 返回本地 STRM 来源时，先有界补读有权限用户的同一条目详情，核对条目类型、实际路径和来源归属；仍未提供 URL 的受管 STRM，利用已有同步文件与可信路径对应只读本地内容，再交给现有来源及账号身份解析。不会访问播放 URL、查询网盘或根据文件名猜测身份；正常原生来源不产生这类补读，也不按 Jellyfin 版本分流。该兼容只补足 QMediaSync 的来源关联，不修改 Jellyfin 数据库或修复其媒体探测。
 
 已精确识别的受管 STRM 若读取失败、内容与账号或文件标识不符，普通同步不提交该组，保留原有正确关联并报告失败。删除前的完整本端存活清单也复用来源兼容，以识别另一路径或新条目 ID 对同一云盘文件的引用；已确认受管但来源未能恢复时，本次删除核验失败，不发送网盘删除请求，也不把通知标记为删除处理成功。即使该存活条目的新 ID 尚未入索引，也不能仅凭本地路径位于待删目录外就断言云端文件无关。原生 HTTP 来源及可正常恢复的 STRM 继续按实际来源判断共享关系。
@@ -380,6 +382,10 @@ SQLite 构建 membership 时可复用本次已构造的 evidence 条目，无法
 
 手动同步用于低频校验或重建本地索引，同样要求本端 `enabled=true` 与 `sync_enabled=1`。总开关关闭仍可只读查询媒体库以准备配置。
 
+`POST /api/{emby|jellyfin}/sync/start` 接受任务后返回 HTTP `202`，`data={status:"submitted", media_server_type:"emby"|"jellyfin"}` 表示本端条目同步已受理；最终结果从状态接口读取。未配置返回 `404`、`MEDIA_LIBRARY_NOT_CONFIGURED`；连接或同步设置未就绪返回 `409`、`MEDIA_LIBRARY_SYNC_UNAVAILABLE`；本端已有任务运行返回 `409`、`MEDIA_LIBRARY_SYNC_RUNNING`。外层字段遵循 [API 响应与请求错误](../reference/api-response.md)。
+
+媒体库列表的连接未配置完整时返回 `409`、`MEDIA_LIBRARY_CONNECTION_UNAVAILABLE`；直接桥接媒体服务器失败按实际原因返回 `502` 或超时 `504`。列表已成功更新但本地清理失败时，读取成功结果和顶层 `warnings`，不能将其作为未更新重试。
+
 流程：
 
 1. 生成本轮 `sync_run_id`。
@@ -665,6 +671,8 @@ Emby 与 Jellyfin 的删除保护均限于本端：另一端索引、成员、�
 
 ## 同步运行状态
 
+`GET /api/{emby|jellyfin}/sync/status` 成功读取快照返回 HTTP `200`；尚未配置也是成功查询，`data.exists=false`。配置或条目数量查询遇到数据库故障返回 `500`、`INTERNAL_ERROR`，不能据此判断未配置。
+
 状态接口返回的核心字段：
 
 | 字段 | 含义 |
@@ -686,6 +694,8 @@ Emby 与 Jellyfin 的删除保护均限于本端：另一端索引、成员、�
 Web 设置页由 `api/mediaLibrary.ts` 封装两端配置、媒体库、提取和同步请求，`useMediaLibrarySyncStatus` 管理本端轮询与过期回调。隐藏标签暂停轮询，返回只重读状态，不覆盖草稿。保存失败保留输入，公共请求分类见 [前端开发约定](../engineering/frontend-development.md#api-响应与请求错误)；动态 `last_error` 不直接展示底层错误内容，页面提示查看服务日志。
 
 “提取媒体信息”扫描本端全部媒体库，不受索引选库范围和入库自动提取分项限制。每端同一时间只运行一轮，后台扫描结束才释放运行标记；用户必须具备全部媒体库与播放权限。缺少可用媒体流的条目进入原下载队列，来源为 `emby_media` 或 `jellyfin_media`。普通索引查询不增加提取专用媒体流字段。
+
+手动提取受理返回 HTTP `202` 和 `data.status="submitted"`；本端未启用、连接未配置完整或已有提取任务运行返回 `409`、`MEDIA_LIBRARY_UNAVAILABLE`。读取配置的数据库故障返回 `500 / INTERNAL_ERROR`，诊断保留原始原因，不作为配置或运行状态冲突。受理后的扫描失败仍由后台任务处理，不回写已返回的受理响应。
 
 新提取任务以 `source`／`source_type=emby_media|jellyfin_media` 保存归属，持久化隐藏的 `emby_item_id`、`media_server_id`，不保存新的地址／密钥；重试只允许同端同实例更换当前地址／密钥，不能把旧任务投向另一实例。旧任务无法证明原身份时不自动替换凭据。只有 HTTP 200、合法 JSON、无 `ErrorCode` 且具备适用主流 codec 才能完成；非成功 HTTP、JSON 错误及无可用媒体流不能标记提取成功；自动单条入队只忽略活跃重复任务，其他失败记录日志。队列字段见 [下载任务](../reference/database-schema.md#db_download_tasks)。
 

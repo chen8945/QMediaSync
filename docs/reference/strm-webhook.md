@@ -24,7 +24,7 @@ X-API-Key: qms_xxxxxxxxxxxxxxxxxxxxxxxx
 
 - 推荐使用 `X-API-Key` 请求头。
 - 仅在调用方无法设置请求头时，使用 `?api_key=` 查询参数。
-- API Key 无效或缺失时返回 HTTP `401`。请求未携带 API Key（或只有空白）时，响应带顶层 `error_code=AUTHENTICATION_REQUIRED`；API Key 不存在或已停用时带 `error_code=AUTHENTICATION_INVALID`；API Key 查询出现内部故障时不带 `error_code`。错误码含义见 [认证会话](../architecture/authentication-sessions.md)。
+- API Key 无效或缺失时返回 HTTP `401`。请求未携带 API Key（或只有空白）时，响应带顶层 `error_code=AUTHENTICATION_REQUIRED`；API Key 不存在或已停用时带 `error_code=AUTHENTICATION_INVALID`；API Key 查询出现内部故障时返回 HTTP `500` 的安全错误，不冒充认证失效。错误码含义见 [认证会话](../architecture/authentication-sessions.md)。
 
 API Key 在 Web 页面「系统设置 - API Key」中创建。完整密钥只会在创建响应中返回一次，后端只保存哈希。
 
@@ -156,7 +156,7 @@ Webhook 任务按实际处理批次使用配置，修改从下一小批生效；
 
 ## 响应
 
-成功接收请求时返回 HTTP `200`，业务响应的 `data` 包含：
+至少一项任务受理或复用活动任务时返回 HTTP `202`，业务响应的 `data` 包含：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -166,17 +166,21 @@ Webhook 任务按实际处理批次使用配置，修改从下一小批生效；
 | `failed_count` | 批量请求中失败项数量。 |
 | `results` | 逐项结果，`index` 从 0 开始，包含 `accepted`、`task_id` 或 `error`。 |
 
-单文件和目录扫描请求如果校验失败，会返回 HTTP `400`。批量请求中单项失败不会导致整个请求失败，只会在对应 `results` 项中写入错误；如果所有 item 都不合法，仍返回 HTTP `200`、`accepted_count=0`、`failed_count=items.length`，且不会创建父任务或子任务。`items[]` 内放入请求级开关属于整批请求错误，会直接返回 HTTP `400`。
+单文件和目录扫描请求的参数校验失败返回 HTTP `400`，引用的本地同步目录或账号不存在返回 `404`，内部故障返回 `500`。批量请求中单项失败不会导致整个请求失败，只会在对应 `results` 项中写入错误；如果所有 item 都不合法，仍返回 HTTP `200`、`accepted_count=0`、`failed_count=items.length`，且不会创建父任务或子任务。`items[]` 内放入请求级开关属于整批请求错误，会直接返回 HTTP `400`。
 
-所有 JSON 响应使用 `APIResponse` 包络。成功响应的 JSON `code` 为 `200`；当前错误响应虽然分别使用 HTTP `400` 或 `401`，但 JSON `code` 固定为 `500`，调用方必须以 HTTP 状态和 `message` 判断请求是否失败，不能把 JSON `code` 当作 HTTP 状态。
+单文件或目录扫描请求的远端客户端错误使用共享的网盘上游分类：115 凭据失效返回 `400 / UPSTREAM_CREDENTIALS_INVALID`，提示重新授权；上游超时返回 `504 / UPSTREAM_TIMEOUT`；其他上游故障返回 `502 / UPSTREAM_ERROR`。这些错误不表示 QMediaSync API Key 失效。远端解析保留错误链和已知凭据供诊断脱敏，控制器选择 HTTP 分类，公共响应层仅负责输出；本地数据库故障仍返回安全的 `500 / INTERNAL_ERROR`。
+
+所有响应使用 [公共 JSON 包络](api-response.md)，正文 `status` 与 HTTP 状态一致；请求错误使用顶层机器原因与字段定位。逐项业务结果仍保留在 `data.results`，不提升为请求错误。`instance` 只关联本次请求失败诊断，不替代业务 `request_id/task_ids`。
 
 请求完成入队统计后，会向 `app.log` 写入 `[STRM Webhook] 接收到 STRM 任务` INFO 日志，包含 `request_id`、`action`、`sync_path_id`、`download_meta`、`refresh_emby`、接收 / 拒绝数量和任务 ID 列表。日志不会记录 API Key、请求头或鉴权密钥。
+
+批量请求中，因远端或内部故障拒绝的项目以 `request_id` 和 `index` 记录单行诊断，保留脱敏后的原始原因。响应中的逐项错误继续使用安全说明；拒绝项没有任务记录，不能仅依赖任务 ID 或 SDK 的独立日志定位。
 
 示例响应：
 
 ```json
 {
-  "code": 200,
+  "status": 202,
   "message": "STRM 生成任务已接收",
   "data": {
     "request_id": "strm_abcdefghijklmnop",
@@ -225,7 +229,7 @@ X-API-Key: qms_xxxxxxxxxxxxxxxxxxxxxxxx
 | `upload_task_id` | 限定上传任务 |
 | `sync_path_id` | 限定同步目录 |
 
-多个筛选条件同时提供时取交集。未提供任务 ID、父任务 ID 或上传任务 ID 时，只列顶层任务。结果按任务 ID 从新到旧排列，响应沿用 `APIResponse`：`data.items` 是当前页，`data.total` 是符合条件的总数；没有匹配项返回空数组。无效分页返回 HTTP 400，数据库读取失败返回 HTTP 500。
+多个筛选条件同时提供时取交集。未提供任务 ID、父任务 ID 或上传任务 ID 时，只列顶层任务。结果按任务 ID 从新到旧排列，响应遵循公共包络：`data.items` 是当前页，`data.total` 是符合条件的总数；没有匹配项返回空数组。无效分页返回 HTTP 400，数据库读取失败返回 HTTP 500。
 
 每项包含任务/父任务/上传/同步目录 ID、来源、类型、文件名或目录路径、`status`、`skip_reason`、`total_items`、`accepted_items`、`failed_items`、`skipped_items` 和 `updated_at`。不返回 PickCode、幂等哈希或原始错误详情。历史没有记录的数量可为 `null`，表示未记录，不能当作 0。
 

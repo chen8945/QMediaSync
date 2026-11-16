@@ -7,7 +7,7 @@ import { httpKey } from '@/http/client'
 
 const wrappers: VueWrapper[] = []
 const createHTTP = () => ({
-  get: vi.fn().mockResolvedValue({ status: 200, data: { code: 200, data: [] } }),
+  get: vi.fn().mockResolvedValue({ status: 200, data: { status: 200, data: [] } }),
   post: vi.fn(),
 })
 const mountForm = async (http = createHTTP()) => {

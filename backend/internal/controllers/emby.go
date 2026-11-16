@@ -20,17 +20,6 @@ import (
 type EmbyEvent = requests.EmbyWebhookRequest
 
 // Webhook 持久接收 Emby 条目事件；成功只表示保存，后台核验后执行。
-// @Summary Emby Webhook
-// @Description 持久接收条目同步与删除事件；成功仅表示已保存，后台核验后执行
-// @Tags Emby 管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 400 {object} object
-// @Failure 401 {object} object
-// @Failure 413 {object} object
-// @Failure 503 {object} object
-// @Router /emby/webhook [post]
 func Webhook(ctx *gin.Context) { mediaLibraryWebhook(ctx, models.MediaServerEmby) }
 
 // JellyfinWebhook 接收官方插件标准 JSON，缺失删除路径不补造历史证据。

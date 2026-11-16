@@ -34,8 +34,11 @@ const queue = {
   avg_response_time_ms: 0,
   time_window_seconds: 3600,
 }
-const success = (data: unknown = null) => ({ status: 200, data: { code: 200, data } })
-const failedResponse = { status: 200, data: { code: 500, message: 'SQL token=secret', data: null } }
+const success = (data: unknown = null) => ({ status: 200, data: { status: 200, data } })
+const failedResponse = {
+  status: 400,
+  data: { status: 400, message: 'SQL token=secret', data: null },
+}
 const withSetup = <T>(composable: () => T, get: ReturnType<typeof vi.fn>) => {
   let state!: T
   const wrapper = mount(
@@ -63,8 +66,8 @@ afterEach(() => {
 })
 
 describe('公告与统计错误处理', () => {
-  it('公告兼容旧数组，失败清空公告，只输出安全诊断', async () => {
-    const get = vi.fn().mockResolvedValue({ status: 200, data: announcement })
+  it('公告列表正常解包，失败清空公告，只输出安全诊断', async () => {
+    const get = vi.fn().mockResolvedValue(success(announcement))
     const { state } = withSetup(useAnnouncement, get)
     await flushPromises()
     expect(state.announcementList.value).toEqual(announcement)
@@ -72,7 +75,7 @@ describe('公告与统计错误处理', () => {
     await state.loadAnnouncements()
     expect(state.announcementList.value).toEqual([])
     expect(state.announcementLoading.value).toBe(false)
-    expect(console.error).toHaveBeenCalledExactlyOnceWith('加载公告列表错误：', { status: 200 })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith('加载公告列表错误：', { status: 400 })
     expect(ElMessage.error).not.toHaveBeenCalled()
   })
 
@@ -87,7 +90,7 @@ describe('公告与统计错误处理', () => {
     expect(state.chartOption.value).toHaveProperty('series')
     expect(state.hourlyStatsLoading.value).toBe(false)
     expect(console.error).toHaveBeenCalledExactlyOnceWith('加载每小时请求统计错误：', {
-      status: 200,
+      status: 400,
     })
     expect(ElMessage.error).not.toHaveBeenCalled()
     get.mockResolvedValue(success())
@@ -125,7 +128,7 @@ describe('公告与统计错误处理', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(get).toHaveBeenCalledTimes(4)
     expect(console.error).toHaveBeenCalledExactlyOnceWith('加载 115 接口请求统计错误：', {
-      status: 200,
+      status: 400,
     })
     expect(ElMessage.error).not.toHaveBeenCalled()
   })

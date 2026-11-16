@@ -44,7 +44,7 @@ describe('刮削目录 API', () => {
   it('同步目录关联查询保留来源筛选参数', async () => {
     const adapter = vi.fn(async (config) => ({
       config,
-      data: { code: 200, data: [] },
+      data: { status: 200, data: [] },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -59,7 +59,7 @@ describe('刮削目录 API', () => {
     const warnings = ['设置已保存，但定时任务应用失败，请重新保存重试']
     const adapter = vi.fn(async (config) => ({
       config,
-      data: { code: 200, data: null, warnings },
+      data: { status: 200, data: null, warnings },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -68,13 +68,15 @@ describe('刮削目录 API', () => {
     await fetchScrapePaths(http)
     await fetchScrapePath(http, 12)
     await expect(saveScrapePath(http, payload)).resolves.toEqual({ warnings })
-    await expect(saveScrapePath(http, {
-      ...payload,
-      id: 0,
-      source_type: 'local',
-      account_id: 0,
-      media_type: 'movie',
-    })).resolves.toEqual({ warnings })
+    await expect(
+      saveScrapePath(http, {
+        ...payload,
+        id: 0,
+        source_type: 'local',
+        account_id: 0,
+        media_type: 'movie',
+      }),
+    ).resolves.toEqual({ warnings })
     await expect(deleteScrapePath(http, 12)).resolves.toEqual({ warnings })
     await startScrapePath(http, 12)
     await stopScrapePath(http, 12)
@@ -114,8 +116,14 @@ describe('刮削目录 API', () => {
     const http = axios.create({
       adapter: async (config) => ({
         config,
-        data: { code: 500, message: 'internal secret', data: null },
-        status: 200,
+        data: {
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 500,
+          message: 'internal secret',
+          data: null,
+        },
+        status: 500,
         statusText: 'OK',
         headers: {},
       }),

@@ -16,6 +16,7 @@ import (
 	"qmediasync/internal/playback"
 	v115auth "qmediasync/internal/v115/auth"
 	v115open "qmediasync/internal/v115/openapi"
+	"qmediasync/internal/validation"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -40,9 +41,24 @@ type Account struct {
 }
 
 var (
-	ErrAccountNameTaken   = errors.New("账号备注已存在")
-	ErrAccountUserIDTaken = errors.New("当前账号已存在，不允许添加重复账号")
+	ErrAccountNameTaken            = errors.New("账号备注已存在")
+	ErrAccountUserIDTaken          = errors.New("当前账号已存在，不允许添加重复账号")
+	ErrAccountAuthorizationChanged = errors.New("OpenList 账号配置已更新或账号已删除，请重新加载后重试")
+	ErrAccountHasSyncPaths         = errors.New("账号仍有关联的同步目录")
 )
+
+// OpenListVerificationError 区分远端凭据验证失败与本地持久化失败。
+type OpenListVerificationError struct {
+	Cause error
+}
+
+func (e *OpenListVerificationError) Error() string {
+	return "OpenList 账号验证失败：" + e.Cause.Error()
+}
+
+func (e *OpenListVerificationError) Unwrap() error {
+	return e.Cause
+}
 
 const (
 	openListAuthTypePassword = "password"
@@ -371,8 +387,7 @@ func (account *Account) Delete() error {
 	// 检查是否有关联的同步目录没有删除
 	syncPaths := GetAllSyncPathByAccountId(account.ID)
 	if len(syncPaths) > 0 {
-		helpers.AppLogger.Errorf("开放平台账号 %v 有关联的同步目录，不能删除", account.ID)
-		return fmt.Errorf("开放平台账号 %v 有关联的同步目录，不能删除", account.ID)
+		return fmt.Errorf("开放平台账号 %v: %w", account.ID, ErrAccountHasSyncPaths)
 	}
 
 	result := db.Db.Delete(account)
@@ -449,7 +464,7 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 		}
 	}
 	if authType != openListAuthTypePassword && authType != openListAuthTypeToken {
-		return fmt.Errorf("不支持的 OpenList 认证方式：%s", authType)
+		return validation.New("auth_type", "不支持的 OpenList 认证方式")
 	}
 
 	usernameProvided := strings.TrimSpace(username) != ""
@@ -468,28 +483,28 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	case openListAuthTypeToken:
 		if token == "" {
 			if oldPassword != "" {
-				return fmt.Errorf("切换为 Token 认证需要提供新的 Token")
+				return validation.New("token", "切换为 Token 认证需要提供新的 Token")
 			}
 			token = oldToken
 		}
 		if token == "" {
-			return fmt.Errorf("OpenList Token 不能为空")
+			return validation.New("token", "OpenList Token 不能为空")
 		}
 		// Token 认证不保留旧密码，避免账号列表和 Token 刷新流程误判为密码认证。
 		candidate.Password = ""
 		candidate.Token = token
 	case openListAuthTypePassword:
 		if oldAuthType != openListAuthTypePassword && !usernameProvided {
-			return fmt.Errorf("切换为用户名密码认证需要提供用户名")
+			return validation.New("username", "切换为用户名密码认证需要提供用户名")
 		}
 		if oldAuthType != openListAuthTypePassword && !passwordProvided {
-			return fmt.Errorf("切换为用户名密码认证需要提供密码")
+			return validation.New("password", "切换为用户名密码认证需要提供密码")
 		}
 		if strings.TrimSpace(password) == "" {
 			password = oldPassword
 		}
 		if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
-			return fmt.Errorf("OpenList 用户名和密码不能为空")
+			return validation.New("password", "OpenList 用户名和密码不能为空")
 		}
 		candidate.Password = password
 		credentialsChanged := oldAuthType != openListAuthTypePassword || username != oldUsername || password != oldPassword
@@ -503,14 +518,12 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	defer client.Close()
 	if needsNewToken {
 		if _, err := client.GetToken(); err != nil {
-			helpers.AppLogger.Errorf("更新 OpenList 账号 Token 失败：%v", err)
-			return err
+			return &OpenListVerificationError{Cause: err}
 		}
 	}
 	userInfo, err := client.GetUserInfo(client.GetAuthToken())
 	if err != nil {
-		helpers.AppLogger.Errorf("验证 OpenList 账号失败：%v", err)
-		return err
+		return &OpenListVerificationError{Cause: err}
 	}
 	// 用户信息查询可能自动刷新 Token，保存最终验证过的实际值。
 	candidate.Token = client.GetAuthToken()
@@ -536,11 +549,10 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	defer openListAuthorizationMu.Unlock()
 	result := openListAccountIfCurrent(account.ID, oldBaseUrl, oldUsername, oldPassword, oldToken).Updates(updateData)
 	if result.Error != nil {
-		helpers.AppLogger.Errorf("更新 OpenList 账号失败：%v", result.Error)
 		return mapAccountIdentityError(result.Error, updateData)
 	}
 	if result.RowsAffected != 1 {
-		return fmt.Errorf("OpenList 账号配置已更新或账号已删除，请重新加载后重试")
+		return ErrAccountAuthorizationChanged
 	}
 	*account = candidate
 	account.GetOpenListClient()
@@ -637,14 +649,12 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 	// 如果提供了 Token，优先使用 Token，否则使用用户名密码获取 Token
 	if token == "" {
 		if _, err := client.GetToken(); err != nil {
-			helpers.AppLogger.Errorf("验证 OpenList 账号失败：%v", err)
-			return nil, err
+			return nil, &OpenListVerificationError{Cause: err}
 		}
 	}
 	userInfo, err := client.GetUserInfo(client.GetAuthToken())
 	if err != nil {
-		helpers.AppLogger.Errorf("获取 OpenList 用户信息失败：%v", err)
-		return nil, err
+		return nil, &OpenListVerificationError{Cause: err}
 	}
 	account.Token = client.GetAuthToken()
 	account.UserId = fmt.Sprintf("%d", userInfo.ID)
@@ -659,7 +669,6 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 	defer openListAuthorizationMu.Unlock()
 	err = db.Db.Session(&gorm.Session{Logger: logger.Discard}).Create(account).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("创建 OpenList 账号失败：%v", err)
 		return nil, err
 	}
 	account.GetOpenListClient()
@@ -721,14 +730,22 @@ func GetAccountByUserId(userId string) (*Account, error) {
 
 // 通过 ID 查询开放平台账号
 func GetAccountById(id uint) (*Account, error) {
-	return getAccountByIDWithDB(db.Db, id)
+	account, err := ReadAccount(context.Background(), id)
+	if err != nil && helpers.AppLogger != nil {
+		helpers.AppLogger.Errorf("查询开放平台账号失败：%v", err)
+	}
+	return account, err
+}
+
+// ReadAccount 查询账号并返回原始错误，由调用方记录诊断。
+func ReadAccount(ctx context.Context, id uint) (*Account, error) {
+	return getAccountByIDWithDB(db.Db.WithContext(ctx), id)
 }
 
 func getAccountByIDWithDB(conn *gorm.DB, id uint) (*Account, error) {
 	account := &Account{}
 	err := conn.Where("id = ?", id).First(account).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("查询开放平台账号失败：%v", err)
 		return nil, err
 	}
 	return account, nil
@@ -747,27 +764,34 @@ func GetAccountBySourceType(sourceType SourceType) ([]*Account, error) {
 
 // 查询账号列表，全部返回
 func GetAllAccount() ([]Account, error) {
-	var accounts []Account
-	err := db.Db.Order("id desc").Find(&accounts).Error
-	if err != nil {
+	accounts, err := ReadAccounts(context.Background())
+	if err != nil && helpers.AppLogger != nil {
 		helpers.AppLogger.Errorf("查询开放平台账号失败：%v", err)
+	}
+	return accounts, err
+}
+
+// ReadAccounts 读取账号列表并返回原始错误，由调用方记录诊断。
+func ReadAccounts(ctx context.Context) ([]Account, error) {
+	var accounts []Account
+	err := db.Db.WithContext(ctx).Order("id desc").Find(&accounts).Error
+	if err != nil {
 		return nil, err
 	}
 	return accounts, nil
 }
 
 // 根据 fileId 获取文件夹的路径
-func GetPathByPathFileId(account *Account, fileId string) string {
+func GetPathByPathFileId(account *Account, fileId string) (string, error) {
 	client := account.Get115Client()
 	ctx := context.Background()
 	detail, err := client.GetFsDetailByCid(ctx, fileId)
 	if err != nil {
-		helpers.AppLogger.Errorf("查询文件详情失败：%v", err)
-		return ""
+		return "", err
 	}
 	// 生成完整路径
 	baseDir := detail.GetFullPath()
-	return baseDir + "/" + detail.FileName
+	return baseDir + "/" + detail.FileName, nil
 }
 
 // 处理 115 访问凭证失效事件（异步版本）

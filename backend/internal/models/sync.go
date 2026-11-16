@@ -38,9 +38,10 @@ var SyncStatusText map[SyncStatus]string = map[SyncStatus]string{
 	SyncStatusCancelled:  "已取消",
 }
 
+// ErrSyncRecordNotFound 与 ErrSyncRecordNotDeletable 区分记录缺失和运行状态冲突。
 var (
-	errSyncRecordNotFound     = errors.New("同步记录不存在")
-	errSyncRecordNotDeletable = errors.New("同步记录未完成，不能删除")
+	ErrSyncRecordNotFound     = errors.New("同步记录不存在")
+	ErrSyncRecordNotDeletable = errors.New("同步记录未完成，不能删除")
 )
 
 // ErrSyncLedgerRecordDeleted 表示后台状态写入时已确认历史记录被删除。
@@ -443,7 +444,7 @@ func syncUpdateError(result *gorm.DB) error {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return errSyncRecordNotFound
+		return ErrSyncRecordNotFound
 	}
 	return nil
 }
@@ -554,12 +555,12 @@ func deleteSyncRecordById(id uint, requireFinished bool) error {
 	existing := &Sync{}
 	if err := db.Db.First(existing, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w：%d", errSyncRecordNotFound, id)
+			return fmt.Errorf("%w：%d", ErrSyncRecordNotFound, id)
 		}
 		return fmt.Errorf("查询同步记录失败：%w", err)
 	}
 	if requireFinished && !canDeleteSyncRecord(existing.Status) {
-		return fmt.Errorf("%w：%s", errSyncRecordNotDeletable, syncStatusText(existing.Status))
+		return fmt.Errorf("%w：%s", ErrSyncRecordNotDeletable, syncStatusText(existing.Status))
 	}
 	if err := db.Db.Delete(&Sync{}, id).Error; err != nil {
 		return fmt.Errorf("删除同步记录失败：%w", err)

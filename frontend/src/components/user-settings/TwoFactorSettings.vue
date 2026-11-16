@@ -12,6 +12,7 @@ import {
   userSettingsPublicMessages,
 } from '@/api/userSettings'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
+import type { SettingsSaveResult } from '@/api/types'
 
 interface TwoFactorStatus {
   enabled: boolean
@@ -38,6 +39,12 @@ const twoFactorDisableForm = reactive({
 })
 const twoFactorLoading = shallowRef(false)
 const twoFactorQrCode = shallowRef('')
+
+const showOperationResult = (result: SettingsSaveResult, fallback: string) => {
+  const message = result.message?.trim() || fallback
+  if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+  else ElMessage.success(message)
+}
 
 const reportError = (error: unknown, fallbackMessage: string) => {
   notifyHttpError(error, fallbackMessage, {
@@ -76,8 +83,8 @@ const enableTwoFactor = async () => {
     return
   }
   try {
-    await requestTwoFactorEnable(http, twoFactorEnableCode.value)
-    ElMessage.success('两步验证已启用')
+    const result = await requestTwoFactorEnable(http, twoFactorEnableCode.value)
+    showOperationResult(result, '两步验证已启用')
     twoFactorEnableCode.value = ''
     twoFactorSetup.secret = ''
     twoFactorSetup.otpauth_url = ''
@@ -94,11 +101,11 @@ const disableTwoFactor = async () => {
     return
   }
   try {
-    await requestTwoFactorDisable(http, {
+    const result = await requestTwoFactorDisable(http, {
       password: twoFactorDisableForm.password,
       totp_code: twoFactorDisableForm.totpCode,
     })
-    ElMessage.success('两步验证已关闭')
+    showOperationResult(result, '两步验证已关闭')
     twoFactorDisableForm.password = ''
     twoFactorDisableForm.totpCode = ''
     await loadTwoFactorStatus()

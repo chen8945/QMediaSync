@@ -8,7 +8,16 @@ import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 
 const wrappers: VueWrapper[] = []
 const failure = (status: number, error_code?: string) =>
-  new HttpResponseError({ status, data: { code: 500, message: 'SQL secret', error_code } })
+  new HttpResponseError({
+    status,
+    data: {
+      status: status,
+      message: 'SQL secret',
+      error_code: error_code ?? 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
+  })
 const runRepair = async (post: ReturnType<typeof vi.fn>) => {
   const wrapper = mount(AppDatabaseRepair, {
     global: { provide: { [httpKey]: { post } }, stubs: { PageHeader: true } },
@@ -24,6 +33,7 @@ const runRepair = async (post: ReturnType<typeof vi.fn>) => {
 beforeEach(() => {
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
 })
 afterEach(() => {
@@ -32,16 +42,38 @@ afterEach(() => {
 })
 
 describe('数据库修复请求', () => {
-  it('业务失败不误报成功并展示服务端原因', async () => {
+  it('修复返回的消息与警告进入现有反馈', async () => {
+    const message = '服务器确认测试修复请求'
+    const warning = '测试修复仍需人工确认'
     await runRepair(
       vi.fn().mockResolvedValue({
         status: 200,
-        data: { code: 500, message: '修复数据库失败：磁盘空间不足', data: null },
+        data: { status: 200, data: null, message, warnings: [warning] },
+      }),
+    )
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
+  it('业务失败不误报成功并展示服务端原因', async () => {
+    await runRepair(
+      vi.fn().mockResolvedValue({
+        status: 500,
+        data: {
+          status: 500,
+          message: '修复数据库失败：磁盘空间不足',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
       }),
     )
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('修复数据库失败：磁盘空间不足')
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(console.error).toHaveBeenCalledExactlyOnceWith('数据库修复失败：', { status: 200 })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      '数据库修复失败：',
+      expect.objectContaining({ status: 500 }),
+    )
   })
   it.each([
     [
@@ -75,7 +107,7 @@ describe('数据库修复请求', () => {
     expect(console.error).not.toHaveBeenCalled()
   })
   it('合法空数据成功显示修复成功', async () => {
-    await runRepair(vi.fn().mockResolvedValue({ status: 200, data: { code: 200, data: null } }))
+    await runRepair(vi.fn().mockResolvedValue({ status: 200, data: { status: 200, data: null } }))
     expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('数据库修复成功')
     expect(ElMessage.error).not.toHaveBeenCalled()
   })

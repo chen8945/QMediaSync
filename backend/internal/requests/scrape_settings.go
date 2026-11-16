@@ -142,7 +142,7 @@ func (r TVShowCategoryRequest) Validate() error {
 type TMDBSearchRequest struct {
 	Name   string           `json:"name" form:"name"`
 	Year   int              `json:"year" form:"year"`
-	Type   models.MediaType `json:"type" form:"type" binding:"required"`
+	Type   models.MediaType `json:"type" form:"type"`
 	TmdbID int              `json:"tmdb_id" form:"tmdb_id"`
 }
 

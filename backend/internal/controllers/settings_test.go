@@ -4,20 +4,178 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
-
-	"github.com/gin-gonic/gin"
 )
+
+func TestRequiredRequestFieldsUseDomainValidation(t *testing.T) {
+	previousLogger := helpers.AppLogger
+	t.Cleanup(func() { helpers.AppLogger = previousLogger })
+	user, _ := setupAPIKeyControllerTest(t)
+	if err := db.Db.AutoMigrate(&models.SyncPath{}); err != nil {
+		t.Fatal(err)
+	}
+	apiKey, _, err := models.CreateAPIKey(user.ID, "existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.Use(func(c *gin.Context) { SetCurrentUser(c, user, authMethodSession) })
+	endpoints := []struct {
+		name, method, path string
+		handler            gin.HandlerFunc
+		values             map[string]any
+		fields             []string
+		nested             bool
+	}{
+		{"log", http.MethodPost, "/setting/log", UpdateLogSetting, map[string]any{"level": "info"}, []string{"level"}, false},
+		{"cron-next", http.MethodGet, "/setting/cron", GetCronNextTime, map[string]any{"cron": "0 * * * *"}, []string{"cron"}, false},
+		{"cron-validate", http.MethodPost, "/cron/validate", ValidateCron, map[string]any{"cron_expression": "0 * * * *"}, []string{"cron_expression"}, false},
+		{"strm", http.MethodPost, "/setting/strm-config", UpdateStrmConfig, map[string]any{"strm_base_url": "http://qms.test", "cron": "0 * * * *", "add_path": 3}, []string{"strm_base_url", "cron"}, false},
+		{"queue-limit", http.MethodPost, "/115/queue/rate-limit", SetQueueRateLimit, map[string]any{"qps": 4, "qpm": 120, "qph": 1000}, []string{"qps", "qpm", "qph"}, false},
+		{"stats-clean", http.MethodPost, "/115/stats/clean", CleanOldRequestStats, map[string]any{"days": 7}, []string{"days"}, false},
+		{"api-key-create", http.MethodPost, "/api-keys", CreateAPIKey, map[string]any{"name": "new"}, []string{"name"}, false},
+		{"api-key-status", http.MethodPut, "/api-keys/:id/status", UpdateAPIKeyStatus, map[string]any{"is_active": true}, []string{"is_active"}, false},
+		{"sync-create", http.MethodPost, "/sync/paths", CreateSyncPathAggregate, map[string]any{"source_type": "local", "base_cid": "root", "local_path": "/local", "remote_path": "/remote"}, []string{"source_type", "base_cid", "local_path", "remote_path"}, true},
+		{"tmdb", http.MethodGet, "/scrape/tmdb-search", TmdbSearch, map[string]any{"type": "movie", "name": "fixture"}, []string{"type"}, false},
+	}
+	for _, endpoint := range endpoints {
+		router.Handle(endpoint.method, endpoint.path, endpoint.handler)
+	}
+	assertField := func(t *testing.T, response *httptest.ResponseRecorder, field string) {
+		t.Helper()
+		assertScrapeFailure(t, response, http.StatusBadRequest, "INVALID_REQUEST")
+		var result httpapi.APIResponse[any]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.FieldErrors) != 1 || result.FieldErrors[0].Field != field || result.FieldErrors[0].Message == "" {
+			t.Fatalf("missing domain field error for %s: %s", field, response.Body)
+		}
+	}
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.name, func(t *testing.T) {
+			for _, field := range endpoint.fields {
+				variants := []string{"missing", "null"}
+				if endpoint.method == http.MethodGet {
+					variants = []string{"missing", "empty"}
+				} else if _, numeric := endpoint.values[field].(int); numeric {
+					variants = append(variants, "zero")
+				}
+				for _, variant := range variants {
+					t.Run(field+"/"+variant, func(t *testing.T) {
+						values := make(map[string]any, len(endpoint.values))
+						for key, value := range endpoint.values {
+							values[key] = value
+						}
+						delete(values, field)
+						switch variant {
+						case "null":
+							values[field] = nil
+						case "empty":
+							values[field] = ""
+						case "zero":
+							values[field] = 0
+						}
+						path := strings.Replace(endpoint.path, ":id", fmt.Sprint(apiKey.ID), 1)
+						var body []byte
+						if endpoint.method == http.MethodGet {
+							query := url.Values{}
+							for key, value := range values {
+								query.Set(key, fmt.Sprint(value))
+							}
+							path += "?" + query.Encode()
+						} else {
+							if endpoint.nested {
+								values = map[string]any{"sync_path": values}
+							}
+							var err error
+							body, err = json.Marshal(values)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						request := httptest.NewRequest(endpoint.method, path, bytes.NewReader(body))
+						if endpoint.method != http.MethodGet {
+							request.Header.Set("Content-Type", "application/json")
+						}
+						response := httptest.NewRecorder()
+						router.ServeHTTP(response, request)
+						assertField(t, response, field)
+					})
+				}
+			}
+		})
+	}
+	t.Run("sync-empty-aggregate", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPost, "/sync/paths", strings.NewReader(`{"sync_path":{}}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assertField(t, response, "source_type")
+	})
+	for _, test := range []struct{ name, method, path, body string }{
+		{"wrong-string-type", http.MethodPost, "/setting/log", `{"level":123}`},
+		{"wrong-number-type", http.MethodPost, "/115/queue/rate-limit", `{"qps":"private-value","qpm":120,"qph":1000}`},
+		{"wrong-bool-type", http.MethodPut, fmt.Sprintf("/api-keys/%d/status", apiKey.ID), `{"is_active":"private-value"}`},
+		{"malformed-json", http.MethodPost, "/api-keys", `{"name":`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assertScrapeFailure(t, response, http.StatusBadRequest, "INVALID_REQUEST")
+			var result httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.FieldErrors) != 0 || strings.Contains(response.Body.String(), "private-value") {
+				t.Fatalf("binding error exposed request contents or invented field errors: %s", response.Body)
+			}
+		})
+	}
+	var keyCount, syncCount int64
+	if err := db.Db.Model(&models.ApiKey{}).Count(&keyCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Model(&models.SyncPath{}).Count(&syncCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if keyCount != 1 || syncCount != 0 {
+		t.Fatalf("invalid requests changed stored data: keys=%d sync_paths=%d", keyCount, syncCount)
+	}
+	stored, err := models.GetAPIKeyByIDAndUserID(apiKey.ID, user.ID)
+	if err != nil || !stored.IsActive {
+		t.Fatalf("invalid requests changed API Key status: stored=%+v err=%v", stored, err)
+	}
+	t.Run("explicit-false-disables-api-key", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api-keys/%d/status", apiKey.ID), strings.NewReader(`{"is_active":false}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		stored, err := models.GetAPIKeyByIDAndUserID(apiKey.ID, user.ID)
+		if response.Code != http.StatusOK || err != nil || stored.IsActive {
+			t.Fatalf("explicit false was not accepted: %s, stored=%+v err=%v", response.Body, stored, err)
+		}
+	})
+}
 
 func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -66,7 +224,7 @@ func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
-			var result APIResponse[any]
+			var result httpapi.APIResponse[any]
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
@@ -75,7 +233,7 @@ func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tt.failWrite {
-				if response.Code != http.StatusOK || result.Code != BadRequest {
+				if response.Code != http.StatusInternalServerError || result.Status != http.StatusInternalServerError {
 					t.Fatalf("保存失败应返回业务错误：HTTP %d，%s", response.Code, response.Body)
 				}
 				if !reflect.DeepEqual(*models.SettingsGlobal, previous) || !reflect.DeepEqual(stored, previous) {
@@ -83,7 +241,7 @@ func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 				}
 				return
 			}
-			if response.Code != http.StatusOK || result.Code != Success {
+			if response.Code != http.StatusOK || result.Status != http.StatusOK {
 				t.Fatalf("保存失败：HTTP %d，%s", response.Code, response.Body)
 			}
 			for _, settings := range []*models.Settings{models.SettingsGlobal, &stored} {
@@ -93,11 +251,11 @@ func TestStrmConfigMultiPlaybackSave(t *testing.T) {
 			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
-			var loaded APIResponse[models.Settings]
+			var loaded httpapi.APIResponse[models.Settings]
 			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
 				t.Fatal(err)
 			}
-			if loaded.Code != Success || loaded.Data.MultiPlaybackEnabled != tt.next || loaded.Data.LocalProxy != tt.proxy {
+			if loaded.Status != http.StatusOK || loaded.Data.MultiPlaybackEnabled != tt.next || loaded.Data.LocalProxy != tt.proxy {
 				t.Fatalf("设置读回与保存值不一致：%s", response.Body)
 			}
 		})
@@ -144,11 +302,11 @@ func TestStrmConfigRegexSaveRoundTripAndValidation(t *testing.T) {
 		t.Helper()
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
-		var result APIResponse[models.SettingStrm]
+		var result httpapi.APIResponse[models.SettingStrm]
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if result.Code != Success || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
+		if result.Status != http.StatusOK || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
 			t.Fatalf("设置读回未保留原文：%s，期望 %q", response.Body, want)
 		}
 		if !reflect.DeepEqual(result.Data.ExcludeNameArr, []string{"sample"}) {
@@ -247,7 +405,7 @@ func TestStrmConfigEmptyExtensionsUseConfiguredDefaults(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
-			var savedResult APIResponse[any]
+			var savedResult httpapi.APIResponse[any]
 			if err := json.Unmarshal(response.Body.Bytes(), &savedResult); err != nil {
 				t.Fatal(err)
 			}
@@ -256,7 +414,7 @@ func TestStrmConfigEmptyExtensionsUseConfiguredDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tt.failWrite {
-				if response.Code != http.StatusOK || savedResult.Code != BadRequest {
+				if response.Code != http.StatusInternalServerError || savedResult.Status != http.StatusInternalServerError {
 					t.Fatalf("保存失败应返回业务错误：HTTP %d，%s", response.Code, response.Body)
 				}
 				if !reflect.DeepEqual(*models.SettingsGlobal, previous) {
@@ -268,7 +426,7 @@ func TestStrmConfigEmptyExtensionsUseConfiguredDefaults(t *testing.T) {
 				}
 				return
 			}
-			if response.Code != http.StatusOK || savedResult.Code != Success {
+			if response.Code != http.StatusOK || savedResult.Status != http.StatusOK {
 				t.Fatalf("清空扩展名保存失败：HTTP %d，%s", response.Code, response.Body)
 			}
 			if (len(tt.video) == 0 && stored.VideoExt != "[]") || (len(tt.meta) == 0 && stored.MetaExt != "[]") {
@@ -289,11 +447,11 @@ func TestStrmConfigEmptyExtensionsUseConfiguredDefaults(t *testing.T) {
 			checkEffective(models.SettingsGlobal.SettingStrm)
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
-			var loaded APIResponse[models.SettingStrm]
+			var loaded httpapi.APIResponse[models.SettingStrm]
 			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
 				t.Fatal(err)
 			}
-			if response.Code != http.StatusOK || loaded.Code != Success {
+			if response.Code != http.StatusOK || loaded.Status != http.StatusOK {
 				t.Fatalf("读取设置失败：HTTP %d，%s", response.Code, response.Body)
 			}
 			checkEffective(loaded.Data)
@@ -383,9 +541,6 @@ func TestUpdateThreadsApplies115RateConfigAfterSaving(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP = %d，期望 200，body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"code":200`) {
-		t.Fatalf("更新线程配置失败：%s", w.Body.String())
-	}
 	if setCallbackErr != nil {
 		t.Fatalf("运行时配置回调读取 settings 失败：%v", setCallbackErr)
 	}
@@ -421,6 +576,7 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 
 	for _, tt := range []struct {
 		name       string
+		field      string
 		value      any
 		omit       bool
 		failWrite  bool
@@ -437,7 +593,15 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 		{name: "拒绝小数", value: 1.5, wantHTTP: http.StatusBadRequest, wantUpload: 7},
 		{name: "拒绝字符串", value: "3", wantHTTP: http.StatusBadRequest, wantUpload: 7},
 		{name: "拒绝布尔值", value: true, wantHTTP: http.StatusBadRequest, wantUpload: 7},
-		{name: "写入失败保留配置", value: 3, failWrite: true, wantHTTP: http.StatusOK, wantUpload: 7},
+		{name: "写入失败保留配置", value: 3, failWrite: true, wantHTTP: http.StatusInternalServerError, wantUpload: 7},
+		{name: "下载线程空值定位字段", field: "download_threads", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "文件详情线程空值定位字段", field: "file_detail_threads", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "OpenList QPS 空值定位字段", field: "openlist_qps", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "OpenList 重试次数空值定位字段", field: "openlist_retry", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "OpenList 重试间隔空值定位字段", field: "openlist_retry_delay", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "文件列表分页大小空值定位字段", field: "file_list_page_size", value: nil, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "下载线程缺失定位字段", field: "download_threads", omit: true, wantHTTP: http.StatusBadRequest, wantUpload: 7},
+		{name: "下载线程零值定位字段", field: "download_threads", value: 0, wantHTTP: http.StatusBadRequest, wantUpload: 7},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setupControllerTestDB(t, &models.Settings{}, &models.DbDownloadTask{})
@@ -474,8 +638,14 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 				"openlist_qps": 2, "openlist_retry": 1, "openlist_retry_delay": 30,
 				"file_list_page_size": 1150,
 			}
-			if !tt.omit {
-				payload["upload_threads"] = tt.value
+			field := tt.field
+			if field == "" {
+				field = "upload_threads"
+			}
+			if tt.omit {
+				delete(payload, field)
+			} else {
+				payload[field] = tt.value
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
@@ -488,19 +658,16 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
-			var result APIResponse[any]
+			var result httpapi.APIResponse[any]
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			wantCode := Success
-			if tt.wantHTTP != http.StatusOK || tt.failWrite {
-				wantCode = BadRequest
-				if models.GetThreadSettingsSnapshot() != previous || rateCalls != 0 {
-					t.Fatal("拒绝请求或保存失败后不应修改内存配置或运行时速率")
-				}
-			}
-			if response.Code != tt.wantHTTP || result.Code != wantCode {
+			wantCode := tt.wantHTTP
+			if response.Code != tt.wantHTTP || result.Status != wantCode {
 				t.Fatalf("保存响应 = HTTP %d，%s", response.Code, response.Body)
+			}
+			if wantCode != http.StatusOK && (models.GetThreadSettingsSnapshot() != previous || rateCalls != 0) {
+				t.Fatal("拒绝请求或保存失败后不应修改内存配置或运行时速率")
 			}
 			if models.GlobalUploadQueue != queue || queue.IsRunning() || queue.GetConcurrency() != tt.wantUpload {
 				t.Fatalf("应保留原暂停队列并设置并发为 %d；实际并发 %d、运行中 %t", tt.wantUpload, queue.GetConcurrency(), queue.IsRunning())
@@ -512,18 +679,72 @@ func TestUpdateThreadsUploadConcurrency(t *testing.T) {
 			if saved.UploadThreads != tt.wantUpload || models.GetThreadSettingsSnapshot().UploadThreads != tt.wantUpload {
 				t.Fatalf("数据库/内存上传并发 = %d/%d，期望 %d", saved.UploadThreads, models.GetThreadSettingsSnapshot().UploadThreads, tt.wantUpload)
 			}
-			if wantCode != Success && saved.ThreadAndRapidWait() != previous {
+			if wantCode != http.StatusOK && saved.ThreadAndRapidWait() != previous {
 				t.Fatal("拒绝请求或保存失败后不应修改已保存配置")
+			}
+			if tt.field != "" {
+				if result.ErrorCode != "INVALID_REQUEST" || result.Message == "" || result.Instance == "" || result.Data != nil ||
+					len(result.FieldErrors) != 1 || result.FieldErrors[0].Field != tt.field || result.FieldErrors[0].Message == "" {
+					t.Fatalf("字段拒绝应保留安全说明和 JSON 字段定位：%s", response.Body)
+				}
+				if strings.Contains(response.Body.String(), "UpdateThreadsRequest") || strings.Contains(response.Body.String(), "required") {
+					t.Fatalf("字段拒绝不应暴露绑定器细节：%s", response.Body)
+				}
 			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/threads", nil))
-			var loaded APIResponse[models.SettingThreadAndRapidWait]
+			var loaded httpapi.APIResponse[models.SettingThreadAndRapidWait]
 			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil {
 				t.Fatal(err)
 			}
-			if response.Code != http.StatusOK || loaded.Code != Success || loaded.Data.UploadThreads != tt.wantUpload {
+			if response.Code != http.StatusOK || loaded.Status != http.StatusOK || loaded.Data.UploadThreads != tt.wantUpload {
 				t.Fatalf("上传并发读取结果不一致：%s", response.Body)
 			}
 		})
+	}
+}
+
+func TestParseMediaLibraryDistinguishesReadFailureFromUnavailable(t *testing.T) {
+	for _, handler := range []struct {
+		name  string
+		parse gin.HandlerFunc
+	}{
+		{name: "Emby", parse: ParseEmby},
+		{name: "Jellyfin", parse: ParseJellyfin},
+	} {
+		for _, failRead := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/readFailure=%v", handler.name, failRead), func(t *testing.T) {
+				conn := setupControllerTestDB(t, &models.EmbyConfig{}, &models.JellyfinConfig{})
+				var logs bytes.Buffer
+				previous := helpers.AppLogger
+				helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+				t.Cleanup(func() { helpers.AppLogger = previous })
+				if failRead {
+					if err := conn.Callback().Query().Before("gorm:query").Register("fixture_media_read_failure", func(tx *gorm.DB) {
+						tx.AddError(errors.New("private media configuration read failure"))
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				router := gin.New()
+				router.POST("/parse", handler.parse)
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/parse", nil))
+				status, code := http.StatusConflict, "MEDIA_LIBRARY_UNAVAILABLE"
+				if failRead {
+					status, code = http.StatusInternalServerError, "INTERNAL_ERROR"
+				}
+				assertScrapeFailure(t, response, status, code)
+				if failRead {
+					var result httpapi.APIResponse[any]
+					if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(response.Body.String(), "private media configuration") || !strings.Contains(logs.String(), "private media configuration read failure") || !strings.Contains(logs.String(), result.Instance) {
+						t.Fatalf("read cause must be private and correlated: response=%s logs=%s", response.Body, &logs)
+					}
+				}
+			})
+		}
 	}
 }

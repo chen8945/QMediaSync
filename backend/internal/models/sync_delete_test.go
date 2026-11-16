@@ -48,8 +48,8 @@ func TestDeleteSyncRecordById只允许删除已结束记录(t *testing.T) {
 		wantDelete bool
 		wantErr    error
 	}{
-		{name: "待处理记录不能删除", status: SyncStatusPending, wantErr: errSyncRecordNotDeletable},
-		{name: "进行中记录不能删除", status: SyncStatusInProgress, wantErr: errSyncRecordNotDeletable},
+		{name: "待处理记录不能删除", status: SyncStatusPending, wantErr: ErrSyncRecordNotDeletable},
+		{name: "进行中记录不能删除", status: SyncStatusInProgress, wantErr: ErrSyncRecordNotDeletable},
 		{name: "已完成记录可以删除", status: SyncStatusCompleted, wantDelete: true},
 		{name: "失败记录可以删除", status: SyncStatusFailed, wantDelete: true},
 		{name: "部分完成记录可以删除", status: SyncStatusPartial, wantDelete: true},
@@ -92,8 +92,8 @@ func TestDeleteSyncRecordById记录不存在时返回错误(t *testing.T) {
 	setupSyncDeleteTestDB(t)
 
 	err := DeleteSyncRecordById(404)
-	if !errors.Is(err, errSyncRecordNotFound) {
-		t.Fatalf("DeleteSyncRecordById() error = %v，期望匹配 %v", err, errSyncRecordNotFound)
+	if !errors.Is(err, ErrSyncRecordNotFound) {
+		t.Fatalf("DeleteSyncRecordById() error = %v，期望匹配 %v", err, ErrSyncRecordNotFound)
 	}
 }
 

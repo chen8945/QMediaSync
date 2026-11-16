@@ -2,8 +2,8 @@ import { isAxiosError, type AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError, type HttpErrorResponse } from '@/http/errors'
 import type { BackupConfig, BackupRecordsResponse } from '@/types/backup'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export type BackupConfigInput = Pick<
   BackupConfig,
@@ -63,13 +63,16 @@ export const backupPublicMessages: Readonly<Record<string, string>> = {
 
 export async function fetchBackupConfig(http: AxiosInstance): Promise<BackupConfig> {
   return unwrapResponse(await http.get<APIResponse<BackupConfig>>(`${SERVER_URL}/backup/config`))
+    .data
 }
 
 export async function saveBackupConfig(
   http: AxiosInstance,
   config: BackupConfigInput,
-): Promise<void> {
-  unwrapResponse(await http.put<APIResponse<null>>(`${SERVER_URL}/backup/config`, config))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.put<APIResponse<null>>(`${SERVER_URL}/backup/config`, config),
+  )
 }
 
 export async function fetchBackupRecords(
@@ -78,27 +81,37 @@ export async function fetchBackupRecords(
 ): Promise<BackupRecordsResponse> {
   return unwrapResponse(
     await http.get<APIResponse<BackupRecordsResponse>>(`${SERVER_URL}/backup/list`, { params }),
-  )
+  ).data
 }
 
-export async function createBackup(http: AxiosInstance, reason: string): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/backup/create`, { reason }))
+export async function createBackup(
+  http: AxiosInstance,
+  reason: string,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/backup/create`, { reason }),
+  )
 }
 
 export async function fetchBackupFiles(http: AxiosInstance): Promise<BackupFilesResponse> {
   return unwrapResponse(
     await http.get<APIResponse<BackupFilesResponse>>(`${SERVER_URL}/backup/files`),
-  )
+  ).data
 }
 
-export async function deleteBackup(http: AxiosInstance, recordId: number): Promise<void> {
-  unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/backup/records/${recordId}`))
+export async function deleteBackup(
+  http: AxiosInstance,
+  recordId: number,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.delete<APIResponse<null>>(`${SERVER_URL}/backup/records/${recordId}`),
+  )
 }
 
 export async function restoreBackup(
   http: AxiosInstance,
   source: number | { file_name: string },
-): Promise<RestoreStartResponse | null> {
+): Promise<SettingsSaveResult & { data: RestoreStartResponse | null }> {
   return unwrapResponse(
     await http.post<APIResponse<RestoreStartResponse | null>>(
       `${SERVER_URL}/backup/restore`,
@@ -110,7 +123,7 @@ export async function restoreBackup(
 export async function uploadAndRestoreBackup(
   http: AxiosInstance,
   file: File,
-): Promise<RestoreStartResponse | null> {
+): Promise<SettingsSaveResult & { data: RestoreStartResponse | null }> {
   const form = new FormData()
   form.append('file', file)
   return unwrapResponse(
@@ -136,7 +149,7 @@ export async function fetchBackupStatus(
         ? { headers: { 'X-Restore-Receipt': restoreReceipt }, skipAuthInvalidation: true }
         : undefined,
     ),
-  )
+  ).data
 }
 
 export async function restartAfterRestore(
@@ -148,7 +161,7 @@ export async function restartAfterRestore(
       headers: { 'X-Restore-Receipt': restoreReceipt },
       skipAuthInvalidation: true,
     }),
-  )
+  ).data
 }
 
 async function decodeDownloadError(response: HttpErrorResponse): Promise<boolean> {

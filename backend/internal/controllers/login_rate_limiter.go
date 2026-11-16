@@ -3,9 +3,12 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"qmediasync/internal/httpapi"
 
 	"qmediasync/internal/helpers"
 
@@ -124,9 +127,8 @@ func (l *LoginRateLimiter) Reset(ip string, username string) {
 }
 
 func writeLoginRateLimited(c *gin.Context, wait time.Duration) {
-	c.JSON(http.StatusTooManyRequests, APIResponse[any]{
-		Code:    BadRequest,
-		Message: fmt.Sprintf("请求过于频繁，请 %d 秒后再试", int(wait.Seconds())),
-		Data:    nil,
-	})
+	seconds := max(1, int((wait+time.Second-1)/time.Second))
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	c.Header("Cache-Control", "no-store, private")
+	httpapi.Failure(c, http.StatusTooManyRequests, httpapi.Error{Code: "RATE_LIMITED", Message: fmt.Sprintf("请求过于频繁，请 %d 秒后再试", seconds)})
 }

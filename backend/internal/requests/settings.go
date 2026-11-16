@@ -10,7 +10,7 @@ import (
 
 // UpdateLogSettingRequest 更新日志设置请求。
 type UpdateLogSettingRequest struct {
-	Level      string `form:"level" json:"level" binding:"required"`
+	Level      string `form:"level" json:"level"`
 	MaxSizeMB  *int   `form:"maxSizeMB" json:"maxSizeMB"`
 	MaxBackups *int   `form:"maxBackups" json:"maxBackups"`
 	MaxAgeDays *int   `form:"maxAgeDays" json:"maxAgeDays"`
@@ -42,7 +42,7 @@ func (r UpdateLogSettingRequest) Validate() error {
 
 // GetCronNextTimeRequest 获取 Cron 下次执行时间请求。
 type GetCronNextTimeRequest struct {
-	Cron string `form:"cron" json:"cron" binding:"required"`
+	Cron string `form:"cron" json:"cron"`
 }
 
 // Validate 校验 Cron 下次执行时间请求。
@@ -57,7 +57,7 @@ func (r GetCronNextTimeRequest) NormalizedCron() string {
 
 // ValidateCronRequest 验证 Cron 表达式请求。
 type ValidateCronRequest struct {
-	CronExpression string `json:"cron_expression" binding:"required"`
+	CronExpression string `json:"cron_expression"`
 }
 
 // Validate 校验 Cron 表达式请求。
@@ -72,13 +72,13 @@ func (r ValidateCronRequest) NormalizedCronExpression() string {
 
 // UpdateThreadsRequest 更新线程配置请求。
 type UpdateThreadsRequest struct {
-	DownloadThreads                int    `form:"download_threads" json:"download_threads" binding:"required"`
+	DownloadThreads                int    `form:"download_threads" json:"download_threads"`
 	UploadThreads                  *int   `form:"upload_threads" json:"upload_threads"`
-	FileDetailThreads              int    `form:"file_detail_threads" json:"file_detail_threads" binding:"required"`
-	OpenlistQPS                    int    `form:"openlist_qps" json:"openlist_qps" binding:"required"`
-	OpenlistRetry                  int    `form:"openlist_retry" json:"openlist_retry" binding:"required"`
-	OpenlistRetryDelay             int    `form:"openlist_retry_delay" json:"openlist_retry_delay" binding:"required"`
-	FileListPageSize               int    `form:"file_list_page_size" json:"file_list_page_size" binding:"required"`
+	FileDetailThreads              int    `form:"file_detail_threads" json:"file_detail_threads"`
+	OpenlistQPS                    int    `form:"openlist_qps" json:"openlist_qps"`
+	OpenlistRetry                  int    `form:"openlist_retry" json:"openlist_retry"`
+	OpenlistRetryDelay             int    `form:"openlist_retry_delay" json:"openlist_retry_delay"`
+	FileListPageSize               int    `form:"file_list_page_size" json:"file_list_page_size"`
 	UploadRapidWaitEnabled         *int   `form:"upload_rapid_wait_enabled" json:"upload_rapid_wait_enabled"`
 	UploadRapidWaitTimeoutSeconds  *int   `form:"upload_rapid_wait_timeout_seconds" json:"upload_rapid_wait_timeout_seconds"`
 	UploadRapidWaitIntervalSeconds *int   `form:"upload_rapid_wait_interval_seconds" json:"upload_rapid_wait_interval_seconds"`
@@ -186,8 +186,8 @@ type UpdateStrmConfigRequest struct {
 	MultiPlaybackEnabled int      `form:"multi_playback_enabled" json:"multi_playback_enabled"`
 	StrmPreloadEnabled   *int     `form:"strm_preload_enabled" json:"strm_preload_enabled"`
 	LocalProxy           int      `form:"local_proxy" json:"local_proxy"`
-	StrmBaseURL          string   `form:"strm_base_url" json:"strm_base_url" binding:"required"`
-	Cron                 string   `form:"cron" json:"cron" binding:"required"`
+	StrmBaseURL          string   `form:"strm_base_url" json:"strm_base_url"`
+	Cron                 string   `form:"cron" json:"cron"`
 	MinVideoSize         int64    `form:"min_video_size" json:"min_video_size"`
 	VideoExtArr          []string `json:"video_ext_arr"`
 	MetaExtArr           []string `form:"meta_ext_arr" json:"meta_ext_arr"`

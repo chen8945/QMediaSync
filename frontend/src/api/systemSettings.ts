@@ -1,6 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import type { ParsedHttpError } from '@/http/errors'
+import { HttpResponseError, type ParsedHttpError } from '@/http/errors'
+import { isAPIResponse } from '@/http/envelope'
 import type { LogLevel } from '@/types/log'
 import { getSettingsSaveResult, unwrapResponse } from './response'
 import type { APIResponse, SettingsSaveResult } from './types'
@@ -98,34 +99,47 @@ export const systemSettingsPublicMessages: Readonly<Record<string, string>> = {
   'maxAgeDays：取值超出允许范围': '保留天数必须在 1 到 365 之间',
 }
 
-// 全局 STRM 的旧校验响应仅有 message；只提取确定的字段位置与固定原因。
-// Go regexp 的动态错误尾部可能包含输入原文，不能作为公开消息或诊断输出。
+// 字段路径确定条目位置，Go regexp 的动态错误原文不进入公开反馈。
 export function strmRegexValidationIssue(
   error: ParsedHttpError,
 ): { position: number; reason: 'empty' | 'invalid' } | undefined {
-  if (error.kind !== 'application' || error.response?.status !== 400) return undefined
+  if (error.response?.status !== 400 || !isAPIResponse(error.response)) return undefined
   const body = error.response.data
-  if (body === null || typeof body !== 'object' || !('message' in body)) return undefined
-  if (typeof body.message !== 'string') return undefined
-  const match =
-    /^exclude_name_regex_arr\[(0|[1-9]\d{0,8})\]：(正则表达式不能为空|正则表达式无效(?:：[\s\S]+)?)$/.exec(
-      body.message,
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    !('field_errors' in body) ||
+    !Array.isArray(body.field_errors)
+  )
+    return undefined
+  for (const item of body.field_errors) {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      typeof item.field !== 'string' ||
+      typeof item.message !== 'string'
     )
-  if (!match) return undefined
-  return {
-    position: Number(match[1]) + 1,
-    reason: match[2] === '正则表达式不能为空' ? 'empty' : 'invalid',
+      continue
+    const match = /^exclude_name_regex_arr\[(0|[1-9]\d{0,8})\]$/.exec(item.field)
+    if (match)
+      return {
+        position: Number(match[1]) + 1,
+        reason: item.message === '正则表达式不能为空' ? 'empty' : 'invalid',
+      }
   }
 }
 
 export async function fetchStrmSettings(http: AxiosInstance): Promise<StrmSettings> {
   return unwrapResponse(
     await http.get<APIResponse<StrmSettings>>(`${SERVER_URL}/setting/strm-config`),
-  )
+  ).data
 }
 
-export async function saveStrmSettings(http: AxiosInstance, payload: StrmSettings): Promise<void> {
-  unwrapResponse(
+export async function saveStrmSettings(
+  http: AxiosInstance,
+  payload: StrmSettings,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/setting/strm-config`, payload, {
       headers: { 'Content-Type': 'application/json' },
     }),
@@ -141,14 +155,14 @@ export async function fetchCronTimes(
       await http.get<APIResponse<(string | number)[] | null>>(`${SERVER_URL}/setting/cron`, {
         params: { cron },
       }),
-    ) ?? []
+    ).data ?? []
   )
 }
 
 export async function fetchThreadSettings(http: AxiosInstance): Promise<ThreadSettings> {
   return unwrapResponse(
     await http.get<APIResponse<ThreadSettings>>(`${SERVER_URL}/setting/threads`),
-  )
+  ).data
 }
 
 export async function saveThreadSettings(
@@ -156,21 +170,25 @@ export async function saveThreadSettings(
   payload: ThreadSettings,
 ): Promise<SettingsSaveResult> {
   const response = await http.post<APIResponse<null>>(`${SERVER_URL}/setting/threads`, payload)
-  unwrapResponse(response)
   return getSettingsSaveResult(response)
 }
 
 export async function fetchLogSettings(http: AxiosInstance): Promise<LogSettingsResponse> {
   return unwrapResponse(
     await http.get<APIResponse<LogSettingsResponse>>(`${SERVER_URL}/setting/log`),
-  )
+  ).data
 }
 
 export async function saveLogSettings(
   http: AxiosInstance,
   payload: LogSettings,
-): Promise<LogSettingsResponse> {
-  return unwrapResponse(
-    await http.post<APIResponse<LogSettingsResponse>>(`${SERVER_URL}/setting/log`, payload),
+): Promise<LogSettingsResponse & SettingsSaveResult> {
+  const response = await http.post<APIResponse<LogSettingsResponse>>(
+    `${SERVER_URL}/setting/log`,
+    payload,
   )
+  const data = unwrapResponse(response).data
+  if (!data || typeof data !== 'object' || Array.isArray(data))
+    throw new HttpResponseError(response)
+  return { ...data, ...getSettingsSaveResult(response) }
 }

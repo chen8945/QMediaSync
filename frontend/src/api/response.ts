@@ -1,19 +1,24 @@
-import type { AxiosResponse } from 'axios'
-import { HttpResponseError } from '@/http/errors'
+import { HttpResponseError, type HttpErrorResponse } from '@/http/errors'
+import { isAPIResponse } from '@/http/envelope'
 import type { APIResponse, SettingsSaveResult } from './types'
 
-export function unwrapResponse<T>(response: AxiosResponse<APIResponse<T>>): T {
-  if (response.status < 200 || response.status >= 300 || response.data?.code !== 200) {
+export function unwrapResponse<T>(
+  response: HttpErrorResponse & { data: APIResponse<T> },
+): APIResponse<T> & { warnings: string[] }
+export function unwrapResponse<T = unknown>(
+  response: HttpErrorResponse,
+): APIResponse<T> & { warnings: string[] }
+export function unwrapResponse<T>(
+  response: HttpErrorResponse,
+): APIResponse<T> & { warnings: string[] } {
+  if (response.status < 200 || response.status >= 300 || !isAPIResponse(response)) {
     throw new HttpResponseError(response)
   }
-  return response.data.data
+  const body = response.data as APIResponse<T>
+  return { ...body, warnings: body.warnings ?? [] }
 }
 
-export function getSettingsSaveResult(
-  response: AxiosResponse<APIResponse<unknown> & { warnings?: unknown }>,
-): SettingsSaveResult {
-  const warnings = response.data.warnings === undefined ? [] : response.data.warnings
-  if (!Array.isArray(warnings) || !warnings.every((warning) => typeof warning === 'string'))
-    throw new HttpResponseError(response)
-  return { warnings }
+export function getSettingsSaveResult(response: HttpErrorResponse): SettingsSaveResult {
+  const { warnings, message } = unwrapResponse(response)
+  return message?.trim() ? { warnings, message } : { warnings }
 }

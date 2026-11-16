@@ -128,7 +128,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (isLoggingOut.value) return
     isLoggingOut.value = true
     try {
-      await requestLogout(http)
+      return await requestLogout(http)
     } catch (error) {
       const failure = parseHttpError(error)
       if (failure.shouldNotify && failure.kind !== 'unauthorized') {

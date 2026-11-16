@@ -10,22 +10,25 @@ import type { APIResponse } from '@/api/types'
 const setup = async (platformError?: unknown, fnos = false, progressStatus = 'downloading') => {
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: null })
+    .mockResolvedValue({ status: 200, message: '', data: null })
   let running = false
   const adapter = vi.fn(async (config) => {
     let data: unknown
     if (config.method === 'post') {
       data = await reply()
-      if (config.url.endsWith('/to-version') && (data as APIResponse<unknown>).code === 200)
+      if (config.url.endsWith('/to-version') && (data as APIResponse<unknown>).status === 200)
         running = true
     } else if (config.url.endsWith('/version')) {
-      data = { version: 'v1.0.0', date: '', isWindows: false, isRelease: true }
+      data = {
+        status: 200,
+        data: { version: 'v1.0.0', date: '', isWindows: false, isRelease: true },
+      }
     } else if (config.url.endsWith('/is-fn-os')) {
       if (platformError) throw platformError
-      data = { code: 200, data: fnos }
+      data = { status: 200, data: fnos }
     } else if (config.url.includes('/update/last')) {
       data = {
-        code: 200,
+        status: 200,
         data: [
           { version: 'v1.2.3', date: '', note: 'Release', url: 'https://example.test/update.zip' },
         ],
@@ -33,12 +36,18 @@ const setup = async (platformError?: unknown, fnos = false, progressStatus = 'do
     } else {
       data = running
         ? {
-            code: 200,
+            status: 200,
             data: { status: progressStatus, progress: 10, total_size: 100, downloaded: 10 },
           }
-        : { code: 500, message: '未开始更新', data: null }
+        : { status: 200, data: { status: 'idle', progress: 0, total_size: 0, downloaded: 0 } }
     }
-    return { config, status: 200, statusText: 'OK', headers: {}, data }
+    return {
+      config,
+      status: (data as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data,
+    }
   })
   const wrapper = mount(AppUpdate, {
     global: { provide: { [httpKey]: axios.create({ adapter }) }, stubs: { PageHeader: true } },
@@ -59,6 +68,7 @@ beforeEach(() => {
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -68,10 +78,35 @@ afterEach(() => {
 })
 
 describe('更新页面请求反馈', () => {
+  it.each([false, true])('取消已受理使用服务端反馈，警告=%s 不报告完全成功', async (warn) => {
+    const { wrapper, reply, click } = await setup()
+    await click('在线更新')
+    const message = '服务器确认取消测试更新任务'
+    const warning = '测试更新取消需要人工确认'
+    reply.mockResolvedValueOnce({
+      status: 200,
+      data: null,
+      message,
+      warnings: warn ? [warning] : [],
+    })
+    await click('取消')
+    expect(wrapper.find('.update-progress').exists()).toBe(false)
+    if (warn) {
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+      expect(ElMessage.success).not.toHaveBeenCalled()
+    } else expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith(message)
+  })
+
   it('初始化无更新任务保持静默，启动业务失败不开始进度轮询', async () => {
     const { wrapper, reply, adapter, click } = await setup()
     expect(ElMessage.error).not.toHaveBeenCalled()
-    reply.mockResolvedValueOnce({ code: 500, message: '更新操作失败，请稍后重试', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '更新操作失败，请稍后重试',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     adapter.mockClear()
     await click('在线更新')
     await vi.advanceTimersByTimeAsync(2500)
@@ -87,7 +122,13 @@ describe('更新页面请求反馈', () => {
     await click('手动下载')
     expect(open).toHaveBeenCalledWith('https://example.test/update.zip', '_blank')
     await click('在线更新')
-    reply.mockResolvedValueOnce({ code: 500, message: '更新操作失败，请稍后重试', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '更新操作失败，请稍后重试',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click('取消')
     expect(wrapper.get('.update-progress').text()).toContain('下载中')
     expect(wrapper.get('.update-progress').text()).toContain('取消')
@@ -110,7 +151,13 @@ describe('更新页面请求反馈', () => {
   ])('%s被拒绝时展示后端说明：%s', async (action, message) => {
     const { reply, click } = await setup()
     if (action === '取消') await click('在线更新')
-    reply.mockResolvedValueOnce({ code: 500, message, data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message,
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click(action)
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(message)
   })
@@ -122,8 +169,14 @@ describe('更新页面请求反馈', () => {
         kind === 'cancel'
           ? new CanceledError()
           : new HttpResponseError({
-              status: kind === 'handled' ? 401 : 200,
-              data: { code: 500, message: '更新操作失败，请稍后重试' },
+              status: kind === 'handled' ? 401 : 500,
+              data: {
+                status: kind === 'handled' ? 401 : 500,
+                message: '更新操作失败，请稍后重试',
+                data: null,
+                error_code: 'TEST_REQUEST_FAILED',
+                instance: '/request-errors/ComponentTestFailure0001',
+              },
             })
       if (kind === 'handled') markAuthInvalidationHandled(error)
       const { wrapper } = await setup(error)

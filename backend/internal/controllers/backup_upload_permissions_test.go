@@ -20,6 +20,7 @@ import (
 
 	"qmediasync/internal/backup"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 )
 
@@ -52,11 +53,11 @@ func TestUploadBackupRejectsSymlinkDirectory(t *testing.T) {
 	request.Header.Set("Content-Type", form.FormDataContentType())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	var result APIResponse[any]
+	var result httpapi.APIResponse[any]
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Code != BadRequest || result.Message != "保存上传文件失败" {
+	if response.Code != http.StatusInternalServerError || result.Status != response.Code || result.ErrorCode != "BACKUP_UPLOAD_FAILED" || result.Instance == "" {
 		t.Fatalf("unsafe upload directory accepted: %s", response.Body)
 	}
 	entries, err := os.ReadDir(outside)
@@ -143,11 +144,11 @@ func TestUploadBackupCreatesPrivateArchive(t *testing.T) {
 	request.Header.Set("Content-Type", form.FormDataContentType())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	var result APIResponse[map[string]string]
+	var result httpapi.APIResponse[map[string]string]
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Code != Success || result.Data["restore_receipt"] == "" {
+	if response.Code != http.StatusAccepted || result.Status != response.Code || result.Data["restore_receipt"] == "" {
 		t.Fatalf("upload was not accepted: %s", response.Body)
 	}
 	// 唯一业务连接被测试持有，异步恢复会在旧包关联检查等待，上传文件尚不能被清理。

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,34 +15,11 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
-
-	"qmediasync/internal/requests"
 )
 
-func TestLoginFailureMessageIsGeneric(t *testing.T) {
-	msg := loginFailureMessage()
-	if msg != "登录失败" {
-		t.Fatalf("登录失败信息应统一为登录失败，实际为 %s", msg)
-	}
-}
-
-func TestDisableTwoFactorRequiresPasswordAndCode(t *testing.T) {
-	req := requests.DisableTwoFactorRequest{}
-	if req.Validate() == nil {
-		t.Fatal("空密码和空验证码不应允许关闭 2FA")
-	}
-	req.Password = "admin123"
-	if req.Validate() == nil {
-		t.Fatal("缺少 TOTP 验证码不应允许关闭 2FA")
-	}
-	req.TOTPCode = "123456"
-	if req.Validate() != nil {
-		t.Fatal("同时提供密码和 TOTP 验证码后请求格式应有效")
-	}
-}
-
-func TestLoginFailuresHaveIdenticalResponses(t *testing.T) {
+func TestLoginFailuresDistinguishCredentialRejectionFromInternalError(t *testing.T) {
 	oldConfigDir := helpers.ConfigDir
 	helpers.ConfigDir = t.TempDir()
 	t.Cleanup(func() { helpers.ConfigDir = oldConfigDir })
@@ -110,12 +89,82 @@ func TestLoginFailuresHaveIdenticalResponses(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			const want = `{"code":500,"message":"登录失败","data":null}`
-			if w.Code != http.StatusOK || w.Body.String() != want {
-				t.Fatalf("登录失败响应不一致：HTTP=%d body=%s", w.Code, w.Body.String())
+			var response httpapi.APIResponse[any]
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			wantStatus, wantCode := http.StatusUnauthorized, "AUTHENTICATION_INVALID"
+			if tc.failSession {
+				wantStatus, wantCode = http.StatusInternalServerError, "INTERNAL_ERROR"
+			}
+			if w.Code != wantStatus || response.Status != w.Code || response.ErrorCode != wantCode || response.Data != nil || len(response.FieldErrors) != 0 || !strings.HasPrefix(response.Instance, "/request-errors/") {
+				t.Fatalf("登录失败分类错误：HTTP=%d body=%s", w.Code, w.Body.String())
+			}
+			if !tc.failSession && (response.Message != "登录失败" || w.Header().Get("WWW-Authenticate") != `QMediaSyncSession realm="QMediaSync"`) {
+				t.Fatalf("凭据拒绝暴露匹配细节或缺少 challenge：%s", w.Body.String())
+			}
+			if tc.failSession && (w.Header().Get("WWW-Authenticate") != "" || strings.Contains(w.Body.String(), "no such table")) {
+				t.Fatalf("内部登录故障被误分类或泄露数据库信息：%s", w.Body.String())
+			}
+			if w.Header().Get("Cache-Control") != "no-store, private" {
+				t.Fatal("登录失败响应不应被缓存")
 			}
 			if len(w.Result().Cookies()) != 0 {
 				t.Fatal("登录失败不得设置会话 Cookie")
+			}
+		})
+	}
+}
+
+func TestLoginInvalidInputIsNotCredentialRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, field string
+	}{
+		{name: "JSON 不完整", payload: `{"username":`},
+		{name: "密码缺失", payload: `{"username":"admin"}`, field: "password"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.POST("/api/login", LoginAction)
+			request := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(tc.payload))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusBadRequest || body.Status != response.Code || body.ErrorCode != "INVALID_REQUEST" || body.Data != nil || body.Instance == "" || response.Header().Get("WWW-Authenticate") != "" {
+				t.Fatalf("输入错误被误认为凭据失效：%d %s", response.Code, response.Body)
+			}
+			if tc.field != "" && (len(body.FieldErrors) != 1 || body.FieldErrors[0].Field != tc.field) {
+				t.Fatalf("校验错误缺少字段定位：%s", response.Body)
+			}
+		})
+	}
+}
+
+func TestLoginRateLimitResponseCarriesWaitHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wait    time.Duration
+		seconds int
+	}{
+		{name: "不足一秒", wait: 200 * time.Millisecond, seconds: 1},
+		{name: "非整秒向上取整", wait: 1500 * time.Millisecond, seconds: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = httptest.NewRequest(http.MethodPost, "/api/login", nil)
+			writeLoginRateLimited(context, tc.wait)
+			seconds, err := strconv.Atoi(response.Header().Get("Retry-After"))
+			var body httpapi.APIResponse[any]
+			if jsonErr := json.Unmarshal(response.Body.Bytes(), &body); jsonErr != nil {
+				t.Fatal(jsonErr)
+			}
+			if err != nil || seconds != tc.seconds || response.Code != http.StatusTooManyRequests || body.Status != response.Code || body.ErrorCode != "RATE_LIMITED" {
+				t.Fatalf("限流等待协议错误：%v %s", response.Header(), response.Body)
 			}
 		})
 	}

@@ -466,6 +466,7 @@ import {
   type NetFileSortOrder,
   type BrowseSortValue,
 } from '@/api/files'
+import type { SettingsSaveResult } from '@/api/types'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import DirectorySelector from '@/components/files/DirectorySelector.vue'
@@ -1192,6 +1193,17 @@ async function handleSingleOperation(operation: FileOperationType, item: FileSys
   } catch {}
 }
 
+const showFileResult = (
+  result: SettingsSaveResult,
+  fallback: string,
+  type: 'success' | 'info' = 'success',
+) => {
+  const message = result.message?.trim() || fallback
+  if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+  else if (type === 'info') ElMessage.info(message)
+  else ElMessage.success(message)
+}
+
 async function handleDeleteItem(item: FileSystemItem) {
   const operationContext = createFileOperationContextSnapshot()
 
@@ -1215,7 +1227,7 @@ async function handleDeleteItem(item: FileSystemItem) {
       return
     }
 
-    await deleteFile(http, {
+    const result = await deleteFile(http, {
       parent_id: operationContext.parentId,
       file_id: item.id,
       account_id: operationContext.accountId,
@@ -1225,7 +1237,7 @@ async function handleDeleteItem(item: FileSystemItem) {
       return
     }
 
-    ElMessage.success('删除成功')
+    showFileResult(result, '删除成功')
     await loadFileList({ refresh: true })
   } catch (error) {
     if (!isFileOperationContextCurrent(operationContext)) {
@@ -1240,6 +1252,7 @@ async function handleDeleteItem(item: FileSystemItem) {
 
 async function handleRenameItem(item: FileSystemItem) {
   const operationContext = createFileOperationContextSnapshot()
+  let result: SettingsSaveResult | undefined
 
   try {
     await ElMessageBox.prompt(`将“${item.name}”重命名为：`, '重命名', {
@@ -1261,7 +1274,7 @@ async function handleRenameItem(item: FileSystemItem) {
 
         instance.confirmButtonLoading = true
         try {
-          await renameFile(http, {
+          result = await renameFile(http, {
             parent_id: operationContext.parentId,
             file_id: item.id,
             new_name: instance.inputValue.trim(),
@@ -1282,11 +1295,11 @@ async function handleRenameItem(item: FileSystemItem) {
       },
     })
 
-    if (!isFileOperationContextCurrent(operationContext)) {
+    if (!result || !isFileOperationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('重命名成功')
+    showFileResult(result, '重命名成功')
     await loadFileList({ refresh: true })
   } catch (error) {
     if (!isFileOperationContextCurrent(operationContext)) {
@@ -1334,7 +1347,7 @@ async function handleBatchDelete() {
     batchOperateLoading.value = true
 
     submitted = true
-    await deleteFiles(http, {
+    const result = await deleteFiles(http, {
       parent_id: operationContext.parentId,
       file_ids: items.map((item) => item.id),
       account_id: operationContext.accountId,
@@ -1344,7 +1357,7 @@ async function handleBatchDelete() {
       return
     }
 
-    ElMessage.success(`已删除 ${items.length} 项`)
+    showFileResult(result, `已删除 ${items.length} 项`)
     clearFileSelection()
     await loadFileList({ refresh: true })
   } catch (error) {
@@ -1482,10 +1495,19 @@ async function confirmFileTargetOperation() {
       return
     }
 
-    if (result?.status === 'submitted') {
-      ElMessage.info('已提交到 OpenList，请查看任务结果，完成后点击刷新更新文件列表')
+    if (result.data?.status === 'submitted') {
+      showFileResult(
+        {
+          ...result,
+          message: result.message?.trim()
+            ? `${result.message.trim()}，请查看任务结果，完成后点击刷新更新文件列表`
+            : undefined,
+        },
+        '已提交到 OpenList，请查看任务结果，完成后点击刷新更新文件列表',
+        'info',
+      )
     } else {
-      ElMessage.success(operation === 'move' ? '移动成功' : '复制成功')
+      showFileResult(result, operation === 'move' ? '移动成功' : '复制成功')
     }
     resetFileTargetDialog()
     if (!isSingleOperation) {
@@ -1544,7 +1566,7 @@ async function handleCreateDirectory() {
 
     createLoading.value = true
 
-    await createDirectory(http, {
+    const result = await createDirectory(http, {
       parent_id: operationContext.parentId,
       parent_path: operationContext.parentPath,
       name: createForm.value.name.trim(),
@@ -1556,7 +1578,7 @@ async function handleCreateDirectory() {
       return
     }
 
-    ElMessage.success('创建文件夹成功')
+    showFileResult(result, '创建文件夹成功')
     resetCreateDirectoryDialog()
     await loadFileList({ refresh: true })
   } catch (error) {
@@ -1597,7 +1619,7 @@ async function confirmStrmGenerate() {
   try {
     strmGenerateLoading.value = true
 
-    let succeededCount = 0
+    const results: SettingsSaveResult[] = []
     let firstError: unknown = null
     for (const item of items) {
       // 提交期间目录或账号被切换时中止剩余提交，避免向新上下文误发任务
@@ -1606,12 +1628,12 @@ async function confirmStrmGenerate() {
       }
 
       try {
-        await generateManualStrm(http, {
+        const result = await generateManualStrm(http, {
           path_id: item.id,
           target_path: targetPath,
           account_id: operationContext.accountId,
         })
-        succeededCount += 1
+        results.push(result)
       } catch (error) {
         if (!isStrmOperationContextCurrent(operationContext)) {
           return
@@ -1624,9 +1646,15 @@ async function confirmStrmGenerate() {
       return
     }
 
+    const succeededCount = results.length
+    const messages = [...new Set(results.map((result) => result.message?.trim()).filter(Boolean))]
+    const warnings = results.flatMap((result) => result.warnings)
     if (succeededCount === items.length) {
-      ElMessage.success(
-        items.length > 1 ? `已提交 ${items.length} 项 STRM 生成任务` : 'STRM 生成任务已提交',
+      const summary =
+        items.length > 1 ? `已提交 ${items.length} 项 STRM 生成任务` : 'STRM 生成任务已提交'
+      showFileResult(
+        { message: (items.length > 1 ? [summary, ...messages] : messages).join('；'), warnings },
+        summary,
       )
       resetStrmTargetDialog()
       return
@@ -1636,7 +1664,11 @@ async function confirmStrmGenerate() {
       // 部分成功时已入队任务无法撤回，关闭弹窗并汇总结果；
       // 失败项可重新选择后再次提交，队列会拒绝重复任务。
       ElMessage.warning(
-        `STRM 生成任务提交：成功 ${succeededCount} 项，失败 ${items.length - succeededCount} 项`,
+        [
+          `STRM 生成任务提交：成功 ${succeededCount} 项，失败 ${items.length - succeededCount} 项`,
+          ...messages,
+          ...warnings,
+        ].join('；'),
       )
       resetStrmTargetDialog()
       return

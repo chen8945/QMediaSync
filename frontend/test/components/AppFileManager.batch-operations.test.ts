@@ -17,7 +17,14 @@ import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 
-const envelope = (data: unknown, code = 200, message = '') => ({ code, data, message })
+const envelope = (data: unknown, status = 200, message = '') => ({
+  status,
+  data,
+  message,
+  ...(status >= 400
+    ? { error_code: 'TEST_REQUEST_FAILED', instance: '/request-errors/ComponentTestFailure0001' }
+    : {}),
+})
 const file = { id: 'file', name: 'movie.mkv', size: 1024, modified_time: 1, is_directory: false }
 const secondFile = {
   id: 'file-2',
@@ -81,13 +88,17 @@ const mountPage = async (
     },
   )
   const writeReply = vi.fn(async (): Promise<unknown> => envelope(null))
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await readReply(config.url, config.params) : await writeReply(),
-  }))
+  const adapter = vi.fn(async (config) => {
+    const responseBody =
+      config.method === 'get' ? await readReply(config.url, config.params) : await writeReply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/', component: { template: '<div />' } }],
@@ -183,6 +194,38 @@ describe('AppFileManager 批量操作', () => {
     await flushPromises()
     sessionStorage.clear()
     localStorage.clear()
+  })
+
+  it('文件删除使用服务端反馈和警告，同时刷新已提交结果', async () => {
+    const { wrapper, writeReply, readReply } = await mountPage()
+    writeReply.mockResolvedValueOnce({
+      ...envelope(null, 200, '服务端操作反馈'),
+      warnings: ['测试应用警告'],
+    })
+    await fileAction(wrapper, 'DELETE')
+    expect(ElMessage.warning).toHaveBeenCalledWith('服务端操作反馈；测试应用警告')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(readReply).toHaveBeenLastCalledWith(
+      expect.stringContaining('/path/files'),
+      expect.objectContaining({ refresh: 1 }),
+    )
+  })
+
+  it.each(['移动', '复制'])('%s受理反馈保留服务端消息、应用警告和任务查看说明', async (action) => {
+    const { wrapper, writeReply } = await mountPage('openlist', '/source')
+    await toggleBatchMode(wrapper)
+    await selectRow(wrapper, 0)
+    await click(wrapper, action)
+    writeReply.mockResolvedValueOnce({
+      ...envelope({ status: 'submitted', task_ids: ['task-1'] }, 202, '服务端受理反馈'),
+      warnings: ['测试应用警告'],
+    })
+    await click(wrapper, `${action}到根目录`)
+    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('服务端受理反馈'))
+    expect(vi.mocked(ElMessage.warning).mock.calls.at(-1)?.[0]).toContain('测试应用警告')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(batchSummary(wrapper)).toBe('已选 0 项')
   })
 
   it.each([1200, 600])('宽度 %s 下根目录不显示返回上级入口', async (width) => {

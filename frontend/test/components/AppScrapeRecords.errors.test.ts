@@ -58,11 +58,14 @@ const result = {
   poster_url: '',
   overview: '',
 }
-const success = (data: unknown = null, message = '') => ({ code: 200, message, data })
+const success = (data: unknown = null, message = '') => ({ status: 200, message, data })
 const failureBody = {
-  code: 500,
+  status: 500,
   message: '刮削请求失败，请稍后重试',
-  data: { field_errors: { id: 'private details' } },
+  data: null,
+  error_code: 'TEST_REQUEST_FAILED',
+  instance: '/request-errors/ComponentTestFailure0001',
+  field_errors: [{ field: 'id', message: '记录校验失败' }],
 }
 
 function forbidden(config: InternalAxiosRequestConfig, errorCode: string) {
@@ -73,7 +76,13 @@ function forbidden(config: InternalAxiosRequestConfig, errorCode: string) {
     {},
     {
       config,
-      data: { code: 500, message: 'private-secret', error_code: errorCode, data: null },
+      data: {
+        status: 403,
+        message: 'private-secret',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      },
       status: 403,
       statusText: 'Forbidden',
       headers: {},
@@ -89,19 +98,22 @@ let consoleError: ReturnType<typeof vi.spyOn>
 async function createWrapper(
   respond?: (config: InternalAxiosRequestConfig) => unknown | Promise<unknown>,
 ) {
-  const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
-    config,
-    data:
+  const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
+    const responseBody =
       (await respond?.(config)) ??
       (config.url?.endsWith('/scrape/records') && config.method === 'get'
         ? success({ list: records, total: records.length })
         : config.url?.endsWith('/tmdb-search')
           ? success([result])
-          : success()),
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-  }))
+          : success())
+    return {
+      config,
+      data: responseBody,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+    }
+  })
   const http = axios.create({ adapter })
   const wrapper = shallowMount(AppScrapeRecords, {
     global: {
@@ -178,7 +190,7 @@ function expectNoSuccessOrSecrets() {
     expect(Object.keys(diagnostics)).toEqual(expect.arrayContaining(['method', 'path', 'status']))
     expect(
       Object.keys(diagnostics).every((key) =>
-        ['method', 'path', 'status', 'errorCode'].includes(key),
+        ['method', 'path', 'status', 'errorCode', 'instance'].includes(key),
       ),
     ).toBe(true)
   }
@@ -188,6 +200,7 @@ beforeEach(() => {
   sessionStorage.clear()
   messageError = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   messageSuccess = vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
   // Element Plus 声明为输入结果与 Action 的交叉类型，但普通确认框实际返回字符串 Action。
   vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
@@ -199,6 +212,27 @@ afterEach(() => {
 })
 
 describe('AppScrapeRecords 请求失败', () => {
+  it.each([
+    ['删除所选记录', '/scrape/records?ids=2,7,9'],
+    ['重新整理所选', '/scrape/rename-failed?ids=2,7,9'],
+    ['清除失败记录', '/scrape/clear-failed'],
+    ['清空记录', '/scrape/truncate-all'],
+    ['标记已整理 9', '/scrape/finish'],
+  ])('%s 的受理消息与警告进入原有反馈，保留后续刷新', async (label, endpoint) => {
+    const message = '服务器确认测试记录操作'
+    const warning = '测试记录操作需要人工确认'
+    const { wrapper, listCalls } = await createWrapper((config) =>
+      config.url?.endsWith(endpoint)
+        ? { ...success(null, message), warnings: [warning] }
+        : undefined,
+    )
+    await click(wrapper, '选择记录')
+    await click(wrapper, label)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+    expect(messageSuccess).not.toHaveBeenCalled()
+    expect(listCalls()).toBe(2)
+  })
+
   it('搜索业务失败保留输入，不展示成功或空结果状态', async () => {
     const { wrapper, adapter } = await createWrapper((config) =>
       config.url?.endsWith('/tmdb-search') ? failureBody : undefined,
@@ -313,7 +347,13 @@ describe('AppScrapeRecords 请求失败', () => {
         {},
         {
           config,
-          data: { code: 401, error_code: 'SESSION_INVALID', data: null },
+          data: {
+            status: 401,
+            data: null,
+            message: '请求处理失败',
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'SESSION_INVALID',
+          },
           status: 401,
           statusText: 'Unauthorized',
           headers: {},

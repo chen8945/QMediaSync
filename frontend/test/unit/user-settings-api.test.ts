@@ -10,9 +10,8 @@ import {
   revokeLoginSession,
   revokeOtherLoginSessions,
   setupTwoFactor,
-  userSettingsPublicMessages,
 } from '@/api/userSettings'
-import { HttpResponseError, parseHttpError } from '@/http/errors'
+import { HttpResponseError } from '@/http/errors'
 
 const operations: [string, string, (http: AxiosInstance) => Promise<unknown>][] = [
   ['get', '/user/info', fetchCurrentUser],
@@ -37,8 +36,14 @@ const operations: [string, string, (http: AxiosInstance) => Promise<unknown>][] 
 describe('用户设置 API', () => {
   it.each(operations)('%s %s 保留请求契约并拒绝业务失败', async (method, path, operation) => {
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
-      data: { code: 500, message: 'private secret', data: null },
-      status: 200,
+      data: {
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+        status: 500,
+        message: 'private secret',
+        data: null,
+      },
+      status: 500,
       statusText: 'OK',
       headers: {},
       config,
@@ -52,7 +57,7 @@ describe('用户设置 API', () => {
 
   it.each([true, false])('修改凭据保留重新登录标记 %s', async (data) => {
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
-      data: { code: 200, data },
+      data: { status: 200, data },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -61,7 +66,7 @@ describe('用户设置 API', () => {
     const http = axios.create({ adapter })
     await expect(
       changeUserCredentials(http, { username: 'admin', new_password: 'Pass123' }),
-    ).resolves.toBe(data)
+    ).resolves.toMatchObject({ data, warnings: [] })
     expect(JSON.parse(adapter.mock.calls[0]![0].data)).toEqual({
       username: 'admin',
       new_password: 'Pass123',
@@ -71,7 +76,7 @@ describe('用户设置 API', () => {
   it('空登录设备列表仍为正常结果', async () => {
     const http = axios.create({
       adapter: async (config) => ({
-        data: { code: 200, data: null },
+        data: { status: 200, data: null },
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -81,18 +86,22 @@ describe('用户设置 API', () => {
     await expect(fetchLoginSessions(http)).resolves.toEqual([])
   })
 
-  it.each([
-    ['新密码不能与当前密码相同', '新密码不能与当前密码相同'],
-    ['new_password：不能是纯数字或纯字母', '密码不能是纯数字或纯字母'],
-  ])('保留用户设置文案：%s', (message, expected) => {
-    const failure = parseHttpError(
-      new HttpResponseError({ status: 200, data: { code: 500, message } }),
-      {
-        publicMessages: userSettingsPublicMessages,
-        fallbackMessage: '保存用户设置失败',
-      },
-    )
-    expect(failure.message).toBe(expected)
-    expect(failure.diagnostics).toEqual({ status: 200 })
-  })
+  it.each(operations.filter(([method, path]) => method !== 'get' && !path.endsWith('/setup')))(
+    '%s %s 保留已有操作的服务端反馈',
+    async (_method, _path, operation) => {
+      const http = axios.create({
+        adapter: async (config) => ({
+          data: { status: 200, data: false, message: '服务端操作结果', warnings: ['本地应用提醒'] },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }),
+      })
+      await expect(operation(http)).resolves.toMatchObject({
+        message: '服务端操作结果',
+        warnings: ['本地应用提醒'],
+      })
+    },
+  )
 })

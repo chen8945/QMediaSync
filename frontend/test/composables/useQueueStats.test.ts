@@ -20,8 +20,9 @@ const createDeferred = <T>(): Deferred<T> => {
 }
 
 const queueStatsResponse = {
+  status: 200,
   data: {
-    code: 200,
+    status: 200,
     data: {
       avg_response_time_ms: 0,
       is_throttled: false,

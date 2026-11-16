@@ -53,7 +53,8 @@ describe('AppLogViewer', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: vi.fn().mockResolvedValue({ entries: [], pos: 0 }),
+        json: vi.fn().mockResolvedValue({ status: 200, data: { entries: [], pos: 0 } }),
+        status: 200,
       }),
     )
     vi.stubGlobal('EventSource', MockEventSource)
@@ -90,7 +91,8 @@ describe('AppLogViewer', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: vi.fn().mockResolvedValue({ entries: [], pos: 0 }),
+        json: vi.fn().mockResolvedValue({ status: 200, data: { entries: [], pos: 0 } }),
+        status: 200,
       }),
     )
     vi.stubGlobal('EventSource', MockEventSource)
@@ -131,7 +133,8 @@ describe('AppLogViewer', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: vi.fn().mockResolvedValue({ entries: [], pos: 0 }),
+        json: vi.fn().mockResolvedValue({ status: 200, data: { entries: [], pos: 0 } }),
+        status: 200,
       }),
     )
     vi.stubGlobal('EventSource', undefined)
@@ -165,6 +168,7 @@ describe('AppLogViewer', () => {
       vi.fn().mockResolvedValue({
         ok: false,
         json: vi.fn().mockResolvedValue({ error: '日志快照不可用' }),
+        status: 200,
       }),
     )
     vi.stubGlobal('EventSource', MockEventSource)
@@ -230,7 +234,7 @@ describe('AppLogViewer', () => {
     type PendingRequest = {
       url: string
       signal: AbortSignal | undefined
-      resolve: (response: { ok: boolean; json: () => Promise<unknown> }) => void
+      resolve: (response: { ok: boolean; status: number; json: () => Promise<unknown> }) => void
     }
     const pendingRequests: PendingRequest[] = []
     vi.stubGlobal(
@@ -270,17 +274,25 @@ describe('AppLogViewer', () => {
     pendingRequests[1].resolve({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        entries: [{ level: 'info', message: 'second snapshot', timestamp: 't2' }],
-        pos: 2,
+        status: 200,
+        data: {
+          entries: [{ level: 'info', message: 'second snapshot', timestamp: 't2' }],
+          pos: 2,
+        },
       }),
+      status: 200,
     })
     await flushPromises()
     pendingRequests[0].resolve({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        entries: [{ level: 'info', message: 'stale first snapshot', timestamp: 't1' }],
-        pos: 1,
+        status: 200,
+        data: {
+          entries: [{ level: 'info', message: 'stale first snapshot', timestamp: 't1' }],
+          pos: 1,
+        },
       }),
+      status: 200,
     })
     await flushPromises()
 
@@ -292,20 +304,46 @@ describe('AppLogViewer', () => {
   it.each([
     [
       403,
-      { code: 500, error_code: 'REQUEST_ORIGIN_INVALID', message: 'private secret' },
+      {
+        status: 500,
+        error_code: 'REQUEST_ORIGIN_INVALID',
+        message: 'private secret',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+      },
       '访问地址校验失败',
     ],
-    [403, { code: 500, error_code: 'CSRF_TOKEN_INVALID' }, '请求安全校验失败'],
-    [401, { code: 401 }, '登录已失效'],
+    [
+      403,
+      {
+        status: 500,
+        error_code: 'CSRF_TOKEN_INVALID',
+        data: null,
+        message: '请求处理失败',
+        instance: '/request-errors/ComponentTestFailure0001',
+      },
+      '请求安全校验失败',
+    ],
+    [
+      401,
+      {
+        status: 401,
+        data: null,
+        message: '请求处理失败',
+        error_code: 'TEST_REQUEST_FAILED',
+        instance: '/request-errors/ComponentTestFailure0001',
+      },
+      '登录已失效',
+    ],
     [502, '<html>private secret</html>', '服务器处理请求失败'],
   ])('HTTP %s 失败使用公共提示且不创建实时流', async (status, body, message) => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
-        ),
+      vi.fn().mockResolvedValue(
+        new Response(typeof body === 'string' ? body : JSON.stringify({ ...body, status }), {
+          status,
+        }),
+      ),
     )
     vi.stubGlobal('EventSource', MockEventSource)
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -339,6 +377,7 @@ describe('AppLogViewer', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.reject(new TypeError('internal parser')),
+        status: 200,
       })
     vi.stubGlobal('fetch', fetch)
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -359,7 +398,9 @@ describe('AppLogViewer', () => {
     let oldSignal: AbortSignal | undefined
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [], pos: 20 })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 200, data: { entries: [], pos: 20 } })),
+      )
       .mockImplementationOnce((_url, options: RequestInit) => {
         oldSignal = options.signal ?? undefined
         return new Promise((_resolve, reject) => {
@@ -369,8 +410,11 @@ describe('AppLogViewer', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            entries: [{ level: 'info', message: 'new snapshot', timestamp: 't2' }],
-            pos: 10,
+            status: 200,
+            data: {
+              entries: [{ level: 'info', message: 'new snapshot', timestamp: 't2' }],
+              pos: 10,
+            },
           }),
         ),
       )
@@ -394,7 +438,11 @@ describe('AppLogViewer', () => {
   })
 
   it('原生流断开仍由浏览器重连，不附加 HTTP 探测', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ entries: [], pos: 0 })))
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ status: 200, data: { entries: [], pos: 0 } })),
+      )
     vi.stubGlobal('fetch', fetch)
     vi.stubGlobal('EventSource', MockEventSource)
     const wrapper = mount(AppLogViewer, { props: { logPath: 'a.log', isRealTime: true } })
@@ -409,7 +457,11 @@ describe('AppLogViewer', () => {
   it('浏览器放弃重连（CLOSED）时回到已断开，不再提示正在重连', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ entries: [], pos: 0 }))),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ status: 200, data: { entries: [], pos: 0 } })),
+        ),
     )
     vi.stubGlobal('EventSource', MockEventSource)
     const wrapper = mount(AppLogViewer, { props: { logPath: 'a.log', isRealTime: true } })

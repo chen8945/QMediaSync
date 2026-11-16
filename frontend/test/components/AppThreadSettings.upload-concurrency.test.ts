@@ -25,9 +25,10 @@ const existingSettings = {
 const mountSettings = async (uploadSettings: Record<string, unknown> = {}) => {
   const http = {
     get: vi.fn().mockResolvedValue({
-      data: { code: 200, data: { ...existingSettings, ...uploadSettings } },
+      data: { status: 200, data: { ...existingSettings, ...uploadSettings } },
+      status: 200,
     }),
-    post: vi.fn().mockResolvedValue({ data: { code: 200 } }),
+    post: vi.fn().mockResolvedValue({ data: { status: 200, data: null }, status: 200 }),
   }
   const wrapper = mount(AppThreadSettings, {
     global: {
@@ -85,7 +86,10 @@ describe('AppThreadSettings 同时上传任务数', () => {
     const { wrapper, http, input, save } = await mountSettings({ upload_threads: 3 })
     await input.setValue('4')
     const warning = '线程设置已保存，但应用失败，请重新保存'
-    http.post.mockResolvedValueOnce({ data: { code: 200, data: null, warnings: [warning] } })
+    http.post.mockResolvedValueOnce({
+      data: { status: 200, data: null, warnings: [warning] },
+      status: 200,
+    })
     await save()
     expect(wrapper.get('.save-status').text()).toContain(warning)
     expect(wrapper.get('.save-status').text()).toContain('尚未完全生效')
@@ -146,7 +150,16 @@ describe('AppThreadSettings 同时上传任务数', () => {
 
   it('显示后端保存失败的原因，并允许重新保存', async () => {
     const { wrapper, http, save } = await mountSettings({ upload_threads: 3 })
-    http.post.mockResolvedValueOnce({ data: { code: 500, message: '更新线程数失败' } })
+    http.post.mockResolvedValueOnce({
+      data: {
+        status: 500,
+        message: '更新线程数失败',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
+      status: 500,
+    })
 
     await save()
 

@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { ParseHttpErrorOptions } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface User {
   id: string
@@ -58,18 +58,23 @@ export const initialAdminErrorOptions: ParseHttpErrorOptions = {
 }
 
 export async function fetchSetupStatus(http: AxiosInstance): Promise<SetupStatus> {
-  return unwrapResponse(await http.get<APIResponse<SetupStatus>>(`${SERVER_URL}/setup/status`))
+  return unwrapResponse(await http.get<APIResponse<SetupStatus>>(`${SERVER_URL}/setup/status`)).data
 }
 
 export async function createInitialAdmin(
   http: AxiosInstance,
   payload: CreateInitialAdminPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<unknown>>(`${SERVER_URL}/setup/admin`, payload))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<unknown>>(`${SERVER_URL}/setup/admin`, payload),
+  )
 }
 
-export async function login(http: AxiosInstance, payload: LoginRequest): Promise<void> {
-  unwrapResponse(
+export async function login(
+  http: AxiosInstance,
+  payload: LoginRequest,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<unknown>>(`${SERVER_URL}/login`, payload, {
       headers: { 'Content-Type': 'application/json' },
       skipAuthInvalidation: true,
@@ -83,11 +88,11 @@ export async function fetchSession(http: AxiosInstance): Promise<SessionResponse
       withCredentials: true,
       skipAuthInvalidation: true,
     }),
-  )
+  ).data
 }
 
-export async function logout(http: AxiosInstance): Promise<void> {
-  unwrapResponse(
+export async function logout(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<unknown>>(`${SERVER_URL}/logout`, undefined, {
       withCredentials: true,
       skipAuthInvalidation: true,

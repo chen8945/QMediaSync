@@ -74,25 +74,25 @@ const chooseDirectory = async (wrapper: VueWrapper, label: string, id: string, p
 }
 const mountForm = async (edit = false) => {
   const adapter = vi.fn(async (config) => {
-    let data: unknown = { code: 200, data: [] }
+    let data: unknown = { status: 200, data: [] }
     if (config.method !== 'get') {
       data = {
-        code: 200,
+        status: 200,
         data: {
           sync_path: { id: 12 },
           directory_upload: { enabled: false, rules: [] },
-          warnings: [],
         },
+        warnings: [],
       }
     } else if (config.url.endsWith('/version')) {
-      data = { version: 'v1', date: '', isWindows: false, isRelease: false }
+      data = { status: 200, data: { version: 'v1', date: '', isWindows: false, isRelease: false } }
     } else if (config.url.endsWith('/sync/path/12')) {
-      data = { code: 200, data: directory }
+      data = { status: 200, data: directory }
     } else if (config.url.endsWith('/directory-upload/rules')) {
-      data = { code: 200, data: { list: [uploadRule] } }
+      data = { status: 200, data: { list: [uploadRule] } }
     } else if (config.url.endsWith('/account/list')) {
       data = {
-        code: 200,
+        status: 200,
         data: [
           { id: 1, name: '115 A', source_type: '115' },
           { id: 2, name: '115 B', source_type: '115' },
@@ -100,7 +100,13 @@ const mountForm = async (edit = false) => {
         ],
       }
     }
-    return { config, status: 200, statusText: 'OK', headers: {}, data }
+    return {
+      config,
+      status: (data as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data,
+    }
   })
   const router = createRouter({
     history: createMemoryHistory(),

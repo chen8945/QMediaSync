@@ -447,12 +447,17 @@ const saveStrmConfig = async () => {
     strmLoading.value = true
     strmStatus.value = null
 
-    await saveStrmSettings(http, strmData)
+    const result = await saveStrmSettings(http, strmData)
     strmStatus.value = {
-      title: 'STRM 配置已保存',
-      type: 'success',
-      description:
+      title: result.warnings.length ? 'STRM 配置已保存，尚未完全生效' : 'STRM 配置已保存',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: [
+        result.message?.trim(),
+        ...result.warnings,
         '配置已保存；STRM 后处理从下一小批任务起使用新配置，完整同步在本轮结束前继续使用原配置；播放设置用于后续播放请求。',
+      ]
+        .filter(Boolean)
+        .join('；'),
     }
   } catch (error) {
     const parsed = parseHttpError(error, {

@@ -197,7 +197,7 @@ func (r *CreateOpenListAccountRequest) Validate() error {
 
 // CreateAPIKeyRequest 创建 API Key 请求。
 type CreateAPIKeyRequest struct {
-	Name string `json:"name" binding:"required"`
+	Name string `json:"name"`
 }
 
 // Validate 校验创建 API Key 请求。
@@ -207,7 +207,7 @@ func (r CreateAPIKeyRequest) Validate() error {
 
 // UpdateAPIKeyStatusRequest 更新 API Key 状态请求。
 type UpdateAPIKeyStatusRequest struct {
-	IsActive *bool `json:"is_active" binding:"required"`
+	IsActive *bool `json:"is_active"`
 }
 
 // Validate 校验 API Key 状态更新请求。

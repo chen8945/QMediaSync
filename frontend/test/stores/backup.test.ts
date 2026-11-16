@@ -25,8 +25,9 @@ describe('backup store 进度轮询', () => {
   it.each(['backup', 'restore'] as const)('%s 失败终态不能提示成功或泄露内部错误', async (type) => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             type,
             status: 'failed',
@@ -60,8 +61,9 @@ describe('backup store 进度轮询', () => {
   it('旧后端仅返回停止状态时不推断成功，空总数不产生 NaN', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             type: 'backup',
             is_running: false,
@@ -142,8 +144,9 @@ describe('backup store 进度轮询', () => {
     async (code) => {
       const http = {
         get: vi.fn().mockResolvedValue({
+          status: 200,
           data: {
-            code: 200,
+            status: 200,
             data: {
               type: 'backup',
               status: 'failed',
@@ -176,8 +179,9 @@ describe('backup store 进度轮询', () => {
   it.each(['backup', 'restore'] as const)('%s 只对明确完成状态提示成功且停止轮询', async (type) => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             type,
             status: 'completed',
@@ -206,8 +210,9 @@ describe('backup store 进度轮询', () => {
   it('旧后端的 error_msg 保留失败语义，不依赖进度计数', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             type: 'backup',
             is_running: false,
@@ -239,8 +244,9 @@ describe('backup store 进度轮询', () => {
   it('恢复完成后保留结果与重启提示，恢复凭证在页面切换可见性后仍用于查询', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             type: 'restore',
             status: 'completed',
@@ -283,8 +289,9 @@ describe('backup store 进度轮询', () => {
     async (restartRequired) => {
       const http = {
         get: vi.fn().mockResolvedValue({
+          status: 200,
           data: {
-            code: 200,
+            status: 200,
             data: {
               type: 'restore',
               status: 'failed',
@@ -331,8 +338,9 @@ describe('backup store 进度轮询', () => {
     expect(ElMessage.success).not.toHaveBeenCalled()
 
     http.get.mockResolvedValue({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: {
           type: 'restore',
           status: 'completed',
@@ -375,8 +383,9 @@ describe('backup store 进度轮询', () => {
   it('初次延迟期间切回前台后重新启动轮询', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: { is_running: true, count: 1, total: 2, elapsed: 1, desc: '备份中' },
         },
       }),
@@ -403,8 +412,9 @@ describe('backup store 进度轮询', () => {
     { type: 'restore' as const, desc: '旧恢复' },
   ])('$desc 请求在新一轮任务启动后不写回状态', async ({ type }) => {
     const oldRequest = createDeferred<{
+      status: number
       data: {
-        code: number
+        status: number
         data: {
           is_running: boolean
           count: number
@@ -428,8 +438,9 @@ describe('backup store 进度轮询', () => {
       newHttp as never,
     )
     oldRequest.resolve({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: { is_running: false, count: 1, total: 1, elapsed: 1, desc: '旧任务完成' },
       },
     })
@@ -442,8 +453,9 @@ describe('backup store 进度轮询', () => {
 
   it('页面隐藏后忽略仍在途的进度响应', async () => {
     const request = createDeferred<{
+      status: number
       data: {
-        code: number
+        status: number
         data: {
           is_running: boolean
           count: number
@@ -461,8 +473,9 @@ describe('backup store 进度轮询', () => {
     Object.defineProperty(document, 'hidden', { configurable: true, value: true })
     document.dispatchEvent(new Event('visibilitychange'))
     request.resolve({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: { is_running: false, count: 1, total: 1, elapsed: 1, desc: '备份完成' },
       },
     })
@@ -475,8 +488,14 @@ describe('backup store 进度轮询', () => {
   it('业务失败计入连续失败次数且不写回成功进度', async () => {
     const http = {
       get: vi.fn().mockResolvedValue({
-        status: 200,
-        data: { code: 500, message: '进度文件不存在', data: null },
+        status: 400,
+        data: {
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+          status: 400,
+          message: '进度文件不存在',
+          data: null,
+        },
       }),
     }
     const store = useBackupStore()
@@ -495,7 +514,16 @@ describe('backup store 进度轮询', () => {
     const error =
       kind === 'cancel'
         ? new CanceledError()
-        : new HttpResponseError({ status: 401, data: { code: 401 } })
+        : new HttpResponseError({
+            status: 401,
+            data: {
+              data: null,
+              message: '请求未完成',
+              error_code: 'INVALID_REQUEST',
+              instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+              status: 401,
+            },
+          })
     if (kind === 'handled') markAuthInvalidationHandled(error)
     const http = { get: vi.fn().mockRejectedValue(error) }
     const store = useBackupStore()
@@ -508,22 +536,26 @@ describe('backup store 进度轮询', () => {
   })
 
   it('慢请求不重叠，旧失败在停止后不增加重试次数', async () => {
-    const request = createDeferred<{ data: { code: number; message: string; data: null } }>()
+    const request = createDeferred<{
+      status: number
+      data: { status: number; message: string; data: null }
+    }>()
     const http = { get: vi.fn(() => request.promise) }
     const store = useBackupStore()
     store.startProgressPolling('backup', undefined, http as never)
     await vi.advanceTimersByTimeAsync(7000)
     expect(http.get).toHaveBeenCalledTimes(1)
     store.stopProgressPolling()
-    request.resolve({ data: { code: 500, message: 'secret', data: null } })
+    request.resolve({ status: 400, data: { status: 400, message: 'secret', data: null } })
     await flushPromises()
     expect(store.errorRetryCount).toBe(0)
     expect(ElMessage.error).not.toHaveBeenCalled()
   })
 
   const restartStatus = (overrides = {}) => ({
+    status: 200,
     data: {
-      code: 200,
+      status: 200,
       data: {
         type: 'restore',
         status: 'completed',
@@ -544,7 +576,13 @@ describe('backup store 进度轮询', () => {
   const receiptExpired = () =>
     new HttpResponseError({
       status: 401,
-      data: { code: 401, error_code: 'RESTORE_RECEIPT_INVALID' },
+      data: {
+        data: null,
+        message: '请求未完成',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 401,
+        error_code: 'RESTORE_RECEIPT_INVALID',
+      },
     })
 
   const setupRestart = async (overrides = {}) => {
@@ -590,7 +628,13 @@ describe('backup store 进度轮询', () => {
       vi.mocked(authAPI.fetchSession).mockRejectedValueOnce(
         new HttpResponseError({
           status: 503,
-          data: { code: 503, error_code: 'DATABASE_MAINTENANCE' },
+          data: {
+            data: null,
+            message: '请求未完成',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 503,
+            error_code: 'DATABASE_MAINTENANCE',
+          },
         }),
       )
       store.checkRestartStatus()
@@ -687,7 +731,16 @@ describe('backup store 进度轮询', () => {
     async ({ status, errorCode }) => {
       const { store, http } = await setupRestart({ status: 'failed' })
       http.post.mockRejectedValueOnce(
-        new HttpResponseError({ status, data: { code: status, error_code: errorCode } }),
+        new HttpResponseError({
+          status,
+          data: {
+            status,
+            error_code: errorCode,
+            message: '测试重启拒绝',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            data: null,
+          },
+        }),
       )
       await store.requestRestart()
       expect(store.canRestart).toBe(true)
@@ -706,8 +759,26 @@ describe('backup store 进度轮询', () => {
   it.each([
     { status: 502, data: '<html>Bad Gateway</html>' },
     { status: 504, data: '<html>Gateway Timeout</html>' },
-    { status: 500, data: { code: 500, error_code: 'UNKNOWN_SERVER_ERROR', message: 'secret' } },
-    { status: 503, data: { code: 503, message: 'restart failed' } },
+    {
+      status: 500,
+      data: {
+        data: null,
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 500,
+        error_code: 'UNKNOWN_SERVER_ERROR',
+        message: 'secret',
+      },
+    },
+    {
+      status: 503,
+      data: {
+        data: null,
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 503,
+        message: 'restart failed',
+      },
+    },
   ])('未知 HTTP $status 不能证明重启未执行，仅查询直到确认上线', async ({ status, data }) => {
     const { store, http } = await setupRestart()
     http.post.mockRejectedValueOnce(new HttpResponseError({ status, data }))

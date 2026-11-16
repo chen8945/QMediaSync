@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/t
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MediaServerSettings from '@/components/media-library/MediaServerSettings.vue'
 import type { MediaLibraryPathMapping } from '@/api/mediaLibrary'
+import type { APIResponse } from '@/api/types'
 import { httpKey } from '@/http/client'
 import { createDeferred } from '../support/deferred'
 
@@ -16,16 +17,17 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
   const list = vi.fn(async () => {
     throw new AxiosError('unavailable', 'ERR_NETWORK')
   })
-  const save = vi.fn<() => Promise<{ code: number; message: string; data: unknown }>>(async () => ({
-    code: 200,
+  const save = vi.fn<() => Promise<APIResponse<unknown>>>(async () => ({
+    status: 200,
     message: '',
-    data: { warnings: [], restart_required: false },
+    data: { restart_required: false },
+    warnings: [],
   }))
   const adapter = vi.fn(async (config) => {
     let data: unknown
     if (config.method === 'post') {
       data = await save()
-      if ((data as { code: number }).code === 200) {
+      if ((data as { status: number }).status === 200) {
         const payload = JSON.parse(config.data)
         if (Object.hasOwn(payload, 'path_mappings')) {
           storedConfig.path_mappings = payload.path_mappings
@@ -33,7 +35,7 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
       }
     } else if (config.url.endsWith('/setting/emby-config')) {
       data = {
-        code: 200,
+        status: 200,
         message: '',
         data: {
           exists: true,
@@ -48,11 +50,17 @@ const mountSettings = async (mappings: unknown = [], syncEnabled = 1) => {
         },
       }
     } else if (config.url.endsWith('/sync/path-list')) {
-      data = { code: 200, message: '', data: await list() }
+      data = { status: 200, message: '', data: await list() }
     } else {
-      data = { code: 200, message: '', data: { is_running: false } }
+      data = { status: 200, message: '', data: { is_running: false } }
     }
-    return { config, status: 200, statusText: 'OK', headers: {}, data }
+    return {
+      config,
+      status: (data as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data,
+    }
   })
   const wrapper = mount(MediaServerSettings, {
     props: { serverType: 'emby', active: true },
@@ -135,7 +143,13 @@ describe('Emby 手工 STRM 路径映射入口隐藏', () => {
 
   it('保存失败后重试仍保留已有映射', async () => {
     const { wrapper, save, adapter, storedConfig } = await mountSettings([originalMapping])
-    save.mockResolvedValueOnce({ code: 500, message: '配置暂时不可写', data: null })
+    save.mockResolvedValueOnce({
+      status: 500,
+      message: '配置暂时不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click(wrapper, '保存设置')
     expect(wrapper.text()).toContain('配置暂时不可写')
     await click(wrapper, '保存设置')
@@ -150,11 +164,11 @@ describe('Emby 手工 STRM 路径映射入口隐藏', () => {
 
   it('保存成功后的回读失败不会清空后续保存中的映射', async () => {
     const { wrapper, save, adapter, storedConfig } = await mountSettings([originalMapping])
-    const pending = createDeferred<{ code: number; message: string; data: unknown }>()
+    const pending = createDeferred<APIResponse<unknown>>()
     save.mockReturnValueOnce(pending.promise)
     await click(wrapper, '保存设置')
     adapter.mockRejectedValueOnce(new AxiosError('unavailable', 'ERR_NETWORK'))
-    pending.resolve({ code: 200, message: '', data: { warnings: [], restart_required: false } })
+    pending.resolve({ status: 200, message: '', data: { restart_required: false }, warnings: [] })
     await flushPromises()
     expect(wrapper.text()).toContain('Emby 配置已保存，但刷新失败')
     await click(wrapper, '保存设置')

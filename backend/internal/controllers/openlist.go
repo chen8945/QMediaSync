@@ -3,7 +3,7 @@ package controllers
 import (
 	"net/http"
 
-	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 
@@ -11,40 +11,29 @@ import (
 )
 
 // GetOpenListFileURL 获取 OpenList 文件直链
-// @Summary 获取 OpenList 文件直链
-// @Description 根据路径查询 OpenList 文件直链并 302 重定向
-// @Tags OpenList
-// @Accept json
-// @Produce json
-// @Param account_id query integer true "账号 ID"
-// @Param path query string true "文件路径"
-// @Success 302 {string} string "重定向到文件直链"
-// @Failure 200 {object} object
-// @Router /openlist/url [get]
 func GetOpenListFileUrl(c *gin.Context) {
 	var req requests.OpenListFileURLRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	client := account.GetOpenListClient()
 	fileDetail, err := client.FileDetailContext(c.Request.Context(), req.Path)
 	if err != nil {
-		helpers.AppLogger.Errorf("[下载] 获取文件详情失败：%v", err)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取文件详情失败", Data: nil})
+		writeCloudUpstreamError(c, err, "获取文件详情失败", account.Token, account.Password)
 		return
 	}
 	if fileDetail.RawURL == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "文件详情中未找到直链", Data: nil})
+		httpapi.Failure(c, http.StatusBadGateway, httpapi.Error{Code: "UPSTREAM_RESPONSE_INVALID", Message: "文件详情中未找到直链"})
 		return
 	}
 	// 302 重定向到直链

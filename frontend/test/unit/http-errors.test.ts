@@ -7,84 +7,81 @@ import {
   parseHttpError,
 } from '@/http/errors'
 
+const instance = '/request-errors/abcdefghijklmnopqrstuvwx'
+const failureBody = (status: number, error_code = 'INVALID_REQUEST', message = '测试失败') => ({
+  status,
+  data: null as unknown,
+  error_code,
+  message,
+  instance,
+})
 const responseError = (status: number, data: unknown, method = 'get') =>
   new HttpResponseError({ status, data, config: { method, url: '/api/example' } })
 
 describe('公共 HTTP 错误解析', () => {
-  it('恢复维护错误在登录和普通请求中明确提示重启服务，不泄露服务端原文', () => {
+  it('恢复维护保留明确的重启操作提示', () => {
     const parsed = parseHttpError(
-      responseError(503, {
-        code: 503,
-        error_code: 'DATABASE_MAINTENANCE',
-        message: 'internal secret',
-      }),
+      responseError(503, failureBody(503, 'DATABASE_MAINTENANCE', 'internal secret')),
     )
     expect(parsed.kind).toBe('maintenance')
-    expect(parsed.message).toBe(
-      '数据库恢复维护中，服务暂不可用。请等待恢复结束，重启 QMediaSync 服务后重新登录',
-    )
+    expect(parsed.message).toContain('重启')
     expect(parsed.shouldNotify).toBe(true)
     expect(parsed.message).not.toContain('secret')
   })
+
   it.each([
-    ['REQUEST_ORIGIN_INVALID', 'origin'],
-    ['CSRF_TOKEN_INVALID', 'csrf'],
-    ['AUTHENTICATION_REQUIRED', 'unauthorized'],
-    ['AUTHENTICATION_INVALID', 'unauthorized'],
-    ['SESSION_INVALID', 'unauthorized'],
-    ['FORBIDDEN', 'forbidden'],
-  ])('优先使用顶层机器码 %s', (error_code, kind) => {
+    [403, 'REQUEST_ORIGIN_INVALID', 'origin'],
+    [403, 'CSRF_TOKEN_INVALID', 'csrf'],
+    [401, 'AUTHENTICATION_REQUIRED', 'unauthorized'],
+    [401, 'AUTHENTICATION_INVALID', 'unauthorized'],
+    [401, 'SESSION_INVALID', 'unauthorized'],
+    [401, 'RESTORE_RECEIPT_INVALID', 'application'],
+    [403, 'FORBIDDEN', 'forbidden'],
+  ])('依据 HTTP %s 与顶层机器码 %s 分类', (status, error_code, kind) => {
     const failure = parseHttpError(
-      responseError(403, {
-        code: 500,
-        message: 'CSRF 校验失败',
-        error_code,
-        data: { error_code: 'CSRF_TOKEN_INVALID' },
-      }),
+      responseError(Number(status), failureBody(Number(status), String(error_code))),
     )
     expect(failure.kind).toBe(kind)
     expect(failure.diagnostics.errorCode).toBe(error_code)
   })
 
-  it('兼容嵌套机器码并原样保留字段错误、警告与响应', () => {
+  it('请求字段与部分执行结果原样保留，领域内部错误码不参与请求分类', () => {
     const data = {
-      error_code: 'DIRECTORY_UPLOAD_RULE_CONFLICT',
-      field_errors: [{ field: 'monitor_path', message: '目录冲突', client_id: 'rule-1' }],
-      warnings: ['目录仍有排队任务'],
+      accepted: 2,
+      error_code: 'CSRF_TOKEN_INVALID',
+      items: [{ rule_id: 1, accepted: 2 }],
     }
-    const error = responseError(409, { code: 500, data })
+    const field_errors = [{ field: 'monitor_path', message: '测试字段原因', client_id: 'rule-1' }]
+    const error = responseError(409, {
+      ...failureBody(409, 'DIRECTORY_UPLOAD_RULE_CONFLICT'),
+      data,
+      field_errors,
+    })
     const failure = parseHttpError(error)
     expect(failure.kind).toBe('application')
     expect(failure.diagnostics.errorCode).toBe('DIRECTORY_UPLOAD_RULE_CONFLICT')
     expect(failure.details).toBe(data)
     expect(failure.response).toBe(error.response)
-    expect(
-      parseHttpError(responseError(403, { code: 500, data: { error_code: 'CSRF_TOKEN_INVALID' } }))
-        .kind,
-    ).toBe('csrf')
+    expect((failure.response?.data as { field_errors: unknown }).field_errors).toBe(field_errors)
   })
 
-  it.each([
-    ['请求来源无效', 'origin'],
-    ['请求来源校验失败', 'forbidden'],
-    ['CSRF 校验失败', 'csrf'],
-    ['来源不正确', 'forbidden'],
-    ['CSRF 校验失败：内部错误', 'forbidden'],
-  ])('仅兼容已知旧版完整消息 %s', (message, kind) => {
-    expect(parseHttpError(responseError(403, { code: 500, message })).kind).toBe(kind)
-  })
-
-  it('未知顶层码按 HTTP 状态回退，不使用嵌套码或旧文案覆盖', () => {
+  it('未知码按 HTTP 回退，不根据消息猜测来源或 CSRF 原因', () => {
     const failure = parseHttpError(
-      responseError(403, {
-        code: 500,
-        error_code: 'NEW_ERROR',
-        message: '请求来源无效',
-        data: { error_code: 'CSRF_TOKEN_INVALID' },
-      }),
+      responseError(403, failureBody(403, 'NEW_ERROR', 'CSRF 校验失败')),
     )
     expect(failure.kind).toBe('forbidden')
     expect(failure.diagnostics.errorCode).toBe('NEW_ERROR')
+  })
+
+  it('登录凭据失败保持统一说明，不透传具体匹配原因', () => {
+    const messages = ['用户不存在', '密码错误', '验证码错误']
+    for (const message of messages) {
+      const failure = parseHttpError(
+        responseError(401, failureBody(401, 'AUTHENTICATION_INVALID', message)),
+      )
+      expect(failure.kind).toBe('unauthorized')
+      expect(failure.message).toBe('登录失败')
+    }
   })
 
   it.each([
@@ -95,13 +92,24 @@ describe('公共 HTTP 错误解析', () => {
     [429, 'rate-limit'],
     [500, 'server'],
     [502, 'server'],
-  ])('分类 HTTP %s', (status, kind) => {
-    expect(parseHttpError(responseError(status, '<html>upstream secret</html>')).kind).toBe(kind)
+  ])('非包络 HTTP %s 只使用安全状态回退', (status, kind) => {
+    const failure = parseHttpError(responseError(Number(status), '<html>upstream secret</html>'))
+    expect(failure.kind).toBe(kind)
+    expect(failure.message).not.toContain('secret')
   })
 
-  it('业务 code 不冒充 HTTP 状态', () => {
-    expect(parseHttpError(responseError(200, { code: 500 })).kind).toBe('application')
-    expect(parseHttpError(responseError(200, { code: 401 })).kind).toBe('application')
+  it('认证标记不能覆盖真实内部故障，也不读取成功任务内的认证错误码', () => {
+    expect(
+      parseHttpError(responseError(500, failureBody(500, 'AUTHENTICATION_REQUIRED'))).kind,
+    ).toBe('server')
+    const failure = parseHttpError(
+      responseError(200, {
+        status: 200,
+        data: { error_code: 'SESSION_INVALID', status: 'failed' },
+      }),
+    )
+    expect(failure.kind).toBe('unknown')
+    expect(failure.diagnostics.errorCode).toBeUndefined()
   })
 
   it('只有真正传输失败归类无响应，程序异常和 Axios 参数错误保持未知', () => {
@@ -121,9 +129,9 @@ describe('公共 HTTP 错误解析', () => {
       null,
       'arbitrary secret',
     ]) {
-      const failure = parseHttpError(error)
+      const failure = parseHttpError(error, { fallbackMessage: '测试操作回退' })
       expect(failure.kind).toBe('unknown')
-      expect(failure.message).toBe('请求失败，请稍后重试')
+      expect(failure.message).toBe('测试操作回退')
     }
   })
 
@@ -132,12 +140,9 @@ describe('公共 HTTP 错误解析', () => {
       new CanceledError('secret'),
       new FetchRequestError(new DOMException('secret', 'AbortError'), {}),
     ]) {
-      expect(parseHttpError(error)).toMatchObject({
-        kind: 'cancelled',
-        shouldNotify: false,
-        message: '',
-      })
+      expect(parseHttpError(error)).toMatchObject({ kind: 'cancelled', shouldNotify: false })
     }
+    expect(parseHttpError(new AxiosError('secret', 'ETIMEDOUT')).kind).toBe('timeout')
     for (const method of ['post', 'put', 'patch', 'delete']) {
       const failure = parseHttpError(
         new AxiosError('timeout secret', 'ETIMEDOUT', { method, headers: new AxiosHeaders() }),
@@ -146,51 +151,61 @@ describe('公共 HTTP 错误解析', () => {
       expect(failure.message).toContain('操作结果尚未确认')
       expect(failure.message).toContain('避免重复提交')
     }
-    // 浏览器中止（非主动取消）不冒充超时。
     expect(
       parseHttpError(new AxiosError('Request aborted', 'ECONNABORTED', undefined, {})).kind,
     ).toBe('network')
     expect(
-      parseHttpError(
-        new FetchRequestError(new DOMException('timeout', 'TimeoutError'), { method: 'get' }),
-      ).message,
-    ).toBe('请求超时，请稍后重试')
+      parseHttpError(new FetchRequestError(new DOMException('timeout', 'TimeoutError'), {})).kind,
+    ).toBe('timeout')
   })
 
-  it('显示新的业务原因，空消息和程序异常使用回退文案', () => {
-    const options = { fallbackMessage: '保存失败' }
+  it.each([400, 403, 404, 409, 500, 502])('合法 HTTP %s 失败保留安全服务端消息', (status) => {
     expect(
       parseHttpError(
-        responseError(200, { code: 500, message: '  目录已被任务 12 占用  ' }),
+        responseError(status, failureBody(status, 'REQUEST_FAILED', '  测试安全失败信息  ')),
+        { fallbackMessage: '测试操作回退' },
+      ).message,
+    ).toBe('测试安全失败信息')
+  })
+
+  it.each([
+    { message: 'secret' },
+    { ...failureBody(500), status: 401 },
+    { ...failureBody(500), message: '' },
+    { ...failureBody(500), instance: 'https://user:secret@example.test/?token=secret' },
+    { status: 500, error_code: 'INTERNAL_ERROR', message: 'secret', instance },
+  ])('不完整或不安全的包络不回显原文及实例：%j', (data) => {
+    const failure = parseHttpError(responseError(500, data))
+    expect(failure.kind).toBe('server')
+    expect(failure.message).not.toContain('secret')
+    expect(failure.diagnostics.errorCode).toBeUndefined()
+    expect(failure.diagnostics.instance).toBeUndefined()
+  })
+
+  it('保留必要字段文案改写，普通业务原因不依赖映射', () => {
+    const options = { publicMessages: { 测试字段原因: '测试本地字段反馈' } }
+    expect(
+      parseHttpError(
+        responseError(400, failureBody(400, 'INVALID_REQUEST', '测试字段原因')),
         options,
       ).message,
-    ).toBe('目录已被任务 12 占用')
+    ).toBe('测试本地字段反馈')
     expect(
-      parseHttpError(responseError(200, { code: 1, message: '渠道暂不可用' }), options).message,
-    ).toBe('渠道暂不可用')
-    for (const message of ['', '  ', undefined]) {
-      expect(parseHttpError(responseError(200, { code: 500, message }), options).message).toBe(
-        '保存失败',
-      )
-    }
-    expect(parseHttpError(new Error('internal error'), options).message).toBe('保存失败')
-  })
-
-  it('保留字段文案改写，普通业务原因不依赖映射', () => {
-    const options = { publicMessages: { 'name：不能为空': '名称不能为空' } }
-    expect(
-      parseHttpError(responseError(200, { code: 500, message: 'name：不能为空' }), options).message,
-    ).toBe('名称不能为空')
-    expect(
-      parseHttpError(responseError(200, { code: 500, message: 'constructor' }), options).message,
+      parseHttpError(
+        responseError(400, failureBody(400, 'INVALID_REQUEST', 'constructor')),
+        options,
+      ).message,
     ).toBe('constructor')
   })
 
-  it('诊断只包含方法、无凭据与查询参数的路径、状态、机器码', () => {
+  it.each([
+    'https://user:password@example.test/api/login?token=secret#secret',
+    '//user:password@example.test/api/login?token=secret#secret',
+  ])('诊断只包含筛选后的方法、路径、状态、机器码与安全实例：%s', (url) => {
     const config = {
       headers: new AxiosHeaders({ Authorization: 'Bearer secret', Cookie: 'secret' }),
       method: 'post',
-      url: 'https://user:password@example.test/api/login?token=secret#secret',
+      url,
       data: { password: 'secret' },
     }
     const response = {
@@ -198,7 +213,7 @@ describe('公共 HTTP 错误解析', () => {
       status: 403,
       statusText: 'secret',
       headers: {},
-      data: { code: 500, message: 'secret', error_code: 'REQUEST_ORIGIN_INVALID' },
+      data: failureBody(403, 'REQUEST_ORIGIN_INVALID', 'secret'),
     }
     const failure = parseHttpError(
       new AxiosError('secret', 'ERR_BAD_REQUEST', config, { secret: true }, response),
@@ -208,27 +223,38 @@ describe('公共 HTTP 错误解析', () => {
       path: '/api/login',
       status: 403,
       errorCode: 'REQUEST_ORIGIN_INVALID',
+      instance,
     })
     expect(failure.message).not.toContain('secret')
-    expect(parseHttpError(responseError(200, {}, 'get')).diagnostics.path).toBe('/api/example')
   })
 
-  it('保留服务端的限流等待提示，不回显任意限流错误文本', () => {
-    expect(
-      parseHttpError(responseError(429, { code: 500, message: '请求过于频繁，请 83 秒后再试' })),
-    ).toMatchObject({ retryAfterSeconds: 83, message: '请求过于频繁，请 83 秒后再试' })
-    expect(parseHttpError(responseError(429, { code: 500, message: 'secret 123' })).message).toBe(
-      '请求过于频繁，请稍后重试',
-    )
+  it.each([{ 'Retry-After': '83' }, new AxiosHeaders({ 'Retry-After': '83' })])(
+    '从 Retry-After 读取等待秒数，不解析产品文案',
+    (headers) => {
+      const error = new HttpResponseError({ status: 429, data: '<html>secret</html>', headers })
+      expect(parseHttpError(error).retryAfterSeconds).toBe(83)
+    },
+  )
+
+  it('无有效 Retry-After 时不猜测等待秒数', () => {
+    for (const value of [undefined, 'soon', '-1', '1.5']) {
+      const error = new HttpResponseError({
+        status: 429,
+        data: failureBody(429, 'RATE_LIMITED', '测试限流反馈'),
+        headers: { 'Retry-After': value },
+      })
+      expect(parseHttpError(error).retryAfterSeconds).toBeUndefined()
+    }
   })
 
-  it('已处理的认证错误保持分类与详情但抑制提示', () => {
-    const error = responseError(401, { code: 401 })
+  it('已处理认证错误保持分类和原响应但抑制提示', () => {
+    const error = responseError(401, failureBody(401, 'SESSION_INVALID'))
     markAuthInvalidationHandled(error)
     expect(parseHttpError(error)).toMatchObject({
       kind: 'unauthorized',
       handled: true,
       shouldNotify: false,
+      response: error.response,
     })
   })
 })

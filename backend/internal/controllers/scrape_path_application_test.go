@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	"qmediasync/internal/synccron"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestScrapePathSavedCronControlsRealQueueAndPreservesManualScan(t *testing.T) {
@@ -54,13 +54,24 @@ func TestScrapePathSavedCronControlsRealQueueAndPreservesManualScan(t *testing.T
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, req)
 		var result struct {
-			Code     APIResponseCode `json:"code"`
-			Warnings []string        `json:"warnings"`
+			Status   int      `json:"status"`
+			Warnings []string `json:"warnings"`
+			Data     struct {
+				TaskID uint   `json:"task_id"`
+				Status string `json:"status"`
+			} `json:"data"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if response.Code != http.StatusOK || result.Code != Success || len(result.Warnings) != 0 {
+		wantHTTP := http.StatusOK
+		if path == "/paths/start" {
+			wantHTTP = http.StatusAccepted
+			if result.Data.TaskID == 0 || result.Data.Status != "submitted" {
+				t.Fatalf("missing admitted task identity: %s", response.Body)
+			}
+		}
+		if response.Code != wantHTTP || result.Status != wantHTTP || len(result.Warnings) != 0 {
 			t.Fatalf("write failed: %d %s", response.Code, response.Body.String())
 		}
 	}

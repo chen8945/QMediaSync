@@ -6,7 +6,7 @@
 >
 > 修改时机：修改 Request DTO、`Validate()` 规则、绑定方式、路径参数约定或前后端校验边界时必须更新本文档。
 >
-> 相关代码：`backend/internal/requests/`、`backend/internal/validation/`、`backend/internal/controllers/`、`frontend/src/constants/validation.ts`。
+> 相关代码：`backend/internal/requests/`、`backend/internal/validation/`、`backend/internal/notification/config/`、`backend/internal/controllers/`、`frontend/src/constants/validation.ts`。
 
 本文档记录 QMediaSync 后端请求校验体系的当前实现和后续约定。已迁移的 HTTP 接口使用 `backend/internal/requests` 下的 Request DTO 绑定请求，复用 `backend/internal/validation` 下的通用规则；未迁移或特殊流程接口以实际代码为准。
 
@@ -16,33 +16,23 @@
 - 纯内部 Go 函数、Service 调用、模型方法和后台任务不为了形式统一额外创建 DTO。
 - 路径参数仍允许在控制器中就地解析，例如 `c.Param("id")` 后转换为整数；需要复用时可迁移到通用 ID DTO 或独立辅助函数。
 - 数据库存在性、账号归属、权限、任务状态、外部服务连通性等依赖运行时状态的校验保留在控制器或业务层。
-- 控制器响应风格保持所在模块既有模式，不因为 DTO 迁移统一改 HTTP 状态码或响应结构。
+- 自有普通 JSON 响应使用公共输出；DTO 校验和领域状态分别判断，第三方协议保留原生出口。
 
 ## 响应与错误分类
 
-`APIResponse[T]` 保留 `code`、`message`、`data`，并通过可选顶层 `error_code` 提供稳定的机器错误码；未设置时省略该字段，成功响应不携带错误码。三个状态来源各有职责：
+自有普通 JSON API 的公共包络、HTTP 状态、请求错误、安全输出和应用警告由 [API 响应与请求错误](../reference/api-response.md) 统一维护。控制器复用公共输出，领域业务结果保留原含义；认证与来源错误见 [认证会话](../architecture/authentication-sessions.md#请求错误码)，同步目录字段定位见 [同步目录聚合 API](../reference/sync-path-api.md#响应与错误)。
 
-- HTTP 状态表示请求层面的结果，沿用接口已有的 `200`、`400`、`401`、`403` 等状态。
-- 数值 `code` 不代替 HTTP 认证状态；仅有响应体 `code=401` 不触发会话失效。它表示历史业务结果：常规接口 `200` 为成功，`500` 为业务失败，不能将响应体的 `500` 当作 HTTP `500`。通知管理接口保留 `code=0` 成功、`code=1` 失败的独立历史契约，前端仅在该领域 API 中识别。 创建、更新、开关、规则和删除写入保留原 `data` 形状；成功提交后的应用警告使用可选顶层 `warnings: string[]`，旧响应缺少字段时按空列表处理。警告不改变已经成功提交的结果。
-- 字符串 `error_code` 提供可识别的原因；缺失或未知时，客户端根据 HTTP 状态和业务结果回退，不依赖任意文案猜测。
+授权和下载代理请求通过输入校验后，仍按实际调用错误投影失败。授权诊断使用本次调用已知的凭据；下载取得上游响应前的本地失败按公共状态契约分类，取得响应后保持原生透传。
 
-出站代理、线程组和刮削目录写入保留常规成功码 `200` 与原 `data`，提交后的本地应用警告同样使用可选顶层 `warnings: string[]`。媒体设置仍将警告放在 `data.warnings`；各领域先按自己的成功码判断，再读取对应警告位置，不改变其他接口的响应。
+## 文件操作结果与校验
 
-认证与来源校验错误码由 [认证与浏览器会话](../architecture/authentication-sessions.md#请求错误码) 定义。错误码只表达已知原因，不暴露凭据匹配细节，也不为了分类改变既有认证策略。
+网盘文件操作同样需要区分调用成功与操作完成。`POST /api/path/move` 和 `POST /api/path/copy` 的成功响应返回 `data.status`（`completed` 或 `submitted`）和 `data.task_ids`（字符串数组）：同步完成返回 HTTP `200`、`completed` 和空数组；OpenList 返回后台任务时返回 HTTP `202`、`submitted`，保留上游任务 ID。`submitted` 只表示已提交，最终成功或失败在 OpenList 任务列表查看，不能依据本次响应或紧随其后的文件列表刷新宣称完成。实际创建目录返回 HTTP `201`，保留目录结果。
 
-普通业务失败的非空 `message` 会直接展示给用户。拼接第三方错误时复用 `helpers.RedactSensitiveLog` 清理凭据；对 URL 路径或无字段名的密钥回显同时传入已知密钥。客户端只改写需要本地化的字段文案，空消息或程序异常使用操作级回退说明。登录凭据失败仍统一返回“登录失败”，诊断日志不输出原始响应或请求载荷。
+文件管理的批量删除、移动、复制和单项重命名在返回上游错误前统一脱敏，同时清理账号已知的 Token、Refresh Token 和密码回显，覆盖连接失败或超时错误中的请求 URL；按实际请求原因选择 HTTP 状态，保留安全的操作失败说明。
 
-同步目录聚合接口暂时保留 `data.error_code`、`data.field_errors` 和成功响应中的 `warnings`，精确语义见 [同步目录聚合 API](../reference/sync-path-api.md)。这属于存量响应兼容，不是另一套永久的错误码层级；客户端解析时顶层错误码优先，已知旧接口可回退到嵌套字段。不得将其所有错误都当作字段校验失败。
+115 文件管理的删除、移动、复制和重命名控制器同时检查客户端返回的错误与成功标记；错误为空但成功标记为 `false` 时仍返回请求失败。这是控制器边界的防御性校验，不改变 115 客户端原有的 `(bool, error)` 返回契约。
 
-异步备份和恢复的状态查询成功不等于任务成功，任务结果由 `data.status` 判定；任务内的 `data.error_code` 表示异步失败原因，`data.restore_outcome` 表示已确认的数据库结果，不能与查询接口的顶层错误码混淆。字段和旧响应兼容见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
-
-网盘文件操作同样需要区分调用成功与操作完成。`POST /api/path/move` 和 `POST /api/path/copy` 的成功响应返回 `data.status`（`completed` 或 `submitted`）和 `data.task_ids`（字符串数组）：同步完成时为 `completed` 和空数组；OpenList 返回后台任务时为 `submitted`，保留上游任务 ID。`submitted` 只表示已提交，最终成功或失败在 OpenList 任务列表查看，不能依据本次响应或紧随其后的文件列表刷新宣称完成。前端兼容旧版本的 `data=null`，沿用旧版同步成功语义。
-
-文件管理的批量删除、移动、复制和单项重命名在返回上游错误前统一脱敏，同时清理账号已知的 Token、Refresh Token 和密码回显，覆盖连接失败或超时错误中的请求 URL；保留原有 HTTP 状态、业务码和操作失败前缀。
-
-115 文件管理的删除、移动、复制和重命名控制器同时检查客户端返回的错误与成功标记；错误为空但成功标记为 `false` 时仍返回业务失败。这是控制器边界的防御性校验，不改变 115 客户端原有的 `(bool, error)` 返回契约。
-
-百度文件管理响应同时检查顶层 `errno` 和 `info[].errno`：顶层错误优先；顶层成功但任一条目失败时仍返回业务失败，并沿用既有错误码文案和凭据错误分类。该规则覆盖删除、移动、复制和重命名的单项及批量客户端入口，不改变公开方法签名；没有逐项结果的旧响应保留顶层成功语义，其他百度接口的 `info` 不按文件管理结果解析。
+百度文件管理响应同时检查顶层 `errno` 和 `info[].errno`：顶层错误优先；顶层成功但任一条目失败时仍返回请求失败，并沿用既有错误码文案和凭据错误分类。该规则覆盖删除、移动、复制和重命名的单项及批量客户端入口，不改变公开方法签名；没有逐项结果的旧响应保留顶层成功语义，其他百度接口的 `info` 不按文件管理结果解析。
 
 文件管理的路径型 ID（百度网盘、OpenList）保留文件名中的首尾空白，源目录、目标目录和缓存键遵循相同规则；批量列表只对原文相同的 ID 去重。115 数字 ID 单独裁剪空白。OpenList 删除、移动、复制和重命名要求所有完整文件路径属于同一父目录；提供 `parent_id` 时必须与实际父目录一致，省略时从首项推导。不一致的请求在访问上游前整批拒绝，不按首项目录重组其他文件路径。
 
@@ -52,7 +42,7 @@ OpenList 移动和复制关闭普通错误重试：网络错误、超时或响�
 
 批量删除、移动、复制和单个重命名一旦实际调用上游，即使返回错误也失效受影响缓存，因为操作可能部分生效或响应丢失。路径型来源根据完整 ID 清理实际父目录列表和受影响子树：删除清理源路径，移动和重命名清理源、目标路径，复制清理目标路径；115 移动和重命名保留稳定数字 ID 对应的子目录缓存，仅刷新相关父目录。缓存代次阻止失效前的在途读取重新写回。OpenList 异步任务提交时的失效不代表任务终态，任务完成后仍须强制刷新所查看的目录。
 
-电影和电视剧分类的创建、更新必须向控制器返回实际数据库写入结果。写入失败时沿用 HTTP `200`、业务 `code=500` 和 `data=null`，不能返回“已保存”；只有写入成功才返回业务 `code=200`。模型保存方法不得忽略 GORM 的 `Error` 后固定返回成功。
+电影和电视剧分类的创建、更新必须向控制器返回实际数据库写入结果。写入失败返回 HTTP `500` 和安全错误，不能返回“已保存”；只有写入成功才返回成功包络。模型保存方法不得忽略 GORM 的 `Error` 后固定返回成功。
 
 ## 控制器流程
 
@@ -61,11 +51,11 @@ JSON Body 和 Query/Form 参数优先使用 DTO 绑定：
 ```go
 var req requests.UpdateStrmConfigRequest
 if err := c.ShouldBind(&req); err != nil {
-    // 按所在控制器的既有响应风格返回参数错误
+    // 通过公共错误出口返回参数错误
     return
 }
 if err := req.Validate(); err != nil {
-    // 按所在控制器的既有响应风格返回校验错误
+    // 通过公共错误出口返回字段校验错误
     return
 }
 input := req.ToModel()
@@ -85,8 +75,18 @@ DTO 负责：
 
 - 调用 `ShouldBind`、`ShouldBindJSON` 或 `ShouldBindQuery`。
 - 调用 DTO 的 `Validate()` 或场景化方法，例如 `ValidateSave()`、`ValidateTest()`、`ValidateCreate()`、`ValidateUpdate()`。
-- 数据库查询、账号类型匹配、权限检查、任务状态检查和外部请求。
-- 保持模块既有错误响应。当前代码中同时存在 `APIResponse`、`gin.H`、HTTP 200 业务错误、HTTP 400/401/403/404/409 等模式。
+- 调用既有业务入口并投影领域结果；简单查询可直接复用现有模型，不为形式统一额外建服务。
+- 选择真实 HTTP 状态，通过公共出口返回成功、请求错误或提交后应用警告。
+
+通知配置的创建、更新、开关、删除与规则写入由 `internal/notification/config` 统一编排当前状态读取、字段补丁、既有事务和提交后应用。DTO 与应用入口复用 `internal/notification` 中同一份纯校验／归一化规则；应用服务不依赖 HTTP DTO、Gin 或响应包络。其他领域沿用已有业务入口，不扩大为全库服务化。
+
+Telegram、MeoW、Bark 和 ServerChan 创建请求的必填字符串，以及更新请求的 `channel_id`，由这份纯校验处理，不重复添加 Gin `binding:"required"`。缺失、`null` 或空字符串的必填值，以及缺失、`null` 或 `0` 的更新 ID，返回 HTTP `400` 和对应字段的 `field_errors`；JSON 格式和类型错误仍由绑定层安全拒绝。更新时可选字段的省略与空值语义保持原约定。
+
+渠道开关的 `channel_id`、规则保存的 `channel_id` 和 `event_type` 同样由应用入口的已有必填校验处理，缺失、`null` 或零值返回对应字段错误，校验失败不写库或应用。`is_enabled=false` 仍是合法值，规则事件类型沿用已有校验，不新增限制。
+
+STRM 的 `strm_base_url/cron`、日志 `level`、Cron 查询/验证、队列 `qps/qpm/qph` 与统计清理 `days`、API Key 的 `name/is_active`、同步路径必填字段及 TMDB 搜索 `type` 也由已有 DTO 校验处理，不重复添加 `binding:"required"`。缺失、`null`、空字符串或不合法的零值返回对应 `field_errors`；同步路径聚合保留现有字段定位，不额外修改 DTO 或领域错误的字段路径。API Key `is_active=false` 保持合法，字段省略仍由原 nil 校验拒绝；JSON/字段类型错误保持绑定层的安全拒绝，不放宽范围或可选值语义。
+
+通知规则按已有的查询后创建／更新流程保存。缺失规则的首次写入也必须保存请求中的 `is_enabled=false`，不能由 GORM 的 `default:true` 覆盖；创建／更新时间沿用数据库连接的 `NowFunc`。
 
 模型层仍负责：
 
@@ -161,6 +161,8 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | `requests/users.go` | 登录、启用/关闭两步验证、当前用户用户名/密码修改 | 登录校验用户名和密码非空，用户名 20 个字符上限；创建和修改使用严格用户名 / 密码规则，用户名去除首尾空白后长度为 3 到 20 个字符且只能包含英文和数字，密码长度至少 6 个字符且不能是纯数字或纯字母；两步验证码必填。 |
 | `requests/operations.go` | 分页、ID、路径浏览、网盘文件、目录操作、网盘文件批量删除 / 移动 / 复制 / 重命名、队列、同步/刮削关联、日志、临时图片、版本更新 | 分页默认值和范围、HTTP path 正 ID、ID 列表、CSV ID、来源类型、文件夹名、文件条目名、路径穿越防护、日志文件名限制、版本号格式、日期范围；批量文件操作要求 `file_ids` 非空、去重、不含无效 ID 且单次最多 500 项，移动 / 复制另要求 `target_parent_id` 必填，重命名要求 `file_id` 非空且新名称为合法文件条目名。 |
 
+AI 连接测试仍先校验当前草稿的地址、模型及超时，缺少连接必填字段时返回字段错误；测试不保存或发布配置。可识别的上游等待超时返回 `504 / UPSTREAM_TIMEOUT`，其他测试失败保留 `500 / AI_TEST_FAILED`；原因解析及安全诊断遵循 [公共响应契约](../reference/api-response.md#http-状态与错误分类)。
+
 首次数据库配置服务是启动期流程，不纳入公共 `backend/internal/requests` 目录；它只提供 SQLite 和PostgreSQL 配置，旧库迁移服务已移除。
 
 ## 重要兼容性规则
@@ -176,10 +178,11 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 刮削路径本地来源支持移动、复制、软链接和硬链接整理；115、百度网盘和 OpenList 支持移动和复制整理；其他远程来源只保守允许移动整理。
 - `SaveRelScrapePathRequest` 同时支持旧字段 `id`、`scrape_path_id` 和新字段 `sync_path_id`、`scrape_path_ids`。
 - 同步路径和刮削路径的关联保存允许空 ID 列表，用于清空关联；通用 `IDListRequest` 不允许空列表。
-- `IDCSVRequest` 保留 `ids=1,2` 的 Query 格式，用于刮削记录批量操作。
-- `ParsePositiveIDRequest` 用于解析 HTTP path 中的正整数 `id`，控制器仍按各自模块既有响应格式返回错误。
+- `IDCSVRequest` 保留 `ids=1,2` 的 Query 格式，用于刮削记录批量操作和导出附件的记录选择。
+- `ParsePositiveIDRequest` 用于解析 HTTP path 中的正整数 `id`，普通 JSON 请求的错误由公共输出写出。
 - `QueueListRequest.Status` 当前只绑定为 `int`，不做枚举限制，继续兼容现有前端和模型状态值。
 - `UpdateThreadsRequest.upload_threads` 为可选整数，显式数值必须在 `1` 到 `10` 之间；旧调用方省略该字段或传入 `null` 时保留当前上传并发数，首次初始化默认 `1`。设置写库失败时，内存中的配置和上传队列并发数都必须保持原值。
+- 线程配置的六个必填整数字段由 DTO 的范围校验接管：缺失、`null` 或 `0` 都不能绕过校验，失败返回对应 API 字段的 `field_errors`。这些字段不重复使用 Gin `binding:"required"`，避免绑定提前拒绝后丢失字段定位；类型和 JSON 格式错误仍由绑定层安全拒绝。
 - `AISettingsRequest.EnableAI` 允许空值，避免旧前端或局部保存请求被误拒。
 - `HTTPProxyRequest.PreserveProxyCredentials` 是可空布尔值：当前前端保存或测试脱敏代理地址时必须显式提交。`true` 仅在提交地址与当前存储地址的协议和 `host:port` 一致时保留用户名和密码；端点变化时忽略该标志，使用 `http_proxy` 中的凭据，避免将已存凭据转发给其他代理。`false` 表示将 `http_proxy` 中的凭据作为新值；字段缺失仅为兼容未升级前端，继续沿用历史的脱敏字符串匹配行为。
 - 账号添加页面会在提交前拦截空账号备注、OpenList 访问地址、用户名、密码或 Token 等轻量问题；后端 DTO 仍是最终校验来源，并在账号接口返回前把字段级校验错误转换为面向用户的提示。
@@ -194,9 +197,13 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 - 备份配置中 `backup_retention` 为 0 时表示不更新或使用既有值；大于 0 时限制为 1 到 365。
 - 首次数据库配置保存只接受 `sqlite`、`postgres` 引擎；PostgreSQL 配置中遗留的 `postgresType: embedded` 或未知模式必须被拒绝，不得静默改成外部连接。旧 SQLite 配置中的该字段不参与连接。
 
+刮削目录扫描入队返回 HTTP `202` 和 `data={task_id, status:"submitted"}`，任务标识沿用现有目录任务。已整理记录重新识别并触发后台回滚时返回 `202` 和 `data={id, status:"rollbacking"}`；其他重新识别字段同步保存返回 `200`，不表示新一轮刮削已完成。导出的 JSON 附件和图片继续使用原生文件内容，不套公共包络。
+
+刮削记录列表保留删除目录后仍存在的已整理历史记录，`total` 与分页记录语义不变，`list` 每项必须为完整记录对象，不能因目录关联缺失留下 `null` 或过滤记录。记录自身的 ID、状态、名称及路径信息继续返回；已删除目录的来源/整理类型等专属字段为空，运行标记为 `false`。真正的目录读取数据库故障仍返回 `500 / INTERNAL_ERROR`，不能当作已删除目录处理。
+
 ### 备份文件与恢复请求
 
-`GET /api/backup/files` 沿用备份接口的鉴权与维护门禁，无需客户端传目录。成功的 `data` 为 `{ directory, files }`：`directory` 是当前进程实际使用的备份目录，每项包含 `file_name`、`file_size`（字节）、`modified_at`（Unix 秒）。仅列出该目录根层的普通 `.zip` 文件，扩展名不区分大小写；不递归、跟随符号链接或读取归档内容。目录为空或尚未创建时返回空数组，其他目录访问故障返回业务失败，不能伪装为空列表。该入口独立于仍只返回目录的 `/api/path/list`。
+`GET /api/backup/files` 沿用备份接口的鉴权与维护门禁，无需客户端传目录。成功的 `data` 为 `{ directory, files }`：`directory` 是当前进程实际使用的备份目录，每项包含 `file_name`、`file_size`（字节）、`modified_at`（Unix 秒）。仅列出该目录根层的普通 `.zip` 文件，扩展名不区分大小写；不递归、跟随符号链接或读取归档内容。目录为空或尚未创建时返回空数组，其他目录访问故障返回 HTTP `500` 的安全错误包络，不能伪装为空列表。该入口独立于仍只返回目录的 `/api/path/list`。
 
 `POST /api/backup/restore` 的 `BackupRestoreRequest` 接受二选一：正数 `record_id` 或非空 `file_name`，同时指定或同时缺失均拒绝。保留原记录恢复调用；文件名方式只允许备份目录根层 ZIP 名称，拒绝绝对路径、目录分隔符、路径穿越和 Windows 盘符。服务器根据实际目录解析，并在启动时重新检查文件类型及可用性，不能直接使用客户端路径。接受后仍返回 `restore_receipt`，通过原状态、恢复和重启流程执行。
 
@@ -213,7 +220,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 | OpenList | `default` | `default` | 保留服务端顺序，不发送自定义排序参数 |
 | 本地 | 无文件管理入口 | `name/time` | 返回当前层目录及可用的 `modified_time`；前端排序 |
 
-`/api/path/files` 接受可选的 `folders_first`，仅 115 显式排序支持：开启映射 `custom_order=1`，关闭映射 `2`；省略时保留原置顶行为。`default` 映射 `custom_order=0`，不发送 `o/asc`。为兼容旧文件列表请求，`default + sort_order=asc` 允许作为占位，但不会传到上游；显式降序或置顶组合被拒绝。不支持的来源／场景／字段组合返回既有业务参数错误，不能静默忽略。
+`/api/path/files` 接受可选的 `folders_first`，仅 115 显式排序支持：开启映射 `custom_order=1`，关闭映射 `2`；省略时保留原置顶行为。`default` 映射 `custom_order=0`，不发送 `o/asc`。为兼容旧文件列表请求，`default + sort_order=asc` 允许作为占位，但不会传到上游；显式降序或置顶组合被拒绝。不支持的来源／场景／字段组合返回 `400 / INVALID_REQUEST` 与原字段的 `field_errors`，不能静默忽略。通用 DTO 校验后，读取账号才确定的来源校验同样保留该结果，并在缓存读取或网盘请求前拒绝；例如百度账号的 `sort_by=type` 定位到 `sort_by`。
 
 `/api/path/list` 接受可选的 `sort_by/sort_order` 和 `refresh=0|1`，维持目录数组响应。目录场景拒绝显式 `folders_first`；115 显式名称／时间排序内部使用置顶模式。未携带排序的旧目录请求及无选项 SDK 调用保留原行为。用户选择与上游 `order/is_asc` 回显分开，不能用一次名称回显覆盖 `default` 意图；回显的降序零值必须与缺失区分。
 
@@ -254,7 +261,7 @@ Emby 条目同步默认 Cron 为 `0 * * * *`，含义是每小时整点执行一
 
 OSS multipart 的 part size 必须由后端计算，不接受外部传入：默认 `32 MiB`，超过 `9999` 个 part 时动态放大并按 `1 MiB` 对齐，超过 OSS 单 part 上限时直接失败。初始化 multipart 必须带 `sequential=1`，相关单元测试会校验该请求参数。115 调度返回的 `callback` 可为单个对象或对象数组，数组只使用第一个回调配置。传给 OSS complete 前必须校验 `callback` / `callback_var` 是 JSON 对象，并将 115 返回的 JSON 字符串原样 Base64 编码；不得提前展开 `callbackBody`，不得向 `callback_var` 增加非 `x:` 字段，也不得把本地 SHA1 作为 OSS multipart 或 callback 的替代输入。`CompleteMultipartUpload` 后必须校验 115 callback 业务结果；`state=false`、`message` 非空、缺少 `file_id` 或缺少 `pick_code` 都不能视为上传成功。
 
-同步目录聚合写入和目录监控规则的 DTO 仍遵循本文的绑定与校验边界；精确请求字段、幂等、结构化错误和最终集合语义由 [同步目录聚合 API](../reference/sync-path-api.md) 维护。`/api/directory-upload/sync-paths/:sync_path_id/scan` 只扫描总开关和规则自身都启用的规则。
+同步目录聚合写入和目录监控规则的 DTO 仍遵循本文的绑定与校验边界；精确请求字段、幂等、结构化错误和最终集合语义由 [同步目录聚合 API](../reference/sync-path-api.md) 维护。`/api/directory-upload/sync-paths/:sync_path_id/scan` 只扫描总开关和规则自身都启用的规则。 同步扫描完成返回成功；规则整体停用为状态冲突。若已部分受理后失败，保留 `accepted/items`，反馈区分已受理项和剩余失败，遵循公共响应的部分执行规则。
 
 STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 [STRM Webhook](../reference/strm-webhook.md) 维护；本文只约束其控制器使用的输入校验边界。
 
@@ -270,9 +277,9 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 | 手动提取 | `POST /api/setting/emby/parse` | `POST /api/setting/jellyfin/parse` |
 | 外部 Webhook | `POST /emby/webhook` | `POST /jellyfin/webhook` |
 
-`enabled` 与 `enable_media_notification` 支持旧请求省略或 `null` 时保留现值，显式 `false`／`0` 仍保存；新配置默认关闭。读取返回 `data={exists, config}`。保存只做本地字段校验，允许离线保存；提交成功返回 `code=200`，`data.warnings: string[]` 表示提交后的应用警告；`data.restart_required` 固定为 `false`，保留字段供旧调用方兼容。应用失败不变成未保存，回读失败也不等同于配置提交失败；完整契约见 [独立配置与入口](../architecture/emby-library-sync.md#独立配置与入口)。
+`enabled` 与 `enable_media_notification` 支持旧请求省略或 `null` 时保留现值，显式 `false`／`0` 仍保存；新配置默认关闭。读取返回 `data={exists, config}`。保存只做本地字段校验，允许离线保存；提交成功返回成功包络，顶层 `warnings` 表示提交后的应用警告；`data.restart_required` 固定为 `false`。应用失败不变成未保存，回读失败也不等同于配置提交失败；完整契约见 [独立配置与入口](../architecture/emby-library-sync.md#独立配置与入口)。
 
-手动提取使用无 body 的 `POST /api/setting/{emby|jellyfin}/parse`，要求本端总开关、连接、全部媒体库及播放权限，不受 `enable_extract_media_info` 和同步选库限制。该分项只控制入库自动提取。手动全量仍要求本端总开关与 `sync_enabled=1`；媒体库列表只读查询允许总开关关闭。
+手动提取使用无 body 的 `POST /api/setting/{emby|jellyfin}/parse`，要求本端总开关、连接、全部媒体库及播放权限，不受 `enable_extract_media_info` 和同步选库限制。该分项只控制入库自动提取。手动全量仍要求本端总开关与 `sync_enabled=1`；媒体库列表只读查询允许总开关关闭。受理状态和未就绪错误见 [同步运行状态](../architecture/emby-library-sync.md#同步运行状态)。
 
 ## Emby Webhook 入站边界
 
@@ -295,7 +302,7 @@ STRM Webhook 的外部字段、鉴权、路径边界、批量规则和响应由 
 以下接口或参数仍是特殊实现，不应作为新增接口的默认写法：
 
 - 用户会话撤销使用 `session_id` 路径参数，当前直接从 `c.Param("session_id")` 读取。
-- 同步记录、同步任务详情 HTTP 查询、同步路径列表查询仍在 `controllers/sync.go` 使用控制器内局部 Request 结构；同步任务详情实时流在 `controllers/event_stream.go` 使用 `ParsePositiveIDRequest` 解析路径 `id`，不新增 DTO。
+- 同步记录、同步任务详情 HTTP 查询、同步路径列表查询仍在 `controllers/sync.go` 使用控制器内局部 Request 结构；同步任务详情实时流在 `controllers/sync_task_stream.go` 使用 `ParsePositiveIDRequest` 解析路径 `id`，不新增 DTO。
 - 备份上传恢复在解析 multipart 前限制请求体，并单独限制实际文件大小；超限返回 HTTP `413`、顶层 `error_code=BACKUP_ARCHIVE_LIMIT`，清理 multipart 和本轮上传临时文件。文件读取、扩展名和暂存处理保留在控制器中，具体限额见[数据库运维](../operations/database.md#恢复与风险边界)。
 - 首次数据库配置服务 `backend/internal/app/setup.go` 使用独立的启动期接口和私有请求结构，不纳入常规 API DTO 目录。
 - 部分只读或触发型接口没有外部参数，或只做运行状态检查，不需要 DTO。

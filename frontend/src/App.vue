@@ -453,8 +453,10 @@ const handleLogout = async () => {
       type: 'warning',
     })
 
-    await authStore.logoutWithServer(http)
-    ElMessage.success('已退出登录')
+    const result = await authStore.logoutWithServer(http)
+    const message = result?.message?.trim() || '已退出登录'
+    if (result?.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+    else ElMessage.success(message)
     router.replace('/login')
   } catch {
     // 用户取消

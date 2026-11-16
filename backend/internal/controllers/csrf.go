@@ -3,6 +3,8 @@ package controllers
 import (
 	"net/http"
 
+	"qmediasync/internal/httpapi"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,17 +29,20 @@ func validateCSRF(c *gin.Context) bool {
 		return false
 	}
 	if !requestOriginAllowed(c) {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "请求来源无效", Data: nil, ErrorCode: ErrorCodeRequestOriginInvalid})
+		c.Header("Cache-Control", "no-store, private")
+		httpapi.Failure(c, http.StatusForbidden, httpapi.Error{Code: ErrorCodeRequestOriginInvalid, Message: "请求来源无效", Data: nil})
 		return false
 	}
 	headerToken := c.Request.Header.Get(csrfHeaderName)
 	cookie, err := c.Request.Cookie(csrfCookieName)
 	if err != nil || cookie.Value == "" || headerToken == "" || headerToken != cookie.Value {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil, ErrorCode: ErrorCodeCSRFTokenInvalid})
+		c.Header("Cache-Control", "no-store, private")
+		httpapi.Failure(c, http.StatusForbidden, httpapi.Error{Code: ErrorCodeCSRFTokenInvalid, Message: "CSRF 校验失败", Data: nil})
 		return false
 	}
 	if !session.ValidateCSRFToken(headerToken) {
-		c.JSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "CSRF 校验失败", Data: nil, ErrorCode: ErrorCodeCSRFTokenInvalid})
+		c.Header("Cache-Control", "no-store, private")
+		httpapi.Failure(c, http.StatusForbidden, httpapi.Error{Code: ErrorCodeCSRFTokenInvalid, Message: "CSRF 校验失败", Data: nil})
 		return false
 	}
 	return true

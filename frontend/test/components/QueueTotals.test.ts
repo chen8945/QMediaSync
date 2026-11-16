@@ -39,11 +39,12 @@ describe.each([
     let filteredTotal = 650
     const endpoint = `${SERVER_URL}/${queue}/queue`
     const get = vi.fn(async (url: string) => {
-      if (url === `${endpoint}/status`) return { data: { code: 200, data: snapshot } }
+      if (url === `${endpoint}/status`)
+        return { data: { status: 200, data: snapshot }, status: 200 }
       if (url !== endpoint) throw new Error(`unexpected url: ${url}`)
       return {
         data: {
-          code: 200,
+          status: 200,
           data: {
             list: [],
             total: filteredTotal,
@@ -52,6 +53,7 @@ describe.each([
             queue_status: snapshot,
           },
         },
+        status: 200,
       }
     })
     const wrapper = shallowMount(component, {
@@ -71,10 +73,9 @@ describe.each([
 
     if (queue === 'download') {
       expect(
-        wrapper.findAllComponents({ name: 'ElOption' }).map((option) => [
-          option.props('value'),
-          option.props('label'),
-        ]),
+        wrapper
+          .findAllComponents({ name: 'ElOption' })
+          .map((option) => [option.props('value'), option.props('label')]),
       ).toEqual([
         [-1, '全部状态'],
         [0, '等待下载'],

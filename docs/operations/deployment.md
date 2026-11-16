@@ -6,7 +6,7 @@
 >
 > 修改时机：修改 Dockerfile、容器入口脚本、管理员恢复入口、二进制运行目录、飞牛安装流程、运行端口或持久化目录时必须更新本文档。
 >
-> 相关代码：`docker/`、`backend/main.go`、`backend/internal/app/admin_recovery.go`、`packaging/fnos/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
+> 相关代码：`docker/`、`backend/main.go`、`backend/internal/app/admin_recovery.go`、`backend/internal/app/setup.go`、`packaging/fnos/`、`scripts/recover-admin.sh`、`scripts/install/linux-init.sh`、`backend/internal/controllers/update.go`、`.github/workflows/release.yaml`。
 
 ## 部署选择与持久化边界
 
@@ -94,6 +94,8 @@ systemctl status qmediasync
 
 Windows 在 `config/update/` 准备完整发布文件，启动独立更新进程后才退出原进程；更新进程替换程序和 `web_statics/`，将旧文件移到 `old/`，替换失败尝试回滚并重启旧版本，不替换 Docker 脚本。Docker 先在安装目录写完临时更新包，再改名为 `qms.update.tar.gz` 交给监视器；入口脚本检查解压和替换结果，中途失败尝试恢复旧文件。准备或启动更新器失败会报告失败，交付成功保持安装中，重启后由页面核对实际版本，不能仅凭进程重启提示更新完成。
 
+更新启动受理返回 HTTP `202`；进度查询成功返回 `200`，尚未启动时为 `data.status="idle"`，失败任务仍是成功读取的快照，`data.error_message` 使用安全说明。当前运行方式不支持更新返回 `503`、`UPDATE_UNSUPPORTED`；安装目录不可写返回 `500`、`UPDATE_INSTALL_DIRECTORY_UNWRITABLE`；下载源不可达返回 `503`、`UPDATE_SOURCE_UNAVAILABLE`。发布查询成功但目标版本不存在或没有当前平台安装包时，返回 `400 / UPDATE_TARGET_UNAVAILABLE`，在下载和任务创建前拒绝；应选择有当前平台安装包的版本。发布信息查询故障仍返回 `500 / UPDATE_RELEASE_LOOKUP_FAILED`，不把查询失败当作没有新版本。外层响应见 [API 响应与请求错误](../reference/api-response.md)。
+
 脚本创建的服务带有 `Restart=always` 和 `Environment=QMS_SYSTEMD_UPDATE=1`。程序同时检测到该标记和 systemd 为服务进程设置的 `INVOCATION_ID` 时才启用 systemd 在线更新；`INVOCATION_ID` 需要 systemd 232 及以上，更早的版本按不支持在线更新处理。
 
 - 发起更新时，下载前依次确认三项：安装目录对服务用户可写，否则返回“安装目录不可写，无法在线更新，请手动下载安装”；运行中的程序就是安装目录下的 `QMediaSync`，程序改名或经其他路径运行时返回“当前运行方式不支持在线更新，请手动下载安装”；该版本发布了 `checksums.txt`，否则返回“该版本未发布校验文件，无法在线更新，请手动下载安装”。
@@ -125,6 +127,8 @@ sudo systemctl daemon-reload && sudo systemctl restart qmediasync
 
 保存端先落盘再准备启动；准备失败返回“已保存但未能自动启动”，保留配置服务和重试入口。保存成功后重复提交只重试启动，不重写配置或再次清库；准备成功只安排一次退出。PostgreSQL 清库失败会中止保存；清库成功但配置落盘失败时，再次保存沿用本轮数据库设置，不重复清库。等待服务启动后，查看本轮日志中的初始化码，再手动刷新当前页面创建管理员；配置页不会自动跳转。首次配置能力不代表 fnOS 支持恢复后的程序内重启或网页在线更新。
 
+首次配置保存成功返回 HTTP `200`；启动准备失败仍是保存成功，返回 `data.restartPending=true` 和顶层 `warnings`。清库或落盘失败返回 `500`；已完成清库后发生后续失败时保留 `data.databaseCleared=true`，页面按这一实际结果提供重试反馈。数据库连接测试拒绝当前连接配置返回 `400`、`DATABASE_CONNECTION_FAILED`；数据库目录探测故障返回 `500`、`DATABASE_PROBE_FAILED`。配置页按公共 `status`、`data`、`message` 解析，重复保存的流程边界不变。
+
 Docker 入口在主进程退出后检查更新包和重启请求，仅在检测到更新包时提示执行更新；两者均无有效请求时退出容器，后续是否自动重启由容器重启策略决定。
 
 Docker 的 `QMS_DOCKER_RESTART=1` 由支持此机制的入口脚本声明，不应手工给旧入口补这个环境变量；只在线更新二进制不能让已经运行的旧入口获得新能力。重启准备成功后约 3 秒开始退出，关闭超过 60 秒则强制退出。准备失败时当前服务继续保持维护，页面可重试；重新上线后再登录并核验结果。
@@ -144,6 +148,8 @@ fnOS FPK 由发布流程生成，源码位于 `packaging/fnos/`。平台安装�
 安装、升级及保留数据重装不重建配置；卸载向导默认保留，明确删除时只删除已校验的本应用共享目录下 `config/`，包含其中的 SQLite、密钥和本地备份，不处理外部 PostgreSQL 或媒体目录。不要把 Docker 的 `/app/config`、`GUID`/`GPID` 或 systemd 配置套用到原生包。备份见 [数据库运维](database.md)。
 
 本地目录仍使用平台环境变量和既有授权刷新回调；找不到目录或无法写入时，在应用设置检查授权，返回 QMediaSync 刷新，必要时停止后启动应用。全部撤销授权时，旧目录刷新接口不接受空值，需重启使新环境生效。本次不接入 fnOS 账号、统一网关或新文件授权 SDK。
+
+目录授权回调仅在真实 HTTP `200` 且统一响应正文 `status=200` 时确认刷新成功；其他响应或连接失败会提示未能刷新，并保留原有重试与重启处理。
 
 fnOS 的 QMediaSync 网页仅提供更新说明，后端同样拒绝在线安装。应用中心来源的版本由平台提供更新；手动安装版本按发布说明下载对应 FPK，通过平台入口处理。是否有商店更新取决于应用来源，本项目构建 FPK 不代表已上架。GitHub `checksums.txt` 可供手工核对，平台生命周期脚本不读取它。
 

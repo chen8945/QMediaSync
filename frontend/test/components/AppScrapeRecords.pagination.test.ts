@@ -31,7 +31,7 @@ function primeScrapeRecordsState() {
 function createScrapeRecordsResponse(page: number, total = 45) {
   return {
     data: {
-      code: 200,
+      status: 200,
       data: {
         list: Array.from({ length: 20 }, (_, index) => ({
           id: (page - 1) * 20 + index + 1,
@@ -41,6 +41,7 @@ function createScrapeRecordsResponse(page: number, total = 45) {
         page_size: 20,
       },
     },
+    status: 200,
   }
 }
 

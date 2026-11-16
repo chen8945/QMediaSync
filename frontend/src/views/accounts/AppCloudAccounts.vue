@@ -546,6 +546,7 @@ import {
   type CloudDiskStatus,
   type CreateAccountPayload,
 } from '@/api/accounts'
+import type { SettingsSaveResult } from '@/api/types'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageStats from '@/components/common/PageStats.vue'
 import V115AuthorizationDialog from '@/components/cloud-auth/V115AuthorizationDialog.vue'
@@ -946,8 +947,8 @@ const handleDelete = async (row: CloudAccount) => {
       type: 'warning',
     })
 
-    await deleteAccount(http, row.id)
-    ElMessage.success('账号删除成功')
+    const result = await deleteAccount(http, row.id)
+    showSaveResults([result], '账号删除成功')
     loadAccounts()
   } catch (error) {
     if (!isMessageBoxCancelError(error)) {
@@ -1022,7 +1023,19 @@ const hasOpenListConfigChanged = (): boolean => {
   )
 }
 
+const showSaveResults = (results: SettingsSaveResult[], fallbackMessage: string) => {
+  const message =
+    results
+      .map((result) => result.message?.trim())
+      .filter(Boolean)
+      .join('；') || fallbackMessage
+  const warnings = results.flatMap((result) => result.warnings)
+  if (warnings.length) ElMessage.warning([message, ...warnings].filter(Boolean).join('；'))
+  else ElMessage.success(message)
+}
+
 const handleUpdateAccount = async () => {
+  const results: SettingsSaveResult[] = []
   try {
     if (hasOpenListConfigChanged()) {
       const validationMessage = getOpenListUpdateValidationMessage()
@@ -1043,20 +1056,33 @@ const handleUpdateAccount = async () => {
             }),
       }
 
-      await saveOpenListAccount(http, openListRequestData)
+      results.push(await saveOpenListAccount(http, openListRequestData))
     }
 
-    await updateAccount(http, {
-      id: editAccountForm.value.id,
-      name: editAccountForm.value.name,
-      app_id_name: editAccountForm.value.app_id_name,
-    })
+    results.push(
+      await updateAccount(http, {
+        id: editAccountForm.value.id,
+        name: editAccountForm.value.name,
+        app_id_name: editAccountForm.value.app_id_name,
+      }),
+    )
 
     showEditAccountDialog.value = false
     loadAccounts()
-    ElMessage.success('账号更新成功')
+    showSaveResults(results, '账号更新成功')
   } catch (error) {
-    reportError(error, '更新账号失败')
+    const savedMessage =
+      results
+        .map((result) => result.message?.trim())
+        .filter(Boolean)
+        .join('；') || 'OpenList 连接配置已保存'
+    notifyHttpError(error, '更新账号失败', {
+      publicMessages: authorizationPublicMessages,
+      fallbackMessage: '更新账号失败',
+      messagePrefix: results.length
+        ? [savedMessage, ...results.flatMap((result) => result.warnings)].join('；')
+        : undefined,
+    })
   }
 }
 
@@ -1377,8 +1403,9 @@ const handleAddAccount = async () => {
       })
     }
 
+    let result: SettingsSaveResult
     if (newAccountForm.value.type === 'openlist') {
-      await saveOpenListAccount(http, {
+      result = await saveOpenListAccount(http, {
         ...data,
         base_url: newAccountForm.value.base_url,
         auth_type: newAccountForm.value.auth_type,
@@ -1390,10 +1417,10 @@ const handleAddAccount = async () => {
             }),
       })
     } else {
-      await createAccount(http, data)
+      result = await createAccount(http, data)
     }
 
-    ElMessage.success('添加账号成功')
+    showSaveResults([result], '添加账号成功')
     showAddAccountDialog.value = false
     loadAccounts()
     resetForm()
@@ -1424,14 +1451,19 @@ const confirmOAuth = async (
       return
     }
 
-    await confirm(http, {
+    const result = await confirm(http, {
       account_id: accountId,
       ...(tokenData ? { data: tokenData } : { payload }),
       ...(payload.authorization_id ? { authorization_id: payload.authorization_id } : {}),
     })
 
     clearPendingV115Authorization(payload.authorization_id)
-    ElMessage.success({ message: '授权成功，2 秒后将自动刷新页面', duration: 2000 })
+    const message = result.message?.trim()
+      ? `${result.message.trim()}，2 秒后将自动刷新页面`
+      : '授权成功，2 秒后将自动刷新页面'
+    if (result.warnings.length)
+      ElMessage.warning({ message: [message, ...result.warnings].join('；'), duration: 2000 })
+    else ElMessage.success({ message, duration: 2000 })
     setTimeout(() => {
       const hash = window.location.hash
       const cleanHash = hash.split('?')[0]

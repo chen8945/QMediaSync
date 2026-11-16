@@ -436,8 +436,10 @@ const handleDelete = async (type: 'movie' | 'tvshow', id: number) => {
       type: 'warning',
     })
 
-    await deleteScrapeCategory(http, type, id)
-    ElMessage.success('删除成功')
+    const result = await deleteScrapeCategory(http, type, id)
+    if (result.warnings.length > 0)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || '删除成功')
     await loadCategories(true)
   } catch (error: unknown) {
     if (!isMessageBoxCancelError(error)) {
@@ -478,8 +480,10 @@ const handleSubmit = async () => {
       payload.country_array = formData.languages
     }
 
-    await saveScrapeCategory(http, editingType.value, payload)
-    ElMessage.success(`${action}成功`)
+    const result = await saveScrapeCategory(http, editingType.value, payload)
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || `${action}成功`)
     dialogVisible.value = false
     await loadCategories(true)
   } catch (error: unknown) {

@@ -40,16 +40,24 @@ describe('APP ID 选择器请求错误', () => {
     const get = vi
       .fn()
       .mockResolvedValueOnce({
-        data: { code: 500, message: '搜索服务繁忙', data: null },
+        data: {
+          status: 500,
+          message: '搜索服务繁忙',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
+        status: 500,
       })
       .mockResolvedValueOnce({
         data: {
-          code: 200,
+          status: 200,
           data: {
             items: [{ app_id: '1001', app_name: '测试应用', display_name: '测试应用' }],
             total: 1,
           },
         },
+        status: 200,
       })
     const wrapper = mountSelect(get)
     await wrapper.get('input').setValue('测试')
@@ -64,7 +72,18 @@ describe('APP ID 选择器请求错误', () => {
   })
 
   it('取消和已经处理的 401 不再显示错误', async () => {
-    const handled = { response: { status: 401, data: { code: 500, message: 'private-token' } } }
+    const handled = {
+      response: {
+        status: 401,
+        data: {
+          status: 401,
+          message: 'private-token',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
+      },
+    }
     markAuthInvalidationHandled(handled)
     const wrapper = mountSelect(
       vi.fn().mockRejectedValueOnce(new CanceledError()).mockRejectedValueOnce(handled),

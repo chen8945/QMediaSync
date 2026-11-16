@@ -1,8 +1,8 @@
 import type { AxiosInstance, AxiosResponse } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface FnosPathMapping {
   fnos_root: string
@@ -45,7 +45,7 @@ const isPort = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65535
 
 const settingsResponse = (response: AxiosResponse<APIResponse<FnosProxySettings>>) => {
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   const config = data?.config
   const runtime = data?.runtime
   if (
@@ -82,8 +82,10 @@ export async function fetchFnosProxySettings(http: AxiosInstance): Promise<FnosP
 export async function saveFnosProxySettings(
   http: AxiosInstance,
   config: FnosProxyConfig,
-): Promise<FnosProxySettings> {
-  return settingsResponse(
-    await http.post<APIResponse<FnosProxySettings>>(`${SERVER_URL}/setting/fnos-proxy`, config),
+): Promise<FnosProxySettings & SettingsSaveResult> {
+  const response = await http.post<APIResponse<FnosProxySettings>>(
+    `${SERVER_URL}/setting/fnos-proxy`,
+    config,
   )
+  return { ...settingsResponse(response), ...getSettingsSaveResult(response) }
 }

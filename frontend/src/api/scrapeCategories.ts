@@ -1,7 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export type ScrapeCategoryType = 'movie' | 'tvshow'
 
@@ -42,7 +42,7 @@ export async function fetchScrapeLanguages(http: AxiosInstance): Promise<ScrapeR
   return (
     unwrapResponse(
       await http.get<APIResponse<ScrapeRegion[] | null>>(`${SERVER_URL}/scrape/language`),
-    ) ?? []
+    ).data ?? []
   )
 }
 
@@ -50,7 +50,7 @@ export async function fetchScrapeCountries(http: AxiosInstance): Promise<ScrapeR
   return (
     unwrapResponse(
       await http.get<APIResponse<ScrapeRegion[] | null>>(`${SERVER_URL}/scrape/countries`),
-    ) ?? []
+    ).data ?? []
   )
 }
 
@@ -61,7 +61,7 @@ export async function fetchScrapeGenres(
   return (
     unwrapResponse(
       await http.get<APIResponse<ScrapeGenre[] | null>>(`${SERVER_URL}/scrape/${type}-genre`),
-    ) ?? []
+    ).data ?? []
   )
 }
 
@@ -74,7 +74,7 @@ export async function fetchScrapeCategories(
       await http.get<APIResponse<ScrapeCategory[] | null>>(
         `${SERVER_URL}/scrape/${type}-categories`,
       ),
-    ) ?? []
+    ).data ?? []
   )
 }
 
@@ -82,8 +82,8 @@ export async function saveScrapeCategory(
   http: AxiosInstance,
   type: ScrapeCategoryType,
   payload: ScrapeCategory,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/${type}-categories`, payload),
   )
 }
@@ -92,8 +92,8 @@ export async function deleteScrapeCategory(
   http: AxiosInstance,
   type: ScrapeCategoryType,
   id: number,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.delete<APIResponse<null>>(`${SERVER_URL}/scrape/${type}-categories/${id}`),
   )
 }

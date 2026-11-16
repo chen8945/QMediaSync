@@ -3,6 +3,8 @@ package controllers
 import (
 	"net/http"
 
+	"qmediasync/internal/httpapi"
+
 	"github.com/gin-gonic/gin"
 
 	"qmediasync/internal/db"
@@ -14,11 +16,11 @@ import (
 func ListStrmResults(c *gin.Context) {
 	var req requests.StrmResultsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "查询参数无效"})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	query := db.Db.WithContext(c.Request.Context()).Model(&models.StrmGenerationTask{})
@@ -38,17 +40,17 @@ func ListStrmResults(c *gin.Context) {
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "读取 STRM 结果失败"})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取 STRM 结果失败", Cause: err, Data: nil})
 		return
 	}
 	// 只返回展示所需字段，避免暴露远端定位凭据和内部幂等信息。
 	items := make([]strmResult, 0)
 	if err := query.Select("id, parent_task_id, upload_task_id, sync_path_id, source, task_type, file_name, directory_path, status, skip_reason, total_items, accepted_items, failed_items, skipped_items, updated_at").Order("id DESC").Offset((req.Page - 1) * req.PageSize).Limit(req.PageSize).Scan(&items).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "读取 STRM 结果失败"})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取 STRM 结果失败", Cause: err, Data: nil})
 		return
 	}
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Data: gin.H{"items": items, "total": total}})
+	httpapi.Success(c, http.StatusOK, gin.H{"items": items, "total": total}, "")
 }
 
 type strmResult struct {

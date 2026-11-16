@@ -101,11 +101,11 @@ func (r SyncPathStrmRequest) isZero() bool {
 
 // SyncPathRequest 创建同步路径请求。
 type SyncPathRequest struct {
-	SourceType             models.SourceType `json:"source_type" form:"source_type" binding:"required"`
+	SourceType             models.SourceType `json:"source_type" form:"source_type"`
 	AccountID              uint              `json:"account_id" form:"account_id"`
-	BaseCid                string            `json:"base_cid" form:"base_cid" binding:"required"`
-	LocalPath              string            `json:"local_path" form:"local_path" binding:"required"`
-	RemotePath             string            `json:"remote_path" form:"remote_path" binding:"required"`
+	BaseCid                string            `json:"base_cid" form:"base_cid"`
+	LocalPath              string            `json:"local_path" form:"local_path"`
+	RemotePath             string            `json:"remote_path" form:"remote_path"`
 	EnableCron             bool              `json:"enable_cron" form:"enable_cron"`
 	DirectoryUploadEnabled *bool             `json:"directory_upload_enabled" form:"directory_upload_enabled"`
 	CustomConfig           bool              `json:"custom_config" form:"custom_config"`
@@ -172,7 +172,7 @@ func (r SyncPathRequest) strmRequest() SyncPathStrmRequest {
 
 // UpdateSyncPathRequest 更新同步路径请求。
 type UpdateSyncPathRequest struct {
-	ID uint `json:"id" form:"id" binding:"required"`
+	ID uint `json:"id" form:"id"`
 	SyncPathRequest
 }
 

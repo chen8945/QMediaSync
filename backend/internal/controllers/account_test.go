@@ -3,12 +3,16 @@ package controllers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	v115auth "qmediasync/internal/v115/auth"
 	v115open "qmediasync/internal/v115/openapi"
@@ -16,11 +20,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
-
-type apiMessageResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
 
 func setupAccountControllerTest(t *testing.T) {
 	t.Helper()
@@ -30,54 +29,13 @@ func setupAccountControllerTest(t *testing.T) {
 	setupControllerTestDB(t, &models.Account{})
 }
 
-func decodeAPIMessage(t *testing.T, body *bytes.Buffer) apiMessageResponse {
+func decodeAPIMessage(t *testing.T, body *bytes.Buffer) httpapi.APIResponse[any] {
 	t.Helper()
-	var resp apiMessageResponse
+	var resp httpapi.APIResponse[any]
 	if err := json.Unmarshal(body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v，响应: %s", err, body.String())
 	}
 	return resp
-}
-
-func TestFriendlyAccountValidationMessage(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{
-			name: "账号 ID 错误",
-			err:  validation.New("id", "必须大于 0"),
-			want: "请选择要操作的账号",
-		},
-		{
-			name: "账号备注包含控制字符",
-			err:  validation.New("name", "不能包含控制字符"),
-			want: "账号备注不能包含特殊控制字符",
-		},
-		{
-			name: "自定义应用名包含控制字符",
-			err:  validation.New("custom_app_name", "不能包含控制字符"),
-			want: "自定义应用名不能包含特殊控制字符",
-		},
-		{
-			name: "未知字段不暴露字段名",
-			err:  validation.New("unknown", "不能为空"),
-			want: "请求参数不正确，请检查后再试",
-		},
-	}
-
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			got := friendlyAccountValidationMessage(tt.err)
-			if got != tt.want {
-				t.Fatalf("friendlyAccountValidationMessage() = %q，期望 %q", got, tt.want)
-			}
-			if strings.Contains(got, "：") {
-				t.Fatalf("响应不应暴露字段级错误: %s", got)
-			}
-		})
-	}
 }
 
 func TestGetAccountList_ReturnsCustom115AppNameAndAppId(t *testing.T) {
@@ -205,8 +163,8 @@ func TestUpdateAccountInfo_UpdatesRemarkAndCustomAppNameOnly(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
 	}
-	if !strings.Contains(w.Body.String(), `"code":200`) {
-		t.Fatalf("响应未返回成功 code: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), `"status":200`) {
+		t.Fatalf("响应未返回成功 status: %s", w.Body.String())
 	}
 
 	var updated models.Account
@@ -223,6 +181,94 @@ func TestUpdateAccountInfo_UpdatesRemarkAndCustomAppNameOnly(t *testing.T) {
 		updated.RefreshToken != "refresh-token" || updated.UserId != "115-user" ||
 		updated.Username != "115-name" {
 		t.Fatalf("更新账号资料影响了授权字段: %#v", updated)
+	}
+}
+
+func TestDeleteAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		hasSyncPath  bool
+		failDelete   bool
+		wantStatus   int
+		wantCode     string
+		wantAccounts int
+	}{
+		{name: "linked sync directory", hasSyncPath: true, wantStatus: http.StatusConflict, wantCode: "ACCOUNT_HAS_SYNC_PATHS", wantAccounts: 1},
+		{name: "no linked directory", wantStatus: http.StatusOK},
+		{name: "database delete failure", failDelete: true, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_ERROR", wantAccounts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupAccountControllerTest(t)
+			if err := db.Db.AutoMigrate(&models.SyncPath{}); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			account := models.Account{Name: "delete-account", SourceType: models.SourceType115, Token: "existing-token"}
+			if err := db.Db.Create(&account).Error; err != nil {
+				t.Fatal(err)
+			}
+			path := models.SyncPath{AccountId: account.ID, SourceType: account.SourceType, BaseCid: "linked-directory"}
+			if tc.hasSyncPath {
+				if err := db.Db.Create(&path).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			const databaseError = "account-delete-database-fault-sentinel"
+			if tc.failDelete {
+				if err := db.Db.Exec(`CREATE TRIGGER fail_account_delete BEFORE DELETE ON account
+					BEGIN SELECT RAISE(FAIL, '` + databaseError + `'); END`).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			payload, err := json.Marshal(map[string]any{"id": account.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			router := gin.New()
+			router.POST("/api/account/delete", DeleteAccount)
+			request := httptest.NewRequest(http.MethodPost, "/api/account/delete", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, request)
+			response := decodeAPIMessage(t, w.Body)
+			if w.Code != tc.wantStatus || response.Status != w.Code || response.ErrorCode != tc.wantCode {
+				t.Errorf("账号删除错误分类不正确: HTTP=%d response=%+v", w.Code, response)
+			}
+			if tc.wantCode != "" && (response.Message == "" || response.Instance == "") {
+				t.Errorf("删除失败缺少安全说明或诊断关联: %+v", response)
+			}
+			if tc.hasSyncPath {
+				if !strings.Contains(response.Message, "同步目录") || !strings.Contains(response.Message, "先删除") {
+					t.Errorf("关联目录拒绝缺少原因和处理提示: %q", response.Message)
+				}
+				if strings.Count(logs.String(), response.Instance) != 1 || strings.Count(logs.String(), "\n") != 1 {
+					t.Errorf("关联目录拒绝应只记录一次请求诊断: %s", logs.String())
+				}
+			}
+			if strings.Contains(w.Body.String(), databaseError) {
+				t.Error("删除失败响应泄露数据库诊断")
+			}
+			var accounts []models.Account
+			if err := db.Db.Find(&accounts).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(accounts) != tc.wantAccounts {
+				t.Fatalf("删除后的账号数量 = %d，期望 %d", len(accounts), tc.wantAccounts)
+			}
+			if len(accounts) == 1 && (accounts[0].ID != account.ID || accounts[0].Name != account.Name || accounts[0].Token != account.Token) {
+				t.Error("拒绝删除改变了原账号")
+			}
+			var paths []models.SyncPath
+			if err := db.Db.Find(&paths).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tc.hasSyncPath && (len(paths) != 1 || paths[0].ID != path.ID || paths[0].AccountId != account.ID || paths[0].BaseCid != path.BaseCid) {
+				t.Fatalf("拒绝删除改变了关联目录: %+v", paths)
+			}
+		})
 	}
 }
 
@@ -305,11 +351,11 @@ func TestCreateTmpAccountV115AuthSource(t *testing.T) {
 
 			CreateTmpAccount(c)
 
-			if w.Code != http.StatusOK {
-				t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusCreated)
 			}
-			if !strings.Contains(w.Body.String(), `"code":200`) {
-				t.Fatalf("响应未返回成功 code: %s", w.Body.String())
+			if !strings.Contains(w.Body.String(), `"status":201`) {
+				t.Fatalf("响应未返回成功 status: %s", w.Body.String())
 			}
 			var account models.Account
 			if err := db.Db.Where("name = ?", tt.payload["name"]).First(&account).Error; err != nil {
@@ -343,11 +389,11 @@ func TestCreateTmpAccountV115AuthSource(t *testing.T) {
 
 	CreateTmpAccount(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(w.Body.String(), `"code":500`) {
-		t.Fatalf("不支持的授权来源未返回 BadRequest: %s", w.Body.String())
+	if decodeAPIMessage(t, w.Body).ErrorCode != "INVALID_REQUEST" {
+		t.Fatalf("不支持的授权来源未返回 INVALID_REQUEST: %s", w.Body.String())
 	}
 }
 
@@ -385,7 +431,7 @@ func TestPrepareAccountAuthorizationBindsSessionAndRejectsCrossSource(t *testing
 	c.Request.Header.Set("Content-Type", "application/json")
 	PrepareAccountAuthorization(c)
 
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"code":200`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":200`) {
 		t.Fatalf("准备授权失败: status=%d body=%s", w.Code, w.Body.String())
 	}
 	var response struct {
@@ -414,7 +460,7 @@ func TestPrepareAccountAuthorizationBindsSessionAndRejectsCrossSource(t *testing
 	duplicateContext.Request = httptest.NewRequest(http.MethodPost, "/account/authorization/prepare", bytes.NewReader(payload))
 	duplicateContext.Request.Header.Set("Content-Type", "application/json")
 	PrepareAccountAuthorization(duplicateContext)
-	if duplicateRecorder.Code != http.StatusBadRequest || !strings.Contains(duplicateRecorder.Body.String(), "授权流程进行中") {
+	if duplicateRecorder.Code != http.StatusConflict || decodeAPIMessage(t, duplicateRecorder.Body).ErrorCode != "AUTHORIZATION_IN_PROGRESS" {
 		t.Fatalf("同一账号的重复授权流程未被拒绝: status=%d body=%s", duplicateRecorder.Code, duplicateRecorder.Body.String())
 	}
 
@@ -432,7 +478,7 @@ func TestPrepareAccountAuthorizationBindsSessionAndRejectsCrossSource(t *testing
 	crossContext.Request = httptest.NewRequest(http.MethodPost, "/account/authorization/prepare", bytes.NewReader(crossBody))
 	crossContext.Request.Header.Set("Content-Type", "application/json")
 	PrepareAccountAuthorization(crossContext)
-	if crossRecorder.Code != http.StatusBadRequest || !strings.Contains(crossRecorder.Body.String(), "相同的网盘类型") {
+	if crossRecorder.Code != http.StatusBadRequest || decodeAPIMessage(t, crossRecorder.Body).ErrorCode != "INVALID_REQUEST" {
 		t.Fatalf("跨来源请求未被拒绝: status=%d body=%s", crossRecorder.Code, crossRecorder.Body.String())
 	}
 }
@@ -458,7 +504,8 @@ func TestGetV115AuthorizationTargetKeepsLegacyDeprecatedSourceButRejectsReplacem
 		t.Fatalf("创建测试授权会话失败: %v", err)
 	}
 	_, replacementClient, err := getV115AuthorizationTarget(account, session.ID)
-	if err == nil || !strings.Contains(err.Error(), "废弃") {
+	fieldErr, ok := errors.AsType[validation.Error](err)
+	if !ok || fieldErr.Field != "auth_source_type" {
 		t.Fatalf("更换授权目标应拒绝废弃来源: client=%#v err=%v", replacementClient, err)
 	}
 	if replacementClient != nil {
@@ -477,7 +524,7 @@ func TestBaiduOAuthRejectsNonBaiduAccount(t *testing.T) {
 	urlContext, _ := gin.CreateTestContext(urlRecorder)
 	urlContext.Request = httptest.NewRequest(http.MethodGet, "/baidupan/oauth-url?account_id=1&redirect_url=http%3A%2F%2Flocalhost%2Fcallback", nil)
 	GetBaiDuPanOAuthUrl(urlContext)
-	if urlRecorder.Code != http.StatusBadRequest || !strings.Contains(urlRecorder.Body.String(), "不是百度网盘账号") {
+	if urlRecorder.Code != http.StatusBadRequest || decodeAPIMessage(t, urlRecorder.Body).ErrorCode != "INVALID_REQUEST" {
 		t.Fatalf("百度 OAuth 地址接口未拒绝 115 账号: status=%d body=%s", urlRecorder.Code, urlRecorder.Body.String())
 	}
 
@@ -490,7 +537,7 @@ func TestBaiduOAuthRejectsNonBaiduAccount(t *testing.T) {
 	confirmContext.Request = httptest.NewRequest(http.MethodPost, "/baidupan/oauth-confirm", bytes.NewReader(body))
 	confirmContext.Request.Header.Set("Content-Type", "application/json")
 	ConfirmBaiDuPanOAuthCode(confirmContext)
-	if confirmRecorder.Code != http.StatusBadRequest || !strings.Contains(confirmRecorder.Body.String(), "不是百度网盘账号") {
+	if confirmRecorder.Code != http.StatusBadRequest || decodeAPIMessage(t, confirmRecorder.Body).ErrorCode != "INVALID_REQUEST" {
 		t.Fatalf("百度 OAuth 确认接口未拒绝 115 账号: status=%d body=%s", confirmRecorder.Code, confirmRecorder.Body.String())
 	}
 }
@@ -525,7 +572,7 @@ func TestCancelAccountAuthorizationInvalidatesAllPendingState(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/json")
 	CancelAccountAuthorization(c)
 
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"code":200`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":200`) {
 		t.Fatalf("取消授权失败: status=%d body=%s", w.Code, w.Body.String())
 	}
 	if _, ok := v115auth.GetAuthorizationSession(session.ID, account.ID); ok {
@@ -558,12 +605,12 @@ func TestGetOAuthStatusRejectsUnboundAuthorizationID(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/115/oauth-status?account_id=1&state=legacy-oauth-state&authorization_id=unbound", nil)
 	GetOAuthStatus(c)
 
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "授权会话不匹配") {
+	if w.Code != http.StatusBadRequest || decodeAPIMessage(t, w.Body).ErrorCode != "AUTHORIZATION_MISMATCH" {
 		t.Fatalf("未绑定授权会话未被拒绝: status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
-func TestCreateTmpAccountReturnsFriendlyValidationMessage(t *testing.T) {
+func TestCreateTmpAccountReturnsValidationField(t *testing.T) {
 	setupAccountControllerTest(t)
 	body, err := json.Marshal(map[string]any{
 		"source_type": "115",
@@ -579,24 +626,22 @@ func TestCreateTmpAccountReturnsFriendlyValidationMessage(t *testing.T) {
 
 	CreateTmpAccount(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusBadRequest)
 	}
 	resp := decodeAPIMessage(t, w.Body)
-	if resp.Message != "请填写账号备注" {
-		t.Fatalf("Message = %q，期望 请填写账号备注", resp.Message)
-	}
-	if strings.Contains(resp.Message, "name：") {
-		t.Fatalf("响应不应暴露字段级错误: %s", w.Body.String())
+	if resp.Status != w.Code || resp.ErrorCode != "INVALID_REQUEST" || resp.Message == "" ||
+		len(resp.FieldErrors) != 1 || resp.FieldErrors[0].Field != "name" || resp.FieldErrors[0].Message == "" {
+		t.Fatalf("账号校验失败未返回字段定位: %s", w.Body.String())
 	}
 }
 
-func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
+func TestCreateOpenListAccountReturnsValidationFields(t *testing.T) {
 	setupAccountControllerTest(t)
 	cases := []struct {
-		name        string
-		payload     map[string]any
-		wantMessage string
+		name      string
+		payload   map[string]any
+		wantField string
 	}{
 		{
 			name: "缺少访问地址",
@@ -605,7 +650,7 @@ func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
 				"username":  "admin",
 				"password":  "pass",
 			},
-			wantMessage: "请填写 OpenList 访问地址",
+			wantField: "base_url",
 		},
 		{
 			name: "用户名密码方式缺少用户名",
@@ -614,7 +659,7 @@ func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
 				"auth_type": "password",
 				"password":  "pass",
 			},
-			wantMessage: "请填写 OpenList 用户名",
+			wantField: "username",
 		},
 		{
 			name: "用户名密码方式缺少密码",
@@ -623,7 +668,7 @@ func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
 				"auth_type": "password",
 				"username":  "admin",
 			},
-			wantMessage: "请填写 OpenList 密码",
+			wantField: "password",
 		},
 		{
 			name: "Token 方式缺少令牌",
@@ -631,7 +676,7 @@ func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
 				"base_url":  "http://openlist.example.com",
 				"auth_type": "token",
 			},
-			wantMessage: "请填写 OpenList 令牌",
+			wantField: "token",
 		},
 	}
 
@@ -656,11 +701,9 @@ func TestCreateOpenListAccountReturnsFriendlyValidationMessage(t *testing.T) {
 				t.Fatalf("HTTP 状态码 = %d，期望 %d", w.Code, http.StatusBadRequest)
 			}
 			resp := decodeAPIMessage(t, w.Body)
-			if resp.Message != tt.wantMessage {
-				t.Fatalf("Message = %q，期望 %q", resp.Message, tt.wantMessage)
-			}
-			if strings.Contains(resp.Message, "：") {
-				t.Fatalf("响应不应暴露字段级错误: %s", w.Body.String())
+			if resp.Status != w.Code || resp.ErrorCode != "INVALID_REQUEST" || resp.Message == "" ||
+				len(resp.FieldErrors) != 1 || resp.FieldErrors[0].Field != tt.wantField || resp.FieldErrors[0].Message == "" {
+				t.Fatalf("OpenList 校验失败未定位到 %s: %s", tt.wantField, w.Body.String())
 			}
 		})
 	}
@@ -692,5 +735,119 @@ func TestGetAccountListKeepsThirdPartyProvider(t *testing.T) {
 	}
 	if !strings.Contains(body, `"auth_provider":"moviepilot"`) {
 		t.Fatalf("第三方 provider 未保留: %s", body)
+	}
+}
+
+func TestAccountLookupSeparatesMissingFromDatabaseFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		dropTable  bool
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "missing account", wantStatus: http.StatusNotFound, wantCode: "ACCOUNT_NOT_FOUND"},
+		{name: "database failure", dropTable: true, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_ERROR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupAccountControllerTest(t)
+			var logs bytes.Buffer
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			if tc.dropTable {
+				if err := db.Db.Migrator().DropTable(&models.Account{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/115/status?account_id=1", nil)
+			Get115Status(c)
+			response := decodeAPIMessage(t, w.Body)
+			if w.Code != tc.wantStatus || response.Status != w.Code || response.ErrorCode != tc.wantCode ||
+				response.Instance == "" || response.Message == "" || strings.Contains(response.Message, "no such table") {
+				t.Fatalf("账号查询错误分类不正确或泄露数据库诊断: HTTP=%d response=%+v", w.Code, response)
+			}
+			if strings.Count(logs.String(), response.Instance) != 1 || strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("账号查询失败应只记录一次请求诊断：%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestCreateTmpAccountNameConflictPreservesExistingAccount(t *testing.T) {
+	setupAccountControllerTest(t)
+	existing := models.Account{Name: "duplicate-name", SourceType: models.SourceType115, Token: "existing-token"}
+	if err := db.Db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/account/add", strings.NewReader(`{"source_type":"115","name":"duplicate-name","auth_source_type":"built_in_appid","auth_provider":"official_pkce","app_id":"100197849"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	CreateTmpAccount(c)
+	response := decodeAPIMessage(t, w.Body)
+	if w.Code != http.StatusConflict || response.Status != w.Code || response.ErrorCode != "ACCOUNT_NAME_TAKEN" {
+		t.Fatalf("重复账号未返回冲突: HTTP=%d response=%+v", w.Code, response)
+	}
+	var accounts []models.Account
+	if err := db.Db.Find(&accounts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].ID != existing.ID || accounts[0].Token != existing.Token {
+		t.Fatalf("冲突请求改变了原账号: %#v", accounts)
+	}
+}
+
+func TestOpenListVerificationFailureUsesSafeRequestDiagnostic(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		updating, reuse bool
+	}{
+		{name: "create"},
+		{name: "update", updating: true},
+		{name: "reuse credential", updating: true, reuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			token := "request-token-sentinel"
+			if test.reuse {
+				token = "fixture-token"
+			}
+			account := setupOpenListFileOperationTest(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 500, "message": "fixture verification failed: " + token})
+			})
+			var logs bytes.Buffer
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			payload := map[string]any{"base_url": account.BaseUrl, "auth_type": "token", "token": token}
+			if test.updating {
+				payload["id"] = account.ID
+			}
+			if test.reuse {
+				delete(payload, "token")
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			router := gin.New()
+			router.POST("/account/openlist", CreateOpenListAccount)
+			request := httptest.NewRequest(http.MethodPost, "/account/openlist", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			result := decodeAPIMessage(t, response.Body)
+			if response.Code != http.StatusBadGateway || result.ErrorCode != "UPSTREAM_ERROR" || result.Instance == "" {
+				t.Fatalf("验证失败分类错误：%d %+v", response.Code, result)
+			}
+			if strings.Contains(logs.String(), token) || strings.Contains(response.Body.String(), token) {
+				t.Fatal("请求失败日志或响应泄露已知凭据")
+			}
+			if strings.Count(logs.String(), result.Instance) != 1 || strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("失败应只由公共出口记录关联诊断：%s", logs.String())
+			}
+		})
 	}
 }

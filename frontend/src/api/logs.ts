@@ -2,6 +2,7 @@ import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
 import type { LogEntry } from '@/types/log'
 import { fetchJSONResponse } from './fetchResponse'
+import { unwrapResponse } from './response'
 
 export interface LogSnapshot {
   entries: LogEntry[]
@@ -20,7 +21,7 @@ export async function fetchLogSnapshot(
     credentials: 'include',
     ...(signal ? { signal } : {}),
   })
-  const data = response.data as Partial<LogSnapshot> | null
+  const data = unwrapResponse<LogSnapshot | null>(response).data
   if (!data || !Array.isArray(data.entries) || typeof data.pos !== 'number') {
     throw new HttpResponseError(response)
   }

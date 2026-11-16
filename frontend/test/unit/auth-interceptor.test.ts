@@ -18,14 +18,20 @@ type AuthStoreStub = AuthInvalidationStore & {
 
 const unauthorizedResponse = (config: InternalAxiosRequestConfig) => ({
   config,
-  data: { code: 401 },
+  data: {
+    status: 401,
+    data: null,
+    error_code: 'SESSION_INVALID',
+    message: '测试会话失效',
+    instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+  },
   headers: {},
   status: 401,
   statusText: 'Unauthorized',
 })
 
 const unauthorizedAdapter: AxiosAdapter = async (config) => {
-  if (config.url === '/body-code-401') {
+  if (config.url === '/mismatched-status') {
     return {
       ...unauthorizedResponse(config),
       status: 200,
@@ -89,7 +95,7 @@ describe('auth response interceptor', () => {
           kind: 'unauthorized',
           handled: true,
           shouldNotify: false,
-          response: { data: { code: 401 } },
+          response: { data: { status: 401, error_code: 'SESSION_INVALID' } },
         })
       }
     }
@@ -129,7 +135,7 @@ describe('auth response interceptor', () => {
         handled: true,
         shouldNotify: false,
         diagnostics: { status: 401 },
-        response: { data: { code: 401 } },
+        response: { data: { status: 401, error_code: 'SESSION_INVALID' } },
       })
       expect(store.isAuthenticated).toBe(true)
       expect(store.clearAuth).toHaveBeenCalledTimes(invalidateFirst ? 1 : 0)
@@ -161,7 +167,7 @@ describe('auth response interceptor', () => {
     uninstall()
   })
 
-  it('不把历史业务数值当作 HTTP 认证状态', async () => {
+  it('正文状态不能覆盖真实 HTTP 状态清理会话', async () => {
     const http = axios.create({ adapter: unauthorizedAdapter })
     const store = createAuthenticatedStore()
     const invalidate = vi.fn()
@@ -169,7 +175,39 @@ describe('auth response interceptor', () => {
       getAuthStore: () => store,
       onAuthenticationInvalidated: invalidate,
     })
-    await expect(http.get('/body-code-401')).resolves.toMatchObject({ status: 200 })
+    await expect(http.get('/mismatched-status')).resolves.toMatchObject({ status: 200 })
+    expect(store.clearAuth).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    uninstall()
+  })
+
+  it.each([
+    [500, 'SESSION_INVALID', 'server'],
+    [401, 'RESTORE_RECEIPT_INVALID', 'application'],
+  ])('内部故障与恢复回执不清理网页会话：HTTP %s %s', async (status, error_code, kind) => {
+    const http = axios.create({
+      adapter: async (config) => {
+        const response = {
+          ...unauthorizedResponse(config),
+          status: Number(status),
+          data: {
+            ...unauthorizedResponse(config).data,
+            status: Number(status),
+            error_code: String(error_code),
+          },
+        }
+        throw new AxiosError('测试请求失败', 'ERR_BAD_RESPONSE', config, undefined, response)
+      },
+    })
+    const store = createAuthenticatedStore()
+    const invalidate = vi.fn()
+    const uninstall = installAuthResponseInterceptor(http, {
+      getAuthStore: () => store,
+      onAuthenticationInvalidated: invalidate,
+    })
+    const error = await http.get('/protected').catch((error: unknown) => error)
+    expect(parseHttpError(error).kind).toBe(kind)
+    expect(store.isAuthenticated).toBe(true)
     expect(store.clearAuth).not.toHaveBeenCalled()
     expect(invalidate).not.toHaveBeenCalled()
     uninstall()

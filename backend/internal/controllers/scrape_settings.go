@@ -1,11 +1,14 @@
 package controllers
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
-	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 )
@@ -44,17 +47,8 @@ type AiSettings struct {
 }
 
 // GetTmdbSettings 获取 TMDB 设置。
-// @Summary 获取 TMDB 设置
-// @Description 获取当前的 TMDB API 配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetTmdbSettings(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	snapshot := models.GetScrapeSettingsSnapshot()
 	tmdbSettings := TmdbSettings{
 		TmdbApiKey:        snapshot.TmdbApiKey,
@@ -66,70 +60,39 @@ func GetTmdbSettings(c *gin.Context) {
 		TmdbEnableProxy:   snapshot.TmdbEnableProxy,
 		FanartApiKey:      snapshot.FanartApiKey,
 	}
-	c.JSON(http.StatusOK, APIResponse[TmdbSettings]{Code: Success, Message: "", Data: tmdbSettings})
+	httpapi.Success(c, http.StatusOK, tmdbSettings, "")
 }
 
 // SaveTmdbSettings 保存 TMDB 设置。
-// @Summary 保存 TMDB 设置
-// @Description 保存或更新 TMDB API 配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param tmdb_api_key body string false "TMDB API Key"
-// @Param tmdb_access_token body string false "TMDB Access Token"
-// @Param tmdb_url body string false "TMDB 服务器地址"
-// @Param tmdb_image_url body string false "TMDB 图片服务器地址"
-// @Param tmdb_language body string false "TMDB 默认语言"
-// @Param tmdb_image_language body string false "TMDB 图片语言"
-// @Param tmdb_enable_proxy body boolean false "是否启用代理"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func SaveTmdbSettings(c *gin.Context) {
 	reqData := requests.TMDBSettingsRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := models.SaveTmdbSettings(c.Request.Context(), models.ScrapeSettings{
 		TmdbApiKey: reqData.TmdbAPIKey, TmdbAccessToken: reqData.TmdbAccessToken, TmdbUrl: reqData.TmdbURL, TmdbImageUrl: reqData.TmdbImageURL,
 		TmdbLanguage: reqData.TmdbLanguage, TmdbImageLanguage: reqData.TmdbImageLanguage, TmdbEnableProxy: reqData.TmdbEnableProxy, FanartApiKey: reqData.FanartAPIKey,
 	}); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存 TMDB 设置失败", Cause: err, Secrets: []string{reqData.TmdbAPIKey, reqData.TmdbAccessToken, reqData.FanartAPIKey}})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "TMDB 设置已保存", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "TMDB 设置已保存")
 }
 
 // TestTmdbSettings 测试 TMDB 设置。
-// @Summary 测试 TMDB 连接
-// @Description 测试指定的 TMDB 配置是否有效
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param tmdb_api_key body string false "TMDB API Key"
-// @Param tmdb_access_token body string false "TMDB Access Token"
-// @Param tmdb_url body string false "TMDB 服务器地址"
-// @Param tmdb_image_url body string false "TMDB 图片服务器地址"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tmdb-test [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func TestTmdbSettings(c *gin.Context) {
 	reqData := requests.TMDBSettingsRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	tmpScrapeSetting := &models.ScrapeSettings{
@@ -143,68 +106,48 @@ func TestTmdbSettings(c *gin.Context) {
 		HttpProxy:         models.GetHTTPProxy(),
 	}
 	testResult := tmpScrapeSetting.TestTmdb(c.Request.Context())
-	c.JSON(http.StatusOK, APIResponse[bool]{Code: Success, Message: "", Data: testResult})
+	httpapi.Success(c, http.StatusOK, testResult, "")
 }
 
 // SaveAiSettings 保存 AI 识别设置。
-// @Summary 保存 AI 识别设置
-// @Description 保存或更新 AI 识别模型的配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param enable_ai body string false "是否启用 AI 识别"
-// @Param ai_api_key body string false "AI API Key"
-// @Param ai_base_url body string false "AI 服务器地址"
-// @Param ai_model_name body string false "AI 模型名称"
-// @Param ai_timeout body integer false "AI 超时时间"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-settings [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func SaveAiSettings(c *gin.Context) {
 	reqData := requests.AISettingsRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := models.SaveAISettings(c.Request.Context(), models.ScrapeSettings{AiApiKey: reqData.AIAPIKey, AiBaseUrl: reqData.AIBaseURL, AiModelName: reqData.AIModelName, AiTimeout: reqData.AITimeout}); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存 AI 识别设置失败", Cause: err, Secrets: []string{reqData.AIAPIKey}})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "AI 识别设置已保存", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "AI 识别设置已保存")
 }
 
 // TestAiSettings 测试 AI 识别设置。
-// @Summary 测试 AI 识别连接
-// @Description 测试指定的 AI 模型配置是否有效
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param ai_api_key body string true "AI API Key"
-// @Param ai_base_url body string true "AI 服务器地址"
-// @Param ai_model_name body string true "AI 模型名称"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-test [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func TestAiSettings(c *gin.Context) {
 	reqData := requests.AISettingsRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if reqData.AIAPIKey == "" || reqData.AIBaseURL == "" || reqData.AIModelName == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请填写 API Key、接口地址和模型名称", Data: nil})
+		var fields []httpapi.FieldError
+		for _, field := range []struct {
+			name, value string
+		}{{"ai_api_key", reqData.AIAPIKey}, {"ai_base_url", reqData.AIBaseURL}, {"ai_model_name", reqData.AIModelName}} {
+			if field.value == "" {
+				fields = append(fields, httpapi.FieldError{Field: field.name, Message: "必须填写"})
+			}
+		}
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请填写 API Key、接口地址和模型名称", FieldErrors: fields})
 		return
 	}
 	tmpScrapeSetting := &models.ScrapeSettings{
@@ -215,24 +158,19 @@ func TestAiSettings(c *gin.Context) {
 	}
 	testResult := tmpScrapeSetting.TestAi(c.Request.Context())
 	if testResult != nil {
-		c.JSON(http.StatusOK, APIResponse[error]{Code: BadRequest, Message: helpers.RedactSensitiveLog(testResult.Error(), reqData.AIAPIKey), Data: nil})
+		status, code, message := http.StatusInternalServerError, "AI_TEST_FAILED", "AI 识别连接测试失败"
+		if timeout, ok := errors.AsType[net.Error](testResult); errors.Is(testResult, context.DeadlineExceeded) || ok && timeout.Timeout() {
+			status, code, message = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "AI 识别连接测试超时"
+		}
+		httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: testResult, Secrets: []string{reqData.AIAPIKey}})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[error]{Code: Success, Message: "AI 识别连接测试成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "AI 识别连接测试成功")
 }
 
 // GetAiSettings 获取 AI 识别设置。
-// @Summary 获取 AI 识别设置
-// @Description 获取当前的 AI 识别模型配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/ai-settings [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetAiSettings(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	snapshot := models.GetScrapeSettingsSnapshot()
 	aiSettings := AiSettings{
 		AiApiKey:    snapshot.AiApiKey,
@@ -240,5 +178,5 @@ func GetAiSettings(c *gin.Context) {
 		AiModelName: snapshot.AiModelName,
 		AiTimeout:   snapshot.AiTimeout,
 	}
-	c.JSON(http.StatusOK, APIResponse[AiSettings]{Code: Success, Message: "", Data: aiSettings})
+	httpapi.Success(c, http.StatusOK, aiSettings, "")
 }

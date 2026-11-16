@@ -67,12 +67,13 @@ const listData = () => ({
   total: 2,
   queue_status: { ...queueStatus },
 })
-const ok = (data: unknown = null) => ({ code: 200, data })
+const ok = (data: unknown = null) => ({ status: 200, data })
 interface Reply {
-  code: number
+  status: number
   data?: unknown
   message?: string
   error_code?: string
+  instance?: string
 }
 type Handler = (config: InternalAxiosRequestConfig) => Reply | Promise<Reply>
 const tableStub = defineComponent({
@@ -123,13 +124,19 @@ const failure =
         statusText: '',
         headers: {},
         config,
-        data: { code: 401, message: 'secret' },
+        data: {
+          status: 401,
+          message: 'secret',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
       })
       markAuthInvalidationHandled(error)
       throw error
     }
     return {
-      code: 400,
+      status: kind === 'origin' || kind === 'csrf' ? 403 : 409,
       message:
         kind === 'business' ? '队列正忙' : 'secret token and https://private.test/?token=secret',
       error_code:
@@ -137,7 +144,9 @@ const failure =
           ? 'REQUEST_ORIGIN_INVALID'
           : kind === 'csrf'
             ? 'CSRF_TOKEN_INVALID'
-            : undefined,
+            : 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
     }
   }
 
@@ -158,7 +167,14 @@ describe.each([
           : config.url?.endsWith('/status')
             ? handlers.status
             : handlers.list
-      return { config, status: 200, statusText: '', headers: {}, data: await handler(config) }
+      const responseBody = await handler(config)
+      return {
+        config,
+        status: (responseBody as { status: number }).status,
+        statusText: '',
+        headers: {},
+        data: responseBody,
+      }
     })
     const visible = ref(true)
     const host = defineComponent({
@@ -212,7 +228,13 @@ describe.each([
   it('exposes verified business reasons and keeps retry failure distinct from success', async () => {
     const state = setup()
     await flushPromises()
-    state.handlers.write = () => ({ code: 400, message: `重试失败的${label}任务失败` })
+    state.handlers.write = () => ({
+      status: 400,
+      message: `重试失败的${label}任务失败`,
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await state.button('重试失败').trigger('click')
     await flushPromises()
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
@@ -259,7 +281,7 @@ describe.each([
     },
   )
 
-  it('treats an HTTP 200 business failure during refresh as a snapshot failure', async () => {
+  it('treats an request failure during refresh as a snapshot failure', async () => {
     const state = setup()
     await flushPromises()
     state.handlers.list = failure('business')
@@ -297,7 +319,13 @@ describe.each([
     expect(state.calls('get')).toHaveLength(3)
     state.handlers.list = () =>
       ok({ ...listData(), list: [{ ...rows[1], file_name: 'latest.mkv' }], total: 1 })
-    old.resolve({ code: 400, message: 'secret obsolete failure' })
+    old.resolve({
+      status: 400,
+      message: 'secret obsolete failure',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await flushPromises()
     expect(state.calls('get')).toHaveLength(4)
     expect(state.adapter.mock.calls.at(-1)![0].params).toEqual({

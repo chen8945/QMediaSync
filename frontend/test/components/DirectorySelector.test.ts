@@ -36,7 +36,7 @@ const mountSelector = (
   get = vi.fn(),
   additionalProps: Record<string, unknown> = {},
   post = vi.fn(),
-  platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: false } }),
+  platformGet = vi.fn().mockResolvedValue({ data: { status: 200, data: false }, status: 200 }),
 ) =>
   mount(DirectorySelector, {
     props: {
@@ -53,9 +53,10 @@ const mountSelector = (
             if (url.endsWith('/path/sort-options')) {
               return Promise.resolve({
                 data: {
-                  code: 200,
+                  status: 200,
                   data: browseSortOptions(String(config.params.source_type), 'directories'),
                 },
+                status: 200,
               })
             }
             return get(url, config)
@@ -74,8 +75,12 @@ beforeEach(() => {
 
 describe('DirectorySelector', () => {
   it('原生 fnOS 本地目录显示授权说明，刷新仍重新读取目录', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
-    const platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: true } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
+    const platformGet = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: true }, status: 200 })
     const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
     await flushPromises()
 
@@ -93,7 +98,9 @@ describe('DirectorySelector', () => {
   })
 
   it('非原生 fnOS 不显示授权说明', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     const wrapper = mountSelector(get)
     await flushPromises()
 
@@ -102,8 +109,12 @@ describe('DirectorySelector', () => {
   })
 
   it('网盘目录不请求 fnOS 环境，也不显示本地授权说明', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
-    const platformGet = vi.fn().mockResolvedValue({ data: { code: 200, data: true } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
+    const platformGet = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: true }, status: 200 })
     const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 }, vi.fn(), platformGet)
     await flushPromises()
 
@@ -114,7 +125,9 @@ describe('DirectorySelector', () => {
 
   it('环境识别失败不阻断目录加载，也不增加错误提示', async () => {
     const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     const platformGet = vi.fn().mockRejectedValue(new Error('环境识别失败'))
     const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
     await flushPromises()
@@ -132,8 +145,14 @@ describe('DirectorySelector', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const get = vi.fn().mockRejectedValue(
       new HttpResponseError({
-        status: 200,
-        data: { code: 500, message: '无权读取这个目录' },
+        status: 500,
+        data: {
+          status: 500,
+          message: '无权读取这个目录',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
       }),
     )
     const platformGet = vi.fn().mockRejectedValue(new Error('环境识别失败'))
@@ -145,13 +164,21 @@ describe('DirectorySelector', () => {
   })
 
   it('切换来源后旧环境识别不能回写，再切回本地只接受当前结果', async () => {
-    const oldPlatform = createDeferred<{ data: { code: number; data: boolean } }>()
-    const newPlatform = createDeferred<{ data: { code: number; data: boolean } }>()
+    const oldPlatform = createDeferred<{
+      status: number
+      data: { status: number; data: boolean }
+    }>()
+    const newPlatform = createDeferred<{
+      status: number
+      data: { status: number; data: boolean }
+    }>()
     const platformGet = vi
       .fn()
       .mockReturnValueOnce(oldPlatform.promise)
       .mockReturnValueOnce(newPlatform.promise)
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     const wrapper = mountSelector(get, {}, vi.fn(), platformGet)
     await flushPromises()
     await wrapper.setProps({ sourceType: '115', accountId: 1 })
@@ -159,9 +186,9 @@ describe('DirectorySelector', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
 
     await wrapper.setProps({ sourceType: 'local', accountId: 0 })
-    newPlatform.resolve({ data: { code: 200, data: false } })
+    newPlatform.resolve({ data: { status: 200, data: false }, status: 200 })
     await flushPromises()
-    oldPlatform.resolve({ data: { code: 200, data: true } })
+    oldPlatform.resolve({ data: { status: 200, data: true }, status: 200 })
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -169,7 +196,7 @@ describe('DirectorySelector', () => {
   })
 
   it('有根目录 ID 时从该目录加载初始和刷新列表', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+    const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get, {
       rootId: 'source-root',
       rootPath: '/source',
@@ -203,7 +230,8 @@ describe('DirectorySelector', () => {
 
   it('目录上下文变化后忽略较晚返回的旧根目录请求', async () => {
     const oldRootRequest = createDeferred<{
-      data: { code: number; data: (typeof emptyDirectory)[] }
+      status: number
+      data: { status: number; data: (typeof emptyDirectory)[] }
     }>()
     const restrictedRootDirectory = {
       id: 'restricted',
@@ -211,7 +239,8 @@ describe('DirectorySelector', () => {
       path: '/source/restricted',
     }
     const restrictedRootRequest = createDeferred<{
-      data: { code: number; data: (typeof restrictedRootDirectory)[] }
+      status: number
+      data: { status: number; data: (typeof restrictedRootDirectory)[] }
     }>()
     const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) =>
       params.parent_id === 'source-root' ? restrictedRootRequest.promise : oldRootRequest.promise,
@@ -222,9 +251,12 @@ describe('DirectorySelector', () => {
     await wrapper.setProps({ rootId: 'source-root', rootPath: '/source' })
     await flushPromises()
 
-    restrictedRootRequest.resolve({ data: { code: 200, data: [restrictedRootDirectory] } })
+    restrictedRootRequest.resolve({
+      data: { status: 200, data: [restrictedRootDirectory] },
+      status: 200,
+    })
     await flushPromises()
-    oldRootRequest.resolve({ data: { code: 200, data: [emptyDirectory] } })
+    oldRootRequest.resolve({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     await flushPromises()
 
     expect(wrapper.text()).toContain('受限目录')
@@ -255,8 +287,8 @@ describe('DirectorySelector', () => {
   it('空目录首次加载后不再重复请求子目录', async () => {
     const get = vi
       .fn()
-      .mockResolvedValueOnce({ data: { code: 200, data: [emptyDirectory] } })
-      .mockResolvedValue({ data: { code: 200, data: [] } })
+      .mockResolvedValueOnce({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
+      .mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get)
 
     await flushPromises()
@@ -275,7 +307,7 @@ describe('DirectorySelector', () => {
   })
 
   it('展示刷新入口，并在未选择父目录时禁用新建文件夹', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+    const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get)
 
     await flushPromises()
@@ -288,7 +320,7 @@ describe('DirectorySelector', () => {
   })
 
   it('空的受限根目录允许新建第一个文件夹', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+    const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get, {
       rootId: 'source-root',
       rootPath: '/source',
@@ -304,7 +336,9 @@ describe('DirectorySelector', () => {
   })
 
   it('仅通过面包屑反馈选择位置，并保持简短的新建文案', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     const wrapper = mountSelector(get)
 
     await flushPromises()
@@ -319,7 +353,7 @@ describe('DirectorySelector', () => {
   })
 
   it('将加载反馈固定在目录滚动区域之外', async () => {
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+    const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get)
 
     await flushPromises()
@@ -339,11 +373,15 @@ describe('DirectorySelector', () => {
     const child = { id: 'child', name: '子目录', path: '/parent/child' }
     let refreshed = false
     const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) => {
-      if (params.parent_id === '') return Promise.resolve({ data: { code: 200, data: [parent] } })
+      if (params.parent_id === '')
+        return Promise.resolve({ data: { status: 200, data: [parent] }, status: 200 })
       if (params.parent_id === 'parent') {
-        return Promise.resolve({ data: { code: 200, data: refreshed ? [] : [child] } })
+        return Promise.resolve({
+          data: { status: 200, data: refreshed ? [] : [child] },
+          status: 200,
+        })
       }
-      return Promise.resolve({ data: { code: 200, data: [] } })
+      return Promise.resolve({ data: { status: 200, data: [] }, status: 200 })
     })
     const wrapper = mountSelector(get)
 
@@ -372,7 +410,7 @@ describe('DirectorySelector', () => {
     const rootDirectory = { id: 'root-directory', name: '根目录下的目录', path: '/root-directory' }
     let removed = false
     const get = vi.fn(() =>
-      Promise.resolve({ data: { code: 200, data: removed ? [] : [rootDirectory] } }),
+      Promise.resolve({ data: { status: 200, data: removed ? [] : [rootDirectory] }, status: 200 }),
     )
     const wrapper = mountSelector(get)
 
@@ -393,9 +431,11 @@ describe('DirectorySelector', () => {
     const refreshedChild = { id: 'refreshed-child', name: '新子目录', path: '/parent/new' }
     let refreshed = false
     const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) => {
-      if (params.parent_id === '') return Promise.resolve({ data: { code: 200, data: [parent] } })
+      if (params.parent_id === '')
+        return Promise.resolve({ data: { status: 200, data: [parent] }, status: 200 })
       return Promise.resolve({
-        data: { code: 200, data: refreshed ? [refreshedChild] : [initialChild] },
+        data: { status: 200, data: refreshed ? [refreshedChild] : [initialChild] },
+        status: 200,
       })
     })
     const wrapper = mountSelector(get)
@@ -416,8 +456,9 @@ describe('DirectorySelector', () => {
     const parent = { id: 'parent', name: '父目录', path: '/parent' }
     const child = { id: 'child', name: '子目录', path: '/parent/child' }
     const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) => {
-      if (params.parent_id === '') return Promise.resolve({ data: { code: 200, data: [parent] } })
-      return Promise.resolve({ data: { code: 200, data: [child] } })
+      if (params.parent_id === '')
+        return Promise.resolve({ data: { status: 200, data: [parent] }, status: 200 })
+      return Promise.resolve({ data: { status: 200, data: [child] }, status: 200 })
     })
     const wrapper = mountSelector(get)
 
@@ -436,9 +477,18 @@ describe('DirectorySelector', () => {
   it('目录加载失败时提供行内重试', async () => {
     const get = vi
       .fn()
-      .mockResolvedValueOnce({ data: { code: 200, data: [emptyDirectory] } })
-      .mockResolvedValueOnce({ data: { code: 500, message: '上游异常', data: [] } })
-      .mockResolvedValueOnce({ data: { code: 200, data: [] } })
+      .mockResolvedValueOnce({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
+      .mockResolvedValueOnce({
+        data: {
+          status: 500,
+          message: '上游异常',
+          data: [],
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
+        status: 500,
+      })
+      .mockResolvedValueOnce({ data: { status: 200, data: [] }, status: 200 })
     const wrapper = mountSelector(get)
 
     await flushPromises()
@@ -457,17 +507,18 @@ describe('DirectorySelector', () => {
   it('刷新目录期间不允许确认仍在校验的选择', async () => {
     const selectedDirectory = { id: 'selected', name: '待校验目录', path: '/selected' }
     const pendingRefresh = createDeferred<{
-      data: { code: number; data: (typeof selectedDirectory)[] }
+      status: number
+      data: { status: number; data: (typeof selectedDirectory)[] }
     }>()
     let rootRequestCount = 0
     const get = vi.fn((_url: string, { params }: { params: { parent_id: string } }) => {
       if (params.parent_id !== '') {
-        return Promise.resolve({ data: { code: 200, data: [] } })
+        return Promise.resolve({ data: { status: 200, data: [] }, status: 200 })
       }
 
       rootRequestCount += 1
       return rootRequestCount === 1
-        ? Promise.resolve({ data: { code: 200, data: [selectedDirectory] } })
+        ? Promise.resolve({ data: { status: 200, data: [selectedDirectory] }, status: 200 })
         : pendingRefresh.promise
     })
     const wrapper = mountSelector(get)
@@ -484,17 +535,17 @@ describe('DirectorySelector', () => {
     await selectButton?.trigger('click')
     expect(wrapper.emitted('select')).toBeUndefined()
 
-    pendingRefresh.resolve({ data: { code: 200, data: [] } })
+    pendingRefresh.resolve({ data: { status: 200, data: [] }, status: 200 })
     await flushPromises()
   })
 
   it('刷新受限根目录期间不允许新建文件夹', async () => {
-    const pendingRefresh = createDeferred<{ data: { code: number; data: [] } }>()
+    const pendingRefresh = createDeferred<{ status: number; data: { status: number; data: [] } }>()
     let rootRequestCount = 0
     const get = vi.fn(() => {
       rootRequestCount += 1
       return rootRequestCount === 1
-        ? Promise.resolve({ data: { code: 200, data: [] } })
+        ? Promise.resolve({ data: { status: 200, data: [] }, status: 200 })
         : pendingRefresh.promise
     })
     const wrapper = mountSelector(get, { rootId: 'source-root', rootPath: '/source' })
@@ -508,17 +559,17 @@ describe('DirectorySelector', () => {
       .find((button) => button.text().includes('新建文件夹'))
     expect(createButton?.attributes('disabled')).toBeDefined()
 
-    pendingRefresh.resolve({ data: { code: 200, data: [] } })
+    pendingRefresh.resolve({ data: { status: 200, data: [] }, status: 200 })
     await flushPromises()
   })
 
   it('刷新开始后禁止确认已打开的新建文件夹弹窗', async () => {
-    const pendingRefresh = createDeferred<{ data: { code: number; data: [] } }>()
+    const pendingRefresh = createDeferred<{ status: number; data: { status: number; data: [] } }>()
     let rootRequestCount = 0
     const get = vi.fn(() => {
       rootRequestCount += 1
       return rootRequestCount === 1
-        ? Promise.resolve({ data: { code: 200, data: [] } })
+        ? Promise.resolve({ data: { status: 200, data: [] }, status: 200 })
         : pendingRefresh.promise
     })
     const post = vi.fn()
@@ -546,13 +597,16 @@ describe('DirectorySelector', () => {
     confirmButton?.click()
     expect(post).not.toHaveBeenCalled()
 
-    pendingRefresh.resolve({ data: { code: 200, data: [] } })
+    pendingRefresh.resolve({ data: { status: 200, data: [] }, status: 200 })
     await flushPromises()
   })
 
   it('新建文件夹请求进行期间不允许启动刷新', async () => {
-    const pendingCreate = createDeferred<{ data: { code: number; data: typeof emptyDirectory } }>()
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+    const pendingCreate = createDeferred<{
+      status: number
+      data: { status: number; data: typeof emptyDirectory }
+    }>()
+    const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
     const post = vi.fn().mockReturnValue(pendingCreate.promise)
     const wrapper = mountSelector(get, { rootId: 'source-root', rootPath: '/source' }, post)
 
@@ -586,7 +640,7 @@ describe('DirectorySelector', () => {
     await flushPromises()
     expect(refreshButton.attributes('disabled')).toBeDefined()
 
-    pendingCreate.resolve({ data: { code: 200, data: emptyDirectory } })
+    pendingCreate.resolve({ data: { status: 200, data: emptyDirectory }, status: 200 })
     await flushPromises()
   })
 
@@ -594,19 +648,22 @@ describe('DirectorySelector', () => {
     const parent = { id: 'parent', name: '父目录', path: '/parent' }
     const createdDirectory = { id: 'created', name: '新建目录', path: '/parent/created' }
     const pendingChildListing = createDeferred<{
-      data: { code: number; data: (typeof createdDirectory)[] }
+      status: number
+      data: { status: number; data: (typeof createdDirectory)[] }
     }>()
     const get = vi.fn(
       (_url: string, { params }: { params: { parent_id: string; refresh?: number } }) => {
         if (params.parent_id === '') {
-          return Promise.resolve({ data: { code: 200, data: [parent] } })
+          return Promise.resolve({ data: { status: 200, data: [parent] }, status: 200 })
         }
         if (params.refresh)
-          return Promise.resolve({ data: { code: 200, data: [createdDirectory] } })
+          return Promise.resolve({ data: { status: 200, data: [createdDirectory] }, status: 200 })
         return pendingChildListing.promise
       },
     )
-    const post = vi.fn().mockResolvedValue({ data: { code: 200, data: createdDirectory } })
+    const post = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: createdDirectory }, status: 200 })
     const wrapper = mountSelector(get, {}, post)
 
     await flushPromises()
@@ -639,7 +696,7 @@ describe('DirectorySelector', () => {
     expect(post).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('新建目录')
 
-    pendingChildListing.resolve({ data: { code: 200, data: [] } })
+    pendingChildListing.resolve({ data: { status: 200, data: [] }, status: 200 })
     await flushPromises()
 
     expect(wrapper.text()).toContain('新建目录')
@@ -652,7 +709,7 @@ describe('DirectorySelector', () => {
       (_url: string, { params }: { params: { parent_id: string; sort_by: string } }) =>
         Promise.resolve({
           data: {
-            code: 200,
+            status: 200,
             data:
               params.parent_id === ''
                 ? params.sort_by === 'time'
@@ -662,6 +719,7 @@ describe('DirectorySelector', () => {
                   ? [child]
                   : [],
           },
+          status: 200,
         }),
     )
     const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 })
@@ -689,8 +747,13 @@ describe('DirectorySelector', () => {
   })
 
   it('排序失败回滚控件并保留旧目录，旧排序请求不能覆盖最新结果', async () => {
-    const delayed = createDeferred<{ data: { code: number; data: (typeof emptyDirectory)[] } }>()
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [emptyDirectory] } })
+    const delayed = createDeferred<{
+      status: number
+      data: { status: number; data: (typeof emptyDirectory)[] }
+    }>()
+    const get = vi
+      .fn()
+      .mockResolvedValue({ data: { status: 200, data: [emptyDirectory] }, status: 200 })
     const wrapper = mountSelector(get, { sourceType: '115', accountId: 1 })
     await flushPromises()
     const control = wrapper.findComponent(BrowseSortControl)
@@ -699,7 +762,7 @@ describe('DirectorySelector', () => {
     await flushPromises()
     control.vm.$emit('change', { sort_by: 'name', sort_order: 'desc' })
     await flushPromises()
-    delayed.resolve({ data: { code: 200, data: [] } })
+    delayed.resolve({ data: { status: 200, data: [] }, status: 200 })
     await flushPromises()
     expect(wrapper.text()).toContain('空目录')
     expect(control.props('modelValue')).toEqual({ sort_by: 'name', sort_order: 'desc' })
@@ -717,15 +780,22 @@ describe('DirectorySelector', () => {
     '%s 新建成功后刷新失败不会误报为创建失败',
     async (location) => {
       const success = vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+      const warning = vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
       const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
       vi.spyOn(console, 'error').mockImplementation(() => {})
       const parent = { id: 'source', name: '父目录', path: '/source' }
-      const get = vi.fn().mockResolvedValue({ data: { code: 200, data: [] } })
+      const get = vi.fn().mockResolvedValue({ data: { status: 200, data: [] }, status: 200 })
       if (location === '已选子目录') {
-        get.mockResolvedValueOnce({ data: { code: 200, data: [parent] } })
+        get.mockResolvedValueOnce({ data: { status: 200, data: [parent] }, status: 200 })
       }
       const post = vi.fn().mockResolvedValue({
-        data: { code: 200, data: { id: 'new', name: '新目录', path: '/source/new' } },
+        data: {
+          status: 200,
+          data: { id: 'new', name: '新目录', path: '/source/new' },
+          message: '服务端目录反馈',
+          ...(location === '受限根目录' ? { warnings: ['测试目录警告'] } : {}),
+        },
+        status: 200,
       })
       const wrapper = mountSelector(
         get,
@@ -753,7 +823,10 @@ describe('DirectorySelector', () => {
         .click()
       await flushPromises()
       await flushPromises()
-      expect(success).toHaveBeenCalledWith('创建文件夹成功')
+      if (location === '受限根目录') {
+        expect(warning).toHaveBeenCalledWith('服务端目录反馈；测试目录警告')
+        expect(success).not.toHaveBeenCalled()
+      } else expect(success).toHaveBeenCalledWith('服务端目录反馈')
       expect(error).toHaveBeenCalledWith(expect.stringContaining('文件夹已创建，但刷新目录失败'))
       expect(post).toHaveBeenCalledTimes(1)
       expect(get.mock.calls.at(-1)?.[1].params).toMatchObject({

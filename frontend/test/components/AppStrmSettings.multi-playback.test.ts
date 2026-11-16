@@ -37,9 +37,10 @@ describe('115 多端播放配置', () => {
     }
     const http = {
       get: vi.fn(async (url: string) => ({
-        data: { code: 200, data: url.endsWith('/setting/cron') ? [] : config },
+        data: { status: 200, data: url.endsWith('/setting/cron') ? [] : config },
+        status: 200,
       })),
-      post: vi.fn(async () => ({ data: { code: 200 } })),
+      post: vi.fn(async () => ({ data: { status: 200, data: null }, status: 200 })),
     }
     const wrapper = mount(AppStrmSettings, {
       attachTo: document.body,

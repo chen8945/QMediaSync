@@ -3,6 +3,7 @@ package updater
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/hashicorp/go-version"
 )
+
+// ErrReleaseUnavailable 表示已取得发布列表，但指定版本或当前系统的下载文件不存在。
+var ErrReleaseUnavailable = errors.New("release target unavailable")
 
 // 扩展 GitHubRelease 结构体
 type GitHubRelease struct {
@@ -292,14 +296,14 @@ func (g *GitHubUpdater) GetReleaseDownloadURL(versionTag string) (string, string
 	}
 
 	if targetRelease == nil {
-		return "", "", nil, fmt.Errorf("未找到版本：%s", versionTag)
+		return "", "", nil, fmt.Errorf("未找到版本 %s：%w", versionTag, ErrReleaseUnavailable)
 	}
 
 	// 查找匹配的资产文件
 	downloadURL, checksumURL := g.findMatchingAsset(targetRelease.Assets)
 
 	if downloadURL == "" {
-		return "", "", nil, fmt.Errorf("未找到适合当前系统的下载文件")
+		return "", "", nil, fmt.Errorf("未找到适合当前系统的下载文件：%w", ErrReleaseUnavailable)
 	}
 
 	// 解析发布时间

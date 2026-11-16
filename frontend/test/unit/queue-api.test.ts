@@ -34,21 +34,44 @@ const query = { page: 2, page_size: 50, status: -1 }
 const createHTTP = (
   code = 200,
   data: unknown = null,
-  status = 200,
+  status = code,
   message = '',
   error_code?: string,
+  warnings?: string[],
 ) => {
   const adapter = vi.fn(async (config) => ({
     config,
     status,
     statusText: '',
     headers: {},
-    data: { code, data, message, error_code },
+    data: {
+      status: code,
+      data,
+      message,
+      error_code,
+      ...(warnings ? { warnings } : {}),
+      ...(code >= 400
+        ? {
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            error_code: error_code ?? 'INVALID_REQUEST',
+          }
+        : {}),
+    },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
 
 describe.each(queues)('$name queue API', (queue) => {
+  it('returns server mutation feedback without changing query snapshots', async () => {
+    const { http } = createHTTP(200, null, 200, '服务端操作反馈', undefined, ['测试应用警告'])
+    for (const [, operation] of queue.operations) {
+      expect(await operation(http)).toEqual({
+        message: '服务端操作反馈',
+        warnings: ['测试应用警告'],
+      })
+    }
+  })
+
   it('preserves pagination, global counts and task identity fields', async () => {
     const snapshot = {
       total: 14,
@@ -97,7 +120,7 @@ describe.each(queues)('$name queue API', (queue) => {
     expect(status.adapter.mock.calls[0]![0].url).toBe(`/api/${queue.name}/queue/status`)
     const writes = createHTTP()
     for (const [, operation] of queue.operations)
-      await expect(operation(writes.http)).resolves.toBeUndefined()
+      await expect(operation(writes.http)).resolves.toEqual({ warnings: [] })
     expect(
       writes.adapter.mock.calls.map(([config]) => [config.method, config.url, config.data]),
     ).toEqual(
@@ -111,10 +134,10 @@ describe.each(queues)('$name queue API', (queue) => {
       queue.status,
       ...queue.operations.map(([, operation]) => operation),
     ]
-    for (const code of [0, 400, 500]) {
+    for (const code of [400, 500]) {
       for (const operation of operations) {
         await expect(operation(createHTTP(code, { token: 'secret' }).http)).rejects.toMatchObject({
-          response: { status: 200, data: { code, data: { token: 'secret' } } },
+          response: { status: code, data: { status: code, data: { token: 'secret' } } },
         })
       }
     }

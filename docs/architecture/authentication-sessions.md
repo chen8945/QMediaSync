@@ -6,7 +6,7 @@
 >
 > 修改时机：修改管理员恢复、登录、注销、会话撤销、两步验证、Cookie、CSRF、可信来源、API Key 或下载代理鉴权时必须更新本文档。
 >
-> 相关代码：`backend/internal/app/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/base.go`、`backend/internal/emby302/service/emby/download.go`、`frontend/src/stores/auth.ts`。
+> 相关代码：`backend/internal/app/admin_recovery.go`、`backend/internal/models/admin_recovery.go`、`backend/internal/controllers/users.go`、`backend/internal/controllers/auth_*.go`、`backend/internal/controllers/csrf.go`、`backend/internal/controllers/api_key.go`、`backend/internal/controllers/auth_middleware.go`、`backend/internal/emby302/service/emby/download.go`、`frontend/src/stores/auth.ts`。
 
 ## 首次管理员
 
@@ -72,20 +72,22 @@
 
 ## 请求错误码
 
-认证拒绝通过 `APIResponse` 的可选顶层 `error_code` 区分原因，保留既有 HTTP 状态、数值 `code`、`message` 和 `data`。通用响应边界见 [请求校验约定](../engineering/request-validation.md#响应与错误分类)。
+认证请求失败通过 [公共响应包络](../reference/api-response.md) 的顶层 `error_code` 区分原因，正文 `status` 与真实 HTTP 状态一致，并返回安全说明及诊断实例。
 
 | 错误码 | 含义 |
 | --- | --- |
 | `AUTHENTICATION_REQUIRED` | 受保护操作（含 STRM Webhook）缺少登录凭证、API Key 或认证上下文。 |
-| `AUTHENTICATION_INVALID` | 受保护操作（含 STRM Webhook）的 JWT 或 API Key 无效，或对应用户不存在；不用于登录接口。 |
+| `AUTHENTICATION_INVALID` | 登录凭据失败，或受保护操作（含 STRM Webhook）的 JWT/API Key 无效、对应用户不存在。 |
 | `SESSION_INVALID` | 会话不存在、已撤销、已过期或与用户不一致，不进一步区分具体原因。 |
 | `REQUEST_ORIGIN_INVALID` | 来源缺失、格式无效或不在允许范围内，不能仅据此断言反向代理是唯一原因。 |
 | `CSRF_TOKEN_INVALID` | CSRF 请求头、Cookie 或会话哈希校验失败。 |
-| `FORBIDDEN` | 通用拒绝码，供明确的禁止访问分支使用（如 `/proxy-115` 拒绝非 115／百度网盘链接）；未分类的旧 `403` 仍可省略错误码。 |
+| `FORBIDDEN` | 明确的禁止访问分支，如 `/proxy-115` 拒绝非 115／百度网盘链接。 |
 
-来源和 CSRF 拒绝仍返回 HTTP `403`、业务 `code=500`、`data=null`。所有常规登录失败保留原完整响应：HTTP `200`、`code=500`、`message="登录失败"`、`data=null`，不新增 `error_code`；不得通过任何响应字段区分账号不存在、密码错误或 TOTP 错误。登录限流保留独立的 HTTP `429` 和等待提示。
+来源和 CSRF 拒绝返回 HTTP `403`。常规登录凭据失败统一返回 HTTP `401`、`AUTHENTICATION_INVALID`、`message="登录失败"` 和 `data=null`；不得通过任何字段区分账号不存在、密码错误或 TOTP 错误。请求格式或字段校验失败为 `400`，登录限流保留 `429` 和等待提示。登录 API 的 `skipAuthInvalidation` 继续保护已有会话。
 
-受保护请求的会话、API Key 或用户查询故障保留历史 HTTP `401` 和响应体，但不推断为 `SESSION_INVALID` 或 `AUTHENTICATION_INVALID`；`/api/session` 的内部故障仍返回 `5xx`。匿名会话查询是正常成功响应，不带 `error_code`。错误码不改变来源白名单、API Key 的 CSRF 豁免或 Cookie 安全属性。
+受保护请求的会话、API Key 或用户查询发生数据库故障时返回 HTTP `500`，不作为认证失效、不清除有效会话；上游网盘凭据失败同样不能冒充本系统认证失败。匿名会话查询仍是 HTTP `200` 的正常结果，不带请求错误码。来源白名单、API Key 的 CSRF 豁免和 Cookie 安全属性保持。
+
+HTTP `401` 由实际认证拥有者设置 `WWW-Authenticate`：Cookie 会话使用 `QMediaSyncSession realm="QMediaSync"`，API Key 使用 `QMediaSyncApiKey realm="QMediaSync"`，恢复回执使用 `QMediaSyncRestoreReceipt realm="QMediaSyncRestore"`。这些私有 challenge 描述现有输入机制，不新增 Basic/Bearer 登录方式。恢复回执失效只进入回执流程，不清除网页会话；认证、会话和敏感管理结果使用 private/no-store 缓存策略。
 
 ## API Key、可信来源与下载代理
 
@@ -98,6 +100,7 @@
 - `/proxy-115` 仅允许 115 CDN 和百度网盘下载域名；初始目标和每次重定向目标都执行同一白名单校验。
 - 共享下载代理只转发客户端的 `Range`、`Referer`，并设置对应网盘的 UA；首跳和后续重定向均不转发浏览器 `Cookie`，包括 `auth_token`、`csrf_token` 及其他会话凭据。
 - 共享 `Proxy115` 保持 GET 流式转发；内部以 HEAD 调用时向网盘仍发 HEAD，只返回状态和响应头，不读取或发送视频 Body。两种方法都传播请求 context，使客户端取消与服务停止能取消出站连接，不把 HEAD 转成整段 GET 后丢弃内容。主站 `/proxy-115` 的既有 GET 路由不变，飞牛 GET／HEAD 由应用入口局部分发，仍执行相同 URL 和逐跳重定向校验；维护准入与短许可边界见 [飞牛内部转交](../reference/fnos-proxy-api.md#播放接管与回退)。
+- 尚未取得上游响应时，下载代理按实际错误链区分等待超时和其他失败，见 [公共响应分类](../reference/api-response.md#http-状态与错误分类)；失败的 HEAD 同样只写状态和响应头并保留诊断关联。
 
 ## Emby 代理下载权限
 

@@ -3,6 +3,8 @@ package models
 import (
 	"qmediasync/internal/db"
 	v115open "qmediasync/internal/v115/openapi"
+
+	"gorm.io/gorm"
 )
 
 type SyncTreeItemMetaAction int
@@ -66,16 +68,16 @@ func GetSyncFileById(id uint) *SyncFile {
 	return db115File
 }
 
-func GetFileByPickCode(pickCode string) *SyncFile {
+func GetFileByPickCode(pickCode string) (*SyncFile, error) {
 	if pickCode == "" {
-		return nil
+		return nil, gorm.ErrRecordNotFound
 	}
 	var db115File *SyncFile
 	err := db.Db.Model(&SyncFile{}).Where("pick_code = ?", pickCode).First(&db115File).Error
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return db115File
+	return db115File, nil
 }
 
 func GetFilesBySyncPathId(syncPathId uint, offset, limit int) ([]*SyncFile, error) {

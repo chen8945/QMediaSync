@@ -12,26 +12,35 @@ const privateURL = 'http://private-user:private-password@proxy:8080'
 const rejectedRequest = (errorCode: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, error_code: errorCode, message: privateURL },
+    data: {
+      status: status,
+      error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      message: privateURL,
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/setting/test-http-proxy?token=private-token' },
   })
 const mountSettings = async (loadError?: unknown) => {
   const getReply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: { http_proxy: masked, credentials_masked: '1' },
   })
   if (loadError) getReply.mockRejectedValueOnce(loadError)
   const reply = vi
     .fn<() => Promise<APIResponse<unknown> & { warnings?: string[] }>>()
-    .mockResolvedValue({ code: 200, message: '', data: null })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await getReply() : await reply(),
-  }))
+    .mockResolvedValue({ status: 200, message: '', data: null })
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'get' ? await getReply() : await reply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const wrapper = mount(AppProxySettings, {
     global: { provide: { [httpKey]: axios.create({ adapter }) }, stubs: { PageHeader: true } },
   })
@@ -55,28 +64,50 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('代理设置请求反馈', () => {
-  it.each(['success', 'failure'])('保存应用警告在 %s 回读后仍保留，刷新失败单独显示', async (readback) => {
-    const { wrapper, reply, getReply, act } = await mountSettings()
+  it('连接测试保留服务端消息和警告，不改变待保存的代理配置', async () => {
+    const { wrapper, reply, act } = await mountSettings()
+    const message = '服务器确认测试代理连通'
+    const warning = '测试代理连接仍需检查'
     await wrapper.get('input').setValue(privateURL)
-    const warning = '代理设置已保存，但通知渠道刷新失败，请重新保存'
-    reply.mockResolvedValueOnce({ code: 200, message: '', data: null, warnings: [warning] })
-    if (readback === 'failure') getReply.mockRejectedValueOnce(new AxiosError(privateURL, 'ERR_NETWORK'))
-    await act('保存')
+    reply.mockResolvedValueOnce({ status: 200, data: null, message, warnings: [warning] })
+    await act('测试')
+    expect(wrapper.get('.proxy-status').text()).toContain(message)
     expect(wrapper.get('.proxy-status').text()).toContain(warning)
-    expect(wrapper.get('.proxy-status').text()).toContain('尚未完全生效')
-    if (readback === 'failure') {
-      expect(wrapper.get('.proxy-readback-status').text()).toContain('已保存，但刷新失败')
-      expect(wrapper.get('input').element).toHaveProperty('value', privateURL)
-    } else {
-      expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
-      expect(wrapper.get('input').element).toHaveProperty('value', masked)
-    }
-    expect(wrapper.findAll('[role="alert"]').map((alert) => alert.text()).join(' ')).not.toContain('private')
-    await act('保存')
-    expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存')
-    expect(wrapper.get('.proxy-status').text()).not.toContain(warning)
-    expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
+    expect(wrapper.find('.el-alert--warning').exists()).toBe(true)
+    expect(wrapper.get('input').element).toHaveProperty('value', privateURL)
   })
+
+  it.each(['success', 'failure'])(
+    '保存应用警告在 %s 回读后仍保留，刷新失败单独显示',
+    async (readback) => {
+      const { wrapper, reply, getReply, act } = await mountSettings()
+      await wrapper.get('input').setValue(privateURL)
+      const warning = '代理设置已保存，但通知渠道刷新失败，请重新保存'
+      reply.mockResolvedValueOnce({ status: 200, message: '', data: null, warnings: [warning] })
+      if (readback === 'failure')
+        getReply.mockRejectedValueOnce(new AxiosError(privateURL, 'ERR_NETWORK'))
+      await act('保存')
+      expect(wrapper.get('.proxy-status').text()).toContain(warning)
+      expect(wrapper.get('.proxy-status').text()).toContain('尚未完全生效')
+      if (readback === 'failure') {
+        expect(wrapper.get('.proxy-readback-status').text()).toContain('已保存，但刷新失败')
+        expect(wrapper.get('input').element).toHaveProperty('value', privateURL)
+      } else {
+        expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
+        expect(wrapper.get('input').element).toHaveProperty('value', masked)
+      }
+      expect(
+        wrapper
+          .findAll('[role="alert"]')
+          .map((alert) => alert.text())
+          .join(' '),
+      ).not.toContain('private')
+      await act('保存')
+      expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存')
+      expect(wrapper.get('.proxy-status').text()).not.toContain(warning)
+      expect(wrapper.find('.proxy-readback-status').exists()).toBe(false)
+    },
+  )
 
   it('首次读取失败不能保存默认空配置，重试读取成功后才允许保存', async () => {
     const { wrapper, reply, act } = await mountSettings(rejectedRequest('REQUEST_ORIGIN_INVALID'))
@@ -94,7 +125,13 @@ describe('代理设置请求反馈', () => {
   it('业务失败不回读、不报成功，输入与诊断安全边界保留', async () => {
     const { wrapper, reply, getReply, act } = await mountSettings()
     await wrapper.get('input').setValue(privateURL)
-    reply.mockResolvedValueOnce({ code: 500, message: '代理配置暂时不可写', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '代理配置暂时不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('保存')
     expect(wrapper.get('.proxy-status').text()).toContain('保存代理设置失败')
     expect(wrapper.get('.proxy-status').text()).not.toMatch(/private|已保存/)
@@ -115,9 +152,15 @@ describe('代理设置请求反馈', () => {
         getReply.mockRejectedValueOnce(new AxiosError(privateURL, 'ERR_NETWORK'))
       else
         getReply.mockResolvedValueOnce({
-          code: failure === 'business' ? 500 : 200,
+          status: failure === 'business' ? 500 : 200,
           message: '代理配置暂时不可读',
           data: null,
+          ...(failure === 'business'
+            ? {
+                error_code: 'TEST_REQUEST_FAILED',
+                instance: '/request-errors/ComponentTestFailure0001',
+              }
+            : {}),
         })
       await act('保存')
       expect(wrapper.get('.proxy-status').text()).toContain('代理设置已保存，但刷新失败')
@@ -166,7 +209,13 @@ describe('代理设置请求反馈', () => {
 
   it('已核验的连接失败仍展示代理原因', async () => {
     const { wrapper, reply, act } = await mountSettings()
-    reply.mockResolvedValueOnce({ code: 500, message: '出站代理连接测试失败', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '出站代理连接测试失败',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('测试')
     expect(wrapper.get('.proxy-status').text()).toContain(
       '出站代理连接测试失败，请检查代理配置和服务状态',

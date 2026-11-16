@@ -1,9 +1,14 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"gorm.io/gorm"
+
+	"qmediasync/internal/httpapi"
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
@@ -33,38 +38,29 @@ type APIKeyListItem struct {
 }
 
 // CreateAPIKey 创建新的 API Key。
-// @Summary 创建 API Key
-// @Description 为当前登录用户创建新的 API Key，仅此一次返回完整密钥
-// @Tags API 管理
-// @Accept json
-// @Produce json
-// @Param name body string true "API Key 名称"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /api-key/create [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func CreateAPIKey(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	var req requests.CreateAPIKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("参数错误：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		setAuthenticationChallenge(c)
+		httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: ErrorCodeAuthenticationRequired, Message: "用户未登录", Data: nil})
 		return
 	}
 
 	// 创建 API Key
 	apiKey, rawKey, err := models.CreateAPIKey(currentUser.ID, strings.TrimSpace(req.Name))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("创建 API Key 失败：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "创建 API Key 失败", Cause: err})
 		return
 	}
 	helpers.AppLogger.Infof("用户 %s（ID：%d）创建了 API Key：%s（ID：%d）", currentUser.Username, currentUser.ID, apiKey.Name, apiKey.ID)
@@ -79,35 +75,23 @@ func CreateAPIKey(c *gin.Context) {
 		IsActive:  apiKey.IsActive,
 	}
 
-	c.JSON(http.StatusOK, APIResponse[CreateAPIKeyResponse]{
-		Code:    Success,
-		Message: "API Key 已创建，请妥善保管密钥，此密钥仅显示一次",
-		Data:    resp,
-	})
+	httpapi.Success(c, http.StatusCreated, resp, "API Key 已创建，请妥善保管密钥，此密钥仅显示一次")
 }
 
 // ListAPIKeys 获取 API Key 列表。
-// @Summary 获取 API Key 列表
-// @Description 获取当前登录用户的所有 API Key（不包含完整密钥）
-// @Tags API 管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /api-key/list [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ListAPIKeys(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		setAuthenticationChallenge(c)
+		httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: ErrorCodeAuthenticationRequired, Message: "用户未登录", Data: nil})
 		return
 	}
 
 	// 查询用户的 API Key
 	apiKeys, err := models.GetAPIKeysByUserID(currentUser.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("查询 API Key 失败：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询 API Key 失败", Cause: err})
 		return
 	}
 
@@ -124,108 +108,81 @@ func ListAPIKeys(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, APIResponse[[]APIKeyListItem]{
-		Code:    Success,
-		Message: "查询成功",
-		Data:    resp,
-	})
+	httpapi.Success(c, http.StatusOK, resp, "查询成功")
 }
 
 // DeleteAPIKey 删除 API Key。
-// @Summary 删除 API Key
-// @Description 删除指定 ID 的 API Key（仅能删除自己的）
-// @Tags API 管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "API Key ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /api-key/delete/{id} [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteAPIKey(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		setAuthenticationChallenge(c)
+		httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: ErrorCodeAuthenticationRequired, Message: "用户未登录", Data: nil})
 		return
 	}
 
 	// 获取 API Key ID
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "无效的 API Key ID", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
 	apiKey, err := models.GetAPIKeyByIDAndUserID(idReq.ID, currentUser.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "API Key 不存在或无权限删除", Data: nil})
+		writeAPIKeyLookupFailure(c, err)
 		return
 	}
 
 	// 删除 API Key（确保只能删除自己的）
 	err = models.DeleteAPIKey(idReq.ID, currentUser.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("删除 API Key 失败：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "删除 API Key 失败", Cause: err})
 		return
 	}
 	helpers.AppLogger.Infof("用户 %s（ID：%d）删除了 API Key：%s（ID：%d）", currentUser.Username, currentUser.ID, apiKey.Name, apiKey.ID)
 
-	c.JSON(http.StatusOK, APIResponse[any]{
-		Code:    Success,
-		Message: "删除成功",
-		Data:    nil,
-	})
+	httpapi.Success(c, http.StatusOK, nil, "删除成功")
 }
 
 // UpdateAPIKeyStatus 更新 API Key 状态。
-// @Summary 启用或禁用 API Key
-// @Description 更新指定 API Key 的启用状态
-// @Tags API 管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "API Key ID"
-// @Param is_active body boolean true "是否启用"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /api-key/status/{id} [put]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateAPIKeyStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	currentUser, ok := CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "用户未登录", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		setAuthenticationChallenge(c)
+		httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: ErrorCodeAuthenticationRequired, Message: "用户未登录", Data: nil})
 		return
 	}
 
 	// 获取 API Key ID
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "无效的 API Key ID", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
 	// 解析请求体
 	var req requests.UpdateAPIKeyStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("参数错误：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
 	apiKey, err := models.GetAPIKeyByIDAndUserID(idReq.ID, currentUser.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "API Key 不存在或无权限更新", Data: nil})
+		writeAPIKeyLookupFailure(c, err)
 		return
 	}
 
 	// 更新 API Key 状态（确保只能更新自己的）
 	err = models.UpdateAPIKeyStatus(idReq.ID, currentUser.ID, *req.IsActive)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("更新 API Key 状态失败：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "更新 API Key 状态失败", Cause: err})
 		return
 	}
 
@@ -235,9 +192,13 @@ func UpdateAPIKeyStatus(c *gin.Context) {
 	}
 	helpers.AppLogger.Infof("用户 %s（ID：%d）已%s API Key：%s（ID：%d）", currentUser.Username, currentUser.ID, statusText, apiKey.Name, apiKey.ID)
 
-	c.JSON(http.StatusOK, APIResponse[any]{
-		Code:    Success,
-		Message: fmt.Sprintf("API Key 已%s", statusText),
-		Data:    nil,
-	})
+	httpapi.Success(c, http.StatusOK, nil, fmt.Sprintf("API Key 已%s", statusText))
+}
+
+func writeAPIKeyLookupFailure(c *gin.Context, err error) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "API_KEY_NOT_FOUND", Message: "API Key 不存在或无权限访问"})
+		return
+	}
+	httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取 API Key 失败", Cause: err})
 }

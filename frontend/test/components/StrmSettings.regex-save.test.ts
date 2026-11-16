@@ -44,23 +44,30 @@ function createHTTP(
   }
   const success = {
     data: {
-      code: 200,
+      status: 200,
       data: {
         sync_path: { id: 12 },
         directory_upload: { enabled: false, rules: [] },
-        warnings: [],
       },
+      warnings: [],
     },
+    status: 200,
   }
   const http = {
     get: vi.fn(async (url: string) => {
       if (url.endsWith('/version'))
-        return { data: { version: 'v1', date: '', isWindows: false, isRelease: false } }
-      if (url.endsWith('/setting/cron')) return { data: { code: 200, data: [] } }
+        return {
+          data: {
+            status: 200,
+            data: { version: 'v1', date: '', isWindows: false, isRelease: false },
+          },
+          status: 200,
+        }
+      if (url.endsWith('/setting/cron')) return { data: { status: 200, data: [] }, status: 200 }
       if (url.includes('/sync/path/')) {
         return {
           data: {
-            code: 200,
+            status: 200,
             data: {
               ...settings,
               id: 12,
@@ -73,9 +80,10 @@ function createHTTP(
               enable_cron: false,
             },
           },
+          status: 200,
         }
       }
-      return { data: { code: 200, data: { ...settings, ...globalLists } } }
+      return { data: { status: 200, data: { ...settings, ...globalLists } }, status: 200 }
     }),
     post: vi.fn(async (_url: string, body: typeof settings) => {
       settings = JSON.parse(JSON.stringify(body))
@@ -352,12 +360,12 @@ describe('STRM 排除规则保存与读回', () => {
         response: {
           status: 400,
           data: {
-            code: 500,
+            status: 400,
             message: 'exclude_name_regex_arr[0]：正则表达式无效',
-            data: {
-              error_code: 'INVALID_REQUEST',
-              field_errors: [{ field: 'exclude_name_regex_arr[0]', message: '未知字符类' }],
-            },
+            data: null,
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'INVALID_REQUEST',
+            field_errors: [{ field: 'exclude_name_regex_arr[0]', message: '未知字符类' }],
           },
         },
       }

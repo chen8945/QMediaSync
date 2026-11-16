@@ -7,6 +7,7 @@ import {
   type QueueSnapshotResult,
 } from '@/composables/useQueueMutations'
 import { HttpResponseError, markAuthInvalidationHandled, parseHttpError } from '@/http/errors'
+import type { SettingsSaveResult } from '@/api/types'
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void
@@ -23,7 +24,7 @@ const failed = (error: unknown): QueueSnapshotResult => ({
   error: parseHttpError(error),
 })
 const operation = (overrides: Partial<QueueMutationOperationOptions> = {}) => ({
-  execute: vi.fn(async () => {}),
+  execute: vi.fn(async () => ({ warnings: [] })),
   successMessage: '成功',
   requestErrorMessage: '请求失败',
   ...overrides,
@@ -54,6 +55,7 @@ beforeEach(() => {
   vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -61,9 +63,35 @@ afterEach(() => {
 })
 
 describe('useQueueMutations', () => {
+  it('preserves server messages and warnings while still refreshing committed results', async () => {
+    const state = setup()
+    await state.clearQueue(
+      operation({
+        execute: vi.fn(async () => ({ message: '服务端操作反馈', warnings: ['测试应用警告'] })),
+      }),
+    )
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith('服务端操作反馈；测试应用警告')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(state.options.onClearPendingSuccess).toHaveBeenCalledOnce()
+    expect(state.options.reloadQueue).toHaveBeenCalledOnce()
+    expect(state.options.reloadQueueStatus).toHaveBeenCalledOnce()
+  })
+
+  it('uses the server success message and falls back when it is blank', async () => {
+    const state = setup()
+    await state.runMutation(
+      operation({ execute: vi.fn(async () => ({ message: '服务端操作反馈', warnings: [] })) }),
+    )
+    await state.runMutation(
+      operation({ execute: vi.fn(async () => ({ message: '  ', warnings: [] })) }),
+    )
+    expect(ElMessage.success).toHaveBeenNthCalledWith(1, '服务端操作反馈')
+    expect(ElMessage.success).toHaveBeenNthCalledWith(2, '成功')
+  })
+
   it('holds pending from confirmation through mutation and both required snapshots', async () => {
     const confirmation = deferred<MessageBoxData>()
-    const mutation = deferred<void>()
+    const mutation = deferred<SettingsSaveResult>()
     const queueReload = deferred<QueueSnapshotResult>()
     const statusReload = deferred<QueueSnapshotResult>()
     vi.mocked(ElMessageBox.confirm).mockReturnValue(confirmation.promise)
@@ -84,7 +112,7 @@ describe('useQueueMutations', () => {
     confirmation.resolve('confirm' as MessageBoxData)
     await Promise.resolve()
     expect(action.execute).toHaveBeenCalledOnce()
-    mutation.resolve()
+    mutation.resolve({ warnings: [] })
     await Promise.resolve()
     expect(state.isReloadingQueueSnapshot.value).toBe(true)
     expect(state.options.onClearPendingSuccess).toHaveBeenCalledOnce()
@@ -121,8 +149,14 @@ describe('useQueueMutations', () => {
       operation({
         execute: vi.fn().mockRejectedValue(
           new HttpResponseError({
-            status: 200,
-            data: { code: 400, message: '拒绝', data: { token: 'secret' } },
+            status: 400,
+            data: {
+              error_code: 'INVALID_REQUEST',
+              instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+              status: 400,
+              message: '拒绝',
+              data: { token: 'secret' },
+            },
             config: { method: 'post', url: '/api/queue/action?token=secret#private' },
           }),
         ),
@@ -132,7 +166,9 @@ describe('useQueueMutations', () => {
     expect(console.error).toHaveBeenCalledWith(expect.any(String), {
       method: 'POST',
       path: '/api/queue/action',
-      status: 200,
+      status: 400,
+      errorCode: 'INVALID_REQUEST',
+      instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
     })
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret')
     expect(state.options.reloadQueue).not.toHaveBeenCalled()
@@ -157,7 +193,16 @@ describe('useQueueMutations', () => {
   })
 
   const silentErrors = () => {
-    const auth = new HttpResponseError({ status: 401, data: { code: 401 } })
+    const auth = new HttpResponseError({
+      status: 401,
+      data: {
+        data: null,
+        message: '请求未完成',
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 401,
+      },
+    })
     markAuthInvalidationHandled(auth)
     return [new CanceledError(), auth]
   }
@@ -171,7 +216,9 @@ describe('useQueueMutations', () => {
         await state.clearQueue(
           operation({
             execute:
-              stage === 'mutation' ? vi.fn().mockRejectedValue(error) : vi.fn(async () => {}),
+              stage === 'mutation'
+                ? vi.fn().mockRejectedValue(error)
+                : vi.fn(async () => ({ warnings: [] })),
           }),
         )
         expect(ElMessage.error).not.toHaveBeenCalled()
@@ -223,7 +270,7 @@ describe('useQueueMutations', () => {
   it.each(['mutation', 'queue', 'status'])(
     'ignores a stale %s response without later callbacks',
     async (stage) => {
-      const response = deferred<void>()
+      const response = deferred<SettingsSaveResult>()
       const snapshot = deferred<QueueSnapshotResult>()
       const state = setup({
         reloadQueue: vi.fn(async () => (stage === 'queue' ? snapshot.promise : loaded())),
@@ -231,13 +278,15 @@ describe('useQueueMutations', () => {
       })
       const run = state.clearQueue(
         operation({
-          execute: vi.fn(() => (stage === 'mutation' ? response.promise : Promise.resolve())),
+          execute: vi.fn(() =>
+            stage === 'mutation' ? response.promise : Promise.resolve({ warnings: [] }),
+          ),
         }),
       )
       if (stage !== 'mutation')
         await vi.waitFor(() => expect(state.isReloadingQueueSnapshot.value).toBe(true))
       state.invalidate()
-      response.resolve()
+      response.resolve({ warnings: [] })
       snapshot.resolve(failed(new Error('secret')))
       await run
       expect(ElMessage.error).not.toHaveBeenCalled()

@@ -13,24 +13,16 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-type credentialChangeResponse struct {
-	Code    APIResponseCode `json:"code"`
-	Message string          `json:"message"`
-	Data    bool            `json:"data"`
-}
-
-type credentialSessionResponse struct {
-	Code APIResponseCode `json:"code"`
-	Data []struct {
-		SessionID string `json:"session_id"`
-		Current   bool   `json:"current"`
-	} `json:"data"`
+type credentialSessionListItem struct {
+	SessionID string `json:"session_id"`
+	Current   bool   `json:"current"`
 }
 
 type credentialChangeFixture struct {
@@ -165,11 +157,11 @@ func TestChangeCredentials_RevokesAllPreviousSessions(t *testing.T) {
 			if changeResponse.Code != http.StatusOK {
 				t.Fatalf("修改凭据 HTTP = %d，body=%s", changeResponse.Code, changeResponse.Body.String())
 			}
-			var changed credentialChangeResponse
+			var changed httpapi.APIResponse[bool]
 			if err := json.Unmarshal(changeResponse.Body.Bytes(), &changed); err != nil {
 				t.Fatalf("解析修改凭据响应失败: %v", err)
 			}
-			if changed.Code != Success || !changed.Data {
+			if changed.Status != http.StatusOK || !changed.Data {
 				t.Fatalf("修改凭据响应 = %+v，期望成功", changed)
 			}
 			if !hasClearedSessionCookies(changeResponse.Result().Cookies()) {
@@ -210,11 +202,11 @@ func TestChangeCredentials_RevokesAllPreviousSessions(t *testing.T) {
 			if listResponse.Code != http.StatusOK {
 				t.Fatalf("查询登录设备 HTTP = %d，body=%s", listResponse.Code, listResponse.Body.String())
 			}
-			var sessions credentialSessionResponse
+			var sessions httpapi.APIResponse[[]credentialSessionListItem]
 			if err := json.Unmarshal(listResponse.Body.Bytes(), &sessions); err != nil {
 				t.Fatalf("解析登录设备响应失败: %v", err)
 			}
-			if sessions.Code != Success || len(sessions.Data) != 1 || !sessions.Data[0].Current {
+			if sessions.Status != http.StatusOK || len(sessions.Data) != 1 || !sessions.Data[0].Current {
 				t.Fatalf("重新登录后的登录设备 = %+v，期望仅有当前设备", sessions)
 			}
 
@@ -256,18 +248,15 @@ func TestChangeCredentialsRejectsUnchangedCredentials(t *testing.T) {
 		name        string
 		username    string
 		newPassword string
-		message     string
 	}{
 		{
 			name:        "新密码与当前密码相同",
 			username:    "admin",
 			newPassword: "old-password",
-			message:     "新密码不能与当前密码相同",
 		},
 		{
 			name:     "用户名和密码均未变化",
 			username: "admin",
-			message:  "用户名和密码未发生变化",
 		},
 	}
 
@@ -278,15 +267,15 @@ func TestChangeCredentialsRejectsUnchangedCredentials(t *testing.T) {
 			response := httptest.NewRecorder()
 			fixture.router.ServeHTTP(response, newCredentialChangeRequest(t, fixture.current, fixture.currentCSRF, tt.username, tt.newPassword))
 
-			if response.Code != http.StatusOK {
+			if response.Code != http.StatusConflict {
 				t.Fatalf("修改凭据 HTTP = %d，body=%s", response.Code, response.Body.String())
 			}
-			var changed credentialChangeResponse
+			var changed httpapi.APIResponse[json.RawMessage]
 			if err := json.Unmarshal(response.Body.Bytes(), &changed); err != nil {
 				t.Fatalf("解析修改凭据响应失败: %v", err)
 			}
-			if changed.Code == Success || changed.Data || changed.Message != tt.message {
-				t.Fatalf("修改未变化凭据响应 = %+v，期望业务失败且提示 %q", changed, tt.message)
+			if changed.Status != response.Code || changed.ErrorCode != "CREDENTIALS_UNCHANGED" || string(changed.Data) != "null" {
+				t.Fatalf("修改未变化凭据响应 = %+v，期望状态冲突", changed)
 			}
 			if hasClearedSessionCookies(response.Result().Cookies()) {
 				t.Fatalf("拒绝未变化凭据时不应清除 Cookie: %#v", response.Result().Cookies())
@@ -323,11 +312,11 @@ func TestChangeCredentials_RollsBackWhenSessionRevocationFails(t *testing.T) {
 	changeResponse := httptest.NewRecorder()
 	fixture.router.ServeHTTP(changeResponse, newCredentialChangeRequest(t, fixture.current, fixture.currentCSRF, "admin", "new-password"))
 
-	var changed credentialChangeResponse
+	var changed httpapi.APIResponse[json.RawMessage]
 	if err := json.Unmarshal(changeResponse.Body.Bytes(), &changed); err != nil {
 		t.Fatalf("解析修改凭据响应失败: %v", err)
 	}
-	if changed.Code == Success || changed.Data {
+	if changeResponse.Code != http.StatusInternalServerError || changed.Status != changeResponse.Code || changed.ErrorCode != "INTERNAL_ERROR" || string(changed.Data) != "null" {
 		t.Fatalf("会话撤销失败时修改凭据响应 = %+v，期望失败", changed)
 	}
 	if strings.Contains(changeResponse.Body.String(), "simulate session revocation failure") {
@@ -540,11 +529,11 @@ func TestChangeCredentialsKeepsAPIKeyUsable(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("凭据修改后的 API Key 请求 HTTP = %d，body=%s", response.Code, response.Body.String())
 	}
-	var sessions credentialSessionResponse
+	var sessions httpapi.APIResponse[[]credentialSessionListItem]
 	if err := json.Unmarshal(response.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("解析 API Key 会话列表响应失败: %v", err)
 	}
-	if sessions.Code != Success || len(sessions.Data) != 0 {
+	if sessions.Status != http.StatusOK || len(sessions.Data) != 0 {
 		t.Fatalf("API Key 会话列表 = %+v，期望不显示已撤销浏览器会话", sessions)
 	}
 }

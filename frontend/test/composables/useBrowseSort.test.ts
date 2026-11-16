@@ -13,7 +13,7 @@ function client() {
     status: 200,
     statusText: 'OK',
     headers: {},
-    data: { code: 200, data: browseSortOptions(config.params.source_type, config.params.scope) },
+    data: { status: 200, data: browseSortOptions(config.params.source_type, config.params.scope) },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
@@ -125,7 +125,7 @@ describe('浏览排序偏好', () => {
       status: 200,
       statusText: 'OK',
       headers: {},
-      data: { code: 200, data: await old.promise },
+      data: { status: 200, data: await old.promise },
     }))
     const source = ref('115')
     const sort = useBrowseSort(http, source, 1, 'files')

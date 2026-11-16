@@ -430,7 +430,9 @@ async function saveSettings() {
     saveStatus.value = {
       title: result.warnings.length ? '线程设置已保存，尚未完全生效' : '保存成功',
       type: result.warnings.length ? 'warning' : 'success',
-      description: result.warnings.length ? result.warnings.join('；') : '线程设置已成功保存',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || '线程设置已成功保存',
     }
 
     if (!result.warnings.length) {

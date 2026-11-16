@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 import { createPinia, setActivePinia } from 'pinia'
 import axios, { AxiosError, type AxiosResponse } from 'axios'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '../../src/stores/auth'
 import { installAuthResponseInterceptor } from '@/http/authInterceptor'
 import { parseHttpError } from '@/http/errors'
 
 describe('cookie-only auth store', () => {
+  afterEach(() => vi.useRealTimers())
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
@@ -28,12 +29,45 @@ describe('cookie-only auth store', () => {
     expect(sessionStorage.getItem('auth_token')).toBeNull()
   })
 
+  it.each(['success', 'failure'] as const)(
+    '服务端退出%s仍清理本地会话，只保留已确认的操作反馈',
+    async (outcome) => {
+      vi.useFakeTimers()
+      const store = useAuthStore()
+      store.login({ user: { id: '1', username: 'admin' }, csrfToken: 'csrf-token' })
+      const adapter = vi.fn(async (config) => {
+        if (outcome === 'failure') throw new AxiosError('canceled', 'ERR_CANCELED', config)
+        return {
+          config,
+          headers: {},
+          statusText: 'OK',
+          status: 200,
+          data: { status: 200, data: null, message: '服务端退出结果', warnings: ['退出附加提醒'] },
+        }
+      })
+      const result = await store.logoutWithServer(axios.create({ adapter }))
+      if (outcome === 'success')
+        expect(result).toEqual({ message: '服务端退出结果', warnings: ['退出附加提醒'] })
+      else expect(result).toBeUndefined()
+      expect(store.isAuthenticated).toBe(false)
+      expect(store.csrfToken).toBeNull()
+      expect(adapter).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          url: '/api/logout',
+          withCredentials: true,
+          skipAuthInvalidation: true,
+        }),
+      )
+    },
+  )
+
   it('通过 /session 恢复服务端会话', async () => {
     const store = useAuthStore()
     const http = {
       get: vi.fn().mockResolvedValue({
+        status: 200,
         data: {
-          code: 200,
+          status: 200,
           data: {
             authenticated: true,
             user: { id: '1', username: 'admin', role: 'admin' },
@@ -68,7 +102,13 @@ describe('cookie-only auth store', () => {
                 status: 401,
                 statusText: 'Unauthorized',
                 headers: {},
-                data: { code: 401 },
+                data: {
+                  status: 401,
+                  data: null,
+                  error_code: 'SESSION_INVALID',
+                  message: '测试会话失效',
+                  instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+                },
               }),
             )
         }),

@@ -1134,8 +1134,12 @@ const handleSubmit = async () => {
       max_threads: isEditMode.value ? parseInt(form.max_threads + '') : form.max_threads,
     })
 
-    if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
-    else ElMessage.success(isEditMode.value ? '编辑刮削目录成功' : '添加刮削目录成功')
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else
+      ElMessage.success(
+        result.message?.trim() || (isEditMode.value ? '编辑刮削目录成功' : '添加刮削目录成功'),
+      )
     returnToScrapePathList()
   } catch (error) {
     reportError(error, isEditMode.value ? '编辑刮削目录失败' : '添加刮削目录失败')

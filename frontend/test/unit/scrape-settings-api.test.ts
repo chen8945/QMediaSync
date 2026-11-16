@@ -52,14 +52,16 @@ describe('刮削设置 API', () => {
       status: 200,
       statusText: 'OK',
       headers: {},
-      data: { code: 200, data: null },
+      data: { status: 200, data: null },
     }))
     const legacy = {
       ai_base_url: ai.ai_base_url,
       ai_api_key: ai.ai_api_key,
       ai_model_name: ai.ai_model_name,
     }
-    await expect(testAiConnection(axios.create({ adapter }), legacy)).resolves.toBeUndefined()
+    await expect(testAiConnection(axios.create({ adapter }), legacy)).resolves.toEqual({
+      warnings: [],
+    })
     expect(JSON.parse(adapter.mock.calls[0]![0].data)).toEqual(legacy)
   })
 
@@ -70,7 +72,7 @@ describe('刮削设置 API', () => {
       statusText: 'OK',
       headers: {},
       data: {
-        code: 200,
+        status: 200,
         message: '',
         data:
           config.method === 'get'
@@ -86,10 +88,12 @@ describe('刮削设置 API', () => {
 
     expect(await fetchAiSettings(http)).toEqual(ai)
     expect(await fetchTmdbSettings(http)).toEqual(tmdb)
-    await expect(saveAiSettings(http, ai)).resolves.toBeUndefined()
-    await expect(saveTmdbSettings(http, tmdb)).resolves.toBeUndefined()
-    await expect(testAiConnection(http, aiTest)).resolves.toBeUndefined()
-    await expect(testTmdbConnection(http, tmdbTest)).resolves.toBe(false)
+    await expect(saveAiSettings(http, ai)).resolves.toEqual({ warnings: [] })
+    await expect(saveTmdbSettings(http, tmdb)).resolves.toEqual({ warnings: [] })
+    await expect(testAiConnection(http, aiTest)).resolves.toEqual({ warnings: [] })
+    await expect(testTmdbConnection(http, tmdbTest).then((result) => result.data)).resolves.toBe(
+      false,
+    )
 
     const configs = adapter.mock.calls.map(([config]) => config)
     expect(configs.map(({ method, url, timeout }) => [method, url, timeout])).toEqual([
@@ -109,11 +113,17 @@ describe('刮削设置 API', () => {
   })
 
   it('拒绝 HTTP 200 业务失败，保留原响应信息', async () => {
-    const body = { code: 500, message: 'internal secret', data: null }
+    const body = {
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
+      message: 'internal secret',
+      data: null,
+    }
     const http = axios.create({
       adapter: async (config) => ({
         config,
-        status: 200,
+        status: 500,
         statusText: 'OK',
         headers: {},
         data: body,
@@ -122,7 +132,7 @@ describe('刮削设置 API', () => {
 
     await expect(saveTmdbSettings(http, tmdb)).rejects.toMatchObject({
       name: 'HttpResponseError',
-      response: { status: 200, data: body },
+      response: { status: 500, data: body },
     })
   })
 

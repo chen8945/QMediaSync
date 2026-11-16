@@ -430,6 +430,7 @@
 </template>
 
 <script setup lang="ts">
+import type { SettingsSaveResult } from '@/api/types'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
@@ -474,6 +475,11 @@ import { Film, Finished, Picture, Refresh, Search, View } from '@element-plus/ic
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const http = useHttpClient()
+const showOperationResult = (result: SettingsSaveResult, fallbackMessage: string) => {
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || fallbackMessage)
+}
 
 interface SelectableTmdbSearchResult extends TmdbSearchResult {
   selecting: boolean
@@ -1064,13 +1070,13 @@ const handleDeleteSelectedRecords = async () => {
     }
 
     const ids = selectedRecords.value.map((record) => record.id)
-    await deleteScrapeRecords(http, ids)
+    const result = await deleteScrapeRecords(http, ids)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('删除成功')
+    showOperationResult(result, '删除成功')
     // 清空选择
     selectedRecords.value = []
     // 刷新记录列表
@@ -1123,13 +1129,13 @@ const handleRename = async () => {
     }
 
     const ids = selectedRecords.value.map((record) => record.id)
-    await renameFailedScrapeRecords(http, ids)
+    const result = await renameFailedScrapeRecords(http, ids)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('重新整理成功')
+    showOperationResult(result, '重新整理成功')
     // 清空选择
     selectedRecords.value = []
     // 刷新记录列表
@@ -1275,13 +1281,13 @@ const selectSearchResult = async (item: SelectableTmdbSearchResult) => {
       return
     }
 
-    const message = await reidentifyScrapeRecord(http, params)
+    const result = await reidentifyScrapeRecord(http, params)
 
     if (!isRecordActionContextCurrent(operationContext, recordId)) {
       return
     }
 
-    ElMessage.success(message || '重新识别请求已发送')
+    showOperationResult(result, '重新识别请求已发送')
     invalidateRecordActionContext()
     loadRecords()
   } catch (error) {
@@ -1341,13 +1347,13 @@ const handleDeleteFailedRecords = async () => {
       return
     }
 
-    await clearFailedScrapeRecords(http)
+    const result = await clearFailedScrapeRecords(http)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('刮削失败记录已清除')
+    showOperationResult(result, '刮削失败记录已清除')
     loadRecords()
   } catch (error) {
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
@@ -1396,13 +1402,13 @@ const handleTruncateAll = async () => {
     }
 
     // 发送请求
-    await truncateScrapeRecords(http)
+    const result = await truncateScrapeRecords(http)
 
     if (!isScrapeRecordsMutationContextCurrent(operationContext)) {
       return
     }
 
-    ElMessage.success('清空记录成功')
+    showOperationResult(result, '清空记录成功')
     // 清空选择
     selectedRecords.value = []
     // 刷新记录列表
@@ -1445,13 +1451,13 @@ const markAsFinished = async (record: ScrapeRecord) => {
       return
     }
 
-    await finishScrapeRecord(http, record.id)
+    const result = await finishScrapeRecord(http, record.id)
 
     if (!isRecordActionContextCurrent(operationContext, record.id)) {
       return
     }
 
-    ElMessage.success('标记为已整理成功')
+    showOperationResult(result, '标记为已整理成功')
     // 刷新记录列表
     loadRecords()
   } catch (error) {

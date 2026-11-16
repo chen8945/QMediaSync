@@ -653,12 +653,12 @@ func GetPendingDownloadTasks(limit int) []*DbDownloadTask {
 	return tasks
 }
 
-func GetDownloadingCount() int64 {
+func GetDownloadingCount(ctx context.Context) (int64, error) {
 	var count int64
-	db.Db.Model(&DbDownloadTask{}).
+	err := db.Db.WithContext(ctx).Model(&DbDownloadTask{}).
 		Where("status = ?", DownloadStatusDownloading).
-		Count(&count)
-	return count
+		Count(&count).Error
+	return count, err
 }
 
 // RetryFailedDownloadTasks 重试失败的下载任务
@@ -727,19 +727,22 @@ func retryFailedDownloadTasks(ctx context.Context, maxRetry int) error {
 }
 
 // 查询下载队列任务列表
-func GetDownloadTaskList(status DownloadStatus, page, pageSize int) ([]*DbDownloadTask, int64) {
+func GetDownloadTaskList(ctx context.Context, status DownloadStatus, page, pageSize int) ([]*DbDownloadTask, int64, error) {
 	var tasks []*DbDownloadTask
 	var total int64
-	tx := db.Db.Model(&DbDownloadTask{})
+	tx := db.Db.WithContext(ctx).Model(&DbDownloadTask{})
 	if status >= 0 {
 		tx.Where("status = ?", status)
 	}
-	tx.Count(&total).
+	err := tx.Count(&total).
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Order("id DESC").
-		Find(&tasks)
-	return tasks, total
+		Find(&tasks).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return tasks, total, nil
 }
 
 func getPendingDownloadTaskSyncPathIdsWithDB(tx *gorm.DB) ([]uint, error) {

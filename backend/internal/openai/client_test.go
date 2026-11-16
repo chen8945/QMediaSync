@@ -4,13 +4,79 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestChatCompletionFailureRetainsMessageWithoutPrintingBody(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStdout := os.Stdout
+	os.Stdout = writer
+	t.Cleanup(func() {
+		os.Stdout = previousStdout
+		writer.Close()
+		reader.Close()
+	})
+	for _, test := range []struct {
+		name, body, message string
+		status              int
+	}{
+		{"nested-string-code", `{"error":{"message":"quota detail","code":"insufficient_quota"},"private":"body-private"}`, "quota detail", http.StatusTooManyRequests},
+		{"nested-null-code", `{"error":{"message":"provider detail","code":null}}`, "provider detail", http.StatusUnauthorized},
+		{"nested-number-code", `{"error":{"message":"nested detail","code":123},"message":"legacy detail"}`, "nested detail", http.StatusBadRequest},
+		{"legacy-message", `{"message":"legacy detail","code":123}`, "legacy detail", http.StatusBadRequest},
+		{"unknown-json", `{"private":"body-private"}`, "", http.StatusBadGateway},
+		{"malformed-json", `{"private":"body-private"`, "", http.StatusBadGateway},
+		{"empty-body", "", "", http.StatusServiceUnavailable},
+		{"blank-message", `{"error":{"message":"  "}}`, "", http.StatusBadGateway},
+		{"invalid-error-shape", `{"error":"body-private"}`, "", http.StatusBadGateway},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			client := NewClient("key", server.URL, "model", 5)
+			defer client.Close()
+			result, err := client.CreateChatCompletion(context.Background(), []Message{{Role: "user", Content: "fixture"}}, nil)
+			if result != nil || err == nil || strings.TrimSpace(err.Error()) == "" {
+				t.Fatalf("failed completion returned no usable error: %+v %v", result, err)
+			}
+			if test.message != "" {
+				if err.Error() != test.message {
+					t.Fatalf("provider message lost: %v", err)
+				}
+			} else if !strings.Contains(err.Error(), http.StatusText(test.status)) && !strings.Contains(err.Error(), fmt.Sprint(test.status)) {
+				t.Fatalf("fallback lost HTTP status: %v", err)
+			}
+			if strings.Contains(err.Error(), "body-private") {
+				t.Fatal("error retained the complete provider body")
+			}
+		})
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = previousStdout
+	printed, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(printed) != 0 {
+		t.Fatal("client printed provider failures outside the safe diagnostic boundary")
+	}
+}
 
 func TestClientsKeepKeyModelAndPrompt(t *testing.T) {
 	type received struct {

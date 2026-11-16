@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 )
 
@@ -36,17 +37,17 @@ func TestRepairDatabaseHidesInternalErrors(t *testing.T) {
 	router.POST("/api/database/repair", RepairDB)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/database/repair", nil))
-	var body APIResponse[any]
+	var body httpapi.APIResponse[any]
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || body.Code != BadRequest || body.Data != nil {
+	if response.Code != http.StatusInternalServerError || body.Status != response.Code || body.ErrorCode != "INTERNAL_ERROR" || body.Instance == "" || body.Data != nil {
 		t.Fatalf("repair failure changed response contract: HTTP=%d body=%s", response.Code, response.Body)
 	}
-	if body.Message != "修复数据库失败，请查看服务日志" || strings.Contains(response.Body.String(), internalError) {
+	if body.Message == "" || strings.Contains(response.Body.String(), internalError) {
 		t.Fatalf("repair exposed internal error: %s", response.Body)
 	}
-	if !strings.Contains(logs.String(), internalError) {
+	if !strings.Contains(logs.String(), internalError) || !strings.Contains(logs.String(), body.Instance) {
 		t.Fatalf("repair omitted diagnostic log: %s", &logs)
 	}
 }

@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+
+	"qmediasync/internal/httpapi"
 
 	"qmediasync/internal/models"
 
@@ -92,44 +95,42 @@ func validateInitialSetupToken(token string) bool {
 
 // SetupStatusAction 返回是否需要创建首个管理员。
 func SetupStatusAction(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	hasUser, err := models.HasAnyUser()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询初始化状态失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询初始化状态失败", Cause: err})
 		return
 	}
 	required := !hasUser && isInitialSetupRequired()
-	c.JSON(http.StatusOK, APIResponse[setupStatusResponse]{
-		Code:    Success,
-		Message: "查询初始化状态成功",
-		Data:    setupStatusResponse{Required: required},
-	})
+	httpapi.Success(c, http.StatusOK, setupStatusResponse{Required: required}, "查询初始化状态成功")
 }
 
 // CreateInitialAdminAction 使用一次性初始化码创建首个管理员。
 func CreateInitialAdminAction(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, private")
 	var req createInitialAdminRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if !validateInitialSetupToken(req.SetupToken) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "初始化码无效", Data: nil})
+		httpapi.Failure(c, http.StatusForbidden, httpapi.Error{Code: "SETUP_TOKEN_INVALID", Message: "初始化码无效"})
+		return
+	}
+	if err := models.ValidateUserCredentials(strings.TrimSpace(req.Username), req.Password); err != nil {
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	user, err := models.CreateInitialAdmin(req.Username, req.Password)
 	if err != nil {
-		if err == models.ErrInitialAdminAlreadyExists {
+		if errors.Is(err, models.ErrInitialAdminAlreadyExists) {
 			DisableInitialSetup()
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "管理员已初始化", Data: nil})
+			httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "ADMIN_ALREADY_INITIALIZED", Message: "管理员已初始化"})
 			return
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "创建管理员失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "创建管理员失败", Cause: err})
 		return
 	}
 	DisableInitialSetup()
-	c.JSON(http.StatusOK, APIResponse[gin.H]{
-		Code:    Success,
-		Message: "管理员创建成功，请使用新账号登录",
-		Data:    gin.H{"username": user.Username},
-	})
+	httpapi.Success(c, http.StatusCreated, gin.H{"username": user.Username}, "管理员创建成功，请使用新账号登录")
 }

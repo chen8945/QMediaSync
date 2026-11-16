@@ -1,13 +1,12 @@
-import type { AxiosInstance, AxiosResponse } from 'axios'
+import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import { HttpResponseError } from '@/http/errors'
 import type {
   ChannelType,
   NotificationChannel,
   NotificationConfig,
   NotificationRule,
 } from '@/utils/notificationUtils'
-import { getSettingsSaveResult } from './response'
+import { getSettingsSaveResult, unwrapResponse } from './response'
 import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface NotificationChannelPayload extends NotificationConfig {
@@ -62,28 +61,13 @@ export const notificationPublicMessages: Readonly<Record<string, string>> = {
   'headers：Header 名称包含非法字符': 'Header 名称包含非法字符',
 }
 
-function unwrapNotificationResponse<T>(response: AxiosResponse<APIResponse<T>>): T {
-  // 通知管理沿用 code=0；不得把该约定扩展到其他领域接口。
-  if (response.status < 200 || response.status >= 300 || response.data?.code !== 0) {
-    throw new HttpResponseError(response)
-  }
-  return response.data.data
-}
-
-function unwrapNotificationSaveResponse(
-  response: AxiosResponse<APIResponse<unknown> & { warnings?: unknown }>,
-): SettingsSaveResult {
-  unwrapNotificationResponse(response)
-  return getSettingsSaveResult(response)
-}
-
 const channelsURL = `${SERVER_URL}/setting/notification/channels`
 const rulesURL = `${SERVER_URL}/setting/notification/rules`
 
 export async function fetchNotificationChannels(
   http: AxiosInstance,
 ): Promise<NotificationChannel[]> {
-  return unwrapNotificationResponse(await http.get<APIResponse<NotificationChannel[]>>(channelsURL))
+  return unwrapResponse(await http.get<APIResponse<NotificationChannel[]>>(channelsURL)).data
 }
 
 export async function fetchNotificationChannel(
@@ -91,9 +75,9 @@ export async function fetchNotificationChannel(
   type: ChannelType,
   id: number,
 ): Promise<NotificationChannelDetails> {
-  return unwrapNotificationResponse(
+  return unwrapResponse(
     await http.get<APIResponse<NotificationChannelDetails>>(`${channelsURL}/${type}/${id}`),
-  )
+  ).data
 }
 
 export async function createNotificationChannel(
@@ -101,7 +85,7 @@ export async function createNotificationChannel(
   type: ChannelType,
   payload: NotificationChannelPayload,
 ): Promise<SettingsSaveResult> {
-  return unwrapNotificationSaveResponse(
+  return getSettingsSaveResult(
     await http.post<APIResponse<unknown>>(`${channelsURL}/${type}`, payload),
   )
 }
@@ -111,7 +95,7 @@ export async function updateNotificationChannel(
   type: ChannelType,
   payload: NotificationChannelPayload & { channel_id: number },
 ): Promise<SettingsSaveResult> {
-  return unwrapNotificationSaveResponse(
+  return getSettingsSaveResult(
     await http.put<APIResponse<unknown>>(`${channelsURL}/${type}`, payload),
   )
 }
@@ -121,7 +105,7 @@ export async function setNotificationChannelEnabled(
   id: number,
   enabled: boolean,
 ): Promise<SettingsSaveResult> {
-  return unwrapNotificationSaveResponse(
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${channelsURL}/status`, {
       channel_id: id,
       is_enabled: enabled,
@@ -129,8 +113,11 @@ export async function setNotificationChannelEnabled(
   )
 }
 
-export async function testNotificationChannel(http: AxiosInstance, id: number): Promise<void> {
-  unwrapNotificationResponse(
+export async function testNotificationChannel(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${channelsURL}/test`, { channel_id: id }),
   )
 }
@@ -139,25 +126,23 @@ export async function deleteNotificationChannel(
   http: AxiosInstance,
   id: number,
 ): Promise<SettingsSaveResult> {
-  return unwrapNotificationSaveResponse(
-    await http.delete<APIResponse<null>>(`${channelsURL}/${id}`),
-  )
+  return getSettingsSaveResult(await http.delete<APIResponse<null>>(`${channelsURL}/${id}`))
 }
 
 export async function fetchNotificationRules(
   http: AxiosInstance,
   channelId: number,
 ): Promise<NotificationRule[]> {
-  return unwrapNotificationResponse(
+  return unwrapResponse(
     await http.get<APIResponse<NotificationRule[]>>(rulesURL, {
       params: { channel_id: channelId },
     }),
-  )
+  ).data
 }
 
 export async function saveNotificationRule(
   http: AxiosInstance,
   payload: Pick<NotificationRule, 'channel_id' | 'event_type' | 'is_enabled'>,
 ): Promise<SettingsSaveResult> {
-  return unwrapNotificationSaveResponse(await http.put<APIResponse<null>>(rulesURL, payload))
+  return getSettingsSaveResult(await http.put<APIResponse<null>>(rulesURL, payload))
 }

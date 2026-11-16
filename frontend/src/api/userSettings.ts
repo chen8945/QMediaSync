@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { User, UserSession } from './auth'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export type LoginSession = Required<UserSession>
 
@@ -21,13 +21,13 @@ export const userSettingsPublicMessages: Readonly<Record<string, string>> = {
 }
 
 export async function fetchCurrentUser(http: AxiosInstance): Promise<User> {
-  return unwrapResponse(await http.get<APIResponse<User>>(`${SERVER_URL}/user/info`))
+  return unwrapResponse(await http.get<APIResponse<User>>(`${SERVER_URL}/user/info`)).data
 }
 
 export async function changeUserCredentials(
   http: AxiosInstance,
   payload: { username: string; new_password: string },
-): Promise<boolean> {
+): Promise<SettingsSaveResult & { data: boolean }> {
   return unwrapResponse(
     await http.post<APIResponse<boolean>>(`${SERVER_URL}/user/change`, payload, {
       headers: { 'Content-Type': 'application/json' },
@@ -38,17 +38,20 @@ export async function changeUserCredentials(
 export async function fetchTwoFactorStatus(http: AxiosInstance): Promise<{ enabled: boolean }> {
   return unwrapResponse(
     await http.get<APIResponse<{ enabled: boolean }>>(`${SERVER_URL}/user/two-factor/status`),
-  )
+  ).data
 }
 
 export async function setupTwoFactor(http: AxiosInstance): Promise<TwoFactorSetup> {
   return unwrapResponse(
     await http.post<APIResponse<TwoFactorSetup>>(`${SERVER_URL}/user/two-factor/setup`),
-  )
+  ).data
 }
 
-export async function enableTwoFactor(http: AxiosInstance, code: string): Promise<void> {
-  unwrapResponse(
+export async function enableTwoFactor(
+  http: AxiosInstance,
+  code: string,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/user/two-factor/enable`, { totp_code: code }),
   )
 }
@@ -56,8 +59,8 @@ export async function enableTwoFactor(http: AxiosInstance, code: string): Promis
 export async function disableTwoFactor(
   http: AxiosInstance,
   payload: { password: string; totp_code: string },
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/user/two-factor/disable`, payload),
   )
 }
@@ -66,18 +69,23 @@ export async function fetchLoginSessions(http: AxiosInstance): Promise<LoginSess
   return (
     unwrapResponse(
       await http.get<APIResponse<LoginSession[] | null>>(`${SERVER_URL}/user/sessions`),
-    ) ?? []
+    ).data ?? []
   )
 }
 
-export async function revokeLoginSession(http: AxiosInstance, sessionId: string): Promise<void> {
-  unwrapResponse(
+export async function revokeLoginSession(
+  http: AxiosInstance,
+  sessionId: string,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.delete<APIResponse<null>>(
       `${SERVER_URL}/user/sessions/${encodeURIComponent(sessionId)}`,
     ),
   )
 }
 
-export async function revokeOtherLoginSessions(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/user/sessions/revoke-others`))
+export async function revokeOtherLoginSessions(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/user/sessions/revoke-others`),
+  )
 }

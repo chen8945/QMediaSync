@@ -21,6 +21,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/updater"
@@ -42,6 +43,7 @@ type version struct {
 type updateStatus string
 
 const (
+	updateStatusIdle        updateStatus = "idle"        // 未开始更新
 	updateStatusDownloading updateStatus = "downloading" // 正在下载
 	updateStatusInstall     updateStatus = "install"     // 安装中
 	updateStatusCompleted   updateStatus = "completed"   // 已完成
@@ -76,6 +78,9 @@ func getCurrentUpdateInfoSnapshot() *updateInfo {
 	}
 	info := *currentUpdateInfo
 	info.ctx = nil
+	if info.Status == string(updateStatusFailed) && info.ErrorMessage != "" {
+		info.ErrorMessage = "更新失败，请查看日志后重试"
+	}
 	return &info
 }
 
@@ -400,16 +405,6 @@ func InstallReleaseFiles(srcDir, rootDir, binaryName string) (err error) {
 }
 
 // GetLastRelease 获取最新版本列表
-// @Summary 获取最新版本
-// @Description 获取 GitHub 上最新的 5 个稳定版本
-// @Tags 更新管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /update/last [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetLastRelease(c *gin.Context) {
 	force := c.Query("force")
 	channel := c.Query("channel")
@@ -420,53 +415,42 @@ func GetLastRelease(c *gin.Context) {
 	if force == "1" {
 		passCache = true
 	}
-	releases := listReleases(passCache, channel)
-	if releases == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取最新版本失败", Data: nil})
+	releases, err := listReleases(passCache, channel)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "UPDATE_RELEASE_LOOKUP_FAILED", Message: "获取最新版本失败，请稍后重试", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取最新版本成功", Data: releases})
+	httpapi.Success(c, http.StatusOK, releases, "获取最新版本成功")
 }
 
 // UpdateToVersion 更新到指定版本
-// @Summary 更新到指定版本
-// @Description 下载并安装指定版本的更新包
-// @Tags 更新管理
-// @Accept json
-// @Produce json
-// @Param version body string true "版本号"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /update/to-version [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateToVersion(c *gin.Context) {
 	// 不支持的运行方式下载后无法安装，会误报更新完成。
 	if !supportsOnlineUpdate() {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前运行方式不支持在线更新，请手动下载安装", Data: nil})
+		httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "UPDATE_UNSUPPORTED", Message: "当前运行方式不支持在线更新，请手动下载安装"})
 		return
 	}
 	// systemd 安装在安装目录内替换文件，服务用户无写权限时下载后必然失败。
 	if isSystemdOnlineUpdate() && !isDirWritable(helpers.RootDir) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "安装目录不可写，无法在线更新，请手动下载安装", Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "UPDATE_INSTALL_DIRECTORY_UNWRITABLE", Message: "安装目录不可写，无法在线更新，请手动下载安装"})
 		return
 	}
 	// 只替换安装目录下的 QMediaSync；程序改名或不在安装目录运行时替换不会生效，同样会误报完成。
 	if isSystemdOnlineUpdate() && !runsInstalledBinary(helpers.RootDir) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前运行方式不支持在线更新，请手动下载安装", Data: nil})
+		httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "UPDATE_UNSUPPORTED", Message: "当前运行方式不支持在线更新，请手动下载安装"})
 		return
 	}
 	if isCurrentUpdateRunning() {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "正在更新中", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "UPDATE_IN_PROGRESS", Message: "正在更新中"})
 		return
 	}
 	var req requests.UpdateVersionRequest
 	if perr := c.ShouldBindJSON(&req); perr != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(perr))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	version := req.Version
@@ -481,7 +465,7 @@ func UpdateToVersion(c *gin.Context) {
 	// 	giteeUpdater := updater.NewGiteeUpdater("chen8945", "QMediaSync", helpers.Version)
 	// 	downloadURL, _, _, err = giteeUpdater.GetReleaseDownloadURL(version)
 	// 	if err != nil {
-	// 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "版本不存在", Data: nil})
+	// 		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "版本不存在", Data: nil})
 	// 		return
 	// 	}
 	// } else {
@@ -489,13 +473,17 @@ func UpdateToVersion(c *gin.Context) {
 		ghUpdater := updater.NewGitHubUpdater("chen8945", "QMediaSync", helpers.Version)
 		downloadURL, checksumURL, _, err = ghUpdater.GetReleaseDownloadURL(version)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "版本不存在", Data: nil})
+			if errors.Is(err, updater.ErrReleaseUnavailable) {
+				httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "UPDATE_TARGET_UNAVAILABLE", Message: "指定版本不存在或未发布适合当前系统的下载文件，请选择其他版本", Cause: err})
+				return
+			}
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "UPDATE_RELEASE_LOOKUP_FAILED", Message: "获取版本信息失败，请稍后重试", Cause: err})
 			return
 		}
 		var proxyUrl string
 		connType, proxyUrl = helpers.TestGithub(downloadURL, models.GetHTTPProxy())
 		if connType == github.ConnectionTypeFailed {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "无法连接 GitHub，且未设置代理，无法升级", Data: nil})
+			httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "UPDATE_SOURCE_UNAVAILABLE", Message: "无法连接 GitHub，请检查网络或代理设置后重试"})
 			return
 		}
 		if connType == github.ConnectionTypeGitHubProxy {
@@ -510,13 +498,13 @@ func UpdateToVersion(c *gin.Context) {
 	}
 	// systemd 替换文件前必须校验更新包；未发布校验文件的旧版本在下载前拒绝。
 	if isSystemdOnlineUpdate() && checksumURL == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "该版本未发布校验文件，无法在线更新，请手动下载安装", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "UPDATE_CHECKSUM_MISSING", Message: "该版本未发布校验文件，无法在线更新，请手动下载安装"})
 		return
 	}
 	currentUpdateMu.Lock()
 	if isUpdateTaskRunning(currentUpdateInfo) {
 		currentUpdateMu.Unlock()
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "正在更新中", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "UPDATE_IN_PROGRESS", Message: "正在更新中"})
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -541,6 +529,7 @@ func UpdateToVersion(c *gin.Context) {
 		filename := filepath.Base(downloadURL)
 		updateFilename := filepath.Join(updateFilePath, filename)
 		failUpdate := func(err error) {
+			helpers.AppLogger.Errorf("更新任务失败：%v", err)
 			cleanupUpdatePackageOnDownloadError(updateFilename)
 			updateCurrentUpdateInfo(func(info *updateInfo) {
 				if info.Status != string(updateStatusCancelled) {
@@ -550,7 +539,6 @@ func UpdateToVersion(c *gin.Context) {
 			})
 		}
 		if err := os.MkdirAll(updateFilePath, 0777); err != nil {
-			helpers.AppLogger.Errorf("创建更新临时目录失败：%v", err)
 			failUpdate(err)
 			return
 		}
@@ -569,12 +557,10 @@ func UpdateToVersion(c *gin.Context) {
 			})
 		})
 		if err != nil {
-			helpers.AppLogger.Errorf("下载文件失败：%v", err)
 			failUpdate(err)
 			return
 		}
 		if err := verifyUpdatePackage(ctx, httpProxy, checksumURL, updateFilename, isSystemdOnlineUpdate()); err != nil {
-			helpers.AppLogger.Errorf("更新包校验失败：%v", err)
 			failUpdate(err)
 			return
 		}
@@ -597,59 +583,37 @@ func UpdateToVersion(c *gin.Context) {
 			err = installDockerUpdate(updateFilename)
 		}
 		if err != nil {
-			helpers.AppLogger.Errorf("安装更新失败：%v", err)
 			failUpdate(err)
 		}
 		// Windows/Docker 交付后仍处于安装中；前端在进程重启后核对实际版本。
 	}()
 	// 返回更新信息
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新开始", Data: getCurrentUpdateInfoSnapshot()})
+	httpapi.Success(c, http.StatusAccepted, getCurrentUpdateInfoSnapshot(), "更新开始")
 }
 
 // UpdateProgress 获取更新进度
-// @Summary 获取更新进度
-// @Description 查询当前更新任务的下载和安装进度
-// @Tags 更新管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /update/progress [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateProgress(c *gin.Context) {
 	info := getCurrentUpdateInfoSnapshot()
 	if info == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "未开始更新", Data: nil})
-		return
+		info = &updateInfo{Status: string(updateStatusIdle)}
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新进度", Data: info})
+	httpapi.Success(c, http.StatusOK, info, "更新进度")
 }
 
 // CancelUpdate 取消更新
-// @Summary 取消更新
-// @Description 取消仍在下载的更新任务；进入安装后不能取消
-// @Tags 更新管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /update/cancel [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func CancelUpdate(c *gin.Context) {
 	currentUpdateMu.Lock()
 	cancel := currentUpdateCancel
 	// 上一轮已结束时新任务可能尚未换入，不能把旧终态改写为已取消。
 	if !isUpdateTaskRunning(currentUpdateInfo) {
 		currentUpdateMu.Unlock()
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "未开始更新", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "UPDATE_NOT_RUNNING", Message: "未开始更新"})
 		return
 	}
 	// 下载完成后开始替换文件并重启，取消已无法阻止。
 	if status := currentUpdateInfo.Status; status != string(updateStatusDownloading) && status != string(updateStatusCancelled) {
 		currentUpdateMu.Unlock()
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "正在安装更新，无法取消", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "UPDATE_CANNOT_CANCEL", Message: "正在安装更新，无法取消"})
 		return
 	}
 	currentUpdateInfo.Status = string(updateStatusCancelled)
@@ -660,11 +624,11 @@ func CancelUpdate(c *gin.Context) {
 	if cancel != nil {
 		cancel()
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新已取消", Data: getCurrentUpdateInfoSnapshot()})
+	httpapi.Success(c, http.StatusOK, getCurrentUpdateInfoSnapshot(), "更新已取消")
 }
 
 // listReleases 列出最新版本
-func listReleases(passCache bool, channel string) []version {
+func listReleases(passCache bool, channel string) ([]version, error) {
 	cacheKey := "latest_releases"
 	if channel == "gitee" {
 		cacheKey = "latest_releases_gitee"
@@ -678,7 +642,10 @@ func listReleases(passCache bool, channel string) []version {
 			err := json.Unmarshal(cached, &versionList)
 			if err == nil {
 				fillCachedPublishedAt(versionList)
-				return versionList
+				if versionList == nil {
+					versionList = []version{}
+				}
+				return versionList, nil
 			} else {
 				helpers.AppLogger.Infof("解析缓存的最新版本列表失败：%v", err)
 			}
@@ -703,14 +670,13 @@ func listReleases(passCache bool, channel string) []version {
 		ghUpdater.IncludePreRelease = false
 		releases, err = ghUpdater.GetLatestStableReleases(5)
 		if err != nil {
-			helpers.AppLogger.Errorf("查找 GitHub 最新版本失败：%v", err)
-			return nil
+			return nil, err
 		}
 	}
 
 	if len(releases) == 0 {
 		helpers.AppLogger.Infof("未找到最新版本")
-		return nil
+		return []version{}, nil
 	}
 
 	helpers.AppLogger.Infof("找到 %s/%s 的 %d 个最新版本（channel：%s）", "chen8945", "QMediaSync", len(releases), channel)
@@ -731,7 +697,7 @@ func listReleases(passCache bool, channel string) []version {
 	if versionListStr != nil {
 		db.Cache.Set(cacheKey, versionListStr, 3600)
 	}
-	return versionList
+	return versionList, nil
 }
 
 func fillCachedPublishedAt(versionList []version) {

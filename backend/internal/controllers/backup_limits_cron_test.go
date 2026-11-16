@@ -3,6 +3,7 @@ package controllers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,7 @@ import (
 	"qmediasync/internal/backup"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/synccron"
 )
@@ -63,8 +65,8 @@ func TestUpdateBackupConfigRemovesDisabledSchedule(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
-		var result APIResponse[any]
-		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Code != Success {
+		var result httpapi.APIResponse[any]
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Status != http.StatusOK {
 			t.Fatalf("config update failed: %s, %v", response.Body, err)
 		}
 		var stored models.BackupConfig
@@ -82,6 +84,46 @@ func TestUpdateBackupConfigRemovesDisabledSchedule(t *testing.T) {
 	reloads.Wait()
 	if hasBackupSchedule() {
 		t.Fatal("concurrent reloads recreated the disabled backup schedule")
+	}
+}
+
+func TestUpdateBackupConfigSaveFailurePreservesActiveConfiguration(t *testing.T) {
+	database := setupControllerTestDB(t, &models.BackupConfig{})
+	setupBackupControllerFiles(t)
+	previousService, previousCron := models.GlobalBackupService, synccron.GlobalCron
+	models.GlobalBackupService, synccron.GlobalCron = nil, cron.New()
+	t.Cleanup(func() { models.GlobalBackupService, synccron.GlobalCron = previousService, previousCron })
+	config := models.BackupConfig{BackupEnabled: 1, BackupCron: "17 5 * * *", BackupRetention: 7, BackupMaxCount: 10, BackupCompress: 1}
+	if err := database.Create(&config).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := models.GetBackupService()
+	beforeConfig, beforeCron := *service.GetBackupConfig(), synccron.GlobalCron
+	if err := database.Callback().Update().Before("gorm:update").Register("test:backup-save-failure", func(tx *gorm.DB) {
+		tx.AddError(errors.New("private database write failure"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Callback().Update().Remove("test:backup-save-failure") })
+	router := gin.New()
+	router.PUT("/config", UpdateBackupConfig)
+	request := httptest.NewRequest(http.MethodPut, "/config", strings.NewReader(`{"backup_enabled":0,"backup_cron":"19 6 * * *","backup_max_count":2,"backup_compress":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	var body httpapi.APIResponse[any]
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusInternalServerError || body.Status != response.Code || body.ErrorCode != "BACKUP_CONFIG_SAVE_FAILED" || body.Instance == "" {
+		t.Fatalf("save failure must be a request error: %s, %v", response.Body, err)
+	}
+	if *service.GetBackupConfig() != beforeConfig || synccron.GlobalCron != beforeCron {
+		t.Fatalf("failed save changed active configuration or schedule: %+v", service.GetBackupConfig())
+	}
+	var stored models.BackupConfig
+	if err := database.First(&stored, config.ID).Error; err != nil || stored != beforeConfig {
+		t.Fatalf("failed save changed persisted configuration: %+v, %v", stored, err)
+	}
+	if strings.Contains(response.Body.String(), "private database write failure") {
+		t.Fatalf("save error exposed database details: %s", response.Body)
 	}
 }
 
@@ -195,11 +237,11 @@ func TestUploadBackupCopyLimitCleansMultipartAndDestination(t *testing.T) {
 
 func assertBackupUploadLimit(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
-	var result APIResponse[any]
+	var result httpapi.APIResponse[any]
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusRequestEntityTooLarge || result.Code != BadRequest || result.ErrorCode != "BACKUP_ARCHIVE_LIMIT" {
+	if response.Code != http.StatusRequestEntityTooLarge || result.Status != response.Code || result.ErrorCode != "BACKUP_ARCHIVE_LIMIT" || result.Instance == "" {
 		t.Fatalf("unexpected oversized upload response: HTTP %d: %s", response.Code, response.Body)
 	}
 }

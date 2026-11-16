@@ -560,8 +560,9 @@ const loadAccounts = async (sourceType?: string) => {
 }
 
 const showSaveResult = (result: SettingsSaveResult, successMessage: string) => {
-  if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
-  else ElMessage.success(successMessage)
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || successMessage)
 }
 
 const handleDelete = async (row: ScrapePath, index: number) => {
@@ -593,8 +594,8 @@ const handleDelete = async (row: ScrapePath, index: number) => {
 const handleScan = async (row: ScrapePath) => {
   try {
     row.scanning = true
-    await startScrapePath(http, row.id)
-    ElMessage.success('刮削任务已开始')
+    const result = await startScrapePath(http, row.id)
+    showSaveResult(result, '刮削请求已受理')
   } catch (error) {
     reportError(error, '启动刮削任务失败')
   } finally {
@@ -605,8 +606,8 @@ const handleScan = async (row: ScrapePath) => {
 const handleStop = async (row: ScrapePath) => {
   try {
     row.scanning = true
-    await stopScrapePath(http, row.id)
-    ElMessage.success('刮削任务已停止')
+    const result = await stopScrapePath(http, row.id)
+    showSaveResult(result, '刮削任务已停止')
   } catch (error) {
     reportError(error, '停止刮削任务失败')
   } finally {
@@ -679,9 +680,9 @@ const saveSyncPathRelation = async () => {
 
   try {
     saveSyncPathLoading.value = true
-    await saveScrapeSyncPathIDs(http, directory.id, [...selectedSyncPathIds.value])
+    const result = await saveScrapeSyncPathIDs(http, directory.id, [...selectedSyncPathIds.value])
     if (!isSyncPathRequestCurrent(requestId, directory.id)) return
-    ElMessage.success('关联同步目录成功')
+    showSaveResult(result, '关联同步目录成功')
     showSyncPathDialog.value = false
   } catch (error) {
     if (!isSyncPathRequestCurrent(requestId, directory.id)) return

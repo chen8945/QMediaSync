@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,9 +15,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"qmediasync/internal/backup"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 )
 
@@ -57,14 +60,14 @@ func TestBackupRecordAvailabilityDoesNotChangeHistory(t *testing.T) {
 	router.GET("/records/:id", GetBackupRecord)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/list", nil))
-	var body APIResponse[struct {
+	var body httpapi.APIResponse[struct {
 		List  []backupRecordResponse `json:"list"`
 		Total int64                  `json:"total"`
 	}]
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code != Success || body.Data.Total != 3 || len(body.Data.List) != 3 {
+	if body.Status != http.StatusOK || body.Data.Total != 3 || len(body.Data.List) != 3 {
 		t.Fatalf("unexpected history response: %s", response.Body)
 	}
 	for _, item := range body.Data.List {
@@ -75,17 +78,50 @@ func TestBackupRecordAvailabilityDoesNotChangeHistory(t *testing.T) {
 	for _, original := range records {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/records/%d", original.ID), nil))
-		var detail APIResponse[backupRecordResponse]
+		var detail httpapi.APIResponse[backupRecordResponse]
 		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 			t.Fatal(err)
 		}
-		if detail.Code != Success || detail.Data.FileStatus != wanted[original.ID] || detail.Data.Status != original.Status {
+		if detail.Status != http.StatusOK || detail.Data.FileStatus != wanted[original.ID] || detail.Data.Status != original.Status {
 			t.Fatalf("unexpected detail response: %s", response.Body)
 		}
 		var stored models.BackupRecord
 		if err := database.First(&stored, original.ID).Error; err != nil || stored.Status != original.Status || stored.CompletedAt != original.CompletedAt {
 			t.Fatalf("history reads changed record: %+v, %v", stored, err)
 		}
+	}
+}
+
+func TestBackupRecordDistinguishesMissingRecordFromDatabaseFailure(t *testing.T) {
+	database := setupControllerTestDB(t, &models.BackupRecord{})
+	setupBackupControllerFiles(t)
+	router := gin.New()
+	router.GET("/records/:id", GetBackupRecord)
+	for _, test := range []struct {
+		name, code string
+		status     int
+		queryError error
+	}{
+		{name: "missing record", status: http.StatusNotFound, code: "BACKUP_RECORD_NOT_FOUND"},
+		{name: "database fault", status: http.StatusInternalServerError, code: "BACKUP_RECORD_READ_FAILED", queryError: errors.New("database secret at /private/backup.db")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.queryError != nil {
+				if err := database.Callback().Query().Before("gorm:query").Register("test:backup-query-failure", func(tx *gorm.DB) { tx.AddError(test.queryError) }); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { database.Callback().Query().Remove("test:backup-query-failure") })
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/records/9999", nil))
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != test.status || body.Status != response.Code || body.ErrorCode != test.code || body.Instance == "" {
+				t.Fatalf("record error classification failed: %s, %v", response.Body, err)
+			}
+			if strings.Contains(response.Body.String(), "/private/backup.db") || strings.Contains(response.Body.String(), "database secret") {
+				t.Fatalf("database details leaked: %s", response.Body)
+			}
+		})
 	}
 }
 
@@ -113,11 +149,11 @@ func TestBackupFilesReturnsOnlyRootZIPMetadata(t *testing.T) {
 	router.GET("/files", GetBackupFiles)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/files", nil))
-	var body APIResponse[backupFilesResponse]
+	var body httpapi.APIResponse[backupFilesResponse]
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Code != Success || body.Data.Directory != directory || len(body.Data.Files) != 2 {
+	if body.Status != http.StatusOK || body.Data.Directory != directory || len(body.Data.Files) != 2 {
 		t.Fatalf("unexpected files response: %s", response.Body)
 	}
 	for _, file := range body.Data.Files {
@@ -137,8 +173,8 @@ func TestBackupFilesEmptyAndUnreadableDirectory(t *testing.T) {
 	router.GET("/files", GetBackupFiles)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/files", nil))
-	var body APIResponse[backupFilesResponse]
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != Success || body.Data.Files == nil {
+	var body httpapi.APIResponse[backupFilesResponse]
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Status != http.StatusOK || body.Data.Files == nil {
 		t.Fatalf("empty listing must be an empty JSON array: %s, %v", response.Body, err)
 	}
 	if err := os.Remove(directory); err != nil {
@@ -149,8 +185,8 @@ func TestBackupFilesEmptyAndUnreadableDirectory(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/files", nil))
-	var failure APIResponse[any]
-	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != BadRequest {
+	var failure httpapi.APIResponse[any]
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || response.Code != http.StatusInternalServerError || failure.Status != response.Code || failure.ErrorCode != "BACKUP_FILE_LIST_FAILED" || failure.Instance == "" {
 		t.Fatalf("directory failure must not masquerade as an empty list: %s, %v", response.Body, err)
 	}
 }
@@ -187,8 +223,8 @@ func TestDownloadBackupChecksFileAvailabilityAndPreservesRanges(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/download/%d", record.ID), nil))
-	var body APIResponse[any]
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != BadRequest || strings.Contains(response.Body.String(), "outside data") {
+	var body httpapi.APIResponse[any]
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Status != http.StatusBadRequest || strings.Contains(response.Body.String(), "outside data") {
 		t.Fatalf("symlink must not be downloaded: %s, %v", response.Body, err)
 	}
 }
@@ -202,11 +238,11 @@ func TestBackupStatusExposesSafeRestoreFailure(t *testing.T) {
 	router.GET("/api/backup/status", GetBackupStatus)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/backup/status", nil))
-	var body APIResponse[backup.BackupOrRestoreResult]
+	var body httpapi.APIResponse[backup.BackupOrRestoreResult]
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || body.Code != Success || body.Data.Status != "failed" || body.Data.Type != "restore" || body.Data.IsRunning {
+	if response.Code != http.StatusOK || body.Status != http.StatusOK || body.Data.Status != "failed" || body.Data.Type != "restore" || body.Data.IsRunning {
 		t.Fatalf("查询应成功返回任务失败终态：HTTP=%d body=%s", response.Code, response.Body)
 	}
 	if body.Data.ErrorMsg == "" || strings.Contains(response.Body.String(), missingPath) {
@@ -226,24 +262,27 @@ func TestRestoreBackupRejectsInvalidOrUnavailableSource(t *testing.T) {
 	}
 	router := gin.New()
 	router.POST("/restore", RestoreFromBackup)
-	for _, scenario := range []struct{ name, body string }{
-		{"empty", `{}`},
-		{"both sources", `{"record_id":1,"file_name":"backup.zip"}`},
-		{"invalid ID", `{"record_id":-1}`},
-		{"traversal", `{"file_name":"../backup.zip"}`},
-		{"nested", `{"file_name":"temp/backup.zip"}`},
-		{"missing filename", `{"file_name":"missing.zip"}`},
-		{"directory", `{"file_name":"directory.zip"}`},
-		{"missing record", `{"record_id":9999}`},
-		{"missing record file", fmt.Sprintf(`{"record_id":%d}`, record.ID)},
+	for _, scenario := range []struct {
+		name, body string
+		status     int
+	}{
+		{"empty", `{}`, http.StatusBadRequest},
+		{"both sources", `{"record_id":1,"file_name":"backup.zip"}`, http.StatusBadRequest},
+		{"invalid ID", `{"record_id":-1}`, http.StatusBadRequest},
+		{"traversal", `{"file_name":"../backup.zip"}`, http.StatusBadRequest},
+		{"nested", `{"file_name":"temp/backup.zip"}`, http.StatusBadRequest},
+		{"missing filename", `{"file_name":"missing.zip"}`, http.StatusNotFound},
+		{"directory", `{"file_name":"directory.zip"}`, http.StatusBadRequest},
+		{"missing record", `{"record_id":9999}`, http.StatusNotFound},
+		{"missing record file", fmt.Sprintf(`{"record_id":%d}`, record.ID), http.StatusNotFound},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/restore", strings.NewReader(scenario.body))
 			request.Header.Set("Content-Type", "application/json")
 			router.ServeHTTP(response, request)
-			var body APIResponse[any]
-			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != BadRequest || backup.IsRunning() {
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != scenario.status || body.Status != response.Code || body.ErrorCode == "" || body.Instance == "" || backup.IsRunning() {
 				t.Fatalf("invalid source started a restore: %s, %v", response.Body, err)
 			}
 		})
@@ -272,8 +311,8 @@ func TestRestoreBackupAcceptsFileAndExistingRecordWithoutTrustingStatus(t *testi
 			request := httptest.NewRequest(http.MethodPost, "/restore", strings.NewReader(scenario.body))
 			request.Header.Set("Content-Type", "application/json")
 			router.ServeHTTP(response, request)
-			var body APIResponse[map[string]string]
-			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != Success || body.Data["restore_receipt"] == "" {
+			var body httpapi.APIResponse[map[string]string]
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusAccepted || body.Status != response.Code || body.Data["restore_receipt"] == "" {
 				t.Fatalf("available source did not start validation: %s, %v", response.Body, err)
 			}
 			deadline := time.Now().Add(5 * time.Second)

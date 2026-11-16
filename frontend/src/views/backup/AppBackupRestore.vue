@@ -198,8 +198,10 @@ const startRestore = async (serverFile?: backupAPI.BackupFile) => {
     const result = serverFile
       ? await backupAPI.restoreBackup(http, { file_name: serverFile.file_name })
       : await backupAPI.uploadAndRestoreBackup(http, uploadFile!)
-    ElMessage.success('恢复任务已启动')
-    backupStore.startProgressPolling('restore', undefined, http, result?.restore_receipt)
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || '恢复任务已启动')
+    backupStore.startProgressPolling('restore', undefined, http, result.data?.restore_receipt)
     if (!serverFile) clearFile()
   } catch (error: unknown) {
     if (isMessageBoxCancelError(error)) return

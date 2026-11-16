@@ -17,6 +17,6 @@ body=${response%$'\n'*}
 if [[ "$status" == 404 ]]; then
     fail 'QMediaSync 尚未完成数据库设置。请完成网页设置后刷新目录，必要时重启应用。'
 fi
-if [[ "$status" != 200 || ! "$body" =~ \"code\"[[:space:]]*:[[:space:]]*200[[:space:]]*[,}] ]]; then
+if [[ "$status" != 200 || ! "$body" =~ \"status\"[[:space:]]*:[[:space:]]*200[[:space:]]*[,}] ]]; then
     fail 'QMediaSync 未能刷新目录授权。请确认应用已启动后重试，必要时重启应用。'
 fi

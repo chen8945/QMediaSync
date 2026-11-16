@@ -10,7 +10,7 @@ import { createDeferred } from '../support/deferred'
 
 const page = (name = '文件', sort_by = 'name') => ({
   data: {
-    code: 200,
+    status: 200,
     data: {
       list: [{ id: 'file', name, is_directory: false, size: 1 }],
       total: 1,
@@ -18,6 +18,7 @@ const page = (name = '文件', sort_by = 'name') => ({
       sort_order: 'asc',
     },
   },
+  status: 200,
 })
 
 function mountPage(source = '115') {
@@ -43,15 +44,19 @@ function mountPage(source = '115') {
       if (url.endsWith('/account/list'))
         return Promise.resolve({
           data: {
-            code: 200,
+            status: 200,
             data: [
               { id: 1, source_type: source },
               { id: 2, source_type: source },
             ],
           },
+          status: 200,
         })
       if (url.endsWith('/path/sort-options'))
-        return Promise.resolve({ data: { code: 200, data: browseSortOptions(source) } })
+        return Promise.resolve({
+          data: { status: 200, data: browseSortOptions(source) },
+          status: 200,
+        })
       if (url.endsWith('/path/files')) return list()
       return Promise.reject(new Error(`unexpected URL ${url} ${Boolean(config)}`))
     }),
@@ -153,7 +158,7 @@ describe('文件管理排序', () => {
     await flushPromises()
     wrapper.unmount()
     const failed = page()
-    failed.data.code = 500
+    failed.data.status = 500
     late.resolve(failed)
     await flushPromises()
     expect(ElMessage.error).not.toHaveBeenCalled()

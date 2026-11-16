@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"bufio"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/logstream"
 	"qmediasync/internal/realtime"
 
@@ -154,5 +156,56 @@ func readSSEFrame(t *testing.T, reader *bufio.Reader) string {
 	case <-time.After(3 * time.Second):
 		t.Fatal("读取 SSE 帧超时")
 		return ""
+	}
+}
+
+func TestLogSnapshotAndNativeRangeDownload(t *testing.T) {
+	oldConfigDir := helpers.ConfigDir
+	helpers.ConfigDir = t.TempDir()
+	t.Cleanup(func() { helpers.ConfigDir = oldConfigDir })
+	logDir := filepath.Join(helpers.ConfigDir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "2026/11/15 10:00:00.000000 [INFO] visible-entry\n"
+	if err := os.WriteFile(filepath.Join(logDir, "app.log"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.GET("/logs/old", GetOldLogs)
+	router.GET("/logs/download", DownloadLogFile)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logs/old?path=app.log&direction=backward&limit=10", nil))
+	var snapshot httpapi.APIResponse[OldLogsResponse]
+	if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || len(snapshot.Data.Entries) != 1 || !strings.Contains(snapshot.Data.Entries[0].Message, "visible-entry") {
+		t.Fatalf("log snapshot: HTTP=%d body=%s", w.Code, w.Body.String())
+	}
+	rangeRequest := httptest.NewRequest(http.MethodGet, "/logs/download?path=app.log", nil)
+	rangeRequest.Header.Set("Range", "bytes=0-9")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, rangeRequest)
+	if w.Code != http.StatusPartialContent || w.Body.String() != content[:10] || w.Header().Get("Content-Range") == "" || w.Header().Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("native range download: HTTP=%d headers=%v body=%q", w.Code, w.Header(), w.Body.String())
+	}
+}
+
+func TestLogRoutesRejectUnsafePathsBeforeNativeOutput(t *testing.T) {
+	router := gin.New()
+	router.GET("/logs/old", GetOldLogs)
+	router.GET("/logs/stream", LogStream)
+	router.GET("/logs/download", DownloadLogFile)
+	for _, route := range []string{"/logs/old", "/logs/stream", "/logs/download"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, route+"?path=../private.log", nil))
+		var failure httpapi.APIResponse[any]
+		if err := json.Unmarshal(w.Body.Bytes(), &failure); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusBadRequest || failure.ErrorCode != "INVALID_REQUEST" || len(failure.FieldErrors) != 1 || failure.FieldErrors[0].Field != "path" {
+			t.Fatalf("unsafe log path response for %s: HTTP=%d body=%s", route, w.Code, w.Body.String())
+		}
 	}
 }

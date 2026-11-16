@@ -1049,6 +1049,33 @@
                 return true;
             }
 
+            async function readAPIResponse(response) {
+                const result = await response.json();
+                if (
+                    !result || typeof result !== "object" || Array.isArray(result) ||
+                    !Number.isInteger(response.status) || result.status !== response.status ||
+                    !Object.hasOwn(result, "data") ||
+                    (result.message !== undefined && typeof result.message !== "string") ||
+                    (result.warnings !== undefined && (!Array.isArray(result.warnings) ||
+                        !result.warnings.every((warning) => typeof warning === "string")))
+                ) {
+                    throw new Error("服务器响应格式无效，请重试");
+                }
+                const valid = response.status >= 200 && response.status < 300
+                    ? result.error_code === undefined && result.instance === undefined && result.field_errors === undefined
+                    : response.status >= 400 && response.status < 600 &&
+                      typeof result.message === "string" && result.message.trim() !== "" &&
+                      typeof result.error_code === "string" && result.error_code.trim() !== "" &&
+                      typeof result.instance === "string" && /^\/request-errors\/[a-z\d]{24}$/i.test(result.instance) &&
+                      result.warnings === undefined &&
+                      (result.field_errors === undefined || (Array.isArray(result.field_errors) &&
+                        result.field_errors.every((field) => field && typeof field === "object" && !Array.isArray(field) &&
+                            typeof field.field === "string" && typeof field.message === "string" &&
+                            (field.client_id === undefined || typeof field.client_id === "string"))));
+                if (!valid) throw new Error("服务器响应格式无效，请重试");
+                return result;
+            }
+
             function testConnection() {
                 invalidateConnectionTest();
                 if (currentConfig.engine !== "postgres") return;
@@ -1071,13 +1098,13 @@
                     },
                     body: JSON.stringify(config),
                 })
-                    .then((response) => response.json())
+                    .then(readAPIResponse)
                     .then((result) => {
                         if (!isCurrentTest(requestId, config)) return;
                         btnTest.disabled = false;
-                        if (result.success) {
+                        if (result.status >= 200 && result.status < 300) {
                             let dropDatabase = false;
-                            if (result.dbExists && result.hasOtherTables) {
+                            if (result.data.dbExists && result.data.hasOtherTables) {
                                 if (
                                     confirm(
                                         "检测到数据库已存在且包含业务数据表：\n\n" +
@@ -1101,16 +1128,16 @@
                             updateSaveButton();
                         } else {
                             resetTestButton();
-                            showMessage("error", result.error || "连接失败");
+                            showMessage("error", result.message || "连接失败");
                             connectionTested = false;
                             updateSaveButton();
                         }
                     })
-                    .catch((error) => {
+                    .catch(() => {
                         if (!isCurrentTest(requestId, config)) return;
                         resetTestButton();
                         btnTest.disabled = false;
-                        showMessage("error", "请求失败: " + error.message);
+                        showMessage("error", "请求失败，请稍后重试");
                         connectionTested = false;
                         updateSaveButton();
                     });
@@ -1174,16 +1201,16 @@
                     },
                     body: JSON.stringify(data),
                 })
-                    .then((response) => response.json())
+                    .then(readAPIResponse)
                     .then((result) => {
                         document.getElementById("loading").classList.remove("active");
-                        if (result.success) {
+                        if (result.status >= 200 && result.status < 300) {
                             showMessage("success", result.message);
-                            if (result.restartPending) {
+                            if (result.data?.restartPending) {
                                 showStep(currentConfig.engine === "postgres" ? "step-postgres-config" : "step-engine");
                             }
                         } else {
-                            showMessage("error", result.error || "保存失败");
+                            showMessage("error", result.message || "保存失败");
                             if (currentConfig.engine === "postgres") {
                                 showStep("step-postgres-config");
                             } else {
@@ -1191,9 +1218,9 @@
                             }
                         }
                     })
-                    .catch((error) => {
+                    .catch(() => {
                         document.getElementById("loading").classList.remove("active");
-                        showMessage("error", "请求失败: " + error.message);
+                        showMessage("error", "请求失败，请稍后重试");
                         if (currentConfig.engine === "postgres") {
                             showStep("step-postgres-config");
                         } else {

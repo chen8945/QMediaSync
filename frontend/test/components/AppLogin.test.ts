@@ -19,8 +19,17 @@ const messageSuccess = vi.spyOn(ElMessage, 'success').mockImplementation(() => u
 const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
 const createHTTP = () => ({
-  get: vi.fn().mockResolvedValue({ data: { code: 200, data: { required: false } } }),
-  post: vi.fn().mockResolvedValue({ data: { code: 500, message: '登录失败' } }),
+  get: vi.fn().mockResolvedValue({ data: { status: 200, data: { required: false } }, status: 200 }),
+  post: vi.fn().mockResolvedValue({
+    data: {
+      status: 500,
+      message: '登录失败',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+      error_code: 'TEST_REQUEST_FAILED',
+    },
+    status: 500,
+  }),
 })
 
 const createWrapper = async (http = createHTTP()) => {
@@ -139,10 +148,10 @@ describe('AppLogin', () => {
     const http = {
       get: vi
         .fn()
-        .mockResolvedValueOnce({ data: { code: 200, data: { required: false } } })
+        .mockResolvedValueOnce({ data: { status: 200, data: { required: false } }, status: 200 })
         .mockResolvedValueOnce({
           data: {
-            code: 200,
+            status: 200,
             data: {
               authenticated: true,
               user: { id: '1', username: 'admin', role: 'admin' },
@@ -150,8 +159,12 @@ describe('AppLogin', () => {
               session: { session_id: 'sid', expires_at: 1 },
             },
           },
+          status: 200,
         }),
-      post: vi.fn().mockResolvedValue({ data: { code: 200, data: {} } }),
+      post: vi.fn().mockResolvedValue({
+        data: { status: 200, data: {}, message: '服务端登录确认结果' },
+        status: 200,
+      }),
     }
     const { router, wrapper } = await createWrapper(http)
 
@@ -179,15 +192,19 @@ describe('AppLogin', () => {
       withCredentials: true,
     })
     expect(router.currentRoute.value.path).toBe('/')
+    expect(messageSuccess).toHaveBeenCalledExactlyOnceWith('服务端登录确认结果')
   })
 
   it('登录后会话 Cookie 未建立时保持在登录页', async () => {
     const http = {
       get: vi
         .fn()
-        .mockResolvedValueOnce({ data: { code: 200, data: { required: false } } })
-        .mockResolvedValueOnce({ data: { code: 200, data: { authenticated: false } } }),
-      post: vi.fn().mockResolvedValue({ data: { code: 200, data: {} } }),
+        .mockResolvedValueOnce({ data: { status: 200, data: { required: false } }, status: 200 })
+        .mockResolvedValueOnce({
+          data: { status: 200, data: { authenticated: false } },
+          status: 200,
+        }),
+      post: vi.fn().mockResolvedValue({ data: { status: 200, data: {} }, status: 200 }),
     }
     const { router, wrapper } = await createWrapper(http)
 
@@ -207,9 +224,9 @@ describe('AppLogin', () => {
     const http = {
       get: vi
         .fn()
-        .mockResolvedValueOnce({ data: { code: 200, data: { required: false } } })
+        .mockResolvedValueOnce({ data: { status: 200, data: { required: false } }, status: 200 })
         .mockRejectedValueOnce(new Error('session service unavailable')),
-      post: vi.fn().mockResolvedValue({ data: { code: 200, data: {} } }),
+      post: vi.fn().mockResolvedValue({ data: { status: 200, data: {} }, status: 200 }),
     }
     const { router, wrapper } = await createWrapper(http)
 
@@ -234,8 +251,14 @@ describe('AppLogin', () => {
       const http = createHTTP()
       // 后端对各类凭据失败统一返回“登录失败”
       http.post.mockResolvedValue({
-        status: 200,
-        data: { code: 500, message: '登录失败', data: null },
+        status: 401,
+        data: {
+          status: 401,
+          message: '登录失败',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'AUTHENTICATION_INVALID',
+        },
       })
       const { router, wrapper } = await createWrapper(http)
       await wrapper.get('input[name="username"]').setValue('admin')
@@ -257,17 +280,41 @@ describe('AppLogin', () => {
       )
       expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
       expect(router.currentRoute.value.path).toBe('/login')
-      expect(consoleError).toHaveBeenCalledWith('登录错误：', { status: 200 })
+      expect(consoleError).toHaveBeenCalledWith(
+        '登录错误：',
+        expect.objectContaining({ status: 401 }),
+      )
     },
   )
 
   it.each([
-    [403, '请求来源无效', '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置'],
-    [403, 'CSRF 校验失败', '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录'],
-    [429, '请求过于频繁，请 83 秒后再试', '请求过于频繁，请 83 秒后再试'],
-  ])('登录 HTTP %s 错误按原因展示一次', async (status, message, expected) => {
+    [
+      403,
+      '请求来源无效',
+      'REQUEST_ORIGIN_INVALID',
+      '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置',
+    ],
+    [
+      403,
+      'CSRF 校验失败',
+      'CSRF_TOKEN_INVALID',
+      '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录',
+    ],
+    [429, '请求过于频繁，请 83 秒后再试', 'REQUEST_RATE_LIMITED', '请求过于频繁，请 83 秒后再试'],
+  ])('登录 HTTP %s 错误按原因展示一次', async (status, message, errorCode, expected) => {
     const http = createHTTP()
-    http.post.mockRejectedValue({ response: { status, data: { code: 500, message } } })
+    http.post.mockRejectedValue({
+      response: {
+        status,
+        data: {
+          status: status,
+          message,
+          data: null,
+          error_code: errorCode,
+          instance: '/request-errors/ComponentTestFailure0001',
+        },
+      },
+    })
     const { router, wrapper } = await createWrapper(http)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -295,9 +342,9 @@ describe('AppLogin', () => {
 
   it('登录后会话无响应时展示连接提示，不误判 Cookie', async () => {
     const http = createHTTP()
-    http.post.mockResolvedValue({ data: { code: 200, data: null } })
+    http.post.mockResolvedValue({ data: { status: 200, data: null }, status: 200 })
     http.get
-      .mockResolvedValueOnce({ data: { code: 200, data: { required: false } } })
+      .mockResolvedValueOnce({ data: { status: 200, data: { required: false } }, status: 200 })
       .mockRejectedValueOnce(new AxiosError('Network Error', 'ERR_NETWORK'))
     const { router, wrapper } = await createWrapper(http)
     await wrapper.get('form').trigger('submit')

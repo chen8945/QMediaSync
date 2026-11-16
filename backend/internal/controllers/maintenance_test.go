@@ -18,6 +18,7 @@ import (
 	"qmediasync/internal/backup"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 )
 
 func TestRestoreReceiptReadsStatusWithoutDatabaseAuthentication(t *testing.T) {
@@ -45,7 +46,7 @@ func TestRestoreReceiptReadsStatusWithoutDatabaseAuthentication(t *testing.T) {
 	request.Header.Set("X-Restore-Receipt", receipt)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	var body APIResponse[backup.BackupOrRestoreResult]
+	var body httpapi.APIResponse[backup.BackupOrRestoreResult]
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +68,11 @@ func TestRestoreReceiptReadsStatusWithoutDatabaseAuthentication(t *testing.T) {
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("receipt bypassed unrelated permission: %d", response.Code)
 		}
-		if path == "/api/backup/status" && !strings.Contains(response.Body.String(), errorCodeRestoreReceiptInvalid) {
-			t.Fatalf("invalid receipt needs a distinct application error: %s", response.Body)
+		if path == "/api/backup/status" {
+			var failure httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Status != response.Code || failure.ErrorCode != errorCodeRestoreReceiptInvalid || failure.Instance == "" || response.Header().Get("WWW-Authenticate") != `QMediaSyncRestoreReceipt realm="QMediaSyncRestore"` {
+				t.Fatalf("invalid receipt needs its own failure and challenge: %s (%v)", response.Body, err)
+			}
 		}
 	}
 	if authCalls != 1 {
@@ -84,7 +88,7 @@ func TestRestoreReceiptReadsStatusWithoutDatabaseAuthentication(t *testing.T) {
 		{"preflight failed", http.MethodPost, receipt, "http://example.com", http.StatusConflict, "RESTORE_RESTART_NOT_READY"},
 		{"cross origin", http.MethodPost, receipt, "https://untrusted.invalid", http.StatusForbidden, ErrorCodeRequestOriginInvalid},
 		{"missing origin", http.MethodPost, receipt, "", http.StatusForbidden, ErrorCodeRequestOriginInvalid},
-		{"get cannot restart", http.MethodGet, receipt, "http://example.com", http.StatusMethodNotAllowed, ""},
+		{"get cannot restart", http.MethodGet, receipt, "http://example.com", http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			before := *backup.GetRunningResult()
@@ -150,11 +154,11 @@ func TestRestoreRestartResponsesAndTrustedOrigins(t *testing.T) {
 			if *backup.GetRunningResult() != before {
 				t.Fatal("restart response changed restore result")
 			}
-			var body APIResponse[map[string]any]
+			var body httpapi.APIResponse[map[string]any]
 			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
 			}
-			if body.ErrorCode != scenario.errorCode {
+			if body.Status != response.Code || body.ErrorCode != scenario.errorCode || (scenario.status != http.StatusOK && body.Instance == "") {
 				t.Fatalf("error_code=%q, want=%q", body.ErrorCode, scenario.errorCode)
 			}
 			if scenario.status == http.StatusOK {

@@ -540,7 +540,7 @@ const handleCreateDirectory = async () => {
     await createFormRef.value.validate()
     if (disposed || contextId !== latestRootLoadId) return
 
-    const newDirectory = await createDirectory(http, {
+    const result = await createDirectory(http, {
       parent_id: parent.id,
       parent_path: parent.path,
       name: createForm.value.name.trim(),
@@ -549,7 +549,10 @@ const handleCreateDirectory = async () => {
     })
 
     if (disposed || contextId !== latestRootLoadId) return
-    ElMessage.success('创建文件夹成功')
+    const newDirectory = result.data
+    const message = result.message?.trim() || '创建文件夹成功'
+    if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+    else ElMessage.success(message)
     showCreateDialog.value = false
     createForm.value.name = ''
 

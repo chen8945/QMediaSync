@@ -8,6 +8,7 @@ import (
 
 	"qmediasync/internal/controllers"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +38,7 @@ func parseBuildUnixTime(value string) int64 {
 
 // 设置路由
 func setRouter(r *gin.Engine, mediaSettings *controllers.MediaLibraryConfigController) {
+	configureHTTPResponses(r)
 	r.Use(controllers.RestoreMaintenanceMiddleware())
 	webStatisPath := filepath.Join(helpers.RootDir, "web_statics")
 	// if helpers.IsFnOS {
@@ -81,13 +83,13 @@ func setRouter(r *gin.Engine, mediaSettings *controllers.MediaLibraryConfigContr
 
 		// 获取应用版本与运行环境信息
 		api.GET("/version", func(c *gin.Context) {
-			c.JSON(http.StatusOK, map[string]any{
+			httpapi.Success(c, http.StatusOK, map[string]any{
 				"version":    build.Version,
 				"build_time": parseBuildUnixTime(build.PublishDate),
 				"date":       build.PublishDate,
 				"isWindows":  runtime.GOOS == "windows",
 				"isRelease":  helpers.IsRelease,
-			})
+			}, "")
 		})
 		api.POST("/database/delete-all-table", controllers.DeleteAllTabble) // 删除所有表
 		api.GET("/announce", controllers.GetAnnounce)                       // 获取公告

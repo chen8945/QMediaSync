@@ -1,24 +1,31 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
+	"qmediasync/internal/baidupan"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
+	"qmediasync/internal/openlist"
 	"qmediasync/internal/requests"
 	v115auth "qmediasync/internal/v115/auth"
+	v115open "qmediasync/internal/v115/openapi"
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func friendlyAccountValidationMessage(err error) string {
 	validationErr, ok := errors.AsType[validation.Error](err)
 	if !ok {
-		return err.Error()
+		return "请求参数不正确，请检查后再试"
 	}
 
 	switch validationErr.Field {
@@ -100,43 +107,90 @@ func accountValidationFieldLabel(field string) string {
 	}
 }
 
-func writeAccountValidationError(c *gin.Context, status int, err error) {
-	if helpers.AppLogger != nil {
-		helpers.AppLogger.Debugf("账号请求参数校验失败: %v", err)
-	}
-	c.JSON(status, APIResponse[any]{
-		Code:    BadRequest,
+func writeAccountValidationError(c *gin.Context, err error) {
+	failure := httpapi.Error{
+		Code:    "INVALID_REQUEST",
 		Message: friendlyAccountValidationMessage(err),
-		Data:    nil,
-	})
+		Cause:   err,
+	}
+	if fieldErr, ok := errors.AsType[validation.Error](err); ok {
+		failure.FieldErrors = []httpapi.FieldError{{Field: fieldErr.Field, Message: fieldErr.Message}}
+	}
+	httpapi.Failure(c, http.StatusBadRequest, failure)
 }
 
-func accountPersistenceMessage(err error) string {
+func writeAccountLookupError(c *gin.Context, err error) {
+	status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "查询账号失败"
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		status, code, message = http.StatusNotFound, "ACCOUNT_NOT_FOUND", "账号 ID 不存在"
+	}
+	httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err})
+}
+
+func writeCloudFileLookupError(c *gin.Context, err error) {
+	status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "查询文件记录失败"
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		status, code, message = http.StatusNotFound, "FILE_NOT_FOUND", "文件标识不存在"
+	}
+	httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err})
+}
+
+func writeAccountPersistenceError(c *gin.Context, err error, message string, secrets ...string) {
+	if _, ok := errors.AsType[*models.OpenListVerificationError](err); ok {
+		writeCloudUpstreamError(c, err, "验证 OpenList 账号失败", secrets...)
+		return
+	}
+	status, code := http.StatusInternalServerError, "INTERNAL_ERROR"
 	switch {
 	case errors.Is(err, models.ErrAccountNameTaken):
-		return "账号备注已存在，请换一个"
+		status, code, message = http.StatusConflict, "ACCOUNT_NAME_TAKEN", "账号备注已存在，请换一个"
 	case errors.Is(err, models.ErrAccountUserIDTaken):
-		return "当前账号已存在，不允许添加重复账号"
-	default:
-		return err.Error()
+		status, code, message = http.StatusConflict, "ACCOUNT_USER_ID_TAKEN", "当前账号已存在，不允许添加重复账号"
+	case errors.Is(err, models.ErrAccountAuthorizationChanged):
+		status, code, message = http.StatusConflict, "ACCOUNT_AUTHORIZATION_CHANGED", "账号配置已更新，请重新加载后重试"
+	case errors.Is(err, models.ErrAccountHasSyncPaths):
+		status, code, message = http.StatusConflict, "ACCOUNT_HAS_SYNC_PATHS", "账号仍有关联的同步目录，请先删除关联目录"
+	case errors.Is(err, v115auth.ErrAuthorizationSessionInactive):
+		status, code, message = http.StatusConflict, "AUTHORIZATION_INACTIVE", "授权会话不存在、已过期或已取消"
+	case errors.Is(err, v115auth.ErrAuthorizationSessionActive):
+		status, code, message = http.StatusConflict, "AUTHORIZATION_IN_PROGRESS", "该账号已有授权流程进行中，请先取消后再试"
+	case errors.Is(err, openlist.ErrTokenExpired):
+		status, code, message = http.StatusBadRequest, "UPSTREAM_CREDENTIALS_INVALID", "网盘访问凭据无效，请重新授权"
 	}
+	if _, ok := errors.AsType[validation.Error](err); ok {
+		writeAccountValidationError(c, err)
+		return
+	}
+	httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err, Secrets: secrets})
+}
+
+func writeCloudUpstreamError(c *gin.Context, err error, message string, secrets ...string) {
+	status, code := http.StatusBadGateway, "UPSTREAM_ERROR"
+	if errors.Is(err, context.Canceled) {
+		status, code = http.StatusServiceUnavailable, "REQUEST_CANCELED"
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		status, code = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+	} else if networkErr, ok := errors.AsType[net.Error](err); ok && networkErr.Timeout() {
+		status, code = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+	} else if _, ok := errors.AsType[*baidupan.TokenInvalidError](err); ok || errors.Is(err, openlist.ErrTokenExpired) {
+		status, code, message = http.StatusBadRequest, "UPSTREAM_CREDENTIALS_INVALID", "网盘访问凭据无效，请重新授权"
+	} else if apiErr, ok := errors.AsType[*v115open.OpenAPIError](err); ok {
+		switch {
+		case apiErr.HTTPStatus == http.StatusUnauthorized || v115open.IsRefreshTokenDead(err) ||
+			apiErr.Code == v115open.ACCESS_TOKEN_AUTH_FAIL || apiErr.Code == v115open.ACCESS_TOKEN_EXPIRY_CODE || apiErr.Code == v115open.ACCESS_AUTH_INVALID:
+			status, code, message = http.StatusBadRequest, "UPSTREAM_CREDENTIALS_INVALID", "网盘访问凭据无效，请重新授权"
+		case v115open.IsRateLimited(err):
+			status, code, message = http.StatusServiceUnavailable, "UPSTREAM_RATE_LIMITED", "网盘访问频率受限，请稍后重试"
+		}
+	}
+	httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err, Secrets: secrets})
 }
 
 // GetAccountList 获取所有开放平台账号列表
-// @Summary 获取账号列表
-// @Description 获取所有已配置的开放平台账号（如 115、OpenList 等）
-// @Tags 账号管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /account/list [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetAccountList(c *gin.Context) {
-	accounts, err := models.GetAllAccount()
+	accounts, err := models.ReadAccounts(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询开放平台账号失败", Data: nil})
+		writeAccountPersistenceError(c, err, "查询开放平台账号失败")
 		return
 	}
 	type accountResp struct {
@@ -202,32 +256,18 @@ func GetAccountList(c *gin.Context) {
 		resp = append(resp, a)
 	}
 
-	c.JSON(http.StatusOK, APIResponse[[]accountResp]{Code: Success, Message: "查询开放平台账号成功", Data: resp})
+	httpapi.Success(c, http.StatusOK, resp, "查询开放平台账号成功")
 }
 
 // CreateTmpAccount 创建临时开放平台账号
-// @Summary 创建账号
-// @Description 创建新的开放平台账号（支持 115、OpenList 等）
-// @Tags 账号管理
-// @Accept json
-// @Produce json
-// @Param source_type query string true "账号源类型"
-// @Param name query string true "账号名称"
-// @Param app_id query string false "APP ID（自定义时必需）"
-// @Param app_id_name query string false "选择的 115 开放平台应用（QMediaSync、精选应用、自定义 APP ID）"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /account/create [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func CreateTmpAccount(c *gin.Context) {
 	tmpAccount := &requests.CreateAccountRequest{}
 	if err := c.ShouldBind(tmpAccount); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := tmpAccount.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusOK, err)
+		writeAccountValidationError(c, err)
 		return
 	}
 	// 创建临时账号
@@ -240,7 +280,7 @@ func CreateTmpAccount(c *gin.Context) {
 	if models.SourceType115 == tmpAccount.SourceType {
 		source, err := v115auth.SourceFromCreateRequest(tmpAccount.AuthSourceType, tmpAccount.AuthProvider, tmpAccount.AppID, tmpAccount.SelectedApp, tmpAccount.CustomAppName)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			writeAccountValidationError(c, err)
 			return
 		}
 		appId = source.StorageAppID()
@@ -266,10 +306,10 @@ func CreateTmpAccount(c *gin.Context) {
 		authProvider,
 	)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "创建开放平台账号失败：" + accountPersistenceMessage(err), Data: nil})
+		writeAccountPersistenceError(c, err, "创建开放平台账号失败")
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[models.Account]{Code: Success, Message: "创建开放平台账号成功", Data: *account})
+	httpapi.Success(c, http.StatusCreated, *account, "创建开放平台账号成功")
 }
 
 // PrepareAccountAuthorization 准备更换已有账号的授权。
@@ -277,24 +317,24 @@ func CreateTmpAccount(c *gin.Context) {
 func PrepareAccountAuthorization(c *gin.Context) {
 	req := &requests.PrepareAccountAuthorizationRequest{}
 	if err := c.ShouldBind(req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusBadRequest, err)
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	if account.SourceType != req.SourceType {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "更换授权只能使用与原账号相同的网盘类型", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "更换授权只能使用与原账号相同的网盘类型"})
 		return
 	}
 	if account.SourceType != models.SourceType115 {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "当前账号暂不支持更换授权", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号暂不支持更换授权"})
 		return
 	}
 	source, err := v115auth.SourceFromCreateRequest(req.AuthSourceType, req.AuthProvider, req.AppID, req.AppIDName, req.CustomAppName)
@@ -302,30 +342,22 @@ func PrepareAccountAuthorization(c *gin.Context) {
 		if err == nil {
 			err = fmt.Errorf("已废弃的 115 授权来源不能作为更换目标")
 		}
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 	session, err := v115auth.CreateAuthorizationSession(account.ID, source)
 	if err != nil {
-		if errors.Is(err, v115auth.ErrAuthorizationSessionActive) {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "该账号已有授权流程进行中，请先取消后再试", Data: nil})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "创建授权会话失败", Data: nil})
+		writeAccountPersistenceError(c, err, "创建授权会话失败")
 		return
 	}
 	// 清理不带 authorization_id 的旧二维码和 OAuth 流程；最终提交仍通过
 	// 状态锁复核，避免已在远端请求中的旧结果回写新授权。
 	deleteOpen115AuthStatesForAccount(account.ID)
 	v115auth.DeleteLegacyOAuthStatesForAccount(account.ID)
-	c.JSON(http.StatusOK, APIResponse[gin.H]{
-		Code:    Success,
-		Message: "授权会话已准备",
-		Data: gin.H{
-			"authorization_id": session.ID,
-			"expires_in":       v115auth.AuthorizationSessionTTLSeconds,
-		},
-	})
+	httpapi.Success(c, http.StatusOK, gin.H{
+		"authorization_id": session.ID,
+		"expires_in":       v115auth.AuthorizationSessionTTLSeconds,
+	}, "授权会话已准备")
 }
 
 // CancelAccountAuthorization 取消待提交或进行中的账号授权更换。
@@ -333,140 +365,100 @@ func PrepareAccountAuthorization(c *gin.Context) {
 func CancelAccountAuthorization(c *gin.Context) {
 	req := &requests.CancelAccountAuthorizationRequest{}
 	if err := c.ShouldBind(req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusBadRequest, err)
+		writeAccountValidationError(c, err)
 		return
 	}
-	if _, err := models.GetAccountById(req.AccountID); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+	if _, err := models.ReadAccount(c.Request.Context(), req.AccountID); err != nil {
+		writeAccountLookupError(c, err)
 		return
 	}
 	authorizationID := strings.TrimSpace(req.AuthorizationID)
 	v115auth.CancelAuthorizationSession(authorizationID, req.AccountID)
 	deleteOpen115AuthStatesForAuthorization(req.AccountID, authorizationID)
 	v115auth.DeleteOAuthStatesForAuthorization(req.AccountID, authorizationID)
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "授权会话已取消", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "授权会话已取消")
 }
 
 // UpdateAccountInfo 更新账号资料
-// @Summary 更新账号资料
-// @Description 更新账号备注和自定义开放平台应用名，不修改授权凭据或 OpenList 连接配置
-// @Tags 账号管理
-// @Accept json
-// @Produce json
-// @Param id query integer true "账号 ID"
-// @Param name query string false "账号备注"
-// @Param app_id_name query string false "自定义应用名"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /account/update [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateAccountInfo(c *gin.Context) {
 	req := &requests.UpdateAccountInfoRequest{}
 	if err := c.ShouldBind(req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusBadRequest, err)
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.ID)
+	account, err := models.ReadAccount(c.Request.Context(), req.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询开放平台账号失败", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	if err := account.UpdateInfo(strings.TrimSpace(req.Name), strings.TrimSpace(req.CustomAppName)); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新开放平台账号资料失败：" + accountPersistenceMessage(err), Data: nil})
+		writeAccountPersistenceError(c, err, "更新开放平台账号资料失败")
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新开放平台账号资料成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "更新开放平台账号资料成功")
 }
 
 // DeleteAccount 删除开放平台账号
-// @Summary 删除账号
-// @Description 删除指定 ID 的开放平台账号
-// @Tags 账号管理
-// @Accept json
-// @Produce json
-// @Param id query integer true "账号 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /account/delete [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteAccount(c *gin.Context) {
 	req := &requests.DeleteAccountRequest{}
 	if err := c.ShouldBind(req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusBadRequest, err)
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.ID)
+	account, err := models.ReadAccount(c.Request.Context(), req.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询开放平台账号失败", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	err = account.Delete()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountPersistenceError(c, err, "删除开放平台账号失败")
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "删除开放平台账号成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "删除开放平台账号成功")
 }
 
 // CreateOpenListAccount 创建或更新 OpenList 账号。
-// @Summary 创建或更新 OpenList 账号
-// @Description 创建新的 OpenList 账号或更新现有账号的凭证，支持用户名密码和 Token 认证；同认证方式更新可复用已有凭据，切换认证方式需提交目标方式凭据
-// @Tags 账号管理
-// @Accept json
-// @Produce json
-// @Param id query integer false "账号 ID（指定则为更新操作）"
-// @Param base_url query string true "OpenList 服务器地址"
-// @Param username query string true "用户名"
-// @Param password query string true "密码"
-// @Param token query string false "直接提供的访问 Token（优先使用）"
-// @Param auth_type query string false "认证方式（password 或 token）"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /account/openlist [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func CreateOpenListAccount(c *gin.Context) {
 	req := &requests.CreateOpenListAccountRequest{}
 	if err := c.ShouldBind(req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		writeAccountValidationError(c, http.StatusBadRequest, err)
+		writeAccountValidationError(c, err)
 		return
 	}
 	if req.ID != 0 {
-		account, err := models.GetAccountById(req.ID)
+		account, err := models.ReadAccount(c.Request.Context(), req.ID)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("查询 OpenList 账号失败：%s", err.Error()), Data: nil})
+			writeAccountLookupError(c, err)
 			return
 		}
 		if err := account.UpdateOpenList(req.BaseURL, req.Username, req.Password, req.Token, req.AuthType); err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("更新 OpenList 账号失败：%s", helpers.RedactSensitiveLog(accountPersistenceMessage(err), req.Password, req.Token)), Data: nil})
+			writeAccountPersistenceError(c, err, "更新 OpenList 账号失败", req.Password, req.Token, account.Password, account.Token)
 			return
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OpenList 账号已更新", Data: nil})
+		httpapi.Success(c, http.StatusOK, nil, "OpenList 账号已更新")
 		return
 	}
 	// 创建 OpenList 账号
 	_, err := models.CreateOpenListAccount(req.BaseURL, req.Username, req.Password, req.Token)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("创建 OpenList 账号失败：%s", helpers.RedactSensitiveLog(accountPersistenceMessage(err), req.Password, req.Token)), Data: nil})
+		writeAccountPersistenceError(c, err, "创建 OpenList 账号失败", req.Password, req.Token)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OpenList 账号已创建", Data: nil})
+	httpapi.Success(c, http.StatusCreated, nil, "OpenList 账号已创建")
 }

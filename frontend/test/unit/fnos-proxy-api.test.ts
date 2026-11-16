@@ -45,9 +45,12 @@ describe('飞牛影视反代 API', () => {
     expect(fnosProxyPublicMessage('服务暂时不可用')).toBe('服务暂时不可用')
   })
   it('使用现有客户端读写，只保存开关、地址和映射', async () => {
-    const { http, adapter } = client({ code: 200, data: settings })
+    const { http, adapter } = client({ status: 200, data: settings })
     await expect(fetchFnosProxySettings(http)).resolves.toEqual(settings)
-    await expect(saveFnosProxySettings(http, settings.config)).resolves.toEqual(settings)
+    await expect(saveFnosProxySettings(http, settings.config)).resolves.toEqual({
+      ...settings,
+      warnings: [],
+    })
     expect(adapter.mock.calls.map(([config]) => [config.method, config.url])).toEqual([
       ['get', '/api/setting/fnos-proxy'],
       ['post', '/api/setting/fnos-proxy'],
@@ -67,8 +70,14 @@ describe('飞牛影视反代 API', () => {
     }
     data.runtime.restart_required = true
     data.runtime.last_error = 'HTTP 端口被占用'
-    const { http, adapter } = client({ code: 200, message: '已保存但未能完全应用', data })
-    await expect(saveFnosProxySettings(http, data.config)).resolves.toEqual(data)
+    const message = '服务器确认保存，但应用需重试'
+    const warnings = ['测试监听器应用失败']
+    const { http, adapter } = client({ status: 200, message, data, warnings })
+    await expect(saveFnosProxySettings(http, data.config)).resolves.toEqual({
+      ...data,
+      message,
+      warnings,
+    })
     expect(JSON.parse(adapter.mock.calls[0]![0].data)).toEqual(data.config)
   })
 
@@ -88,7 +97,7 @@ describe('飞牛影视反代 API', () => {
     { ...settings, runtime: { ...settings.runtime, listen_port: '9005' } },
     { ...settings, runtime: { ...settings.runtime, last_error: null } },
   ])('拒绝损坏响应，防止用默认设置覆盖 %j', async (data) => {
-    const { http } = client({ code: 200, data })
+    const { http } = client({ status: 200, data })
     await expect(fetchFnosProxySettings(http)).rejects.toBeInstanceOf(HttpResponseError)
     await expect(saveFnosProxySettings(http, settings.config)).rejects.toBeInstanceOf(
       HttpResponseError,
@@ -96,7 +105,13 @@ describe('飞牛影视反代 API', () => {
   })
 
   it('业务失败不能当作保存成功', async () => {
-    const { http } = client({ code: 500, message: '设置暂时无法保存', data: null })
+    const { http } = client({
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
+      message: '设置暂时无法保存',
+      data: null,
+    })
     await expect(saveFnosProxySettings(http, settings.config)).rejects.toBeInstanceOf(
       HttpResponseError,
     )

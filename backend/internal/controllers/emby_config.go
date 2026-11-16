@@ -2,19 +2,21 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/emby"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
 	"qmediasync/internal/validation"
-
-	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type MediaLibraryConfigController struct {
@@ -35,63 +37,26 @@ func (controller *MediaLibraryConfigController) UpdateJellyfin(c *gin.Context) {
 }
 
 // GetEmbyConfig 获取 Emby 配置。
-// @Summary 获取 Emby 配置
-// @Description 获取 Emby 媒体服务器的配置信息
-// @Tags Emby 管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /setting/emby-config [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetEmbyConfig(c *gin.Context) { getMediaLibraryConfig(c, models.MediaServerEmby) }
 
 // GetJellyfinConfig 获取独立 Jellyfin 配置。
 func GetJellyfinConfig(c *gin.Context) { getMediaLibraryConfig(c, models.MediaServerJellyfin) }
 
 func getMediaLibraryConfig(c *gin.Context, kind models.MediaServerType) {
+	c.Header("Cache-Control", "no-store, private")
 	config, err := models.ReadMediaLibraryConfigSnapshot(kind)
-	if err == gorm.ErrRecordNotFound {
-		c.JSON(http.StatusOK, APIResponse[any]{
-			Code:    Success,
-			Message: "获取媒体库配置成功",
-			Data:    gin.H{"exists": false},
-		})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		httpapi.Success(c, http.StatusOK, gin.H{"exists": false}, "获取媒体库配置成功")
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取媒体库配置失败：" + err.Error()})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "获取媒体库配置失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{
-		Code:    Success,
-		Message: "获取媒体库配置成功",
-		Data:    gin.H{"exists": true, "config": mediaLibraryConfigResponse(kind, config)},
-	})
+	httpapi.Success(c, http.StatusOK, gin.H{"exists": true, "config": mediaLibraryConfigResponse(kind, config)}, "获取媒体库配置成功")
 }
 
 // UpdateEmbyConfig 更新 Emby 配置。
-// @Summary 更新 Emby 配置
-// @Description 更新 Emby 媒体服务器的配置信息
-// @Tags Emby 管理
-// @Accept json
-// @Produce json
-// @Param emby_url body string false "Emby 服务器地址"
-// @Param emby_api_key body string false "Emby API Key"
-// @Param enable_delete_netdisk body integer false "是否启用网盘删除"
-// @Param enable_refresh_library body integer false "是否启用库刷新"
-// @Param enable_media_notification body integer false "是否启用媒体通知"
-// @Param enable_extract_media_info body integer false "是否启用提取媒体信息"
-// @Param enable_auth body integer false "是否启用 Webhook 鉴权"
-// @Param sync_enabled body integer false "是否启用同步"
-// @Param sync_cron body string false "同步 Cron 表达式"
-// @Param enable_daily_first_full_sync body integer false "是否启用每日首次全量同步"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /setting/emby-config [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateEmbyConfig(c *gin.Context) { (&MediaLibraryConfigController{}).UpdateEmby(c) }
 
 // UpdateJellyfinConfig 保存独立 Jellyfin 配置并报告应用结果。
@@ -112,19 +77,19 @@ func (controller *MediaLibraryConfigController) update(c *gin.Context, kind mode
 		JellyfinAPIKey string `json:"jellyfin_api_key"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	req := payload.UpdateEmbyConfigRequest
 	if kind == models.MediaServerJellyfin {
 		if err := validation.HTTPURL("jellyfin_url", payload.JellyfinURL, true); err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 			return
 		}
 		req.EmbyURL, req.EmbyAPIKey = payload.JellyfinURL, payload.JellyfinAPIKey
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	var pathMappings []models.EmbyPathMapping
@@ -132,7 +97,7 @@ func (controller *MediaLibraryConfigController) update(c *gin.Context, kind mode
 		var err error
 		pathMappings, err = req.NormalizedPathMappings()
 		if err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: validation.New("path_mappings", err.Error()).Error()})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("path_mappings", err.Error())))
 			return
 		}
 	}
@@ -156,10 +121,14 @@ func (controller *MediaLibraryConfigController) update(c *gin.Context, kind mode
 	}
 	warnings, err := models.SaveMediaLibrarySettings(c.Request.Context(), kind, change, validate, controller.applyCommitted)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+		if _, ok := errors.AsType[validation.Error](err); ok {
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
+		} else {
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存媒体库配置失败", Cause: err, Secrets: []string{req.EmbyAPIKey}})
+		}
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "配置已保存", Data: gin.H{"warnings": warnings, "restart_required": false}})
+	httpapi.Success(c, http.StatusOK, gin.H{"restart_required": false}, "配置已保存", warnings...)
 }
 
 func (controller *MediaLibraryConfigController) applyCommitted(ctx context.Context, config *models.EmbyConfig) []string {
@@ -167,16 +136,22 @@ func (controller *MediaLibraryConfigController) applyCommitted(ctx context.Conte
 	if config.MediaServerType == models.MediaServerEmby && controller.apply != nil {
 		if err := controller.apply(ctx, config); err != nil {
 			if helpers.AppLogger != nil {
-				helpers.AppLogger.Warnf("应用 Emby 302 配置失败：%v", err)
+				helpers.AppLogger.Warnf("应用 Emby 302 配置失败：%s", helpers.RedactSensitiveLog(err.Error(), config.EmbyApiKey))
 			}
 			warnings = append(warnings, "配置已保存，Emby 302 尚未应用，请重新保存重试")
 		}
 	}
 	if err := synccron.UpdateMediaLibraryCron(config.MediaServerType); err != nil {
-		warnings = append(warnings, "配置已保存，定时同步尚未生效："+err.Error())
+		if helpers.AppLogger != nil {
+			helpers.AppLogger.Warnf("应用媒体库定时同步失败：%s", helpers.RedactSensitiveLog(err.Error(), config.EmbyApiKey))
+		}
+		warnings = append(warnings, "配置已保存，定时同步尚未生效，请重新保存重试")
 	}
 	if err := emby.WakeMediaLibraryWebhookWorker(config.MediaServerType); err != nil {
-		warnings = append(warnings, "配置已保存，通知后台处理尚未唤醒："+err.Error())
+		if helpers.AppLogger != nil {
+			helpers.AppLogger.Warnf("唤醒媒体库通知后台处理失败：%s", helpers.RedactSensitiveLog(err.Error(), config.EmbyApiKey))
+		}
+		warnings = append(warnings, "配置已保存，通知后台处理尚未唤醒，请重新保存重试")
 	}
 	models.TriggerEmbyLibraryRefreshCheck()
 	models.TriggerMediaLibraryDownloadCheck()

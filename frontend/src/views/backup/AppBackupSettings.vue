@@ -128,8 +128,10 @@ const loadBackupConfig = async () => {
 const saveConfig = async () => {
   configSaving.value = true
   try {
-    await backupAPI.saveBackupConfig(http, configForm)
-    ElMessage.success('备份配置保存成功')
+    const result = await backupAPI.saveBackupConfig(http, configForm)
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || '备份配置保存成功')
     await loadCronTimes()
   } catch (error: unknown) {
     reportError(error, '保存备份配置失败')

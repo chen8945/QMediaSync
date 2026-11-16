@@ -1,7 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import { HttpResponseError } from '@/http/errors'
-import { unwrapResponse } from './response'
+import { getSettingsSaveResult, unwrapResponse } from './response'
 import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface MediaLibraryPathMapping {
@@ -82,7 +82,7 @@ export async function fetchMediaLibraryConfig(
   const response = await http.get<APIResponse<MediaLibraryConfigResult>>(
     `${SERVER_URL}/setting/${serverType}-config`,
   )
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (
     !data ||
     typeof data.exists !== 'boolean' ||
@@ -132,46 +132,42 @@ export async function saveMediaLibraryConfig(
   },
 ): Promise<SettingsSaveResult> {
   const { server_url, api_key, ...fields } = payload
-  const response = await http.post<APIResponse<SettingsSaveResult>>(
+  const response = await http.post<APIResponse<unknown>>(
     `${SERVER_URL}/setting/${serverType}-config`,
     { ...fields, [`${serverType}_url`]: server_url, [`${serverType}_api_key`]: api_key },
     { headers: { 'Content-Type': 'application/json' } },
   )
-  const result = unwrapResponse(response)
-  if (
-    !result ||
-    !Array.isArray(result.warnings) ||
-    !result.warnings.every((warning) => typeof warning === 'string')
-  )
-    throw new HttpResponseError(response)
-  return { warnings: result.warnings }
+  return getSettingsSaveResult(response)
 }
 
 export async function fetchMediaLibraryLibraries(
   http: AxiosInstance,
   serverType: MediaServerType,
-): Promise<MediaLibraryLibraryOption[]> {
-  return (
-    unwrapResponse(
-      await http.get<APIResponse<MediaLibraryLibraryOption[] | null>>(
-        `${SERVER_URL}/${serverType}/libraries`,
-      ),
-    ) ?? []
+): Promise<{ libraries: MediaLibraryLibraryOption[]; warnings: string[] }> {
+  const result = unwrapResponse(
+    await http.get<APIResponse<MediaLibraryLibraryOption[] | null>>(
+      `${SERVER_URL}/${serverType}/libraries`,
+    ),
   )
+  return { libraries: result.data ?? [], warnings: result.warnings }
 }
 
 export async function extractMediaLibraryMediaInfo(
   http: AxiosInstance,
   serverType: MediaServerType,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/setting/${serverType}/parse`))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/setting/${serverType}/parse`),
+  )
 }
 
 export async function startMediaLibrarySync(
   http: AxiosInstance,
   serverType: MediaServerType,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/${serverType}/sync/start`))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<unknown>>(`${SERVER_URL}/${serverType}/sync/start`),
+  )
 }
 
 export async function fetchMediaLibrarySyncStatus(
@@ -182,7 +178,7 @@ export async function fetchMediaLibrarySyncStatus(
     await http.get<APIResponse<MediaLibrarySyncInfo | null>>(
       `${SERVER_URL}/${serverType}/sync/status`,
     ),
-  )
+  ).data
 }
 
 export function mediaLibraryMessages(

@@ -32,7 +32,7 @@ function primeFileManagerState() {
 function createFilesResponse(page: number, total = 305) {
   return {
     data: {
-      code: 200,
+      status: 200,
       data: {
         list: Array.from({ length: 100 }, (_, index) => {
           const fileIndex = (page - 1) * 100 + index + 1
@@ -49,6 +49,7 @@ function createFilesResponse(page: number, total = 305) {
         page_size: 100,
       },
     },
+    status: 200,
   }
 }
 
@@ -65,11 +66,11 @@ describe('AppFileManager 分页总数', () => {
     const http = {
       get: vi.fn((url: string) => {
         if (url.endsWith('/path/sort-options'))
-          return Promise.resolve({ data: { code: 200, data: browseSortOptions() } })
+          return Promise.resolve({ data: { status: 200, data: browseSortOptions() }, status: 200 })
         if (url.endsWith('/account/list')) {
           return Promise.resolve({
             data: {
-              code: 200,
+              status: 200,
               data: [
                 {
                   id: 1,
@@ -82,13 +83,14 @@ describe('AppFileManager 分页总数', () => {
                 },
               ],
             },
+            status: 200,
           })
         }
 
         if (url.endsWith('/path/files')) {
           return Promise.resolve({
             data: {
-              code: 200,
+              status: 200,
               data: {
                 list: Array.from({ length: 100 }, (_, index) => ({
                   id: String(index + 1),
@@ -102,6 +104,7 @@ describe('AppFileManager 分页总数', () => {
                 page_size: 100,
               },
             },
+            status: 200,
           })
         }
 
@@ -144,11 +147,11 @@ describe('AppFileManager 分页总数', () => {
     const http = {
       get: vi.fn((url: string, config?: { params?: { page?: number } }) => {
         if (url.endsWith('/path/sort-options'))
-          return Promise.resolve({ data: { code: 200, data: browseSortOptions() } })
+          return Promise.resolve({ data: { status: 200, data: browseSortOptions() }, status: 200 })
         if (url.endsWith('/account/list')) {
           return Promise.resolve({
             data: {
-              code: 200,
+              status: 200,
               data: [
                 {
                   id: 1,
@@ -161,6 +164,7 @@ describe('AppFileManager 分页总数', () => {
                 },
               ],
             },
+            status: 200,
           })
         }
 

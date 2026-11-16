@@ -170,21 +170,25 @@ const saveSettings = async () => {
     loading.value = true
     saveStatus.value = null
 
-    const requiresLogin = await changeUserCredentials(http, {
+    const result = await changeUserCredentials(http, {
       username: formData.username.trim(),
       new_password: formData.password,
     })
 
     saveStatus.value = {
-      title: '用户设置已保存',
-      type: 'success',
-      description: '用户名和密码已更新，下次登录时请使用新的凭据',
+      title: result.message?.trim() || '用户设置已保存',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: ['用户名和密码已更新，下次登录时请使用新的凭据', ...result.warnings].join('；'),
     }
     formData.confirmPassword = ''
     formData.password = ''
-    if (requiresLogin) {
+    if (result.data === true) {
       authStore.clearAuth()
-      ElMessage.success('已退出登录')
+      const message = [result.message?.trim(), ...result.warnings, '已退出登录']
+        .filter(Boolean)
+        .join('；')
+      if (result.warnings.length) ElMessage.warning(message)
+      else ElMessage.success(message)
       void router.replace('/login')
     }
   } catch (error) {

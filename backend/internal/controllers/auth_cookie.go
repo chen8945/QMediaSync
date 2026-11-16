@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	authCookieName   = "auth_token"
-	csrfCookieName   = "csrf_token"
-	csrfHeaderName   = "X-CSRF-Token"
-	apiKeyHeaderName = "X-API-Key"
+	authCookieName                 = "auth_token"
+	csrfCookieName                 = "csrf_token"
+	csrfHeaderName                 = "X-CSRF-Token"
+	apiKeyHeaderName               = "X-API-Key"
+	sessionAuthenticationChallenge = `QMediaSyncSession realm="QMediaSync"`
+	apiKeyAuthenticationChallenge  = `QMediaSyncApiKey realm="QMediaSync"`
 )
 
 type LoginUser struct {
@@ -111,4 +113,13 @@ func clearSessionCookies(c *gin.Context) {
 			SameSite: http.SameSiteLaxMode,
 		})
 	}
+}
+
+func setAuthenticationChallenge(c *gin.Context) {
+	challenge := sessionAuthenticationChallenge
+	if CurrentAuthMethod(c) == authMethodAPIKey || apiKeyFromRequest(c) != "" {
+		challenge = apiKeyAuthenticationChallenge
+	}
+	c.Header("WWW-Authenticate", challenge)
+	c.Header("Cache-Control", "no-store, private")
 }

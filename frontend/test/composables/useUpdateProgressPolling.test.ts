@@ -59,13 +59,15 @@ describe('useUpdate 进度状态分类', () => {
   it('取消后忽略仍在途的旧进度响应', async () => {
     vi.useFakeTimers()
     const progressRequest = deferred<{
-      data: { code: number; data: { status: string; progress: number } }
+      status: number
+      data: { status: number; data: { status: string; progress: number } }
     }>()
     getMock.mockImplementation((url: string) => {
-      if (url.includes('/update/last')) return Promise.resolve({ data: { code: 200, data: [] } })
+      if (url.includes('/update/last'))
+        return Promise.resolve({ status: 200, data: { status: 200, data: [] } })
       return progressRequest.promise
     })
-    postMock.mockResolvedValue({ data: { code: 200 } })
+    postMock.mockResolvedValue({ status: 200, data: { data: null, status: 200 } })
 
     let update!: ReturnType<typeof useUpdate>
     const wrapper = mount(
@@ -82,7 +84,10 @@ describe('useUpdate 进度状态分类', () => {
     await flushPromises()
     const cancel = update.cancelUpdate()
     await cancel
-    progressRequest.resolve({ data: { code: 200, data: { status: 'completed', progress: 100 } } })
+    progressRequest.resolve({
+      status: 200,
+      data: { status: 200, data: { status: 'completed', progress: 100 } },
+    })
     await start
     await flushPromises()
 
@@ -100,13 +105,14 @@ const mountUpdate = async (initialProgressError?: unknown) => {
     initialProgressError && !url.includes('/update/last')
       ? Promise.reject(initialProgressError)
       : Promise.resolve({
+          status: 200,
           data: {
-            code: 200,
+            status: 200,
             data: url.includes('/update/last') ? [] : { status: '', progress: 0 },
           },
         }),
   )
-  postMock.mockResolvedValue({ data: { code: 200, data: null } })
+  postMock.mockResolvedValue({ status: 200, data: { status: 200, data: null } })
   let update!: ReturnType<typeof useUpdate>
   const wrapper = mount(
     defineComponent({
@@ -130,7 +136,13 @@ describe('useUpdate 请求失败', () => {
   const originFailure = () =>
     new HttpResponseError({
       status: 403,
-      data: { code: 500, error_code: 'REQUEST_ORIGIN_INVALID', data: null },
+      data: {
+        message: '请求未完成',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 403,
+        error_code: 'REQUEST_ORIGIN_INVALID',
+        data: null,
+      },
     })
 
   it('后台更新状态失败只记诊断，版本列表读取失败仍向用户提示', async () => {
@@ -153,15 +165,18 @@ describe('useUpdate 请求失败', () => {
       const { update } = await mountUpdate()
       getMock.mockResolvedValueOnce({
         status: 200,
-        data: { code: 200, data: { status: 'install', progress: 100 } },
+        data: { status: 200, data: { status: 'install', progress: 100 } },
       })
       await update.updateToVersion('v-next')
       await flushPromises()
       getMock.mockImplementation(async (url: string) => {
-        if (url.includes('/update/last')) return { status: 200, data: { code: 200, data: [] } }
+        if (url.includes('/update/last')) return { status: 200, data: { status: 200, data: [] } }
         return url.endsWith('/version')
-          ? { status: 200, data: { version, date: '', isWindows: false, isRelease: true } }
-          : { status: 200, data: { code: 500, message: '未开始更新', data: null } }
+          ? {
+              status: 200,
+              data: { status: 200, data: { version, date: '', isWindows: false, isRelease: true } },
+            }
+          : { status: 200, data: { status: 200, data: { status: 'idle' } } }
       })
       await vi.advanceTimersByTimeAsync(1000)
       expect(getMock).toHaveBeenCalledWith('/api/version')
@@ -186,18 +201,19 @@ describe('useUpdate 请求失败', () => {
 
   it.each(['success', 'failure'])('启动请求在途切换标签页后仍处理 %s 结果', async (outcome) => {
     const { update, wrapper } = await mountUpdate()
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     getMock.mockClear()
     getMock.mockResolvedValue({
-      data: { code: 200, data: { status: 'downloading', progress: 37 } },
+      status: 200,
+      data: { status: 200, data: { status: 'downloading', progress: 37 } },
     })
 
     const start = update.updateToVersion('v-next')
     switchVisibility()
     await flushPromises()
     expect(getMock).not.toHaveBeenCalled()
-    if (outcome === 'success') pending.resolve({ data: { code: 200, data: null } })
+    if (outcome === 'success') pending.resolve({ status: 200, data: { status: 200, data: null } })
     else pending.reject(originFailure())
     await start
     await flushPromises()
@@ -220,16 +236,17 @@ describe('useUpdate 请求失败', () => {
   it.each(['success', 'failure'])('取消请求在途切换标签页后仍处理 %s 结果', async (outcome) => {
     const { update, wrapper } = await mountUpdate()
     getMock.mockResolvedValue({
-      data: { code: 200, data: { status: 'downloading', progress: 37 } },
+      status: 200,
+      data: { status: 200, data: { status: 'downloading', progress: 37 } },
     })
     await update.updateToVersion('v-next')
     await flushPromises()
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     const cancel = update.cancelUpdate()
     switchVisibility()
     await flushPromises()
-    if (outcome === 'success') pending.resolve({ data: { code: 200, data: null } })
+    if (outcome === 'success') pending.resolve({ status: 200, data: { status: 200, data: null } })
     else pending.reject(originFailure())
     await cancel
     if (outcome === 'success') {
@@ -246,13 +263,13 @@ describe('useUpdate 请求失败', () => {
 
   it.each(['success', 'failure'])('新任务启动后丢弃旧启动请求的 %s 结果', async (outcome) => {
     const { update, wrapper } = await mountUpdate()
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     const oldStart = update.updateToVersion('old')
     await update.updateToVersion('new')
     await flushPromises()
     getMock.mockClear()
-    if (outcome === 'success') pending.resolve({ data: { code: 200, data: null } })
+    if (outcome === 'success') pending.resolve({ status: 200, data: { status: 200, data: null } })
     else pending.reject(originFailure())
     await oldStart
     expect(update.updatingVersion.value).toBe('new')
@@ -270,12 +287,12 @@ describe('useUpdate 请求失败', () => {
   ])('卸载后丢弃在途 %s 请求的 %s 结果', async (action, outcome) => {
     const { update, wrapper } = await mountUpdate()
     if (action === 'cancel') await update.updateToVersion('v-next')
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     const request = action === 'start' ? update.updateToVersion('v-next') : update.cancelUpdate()
     wrapper.unmount()
     getMock.mockClear()
-    if (outcome === 'success') pending.resolve({ data: { code: 200, data: null } })
+    if (outcome === 'success') pending.resolve({ status: 200, data: { status: 200, data: null } })
     else pending.reject(originFailure())
     await request
     await vi.advanceTimersByTimeAsync(3000)
@@ -286,16 +303,17 @@ describe('useUpdate 请求失败', () => {
 
   it('启动尚未返回时取消失败，仍接收原启动请求的成功结果', async () => {
     const { update, wrapper } = await mountUpdate()
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     const start = update.updateToVersion('v-next')
     postMock.mockRejectedValueOnce(originFailure())
     await update.cancelUpdate()
     getMock.mockClear()
     getMock.mockResolvedValue({
-      data: { code: 200, data: { status: 'downloading', progress: 37 } },
+      status: 200,
+      data: { status: 200, data: { status: 'downloading', progress: 37 } },
     })
-    pending.resolve({ data: { code: 200, data: null } })
+    pending.resolve({ status: 200, data: { status: 200, data: null } })
     await start
     await flushPromises()
     expect(update.isUpdating.value).toBe(true)
@@ -308,12 +326,15 @@ describe('useUpdate 请求失败', () => {
     const { update, wrapper } = await mountUpdate()
     await update.updateToVersion('v-next')
     await flushPromises()
-    const pending = deferred<{ data: { code: number; data: null } }>()
+    const pending = deferred<{ status: number; data: { status: number; data: null } }>()
     postMock.mockReturnValueOnce(pending.promise)
     const cancel = update.cancelUpdate()
-    getMock.mockResolvedValue({ data: { code: 200, data: { status: 'completed', progress: 100 } } })
+    getMock.mockResolvedValue({
+      status: 200,
+      data: { status: 200, data: { status: 'completed', progress: 100 } },
+    })
     await vi.advanceTimersByTimeAsync(1000)
-    pending.resolve({ data: { code: 200, data: null } })
+    pending.resolve({ status: 200, data: { status: 200, data: null } })
     await cancel
     expect(update.showUpdateCompleteDialog.value).toBe(true)
     expect(ElMessage.success).not.toHaveBeenCalled()
@@ -324,7 +345,14 @@ describe('useUpdate 请求失败', () => {
     const { update, wrapper } = await mountUpdate()
     getMock.mockClear()
     postMock.mockResolvedValueOnce({
-      data: { code: 500, message: '更新操作失败，请稍后重试', data: null },
+      status: 400,
+      data: {
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 400,
+        message: '更新操作失败，请稍后重试',
+        data: null,
+      },
     })
     await update.updateToVersion('v-next')
     await vi.advanceTimersByTimeAsync(3000)
@@ -344,7 +372,14 @@ describe('useUpdate 请求失败', () => {
       getMock.mockClear()
       if (kind === 'business')
         postMock.mockResolvedValueOnce({
-          data: { code: 500, message: '更新操作失败，请稍后重试', data: null },
+          status: 400,
+          data: {
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 400,
+            message: '更新操作失败，请稍后重试',
+            data: null,
+          },
         })
       else if (kind === 'timeout')
         postMock.mockRejectedValueOnce(new AxiosError('secret', 'ETIMEDOUT'))
@@ -353,7 +388,10 @@ describe('useUpdate 请求失败', () => {
         const error = new HttpResponseError({
           status: kind === 'handled' ? 401 : 403,
           data: {
-            code: 500,
+            data: null,
+            message: '请求未完成',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: kind === 'handled' ? 401 : 403,
             error_code: kind === 'handled' ? 'SESSION_INVALID' : 'CSRF_TOKEN_INVALID',
           },
         })
@@ -376,8 +414,9 @@ describe('useUpdate 请求失败', () => {
   it('失败终态不透传下载内部错误，卸载后不执行延迟刷新', async () => {
     const { update, wrapper } = await mountUpdate()
     getMock.mockResolvedValueOnce({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: { status: 'failed', error_message: 'secret http://private/?token=secret' },
       },
     })
@@ -396,7 +435,16 @@ describe('useUpdate 请求失败', () => {
 
   it('业务失败后的延迟重置不覆盖新任务', async () => {
     const { update, wrapper } = await mountUpdate()
-    getMock.mockResolvedValueOnce({ data: { code: 500, message: '未开始更新', data: null } })
+    getMock.mockResolvedValueOnce({
+      status: 400,
+      data: {
+        status: 400,
+        data: null,
+        message: '测试拒绝更新',
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    })
     await update.updateToVersion('old')
     await flushPromises()
     await update.updateToVersion('new')

@@ -8,6 +8,7 @@ Thumbs.db
 *.sln
 *.sw?
 .codebuddy
+__pycache__/
 
 # Local AI agent configuration and lock files
 .agents/
@@ -77,18 +78,13 @@ backend/internal/emby302/config/*
 !backend/internal/strm/config/
 backend/internal/strm/config/*
 !backend/internal/strm/config/*.go
+!backend/internal/notification/config/
+backend/internal/notification/config/*
+!backend/internal/notification/config/*.go
 
 # Backend local experiments, local-only tests, and generated docs
 docs/superpowers/
 backend/test/
-backend/scripts/test_share_link.go
-backend/scripts/test_delta_sync.go
-backend/docs/design/
-backend/docs/FeHelper-20260123203742.json
-backend/docs/sharepoint_azure_setup.md
-backend/docs/sharepoint_usage.md
-verify_yaml.py
-test_guid.sh
 
 # Optional local Postgres binaries/data
 postgres/

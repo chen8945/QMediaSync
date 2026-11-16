@@ -56,6 +56,24 @@ const operations: [string, (http: AxiosInstance) => Promise<unknown>][] = [
 ]
 
 describe('Emby 与代理 API', () => {
+  it.each(['emby', 'jellyfin'] as const)('%s 媒体库列表保留顶层清理警告', async (serverType) => {
+    const libraries = [{ library_id: 'movies', name: '电影' }]
+    const warnings = ['媒体库列表已更新，部分清理尚未完成']
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { status: 200, data: libraries, warnings },
+      }),
+    })
+    await expect(fetchMediaLibraryLibraries(http, serverType)).resolves.toEqual({
+      libraries,
+      warnings,
+    })
+  })
+
   it('媒体保存返回应用警告', async () => {
     const warnings = ['代理尚未应用，请重新保存']
     const http = axios.create({
@@ -64,29 +82,26 @@ describe('Emby 与代理 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data: { warnings, restart_required: false } },
+        data: { status: 200, warnings, data: { restart_required: false } },
       }),
     })
     await expect(saveMediaLibraryConfig(http, 'emby', emby)).resolves.toEqual({ warnings })
   })
 
-  it.each([undefined, null, '应用失败', [123]])(
-    '媒体保存拒绝损坏的应用结果 %j',
-    async (warnings) => {
-      const http = axios.create({
-        adapter: async (config) => ({
-          config,
-          status: 200,
-          statusText: 'OK',
-          headers: {},
-          data: { code: 200, data: { warnings } },
-        }),
-      })
-      await expect(saveMediaLibraryConfig(http, 'emby', emby)).rejects.toBeInstanceOf(
-        HttpResponseError,
-      )
-    },
-  )
+  it.each([null, '应用失败', [123]])('媒体保存拒绝损坏的应用结果 %j', async (warnings) => {
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { status: 200, warnings, data: null },
+      }),
+    })
+    await expect(saveMediaLibraryConfig(http, 'emby', emby)).rejects.toBeInstanceOf(
+      HttpResponseError,
+    )
+  })
 
   it('保留路径、方法、全部字段、JSON 头与客户端超时', async () => {
     const adapter = vi.fn(async (config) => ({
@@ -95,7 +110,7 @@ describe('Emby 与代理 API', () => {
       statusText: 'OK',
       headers: {},
       data: {
-        code: 200,
+        status: 200,
         data: config.url.endsWith('/emby-config')
           ? config.method === 'post'
             ? { warnings: [], restart_required: false }
@@ -130,7 +145,9 @@ describe('Emby 与代理 API', () => {
 
   it.each(operations)('%s 拒绝业务失败并保留安全诊断', async (_name, operation) => {
     const body = {
-      code: 500,
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
       message: '第三方服务暂不可用',
       data: { warning: 'private-key' },
     }
@@ -138,7 +155,7 @@ describe('Emby 与代理 API', () => {
       adapter: async (config) => ({
         config,
         data: body,
-        status: 200,
+        status: 500,
         statusText: 'OK',
         headers: {},
       }),
@@ -157,7 +174,7 @@ describe('Emby 与代理 API', () => {
     const adapter = vi.fn(async (config) => ({
       config,
       data: {
-        code: 200,
+        status: 200,
         warnings,
         data:
           config.url.endsWith('/emby-config') || config.url.endsWith('/sync/status')
@@ -171,7 +188,10 @@ describe('Emby 与代理 API', () => {
     const http = axios.create({ adapter })
     await expect(fetchMediaLibraryConfig(http, 'emby')).resolves.toEqual({ exists: false })
     await expect(fetchMediaLibrarySyncStatus(http, 'emby')).resolves.toEqual({ exists: false })
-    await expect(fetchMediaLibraryLibraries(http, 'emby')).resolves.toEqual([])
+    await expect(fetchMediaLibraryLibraries(http, 'emby')).resolves.toEqual({
+      libraries: [],
+      warnings,
+    })
     await expect(
       saveProxySettings(http, { http_proxy: '', preserve_proxy_credentials: false }),
     ).resolves.toEqual({ warnings })
@@ -179,8 +199,8 @@ describe('Emby 与代理 API', () => {
       http_proxy: '',
       preserve_proxy_credentials: false,
     })
-    await expect(extractMediaLibraryMediaInfo(http, 'emby')).resolves.toBeUndefined()
-    await expect(testProxyConnection(http, proxy)).resolves.toBeUndefined()
+    await expect(extractMediaLibraryMediaInfo(http, 'emby')).resolves.toEqual({ warnings })
+    await expect(testProxyConnection(http, proxy)).resolves.toEqual({ warnings })
   })
 
   it.each([null, {}, { http_proxy: null }])('代理回读缺失地址时拒绝成功响应 %j', async (data) => {
@@ -190,7 +210,7 @@ describe('Emby 与代理 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data },
+        data: { status: 200, data },
       }),
     })
     await expect(fetchProxySettings(http)).rejects.toBeInstanceOf(HttpResponseError)
@@ -205,7 +225,7 @@ describe('Emby 与代理 API', () => {
           status: 200,
           statusText: 'OK',
           headers: {},
-          data: { code: 200, data },
+          data: { status: 200, data },
         }),
       })
       await expect(fetchMediaLibraryConfig(http, 'emby')).rejects.toBeInstanceOf(HttpResponseError)
@@ -225,7 +245,7 @@ describe('Emby 与代理 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data },
+        data: { status: 200, data },
       }),
     })
     await expect(fetchMediaLibraryConfig(http, 'emby')).resolves.toEqual({
@@ -255,7 +275,7 @@ describe('Emby 与代理 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, data: { exists: true, config: { path_mappings: mappings } } },
+        data: { status: 200, data: { exists: true, config: { path_mappings: mappings } } },
       }),
     })
     await expect(fetchMediaLibraryConfig(http, 'emby')).rejects.toBeInstanceOf(HttpResponseError)
@@ -279,14 +299,31 @@ describe('Emby 与代理 API', () => {
 
   it('来源错误优先于第三方连接说明', () => {
     const message = '已有 Emby 条目同步任务正在运行，请稍后再试'
-    const failure = { response: { status: 200, data: { code: 500, message } } }
+    const failure = {
+      response: {
+        status: 500,
+        data: {
+          data: null,
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 500,
+          message,
+        },
+      },
+    }
     expect(parseHttpError(failure, { publicMessages: mediaLibraryPublicMessages }).message).toBe(
       message,
     )
     const origin = {
       response: {
         status: 403,
-        data: { code: 500, message: '出站代理连接测试失败', error_code: 'REQUEST_ORIGIN_INVALID' },
+        data: {
+          data: null,
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 403,
+          message: '出站代理连接测试失败',
+          error_code: 'REQUEST_ORIGIN_INVALID',
+        },
       },
     }
     expect(

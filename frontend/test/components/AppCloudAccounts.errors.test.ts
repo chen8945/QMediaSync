@@ -6,6 +6,7 @@ import AppCloudAccounts from '@/views/accounts/AppCloudAccounts.vue'
 import V115AuthorizationChangeDialog from '@/components/cloud-auth/V115AuthorizationChangeDialog.vue'
 import V115AuthorizationDialog from '@/components/cloud-auth/V115AuthorizationDialog.vue'
 import type { CloudAccount, CloudDiskStatus } from '@/api/accounts'
+import type { APIResponse } from '@/api/types'
 import { httpKey } from '@/http/client'
 import { markAuthInvalidationHandled } from '@/http/errors'
 import {
@@ -15,16 +16,22 @@ import {
 
 interface Reply {
   status: number
-  data: { code: number; data: unknown; message?: string; error_code?: string }
+  data: APIResponse<unknown>
 }
-const success = (data: unknown = null): Reply => ({ status: 200, data: { code: 200, data } })
+const success = (data: unknown = null): Reply => ({ status: 200, data: { status: 200, data } })
 const failure = (
   message = '账号操作失败，请稍后重试',
-  status = 200,
+  status = 500,
   error_code?: string,
 ): Reply => ({
   status,
-  data: { code: 500, data: null, message, error_code },
+  data: {
+    status: status,
+    data: null,
+    message,
+    error_code: error_code ?? 'TEST_REQUEST_FAILED',
+    instance: '/request-errors/ComponentTestFailure0001',
+  },
 })
 const account: CloudAccount = {
   id: 42,
@@ -152,6 +159,30 @@ afterEach(async () => {
 })
 
 describe('云盘账号请求失败', () => {
+  it.each([true, false])('删除成功的消息存在=%s 时保留操作反馈和警告', async (hasMessage) => {
+    const transport = createHTTP(() => ({
+      status: 200,
+      data: {
+        status: 200,
+        data: null,
+        ...(hasMessage ? { message: '服务端账号删除结果' } : {}),
+        warnings: ['账号删除提醒'],
+      },
+    }))
+    const wrapper = await mountPage(transport)
+    await click(wrapper, '删除')
+    expect(transport.calls('/api/account/delete')).toHaveLength(1)
+    expect(transport.calls('/api/account/list')).toHaveLength(2)
+    if (hasMessage)
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith('服务端账号删除结果；账号删除提醒')
+    else {
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(
+        expect.stringMatching(/.+；账号删除提醒$/),
+      )
+    }
+    expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
   it('无响应时保留添加输入且只显示安全提示，不再次抛出 TypeError', async () => {
     const transport = createHTTP((config) => {
       throw new AxiosError('credential-private', 'ERR_NETWORK', config)
@@ -182,7 +213,10 @@ describe('云盘账号请求失败', () => {
       failure('private', 403, 'REQUEST_ORIGIN_INVALID'),
       '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置',
     ],
-    [failure('CSRF 校验失败', 403), '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录'],
+    [
+      failure('CSRF 校验失败', 403, 'CSRF_TOKEN_INVALID'),
+      '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录',
+    ],
   ])('添加失败保留输入且不刷新列表：%s', async (reply, message) => {
     const transport = createHTTP(() => reply)
     const wrapper = await mountPage(transport)
@@ -242,8 +276,12 @@ describe('云盘账号请求失败', () => {
     expect(transport.calls('/api/account/add')).toHaveLength(2)
   })
 
-  it('成功后才关闭、清空表单并刷新列表，保留 115 授权来源字段', async () => {
-    const transport = createHTTP()
+  it('成功后才关闭、清空表单并刷新列表，保留授权来源与服务端消息', async () => {
+    const message = '服务器确认已保存测试账号'
+    const transport = createHTTP(() => ({
+      status: 200,
+      data: { status: 200, data: null, message },
+    }))
     const wrapper = await mountPage(transport)
     await click(await openAddForm(wrapper), '确定')
     expect(JSON.parse(transport.calls('/api/account/add')[0]!.data)).toEqual({
@@ -254,7 +292,7 @@ describe('云盘账号请求失败', () => {
       auth_source_type: 'built_in_appid',
       auth_provider: 'official_pkce',
     })
-    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('添加账号成功')
+    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith(message)
     expect(transport.calls('/api/account/list')).toHaveLength(2)
     await click(wrapper, '添加账号')
     expect(
@@ -288,6 +326,21 @@ describe('云盘账号请求失败', () => {
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
   })
 
+  it('账号保存的应用警告保留服务端确认，不误报完全成功', async () => {
+    const message = '服务器确认已保存测试账号'
+    const warning = '测试账号配置应用需要重试'
+    const transport = createHTTP(() => ({
+      status: 200,
+      data: { status: 200, data: null, message, warnings: [warning] },
+    }))
+    const wrapper = await mountPage(transport)
+    await click(wrapper, '编辑')
+    await click(dialog(wrapper, '编辑账号'), '确定')
+    expect(ElMessage.warning).toHaveBeenCalledWith(`${message}；${warning}`)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(transport.calls('/api/account/list')).toHaveLength(2)
+  })
+
   it('OpenList 编辑凭据失败不继续保存资料，保留修改输入', async () => {
     const transport = createHTTP(
       () => failure(),
@@ -319,7 +372,67 @@ describe('云盘账号请求失败', () => {
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
-  it.each(['编辑', '删除'])('%s 的 HTTP 200 业务失败不成功、不刷新', async (action) => {
+  it.each([true, false])(
+    'OpenList 配置已保存但备注冲突时保留已确认结果，消息存在=%s',
+    async (hasMessage) => {
+      const savedMessage = '服务端确认测试连接已保存'
+      const warning = '测试连接应用提醒'
+      const errorMessage = '服务端拒绝测试备注重复'
+      const transport = createHTTP(
+        (config) =>
+          config.url === '/api/account/openlist'
+            ? {
+                status: 200,
+                data: {
+                  status: 200,
+                  data: null,
+                  ...(hasMessage ? { message: savedMessage } : {}),
+                  warnings: [warning],
+                },
+              }
+            : failure(errorMessage, 409, 'ACCOUNT_NAME_TAKEN'),
+        [
+          {
+            ...account,
+            source_type: 'openlist',
+            auth_type: 'token',
+            base_url: 'https://old.example',
+          },
+        ],
+      )
+      const wrapper = await mountPage(transport)
+      await click(wrapper, '编辑')
+      const form = dialog(wrapper, '编辑 OpenList 账号')
+      await form.get('input[placeholder="请输入令牌"]').setValue('token-private')
+      await form.get('input[placeholder="请输入账号备注"]').setValue('测试重复备注')
+      await click(form, '确定')
+
+      expect(transport.calls('/api/account/openlist')).toHaveLength(1)
+      expect(transport.calls('/api/account/update')).toHaveLength(1)
+      expect(transport.calls('/api/account/list')).toHaveLength(1)
+      expect(form.props('modelValue')).toBe(true)
+      expect(form.get<HTMLInputElement>('input[placeholder="请输入令牌"]').element.value).toBe(
+        'token-private',
+      )
+      expect(form.get<HTMLInputElement>('input[placeholder="请输入账号备注"]').element.value).toBe(
+        '测试重复备注',
+      )
+      if (hasMessage)
+        expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
+          `${savedMessage}；${warning}：${errorMessage}`,
+        )
+      else {
+        expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
+          expect.stringMatching(new RegExp(`.+已保存；${warning}：${errorMessage}$`)),
+        )
+      }
+      expect(ElMessage.success).not.toHaveBeenCalled()
+      expect(ElMessage.warning).not.toHaveBeenCalled()
+      expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('token-private')
+    },
+  )
+
+  it.each(['编辑', '删除'])('%s 的 请求失败不成功、不刷新', async (action) => {
     const transport = createHTTP(() => failure())
     const wrapper = await mountPage(transport)
     await click(wrapper, action)
@@ -457,11 +570,14 @@ describe('网盘状态请求和列表生命周期', () => {
     currentRequest.resolve(failure())
     await flushPromises()
     expect(ElMessage.error).not.toHaveBeenCalled()
-    expect(console.error).toHaveBeenCalledExactlyOnceWith('获取网盘状态失败', {
-      method: 'GET',
-      path: '/api/115/status',
-      status: 200,
-    })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      '获取网盘状态失败',
+      expect.objectContaining({
+        method: 'GET',
+        path: '/api/115/status',
+        status: 500,
+      }),
+    )
     expect(refreshButtons(wrapper)[0]!.props('loading')).toBe(false)
     expect(wrapper.text()).toContain('暂无状态信息')
   })
@@ -808,6 +924,32 @@ describe('云盘 OAuth 请求和生命周期', () => {
     await vi.advanceTimersByTimeAsync(3000)
     expect(window.location.search).toContain('token_data=token-private')
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('private')
+  })
+
+  it.each(['115', 'baidupan'])('%s 确认后保留授权反馈和原刷新说明', async (source) => {
+    vi.useFakeTimers()
+    window.history.replaceState(
+      {},
+      '',
+      `/?account_id=42&source=${source}&token_data=token-private&authorization_id=change-id`,
+    )
+    savePendingV115Authorization({ accountId: 42, authorizationId: 'change-id' })
+    const transport = createHTTP(() => ({
+      status: 200,
+      data: { status: 200, data: null, message: '服务端授权确认结果', warnings: ['授权确认提醒'] },
+    }))
+    await mountPage(transport)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith({
+      message: expect.stringContaining('服务端授权确认结果'),
+      duration: 2000,
+    })
+    expect(vi.mocked(ElMessage.warning).mock.calls[0]![0]).toMatchObject({
+      message: expect.stringContaining('授权确认提醒'),
+    })
+    expect(loadPendingV115Authorization()).toBeNull()
+    expect(transport.calls('/api/account/authorization/cancel')).toHaveLength(0)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(console.error).not.toHaveBeenCalled()
   })
 
   it('回调 ID 不匹配时仅取消原会话，不确认其他会话', async () => {

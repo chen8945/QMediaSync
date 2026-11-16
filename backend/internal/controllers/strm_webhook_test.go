@@ -19,6 +19,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 
@@ -126,7 +127,7 @@ func TestStrmWebhookAuthSupportsHeaderAndQueryAPIKey(t *testing.T) {
 	}
 
 	w := performStrmWebhookRequest(t, router, rawKey, "", payload)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("header API Key 响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 
@@ -136,7 +137,7 @@ func TestStrmWebhookAuthSupportsHeaderAndQueryAPIKey(t *testing.T) {
 		"pick_code":    "pick-2",
 		"file_name":    "movie2.mkv",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("query API Key 响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 
@@ -271,11 +272,11 @@ func TestStrmWebhookEnqueuesFileTaskIdempotently(t *testing.T) {
 		"mtime":        123,
 	}
 	w := performStrmWebhookRequest(t, router, rawKey, "", payload)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("首次入队响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	w = performStrmWebhookRequest(t, router, rawKey, "", payload)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("重复入队响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var total int64
@@ -370,7 +371,7 @@ func TestStrmWebhookFileLongPathUsesShortRequestHashAndPreservesFields(t *testin
 		"sync_path_id": syncPath.ID,
 		"file_id":      "file-long",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("长路径单文件入队响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -444,7 +445,7 @@ func TestStrmWebhookOptionsDefaultFalse(t *testing.T) {
 		"action":       "file",
 		"file_id":      "file-1",
 	})
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusAccepted {
 		t.Fatalf("响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -477,7 +478,7 @@ func TestStrmWebhookBatchCreatesParentAndChildrenWithOptions(t *testing.T) {
 			{"file_id": "file-2"},
 		},
 	})
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusAccepted {
 		t.Fatalf("响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var parent models.StrmGenerationTask
@@ -850,7 +851,7 @@ func TestStrmWebhookBatchFilesChildCreateFailureRollsBackParentAndRetryCreatesAl
 		},
 	}
 	w := performStrmWebhookRequest(t, router, rawKey, "", payload)
-	if w.Code == http.StatusOK {
+	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("子任务创建失败不应返回 200: body=%s", w.Body.String())
 	}
 
@@ -1003,7 +1004,7 @@ func TestStrmWebhookResolvesPathAndFileNameBeforeEnqueue(t *testing.T) {
 		"path":         "/remote/show",
 		"file_name":    "movie.mkv",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("path + file_name 入队响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -1057,7 +1058,7 @@ func TestStrmWebhookAutoMatchesMostSpecificSyncPathByFilePath(t *testing.T) {
 		"path":      "/remote/show/S01",
 		"file_name": "movie.mkv",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("自动匹配同步目录响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -1145,7 +1146,7 @@ func TestStrmWebhookBatchFilesReturnsItemResults(t *testing.T) {
 	}
 	w := performStrmWebhookRequest(t, router, rawKey, "", payload)
 	body := w.Body.String()
-	if w.Code != http.StatusOK ||
+	if w.Code != http.StatusAccepted ||
 		!strings.Contains(body, `"accepted_count":1`) ||
 		!strings.Contains(body, `"failed_count":1`) ||
 		!strings.Contains(body, `"accepted":true`) ||
@@ -1216,7 +1217,7 @@ func TestStrmWebhookDirectoryScan(t *testing.T) {
 		"directory_id":   "dir-1",
 		"directory_path": "/remote/show",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("目录扫描响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -1273,7 +1274,7 @@ func TestStrmWebhookAutoMatchesSyncPathByDirectoryPath(t *testing.T) {
 		"action":         "directory_scan",
 		"directory_path": "/remote/show",
 	})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"accepted_count":1`) {
 		t.Fatalf("目录扫描自动匹配响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	var task models.StrmGenerationTask
@@ -1305,14 +1306,190 @@ func performStrmWebhookRequest(t *testing.T, router *gin.Engine, headerKey strin
 	return w
 }
 
-func decodeStrmWebhookResponse(t *testing.T, w *httptest.ResponseRecorder) APIResponse[strmWebhookResponse] {
+func decodeStrmWebhookResponse(t *testing.T, w *httptest.ResponseRecorder) httpapi.APIResponse[strmWebhookResponse] {
 	t.Helper()
-	if w.Code != http.StatusOK {
-		t.Fatalf("响应状态码 = %d，期望 200，body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("响应状态码 = %d，期望 202，body=%s", w.Code, w.Body.String())
 	}
-	var resp APIResponse[strmWebhookResponse]
+	var resp httpapi.APIResponse[strmWebhookResponse]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析 STRM Webhook 响应失败: %v，body=%s", err, w.Body.String())
 	}
 	return resp
+}
+
+func TestStrmWebhookClassifiesRequestFailures(t *testing.T) {
+	credentialsError := &v115open.OpenAPIError{Code: v115open.ACCESS_TOKEN_AUTH_FAIL, HTTPStatus: http.StatusUnauthorized}
+	for _, tt := range []struct {
+		name        string
+		dropTable   any
+		missingPath bool
+		invalidKey  bool
+		locator     string
+		upstreamErr error
+		status      int
+		errorCode   string
+	}{
+		{name: "API Key query failure", dropTable: &models.ApiKey{}, status: http.StatusInternalServerError, errorCode: "INTERNAL_ERROR"},
+		{name: "invalid API Key", invalidKey: true, status: http.StatusUnauthorized, errorCode: ErrorCodeAuthenticationInvalid},
+		{name: "missing sync path", missingPath: true, status: http.StatusNotFound, errorCode: "RESOURCE_NOT_FOUND"},
+		{name: "local account query failure", dropTable: &models.Account{}, status: http.StatusInternalServerError, errorCode: "INTERNAL_ERROR"},
+		{name: "upstream file failure", status: http.StatusBadGateway, errorCode: "UPSTREAM_ERROR"},
+		{name: "file ID credentials invalid", upstreamErr: credentialsError, status: http.StatusBadRequest, errorCode: "UPSTREAM_CREDENTIALS_INVALID"},
+		{name: "file ID timeout", upstreamErr: context.DeadlineExceeded, status: http.StatusGatewayTimeout, errorCode: "UPSTREAM_TIMEOUT"},
+		{name: "file path credentials invalid", locator: "path", upstreamErr: credentialsError, status: http.StatusBadRequest, errorCode: "UPSTREAM_CREDENTIALS_INVALID"},
+		{name: "file path timeout", locator: "path", upstreamErr: context.DeadlineExceeded, status: http.StatusGatewayTimeout, errorCode: "UPSTREAM_TIMEOUT"},
+		{name: "directory credentials invalid", locator: "directory", upstreamErr: credentialsError, status: http.StatusBadRequest, errorCode: "UPSTREAM_CREDENTIALS_INVALID"},
+		{name: "directory timeout", locator: "directory", upstreamErr: context.DeadlineExceeded, status: http.StatusGatewayTimeout, errorCode: "UPSTREAM_TIMEOUT"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router, rawKey, syncPath := setupStrmWebhookControllerTest(t)
+			const token, refreshToken, password = "bare-account-credential", "bare-refresh-credential", "bare-account-password"
+			if err := db.Db.Model(&models.Account{}).Where("id = ?", syncPath.AccountId).Updates(map[string]any{
+				"token": token, "refresh_token": refreshToken, "password": password,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var logOutput bytes.Buffer
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logOutput, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			upstreamErr := tt.upstreamErr
+			if upstreamErr == nil {
+				upstreamErr = errors.New("upstream fixture failure")
+			}
+			resolver := func(_ context.Context, account *models.Account, _ string) (*v115open.FileDetail, error) {
+				return nil, fmt.Errorf("private-upstream-failure %s %s %s: %w", account.Token, account.RefreshToken, account.Password, upstreamErr)
+			}
+			setStrmWebhookFileIDDetailResolverForTesting(t, resolver)
+			setStrmWebhookFileDetailResolverForTesting(t, resolver)
+			if tt.dropTable != nil {
+				if err := db.Db.Migrator().DropTable(tt.dropTable); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pathID := syncPath.ID
+			if tt.missingPath {
+				pathID += 1000
+			}
+			payload := map[string]any{"sync_path_id": pathID}
+			switch tt.locator {
+			case "path":
+				payload["path"], payload["file_name"] = "/remote", "test-file.mkv"
+			case "directory":
+				payload["action"], payload["directory_id"], payload["directory_path"] = "directory_scan", "test-dir", "/remote"
+			default:
+				payload["file_id"] = "test-file"
+			}
+			headerKey := rawKey
+			if tt.invalidKey {
+				headerKey = "qms_invalid_key"
+			}
+			w := performStrmWebhookRequest(t, router, headerKey, "", payload)
+			var response httpapi.APIResponse[any]
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != tt.status || response.Status != tt.status || response.ErrorCode != tt.errorCode || response.Instance == "" {
+				t.Fatalf("failure classification: HTTP=%d body=%s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "private-upstream-failure") {
+				t.Fatalf("internal cause leaked: %s", w.Body.String())
+			}
+			for _, secret := range []string{rawKey, headerKey, token, refreshToken, password} {
+				if strings.Contains(w.Body.String(), secret) || strings.Contains(logOutput.String(), secret) {
+					t.Fatalf("internal credential leaked: body=%s log=%s", w.Body.String(), logOutput.String())
+				}
+			}
+			if !strings.Contains(logOutput.String(), response.Instance) {
+				t.Fatalf("failure instance absent from diagnostic: %s", logOutput.String())
+			}
+			if tt.dropTable == nil && !tt.missingPath && !tt.invalidKey && !strings.Contains(logOutput.String(), "private-upstream-failure") {
+				t.Fatalf("upstream cause absent from diagnostic: %s", logOutput.String())
+			}
+			if hasChallenge := w.Header().Get("WWW-Authenticate") != ""; hasChallenge != tt.invalidKey {
+				t.Fatalf("authentication challenge does not match QMediaSync credential failure")
+			}
+			var tasks int64
+			if err := db.Db.Model(&models.StrmGenerationTask{}).Count(&tasks).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tasks != 0 {
+				t.Fatalf("rejected request created %d tasks", tasks)
+			}
+		})
+	}
+}
+
+func TestStrmWebhookBatchAllRejectedPreservesResults(t *testing.T) {
+	for _, tt := range []struct {
+		name, items string
+		upstreamErr error
+	}{
+		{name: "invalid items", items: `[{"pick_code":"only-pick-code"},{}]`},
+		{name: "file detail credentials invalid", items: `[{"file_id":"one"},{"file_id":"two"}]`, upstreamErr: &v115open.OpenAPIError{Code: v115open.ACCESS_TOKEN_AUTH_FAIL, HTTPStatus: http.StatusUnauthorized}},
+		{name: "file detail timeout", items: `[{"file_id":"one"},{"file_id":"two"}]`, upstreamErr: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router, rawKey, syncPath := setupStrmWebhookControllerTest(t)
+			const token, refreshToken, password = "bare-batch-account-credential", "bare-batch-refresh-credential", "bare-batch-account-password"
+			if err := db.Db.Model(&models.Account{}).Where("id = ?", syncPath.AccountId).Updates(map[string]any{
+				"token": token, "refresh_token": refreshToken, "password": password,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var logOutput bytes.Buffer
+			oldLogger := helpers.AppLogger
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logOutput, "", 0)}
+			t.Cleanup(func() { helpers.AppLogger = oldLogger })
+			setStrmWebhookFileIDDetailResolverForTesting(t, func(_ context.Context, account *models.Account, _ string) (*v115open.FileDetail, error) {
+				return nil, fmt.Errorf("private-upstream-failure %s %s %s api_key=%s:\n%w", account.Token, account.RefreshToken, account.Password, rawKey, tt.upstreamErr)
+			})
+			w := performStrmWebhookRequest(t, router, rawKey, "", map[string]any{"sync_path_id": syncPath.ID, "action": "batch_files", "items": json.RawMessage(tt.items)})
+			var response httpapi.APIResponse[strmWebhookResponse]
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != http.StatusOK || response.Status != http.StatusOK || response.ErrorCode != "" || response.Instance != "" || response.Data.AcceptedCount != 0 || response.Data.FailedCount != 2 || len(response.Data.Results) != 2 || response.Data.RequestID == "" || len(response.Data.TaskIDs) != 0 {
+				t.Fatalf("all-rejected batch lost its results: HTTP=%d body=%s", w.Code, w.Body.String())
+			}
+			for index, item := range response.Data.Results {
+				if item.Index != index || item.Accepted || item.TaskID != 0 || item.Error == "" {
+					t.Fatalf("invalid result: %+v", item)
+				}
+			}
+			if strings.Contains(w.Body.String(), "private-upstream-failure") || (tt.upstreamErr != nil && strings.Contains(w.Body.String(), tt.upstreamErr.Error())) {
+				t.Fatalf("internal item error leaked: %s", w.Body.String())
+			}
+			for _, secret := range []string{rawKey, token, refreshToken, password} {
+				if strings.Contains(w.Body.String(), secret) || strings.Contains(logOutput.String(), secret) {
+					t.Fatalf("item credential leaked: body=%s log=%s", w.Body.String(), logOutput.String())
+				}
+			}
+			var tasks int64
+			if err := db.Db.Model(&models.StrmGenerationTask{}).Count(&tasks).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tasks != 0 {
+				t.Fatalf("all-rejected batch created %d tasks", tasks)
+			}
+			if strings.Contains(logOutput.String(), "API 请求失败") {
+				t.Fatalf("item rejection should remain a successful request: %s", logOutput.String())
+			}
+			if tt.upstreamErr != nil {
+				for index := range response.Data.Results {
+					correlation := fmt.Sprintf("request_id=%s index=%d", response.Data.RequestID, index)
+					found := false
+					for _, line := range strings.Split(logOutput.String(), "\n") {
+						if strings.Contains(line, correlation) && strings.Contains(line, "private-upstream-failure") && strings.Contains(line, tt.upstreamErr.Error()) {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("safe item cause absent from correlated diagnostic: %s", logOutput.String())
+					}
+				}
+			}
+		})
+	}
 }

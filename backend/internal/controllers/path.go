@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -12,14 +13,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/shirou/gopsutil/v4/disk"
+	"gorm.io/gorm"
+
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	v115open "qmediasync/internal/v115/openapi"
-
-	"github.com/gin-gonic/gin"
-	"github.com/shirou/gopsutil/v4/disk"
+	"qmediasync/internal/validation"
 )
 
 type DirResp struct {
@@ -30,30 +34,14 @@ type DirResp struct {
 }
 
 // GetPathList 获取目录列表
-// @Summary 获取目录列表
-// @Description 获取当前层目录；远端顺序由来源接口决定，本地排序由调用方处理
-// @Tags 路径管理
-// @Accept json
-// @Produce json
-// @Param parent_id query string false "父目录 ID（115）或路径（其他来源）"
-// @Param source_type query string true "来源类型：local、115、openlist、baidupan"
-// @Param account_id query integer false "账号 ID，远程来源必填"
-// @Param sort_by query string false "排序字段，以 sort-options 返回的目录能力为准"
-// @Param sort_order query string false "asc 或 desc；跟随网盘时省略"
-// @Param refresh query integer false "0 或 1，显式刷新当前父目录"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /path/list [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetPathList(c *gin.Context) {
 	var req requests.PathListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	var pathes []DirResp
@@ -62,9 +50,10 @@ func GetPathList(c *gin.Context) {
 	if req.SourceType == models.SourceTypeLocal {
 		pathes, err = GetLocalPath(req.ParentID)
 	} else {
-		account, err = models.GetAccountById(req.AccountID)
+		account, err = models.ReadAccount(c.Request.Context(), req.AccountID)
 		if err == nil && account.SourceType != req.SourceType {
-			err = fmt.Errorf("账号与来源类型不匹配")
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("source_type", "账号与来源类型不匹配")))
+			return
 		}
 		if err == nil {
 			switch req.SourceType {
@@ -79,14 +68,14 @@ func GetPathList(c *gin.Context) {
 	}
 
 	if err != nil {
-		message := helpers.RedactSensitiveLog(err.Error())
 		if account != nil {
-			message = helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password)
+			writeCloudUpstreamError(c, err, "获取目录列表失败", account.Token, account.RefreshToken, account.Password)
+		} else {
+			writePathOperationError(c, err, "获取目录列表失败")
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取目录列表失败：" + message, Data: nil})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取目录列表成功", Data: pathes})
+	httpapi.Success(c, http.StatusOK, pathes, "获取目录列表成功")
 }
 
 // GetLocalPath 获取本地目录列表。
@@ -183,15 +172,15 @@ func GetLocalPath(parentPath string) ([]DirResp, error) {
 func GetBrowseSortOptions(c *gin.Context) {
 	var req requests.BrowseSortOptionsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	options, err := requests.BrowseSortOptionsFor(req.SourceType, req.Scope)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[requests.BrowseSortOptions]{Code: Success, Data: options})
+	httpapi.Success(c, http.StatusOK, options, "")
 }
 
 // GetOpenListPath 使用原生目录接口，保持上游顺序；显式刷新失败时不回退旧缓存。
@@ -375,16 +364,16 @@ type netFileListPage struct {
 func GetNetFileList(c *gin.Context) {
 	var req requests.NetFileListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号信息失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	resp, err := getNetFileListPage(c.Request.Context(), netFileListQuery{
@@ -398,14 +387,14 @@ func GetNetFileList(c *gin.Context) {
 		FoldersFirst: req.FoldersFirst,
 	})
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取目录列表失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		if _, ok := errors.AsType[validation.Error](err); ok {
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
+			return
+		}
+		writeCloudUpstreamError(c, err, "获取目录列表失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[netFileListResponse]{
-		Code:    Success,
-		Message: "",
-		Data:    resp,
-	})
+	httpapi.Success(c, http.StatusOK, resp, "")
 }
 
 type netFileListQuery struct {
@@ -788,31 +777,47 @@ func getBaiduPanDirs(parentId string, account *models.Account, page, pageSize in
 func CreateDir(c *gin.Context) {
 	var req requests.CreateDirRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	var err error
 	var pathId string
+	var account *models.Account
+	if req.SourceType != models.SourceTypeLocal {
+		account, err = models.ReadAccount(c.Request.Context(), req.AccountID)
+		if err != nil {
+			writePathOperationError(c, err, "获取账号信息失败")
+			return
+		}
+		if account.SourceType != req.SourceType {
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("source_type", "账号与来源类型不匹配")))
+			return
+		}
+	}
 	switch req.SourceType {
 	case models.SourceTypeLocal:
 		pathId, err = makeLocalPath(req.ParentID, req.Name)
 	case models.SourceTypeOpenList:
-		pathId, err = makeOpenListPath(req.ParentID, req.Name, req.AccountID)
+		pathId, err = makeOpenListPath(req.ParentID, req.Name, account)
 	case models.SourceType115:
-		pathId, err = make115PathList(req.ParentID, req.ParentPath, req.Name, req.AccountID)
+		pathId, err = make115PathList(req.ParentID, req.ParentPath, req.Name, account)
 	case models.SourceTypeBaiduPan:
-		pathId, err = makeBaiduPanPathList(req.ParentID, req.Name, req.AccountID)
+		pathId, err = makeBaiduPanPathList(req.ParentID, req.Name, account)
 	default:
 		// 报错
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "未知的同步源类型", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "未知的同步源类型", Data: nil})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "创建目录失败：" + err.Error(), Data: nil})
+		if account != nil {
+			writeCloudUpstreamError(c, err, "创建目录失败", account.Token, account.RefreshToken, account.Password)
+		} else {
+			writePathOperationError(c, err, "创建目录失败")
+		}
 		return
 	}
 	if req.SourceType != models.SourceTypeLocal {
@@ -823,94 +828,82 @@ func CreateDir(c *gin.Context) {
 		Name: req.Name,
 		Path: filepath.ToSlash(filepath.Join(req.ParentPath, req.Name)),
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "创建目录成功", Data: dirResp})
+	httpapi.Success(c, http.StatusCreated, dirResp, "创建目录成功")
 }
 
 // 创建本地目录
 func makeLocalPath(parentId string, folderName string) (string, error) {
 	// 检查父目录是否存在
-	if !helpers.PathExists(parentId) || parentId == "" {
-		return "", fmt.Errorf("父目录不存在：%s", parentId)
+	if _, err := os.Stat(parentId); err != nil {
+		return "", fmt.Errorf("读取父目录失败：%w", err)
 	}
 	// 构建新目录路径
 	newDir := filepath.Join(parentId, folderName)
 	// 创建目录
 	if err := os.Mkdir(newDir, 0755); err != nil {
-		return "", fmt.Errorf("创建目录失败：%s，错误：%v", newDir, err)
+		return "", fmt.Errorf("创建目录失败：%s，错误：%w", newDir, err)
 	}
 	return filepath.ToSlash(newDir), nil
 }
 
 // 创建 OpenList 目录
-func makeOpenListPath(parentId string, folderName string, accountId uint) (string, error) {
+func makeOpenListPath(parentId string, folderName string, account *models.Account) (string, error) {
 	if parentId == "" {
 		parentId = "/"
 	}
 	// 检查父目录是否存在
-	account, err := models.GetAccountById(accountId)
-	if err != nil {
-		return "", fmt.Errorf("获取账号失败：%v", err)
-	}
 	client := account.GetOpenListClient()
-	_, err = client.FileDetail(parentId)
+	_, err := client.FileDetail(parentId)
 	if err != nil {
-		return "", fmt.Errorf("获取 OpenList 目录详情失败，目录可能不存在：%v", err)
+		return "", fmt.Errorf("获取 OpenList 目录详情失败，目录可能不存在：%w", err)
 	}
 	newDir := filepath.ToSlash(filepath.Join(parentId, folderName))
 	err = client.Mkdir(newDir)
 	if err != nil {
-		return "", fmt.Errorf("创建 OpenList 目录失败：%s，错误：%v", newDir, err)
+		return "", fmt.Errorf("创建 OpenList 目录失败：%s，错误：%w", newDir, err)
 	}
 	return newDir, nil
 }
 
 // 创建 115 目录
-func make115PathList(parentId, parentPath, folderName string, accountId uint) (string, error) {
+func make115PathList(parentId, parentPath, folderName string, account *models.Account) (string, error) {
 	if parentId == "" {
 		parentId = "0"
 	}
 	// 检查父目录是否存在
-	account, err := models.GetAccountById(accountId)
-	if err != nil {
-		return "", fmt.Errorf("获取账号失败：%v", err)
-	}
 	client := account.Get115Client()
 	if parentId != "0" {
-		_, err = client.GetFsDetailByCid(context.Background(), parentId)
+		_, err := client.GetFsDetailByCid(context.Background(), parentId)
 		if err != nil {
-			return "", fmt.Errorf("获取 115 目录详情失败，目录可能不存在：%v", err)
+			return "", fmt.Errorf("获取 115 目录详情失败，目录可能不存在：%w", err)
 		}
 	}
 	newDir := filepath.ToSlash(filepath.Join(parentPath, folderName))
 	newPathId, err := client.MkDir(context.Background(), parentId, folderName)
 	if err != nil {
-		return "", fmt.Errorf("创建 115 目录失败：%s，错误：%v", newDir, err)
+		return "", fmt.Errorf("创建 115 目录失败：%s，错误：%w", newDir, err)
 	}
 	return newPathId, nil
 }
 
-func makeBaiduPanPathList(parentId string, folderName string, accountId uint) (string, error) {
+func makeBaiduPanPathList(parentId string, folderName string, account *models.Account) (string, error) {
 	if parentId == "" {
 		parentId = "/"
 	}
 	// 检查父目录是否存在
-	account, err := models.GetAccountById(accountId)
-	if err != nil {
-		return "", fmt.Errorf("获取账号失败：%v", err)
-	}
 	client := account.GetBaiDuPanClient()
 	exists, err := client.PathExists(context.Background(), parentId)
 	if err != nil {
-		return "", fmt.Errorf("获取百度网盘目录失败，目录可能不存在：%v", err)
+		return "", fmt.Errorf("获取百度网盘目录失败，目录可能不存在：%w", err)
 	}
 	if !exists {
-		return "", fmt.Errorf("父目录不存在：%s", parentId)
+		return "", fmt.Errorf("父目录 %s 不存在：%w", parentId, os.ErrNotExist)
 	}
 	// 创建新目录
 	newDir := filepath.ToSlash(filepath.Join(parentId, folderName))
 	err = client.Mkdir(context.Background(), newDir)
 	if err != nil {
-		return "", fmt.Errorf("创建百度网盘目录失败：%s，错误：%v", newDir, err)
+		return "", fmt.Errorf("创建百度网盘目录失败：%s，错误：%w", newDir, err)
 	}
 	return newDir, nil
 }
@@ -920,11 +913,11 @@ func makeBaiduPanPathList(parentId string, folderName string, accountId uint) (s
 func UpdateFNPath(c *gin.Context) {
 	var req requests.FNPathRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 用冒号分隔路径
@@ -948,22 +941,22 @@ mainloop:
 	}
 	helpers.AccessiblePathes = strings.Join(safePathes, ":")
 	helpers.AppLogger.Infof("更新飞牛有权限的目录为：%s", req.Path)
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "更新目录成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "更新目录成功")
 }
 
 func DeleteDir(c *gin.Context) {
 	var req requests.DeleteDirRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	invalidateParentID := req.ParentID
@@ -979,20 +972,20 @@ func DeleteDir(c *gin.Context) {
 		var names []string
 		invalidateParentID, names, err = buildOpenListRemoveTarget(req.ParentID, req.FileID)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("file_id", err.Error())))
 			return
 		}
 		err = client.Del(invalidateParentID, names)
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的文件系统", Data: nil})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "删除目录失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "删除目录失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
 	invalidateNetFileCacheForDeletedPath(account.SourceType, req.AccountID, invalidateParentID, req.FileID)
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "删除目录成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "删除目录成功")
 }
 
 func check115FileOperationResult(ok bool, err error) error {
@@ -1013,28 +1006,30 @@ type fileTransferResult struct {
 func sendFileTransferResult(c *gin.Context, action string, taskIDs []string) {
 	result := fileTransferResult{Status: "completed", TaskIDs: []string{}}
 	message := "批量" + action + "成功"
+	status := http.StatusOK
 	if len(taskIDs) > 0 {
+		status = http.StatusAccepted
 		result.Status = "submitted"
 		result.TaskIDs = taskIDs
 		message = "批量" + action + "已提交，请在 OpenList 查看任务进度和结果"
 	}
-	c.JSON(http.StatusOK, APIResponse[fileTransferResult]{Code: Success, Message: message, Data: result})
+	httpapi.Success(c, status, result, message)
 }
 
 // DeleteFiles 批量删除网盘文件或目录。
 func DeleteFiles(c *gin.Context) {
 	var req requests.DeleteFilesRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	fileIDs := req.NormalizedFileIDs(account.SourceType)
@@ -1051,12 +1046,12 @@ func DeleteFiles(c *gin.Context) {
 		var names []string
 		invalidateParentID, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("file_ids", err.Error())))
 			return
 		}
 		err = client.Del(invalidateParentID, names)
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的文件系统", Data: nil})
 		return
 	}
 	// 上游可能已删除部分条目，即使返回错误也不能继续使用旧列表。
@@ -1064,10 +1059,10 @@ func DeleteFiles(c *gin.Context) {
 		invalidateNetFileCacheForDeletedPath(account.SourceType, req.AccountID, invalidateParentID, fileID)
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量删除失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		writeCloudUpstreamError(c, err, "批量删除失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "批量删除成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "批量删除成功")
 }
 
 // buildBaiduTransferItems 构造百度网盘批量移动 / 复制条目，保持原文件名并补全路径分隔符。
@@ -1089,16 +1084,16 @@ func buildBaiduTransferItems(fileIDs []string, targetParentID string) []baidupan
 func MoveFiles(c *gin.Context) {
 	var req requests.MoveFilesRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	fileIDs := req.NormalizedFileIDs(account.SourceType)
@@ -1119,12 +1114,12 @@ func MoveFiles(c *gin.Context) {
 		var names []string
 		srcDir, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("file_ids", err.Error())))
 			return
 		}
 		taskIDs, err = client.MoveWithTasks(srcDir, normalizeOpenListPath(req.TargetParentID), names)
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的文件系统", Data: nil})
 		return
 	}
 	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.ParentID)
@@ -1134,7 +1129,7 @@ func MoveFiles(c *gin.Context) {
 		invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, fileID, targetPath)
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量移动失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		writeCloudUpstreamError(c, err, "批量移动失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
 	sendFileTransferResult(c, "移动", taskIDs)
@@ -1144,16 +1139,16 @@ func MoveFiles(c *gin.Context) {
 func CopyFiles(c *gin.Context) {
 	var req requests.CopyFilesRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	fileIDs := req.NormalizedFileIDs(account.SourceType)
@@ -1171,12 +1166,12 @@ func CopyFiles(c *gin.Context) {
 		var names []string
 		srcDir, names, err = splitOpenListFileIDs(req.ParentID, fileIDs)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("file_ids", err.Error())))
 			return
 		}
 		taskIDs, err = client.CopyWithTasks(srcDir, normalizeOpenListPath(req.TargetParentID), names)
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的文件系统", Data: nil})
 		return
 	}
 	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.TargetParentID)
@@ -1185,7 +1180,7 @@ func CopyFiles(c *gin.Context) {
 		invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, targetPath)
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "批量复制失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		writeCloudUpstreamError(c, err, "批量复制失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
 	sendFileTransferResult(c, "复制", taskIDs)
@@ -1195,16 +1190,16 @@ func CopyFiles(c *gin.Context) {
 func RenameFile(c *gin.Context) {
 	var req requests.RenameFileRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取账号失败：" + err.Error(), Data: nil})
+		writePathOperationError(c, err, "获取账号信息失败")
 		return
 	}
 	fileID := req.FileID
@@ -1226,20 +1221,37 @@ func RenameFile(c *gin.Context) {
 		var names []string
 		srcDir, names, err = splitOpenListFileIDs(req.ParentID, []string{fileID})
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(validation.New("file_id", err.Error())))
 			return
 		}
 		err = client.RenameNoReplace(joinOpenListPath(srcDir, names[0]), newName)
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的文件系统", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的文件系统", Data: nil})
 		return
 	}
 	invalidateNetFileCacheForPath(account.SourceType, req.AccountID, req.ParentID)
 	newPath := joinOpenListPath(pathpkg.Dir(normalizeOpenListPath(fileID)), newName)
 	invalidateNetFileCacheForChangedPaths(account.SourceType, req.AccountID, fileID, newPath)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "重命名失败：" + helpers.RedactSensitiveLog(err.Error(), account.Token, account.RefreshToken, account.Password), Data: nil})
+		writeCloudUpstreamError(c, err, "重命名失败", account.Token, account.RefreshToken, account.Password)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "重命名成功", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "重命名成功")
+}
+
+func writePathOperationError(c *gin.Context, err error, message string, secrets ...string) {
+	if _, ok := errors.AsType[validation.Error](err); ok {
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
+		return
+	}
+	status, code := http.StatusInternalServerError, "INTERNAL_ERROR"
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		status, code, message = http.StatusNotFound, "ACCOUNT_NOT_FOUND", "账号不存在"
+	case errors.Is(err, os.ErrNotExist):
+		status, code, message = http.StatusNotFound, "RESOURCE_NOT_FOUND", "目录或文件不存在"
+	case errors.Is(err, os.ErrExist):
+		status, code, message = http.StatusConflict, "RESOURCE_ALREADY_EXISTS", "目录或文件已存在"
+	}
+	httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err, Secrets: secrets})
 }

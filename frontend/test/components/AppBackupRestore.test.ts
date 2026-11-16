@@ -90,9 +90,10 @@ describe('恢复结果与重启服务交互', () => {
       ...overrides,
     }
     const http = {
-      get: vi.fn().mockResolvedValue({ data: { code: 200, data: result } }),
+      get: vi.fn().mockResolvedValue({ data: { status: 200, data: result }, status: 200 }),
       post: vi.fn().mockResolvedValue({
-        data: { code: 200, data: { ...result, restart_requested: true } },
+        data: { status: 200, data: { ...result, restart_requested: true } },
+        status: 200,
       }),
     }
     store.startProgressPolling('restore', undefined, http as never, 'test-restore-receipt')
@@ -117,7 +118,13 @@ describe('恢复结果与重启服务交互', () => {
       http.get.mockRejectedValue(
         new HttpResponseError({
           status: 401,
-          data: { code: 401, error_code: 'RESTORE_RECEIPT_INVALID' },
+          data: {
+            status: 401,
+            data: null,
+            message: '请求处理失败',
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'RESTORE_RECEIPT_INVALID',
+          },
         }),
       )
       await vi.advanceTimersByTimeAsync(3000)
@@ -164,13 +171,25 @@ describe('恢复结果与重启服务交互', () => {
     http.get.mockRejectedValue(
       new HttpResponseError({
         status: 401,
-        data: { code: 401, error_code: 'RESTORE_RECEIPT_INVALID' },
+        data: {
+          status: 401,
+          data: null,
+          message: '请求处理失败',
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'RESTORE_RECEIPT_INVALID',
+        },
       }),
     )
     vi.mocked(authAPI.fetchSession).mockRejectedValueOnce(
       new HttpResponseError({
         status: 503,
-        data: { code: 503, error_code: 'DATABASE_MAINTENANCE' },
+        data: {
+          status: 503,
+          data: null,
+          message: '请求处理失败',
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'DATABASE_MAINTENANCE',
+        },
       }),
     )
     await button(wrapper, '检查服务状态')!.trigger('click')
@@ -199,7 +218,13 @@ describe('恢复结果与重启服务交互', () => {
     http.get.mockRejectedValue(
       new HttpResponseError({
         status: 401,
-        data: { code: 401, error_code: 'RESTORE_RECEIPT_INVALID' },
+        data: {
+          status: 401,
+          data: null,
+          message: '请求处理失败',
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'RESTORE_RECEIPT_INVALID',
+        },
       }),
     )
     await vi.advanceTimersByTimeAsync(3000)

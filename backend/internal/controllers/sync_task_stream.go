@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"qmediasync/internal/httpapi"
+
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/logstream"
 	"qmediasync/internal/models"
@@ -64,7 +66,7 @@ func buildSyncTaskSnapshotMessage(task *models.Sync, logs []logstream.Entry, log
 func SyncTaskStream(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
@@ -105,8 +107,7 @@ func SyncTaskStream(c *gin.Context) {
 	fullLogPath, logPath := models.ExistingSyncLogPath(task.ID)
 	logs, cursor, err := logstream.ReadTailEntries(fullLogPath, 1000)
 	if err != nil {
-		helpers.AppLogger.Errorf("读取同步任务日志快照失败: %v", err)
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "读取同步任务日志失败", Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取同步任务日志失败", Cause: err, Data: nil})
 		return
 	}
 	if isSSEStreamStopped(streamCtx) {
@@ -115,8 +116,7 @@ func SyncTaskStream(c *gin.Context) {
 
 	logEvents, unsubscribeLog, err := logstream.GlobalManager.Subscribe(streamCtx, fullLogPath, cursor, 512)
 	if err != nil {
-		helpers.AppLogger.Errorf("订阅同步任务日志失败: %v", err)
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "订阅同步任务日志失败", Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "订阅同步任务日志失败", Cause: err, Data: nil})
 		return
 	}
 	defer unsubscribeLog()
@@ -175,13 +175,12 @@ func loadSyncTaskForStream(c *gin.Context, syncID uint) (*models.Sync, bool) {
 		return nil, false
 	}
 	if err != nil {
-		helpers.AppLogger.Errorf("读取同步任务失败: %v", err)
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "读取同步任务失败", Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取同步任务失败", Cause: err, Data: nil})
 		return nil, true
 	}
 	if task == nil {
 		helpers.AppLogger.Error("读取同步任务失败: 返回空记录")
-		c.JSON(http.StatusInternalServerError, APIResponse[any]{Code: BadRequest, Message: "读取同步任务失败", Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取同步任务失败", Cause: err, Data: nil})
 		return nil, true
 	}
 	return task, false

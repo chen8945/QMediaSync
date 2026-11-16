@@ -10,6 +10,7 @@ import TwoFactorSettings from '@/components/user-settings/TwoFactorSettings.vue'
 import { httpKey } from '@/http/client'
 import { markAuthInvalidationHandled } from '@/http/errors'
 import { useAuthStore } from '@/stores/auth'
+import type { APIResponse } from '@/api/types'
 
 const { router } = vi.hoisted(() => ({ router: { replace: vi.fn() } }))
 vi.mock('vue-router', () => ({ useRouter: () => router }))
@@ -19,12 +20,18 @@ vi.mock('qrcode', () => ({
 
 interface Reply {
   status: number
-  data: { code: number; data: unknown; message?: string; error_code?: string }
+  data: APIResponse<unknown>
 }
-const ok = (data: unknown = null): Reply => ({ status: 200, data: { code: 200, data } })
-const fail = (status = 200, error_code?: string): Reply => ({
+const ok = (data: unknown = null): Reply => ({ status: 200, data: { status: 200, data } })
+const fail = (status = 500, error_code?: string): Reply => ({
   status,
-  data: { code: 500, data: null, message: '服务暂不可用', error_code },
+  data: {
+    status: status,
+    data: null,
+    message: '服务暂不可用',
+    error_code: error_code ?? 'TEST_REQUEST_FAILED',
+    instance: '/request-errors/ComponentTestFailure0001',
+  },
 })
 const sessions = [
   {
@@ -77,6 +84,7 @@ async function click(wrapper: VueWrapper, label: string) {
 beforeEach(() => {
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
 })
 afterEach(() => {
@@ -106,11 +114,24 @@ describe('用户凭据设置', () => {
   })
 
   it.each([true, false])('成功响应 data=%s 决定是否重新登录', async (requiresLogin) => {
-    const { wrapper, auth } = mountPage(AppUserSettings, () => ok(requiresLogin))
+    const { wrapper, auth } = mountPage(AppUserSettings, () => ({
+      status: 200,
+      data: {
+        status: 200,
+        data: requiresLogin,
+        message: '服务端凭据操作结果',
+        warnings: ['凭据应用提醒'],
+      },
+    }))
     await wrapper.get('input[placeholder="请输入新的管理员用户名"]').setValue('newadmin')
     await click(wrapper, '保存设置')
     expect(auth.isAuthenticated).toBe(!requiresLogin)
     expect(router.replace).toHaveBeenCalledTimes(requiresLogin ? 1 : 0)
+    expect(wrapper.text()).toContain('服务端凭据操作结果')
+    expect(wrapper.text()).toContain('凭据应用提醒')
+    expect(
+      wrapper.get<HTMLInputElement>('input[placeholder="请输入管理员密码"]').element.value,
+    ).toBe('')
   })
 
   it.each(['cancel', 'handled'] as const)('%s 不重复通知', async (kind) => {
@@ -129,6 +150,42 @@ describe('用户凭据设置', () => {
 })
 
 describe('两步验证设置', () => {
+  it.each(['enable', 'disable'] as const)('%s 成功后展示元信息并清理已提交凭据', async (action) => {
+    let enabled = action === 'disable'
+    const { wrapper, request } = mountPage(TwoFactorSettings, (config) => {
+      if (config.url?.endsWith('/status')) return ok({ enabled })
+      if (config.url?.endsWith('/setup'))
+        return ok({ secret: 'TOTPSECRET', otpauth_url: 'otpauth://totp/test?secret=TOTPSECRET' })
+      enabled = !enabled
+      return {
+        status: 200,
+        data: {
+          status: 200,
+          data: null,
+          message: '服务端两步验证结果',
+          warnings: ['两步验证附加提醒'],
+        },
+      }
+    })
+    await flushPromises()
+    if (action === 'enable') {
+      await click(wrapper, '生成配置')
+      await wrapper.get('input[placeholder="输入动态验证码确认启用"]').setValue('123456')
+      await click(wrapper, '启用两步验证')
+    } else {
+      await wrapper.get('input[placeholder="当前密码"]').setValue('Pass123')
+      await wrapper.get('input[placeholder="当前动态验证码"]').setValue('123456')
+      await click(wrapper, '关闭两步验证')
+    }
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(
+      '服务端两步验证结果；两步验证附加提醒',
+    )
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('TOTPSECRET')
+    expect(request.mock.calls.filter(([config]) => config.url?.endsWith('/status'))).toHaveLength(2)
+  })
+
   it('启用业务失败保留密钥和验证码，不刷新成功状态', async () => {
     const { wrapper, request } = mountPage(TwoFactorSettings, (config) => {
       if (config.url?.endsWith('/status')) return ok({ enabled: false })
@@ -214,12 +271,37 @@ describe('登录设备撤销', () => {
   it('撤销已成功但回读失败时准确提示加载失败', async () => {
     let reads = 0
     const { wrapper } = mountPage(LoginSessions, (config) =>
-      config.method === 'get' ? (++reads === 1 ? ok(sessions) : fail()) : ok(),
+      config.method === 'get'
+        ? ++reads === 1
+          ? ok(sessions)
+          : fail()
+        : { status: 200, data: { status: 200, data: null, message: '服务端设备撤销结果' } },
     )
     await flushPromises()
     await click(wrapper, '撤销其他设备')
-    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('其他登录设备已撤销')
+    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('服务端设备撤销结果')
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('服务暂不可用')
     expect(wrapper.text()).toContain('Test browser')
+  })
+
+  it.each(['撤销', '撤销其他设备'])('%s 已提交的消息和警告进入现有反馈', async (action) => {
+    const { wrapper, request } = mountPage(LoginSessions, (config) =>
+      config.method === 'get'
+        ? ok(sessions)
+        : {
+            status: 200,
+            data: {
+              status: 200,
+              data: null,
+              message: '服务端设备操作结果',
+              warnings: ['设备操作提醒'],
+            },
+          },
+    )
+    await flushPromises()
+    await click(wrapper, action)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith('服务端设备操作结果；设备操作提醒')
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(request.mock.calls.filter(([config]) => config.method === 'get')).toHaveLength(2)
   })
 })

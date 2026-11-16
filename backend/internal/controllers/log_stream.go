@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/logstream"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/requests"
@@ -32,58 +33,66 @@ type OldLogsResponse struct {
 // GetOldLogs 通过 HTTP 接口获取旧日志，返回 JSON 格式。
 func GetOldLogs(c *gin.Context) {
 	var req requests.OldLogsRequest
-	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+	if err := c.ShouldBindQuery(&req); err != nil {
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if req.Pos == 0 && req.Direction == "forward" {
-		c.JSON(http.StatusOK, OldLogsResponse{Entries: make([]LogEntry, 0), Pos: 0, StartPos: 0})
+		httpapi.Success(c, http.StatusOK, OldLogsResponse{Entries: make([]LogEntry, 0), Pos: 0, StartPos: 0}, "")
 		return
 	}
 
 	fullLogPath, err := helpers.SafeJoin(filepath.Join(helpers.ConfigDir, "logs"), req.Path)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("日志文件路径不合法：%v", err)})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "日志文件路径不合法", Cause: err, FieldErrors: []httpapi.FieldError{{Field: "path", Message: "路径不合法"}}})
 		return
 	}
-	if _, err := os.Stat(fullLogPath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "日志文件不存在"})
+	if _, err := os.Stat(fullLogPath); err != nil {
+		status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "读取日志文件失败"
+		if os.IsNotExist(err) {
+			status, code, message = http.StatusNotFound, "LOG_FILE_NOT_FOUND", "日志文件不存在"
+		}
+		httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err})
 		return
 	}
 	lines, newPos, err := helpers.ReadLines(fullLogPath, int64(req.Pos), req.Limit, req.Direction)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("读取日志文件失败：%v", err)})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取日志文件失败", Cause: err})
 		return
 	}
 	entries := make([]LogEntry, 0, len(lines))
 	for _, line := range lines {
 		entries = append(entries, parseLogLine(line))
 	}
-	c.JSON(http.StatusOK, OldLogsResponse{Entries: entries, Pos: newPos, StartPos: int64(req.Pos)})
+	httpapi.Success(c, http.StatusOK, OldLogsResponse{Entries: entries, Pos: newPos, StartPos: int64(req.Pos)}, "")
 }
 
 // DownloadLogFile 下载日志文件。
 func DownloadLogFile(c *gin.Context) {
 	var req requests.LogFileRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	fullLogPath, err := helpers.SafeJoin(filepath.Join(helpers.ConfigDir, "logs"), req.Path)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("日志文件路径不合法：%v", err)})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "日志文件路径不合法", Cause: err, FieldErrors: []httpapi.FieldError{{Field: "path", Message: "路径不合法"}}})
 		return
 	}
-	if _, err := os.Stat(fullLogPath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "日志文件不存在"})
+	if _, err := os.Stat(fullLogPath); err != nil {
+		status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "读取日志文件失败"
+		if os.IsNotExist(err) {
+			status, code, message = http.StatusNotFound, "LOG_FILE_NOT_FOUND", "日志文件不存在"
+		}
+		httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err})
 		return
 	}
 	c.Header("Content-Description", "File Transfer")
@@ -111,8 +120,7 @@ func LogStream(c *gin.Context) {
 
 	messages, unsubscribe, err := logstream.GlobalManager.Subscribe(streamCtx, fullLogPath, cursor, 256)
 	if err != nil {
-		helpers.AppLogger.Errorf("订阅日志 SSE 失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "订阅日志流失败"})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "订阅日志流失败", Cause: err})
 		return
 	}
 	defer unsubscribe()
@@ -174,30 +182,30 @@ func LogStream(c *gin.Context) {
 func prepareLogStream(c *gin.Context) (string, int64, bool) {
 	req := requests.LogFileRequest{Path: c.Query("path")}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return "", 0, false
 	}
 	fullLogPath, err := helpers.SafeJoin(filepath.Join(helpers.ConfigDir, "logs"), req.Path)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("日志文件路径不合法：%v", err)})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "日志文件路径不合法", Cause: err, FieldErrors: []httpapi.FieldError{{Field: "path", Message: "路径不合法"}}})
 		return "", 0, false
 	}
 	stat, err := os.Stat(fullLogPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "日志文件不存在"})
+			httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "LOG_FILE_NOT_FOUND", Message: "日志文件不存在", Cause: err})
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("读取日志文件失败：%v", err)})
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取日志文件失败", Cause: err})
 		}
 		return "", 0, false
 	}
 	if !stat.Mode().IsRegular() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "日志目标不是普通文件"})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "日志目标不是普通文件", FieldErrors: []httpapi.FieldError{{Field: "path", Message: "不是普通文件"}}})
 		return "", 0, false
 	}
 	cursor, err := logstream.ReadEndCursor(fullLogPath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("读取日志位置失败：%v", err)})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取日志位置失败", Cause: err})
 		return "", 0, false
 	}
 	return fullLogPath, cursor, true

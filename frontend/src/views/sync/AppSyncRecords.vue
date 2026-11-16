@@ -81,10 +81,17 @@
 </template>
 
 <script setup lang="ts">
+import type { SettingsSaveResult } from '@/api/types'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
-import { deleteSyncRecords, fetchSyncRecords, syncRecordPublicMessages } from '@/api/syncRecords'
+import {
+  deleteSyncRecords,
+  fetchSyncRecords,
+  syncRecordDeleteResult,
+  syncRecordPublicMessages,
+} from '@/api/syncRecords'
+import { parseHttpError } from '@/http/errors'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
 import { createActiveRequestGate } from '@/composables/useActiveRequestGate'
 import { useBackgroundRefresh } from '@/composables/useBackgroundRefresh'
@@ -139,6 +146,12 @@ interface SyncRecordDeleteContextSnapshot {
 }
 
 const http = useHttpClient()
+const showOperationResult = (result: SettingsSaveResult, fallbackMessage: string) => {
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || fallbackMessage)
+}
+
 const router = useRouter()
 
 // 数据状态
@@ -637,6 +650,26 @@ const handleSyncRecordAction = ({ actionKey, row }: RecordActionPayload<SyncReco
 }
 
 // 单条删除，无需确认
+const reportDeleteFailure = async (error: unknown, fallbackMessage: string) => {
+  const failure = parseHttpError(error, {
+    fallbackMessage,
+    publicMessages: syncRecordPublicMessages,
+  })
+  if (!failure.shouldNotify) return
+  const partial = syncRecordDeleteResult(failure)
+  if (!partial) {
+    reportSyncRecordError(error, fallbackMessage)
+    return
+  }
+  const deletedIds = new Set(partial.deleted_ids)
+  syncRecords.value = syncRecords.value.filter((record) => !deletedIds.has(record.id))
+  selectedIds.value = selectedIds.value.filter((id) => !deletedIds.has(id))
+  total.value = Math.max(0, total.value - deletedIds.size)
+  console.error(fallbackMessage, failure.diagnostics)
+  ElMessage.error(`已删除 ${deletedIds.size} 条同步记录；${failure.message}`)
+  await loadSyncRecords()
+}
+
 const deleteRecord = async (id: number) => {
   const operationContext = startDeleteOperationContext('single')
 
@@ -646,18 +679,18 @@ const deleteRecord = async (id: number) => {
     }
 
     deleteLoading.value = true
-    await deleteSyncRecords(http, [id])
+    const result = await deleteSyncRecords(http, [id])
     if (!isDeleteOperationContextCurrent(operationContext, 'single')) {
       return
     }
 
-    ElMessage.success('删除成功')
+    showOperationResult(result, '删除成功')
     await loadSyncRecords()
   } catch (error) {
     if (!isDeleteOperationContextCurrent(operationContext, 'single')) {
       return
     }
-    reportSyncRecordError(error, '删除失败')
+    await reportDeleteFailure(error, '删除失败')
   } finally {
     if (isDeleteOperationContextCurrent(operationContext, 'single')) {
       deleteLoading.value = false
@@ -689,12 +722,12 @@ const batchDeleteRecords = async () => {
     }
 
     batchDeleteLoading.value = true
-    await deleteSyncRecords(http, ids, { batch: true })
+    const result = await deleteSyncRecords(http, ids, { batch: true })
     if (!isDeleteOperationContextCurrent(operationContext, 'batch')) {
       return
     }
 
-    ElMessage.success('批量删除成功')
+    showOperationResult(result, '批量删除成功')
     selectedIds.value = []
     await loadSyncRecords()
   } catch (error) {
@@ -702,7 +735,7 @@ const batchDeleteRecords = async () => {
       return
     }
     if (!isMessageBoxCancelError(error)) {
-      reportSyncRecordError(error, '批量删除失败')
+      await reportDeleteFailure(error, '批量删除失败')
     }
   } finally {
     if (isDeleteOperationContextCurrent(operationContext, 'batch')) {

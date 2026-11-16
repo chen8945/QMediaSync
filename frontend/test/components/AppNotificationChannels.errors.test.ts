@@ -8,13 +8,19 @@ import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { ChannelType, NotificationConfig } from '@/utils/notificationUtils'
 import { createDeferred } from '../support/deferred'
 
-const success = (data: unknown = null, warnings?: string[]) => ({
+const success = (data: unknown = null, warnings?: string[], message = '') => ({
   status: 200,
-  data: { code: 0, message: '', data, ...(warnings === undefined ? {} : { warnings }) },
+  data: { status: 200, message, data, ...(warnings === undefined ? {} : { warnings }) },
 })
-const failure = (message = '通知渠道操作失败，请稍后重试', status = 200, error_code?: string) => ({
+const failure = (message = '通知渠道操作失败，请稍后重试', status = 500, error_code?: string) => ({
   status,
-  data: { code: 1, message, data: null, error_code },
+  data: {
+    status: status,
+    message,
+    data: null,
+    error_code: error_code ?? 'TEST_REQUEST_FAILED',
+    instance: '/request-errors/ComponentTestFailure0001',
+  },
 })
 const initialConfig: NotificationConfig = {
   bot_token: 'stored-token',
@@ -158,7 +164,7 @@ describe('通知渠道失败反馈', () => {
     [failure('创建通知渠道失败：名称重复'), '创建通知渠道失败：名称重复'],
     [failure('bot_token：不能为空', 400), '请填写 Bot Token'],
     [failure('private', 403, 'REQUEST_ORIGIN_INVALID'), '访问地址校验失败'],
-    [failure('CSRF 校验失败', 403), '请求安全校验失败'],
+    [failure('CSRF 校验失败', 403, 'CSRF_TOKEN_INVALID'), '请求安全校验失败'],
   ])('创建失败保留输入，不关闭或刷新：%s', async (reply, message) => {
     const transport = createHTTP()
     transport.reply.mockResolvedValue(reply)
@@ -180,7 +186,16 @@ describe('通知渠道失败反馈', () => {
     const error =
       kind === 'cancel'
         ? new CanceledError()
-        : new HttpResponseError({ status: 401, data: { code: 500 } })
+        : new HttpResponseError({
+            status: 401,
+            data: {
+              status: 401,
+              data: null,
+              message: '请求处理失败',
+              instance: '/request-errors/ComponentTestFailure0001',
+              error_code: 'TEST_REQUEST_FAILED',
+            },
+          })
     if (kind === 'handled') markAuthInvalidationHandled(error)
     const transport = createHTTP()
     transport.reply.mockRejectedValue(error)
@@ -383,11 +398,12 @@ describe('通知渠道失败反馈', () => {
     await click(wrapper, '编辑')
     const form = dialog(wrapper, '编辑渠道 - 通知渠道')
     const warning = '通知渠道已保存，但应用失败，请重新保存'
-    transport.reply.mockResolvedValueOnce(success({ id: 7 }, [warning]))
+    const savedMessage = 'saved-channel-feedback'
+    transport.reply.mockResolvedValueOnce(success({ id: 7 }, [warning], savedMessage))
     transport.read.mockResolvedValue(failure())
     await click(form, '保存')
     expect(form.props('modelValue')).toBe(false)
-    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${savedMessage}；${warning}`)
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('通知渠道操作失败，请稍后重试')
     expect(wrapper.get('.channel-name').text()).toBe('通知渠道')
@@ -438,6 +454,8 @@ describe('通知渠道创建字段兼容', () => {
     const form = dialog(wrapper, '编辑渠道 - 通知渠道')
     await form.get('.webhook-header-row button').trigger('click')
     await form.get('select[placeholder="选择鉴权方式"]').setValue('none')
+    const savedMessage = 'updated-channel-feedback'
+    transport.reply.mockResolvedValueOnce(success(null, undefined, savedMessage))
     await click(form, '保存')
     const request = transport.adapter.mock.calls.find(([config]) => config.method === 'put')![0]
     const payload = JSON.parse(request.data)
@@ -449,7 +467,7 @@ describe('通知渠道创建字段兼容', () => {
     })
     expect(payload).not.toHaveProperty('auth_token')
     expect(form.props('modelValue')).toBe(false)
-    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('更新成功')
+    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith(savedMessage)
   })
 
   const cases: Array<[ChannelType, Record<string, string>, Record<string, string>]> = [
@@ -494,7 +512,7 @@ describe('通知渠道创建字段兼容', () => {
       },
     ],
   ]
-  it.each(cases)('%s 创建保留字段，code=0 成功后关闭并刷新', async (type, inputs, expected) => {
+  it.each(cases)('%s 创建保留字段，成功响应后关闭并刷新', async (type, inputs, expected) => {
     const transport = createHTTP(type)
     const wrapper = await mountPage(transport)
     const form = await createForm(wrapper, type)

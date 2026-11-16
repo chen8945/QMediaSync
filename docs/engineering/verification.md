@@ -12,6 +12,8 @@
 
 - 按改动范围运行最小必要验证，不为了无关改动运行全量构建。
 - 新增行为必须有相应验证；优先扩展相应 Go 包内、可提交的 table-driven 测试。
+- 测试保护长期公开行为、安全或数据不变量。触达范围内过时、重复、镜像实现和普通产品文案字面值断言可清理，先确认必要行为有保留／替代覆盖；不因旧测试失败而删除正在暴露真实问题的用例。
+- 消息透传和缺省回退使用专用测试文案，不锁定普通产品措辞；登录拒绝说明一致与不泄密仍是必要安全断言。公共格式由共享用例验证，不逐路由复制相同包络测试，不保留纯注解、文件存在性或一次性迁移完成测试。
 - 会修改 `time.Local` 等进程级启动状态的用例使用独立子进程；顺序运行及 cleanup 写回不能隔离其他定时器的并发读取。race 失败须定位真实读写，不能以关闭符号化后通过代替修复。
 - 业务改动的验证应覆盖成功路径、与改动相关的无效输入或状态冲突、失败处理和关键边界；不要求为无关场景机械增加测试。
 - 纯文档改动至少运行 `git diff --check` 和相对 Markdown 链接检查；不强行构建后端或前端。
@@ -26,7 +28,7 @@
 | 刷新故障恢复与并发探测取消 | `syncstrm` 的 `TestLegacyStrmParentRefreshFinalizes`、`TestStrmRefreshIdentityFailureRemainsRecoverable` 与生成/收尾回归；`medialibrary/client` 的 `TestConnectionWaiterRecoversAfterInitiatorCancellation` 及既有取消、错配和失败恢复回归。运行相关普通/race/vet；隔离 PostgreSQL 以 `-tags=integration` 运行对应恢复用例，核对真实目标入队、原实例拒绝、文件只写一次和重载不再生成，skip 不计通过 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理规则](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
 | 同步准备失败与普通上传刷新恢复 | `emby`、`models`、`syncstrm` 普通/race/vet；全量、增量和单项同步分别在选库、连接、总开关变化及身份查询失败时核对本端收尾、另一端保留和后续同步。普通上传覆盖上传完成/远端已存在、双端、已知原身份离线、新连接解析失败、提交失败后重载仅刷新、无变化/关闭刷新及源文件保留；用隔离 PostgreSQL 实际执行同类恢复用例，skip 不计通过 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理规则](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
 | 双端刷新部分成功后的收尾 | `syncstrm` 的 `TestStrmRefreshRetryDoesNotPostponeHealthyEndpoint`、`TestStrmRefreshSubmissionProgressCancellationAndSaveFailure`；普通/race/vet 及隔离 PostgreSQL 的 `TestStrmRefreshRetryHealthyEndpointPostgres`。覆盖首次生成/独立收尾/批父、两种健康端、item/library、兄弟子项重载、健康端实际执行、故障端补交和新事件防抖；取消、保存失败和过期进度不能丢待办 | [媒体库同步](../architecture/emby-library-sync.md)、[后处理恢复](../architecture/upload-and-strm-processing.md#后处理配置何时生效) |
-| 控制器、认证或 API 响应 | 对应控制器包测试；必要时 `go vet ./...` | 请求校验、认证会话、STRM Webhook |
+| 控制器、认证或 API 响应 | 按 [API 响应验证](#api-响应验证) 运行公共出口、实际路由及消费者用例 | 公共响应、请求校验、认证会话、STRM Webhook |
 | 同步、队列、STRM、目录监控或 Emby | 对应 `synccron`、`syncstrm`、`directoryupload`、`emby` 或模型包测试 | 上传与 STRM、Emby 同步、实时事件 |
 | STRM 播放链接预加载 | 按 [预加载验证](#strm-预加载验证) 覆盖关闭、候选选择、动态窗口、配额／重试、身份隔离、接手、生命周期及日志；设置迁移和恢复分别验证 SQLite／隔离 PostgreSQL，前端验证默认关闭和单一开关 | [预加载契约](../architecture/upload-and-strm-processing.md#strm-播放链接预加载)、[配置](../operations/configuration.md#strm-预加载)、[飞牛协议](../reference/fnos-proxy-api.md#预加载观察与限制) |
 | STRM 本地缺项和空目录收尾 | `syncstrm`、`models`、`directoryupload` 普通测试及相关 race / vet；覆盖多层空目录同轮清理、排除及失败保护、取消收尾、活跃上传保留、目录读取错误和上传任务查询失败。核对已确认缺失目录的实际查询次数及存在性 SQL，不用整轮上传任务快照替代删除前检查 | [同步编排](../architecture/sync-orchestration.md)、[上传与 STRM](../architecture/upload-and-strm-processing.md) |
@@ -88,6 +90,25 @@
 
 前端随 Vitest 验证能力控件、账号／场景／用户隔离、偏好损坏与存储失败、跟随意图、排序失败回滚、旧请求失效、新建后按序刷新以及本地未知时间；文件图标测试必须通过真实动态组件渲染出 SVG。排序展示替代旧的整体禁用契约；生产构建后运行 `check:build`。浏览器检查覆盖桌面和窄屏控件换行、长文件名下图标不收缩，以及路径选择底部按钮可达。上游替身和离线响应验证不代替真实百度／OpenList 账号联调；115 同值跨页稳定性及并发目录变更仍由上游决定。
 
+## API 响应验证
+
+公共契约见 [API 响应与请求错误](../reference/api-response.md)。从 `backend/` 运行：
+
+```bash
+go test -p 1 ./internal/httpapi ./internal/controllers ./internal/app ./internal/requests ./internal/validation ./internal/helpers
+go test -p 1 ./internal/notification ./internal/notification/config ./internal/models ./internal/notificationmanager ./internal/strm/config ./internal/backup
+```
+
+公共用例核对真实 HTTP 与正文状态、合法空值、消息／警告、字段定位、部分执行数据、默认等级实例关联与已有等级过滤、AppLogger 未初始化时的标准日志、脱敏和编码失败回退。领域用例保护原事务、幂等、部分更新和提交后应用顺序；真实 Gin 路由核对 OPTIONS、认证、维护、404/405 及原生流／文件出口。广泛控制器类型或 app 组装变更再运行全后端 `go test -p 1 ./...`、`go vet -p 1 ./...` 和受影响包的 race，按 [后端命令](#后端命令) 控制资源占用。
+
+依赖 115 全局队列执行器的取链测试须在本用例初始化日志与数据库后显式 `Start`，通过 `t.Cleanup` 停止并等待 worker 退出，再释放夹具。`GetGlobalExecutor` 仅首次获取时自动启动；验证应包含队列统计测试清理后再执行取链的组合，不能只看独立运行结果。来源排序拒绝经真实 Gin 核对字段定位及零上游请求，保留真正的上游失败分类测试。
+
+重复任务分类运行 `go test -p 1 ./internal/controllers ./internal/synccron`，并对两包运行 race 和 vet：用真实队列验证等待／运行时的重复拒绝，普通／全量／手动同步及刮削扫描首次受理为 `202`、重复为 `409 / TASK_ALREADY_EXISTS`，原任务状态和数量保持；错误链包装后仍可分类，未知或队列满错误不得误报重复冲突。
+
+前端运行公共解析、认证与相应领域／组件用例，最终按 [前端命令](#前端命令) 完成全量测试和生产构建。保存用例使用专用服务端文案验证消息与顶层警告到达已有反馈，保存响应有业务数据时同时验证数据保留；缺省消息仍使用操作级回退。首次向导使用既有 app 路由与真实 HTML 脚本用例，验证独立 fetch 的成功／失败反馈、HTTP 与正文状态不一致的拒绝，以及非包络 JSON／非 JSON 错误页的安全回退。
+
+用同一候选构建的后端、主站静态资源和向导，在临时配置下启动一次，用浏览器核对代表性 JSON 调用的数据与反馈并记录结果。复用现有构建、启动和检查方式，不新增测试设施或扩大供应商／数据库矩阵；无法运行的条件如实记录。现有事务和 manager 可选择代表性 SQLite 验证；实际涉及事务实现、恢复或数据库并发时，再按对应规范补隔离 PostgreSQL，skip 不计通过。
+
 ## 网页设置应用验证
 
 测试必须观察同一进程保存后的后续行为，不能只核对数据库字段、页面文案或文件结构。按实际触及模块选择下面的长期回归，使用[后端命令](#后端命令)中的资源限制与普通／race／vet 入口；模块结果有效时不重复整组检查，最终整合再运行一轮全模块回归。
@@ -95,14 +116,14 @@
 | 模块与对应包 | 必须观察的行为 |
 | --- | --- |
 | 设置、刮削客户端：`models`、`controllers`、`requests`、`scrape`、`tmdb`、`openai`、`fanart` | TMDB／Fanart 一次提交；失败不发布，最新省略字段合并；慢 SQL 时快照读取继续；旧任务参数不混配、新操作使用新参数；草稿测试不发布；真实 HTTP 超时／提示词与私有连接池收尾。 |
-| 通知与刮削定时：`notificationmanager`、`synccron`、`controllers` | 多表事务无部分提交，提交后应用失败保留 `code=0`、原 `data` 和警告；慢发送不阻塞重载，代理刷新保留命令、旧后台不复活；Telegram 回复受阻时同机器人重载或禁用后启用不重复执行命令，换机器人不继承游标；同表达式开关影响后续定时准入，修改线程或其他目录不推迟未变化的 `@every` 期限，过期计划／回调不能重新登记，手动扫描正常。 |
+| 通知与刮削定时：`notificationmanager`、`synccron`、`controllers` | 多表事务无部分提交，提交后应用失败保留成功响应、已保存 `data` 和顶层警告；慢发送不阻塞重载，代理刷新保留命令、旧后台不复活；Telegram 回复受阻时同机器人重载或禁用后启用不重复执行命令，换机器人不继承游标；同表达式开关影响后续定时准入，修改线程或其他目录不推迟未变化的 `@every` 期限，过期计划／回调不能重新登记，手动扫描正常。 |
 | 上传／下载派发：`models`、`controllers`、`syncstrm`、`backup`、`app` | 保存任意同组设置保留用户暂停；升降并发与 QPS、旧预留不越过最新上限；条件领取只执行一次、清空和失败释放准备；临时暂停重叠不提前恢复；启动恢复先于派发；最终取消到达真正 I/O 并等待执行退出，取消 115 续传请求后保留有效断点和重试预算。 |
 | Emby 302：`emby302/...`、`proxyhttp`、`fnosproxy`、`app`、`controllers` | 真实 HTTP／WebSocket 监听下启用、关闭、重开、换 URL／Key；旧流和授权／响应缓存隔离，单模块缓存预算；离线上游、本地绑定失败重试、同配置幂等；M3U8 锁外刷新与辅助后台收尾，最终停止不被晚到应用复活；飞牛既有切换中断行为保持。 |
 | 恢复许可与组合：`backup`、`controllers`、`app` | 提交前取消不发布，提交后浏览器取消仍完成发布与本地应用并保留许可；关闭 HTTP 准入后先等已接受设置命令及应用，再关闭 SQL 准入并排空普通 handler；真实恢复不被已升级 WebSocket 阻塞，旧连接仍保留会话、新握手被维护拒绝，非升级 HTTP 和辅助请求仍完整持有许可；任何排空超时保留门禁且不恢复数据库。最终停止等待已开始的 Cron 回调，失败不虚报旧执行者退出，也不提前关闭其依赖。 |
 
 条件领取或事务修改同时在生产 SQLite 单连接配置与隔离 PostgreSQL 验证；后者通过 `QMS_TEST_POSTGRES_DSN` 与对应 `-tags=integration` 用例运行，跳过不计 PostgreSQL 通过。不增加数据库版本或放宽持久化设置来使测试通过。
 
-前端沿[前端命令](#前端命令)运行 lint、type-check 和受影响 Vitest；删除或合并测试后运行完整 Vitest。复用媒体设置、通知渠道、代理／线程设置与刮削设置的公开行为用例，验证真实保存失败保留草稿、应用警告不回滚已提交开关或被回读覆盖、旧响应缺警告字段兼容，以及 AI 连接测试发送当前草稿超时。下载状态通过队列组件的过滤选项与详情状态／标签验证，不绑定帮助文案或源码导入格式。无需为删除重启文案或目录拆分增加源码扫描测试。
+前端沿[前端命令](#前端命令)运行 lint、type-check 和受影响 Vitest；删除或合并测试后运行完整 Vitest。复用媒体设置、通知渠道、代理／线程设置与刮削设置的公开行为用例，验证真实保存失败保留草稿、应用警告不回滚已提交开关或被回读覆盖、可选警告缺省为空列表，以及 AI 连接测试发送当前草稿超时。下载状态通过队列组件的过滤选项与详情状态／标签验证，不绑定帮助文案或源码导入格式。无需为删除重启文案或目录拆分增加源码扫描测试。
 
 实际 Emby 播放器的旧播放／新请求、网盘传输暂停和速率、Telegram 重配及 fnOS 体验单独验收。本地 HTTP／WebSocket 替身与 PostgreSQL 测试保护并发、协议和持久化边界，不代替实机结果。
 
@@ -279,7 +300,7 @@ go vet . ./internal/app ./internal/playback ./internal/controllers ./internal/mo
 go test -tags=integration ./internal/models ./internal/backup ./internal/db
 ```
 
-前端用 Vitest 验证默认值／旧响应、保存失败、窄屏和键盘、飞牛跳转、同步目录不出现覆盖项，保留多端与本地代理相邻；运行类型检查、改动文件 lint／格式检查、构建和 `check:build`。用户文案说明收益、开启位置及支持范围，不展示内部配额或承诺所有客户端有效。
+前端用 Vitest 验证默认值／合法包络、保存失败、窄屏和键盘、飞牛跳转、同步目录不出现覆盖项，保留多端与本地代理相邻；运行类型检查、改动文件 lint／格式检查、构建和 `check:build`。用户文案说明收益、开启位置及支持范围，不展示内部配额或承诺所有客户端有效。
 
 真实客户端矩阵分别记录 Emby 网页／App、飞牛原生／兼容和实际版本，未观测入口单列。性能计时分别报告链接就绪、代理响应、媒体首字节和播放器首帧；本地延迟替身每条件至少 30 次，报告 p50／p95、样本和失败数。真实网盘仅少量串行正常请求并拉开间隔，遇风控、授权或超时停止，不为凑统计压测或造副本；少量真实签名样本不能宣称新开关、同时多端或首帧提速。测试会话、临时媒体与凭据验证后清理，正常缓存和服务日志不整库回滚。
 
@@ -437,6 +458,8 @@ for script in packaging/fnos/qmediasync-*/cmd/*; do bash -n "$script"; done
 
 `TestFnOSConfigMigrationSourceLockRetry` 验证旧目录被实例或恢复命令占用时不写迁移标记、不移动文件，释放占用后可直接重试，成功与搬移失败后均释放源锁且保留两侧锁文件。生命周期权限回归覆盖 `start` 与直接 `run`、平台 umask `0022` / `0002` / `0077`，检查首次配置前后两次应用进程的掩码与实际新建目录、STRM 权限，同时确认 PID、控制锁、诊断日志和停止文件保持私有。
 
+目录授权回调沿用 `scripts/tests/test_fnos_lifecycle.py` 的现有用例，覆盖两架构的路径编码、HTTP 与正文 `status` 成功条件、状态不一致、字段缺失和连接失败。
+
 发版测试在临时 Git 仓库和远端中验证两份 manifest 与 changelog/发布说明同提交、tag、分支同步、重选、中止/EOF、部分写入失败、推送失败、dry-run 不改写、simulate 仅改沙箱。CI 的 `release-scripts` job 运行上述脚本回归；`windows-restart` 在原生 Windows 执行 `TestInitialConfigWindowsRestart` 等定向测试，验证等待旧实例退出、原参数、带中文/空格的工作目录和锁释放。Linux 交叉编译不能代替此测试，也不能证明 Windows 托盘与无控制台行为已验收。
 
 真实 fnOS 需另验新装、网页保存后自动启动、日志初始化码、配置/密钥保留、实际平台升级、保留数据重装、明确删除、目录授权和系统自启。FPK 两架构均能构建不代表 ARM64 已实测。恢复后 fnOS 仍手动重启；不把首次配置交接当成通用重启。前端验证平台条件提示、识别失败和旧响应不影响目录，配置保存消息与重试，不自动跳转。
@@ -529,10 +552,10 @@ Beta 元数据与打包改动沿用 `python3 -m unittest discover -s scripts/tes
 - OpenList 凭据变更须验证内存与数据库两处的过时结果保护，并覆盖临时验证失败、条件保存冲突与正常刷新；认证重试变更还须验证一次独立认证恢复、完整 multipart 重发及普通网络重试次数不变。契约和回归范围见 [账号授权与更换](../reference/account-authorization.md#openlist-登录与-token-回写)。
 - 当前端行为或源码契约需要自动保护时，在 `frontend/test/` 下按 `components/`、`composables/`、`router/`、`unit/`、`utils/` 或 `regression/` 分类创建 `*.test.ts` / `*.test.mjs`，由 Vitest 统一运行；测试应断言公开行为或稳定契约，避免绑定组件内部实现细节。
 - 刮削与同步目录表单回归覆盖桌面／移动端媒体类型禁用、整理方式未选拦截与合法选择保留、仅刮削往返及提交值、来源／账号切换后目录身份清理和独立本地配置保留，以及编辑回填后直接保存不改变已有命名模板和目录监控规则。沿用上述 Vitest、类型检查及改动文件 lint 入口。
-- 公共请求错误和认证 API 回归随 `pnpm run test` 执行，覆盖新旧错误码、HTTP `200` 业务失败、合法空值、取消／超时／无响应与普通异常的区别、诊断脱敏、默认业务消息与空值回退、字段文案改写、登录统一文案、匿名会话查询及并发 HTTP `401` 只处理一次。响应体数值 `code=401` 不单独使会话失效。后端 `controllers`、`helpers` 测试保护第三方错误中的已知密钥和常见凭据脱敏。业务页面迁入 API 模块时还须验证失败保留输入、不误报成功和不执行成功回调；契约见 [API 响应与请求错误](frontend-development.md#api-响应与请求错误)。
+- 公共请求错误和认证 API 回归随 `pnpm run test` 执行，覆盖统一包络与真实 HTTP 状态一致、顶层错误与字段定位、合法空值、取消／超时／无响应与普通异常的区别、诊断脱敏、安全消息与缺省回退、字段文案改写、登录统一文案、匿名会话查询及并发认证失效只处理一次。内部故障、来源／CSRF 拒绝和恢复回执失效不清除有效网页会话。后端 `controllers`、`helpers` 测试保护第三方错误中的已知密钥和常见凭据脱敏。业务页面迁入 API 模块时还须验证失败保留输入、不误报成功和不执行成功回调；契约见 [API 响应与请求错误](frontend-development.md#api-响应与请求错误)。
 - 刮削请求迁移的回归覆盖 AI / TMDB 保存失败、TMDB 连接测试 `data=false`、来源／CSRF 拒绝、刮削搜索与重新识别参数和专用超时，以及记录删除、目录保存和启停失败不执行成功后续动作。组件错误提示测试应同时确认表单输入保留、提示条关闭后新错误仍可显示，以及取消／已处理认证错误不重复提示。刮削目录须实际触发已订阅的事件回调，验证突发事件的请求合并、连续失败只提示一次、成功后恢复提示，以及停用／卸载后的旧响应失效。
 - 账号请求与授权回归覆盖无响应、来源／CSRF、业务失败的提示和输入保留，以及 QR / OAuth 会话 ID、取消、隐藏／卸载、过期请求和 APP ID 搜索竞态。账号状态查询还须覆盖在途时删除或替换列表、同一行再次请求及卸载，确保旧请求不会抛出数组越界异常、写回过时状态、清除新加载状态或弹出过期错误。旧请求不得覆盖新授权或新搜索状态，错误诊断不得包含授权载荷和凭据；复用 [账号授权与更换](../reference/account-authorization.md#验证方式) 的前端验证入口。
-- 设置领域请求回归覆盖 Emby 轮询失败去重与成功后复位、配置和媒体库读取分离、Cron 字段错误及旧预览失效、代理凭据保留和脱敏回读、通知 `code=0` 的历史成功语义、STRM 安全校验提示、Emby 保存、提取与启动同步在途时互相禁用、通知规则切换渠道或关闭后重开同一渠道时旧规则与晚到结果失效，以及当前用户、两步验证和设备撤销失败不执行成功动作。保存失败保留输入、取消／已处理认证错误静默、回读失败不得被成功说明覆盖，错误与日志不含敏感载荷；均随 Vitest 执行。提取媒体信息同一时间只运行一轮由 `(cd backend && go test -race ./internal/emby)` 验证。
+- 设置领域请求回归覆盖 Emby 轮询失败去重与成功后复位、配置和媒体库读取分离、Cron 字段错误及旧预览失效、代理凭据保留和脱敏回读、通知统一成功包络和顶层警告、STRM 安全校验提示、Emby 保存、提取与启动同步在途时互相禁用、通知规则切换渠道或关闭后重开同一渠道时旧规则与晚到结果失效，以及当前用户、两步验证和设备撤销失败不执行成功动作。保存失败保留输入、取消／已处理认证错误静默、回读失败不得被成功说明覆盖，错误与日志不含敏感载荷；均随 Vitest 执行。提取媒体信息同一时间只运行一轮由 `(cd backend && go test -race ./internal/emby)` 验证。
 - 设置页内联提示的可见性运行 `(cd frontend && pnpm exec vitest run test/composables/useFeedbackScroll.test.ts)`，并回归接入设置页的组件测试。覆盖提示已可见时不滚动、超出内容区与窗口交集时就近滚入、同一结果不重复处理、等待渲染期间状态替换／清空或卸载后不滚动，以及不转移焦点。保存与连接测试结果显式触发，首次读取和后台轮询不触发；原提示文案、清除计时与 API 行为继续由组件回归保护，交互契约见 [前端开发约定](frontend-development.md#api-响应与请求错误)。
 - 同步目录与队列请求回归覆盖聚合保存的字段定位、成功警告和幂等键复用、详情与关联读取失败保护，以及队列操作成功后刷新失败只提示一次、取消／已处理认证错误静默。请求参数、分页统计、刷新合并和生命周期保护仍由 API、composable 与组件测试共同验证；原始版本对象另有 API 契约测试。
 - 剩余领域请求回归覆盖文件与目录操作、同步记录、API Key、分类、备份恢复、更新和后台统计的业务成功校验与输入保护。日志及任务 HTTP 快照测试同时验证错误状态保留、HTML 响应、JSON 解析异常与传输故障区分、取消静默和旧结果失效；原生 SSE 错误不额外探测 HTTP 错误原因；任务流进入 CLOSED 时允许读取任务快照降级，明确认证／来源／CSRF 拒绝或 HTTP `401`、`403`、`404` 会停止轮询，包含首次请求失败的场景。备份下载额外验证 JSON 错误不生成下载文件，更新取消失败继续保留进度状态，页面只在下载中显示取消，重启导致任务状态丢失时须核对目标版本后才提示成功，版本不匹配时仅提示一次“更新未生效”并结束轮询；后端 `controllers` 测试同时验证已结束的更新任务不能被取消改写、进入安装与取消互斥且安装后拒绝取消、不支持的运行方式拒绝在线更新，以及 systemd 在线更新的启用条件、安装目录不可写或运行中程序不在安装目录时下载前拒绝、更新包 SHA-256 校验、发布包替换与中途失败回滚。`go test . ./internal/app ./internal/controllers ./internal/helpers` 同时覆盖 Windows / Docker 更新包准备与交付失败、残留临时文件、正常发布包结构，以及 Linux 下 Docker 入口脚本的成功、损坏包和替换失败回滚；Windows 更新入口还运行 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /tmp/qms-update-verification.exe .` 验证编译。
@@ -542,9 +565,9 @@ Beta 元数据与打包改动沿用 `python3 -m unittest discover -s scripts/tes
 - 备份格式和运行收尾继续使用上述普通／race 验证：真实 ZIP 覆盖格式 2 的根清单与 `tables/`、无清单旧包兼容、不支持的格式版本和错误表路径拒绝；SQLite 文件库在导出事务中通过同一业务单连接池完成并发读写，核对跨表快照、只读限制、专用连接关闭及共用维护门禁。权限验证覆盖既有目录收紧、ZIP 和上传文件 `0600`、符号链接拒绝和已有 ZIP 不覆盖；旧包依赖检查须覆盖预检后目标结构变化。两个单表兼容辅助入口仅置于测试文件。
 - 备份可靠性补强运行 `go test ./internal/backup ./internal/controllers ./internal/requests ./internal/helpers ./internal/synccron ./internal/models . ./internal/app`，对备份／恢复、上传／Cron 和文件发布边界运行相应普通、race、vet 检查：导出前清理、数量预留一份、同秒按 ID 保留最新、列出候选后并发删除不影响后续清理与新备份完成、手动删除缺失记录仍报错、真实清理错误停止导出、后续失败不恢复已删除旧包、目录外历史路径仅清记录且保留两处同名文件、真实配置目录迁移后连续手动／自动备份成功、符号链接仍拒绝删除、未纳管 ZIP 保留、并发发布不覆盖、启动临时清理不跟随符号链接且保留正式文件。归档测试用小型限额验证压缩／展开／目录解析／清单／单条记录及条目数，保留 17 MiB 大记录往返；覆盖重复和额外文件、CRC 损坏、实际读入超限，以及超限上传的 `413`、multipart／暂存清理和恰好上限。
 - 备份历史保留须通过真实新包与无清单旧包验证：目标 `backup_record` 的行、状态和序列保持不变，来源历史不导入，但来源记录内容仍校验；其他业务表及 `backup_config` 正常恢复，恢复事务失败回滚。启动中断处理覆盖 `pending`／`running` 转 `unconfirmed`、不补完成时间、已有终态保留，且在后台任务和 Cron 启动前执行。文件接口验证根层 ZIP、空目录、损坏包仍可列出、元数据读取不校验内容、目录与符号链接排除、缺失／不可访问区别，以及 `record_id`／`file_name` 互斥和路径越界拒绝。上传须覆盖完整预检后发布、同名不覆盖、预检失败清理、数据库恢复失败仍保留正式文件，并以保留的文件再次恢复及重新校验。
-- TOTP 预检覆盖正确／错误／未加载密钥、生效和待确认密文、无密文库及无清单旧包；不得为测试导出重置运行时密钥的入口。恢复结果测试注入事务失败、panic、提交／回滚异常和提交后收尾失败，验证明确回滚与结果不确定的区别，日志和公开错误不含敏感值。前端备份 store、API 及恢复组件回归覆盖安全原因和数据库结果、旧响应保守回退、重启保留结果、`413` 保留选择且不清认证。Windows 文件发布至少交叉编译，实际 Windows 文件系统行为仍需平台验证。
+- TOTP 预检覆盖正确／错误／未加载密钥、生效和待确认密文、无密文库及无清单旧包；不得为测试导出重置运行时密钥的入口。恢复结果测试注入事务失败、panic、提交／回滚异常和提交后收尾失败，验证明确回滚与结果不确定的区别，日志和公开错误不含敏感值。前端备份 store、API 及恢复组件回归覆盖安全原因和数据库结果、未知结果保守回退、重启保留结果、`413` 保留选择且不清认证。Windows 文件发布至少交叉编译，实际 Windows 文件系统行为仍需平台验证。
 - 恢复后重启运行 `cd backend && go test -race ./internal/backup ./internal/controllers ./internal/helpers . ./internal/app`，覆盖本轮回执、明确终态、可信来源、准备失败重试、并发重复只触发一次以及恢复结果不变。平台测试通过隔离子进程与入口脚本替身验证 Docker 普通退出／纯重启／陈旧信号／错误 PID、既有更新路径、延迟退出和能力判断，不重启开发实例。Windows 使用发布标签交叉编译：`CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags=nomsgpack -o /tmp/qms-restart-verification.exe .`；这不能替代实际 Windows 托盘、systemd 和容器托管重启验收。
-- 前端恢复验证运行 `cd frontend && pnpm exec vitest run test/stores/backup.test.ts test/unit/backup-update-api.test.ts test/components/Backup.errors.test.ts test/components/AppBackupRestore.test.ts`，并执行类型检查与改动文件 lint。覆盖启动回执仅经请求头传递、会话清空后的查询、明确成功／失败／旧响应未知结果、重启能力与按钮、请求失败保留结果、重复点击、响应丢失及代理错误先只读核验、页面隐藏与恢复、等待超时后重新检查。点击“检查服务状态”不得直接刷新；只有 `401` 加 `RESTORE_RECEIPT_INVALID` 后，会话查询也成功才能引导重新登录，普通代理 `401` 或仍在维护不能误判就绪。服务器文件列表须覆盖加载失败和重试、文件选择及恢复参数；历史状态与文件状态分别展示，`unconfirmed` 不补猜成功。登录与普通请求的 `DATABASE_MAINTENANCE` 使用专门维护提示。另在部署环境核验恢复后重启、重新登录及原验证器继续使用；数据库测试不替代真实网盘、断电或进程管理器验收。契约见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
+- 前端恢复验证运行 `cd frontend && pnpm exec vitest run test/stores/backup.test.ts test/unit/backup-update-api.test.ts test/components/Backup.errors.test.ts test/components/AppBackupRestore.test.ts`，并执行类型检查与改动文件 lint。覆盖启动回执仅经请求头传递、会话清空后的查询、明确成功／失败／未知结果、重启能力与按钮、请求失败保留结果、重复点击、响应丢失及代理错误先只读核验、页面隐藏与恢复、等待超时后重新检查。点击“检查服务状态”不得直接刷新；只有 `401` 加 `RESTORE_RECEIPT_INVALID` 后，会话查询也成功才能引导重新登录，普通代理 `401` 或仍在维护不能误判就绪。服务器文件列表须覆盖加载失败和重试、文件选择及恢复参数；历史状态与文件状态分别展示，`unconfirmed` 不补猜成功。登录与普通请求的 `DATABASE_MAINTENANCE` 使用专门维护提示。另在部署环境核验恢复后重启、重新登录及原验证器继续使用；数据库测试不替代真实网盘、断电或进程管理器验收。契约见 [备份和恢复状态](../operations/database.md#备份和恢复状态)。
 - 下载、上传队列的统计由 `frontend/test/components/QueueTotals.test.ts` 覆盖全局“剩余 / 排队 / 处理中”、分页和筛选不改变统计口径、快照刷新与空队列归零；下载预取和上传完成处理均沿用后端 `processing` 口径。相关组件测试随 `pnpm run test` 执行。
 - 上传并发由 `frontend/test/components/AppThreadSettings.upload-concurrency.test.ts` 覆盖默认值、保存回读、整数范围及保存失败提示；后端 `requests`、`controllers` 和 `models` 测试覆盖旧请求兼容、写库失败不生效、默认设置和迁移重试。队列测试使用受控在途任务验证增减并发、暂停后保存与恢复、重复领取及清空后的旧任务，并额外运行相关 `models` 测试的 `-race` 检查。百度网盘和 OpenList 还须通过真实队列与本地 HTTP 替身验证驱动共享状态的并发安全，覆盖范围与命令见[上传和 STRM 处理的验证方式](../architecture/upload-and-strm-processing.md#验证方式)。
 - 局部加载遮罩与导航的层级由 `frontend/test/regression/sidebar-menu-motion.test.ts` 保护样式契约；真实绘制和点击命中需在浏览器复核：分别使用移动和桌面视口，延迟首页、更新页及队列接口，确认移动菜单及背景遮罩可点击、关闭菜单后加载区域仍阻止操作、响应结束后遮罩消失，并确认模态对话框仍覆盖侧栏。路由模块加载骨架和全屏加载不得被局部遮罩规则改变。

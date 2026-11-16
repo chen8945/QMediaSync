@@ -8,9 +8,13 @@
 >
 > 相关代码：`backend/internal/controllers/account.go`、`backend/internal/controllers/open115.go`、`backend/internal/requests/accounts.go`、`backend/internal/requests/connections.go`、`backend/internal/v115/auth/`、`backend/internal/v115/openapi/`、`backend/internal/synccron/synccron.go`、`backend/internal/models/account.go`、`backend/internal/openlist/`、`frontend/src/views/accounts/AppCloudAccounts.vue`、`frontend/src/components/cloud-auth/`、`frontend/src/composables/useV115DeviceAuthorization.ts`。
 
+自有授权管理接口使用 [公共 JSON 响应契约](api-response.md)。网盘返回的凭据状态与业务码仍由所属客户端解释，不表示 QMediaSync 会话失效。
+
 ## 账号关联语义
 
 账号表的 `id` 是本地关联的稳定主键。同步目录、刮削目录、任务历史和同步文件等数据只关联这个 ID；成功更换授权不会创建新账号，也不会迁移或复制这些记录。
+
+删除账号前必须先删除关联的同步目录。存在关联目录时保留账号和目录，返回明确的业务冲突，见 [公共响应分类](api-response.md#http-状态与错误分类)。
 
 更换授权只允许在原 `source_type` 内进行。当前完整 UI 覆盖 115：115 账号可以选择有效的 115 APP ID、内置中转或受支持的第三方服务，但不能切换为百度网盘、OpenList 或其他来源。115 和百度网盘的已有账号仍保留不带 `authorization_id` 的普通授权/重新授权入口，以兼容历史账号。OpenList 使用账号密码或令牌直接认证，不显示授权入口；其他不支持的来源触发授权时提示“不支持该网盘类型的授权”，不发起请求。
 
@@ -79,6 +83,8 @@
 - `auth_source_type`、`auth_provider`；
 - `token`、`refresh_token`、`token_expiries_time`；
 - `user_id`、`username`、`token_failed_reason`。
+
+用户信息校验失败时，诊断脱敏同时采用账号旧凭据和本次目标令牌，不为获取脱敏信息提前写库；安全输出与关联诊断见 [公共响应契约](api-response.md#输出与诊断)。
 
 该更新不修改 `id`、`name` 或任何同步、刮削、任务关联表。更新成功后才刷新按账号 ID 缓存的 115 客户端，并消费 `authorization_id`。目标令牌无效、用户信息请求失败、唯一性冲突、更新失败、取消或超时都会保留旧授权的来源、应用、令牌和用户信息。
 

@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { DirInfo, FileSystemItem } from '@/types/files'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export type NetFileSortBy = 'default' | 'name' | 'time' | 'size' | 'type'
 export type NetFileSortOrder = 'asc' | 'desc'
@@ -29,7 +29,7 @@ export async function fetchBrowseSortOptions(
     await http.get<APIResponse<BrowseSortOptions>>(`${SERVER_URL}/path/sort-options`, {
       params: { source_type, scope },
     }),
-  )
+  ).data
   if (
     !options ||
     !Array.isArray(options.fields) ||
@@ -158,7 +158,7 @@ export async function fetchFiles(
       `${SERVER_URL}/path/files`,
       { params, timeout: 60000, ...(signal ? { signal } : {}) },
     ),
-  )
+  ).data
 }
 
 export async function fetchDirectories(
@@ -172,40 +172,69 @@ export async function fetchDirectories(
       params,
       ...(signal ? { signal } : {}),
     }),
-  )
+  ).data
 }
 
-export async function createDirectory(http: AxiosInstance, payload: CreateDirectoryPayload) {
+export async function createDirectory(
+  http: AxiosInstance,
+  payload: CreateDirectoryPayload,
+): Promise<SettingsSaveResult & { data: DirInfo }> {
   return unwrapResponse(await http.post<APIResponse<DirInfo>>(`${SERVER_URL}/path/create`, payload))
 }
 
-export async function deleteFile(http: AxiosInstance, params: DeleteFileQuery): Promise<void> {
-  unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/path`, { params }))
+export async function deleteFile(
+  http: AxiosInstance,
+  params: DeleteFileQuery,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.delete<APIResponse<null>>(`${SERVER_URL}/path`, { params }),
+  )
 }
 
-export async function deleteFiles(http: AxiosInstance, payload: BatchFilePayload): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/path/delete-batch`, payload))
+export async function deleteFiles(
+  http: AxiosInstance,
+  payload: BatchFilePayload,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/path/delete-batch`, payload),
+  )
 }
 
-export async function moveFiles(http: AxiosInstance, payload: MoveFilesPayload) {
+export async function moveFiles(
+  http: AxiosInstance,
+  payload: MoveFilesPayload,
+): Promise<SettingsSaveResult & { data: FileTransferResult | null }> {
   return unwrapResponse(
     await http.post<APIResponse<FileTransferResult | null>>(`${SERVER_URL}/path/move`, payload),
   )
 }
 
-export async function copyFiles(http: AxiosInstance, payload: MoveFilesPayload) {
+export async function copyFiles(
+  http: AxiosInstance,
+  payload: MoveFilesPayload,
+): Promise<SettingsSaveResult & { data: FileTransferResult | null }> {
   return unwrapResponse(
     await http.post<APIResponse<FileTransferResult | null>>(`${SERVER_URL}/path/copy`, payload),
   )
 }
 
-export async function renameFile(http: AxiosInstance, payload: RenameFilePayload): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/path/rename`, payload))
+export async function renameFile(
+  http: AxiosInstance,
+  payload: RenameFilePayload,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/path/rename`, payload),
+  )
 }
 
 export async function generateManualStrm(
   http: AxiosInstance,
   payload: ManualStrmPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/sync/manual`, payload))
+): Promise<SettingsSaveResult & { data: { status: 'accepted' } | null }> {
+  return unwrapResponse(
+    await http.post<APIResponse<{ status: 'accepted' } | null>>(
+      `${SERVER_URL}/sync/manual`,
+      payload,
+    ),
+  )
 }

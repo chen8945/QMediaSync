@@ -87,13 +87,13 @@ export async function fetchScrapePaths(
       `${SERVER_URL}/scrape/pathes`,
       params ? { params } : undefined,
     ),
-  )
+  ).data
 }
 
 export async function fetchScrapePath(http: AxiosInstance, id: number): Promise<ScrapePath> {
   return unwrapResponse(
     await http.get<APIResponse<ScrapePath>>(`${SERVER_URL}/scrape/pathes/${id}`),
-  )
+  ).data
 }
 
 export async function saveScrapePath(
@@ -101,27 +101,39 @@ export async function saveScrapePath(
   payload: SaveScrapePathPayload,
 ): Promise<SettingsSaveResult> {
   const response = await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes`, payload)
-  unwrapResponse(response)
   return getSettingsSaveResult(response)
 }
 
-export async function deleteScrapePath(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+export async function deleteScrapePath(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
   const response = await http.delete<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/${id}`)
-  unwrapResponse(response)
   return getSettingsSaveResult(response)
 }
 
-export async function startScrapePath(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/start`, { id }))
+export async function startScrapePath(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<unknown>>(`${SERVER_URL}/scrape/pathes/start`, { id }),
+  )
 }
 
-export async function stopScrapePath(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/stop`, { id }))
+export async function stopScrapePath(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/stop`, { id }),
+  )
 }
 
-export async function toggleScrapePathCron(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
-  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/toggle-cron`, { id })
-  unwrapResponse(response)
+export async function toggleScrapePathCron(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  const response = await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/pathes/toggle-cron`, {
+    id,
+  })
   return getSettingsSaveResult(response)
 }
 
@@ -133,15 +145,15 @@ export async function fetchScrapeSyncPathIDs(
     await http.get<APIResponse<number[] | null>>(`${SERVER_URL}/scrape/sync-pathes`, {
       params: { scrape_path_id: id },
     }),
-  )
+  ).data
 }
 
 export async function saveScrapeSyncPathIDs(
   http: AxiosInstance,
   id: number,
   syncPathIDs: number[],
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/sync-pathes`, {
       scrape_path_id: id,
       sync_path_ids: syncPathIDs,
@@ -157,5 +169,5 @@ export async function validateScrapePathCron(
     await http.post<APIResponse<{ description: string }>>(`${SERVER_URL}/cron/validate`, {
       cron_expression: expression,
     }),
-  )
+  ).data
 }

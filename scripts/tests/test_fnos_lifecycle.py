@@ -281,7 +281,7 @@ class FnOSLifecycleTest(unittest.TestCase):
 
     def test_directory_callback_encodes_paths_and_reports_errors(self):
         received = []
-        response = [200, {'code': 200}]
+        response = [200, {'status': 200, 'data': None}]
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
@@ -299,19 +299,25 @@ class FnOSLifecycleTest(unittest.TestCase):
         try:
             path = '/media/中文 A&B+%:/other'
             env = dict(self.env, TRIM_SERVICE_PORT=str(server.server_port), TRIM_DATA_ACCESSIBLE_PATHS=path)
-            self.assertEqual(self.hook('config_callback', env=env).returncode, 0)
-            self.assertEqual(received[-1]['path'], [path])
-            response[:] = [404, {}]
-            result = self.hook('config_callback', env=env)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn('尚未完成数据库设置', result.stderr)
-            response[:] = [200, {'code': 400}]
-            self.assertEqual(self.hook('config_callback', env=env).returncode, 1)
+            for arch in ('amd64', 'arm64'):
+                with self.subTest(arch=arch):
+                    response[:] = [200, {'status': 200, 'data': None}]
+                    self.assertEqual(self.hook('config_callback', arch=arch, env=env).returncode, 0)
+                    self.assertEqual(received[-1]['path'], [path])
+                    response[:] = [404, {}]
+                    result = self.hook('config_callback', arch=arch, env=env)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('尚未完成数据库设置', result.stderr)
+                    for response_status, body in ((200, {'status': 400}), (500, {'status': 200}), (200, {})):
+                        response[:] = [response_status, body]
+                        self.assertEqual(self.hook('config_callback', arch=arch, env=env).returncode, 1)
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
-        self.assertEqual(self.hook('config_callback', env=env).returncode, 1)
+        for arch in ('amd64', 'arm64'):
+            with self.subTest(arch=arch):
+                self.assertEqual(self.hook('config_callback', arch=arch, env=env).returncode, 1)
 
     def test_templates_have_shared_identity_and_web_only_wizard(self):
         for arch, platform in (('amd64', 'x86'), ('arm64', 'arm')):

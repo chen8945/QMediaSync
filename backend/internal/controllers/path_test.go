@@ -18,12 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
+	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	v115open "qmediasync/internal/v115/openapi"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestCheck115FileOperationResult(t *testing.T) {
@@ -216,27 +218,30 @@ func TestOpenListFileTransferResponses(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/api/path/"+operation.name, strings.NewReader(body))
 				c.Request.Header.Set("Content-Type", "application/json")
 				operation.handler(c)
-				var got APIResponse[*struct {
+				var got httpapi.APIResponse[*struct {
 					Status  string   `json:"status"`
 					TaskIDs []string `json:"task_ids"`
 				}]
 				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				if w.Code != http.StatusOK {
-					t.Fatalf("HTTP = %d，期望 200", w.Code)
+				wantStatus := http.StatusOK
+				if response.wantErr {
+					wantStatus = http.StatusBadGateway
+				} else if response.status == "submitted" {
+					wantStatus = http.StatusAccepted
+				}
+				if w.Code != wantStatus {
+					t.Fatalf("HTTP = %d，期望 %d", w.Code, wantStatus)
 				}
 				if response.wantErr {
-					if got.Code != BadRequest || got.Data != nil || !strings.Contains(got.Message, "transfer rejected") {
+					if got.Status != http.StatusBadGateway || got.Data != nil || got.ErrorCode != "UPSTREAM_ERROR" || strings.Contains(got.Message, "transfer rejected") {
 						t.Fatalf("失败响应 = %s", w.Body.String())
 					}
 					return
 				}
-				if got.Code != Success || got.Data == nil || got.Data.Status != response.status || got.Data.TaskIDs == nil || !slices.Equal(got.Data.TaskIDs, response.taskIDs) {
+				if got.Status != wantStatus || got.Data == nil || got.Data.Status != response.status || got.Data.TaskIDs == nil || !slices.Equal(got.Data.TaskIDs, response.taskIDs) {
 					t.Fatalf("操作响应 = %s，期望 status=%s task_ids=%v", w.Body.String(), response.status, response.taskIDs)
-				}
-				if response.status == "submitted" && (!strings.Contains(got.Message, "已提交") || strings.Contains(got.Message, "成功")) {
-					t.Fatalf("任务提交不能提示完成：%s", got.Message)
 				}
 			})
 		}
@@ -345,11 +350,11 @@ func TestFileOperationsInvalidateAffectedCaches(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 				c.Request.Header.Set("Content-Type", "application/json")
 				operation.handler(c)
-				var result APIResponse[any]
+				var result httpapi.APIResponse[any]
 				if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 					t.Fatal(err)
 				}
-				if (result.Code != Success) != failed || calls == 0 {
+				if (result.Status >= http.StatusBadRequest) != failed || calls == 0 {
 					t.Fatalf("结果=%s，请求次数=%d", w.Body.String(), calls)
 				}
 				for _, item := range cached {
@@ -393,11 +398,11 @@ func TestOpenListOperationsRejectMismatchedParents(t *testing.T) {
 			c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 			operation.handler(c)
-			var result APIResponse[any]
+			var result httpapi.APIResponse[any]
 			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			if result.Code == Success || calls != 0 {
+			if result.Status < http.StatusBadRequest || calls != 0 {
 				t.Fatalf("错误路径不应发往上游：结果=%s，请求次数=%d", w.Body.String(), calls)
 			}
 		})
@@ -426,13 +431,12 @@ func TestFileOperationsRedactUpstreamErrors(t *testing.T) {
 	})
 	for _, operation := range []struct {
 		name    string
-		prefix  string
 		handler gin.HandlerFunc
 	}{
-		{name: "delete", prefix: "批量删除失败：", handler: DeleteFiles},
-		{name: "move", prefix: "批量移动失败：", handler: MoveFiles},
-		{name: "copy", prefix: "批量复制失败：", handler: CopyFiles},
-		{name: "rename", prefix: "重命名失败：", handler: RenameFile},
+		{name: "delete", handler: DeleteFiles},
+		{name: "move", handler: MoveFiles},
+		{name: "copy", handler: CopyFiles},
+		{name: "rename", handler: RenameFile},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
 			before := calls
@@ -442,12 +446,12 @@ func TestFileOperationsRedactUpstreamErrors(t *testing.T) {
 			c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 			c.Request.Header.Set("Content-Type", "application/json")
 			operation.handler(c)
-			var result APIResponse[any]
+			var result httpapi.APIResponse[any]
 			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			if calls == before || w.Code != http.StatusOK || result.Code != BadRequest || result.Data != nil ||
-				!strings.HasPrefix(result.Message, operation.prefix) || !strings.Contains(result.Message, "connection failed") {
+			if calls == before || w.Code != http.StatusBadGateway || result.Status != w.Code || result.Data != nil ||
+				result.ErrorCode != "UPSTREAM_ERROR" || result.Message == "" || strings.Contains(result.Message, "connection failed") {
 				t.Fatalf("错误响应契约发生变化：%s", w.Body.String())
 			}
 			for _, secret := range []string{account.Token, "fixture-access%2Btoken", account.RefreshToken, account.Password} {
@@ -704,11 +708,11 @@ func TestCreateLocalDirectoryIDMatchesBrowse(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/path/create", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	CreateDir(c)
-	var result APIResponse[DirResp]
+	var result httpapi.APIResponse[DirResp]
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != http.StatusOK || result.Code != Success {
+	if w.Code != http.StatusCreated || result.Status != http.StatusCreated {
 		t.Fatalf("创建目录失败：%s", w.Body.String())
 	}
 	directories, err := GetLocalPath(parent)
@@ -728,11 +732,11 @@ func TestGetPathListRejectsAccountSourceMismatch(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/path/list?source_type=%s&account_id=%d", models.SourceType115, account.ID), nil)
 	GetPathList(c)
-	var result APIResponse[any]
+	var result httpapi.APIResponse[any]
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Code == Success || calls != 0 || !strings.Contains(result.Message, "账号与来源类型不匹配") {
+	if result.Status != http.StatusBadRequest || calls != 0 || len(result.FieldErrors) != 1 || result.FieldErrors[0].Field != "source_type" {
 		t.Fatalf("来源不匹配响应=%s，上游请求=%d", w.Body.String(), calls)
 	}
 }
@@ -751,11 +755,15 @@ func TestGetBrowseSortOptionsResponse(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodGet, "/api/path/sort-options?"+tc.query, nil)
 			GetBrowseSortOptions(c)
-			var result APIResponse[requests.BrowseSortOptions]
+			var result httpapi.APIResponse[requests.BrowseSortOptions]
 			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			if w.Code != http.StatusOK || (result.Code == Success) != tc.success {
+			wantHTTP := http.StatusBadRequest
+			if tc.success {
+				wantHTTP = http.StatusOK
+			}
+			if w.Code != wantHTTP || result.Status != wantHTTP {
 				t.Fatalf("能力响应=%s", w.Body.String())
 			}
 			if tc.success && (!result.Data.FoldersFirst || result.Data.Default.FoldersFirst == nil || !*result.Data.Default.FoldersFirst || result.Data.Default.SortBy != "name" || !slices.Contains(result.Data.Fields, "default")) {
@@ -926,6 +934,83 @@ func TestValidate115BrowseBatchRejectsCountMismatch(t *testing.T) {
 			resp.Data = []v115open.File{{FileId: "1", FileCategory: v115open.TypeDir}}
 			if err := validate115BrowseBatch(resp, tc.start); err == nil {
 				t.Fatal("不能缓存条目数量超过上游总数的响应")
+			}
+		})
+	}
+}
+
+func TestGetNetFileListClassifiesSourceSortValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		source          models.SourceType
+		query, field    string
+		upstreamFailure bool
+	}{
+		{name: "OpenList不支持名称排序", source: models.SourceTypeOpenList, query: "sort_by=name", field: "sort_by"},
+		{name: "OpenList不支持文件夹置顶", source: models.SourceTypeOpenList, query: "folders_first=false", field: "sort_by"},
+		{name: "115跟随网盘不能降序", source: models.SourceType115, query: "sort_by=default&sort_order=desc", field: "sort_by"},
+		{name: "115跟随网盘不能指定置顶", source: models.SourceType115, query: "sort_by=default&folders_first=false", field: "sort_by"},
+		{name: "百度不支持类型排序", source: models.SourceTypeBaiduPan, query: "sort_by=type", field: "sort_by"},
+		{name: "百度不支持文件夹置顶", source: models.SourceTypeBaiduPan, query: "folders_first=false", field: "folders_first"},
+		{name: "合法排序读取上游", source: models.SourceTypeOpenList, query: "sort_by=default"},
+		{name: "上游失败保留分类", source: models.SourceTypeOpenList, query: "sort_by=default", upstreamFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			account := setupOpenListFileOperationTest(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if tc.upstreamFailure {
+					io.WriteString(w, `{"code":500,"message":"private upstream failure"}`)
+					return
+				}
+				io.WriteString(w, `{"code":200,"data":{"content":[{"name":"file.mkv","is_dir":false}],"total":1}}`)
+			})
+			account.SourceType = tc.source
+			if err := db.Db.Save(account).Error; err != nil {
+				t.Fatal(err)
+			}
+			previousTransport := http.DefaultTransport
+			rejectRemote := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return nil, errors.New("invalid sort must not read remote files")
+			})
+			if tc.source != models.SourceTypeOpenList {
+				http.DefaultTransport = rejectRemote
+				t.Cleanup(func() { http.DefaultTransport = previousTransport })
+			}
+			if tc.source == models.SourceType115 {
+				client := account.Get115Client()
+				client.SetTransport(rejectRemote)
+				t.Cleanup(func() { client.SetTransport(previousTransport) })
+			}
+			router := gin.New()
+			router.GET("/api/path/files", GetNetFileList)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/path/files?account_id=%d&path=/parent&%s", account.ID, tc.query), nil)
+			router.ServeHTTP(response, request)
+			if tc.field != "" {
+				assertScrapeFailure(t, response, http.StatusBadRequest, "INVALID_REQUEST")
+				var result httpapi.APIResponse[any]
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if len(result.FieldErrors) != 1 || result.FieldErrors[0].Field != tc.field || result.FieldErrors[0].Message == "" || calls != 0 {
+					t.Fatalf("invalid sort must preserve field and avoid upstream: response=%s calls=%d", response.Body, calls)
+				}
+			} else if tc.upstreamFailure {
+				assertScrapeFailure(t, response, http.StatusBadGateway, "UPSTREAM_ERROR")
+				if calls == 0 || strings.Contains(response.Body.String(), "private upstream failure") {
+					t.Fatalf("upstream failure was not safely projected: %s", response.Body)
+				}
+			} else {
+				var result httpapi.APIResponse[netFileListResponse]
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != http.StatusOK || calls != 1 || len(result.Data.List) != 1 || result.Data.List[0].Name != "file.mkv" {
+					t.Fatalf("valid sort lost listing: %s calls=%d", response.Body, calls)
+				}
 			}
 		})
 	}

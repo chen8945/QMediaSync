@@ -39,29 +39,32 @@ function mountSettings(
   initialRead?: Promise<APIResponse<unknown>>,
 ) {
   const read = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: initial,
   })
   if (initialRead) read.mockReturnValueOnce(initialRead)
   if (failLoad) read.mockRejectedValueOnce(new AxiosError('unavailable', 'ERR_NETWORK'))
   const write = vi.fn<() => Promise<APIResponse<null>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: null,
   })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data:
+  const adapter = vi.fn(async (config) => {
+    const responseBody =
       config.method === 'post'
         ? await write()
         : config.url.endsWith('/cron')
-          ? { code: 200, data: [] }
-          : await read(),
-  }))
+          ? { status: 200, data: [] }
+          : await read()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const wrapper = mount(AppStrmSettings, {
     attachTo: document.body,
     global: {
@@ -101,7 +104,7 @@ describe('STRM 预加载设置', () => {
     )
     expect(saveButton(wrapper).attributes('disabled')).toBeDefined()
     expect(write).not.toHaveBeenCalled()
-    pending.resolve({ code: 200, message: '', data: initial })
+    pending.resolve({ status: 200, message: '', data: initial })
     await flushPromises()
     expect(preloadItem(wrapper).get<HTMLInputElement>('input[value="1"]').element.checked).toBe(
       true,
@@ -142,9 +145,11 @@ describe('STRM 预加载设置', () => {
     const { wrapper, write, save, payloads } = mountSettings()
     await flushPromises()
     write.mockResolvedValueOnce({
-      code: 500,
+      status: 500,
       message: 'strm_preload_enabled：不是允许的取值',
       data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await preloadItem(wrapper).get('input[value="1"]').setValue(true)
     await save()

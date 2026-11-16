@@ -10,6 +10,7 @@ import (
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
@@ -27,41 +28,34 @@ type BaiDuPanStatusResp struct {
 }
 
 // GetBaiDuPanStatus 查询百度网盘账号状态
-// @Summary 查询百度网盘账号状态
-// @Description 获取指定百度网盘账号的登录状态及存储信息
-// @Tags 百度网盘
-// @Accept json
-// @Produce json
-// @Param account_id query integer true "账号 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /auth/baidupan-status [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetBaiDuPanStatus(c *gin.Context) {
 	var req requests.AccountIDRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	client := account.GetBaiDuPanClient()
 	userInfo, err := client.GetUserInfo(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘用户信息失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取百度网盘用户信息失败", account.Token, account.RefreshToken)
 		return
 	}
 	quota, err := client.GetQuota(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘用户配额失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取百度网盘用户配额失败", account.Token, account.RefreshToken)
+		return
+	}
+	if userInfo == nil || userInfo.Uk == nil || userInfo.BaiduName == nil || userInfo.VipType == nil || quota == nil || quota.Used == nil || quota.Total == nil {
+		httpapi.Failure(c, http.StatusBadGateway, httpapi.Error{Code: "UPSTREAM_RESPONSE_INVALID", Message: "百度网盘返回的用户信息不完整"})
 		return
 	}
 	var memberLevel string
@@ -74,50 +68,39 @@ func GetBaiDuPanStatus(c *gin.Context) {
 		memberLevel = "SVIP"
 	default:
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取百度网盘状态成功", Data: BaiDuPanStatusResp{
+	httpapi.Success(c, http.StatusOK, BaiDuPanStatusResp{
 		UserId:      *userInfo.Uk,
 		Username:    *userInfo.BaiduName,
 		MemberLevel: memberLevel,
 		UsedSpace:   *quota.Used,
 		TotalSpace:  *quota.Total,
-	}})
+	}, "获取百度网盘状态成功")
 }
 
 // GetBaiDuPanOAuthURL 获取百度网盘 OAuth 登录地址。
-// @Summary 获取百度网盘 OAuth 登录地址
-// @Description 生成跳转到百度 OAuth 授权服务器的链接
-// @Tags 百度网盘
-// @Accept json
-// @Produce json
-// @Param account_id query string true "账号 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /baidupan/oauth-url [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetBaiDuPanOAuthUrl(c *gin.Context) {
 	var req requests.OAuthURLRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	if account.SourceType != models.SourceTypeBaiduPan {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "当前账号不是百度网盘账号", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号不是百度网盘账号"})
 		return
 	}
 
 	clientId := account.AppId
 	if clientId == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "账号缺少 APP ID 配置", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "ACCOUNT_CONFIGURATION_INVALID", Message: "账号缺少 APP ID 配置"})
 		return
 	}
 
@@ -140,7 +123,7 @@ func GetBaiDuPanOAuthUrl(c *gin.Context) {
 	stateJson, _ := json.Marshal(stateObj)
 	stateEncoded, err := helpers.Encrypt(string(stateJson))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "生成 OAuth 登录地址失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "生成 OAuth 登录地址失败", Cause: err})
 		return
 	}
 
@@ -148,49 +131,37 @@ func GetBaiDuPanOAuthUrl(c *gin.Context) {
 	authServerUrl := fmt.Sprintf("%s/baidu.php", helpers.GlobalConfig.NewAuthServer)
 	// 注意：redirect_uri 需要与百度开放平台配置保持一致
 	oauthUrl := fmt.Sprintf("%s?action=code&state=%s", authServerUrl, stateEncoded)
-	c.JSON(http.StatusOK, APIResponse[string]{Code: Success, Message: "获取百度网盘 OAuth 登录地址成功", Data: oauthUrl})
+	httpapi.Success(c, http.StatusOK, oauthUrl, "获取百度网盘 OAuth 登录地址成功")
 }
 
 // ConfirmBaiDuPanOAuthCode 确认百度网盘 OAuth 登录。
-// @Summary 确认百度网盘 OAuth 登录
-// @Description 客户端将授权服务器返回的数据发送过来，换取 access token 和 refresh token 并入库
-// @Tags 百度网盘
-// @Accept json
-// @Produce json
-// @Param account_id body string true "账号 ID"
-// @Param code body string true "授权码"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /baidupan/oauth-confirm [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 	var req requests.OAuthConfirmRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 	if req.Data == "" {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "data 不能为空", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "data 不能为空"})
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	if account.SourceType != models.SourceTypeBaiduPan {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "当前账号不是百度网盘账号", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号不是百度网盘账号"})
 		return
 	}
 	// 对 req.Data 解密
 	decryptedData, err := helpers.Decrypt(req.Data)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_AUTHORIZATION_PAYLOAD", Message: "授权数据无效", Cause: err})
 		return
 	}
 	var data *baidupan.RefreshResponse
@@ -199,7 +170,7 @@ func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 		if err == nil {
 			err = fmt.Errorf("授权数据为空")
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_AUTHORIZATION_PAYLOAD", Message: "授权数据无效", Cause: err})
 		return
 	}
 	// 用临时客户端验证新凭据，验证成功后再和用户信息一起提交，避免
@@ -207,11 +178,11 @@ func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 	client := baidupan.NewBaiDuPanClientWithToken(data.AccessToken)
 	userInfo, err := client.GetUserInfo(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "确认 OAuth 登录失败", data.AccessToken, data.RefreshToken)
 		return
 	}
 	if userInfo == nil || userInfo.Uk == nil || userInfo.BaiduName == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：用户信息不完整", Data: nil})
+		httpapi.Failure(c, http.StatusBadGateway, httpapi.Error{Code: "UPSTREAM_RESPONSE_INVALID", Message: "确认 OAuth 登录失败：用户信息不完整"})
 		return
 	}
 	if err := account.ReplaceBaiDuPanAuthorization(
@@ -221,21 +192,21 @@ func ConfirmBaiDuPanOAuthCode(c *gin.Context) {
 		helpers.Int64ToString(*userInfo.Uk),
 		*userInfo.BaiduName,
 	); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "更新用户信息失败：" + accountPersistenceMessage(err), Data: nil})
+		writeAccountPersistenceError(c, err, "更新用户信息失败", data.AccessToken, data.RefreshToken)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OAuth 登录已确认", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "OAuth 登录已确认")
 }
 
 // 通过百度网盘文件的 fs_id 获取下载链接，参数名沿用 pickcode 以兼容 115。
 func GetBaiduPanUrlByPickCode(c *gin.Context) {
 	var req requests.RemoteFileURLRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 	pickCode := req.PickCode
@@ -243,15 +214,14 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 	var account *models.Account
 	if userId == "" {
 		// 查询 SyncFile
-		syncFile := models.GetFileByPickCode(pickCode)
-		if syncFile == nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "文件标识不存在", Data: nil})
+		syncFile, err := models.GetFileByPickCode(pickCode)
+		if err != nil {
+			writeCloudFileLookupError(c, err)
 			return
 		}
-		var err error
-		account, err = models.GetAccountById(syncFile.AccountId)
+		account, err = models.ReadAccount(c.Request.Context(), syncFile.AccountId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+			writeAccountLookupError(c, err)
 			return
 		}
 	} else {
@@ -259,7 +229,7 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 		// 通过 userId 查询账号
 		account, err = models.GetAccountByUserId(userId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "用户 ID 不存在", Data: nil})
+			writeAccountLookupError(c, err)
 			return
 		}
 	}
@@ -274,14 +244,17 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 		if cachedUrl == "" {
 			fsDetail, err := client.GetFileDetail(ctx, pickCode, 1)
 			if err != nil || ctx.Err() != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘文件详情失败", Data: nil})
+				if ctx.Err() != nil {
+					err = ctx.Err()
+				}
+				writeCloudUpstreamError(c, err, "获取百度网盘文件详情失败", account.Token)
+				return
+			}
+			if fsDetail == nil || fsDetail.Dlink == "" {
+				httpapi.Failure(c, http.StatusBadGateway, httpapi.Error{Code: "UPSTREAM_RESPONSE_INVALID", Message: "百度网盘返回的下载链接为空"})
 				return
 			}
 			cachedUrl = fmt.Sprintf("%s&access_token=%s", fsDetail.Dlink, account.Token)
-			if cachedUrl == "" {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘下载链接失败", Data: nil})
-				return
-			}
 			helpers.AppLogger.Infof("从接口中查询到百度网盘下载链接：%s => %s", pickCode, cachedUrl)
 			// 缓存 8 小时
 			db.Cache.Set(cacheKey, []byte(cachedUrl), 27000)
@@ -289,21 +262,13 @@ func GetBaiduPanUrlByPickCode(c *gin.Context) {
 			helpers.AppLogger.Infof("从缓存中查询到百度网盘下载链接：%s => %s", pickCode, cachedUrl)
 		}
 		if ctx.Err() != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取百度网盘下载链接失败", Data: nil})
+			writeCloudUpstreamError(c, ctx.Err(), "获取百度网盘下载链接失败", account.Token)
 			return
 		}
-		// 检查是否开启了本地播放代理，如果开启则跳转到代理链接
-		// if models.SettingsGlobal.LocalProxy == 1 {
-		// 跳转到本地代理
 		proxyUrl := fmt.Sprintf("/proxy-115?baidupan=1&url=%s", url.QueryEscape(cachedUrl))
 		helpers.AppLogger.Infof("通过本地代理访问百度网盘下载链接播放：%s", url.QueryEscape(cachedUrl))
 		c.Redirect(http.StatusFound, proxyUrl)
 		return
-		// } else {
-		// 	helpers.AppLogger.Infof("302 重定向到百度网盘下载链接播放：%s", url.QueryEscape(cachedURL))
-		// 	c.Redirect(http.StatusFound, cachedURL)
-		// 	return
-		// }
 	}
-
+	httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "RESOURCE_BUSY", Message: "获取百度网盘下载链接超时，请稍后重试", Cause: ctx.Err()})
 }

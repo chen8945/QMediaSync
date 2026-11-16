@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	syncconfig "qmediasync/internal/strm/config"
 
@@ -62,19 +62,19 @@ func TestSyncPathAggregateRegexSaveRoundTripAndValidation(t *testing.T) {
 		router.ServeHTTP(response, request)
 		return response
 	}
-	if response := save(http.MethodPost, "/sync/paths"); response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `"code":200`) {
+	if response := save(http.MethodPost, "/sync/paths"); response.Code != http.StatusCreated ||
+		!strings.Contains(response.Body.String(), `"status":201`) {
 		t.Fatalf("创建含正则的同步目录失败：%s", response.Body)
 	}
 	checkReloaded := func(want []string) {
 		t.Helper()
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sync/path/1", nil))
-		var result APIResponse[models.SyncPath]
+		var result httpapi.APIResponse[models.SyncPath]
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if result.Code != Success || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
+		if result.Status != http.StatusOK || !reflect.DeepEqual(result.Data.ExcludeNameRegexArr, want) {
 			t.Fatalf("同步目录读回未保留原文：%s，期望 %q", response.Body, want)
 		}
 		if !reflect.DeepEqual(result.Data.ExcludeNameArr, []string{"sample"}) {
@@ -82,6 +82,17 @@ func TestSyncPathAggregateRegexSaveRoundTripAndValidation(t *testing.T) {
 		}
 	}
 	checkReloaded(patterns)
+	replay := save(http.MethodPost, "/sync/paths")
+	if replay.Code != http.StatusCreated || replay.Header().Get("Location") != "/api/sync/path/1" {
+		t.Fatalf("idempotent create replay: HTTP=%d headers=%v body=%s", replay.Code, replay.Header(), replay.Body.String())
+	}
+	var count int64
+	if err := testDB.Model(&models.SyncPath{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("idempotent create made %d paths", count)
+	}
 	setting["exclude_name_regex_arr"] = []string{`\p{UnknownClass}`}
 	response := save(http.MethodPut, "/sync/paths/1")
 	if response.Code != http.StatusBadRequest ||
@@ -94,23 +105,6 @@ func TestSyncPathAggregateRegexSaveRoundTripAndValidation(t *testing.T) {
 		t.Fatalf("清空目录正则失败：%s", response.Body)
 	}
 	checkReloaded([]string{})
-}
-
-func TestSyncPathAggregateHandlersHaveSwaggerAnnotations(t *testing.T) {
-	content, err := os.ReadFile("sync_config.go")
-	if err != nil {
-		t.Fatalf("读取同步目录聚合控制器失败: %v", err)
-	}
-	source := string(content)
-	for _, expected := range []string{
-		"// @Router /sync/paths [post]",
-		"// @Router /sync/paths/{id} [put]",
-		"// @Param Idempotency-Key header string false",
-	} {
-		if !strings.Contains(source, expected) {
-			t.Fatalf("sync_config.go 缺少 Swagger 注解 %q", expected)
-		}
-	}
 }
 
 func TestUpdateSyncPathAggregateReloadsDirectoryUploadServiceWhenMasterSwitchChanges(t *testing.T) {
@@ -209,7 +203,7 @@ func TestUpdateSyncPathAggregateReloadsDirectoryUploadServiceWhenMasterSwitchCha
 	req := httptest.NewRequest(http.MethodPut, "/sync/paths/1", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"code":200`)) {
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"status":200`)) {
 		t.Fatalf("更新同步目录响应异常: code=%d body=%s", w.Code, w.Body.String())
 	}
 	if got := len(directoryupload.GetDirectoryUploadRuntimeStatuses()); got != 0 {

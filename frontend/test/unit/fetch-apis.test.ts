@@ -9,9 +9,9 @@ const jsonResponse = (body: unknown, status = 200, headers?: HeadersInit) =>
 afterEach(() => vi.unstubAllGlobals())
 
 describe('原生 HTTP 快照 API', () => {
-  it('保留日志参数、Cookie、取消信号和原始快照格式', async () => {
+  it('保留日志参数、Cookie、取消信号和业务快照数据', async () => {
     const snapshot = { entries: [], pos: 12, start_pos: -1 }
-    const fetch = vi.fn().mockResolvedValue(jsonResponse(snapshot))
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ status: 200, data: snapshot }))
     vi.stubGlobal('fetch', fetch)
     const controller = new AbortController()
 
@@ -25,9 +25,29 @@ describe('原生 HTTP 快照 API', () => {
   })
 
   it.each([
-    [403, { code: 500, error_code: 'REQUEST_ORIGIN_INVALID' }, 'origin'],
-    [403, { code: 500, message: 'CSRF 校验失败' }, 'csrf'],
-    [401, { code: 401 }, 'unauthorized'],
+    [
+      403,
+      {
+        status: 403,
+        data: null,
+        message: '测试拒绝',
+        error_code: 'REQUEST_ORIGIN_INVALID',
+        instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      },
+      'origin',
+    ],
+    [
+      403,
+      {
+        status: 403,
+        data: null,
+        message: '测试拒绝',
+        error_code: 'CSRF_TOKEN_INVALID',
+        instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      },
+      'csrf',
+    ],
+    [401, { status: 401 }, 'unauthorized'],
     [404, { error: 'secret path' }, 'not-found'],
     [500, { error: 'secret database connection' }, 'server'],
   ])('保留 HTTP %s 和错误体供公共分类', async (status, body, kind) => {
@@ -35,7 +55,7 @@ describe('原生 HTTP 快照 API', () => {
     const error = await fetchLogSnapshot('private.log', -1, 1000).catch((error: unknown) => error)
     const parsed = parseHttpError(error)
     expect(parsed.kind).toBe(kind)
-    expect(parsed.diagnostics).toEqual({
+    expect(parsed.diagnostics).toMatchObject({
       method: 'GET',
       path: '/api/logs/old',
       status,
@@ -75,7 +95,7 @@ describe('原生 HTTP 快照 API', () => {
     expect(parseHttpError(error).shouldNotify).toBe(false)
   })
 
-  it.each([null, { code: 500, message: 'secret' }, { entries: 'invalid', pos: 1 }])(
+  it.each([null, { status: 500, message: 'secret' }, { entries: 'invalid', pos: 1 }])(
     '无效日志快照不得误判为成功',
     async (body) => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body)))
@@ -86,9 +106,17 @@ describe('原生 HTTP 快照 API', () => {
   it('同步任务读取校验业务成功和记录身份，不把错误对象写入任务', async () => {
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ code: 200, data: { id: 8, status: 1 } }))
-      .mockResolvedValueOnce(jsonResponse({ code: 500, message: 'secret', data: null }))
-      .mockResolvedValueOnce(jsonResponse({ code: 200, data: { id: 9, status: 1 } }))
+      .mockResolvedValueOnce(jsonResponse({ status: 200, data: { id: 8, status: 1 } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 500,
+          message: 'secret',
+          data: null,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: 200, data: { id: 9, status: 1 } }))
     vi.stubGlobal('fetch', fetch)
     await expect(fetchSyncTask(8)).resolves.toEqual({ id: 8, status: 1 })
     await expect(fetchSyncTask(8)).rejects.toThrow()

@@ -11,6 +11,7 @@ import InitialAdminSetupForm, {
   type InitialAdminSubmitPayload,
 } from '@/components/auth/InitialAdminSetupForm.vue'
 import { createInitialAdmin, fetchSetupStatus, initialAdminErrorOptions, login } from '@/api/auth'
+import type { SettingsSaveResult } from '@/api/types'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -18,6 +19,12 @@ const http = useHttpClient()
 const loading = shallowRef(false)
 const setupRequired = shallowRef(false)
 const setupStatusLoaded = shallowRef(false)
+
+const showOperationResult = (result: SettingsSaveResult, fallback: string) => {
+  const message = result.message?.trim() || fallback
+  if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+  else ElMessage.success(message)
+}
 
 const subtitle = computed(() => (setupRequired.value ? '创建管理员' : '系统登录'))
 
@@ -38,8 +45,8 @@ const handleCreateInitialAdmin = async (payload: InitialAdminSubmitPayload) => {
   if (loading.value) return
   loading.value = true
   try {
-    await createInitialAdmin(http, payload)
-    ElMessage.success('管理员创建成功，请登录')
+    const result = await createInitialAdmin(http, payload)
+    showOperationResult(result, '管理员创建成功，请登录')
     setupRequired.value = false
   } catch (error: unknown) {
     notifyHttpError(error, '创建管理员失败：', initialAdminErrorOptions)
@@ -53,7 +60,7 @@ const handleLogin = async (payload: LoginSubmitPayload) => {
 
   try {
     loading.value = true
-    await login(http, payload)
+    const result = await login(http, payload)
     const sessionResult = await authStore.refreshSession(http)
     if (sessionResult.state === 'anonymous') {
       ElMessage.error(
@@ -66,7 +73,7 @@ const handleLogin = async (payload: LoginSubmitPayload) => {
       return
     }
 
-    ElMessage.success('登录成功')
+    showOperationResult(result, '登录成功')
 
     // 跳转到首页或原本要访问的页面
     const redirect = router.currentRoute.value.query.redirect as string

@@ -7,11 +7,17 @@ import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 
 const row = { id: 4, name: 'CI', key_prefix: 'qms_ci', is_active: true, created_at: 1 }
-const success = (data: unknown = null) => ({ status: 200, data: { code: 200, data } })
-const failure = (status = 200, error_code?: string) =>
+const success = (data: unknown = null) => ({ status: 200, data: { status: 200, data } })
+const failure = (status = 500, error_code?: string) =>
   new HttpResponseError({
     status,
-    data: { code: 500, message: 'API Key 操作失败，请稍后重试', error_code },
+    data: {
+      status: status,
+      message: 'API Key 操作失败，请稍后重试',
+      error_code: error_code ?? 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
   })
 const wrappers: VueWrapper[] = []
 const createHTTP = () => ({
@@ -57,6 +63,44 @@ afterEach(() => {
 })
 
 describe('API Key 请求失败行为', () => {
+  it.each(['create', 'toggle', 'delete'] as const)(
+    '%s 成功反馈保留消息、警告和已提交结果',
+    async (action) => {
+      vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
+      const http = createHTTP()
+      const reply = {
+        status: 200,
+        data: {
+          status: 200,
+          data: action === 'create' ? { ...row, key: 'qms_created_once' } : null,
+          message: '服务端密钥操作结果',
+          warnings: ['密钥操作附加提醒'],
+        },
+      }
+      http.post.mockResolvedValue(reply)
+      http.put.mockResolvedValue(reply)
+      http.delete.mockResolvedValue(reply)
+      const wrapper = await mountPage(http)
+      if (action === 'create') {
+        await clickButton(await openCreate(wrapper), '生成')
+        const created = wrapper.findAllComponents(ElDialog)[1]
+        expect(created.props('modelValue')).toBe(true)
+        expect(created.get<HTMLInputElement>('input').element.value).toBe('qms_created_once')
+      } else if (action === 'toggle') {
+        await wrapper.get('[role="switch"]').trigger('click')
+        await flushPromises()
+      } else {
+        await clickButton(wrapper, '删除')
+      }
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(
+        '服务端密钥操作结果；密钥操作附加提醒',
+      )
+      expect(ElMessage.success).not.toHaveBeenCalled()
+      expect(http.get).toHaveBeenCalledTimes(2)
+      expect(console.error).not.toHaveBeenCalled()
+    },
+  )
+
   it.each([
     [failure(), 'API Key 操作失败，请稍后重试'],
     [
@@ -90,11 +134,17 @@ describe('API Key 请求失败行为', () => {
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('qms_secret_key')
   })
 
-  it('HTTP 200 业务失败不展示新密钥或刷新列表', async () => {
+  it('请求失败不展示新密钥或刷新列表', async () => {
     const http = createHTTP()
     http.post.mockResolvedValue({
-      status: 200,
-      data: { code: 500, message: 'API Key 操作失败，请稍后重试', data: null },
+      status: 500,
+      data: {
+        status: 500,
+        message: 'API Key 操作失败，请稍后重试',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
     })
     const wrapper = await mountPage(http)
     const dialog = await openCreate(wrapper)
@@ -109,8 +159,14 @@ describe('API Key 请求失败行为', () => {
     const http = createHTTP()
     http.get.mockResolvedValue(success([{ ...row, is_active }]))
     http.put.mockResolvedValue({
-      status: 200,
-      data: { code: 500, message: 'API Key 操作失败，请稍后重试', data: null },
+      status: 500,
+      data: {
+        status: 500,
+        message: 'API Key 操作失败，请稍后重试',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
     })
     const wrapper = await mountPage(http)
     const toggle = wrapper.get('[role="switch"]')
@@ -136,6 +192,10 @@ describe('API Key 请求失败行为', () => {
 
   it('创建成功后刷新失败仍展示一次明文，并准确说明刷新失败', async () => {
     const http = createHTTP()
+    http.post.mockResolvedValue({
+      status: 201,
+      data: { status: 201, data: { ...row, key: 'qms_created_once' }, message: '已提交的密钥结果' },
+    })
     const wrapper = await mountPage(http)
     const dialog = await openCreate(wrapper)
     http.get.mockRejectedValue(failure())
@@ -145,7 +205,7 @@ describe('API Key 请求失败行为', () => {
     expect(dialog.props('modelValue')).toBe(false)
     expect(created.props('modelValue')).toBe(true)
     expect(created.get<HTMLInputElement>('input').element.value).toBe('qms_created_once')
-    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('API Key 创建成功')
+    expect(ElMessage.success).toHaveBeenCalledExactlyOnceWith('已提交的密钥结果')
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
       '操作已成功，但刷新 API Key 列表失败：API Key 操作失败，请稍后重试',
     )

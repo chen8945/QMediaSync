@@ -467,20 +467,36 @@ func DeleteSyncPathByID(ctx context.Context, id uint) error {
 	return err
 }
 
-// 根据 ID 获取同步路径
-func GetSyncPathById(id uint) *SyncPath {
+// GetSyncPathByID 读取同步目录并保留数据库错误。
+func GetSyncPathByID(ctx context.Context, id uint) (*SyncPath, error) {
 	var syncPath SyncPath
-	db.Db.First(&syncPath, id)
-	if syncPath.ID == 0 {
-		helpers.AppLogger.Errorf("同步路径不存在：%v", id)
-		return nil
+	if err := db.Db.WithContext(ctx).First(&syncPath, id).Error; err != nil {
+		return nil, err
 	}
 	syncPath.ParseVideoAndMetaExt()
-	return &syncPath
+	return &syncPath, nil
+}
+
+// 根据 ID 获取同步路径。
+func GetSyncPathById(id uint) *SyncPath {
+	syncPath, err := GetSyncPathByID(context.Background(), id)
+	if err != nil && helpers.AppLogger != nil {
+		helpers.AppLogger.Errorf("读取同步路径失败：%v", err)
+	}
+	return syncPath
 }
 
 // 查询同步路径列表
 func GetSyncPathList(page, pageSize int, enableCron bool, sourceType SourceType) ([]*SyncPath, int64) {
+	paths, total, err := GetSyncPathListWithContext(context.Background(), page, pageSize, enableCron, sourceType)
+	if err != nil && helpers.AppLogger != nil {
+		helpers.AppLogger.Errorf("读取同步路径列表失败：%v", err)
+	}
+	return paths, total
+}
+
+// GetSyncPathListWithContext 分页读取同步目录并保留数据库错误。
+func GetSyncPathListWithContext(ctx context.Context, page, pageSize int, enableCron bool, sourceType SourceType) ([]*SyncPath, int64, error) {
 	var syncPaths []*SyncPath
 	var total int64
 
@@ -492,16 +508,21 @@ func GetSyncPathList(page, pageSize int, enableCron bool, sourceType SourceType)
 	}
 
 	offset := (page - 1) * pageSize
-	query := db.Db.Model(&SyncPath{})
+	query := db.Db.WithContext(ctx).Model(&SyncPath{})
 	if enableCron {
 		query.Where("enable_cron = ?", enableCron)
 	}
 	if sourceType != "" {
 		query.Where("source_type = ?", sourceType)
 	}
-	query.Count(&total)
-	query.Offset(offset).Limit(pageSize).Order("id DESC").Find(&syncPaths)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Offset(offset).Limit(pageSize).Order("id DESC").Find(&syncPaths).Error; err != nil {
+		return nil, 0, err
+	}
 	accountCache := make(map[uint]*Account)
+	var accountErr error
 	for _, syncPath := range syncPaths {
 		// syncPath.ParseVideoAndMetaExt()
 		if syncPath.AccountId == 0 {
@@ -512,9 +533,12 @@ func GetSyncPathList(page, pageSize int, enableCron bool, sourceType SourceType)
 			// helpers.AppLogger.Infof("从缓存获取账号成功：%s", account.Name)
 			continue
 		}
-		account, err := GetAccountById(syncPath.AccountId)
+		account, err := getAccountByIDWithDB(db.Db.WithContext(ctx), syncPath.AccountId)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
 		if err != nil {
-			helpers.AppLogger.Errorf("获取账号失败：%v", err)
+			accountErr = errors.Join(accountErr, err)
 			continue
 		}
 		accountCache[syncPath.AccountId] = account
@@ -527,7 +551,7 @@ func GetSyncPathList(page, pageSize int, enableCron bool, sourceType SourceType)
 	}
 	// // 清空 accountCache
 	// accountCache = nil
-	return syncPaths, total
+	return syncPaths, total, accountErr
 }
 
 // 根据账号 ID 获取同步路径列表

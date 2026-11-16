@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"strings"
 
+	"qmediasync/internal/httpapi"
+
 	"github.com/gin-gonic/gin"
 
 	"qmediasync/internal/backup"
-	"qmediasync/internal/helpers"
 )
 
 const errorCodeRestoreReceiptInvalid = "RESTORE_RECEIPT_INVALID"
@@ -22,17 +23,26 @@ func RestoreMaintenanceMiddleware() gin.HandlerFunc {
 				c.Header("Cache-Control", "no-store, private")
 				result, ok := backup.RestoreResultWithReceipt(receipt)
 				if !ok {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "恢复凭据无效", Data: nil, ErrorCode: errorCodeRestoreReceiptInvalid})
+					c.Abort()
+					c.Header("WWW-Authenticate", `QMediaSyncRestoreReceipt realm="QMediaSyncRestore"`)
+					httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: errorCodeRestoreReceiptInvalid, Message: "恢复凭据无效", Data: nil})
 					return
 				}
-				c.AbortWithStatusJSON(http.StatusOK, APIResponse[backup.BackupOrRestoreResult]{Code: Success, Message: "获取备份状态成功", Data: *result})
+				c.Abort()
+				httpapi.Success(c, http.StatusOK, *result, "获取备份状态成功")
 				return
 			}
 		}
 		if path == "/api/backup/restart" {
+			c.Header("Cache-Control", "no-store, private")
 			if c.Request.Method != http.MethodPost {
 				c.Header("Allow", http.MethodPost)
-				c.AbortWithStatus(http.StatusMethodNotAllowed)
+				c.Abort()
+				if c.Request.Method == http.MethodHead {
+					c.Status(http.StatusMethodNotAllowed)
+					return
+				}
+				httpapi.Failure(c, http.StatusMethodNotAllowed, httpapi.Error{Code: "METHOD_NOT_ALLOWED", Message: "请求方法不支持"})
 				return
 			}
 			restartAfterRestore(c, backup.RestartWithReceipt)
@@ -46,7 +56,9 @@ func RestoreMaintenanceMiddleware() gin.HandlerFunc {
 		release, ok := backup.AcquireRuntimeRequest()
 		if !ok {
 			c.Header("Retry-After", "30")
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, APIResponse[any]{Code: BadRequest, Message: "数据库恢复维护中，请等待结果并重启应用", Data: nil, ErrorCode: "DATABASE_MAINTENANCE"})
+			c.Header("Cache-Control", "no-store, private")
+			c.Abort()
+			httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "DATABASE_MAINTENANCE", Message: "数据库恢复维护中，请等待结果并重启应用", Data: nil})
 			return
 		}
 		defer release()
@@ -57,7 +69,8 @@ func RestoreMaintenanceMiddleware() gin.HandlerFunc {
 func restartAfterRestore(c *gin.Context, restart func(string) error) {
 	c.Header("Cache-Control", "no-store, private")
 	if !requestOriginAllowed(c) {
-		c.AbortWithStatusJSON(http.StatusForbidden, APIResponse[any]{Code: BadRequest, Message: "请求来源无效", Data: nil, ErrorCode: ErrorCodeRequestOriginInvalid})
+		c.Abort()
+		httpapi.Failure(c, http.StatusForbidden, httpapi.Error{Code: ErrorCodeRequestOriginInvalid, Message: "请求来源无效", Data: nil})
 		return
 	}
 	err := restart(c.GetHeader("X-Restore-Receipt"))
@@ -70,13 +83,14 @@ func restartAfterRestore(c *gin.Context, restart func(string) error) {
 			status, message, errorCode = http.StatusConflict, "当前恢复任务尚不能重启", "RESTORE_RESTART_NOT_READY"
 		case errors.Is(err, backup.ErrRestartUnsupported):
 			message, errorCode = "当前运行环境不支持自动重启，请手动重启服务", "RESTORE_RESTART_UNSUPPORTED"
-		default:
-			if helpers.AppLogger != nil {
-				helpers.AppLogger.Errorf("恢复后重启准备失败：%v", err)
-			}
 		}
-		c.AbortWithStatusJSON(status, APIResponse[any]{Code: BadRequest, Message: message, Data: nil, ErrorCode: errorCode})
+		if status == http.StatusUnauthorized {
+			c.Header("WWW-Authenticate", `QMediaSyncRestoreReceipt realm="QMediaSyncRestore"`)
+		}
+		c.Abort()
+		httpapi.Failure(c, status, httpapi.Error{Code: errorCode, Message: message, Cause: err})
 		return
 	}
-	c.AbortWithStatusJSON(http.StatusOK, APIResponse[backup.BackupOrRestoreResult]{Code: Success, Message: "已请求重启服务", Data: *backup.GetRunningResult()})
+	c.Abort()
+	httpapi.Success(c, http.StatusOK, *backup.GetRunningResult(), "已请求重启服务")
 }

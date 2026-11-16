@@ -54,11 +54,11 @@ const mountForm = async (existing?: Partial<ScrapePath>) => {
     get: vi.fn(async (url: string) => ({
       status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: url.endsWith('/scrape/pathes/12') ? { ...directory, ...existing } : accounts,
       },
     })),
-    post: vi.fn().mockResolvedValue({ status: 200, data: { code: 200, data: null } }),
+    post: vi.fn().mockResolvedValue({ status: 200, data: { status: 200, data: null } }),
   }
   const router = createRouter({
     history: createMemoryHistory(),

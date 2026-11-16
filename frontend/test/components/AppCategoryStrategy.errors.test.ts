@@ -10,20 +10,33 @@ import {
 } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AppCategoryStrategy from '@/views/scrape/AppCategoryStrategy.vue'
+import type { APIResponse } from '@/api/types'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 
 const movie = { id: 2, name: '电影规则', language_array: ['en'], genre_id_array: [18] }
 const tvshow = { id: 3, name: '剧集规则', country_array: ['CN'], genre_id_array: [18] }
-const success = (data: unknown = null) => ({ status: 200, data: { code: 200, data } })
-const failureBody = { status: 200, data: { code: 500, message: '分类服务暂不可用', data: null } }
+const success = (data: unknown = null): { status: number; data: APIResponse<unknown> } => ({
+  status: 200,
+  data: { status: 200, data },
+})
+const failureBody = {
+  status: 500,
+  data: {
+    status: 500,
+    message: '分类服务暂不可用',
+    data: null,
+    instance: '/request-errors/ComponentTestFailure0001',
+    error_code: 'TEST_REQUEST_FAILED',
+  },
+}
 const wrappers: VueWrapper[] = []
 const createHTTP = () => ({
   get: vi.fn(async (url: string) => {
     if (url.endsWith('/movie-categories')) return success([{ ...movie }])
     if (url.endsWith('/tvshow-categories')) return success([{ ...tvshow }])
-    if (url.endsWith('/language')) return success([{ code: 'en', name: '英语' }])
-    if (url.endsWith('/countries')) return success([{ code: 'CN', name: '中国' }])
+    if (url.endsWith('/language')) return success([{ status: 'en', name: '英语', data: null }])
+    if (url.endsWith('/countries')) return success([{ status: 'CN', name: '中国', data: null }])
     return success([{ id: 18, name: '剧情' }])
   }),
   post: vi.fn().mockResolvedValue(success()),
@@ -56,6 +69,7 @@ const chooseTvshow = async (wrapper: VueWrapper) => {
 
 beforeEach(() => {
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
 })
@@ -65,6 +79,40 @@ afterEach(() => {
 })
 
 describe('分类策略请求', () => {
+  it('删除分类保留服务端反馈与警告，提交后刷新', async () => {
+    const http = createHTTP()
+    const message = '服务器确认测试分类删除'
+    const warning = '测试分类删除仍需人工确认'
+    http.delete.mockResolvedValue({
+      status: 200,
+      data: { status: 200, data: null, message, warnings: [warning] },
+    })
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
+    const wrapper = await mountPage(http)
+    await clickButton(pane(wrapper, 'movie'), '删除')
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(http.get.mock.calls.filter(([url]) => url.endsWith('/movie-categories'))).toHaveLength(2)
+  })
+
+  it('已保存的分类使用服务端消息与警告，关闭表单并刷新', async () => {
+    const http = createHTTP()
+    const message = '服务器确认已保存分类测试配置'
+    const warning = '测试分类配置应用需要重试'
+    http.post.mockResolvedValue({
+      status: 200,
+      data: { status: 200, data: null, message, warnings: [warning] },
+    })
+    const wrapper = await mountPage(http)
+    await clickButton(pane(wrapper, 'movie'), '编辑')
+    const dialog = wrapper.findComponent(ElDialog)
+    await clickButton(dialog, '确认')
+    expect(dialog.props('modelValue')).toBe(false)
+    expect(ElMessage.warning).toHaveBeenCalledWith(`${message}；${warning}`)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(http.get.mock.calls.filter(([url]) => url.endsWith('/movie-categories'))).toHaveLength(2)
+  })
+
   it.each([
     ['/language', '加载语言列表失败'],
     ['/countries', '加载国家列表失败'],
@@ -80,7 +128,10 @@ describe('分类策略请求', () => {
     await mountPage(http)
     expect(http.get).toHaveBeenCalledTimes(5)
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('分类服务暂不可用')
-    expect(console.error).toHaveBeenCalledExactlyOnceWith(message, { status: 200 })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      message,
+      expect.objectContaining({ status: 500 }),
+    )
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -117,7 +168,13 @@ describe('分类策略请求', () => {
     http.post.mockRejectedValue(
       new HttpResponseError({
         status: 403,
-        data: { code: 500, error_code: 'CSRF_TOKEN_INVALID', message: 'secret' },
+        data: {
+          status: 403,
+          message: 'secret',
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'CSRF_TOKEN_INVALID',
+        },
       }),
     )
     const wrapper = await mountPage(http)

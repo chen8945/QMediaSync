@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,8 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"qmediasync/internal/controllers"
 	"qmediasync/internal/db/database"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 
 	"github.com/gin-gonic/gin"
 )
@@ -94,6 +97,8 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.Default()
+	r.Use(controllers.Cors())
+	configureHTTPResponses(r)
 	// 使用入口提供的资源加载模板
 	data, err := fs.ReadFile(resources, "assets/db_config.html")
 	if err != nil {
@@ -114,6 +119,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 	})
 
 	r.POST("/api/config/test-db", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store, private")
 		var req struct {
 			Host     string `json:"host"`
 			Port     int    `json:"port"`
@@ -123,7 +129,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 			SSL      bool   `json:"ssl"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"success": false, "error": err.Error()})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 			return
 		}
 
@@ -135,7 +141,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 			req.Host, req.Port, req.User, req.Password, sslMode)
 		sqlDB, err := sql.Open("pgx", connStr)
 		if err != nil {
-			c.JSON(200, gin.H{"success": false, "error": "连接失败：" + err.Error()})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "DATABASE_CONNECTION_FAILED", Message: "连接数据库失败，请检查连接配置", Cause: err, Secrets: []string{req.Password}})
 			return
 		}
 		defer sqlDB.Close()
@@ -144,19 +150,19 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 		defer cancel()
 
 		if err := sqlDB.PingContext(ctx); err != nil {
-			c.JSON(200, gin.H{"success": false, "error": "连接失败：" + err.Error()})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "DATABASE_CONNECTION_FAILED", Message: "连接数据库失败，请检查连接配置", Cause: err, Secrets: []string{req.Password}})
 			return
 		}
 
 		var dbExists bool
 		err = sqlDB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", req.Database).Scan(&dbExists)
 		if err != nil {
-			c.JSON(200, gin.H{"success": false, "error": "检查数据库失败：" + err.Error()})
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "DATABASE_PROBE_FAILED", Message: "检查数据库失败", Cause: err, Secrets: []string{req.Password}})
 			return
 		}
 
 		if !dbExists {
-			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": false})
+			httpapi.Success(c, http.StatusOK, gin.H{"dbExists": false}, "数据库连接成功")
 			return
 		}
 
@@ -164,7 +170,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 			req.Host, req.Port, req.User, req.Password, req.Database, sslMode)
 		sqlDBDb, err := sql.Open("pgx", connStrDb)
 		if err != nil {
-			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": false})
+			httpapi.Success(c, http.StatusOK, gin.H{"dbExists": true, "hasOtherTables": false}, "数据库连接成功")
 			return
 		}
 		defer sqlDBDb.Close()
@@ -172,11 +178,11 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 		var tableCount int
 		err = sqlDBDb.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name NOT LIKE 'gorr_%'").Scan(&tableCount)
 		if err != nil {
-			c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": false})
+			httpapi.Success(c, http.StatusOK, gin.H{"dbExists": true, "hasOtherTables": false}, "数据库连接成功")
 			return
 		}
 
-		c.JSON(200, gin.H{"success": true, "message": "数据库连接成功", "dbExists": true, "hasOtherTables": tableCount > 0})
+		httpapi.Success(c, http.StatusOK, gin.H{"dbExists": true, "hasOtherTables": tableCount > 0}, "数据库连接成功")
 	})
 
 	var saveMu sync.Mutex
@@ -184,10 +190,11 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 	var clearedDatabaseConfig *helpers.Config
 	var savedMessage string
 	r.POST("/api/config/save", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store, private")
 		saveMu.Lock()
 		defer saveMu.Unlock()
 		if restartPrepared {
-			c.JSON(200, gin.H{"success": true, "message": savedMessage})
+			httpapi.Success(c, http.StatusOK, nil, savedMessage)
 			return
 		}
 		if !configSaved {
@@ -195,24 +202,28 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 			var req databaseConfigRequest
 			if yamlConfig == nil {
 				if err := c.ShouldBindJSON(&req); err != nil {
-					c.JSON(400, gin.H{"error": err.Error()})
+					httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 					return
 				}
 				var err error
 				yamlConfig, err = req.toConfig()
 				if err != nil {
-					c.JSON(400, gin.H{"error": err.Error()})
+					httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 					return
 				}
 			}
 			if err := checkLegacyDatabaseState(); err != nil {
-				c.JSON(409, gin.H{"error": err.Error()})
+				if _, ok := errors.AsType[*os.PathError](err); ok {
+					httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "检查旧数据库状态失败", Cause: err})
+				} else {
+					httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "LEGACY_DATABASE_CONFLICT", Message: "检测到遗留数据库数据，此版本不支持自动迁移，请先妥善处理旧数据", Cause: err})
+				}
 				return
 			}
 			if clearedDatabaseConfig == nil && req.Engine == helpers.DbEnginePostgres {
 				quotedDatabase, err := database.QuotePostgresIdentifier(req.Database)
 				if err != nil {
-					c.JSON(200, gin.H{"error": "数据库名不合法：" + err.Error()})
+					httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "数据库名不合法", Cause: err, FieldErrors: []httpapi.FieldError{{Field: "database", Message: "数据库名不合法"}}})
 					return
 				}
 				if req.DropDatabase {
@@ -224,7 +235,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 						req.Host, req.Port, req.User, req.Password, sslMode)
 					sqlDB, err := sql.Open("pgx", connStr)
 					if err != nil {
-						c.JSON(200, gin.H{"error": "连接数据库失败：" + err.Error()})
+						httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "DATABASE_CONNECTION_FAILED", Message: "连接数据库失败，请检查连接配置", Cause: err, Secrets: []string{req.Password}})
 						return
 					}
 					ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -235,18 +246,24 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 						clearedDatabaseConfig = yamlConfig
 					}
 					if err := errors.Join(dropErr, sqlDB.Close()); err != nil {
-						c.JSON(200, gin.H{"error": "清空数据库失败：" + err.Error()})
+						var data any
+						if clearedDatabaseConfig != nil {
+							data = gin.H{"databaseCleared": true}
+						}
+						httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "DATABASE_RESET_FAILED", Message: "清空数据库失败", Cause: err, Secrets: []string{req.Password}, Data: data})
 						return
 					}
 				}
 			}
 
 			if err := helpers.SaveConfig(yamlConfig); err != nil {
-				message := "保存配置失败：" + err.Error()
+				message := "保存配置失败，请检查配置目录权限"
+				var data any
 				if clearedDatabaseConfig != nil {
+					data = gin.H{"databaseCleared": true}
 					message = "数据库已清空，但" + message + "。修复后再次保存将沿用本次数据库设置。"
 				}
-				c.JSON(500, gin.H{"error": message})
+				httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "CONFIG_SAVE_FAILED", Message: message, Cause: err, Secrets: []string{yamlConfig.Db.PostgresConfig.Password}, Data: data})
 				return
 			}
 
@@ -255,12 +272,8 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 
 		autoRestart, err := prepareRestart()
 		if err != nil {
-			log.Printf("配置已保存，但准备自动启动失败：%v", err)
-			c.JSON(200, gin.H{
-				"success":        true,
-				"restartPending": true,
-				"message":        "配置已保存，但未能自动启动。可点击保存重试；仍失败时，请按当前部署方式停止后重新启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。",
-			})
+			log.Printf("配置已保存，但准备自动启动失败：%s", helpers.RedactSensitiveLog(err.Error()))
+			httpapi.Success(c, http.StatusOK, gin.H{"restartPending": true}, "配置已保存，但未能自动启动。可点击保存重试；仍失败时，请按当前部署方式停止后重新启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。", "自动启动准备失败")
 			return
 		}
 		message := "配置已保存，配置服务即将退出。请按当前部署方式重启服务；启动完成后，请查看启动日志中的初始化码，手动刷新当前页面，使用初始化码创建首个管理员。"
@@ -269,7 +282,7 @@ func newConfigRouter(resources fs.FS, prepareRestart func() (bool, error), exit 
 		}
 		restartPrepared = true
 		savedMessage = message
-		c.JSON(200, gin.H{"success": true, "message": message})
+		httpapi.Success(c, http.StatusOK, nil, message)
 		go exit()
 	})
 

@@ -816,8 +816,9 @@ const showEditDialog = async (channel: NotificationChannel) => {
 }
 
 const showSaveResult = (result: SettingsSaveResult, successMessage: string) => {
-  if (result.warnings.length) ElMessage.warning(result.warnings.join('；'))
-  else ElMessage.success(successMessage)
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || successMessage)
 }
 
 // 创建渠道
@@ -1026,8 +1027,8 @@ const updateChannel = async () => {
 const testChannel = async (channel: ChannelWithStatus) => {
   channel._testing = true
   try {
-    await testNotificationChannel(http, channel.id)
-    ElMessage.success('测试消息已发送，请检查设备')
+    const result = await testNotificationChannel(http, channel.id)
+    showSaveResult(result, '测试消息已发送，请检查设备')
   } catch (error: unknown) {
     reportError(error, '发送通知测试消息失败，请检查渠道配置或查看服务日志')
   } finally {

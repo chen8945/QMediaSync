@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -351,7 +352,7 @@ func TestAuthRequestErrorCodes(t *testing.T) {
 		{name: "会话不存在", mutation: "missing_session", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
 		{name: "会话用户不一致", mutation: "session_user", wantStatus: 401, wantCode: ErrorCodeSessionInvalid},
 		{name: "登录用户不存在", mutation: "missing_user", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
-		{name: "会话查询故障不标记具体原因", mutation: "database", wantStatus: 401},
+		{name: "会话查询故障属于内部错误", mutation: "database", wantStatus: 500, wantCode: "INTERNAL_ERROR"},
 		{name: "来源缺失", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
 		{name: "来源格式无效", origin: "null", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
 		{name: "代理改写域名", origin: "https://qms.example.com", host: "127.0.0.1", proto: "https", wantStatus: 403, wantCode: ErrorCodeRequestOriginInvalid},
@@ -365,9 +366,9 @@ func TestAuthRequestErrorCodes(t *testing.T) {
 		{name: "无效APIKey", mutation: "api_key", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
 		{name: "API Key 用户不存在", mutation: "api_key_missing_user", wantStatus: 401, wantCode: ErrorCodeAuthenticationInvalid},
 		{name: "API Key 豁免来源和CSRF", mutation: "valid_api_key", wantStatus: 200},
-		{name: "API Key 查询故障不标记具体原因", mutation: "api_key_db", wantStatus: 401},
-		{name: "API Key 用户查询故障不标记具体原因", mutation: "api_key_user_db", wantStatus: 401},
-		{name: "Cookie 用户查询故障不标记具体原因", mutation: "user_db", wantStatus: 401},
+		{name: "API Key 查询故障属于内部错误", mutation: "api_key_db", wantStatus: 500, wantCode: "INTERNAL_ERROR"},
+		{name: "API Key 用户查询故障属于内部错误", mutation: "api_key_user_db", wantStatus: 500, wantCode: "INTERNAL_ERROR"},
+		{name: "Cookie 用户查询故障属于内部错误", mutation: "user_db", wantStatus: 500, wantCode: "INTERNAL_ERROR"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -470,10 +471,31 @@ func TestAuthRequestErrorCodes(t *testing.T) {
 			} else if body["error_code"] != tc.wantCode {
 				t.Fatalf("错误码 = %v，want %s", body["error_code"], tc.wantCode)
 			}
-			if w.Code != http.StatusOK && (body["code"] != float64(BadRequest) || body["data"] != nil) {
-				t.Fatalf("错误响应必须保留 code=500 和 data=null：%s", w.Body.String())
+			if body["status"] != float64(w.Code) {
+				t.Fatalf("正文状态与 HTTP 不一致：%s", w.Body.String())
 			}
-			if w.Code == http.StatusOK && (body["code"] != float64(Success) || body["data"] != true) {
+			instance, _ := body["instance"].(string)
+			if w.Code != http.StatusOK && (instance == "" || body["data"] != nil) {
+				t.Fatalf("错误响应缺少诊断实例或改变失败数据：%s", w.Body.String())
+			}
+			if w.Code == http.StatusUnauthorized {
+				challenge := `QMediaSyncSession realm="QMediaSync"`
+				if apiKey != "" {
+					challenge = `QMediaSyncApiKey realm="QMediaSync"`
+				}
+				if w.Header().Get("WWW-Authenticate") != challenge {
+					t.Fatalf("认证 challenge 错误：%v", w.Header())
+				}
+			} else if w.Header().Get("WWW-Authenticate") != "" {
+				t.Fatalf("非认证拒绝不得声明凭据失效：%v", w.Header())
+			}
+			if w.Code != http.StatusOK && w.Header().Get("Cache-Control") != "no-store, private" {
+				t.Fatal("认证拒绝或内部错误不应被缓存")
+			}
+			if w.Code == http.StatusInternalServerError && hasClearedSessionCookies(w.Result().Cookies()) {
+				t.Fatal("数据库故障不应清除有效 Cookie")
+			}
+			if w.Code == http.StatusOK && body["data"] != true {
 				t.Fatalf("成功请求应执行凭据修改并保留成功响应：%s", w.Body.String())
 			}
 		})
@@ -492,17 +514,11 @@ func TestSessionSuccessOmitsRequestErrorCode(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			var body struct {
-				Code      APIResponseCode `json:"code"`
-				ErrorCode *string         `json:"error_code"`
-				Data      struct {
-					Authenticated bool `json:"authenticated"`
-				} `json:"data"`
-			}
+			var body httpapi.APIResponse[sessionActionResponseData]
 			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
 			}
-			if w.Code != 200 || body.Code != Success || body.ErrorCode != nil || body.Data.Authenticated != authenticated {
+			if w.Code != 200 || body.Status != w.Code || body.ErrorCode != "" || body.Instance != "" || body.Data.Authenticated != authenticated {
 				t.Fatalf("会话状态契约错误：HTTP=%d body=%s", w.Code, w.Body.String())
 			}
 		})

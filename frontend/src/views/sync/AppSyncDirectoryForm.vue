@@ -2189,7 +2189,9 @@ const handleSubmit = async () => {
         for (const warning of saved.warnings) {
           ElMessage.warning(warning)
         }
-        ElMessage.success(isEditMode.value ? '编辑同步目录成功' : '添加同步目录成功')
+        ElMessage.success(
+          saved.message?.trim() || (isEditMode.value ? '编辑同步目录成功' : '添加同步目录成功'),
+        )
         returnToDirectoryList()
       },
     )

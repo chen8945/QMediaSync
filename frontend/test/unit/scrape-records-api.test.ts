@@ -18,7 +18,7 @@ describe('刮削记录 API', () => {
   it('保留查询参数、搜索方式、重新识别载荷和专用超时', async () => {
     const adapter = vi.fn(async (config) => ({
       config,
-      data: { code: 200, message: '已处理', data: null },
+      data: { status: 200, message: '已处理', data: null },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -66,18 +66,19 @@ describe('刮削记录 API', () => {
     expect(getScrapeRecordsExportUrl([7, 2])).toBe('/api/scrape/records/export?ids=7,2')
   })
 
-  it('HTTP 200 业务失败时拒绝，并保留错误详情', async () => {
+  it('HTTP 500 请求失败时拒绝，并保留错误详情', async () => {
     const body = {
-      code: 500,
-      message: 'internal database password=secret',
-      error_code: 'RECORD_CONFLICT',
-      data: { field_errors: { id: 'invalid' } },
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
+      message: '测试拒绝原因',
+      error_code: 'INTERNAL_ERROR',
+      data: { failed_ids: [2] },
     }
     const http = axios.create({
       adapter: async (config) => ({
         config,
         data: body,
-        status: 200,
+        status: 500,
         statusText: 'OK',
         headers: {},
       }),
@@ -106,7 +107,13 @@ describe('刮削记录 API', () => {
           {},
           {
             config,
-            data: { code: 500, message: 'raw private text', error_code: errorCode, data: null },
+            data: {
+              instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+              status: 403,
+              message: 'raw private text',
+              error_code: errorCode,
+              data: null,
+            },
             status: 403,
             statusText: 'Forbidden',
             headers: {},
@@ -118,7 +125,7 @@ describe('刮削记录 API', () => {
     const parsed = parseHttpError(failure, scrapeRecordErrorOptions)
     expect(parsed.kind).toBe(kind)
     expect(parsed.message).toContain(message)
-    expect(parsed.diagnostics).toEqual({
+    expect(parsed.diagnostics).toMatchObject({
       method: 'DELETE',
       path: '/api/scrape/records',
       status: 403,
@@ -128,7 +135,7 @@ describe('刮削记录 API', () => {
 
   it('返回重新识别的成功消息', async () => {
     for (const data of [null, { name: '电影', year: 2024, tmdb_id: 550 }]) {
-      const body = { code: 200, message: '下次扫描会按新的名称和年份重新刮削', data }
+      const body = { status: 200, message: '测试反馈', warnings: ['测试警告'], data }
       const http = axios.create({
         adapter: async (config) => ({
           config,
@@ -140,7 +147,7 @@ describe('刮削记录 API', () => {
       })
       await expect(
         reidentifyScrapeRecord(http, { id: 7, tmdb_id: 550, season: -1, episode: -1 }),
-      ).resolves.toBe(body.message)
+      ).resolves.toEqual({ message: body.message, warnings: body.warnings })
     }
   })
 

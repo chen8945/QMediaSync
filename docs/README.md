@@ -21,7 +21,7 @@
 - [前端开发约定](engineering/frontend-development.md)：页面、组件与类型归属，HTTP 客户端、状态刷新、路由、响应式布局和交互反馈。
 - [仓库结构](engineering/repository-structure.md)：顶层目录和构建产物职责。
 - [请求校验约定](engineering/request-validation.md)：Request DTO、`Validate()`、绑定和前后端校验边界。
-- [注释规范](engineering/comment-guidelines.md)：Go、Vue、Swagger 和验证代码的注释边界。
+- [注释规范](engineering/comment-guidelines.md)：Go、Vue 和验证代码的注释边界。
 - [验证说明](engineering/verification.md)：改动类型到最小验证的映射与稳定验证规则。
 
 ## 运行维护
@@ -35,6 +35,7 @@
 
 ## 参考资料
 
+- [API 响应与请求错误](reference/api-response.md)：自有普通 JSON 包络、HTTP 状态、字段错误、应用警告和诊断关联。
 - [数据库 schema 与迁移](reference/database-schema.md)：表、字段、索引、时间策略、稳定存储值和迁移版本。
 - [刮削命名模板与其他类型 NFO](reference/scrape-rename-templates.md)：命名模板渲染与回退规则、其他类型的 NFO 兼容范围和番号取值顺序。
 - [账号授权与更换](reference/account-authorization.md)：账号关联、同来源校验、授权会话、QR/OAuth 传递、OpenList 凭据回写和原子落库契约。

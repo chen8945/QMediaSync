@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { QueueStatusSnapshot } from '@/utils/queueStatusUtils'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface UploadTask {
   id: string
@@ -61,7 +61,7 @@ export async function fetchUploadQueue(
 ): Promise<UploadQueueSnapshot> {
   return unwrapResponse(
     await http.get<APIResponse<UploadQueueSnapshot>>(queueURL, { params: query }),
-  )
+  ).data
 }
 
 export async function fetchUploadQueueStatus(
@@ -69,25 +69,27 @@ export async function fetchUploadQueueStatus(
 ): Promise<QueueStatusSnapshot | boolean> {
   return unwrapResponse(
     await http.get<APIResponse<QueueStatusSnapshot | boolean>>(`${queueURL}/status`),
+  ).data
+}
+
+export async function clearPendingUploadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/clear-pending`))
+}
+
+export async function clearCompletedUploadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${queueURL}/clear-success-failed`),
   )
 }
 
-export async function clearPendingUploadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/clear-pending`))
+export async function retryFailedUploadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/retry-failed`))
 }
 
-export async function clearCompletedUploadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/clear-success-failed`))
+export async function pauseUploadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/stop`))
 }
 
-export async function retryFailedUploadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/retry-failed`))
-}
-
-export async function pauseUploadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/stop`))
-}
-
-export async function resumeUploadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/start`))
+export async function resumeUploadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/start`))
 }

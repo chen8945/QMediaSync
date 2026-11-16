@@ -18,8 +18,9 @@ describe('auth bootstrap', () => {
   it('通过服务端会话恢复登录状态', async () => {
     const authStore = useAuthStore()
     const http = createHttp({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
         data: {
           authenticated: true,
           user: { id: '1', username: 'admin', role: 'admin' },
@@ -38,7 +39,7 @@ describe('auth bootstrap', () => {
 
   it('服务端返回匿名状态时静默进入匿名状态', async () => {
     const authStore = useAuthStore()
-    const http = createHttp({ data: { code: 200, data: { authenticated: false } } })
+    const http = createHttp({ status: 200, data: { status: 200, data: { authenticated: false } } })
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const restored = await authStore.bootstrapAuth(http as never)
@@ -70,7 +71,7 @@ describe('auth bootstrap', () => {
 
   it('并发启动只请求一次服务端会话', async () => {
     const authStore = useAuthStore()
-    const http = createHttp({ data: { code: 200, data: { authenticated: false } } })
+    const http = createHttp({ status: 200, data: { status: 200, data: { authenticated: false } } })
 
     await Promise.all([
       authStore.bootstrapAuth(http as never),

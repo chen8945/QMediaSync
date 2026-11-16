@@ -21,6 +21,22 @@ import (
 	"gorm.io/gorm"
 )
 
+var (
+	// ErrScrapeMediaAmbiguous 表示名称与年份匹配到多个候选媒体。
+	ErrScrapeMediaAmbiguous = errors.New("multiple matching media")
+	// ErrScrapeMediaNotFound 表示上游查询未找到匹配媒体。
+	ErrScrapeMediaNotFound = errors.New("matching media not found")
+)
+
+// ScrapeTMDBError 保留重新刮削的上游原因及调用时的凭据，供边界分类和安全诊断。
+type ScrapeTMDBError struct {
+	Cause   error
+	Secrets []string
+}
+
+func (e *ScrapeTMDBError) Error() string { return e.Cause.Error() }
+func (e *ScrapeTMDBError) Unwrap() error { return e.Cause }
+
 type ScrapeMediaStatus string
 
 const (
@@ -210,6 +226,14 @@ type ScrapeMediaFile struct {
 }
 
 func (sm *ScrapeMediaFile) Save() error {
+	err := sm.save()
+	if err != nil {
+		helpers.AppLogger.Errorf("保存待刮削的视频文件出错：%v", err)
+	}
+	return err
+}
+
+func (sm *ScrapeMediaFile) save() error {
 	// 转换字幕文件列表为 JSON 字符串
 	if len(sm.SubtitleFiles) > 0 {
 		sm.SubtitleFileJson = helpers.JsonString(sm.SubtitleFiles)
@@ -239,11 +263,7 @@ func (sm *ScrapeMediaFile) Save() error {
 		sm.SeasonFilesJson = helpers.JsonString(sm.SeasonFiles)
 	}
 	// 提交写入请求（同步）
-	err := db.Db.Save(sm).Error
-	if err != nil {
-		helpers.AppLogger.Errorf("保存待刮削的视频文件出错：%v", err)
-	}
-	return err
+	return db.Db.Save(sm).Error
 }
 
 func (sm *ScrapeMediaFile) DecodeJson() {
@@ -322,11 +342,18 @@ func (sm *ScrapeMediaFile) DecodeJson() {
 
 // 查询关联的数据
 func (sm *ScrapeMediaFile) QueryRelation() {
+	if err := sm.queryRelation(); err != nil {
+		helpers.AppLogger.Errorf("查询刮削关联数据失败：%v", err)
+	}
+}
+
+func (sm *ScrapeMediaFile) queryRelation() error {
+	var relationErr error
 	// 查询 Media 表
 	if sm.MediaId > 0 {
 		media, err := GetMediaById(sm.MediaId)
-		if err != nil {
-			helpers.AppLogger.Errorf("查询 Media 表失败：media_id=%d %v", sm.MediaId, err)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			relationErr = errors.Join(relationErr, err)
 		}
 		sm.Media = media
 	}
@@ -335,21 +362,22 @@ func (sm *ScrapeMediaFile) QueryRelation() {
 		if sm.MediaSeasonId > 0 {
 			// 查询季表
 			season, err := GetMediaSeasonById(sm.MediaSeasonId)
-			if err != nil {
-				helpers.AppLogger.Errorf("查询季表失败：season_id=%d %v", sm.MediaSeasonId, err)
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				relationErr = errors.Join(relationErr, err)
 			}
 			sm.MediaSeason = season
 		}
 		if sm.MediaEpisodeId > 0 {
 			// 查询集表
 			episode, err := GetMediaEpisodeById(sm.MediaEpisodeId)
-			if err != nil {
-				helpers.AppLogger.Errorf("查询集表失败：episode_id=%d %v", sm.MediaEpisodeId, err)
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				relationErr = errors.Join(relationErr, err)
 			}
 			sm.MediaEpisode = episode
 		}
 	}
 
+	return relationErr
 }
 
 // 状态改为失败
@@ -603,13 +631,13 @@ func (sm *ScrapeMediaFile) RemoveTmpFiles(task *DbUploadTask) {
 
 // 源文件不存在则标记为成功
 // 目标文件已存在则标记为成功
-func (sm *ScrapeMediaFile) FinishFromRenaming() {
+func (sm *ScrapeMediaFile) FinishFromRenaming() error {
 	if sm.Status != ScrapeMediaStatusRenaming && sm.Status != ScrapeMediaStatusScraped {
-		return
+		return nil
 	}
 	sm.Status = ScrapeMediaStatusRenamed
 	sm.RenameTime = time.Now().Unix()
-	sm.Save()
+	return sm.save()
 }
 
 func (sm *ScrapeMediaFile) isNewTemplateSyntax(template string) bool {
@@ -856,13 +884,18 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 		return err
 	}
 	defer tmdbClient.Close()
+	tmdbFailure := func(err error) error {
+		return &ScrapeTMDBError{Cause: err, Secrets: []string{settings.GetTmdbApiKey(), settings.GetTmdbAccessToken()}}
+	}
 	if sm.MediaType == MediaTypeTvShow {
 		if tmdbId > 0 {
 			// 使用 TMDB ID 直接查询详情
 			tvDetail, err := tmdbClient.GetTvDetail(ctx, tmdbId, settings.GetTmdbLanguage())
-			if err != nil || tvDetail == nil {
-				helpers.AppLogger.Errorf("使用 ID 查询 TMDB 剧集详情失败：%v", err)
-				return err
+			if err != nil {
+				return tmdbFailure(err)
+			}
+			if tvDetail == nil {
+				return ErrScrapeMediaNotFound
 			}
 			sm.Name = tvDetail.Name
 			sm.Year = helpers.ParseYearFromDate(tvDetail.FirstAirDate)
@@ -870,27 +903,26 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			// 剧集
 			tvSearch, err := tmdbClient.SearchTv(ctx, sm.Name, sm.Year, settings.GetTmdbLanguage(), true)
 			if err != nil {
-				helpers.AppLogger.Errorf("使用名称和年份查询 TMDB 剧集失败：%v", err)
-				return err
+				return tmdbFailure(err)
 			}
 			if len(tvSearch.Results) > 1 {
-				helpers.AppLogger.Errorf("通过名称 %s、年份 %d 查询到多条记录，请输入 TMDB ID 后重新识别", sm.Name, sm.Year)
-				return fmt.Errorf("通过名称 %s、年份 %d 查询到多条记录，请输入 TMDB ID 后重新识别", sm.Name, sm.Year)
+				return fmt.Errorf("%w：名称 %s，年份 %d", ErrScrapeMediaAmbiguous, sm.Name, sm.Year)
 			}
 			// 查询第一个
 			if len(tvSearch.Results) > 0 {
 				sm.TmdbId = tvSearch.Results[0].ID
 			} else {
-				helpers.AppLogger.Errorf("查询 TMDB 剧集失败，未找到匹配的剧集，名称：%s，年份：%d", sm.Name, sm.Year)
-				return fmt.Errorf("查询 TMDB 剧集失败，未找到匹配的剧集，名称：%s，年份：%d", sm.Name, sm.Year)
+				return fmt.Errorf("%w：名称 %s，年份 %d", ErrScrapeMediaNotFound, sm.Name, sm.Year)
 			}
 		}
 	} else {
 		if sm.TmdbId > 0 {
 			movieDetail, merror := tmdbClient.GetMovieDetail(ctx, sm.TmdbId, settings.GetTmdbLanguage())
-			if merror != nil || movieDetail == nil {
-				helpers.AppLogger.Errorf("使用 ID 查询 TMDB 电影详情失败：%v", merror)
-				return merror
+			if merror != nil {
+				return tmdbFailure(merror)
+			}
+			if movieDetail == nil {
+				return ErrScrapeMediaNotFound
 			}
 			sm.Name = movieDetail.Title
 			sm.Year = helpers.ParseYearFromDate(movieDetail.ReleaseDate)
@@ -898,19 +930,16 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			// 电影
 			movieSearch, err := tmdbClient.SearchMovie(ctx, sm.Name, sm.Year, settings.GetTmdbLanguage(), true, false)
 			if err != nil {
-				helpers.AppLogger.Errorf("查询 TMDB 电影失败：%v", err)
-				return err
+				return tmdbFailure(err)
 			}
 			if len(movieSearch.Results) > 1 {
-				helpers.AppLogger.Errorf("通过名称 %s、年份 %d 查询到多条记录，请输入 TMDB ID 后重新识别", sm.Name, sm.Year)
-				return fmt.Errorf("通过名称 %s、年份 %d 查询到多条记录，请输入 TMDB ID 后重新识别", sm.Name, sm.Year)
+				return fmt.Errorf("%w：名称 %s，年份 %d", ErrScrapeMediaAmbiguous, sm.Name, sm.Year)
 			}
 			// 查询第一个
 			if len(movieSearch.Results) > 0 {
 				sm.TmdbId = movieSearch.Results[0].ID
 			} else {
-				helpers.AppLogger.Errorf("查询 TMDB 电影失败，未找到匹配的电影，名称：%s，年份：%d", sm.Name, sm.Year)
-				return fmt.Errorf("查询 TMDB 电影失败，未找到匹配的电影，名称：%s，年份：%d", sm.Name, sm.Year)
+				return fmt.Errorf("%w：名称 %s，年份 %d", ErrScrapeMediaNotFound, sm.Name, sm.Year)
 			}
 		}
 	}
@@ -931,19 +960,23 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			updateData["media_episode_id"] = 0
 			updateData["failed_reason"] = ""
 			updateData["media_id"] = 0
-			db.Db.Where("id = ?", mediaId).Delete(&Media{})
-			db.Db.Where("media_id = ?", mediaId).Delete(&MediaSeason{})
-			db.Db.Where("media_id = ?", mediaId).Delete(&MediaEpisode{})
+			if err := db.Db.Where("id = ?", mediaId).Delete(&Media{}).Error; err != nil {
+				return err
+			}
+			if err := db.Db.Where("media_id = ?", mediaId).Delete(&MediaSeason{}).Error; err != nil {
+				return err
+			}
+			if err := db.Db.Where("media_id = ?", mediaId).Delete(&MediaEpisode{}).Error; err != nil {
+				return err
+			}
 			// if sm.PathId == "" {
 			edb := db.Db.Model(&ScrapeMediaFile{}).Where("tvshow_path_id = ? and batch_no = ?", sm.TvshowPathId, sm.BatchNo).Updates(updateData)
 			if err := edb.Error; err != nil {
-				helpers.AppLogger.Errorf("重新刮削时更新电视剧内所有剧集失败：%v", err)
 				return err
 			} else {
 				helpers.AppLogger.Infof("重新刮削时更新电视剧内所有剧集成功, 影响 %d 行 %+v", edb.RowsAffected, updateData)
 			}
 			if err := db.Db.Model(ScrapeMediaFile{}).Where("id = ?", sm.ID).Updates(updateData).Error; err != nil {
-				helpers.AppLogger.Errorf("重新刮削时更新剧集失败：%v", err)
 				return err
 			} else {
 				helpers.AppLogger.Infof("重新刮削时更新剧集成功, %d => %+v", sm.ID, updateData)
@@ -960,8 +993,12 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			if season > 0 {
 				tvSeason, err := tmdbClient.GetTvSeasonDetail(ctx, sm.TmdbId, season, settings.GetTmdbLanguage())
 				if err != nil || tvSeason == nil {
-					serr := fmt.Errorf("查询 TMDB 剧集第 %d 季失败：%v", season, err)
-					helpers.AppLogger.Errorf("%v", serr)
+					if err == nil {
+						err = ErrScrapeMediaNotFound
+					} else {
+						err = tmdbFailure(err)
+					}
+					serr := fmt.Errorf("查询 TMDB 剧集第 %d 季失败：%w", season, err)
 					return serr
 				} else {
 					sm.SeasonNumber = season
@@ -971,8 +1008,12 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 				if episode > 0 {
 					tvEpisode, err := tmdbClient.GetTvEpisodeDetail(ctx, sm.TmdbId, season, episode, settings.GetTmdbLanguage())
 					if err != nil || tvEpisode == nil {
-						serr := fmt.Errorf("查询 TMDB 剧集第 %d 季第 %d 集失败：%v", season, episode, err)
-						helpers.AppLogger.Errorf("%v", serr)
+						if err == nil {
+							err = ErrScrapeMediaNotFound
+						} else {
+							err = tmdbFailure(err)
+						}
+						serr := fmt.Errorf("查询 TMDB 剧集第 %d 季第 %d 集失败：%w", season, episode, err)
 						return serr
 					} else {
 						sm.EpisodeNumber = episode
@@ -981,7 +1022,9 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 				}
 				// 保存
 				if hasEdit {
-					sm.Save()
+					if err := sm.save(); err != nil {
+						return err
+					}
 				}
 			}
 		} else {
@@ -990,13 +1033,19 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			sm.Status = ScrapeMediaStatusScanned
 			sm.FailedReason = ""
 			sm.MediaId = 0
-			db.Db.Where("id = ?", mediaId).Delete(&Media{})
-			sm.Save()
+			if err := db.Db.Where("id = ?", mediaId).Delete(&Media{}).Error; err != nil {
+				return err
+			}
+			if err := sm.save(); err != nil {
+				return err
+			}
 		}
 	}
 	if oldStatus == ScrapeMediaStatusRenamed {
 		sm.Status = ScrapeMediaStatusRollbacking
-		sm.Save()
+		if err := sm.save(); err != nil {
+			return err
+		}
 		if sm.MediaType == MediaTypeTvShow {
 			// 将所有关联的 ScrapeMediaFile 设置为回滚中
 			updateData := make(map[string]any)
@@ -1007,12 +1056,10 @@ func (sm *ScrapeMediaFile) ReScrape(ctx context.Context, name string, year int, 
 			updateData["failed_reason"] = ""
 			if sm.TvshowPathId != "" {
 				if err := db.Db.Model(&ScrapeMediaFile{}).Where("tvshow_path_id = ? and batch_no = ?", sm.TvshowPathId, sm.BatchNo).Updates(updateData).Error; err != nil {
-					helpers.AppLogger.Errorf("重新刮削时更新同一电视剧路径下的其他剧集失败：%v", err)
 					return err
 				}
 			} else {
 				if err := db.Db.Model(&ScrapeMediaFile{}).Where("path_id = ? and batch_no = ?", sm.PathId, sm.BatchNo).Updates(updateData).Error; err != nil {
-					helpers.AppLogger.Errorf("重新刮削时更新同一目录下的其他剧集失败：%v", err)
 					return err
 				}
 			}
@@ -1244,11 +1291,11 @@ func GetScrapeMediaByVideoFileId(videoFileId string) (*ScrapeMediaFile, error) {
 // 按 ID 倒序
 // 先查询总数
 // 再查询列表
-func GetScrapeMediaFiles(page int, pageSize int, mediaType string, status string, name string) (int64, []*ScrapeMediaFile) {
+func GetScrapeMediaFiles(ctx context.Context, page int, pageSize int, mediaType string, status string, name string) (int64, []*ScrapeMediaFile, error) {
 	offset := (page - 1) * pageSize
 	var scrapeMediaFiles []*ScrapeMediaFile
-	tx := db.Db.Order("id desc").Offset(offset).Limit(pageSize).Order("id DESC")
-	txc := db.Db.Model(&ScrapeMediaFile{})
+	tx := db.Db.WithContext(ctx).Order("id desc").Offset(offset).Limit(pageSize).Order("id DESC")
+	txc := db.Db.WithContext(ctx).Model(&ScrapeMediaFile{})
 	condition := make(map[string]any)
 	if mediaType != "" {
 		condition["media_type"] = mediaType
@@ -1266,18 +1313,16 @@ func GetScrapeMediaFiles(page int, pageSize int, mediaType string, status string
 	}
 	err := tx.Find(&scrapeMediaFiles).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("查询 ScrapeMedia 记录失败：%v", err)
-		return 0, nil
+		return 0, nil, err
 	}
 	var total int64
 	err = txc.Count(&total).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("查询 ScrapeMedia 总数失败：%v", err)
-		return 0, nil
+		return 0, nil, err
 	}
 	// helpers.AppLogger.Infof("查询 ScrapeMedia 总数：%d，当前页 %d，offset %d，数量：%d", total, page, offset, len(scrapeMediaFiles))
-	scrapeMediaFiles = DecodeScrapeMediaFile(scrapeMediaFiles)
-	return total, scrapeMediaFiles
+	scrapeMediaFiles, err = decodeScrapeMediaFiles(ctx, scrapeMediaFiles)
+	return total, scrapeMediaFiles, err
 }
 
 // 查询所有待刮削或者待整理的记录，不分页
@@ -1379,17 +1424,24 @@ func GetScrapeMediaFileIdBySeasonId(seasonMediaId uint) []uint {
 	return episodeIds
 }
 
-func GetScrapeMediaFilesByIds(ids []uint) []*ScrapeMediaFile {
+func GetScrapeMediaFilesByIds(ctx context.Context, ids []uint) ([]*ScrapeMediaFile, error) {
 	var scrapeMediaFiles []*ScrapeMediaFile
-	if err := db.Db.Where("id IN ?", ids).Order("id desc").Find(&scrapeMediaFiles).Error; err != nil {
-		helpers.AppLogger.Errorf("查询 ScrapeMedia 记录失败：%v", err)
-		return nil
+	if err := db.Db.WithContext(ctx).Where("id IN ?", ids).Order("id desc").Find(&scrapeMediaFiles).Error; err != nil {
+		return nil, err
 	}
-	scrapeMediaFiles = DecodeScrapeMediaFile(scrapeMediaFiles)
-	return scrapeMediaFiles
+	return decodeScrapeMediaFiles(ctx, scrapeMediaFiles)
 }
 
 func DecodeScrapeMediaFile(scrapeMediaFiles []*ScrapeMediaFile) []*ScrapeMediaFile {
+	files, err := decodeScrapeMediaFiles(context.Background(), scrapeMediaFiles)
+	if err != nil {
+		helpers.AppLogger.Errorf("查询刮削关联数据失败：%v", err)
+	}
+	return files
+}
+
+func decodeScrapeMediaFiles(ctx context.Context, scrapeMediaFiles []*ScrapeMediaFile) ([]*ScrapeMediaFile, error) {
+	var relationErr error
 	mediaIdList := make([]uint, 0)
 	mediaSeasonIdList := make([]uint, 0)
 	mediaEpisodeIdList := make([]uint, 0)
@@ -1411,18 +1463,18 @@ func DecodeScrapeMediaFile(scrapeMediaFiles []*ScrapeMediaFile) []*ScrapeMediaFi
 	var mediaSeasons []*MediaSeason
 	var mediaEpisodes []*MediaEpisode
 	if len(mediaIdList) > 0 {
-		if err := db.Db.Where("id IN ?", mediaIdList).Find(&medias).Error; err != nil {
-			helpers.AppLogger.Errorf("查询 Media 失败：%v", err)
+		if err := db.Db.WithContext(ctx).Where("id IN ?", mediaIdList).Find(&medias).Error; err != nil {
+			relationErr = errors.Join(relationErr, err)
 		}
 	}
 	if len(mediaSeasonIdList) > 0 {
-		if err := db.Db.Where("id IN ?", mediaSeasonIdList).Find(&mediaSeasons).Error; err != nil {
-			helpers.AppLogger.Errorf("查询 MediaSeason 失败：%v", err)
+		if err := db.Db.WithContext(ctx).Where("id IN ?", mediaSeasonIdList).Find(&mediaSeasons).Error; err != nil {
+			relationErr = errors.Join(relationErr, err)
 		}
 	}
 	if len(mediaEpisodeIdList) > 0 {
-		if err := db.Db.Where("id IN ?", mediaEpisodeIdList).Find(&mediaEpisodes).Error; err != nil {
-			helpers.AppLogger.Errorf("查询 MediaEpisode 失败：%v", err)
+		if err := db.Db.WithContext(ctx).Where("id IN ?", mediaEpisodeIdList).Find(&mediaEpisodes).Error; err != nil {
+			relationErr = errors.Join(relationErr, err)
 		}
 	}
 	// 赋值给 mediaFiles
@@ -1452,20 +1504,30 @@ func DecodeScrapeMediaFile(scrapeMediaFiles []*ScrapeMediaFile) []*ScrapeMediaFi
 			}
 		}
 	}
-	return scrapeMediaFiles
+	return scrapeMediaFiles, relationErr
 }
 
 // 根据 ID 查询 ScrapeMediaFile
 func GetScrapeMediaFileById(id uint) *ScrapeMediaFile {
-	var scrapeMediaFile ScrapeMediaFile
-	if err := db.Db.Where("id = ?", id).First(&scrapeMediaFile).Error; err != nil {
+	media, err := ReadScrapeMediaFile(context.Background(), id)
+	if err != nil {
 		helpers.AppLogger.Errorf("查询 ScrapeMedia 记录失败：%v", err)
-		return nil
+	}
+	return media
+}
+
+// ReadScrapeMediaFile 区分记录缺失与主查询、关联查询故障。
+func ReadScrapeMediaFile(ctx context.Context, id uint) (*ScrapeMediaFile, error) {
+	var scrapeMediaFile ScrapeMediaFile
+	if err := db.Db.WithContext(ctx).Where("id = ?", id).First(&scrapeMediaFile).Error; err != nil {
+		return nil, err
 	}
 	scrapeMediaFile.DecodeJson()
-	// 查询关联的数据
-	scrapeMediaFile.QueryRelation()
-	return &scrapeMediaFile
+	// 查询关联的数据，已删除的关联可为空，数据库故障必须向调用方传播。
+	if err := scrapeMediaFile.queryRelation(); err != nil {
+		return &scrapeMediaFile, err
+	}
+	return &scrapeMediaFile, nil
 }
 
 func CheckExistsFileIdAndName(fileId string, scrapePathId uint) bool {
@@ -1506,7 +1568,6 @@ func ClearFailedScrapeRecords(ids []uint) error {
 	var failedScrapeMediaFiles []*ScrapeMediaFile
 	if len(ids) == 0 {
 		if err := db.Db.Where("status = ?", ScrapeMediaStatusScrapeFailed).Find(&failedScrapeMediaFiles).Error; err != nil {
-			helpers.AppLogger.Errorf("查询所有失败的记录失败：%v", err)
 			return err
 		}
 	} else {
@@ -1525,22 +1586,18 @@ func ClearFailedScrapeRecords(ids []uint) error {
 	}
 	err := db.Db.Where("id IN ?", idArray).Delete(&ScrapeMediaFile{}).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("删除刮削记录失败：%v", err)
 		return err
 	}
 	// 删除所有 Media
 	if len(mediaIdArray) > 0 {
 		if err := db.Db.Where("id IN ?", mediaIdArray).Delete(&Media{}).Error; err != nil {
-			helpers.AppLogger.Errorf("删除 Media 失败：%v", err)
 			return err
 		}
 		// 删除所有 MediaSeason 和 MediaEpisode
 		if err := db.Db.Where("media_id IN ?", mediaIdArray).Delete(&MediaSeason{}).Error; err != nil {
-			helpers.AppLogger.Errorf("删除 MediaSeason 失败：%v", err)
 			return err
 		}
 		if err := db.Db.Where("media_id IN ?", mediaIdArray).Delete(&MediaEpisode{}).Error; err != nil {
-			helpers.AppLogger.Errorf("删除 MediaEpisode 失败：%v", err)
 			return err
 		}
 	}
@@ -1554,22 +1611,25 @@ func RenameFailedScrapeRecords(ids []uint) error {
 	updateData["failed_reason"] = ""
 	err := db.Db.Model(&ScrapeMediaFile{}).Where("id IN ?", ids).Updates(updateData).Error
 	if err != nil {
-		helpers.AppLogger.Errorf("将所有失败的记录标记为待整理状态失败：%v", err)
+		return err
 	}
 	// 查询所有 scrape_media_file
 	var scrapeMediaFiles []*ScrapeMediaFile
 	if err := db.Db.Where("id IN ?", ids).Find(&scrapeMediaFiles).Error; err != nil {
-		helpers.AppLogger.Errorf("查询所有失败的记录失败：%v", err)
 		return err
 	}
 	// 将所选记录对应的 Media 或 MediaEpisode 标记为待整理
 	for _, sm := range scrapeMediaFiles {
 		if sm.MediaEpisodeId > 0 {
-			db.Db.Model(&MediaEpisode{}).Where("id = ?", sm.MediaEpisodeId).Update("status", MediaStatusUnScraped)
+			if err := db.Db.Model(&MediaEpisode{}).Where("id = ?", sm.MediaEpisodeId).Update("status", MediaStatusUnScraped).Error; err != nil {
+				return err
+			}
 			continue
 		}
 		if sm.MediaId > 0 && sm.MediaType != MediaTypeTvShow {
-			db.Db.Model(&Media{}).Where("id = ?", sm.MediaId).Update("status", MediaStatusUnScraped)
+			if err := db.Db.Model(&Media{}).Where("id = ?", sm.MediaId).Update("status", MediaStatusUnScraped).Error; err != nil {
+				return err
+			}
 		}
 	}
 	helpers.AppLogger.Infof("将所有失败的记录标记为待整理状态成功")
@@ -1602,8 +1662,7 @@ func TruncateAllScrapeRecords() error {
 
 	for _, tableName := range tables {
 		if err := db.Db.Exec(fmt.Sprintf("DELETE FROM %s", tableName)).Error; err != nil {
-			helpers.AppLogger.Errorf("清空表 %s 失败：%v", tableName, err)
-			return fmt.Errorf("清空表 %s 失败：%v", tableName, err)
+			return fmt.Errorf("清空表 %s 失败：%w", tableName, err)
 		}
 		helpers.AppLogger.Infof("清空表 %s 成功", tableName)
 	}

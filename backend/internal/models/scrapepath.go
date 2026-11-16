@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -202,11 +203,12 @@ func (m *ScrapePath) Save() error {
 	} else {
 		// 先读取旧数据
 		isUpdateCategory := false
-		oldScrapePath := GetScrapePathByID(m.ID)
-		if oldScrapePath != nil {
-			if oldScrapePath.DestPathId != m.DestPathId {
-				isUpdateCategory = true
-			}
+		oldScrapePath, err := ReadScrapePath(context.Background(), m.ID)
+		if err != nil {
+			return err
+		}
+		if oldScrapePath.DestPathId != m.DestPathId {
+			isUpdateCategory = true
 		}
 		// 特定情况下，只能改小，不能改大
 		helpers.AppLogger.Infof("旧最大线程数：%d", oldScrapePath.MaxThreads)
@@ -256,7 +258,7 @@ func (m *ScrapePath) Save() error {
 		if oldScrapePath.ScrapeType != ScrapeTypeOnly && m.ScrapeType == ScrapeTypeOnly {
 			updates["dest_path"] = m.SourcePath
 		}
-		err := db.Db.Model(&ScrapePath{}).Where("id = ?", m.ID).Updates(updates).Error
+		err = db.Db.Model(&ScrapePath{}).Where("id = ?", m.ID).Updates(updates).Error
 		if err != nil {
 			helpers.AppLogger.Errorf("更新刮削目录失败：%v", err)
 			return err
@@ -938,7 +940,7 @@ func (sp *ScrapePath) Decode() error {
 	if sp.VideoExt != "" {
 		err := json.Unmarshal([]byte(sp.VideoExt), &sp.VideoExtList)
 		if err != nil {
-			return fmt.Errorf("转换视频文件扩展名列表失败：%v", err)
+			return fmt.Errorf("转换视频文件扩展名列表失败：%w", err)
 		}
 	} else {
 		sp.VideoExtList = helpers.GlobalConfig.Strm.VideoExt
@@ -947,7 +949,7 @@ func (sp *ScrapePath) Decode() error {
 	if sp.DeletedKeyword != "" {
 		err := json.Unmarshal([]byte(sp.DeletedKeyword), &sp.DeleteKeyword)
 		if err != nil {
-			return fmt.Errorf("转换要删除的关键词列表失败：%v", err)
+			return fmt.Errorf("转换要删除的关键词列表失败：%w", err)
 		}
 	} else {
 		sp.DeleteKeyword = []string{}
@@ -963,70 +965,68 @@ func GetScrapePathCategoryById(id uint) *ScrapePathCategory {
 	return &spc
 }
 
-// 查询刮削目录列表，不需要分页
-func GetScrapePathes(sourceType string) []*ScrapePath {
-	var scrapePathes []*ScrapePath
-	if sourceType == "" {
-		db.Db.Model(&ScrapePath{}).Order("id DESC").Find(&scrapePathes)
-	} else {
-		db.Db.Model(&ScrapePath{}).Where("source_type = ?", sourceType).Order("id DESC").Find(&scrapePathes)
+// ReadScrapePaths 查询刮削目录列表，并保留数据库与存储数据解码错误。
+func ReadScrapePaths(ctx context.Context, sourceType string) ([]*ScrapePath, error) {
+	var scrapePaths []*ScrapePath
+	query := db.Db.WithContext(ctx).Model(&ScrapePath{}).Order("id DESC")
+	if sourceType != "" {
+		query = query.Where("source_type = ?", sourceType)
 	}
-	if len(scrapePathes) > 0 {
-		// 将 video_ext 转为字符串数组
-		for _, scrapePath := range scrapePathes {
-			if scrapePath.VideoExt != "" {
-				err := json.Unmarshal([]byte(scrapePath.VideoExt), &scrapePath.VideoExtList)
-				if err != nil {
-					helpers.AppLogger.Errorf("转换视频文件扩展名列表失败：%v", err)
-				}
-			} else {
-				scrapePath.VideoExtList = []string{}
+	if err := query.Find(&scrapePaths).Error; err != nil {
+		return nil, err
+	}
+	var decodeErr error
+	for _, scrapePath := range scrapePaths {
+		// 列表保留未设置扩展名时的空数组；详情使用全局默认值。
+		scrapePath.VideoExtList = []string{}
+		if scrapePath.VideoExt != "" {
+			if err := json.Unmarshal([]byte(scrapePath.VideoExt), &scrapePath.VideoExtList); err != nil {
+				decodeErr = errors.Join(decodeErr, fmt.Errorf("转换视频文件扩展名列表失败：%w", err))
 			}
-			// 将 deleted_keyword 转为字符串数组
-			if scrapePath.DeletedKeyword != "" {
-				err := json.Unmarshal([]byte(scrapePath.DeletedKeyword), &scrapePath.DeleteKeyword)
-				if err != nil {
-					helpers.AppLogger.Errorf("转换要删除的关键词列表失败：%v", err)
-				}
-			} else {
-				scrapePath.DeleteKeyword = []string{}
+		}
+		scrapePath.DeleteKeyword = []string{}
+		if scrapePath.DeletedKeyword != "" {
+			if err := json.Unmarshal([]byte(scrapePath.DeletedKeyword), &scrapePath.DeleteKeyword); err != nil {
+				decodeErr = errors.Join(decodeErr, fmt.Errorf("转换要删除的关键词列表失败：%w", err))
 			}
 		}
 	}
-	return scrapePathes
+	return scrapePaths, decodeErr
 }
 
-// 查询刮削目录详情
-func GetScrapePathByID(id uint) *ScrapePath {
-	var scrapePath ScrapePath
-	err := db.Db.Model(&ScrapePath{}).Where("id = ?", id).First(&scrapePath).Error
-	if err == nil {
-		// 转换视频文件扩展名列表为 JSON 字符串
-		if scrapePath.VideoExt != "" {
-			err := json.Unmarshal([]byte(scrapePath.VideoExt), &scrapePath.VideoExtList)
-			if err != nil {
-				helpers.AppLogger.Errorf("转换视频文件扩展名列表失败：%v", err)
-			}
-		} else {
-			scrapePath.VideoExtList = []string{}
+// 查询刮削目录列表，不需要分页。
+func GetScrapePathes(sourceType string) []*ScrapePath {
+	scrapePaths, err := ReadScrapePaths(context.Background(), sourceType)
+	if err != nil {
+		if helpers.AppLogger != nil {
+			helpers.AppLogger.Errorf("读取刮削目录列表失败：%v", err)
 		}
-		// 将 deleted_keyword 转为字符串数组
-		if scrapePath.DeletedKeyword != "" {
-			err := json.Unmarshal([]byte(scrapePath.DeletedKeyword), &scrapePath.DeleteKeyword)
-			if err != nil {
-				helpers.AppLogger.Errorf("转换要删除的关键词列表失败：%v", err)
-			}
-		} else {
-			scrapePath.DeleteKeyword = []string{}
-		}
-
 	}
-	// 解码 JSON
+	return scrapePaths
+}
+
+// ReadScrapePath 查询刮削目录详情；不存在、数据库与解码错误由调用方区分。
+func ReadScrapePath(ctx context.Context, id uint) (*ScrapePath, error) {
+	var scrapePath ScrapePath
+	if err := db.Db.WithContext(ctx).Where("id = ?", id).First(&scrapePath).Error; err != nil {
+		return nil, err
+	}
 	if err := scrapePath.Decode(); err != nil {
-		helpers.AppLogger.Errorf("解码刮削目录失败：%v", err)
+		return nil, err
+	}
+	return &scrapePath, nil
+}
+
+// 查询刮削目录详情。
+func GetScrapePathByID(id uint) *ScrapePath {
+	scrapePath, err := ReadScrapePath(context.Background(), id)
+	if err != nil {
+		if helpers.AppLogger != nil {
+			helpers.AppLogger.Errorf("读取刮削目录失败：%v", err)
+		}
 		return nil
 	}
-	return &scrapePath
+	return scrapePath
 }
 
 // 删除刮削目录

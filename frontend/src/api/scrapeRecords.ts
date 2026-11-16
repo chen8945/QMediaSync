@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { ParseHttpErrorOptions } from '@/http/errors'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface ScrapeRecord {
   id: number
@@ -96,7 +96,7 @@ export async function fetchScrapeRecords(
 ): Promise<ScrapeRecordsPage> {
   return unwrapResponse(
     await http.get<APIResponse<ScrapeRecordsPage>>(`${SERVER_URL}/scrape/records`, { params }),
-  )
+  ).data
 }
 
 export async function searchScrapeTmdb(
@@ -108,44 +108,58 @@ export async function searchScrapeTmdb(
       params,
       timeout: 30000,
     }),
-  )
+  ).data
 }
 
 export async function reidentifyScrapeRecord(
   http: AxiosInstance,
   payload: ReidentifyScrapeRecordPayload,
-): Promise<string> {
+): Promise<SettingsSaveResult> {
   const response = await http.post<APIResponse<unknown>>(
     `${SERVER_URL}/scrape/re-scrape`,
     payload,
     { timeout: 60000 },
   )
-  unwrapResponse(response)
-  return response.data.message
+  return getSettingsSaveResult(response)
 }
 
-export async function deleteScrapeRecords(http: AxiosInstance, ids: number[]): Promise<void> {
-  unwrapResponse(
+export async function deleteScrapeRecords(
+  http: AxiosInstance,
+  ids: number[],
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.delete<APIResponse<null>>(`${SERVER_URL}/scrape/records?ids=${ids.join(',')}`),
   )
 }
 
-export async function renameFailedScrapeRecords(http: AxiosInstance, ids: number[]): Promise<void> {
-  unwrapResponse(
+export async function renameFailedScrapeRecords(
+  http: AxiosInstance,
+  ids: number[],
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/rename-failed?ids=${ids.join(',')}`),
   )
 }
 
-export async function clearFailedScrapeRecords(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/clear-failed`))
+export async function clearFailedScrapeRecords(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/clear-failed`),
+  )
 }
 
-export async function truncateScrapeRecords(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/truncate-all`))
+export async function truncateScrapeRecords(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/truncate-all`),
+  )
 }
 
-export async function finishScrapeRecord(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/finish`, { id }))
+export async function finishScrapeRecord(
+  http: AxiosInstance,
+  id: number,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/finish`, { id }),
+  )
 }
 
 export function getScrapeRecordsExportUrl(ids: number[]): string {

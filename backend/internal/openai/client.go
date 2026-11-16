@@ -82,7 +82,9 @@ type RequestConfig struct {
 }
 
 type OpenAIError struct {
-	Code    int    `json:"code"`
+	Error struct {
+		Message string `json:"message"`
+	} `json:"error"`
 	Message string `json:"message"`
 }
 
@@ -183,12 +185,17 @@ func (c *Client) CreateChatCompletion(ctx context.Context, message []Message, op
 
 	// 检查响应是否成功
 	if !response.IsStatusSuccess() {
-		fmt.Printf("OpenAI API 错误：状态码 %d，响应体：%s", response.StatusCode(), response.String())
 		var openAIError OpenAIError
-		if err := json.Unmarshal(response.Bytes(), &openAIError); err != nil {
-			return nil, fmt.Errorf("%v", err)
+		if err := json.Unmarshal(response.Bytes(), &openAIError); err == nil {
+			message := openAIError.Error.Message
+			if strings.TrimSpace(message) == "" {
+				message = openAIError.Message
+			}
+			if strings.TrimSpace(message) != "" {
+				return nil, fmt.Errorf("%s", message)
+			}
 		}
-		return nil, fmt.Errorf("%s", openAIError.Message)
+		return nil, fmt.Errorf("OpenAI API 请求失败（HTTP %d）", response.StatusCode())
 	}
 	// helpers.AppLogger.Infof("OpenAI API response: %+v", resp)
 	return &resp, nil

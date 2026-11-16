@@ -1,7 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface ApiKey {
   id: number
@@ -25,11 +25,15 @@ export const apiKeyPublicMessages: Readonly<Record<string, string>> = {
 
 export async function fetchApiKeys(http: AxiosInstance): Promise<ApiKey[]> {
   return (
-    unwrapResponse(await http.get<APIResponse<ApiKey[] | null>>(`${SERVER_URL}/api-keys`)) ?? []
+    unwrapResponse(await http.get<APIResponse<ApiKey[] | null>>(`${SERVER_URL}/api-keys`)).data ??
+    []
   )
 }
 
-export async function createApiKey(http: AxiosInstance, name: string): Promise<CreatedApiKey> {
+export async function createApiKey(
+  http: AxiosInstance,
+  name: string,
+): Promise<SettingsSaveResult & { data: CreatedApiKey }> {
   return unwrapResponse(
     await http.post<APIResponse<CreatedApiKey>>(`${SERVER_URL}/api-keys`, { name }),
   )
@@ -39,14 +43,14 @@ export async function updateApiKeyStatus(
   http: AxiosInstance,
   id: number,
   isActive: boolean,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.put<APIResponse<null>>(`${SERVER_URL}/api-keys/${id}/status`, {
       is_active: isActive,
     }),
   )
 }
 
-export async function deleteApiKey(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.delete<APIResponse<null>>(`${SERVER_URL}/api-keys/${id}`))
+export async function deleteApiKey(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.delete<APIResponse<null>>(`${SERVER_URL}/api-keys/${id}`))
 }

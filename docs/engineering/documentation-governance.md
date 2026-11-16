@@ -134,6 +134,7 @@ QMediaSync 当前应优先建立或强化以下契约：
 | --- | --- |
 | AI 工具兼容入口 | `AGENTS.md`、`CLAUDE.md` |
 | 完整 AI 协作规则 | `docs/engineering/ai-assistant.md` |
+| 自有普通 JSON 响应与请求错误 | `docs/reference/api-response.md` |
 | 注释和验证规则 | `docs/engineering/comment-guidelines.md`、`docs/engineering/verification.md` |
 | 跨模块行为与安全契约 | `docs/architecture/` |
 | 开发方式、前端实现、目录和请求校验 | `docs/engineering/` |

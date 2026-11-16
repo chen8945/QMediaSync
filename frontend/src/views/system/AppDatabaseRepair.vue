@@ -12,8 +12,10 @@ const loading = ref(false)
 const repairDatabase = async () => {
   try {
     loading.value = true
-    await requestDatabaseRepair(http)
-    ElMessage.success('数据库修复成功')
+    const result = await requestDatabaseRepair(http)
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || '数据库修复成功')
   } catch (error) {
     notifyHttpError(error, '数据库修复失败：', {
       fallbackMessage: '数据库修复失败',

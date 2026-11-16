@@ -1,142 +1,79 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // GetMovieGenre 获取电影分类
-// @Summary 获取电影分类
-// @Description 获取 TMDB 电影分类列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/movie-genre [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetMovieGenre(c *gin.Context) {
 	movieGenre := helpers.MovieGenres
-	c.JSON(http.StatusOK, APIResponse[[]helpers.Genre]{Code: Success, Message: "", Data: movieGenre})
+	httpapi.Success(c, http.StatusOK, movieGenre, "")
 }
 
 // GetTvshowGenre 获取电视剧分类
-// @Summary 获取电视剧分类
-// @Description 获取 TMDB 电视剧分类列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tvshow-genre [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetTvshowGenre(c *gin.Context) {
 	tvshowGenre := helpers.TvshowGenres
-	c.JSON(http.StatusOK, APIResponse[[]helpers.Genre]{Code: Success, Message: "", Data: tvshowGenre})
+	httpapi.Success(c, http.StatusOK, tvshowGenre, "")
 }
 
 // GetLanguage 获取语言列表
-// @Summary 获取语言列表
-// @Description 获取所有支持的语言列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/language [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetLanguage(c *gin.Context) {
 	language := helpers.Languages
-	c.JSON(http.StatusOK, APIResponse[[]helpers.Language]{Code: Success, Message: "", Data: language})
+	httpapi.Success(c, http.StatusOK, language, "")
 }
 
 // GetCountries 获取国家列表
-// @Summary 获取国家列表
-// @Description 获取所有支持的国家列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/countries [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetCountries(c *gin.Context) {
 	countries := helpers.Countries
-	c.JSON(http.StatusOK, APIResponse[[]helpers.Country]{Code: Success, Message: "", Data: countries})
+	httpapi.Success(c, http.StatusOK, countries, "")
 }
 
 // GetMovieCategories 获取电影分类列表
-// @Summary 获取电影分类列表
-// @Description 获取已配置的电影分类列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/movie-categories [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetMovieCategories(c *gin.Context) {
-	movieGenre := models.GetMovieCategory()
-	c.JSON(http.StatusOK, APIResponse[[]*models.MovieCategory]{Code: Success, Message: "", Data: movieGenre})
+	movieGenre, err := models.ReadMovieCategories(c.Request.Context())
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取电影分类失败", Cause: err})
+		return
+	}
+	httpapi.Success(c, http.StatusOK, movieGenre, "")
 }
 
 // GetTvshowCategories 获取电视剧分类列表
-// @Summary 获取电视剧分类列表
-// @Description 获取已配置的电视剧分类列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tvshow-categories [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetTvshowCategories(c *gin.Context) {
-	tvshowGenre := models.GetTvshowCategory()
-	c.JSON(http.StatusOK, APIResponse[[]*models.TvShowCategory]{Code: Success, Message: "", Data: tvshowGenre})
+	tvshowGenre, err := models.ReadTVShowCategories(c.Request.Context())
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取电视剧分类失败", Cause: err})
+		return
+	}
+	httpapi.Success(c, http.StatusOK, tvshowGenre, "")
 }
 
 // SaveMovieCategory 保存电影分类
-// @Summary 保存电影分类
-// @Description 创建或更新电影分类配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer false "分类 ID，不填为新增"
-// @Param name body string true "分类名称"
-// @Param language_array body []string true "语言代码数组"
-// @Param genre_id_array body []integer true "分类 ID 数组"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/movie-categories [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func SaveMovieCategory(c *gin.Context) {
 	reqData := requests.MovieCategoryRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	movieCategory := &models.MovieCategory{
@@ -144,35 +81,21 @@ func SaveMovieCategory(c *gin.Context) {
 		Name: reqData.Name,
 	}
 	if err := movieCategory.Save(reqData.Name, reqData.GenreIDArray, reqData.LanguageArray); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存电影分类失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "电影分类已保存", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "电影分类已保存")
 }
 
 // SaveTvshowCategory 保存电视剧分类
-// @Summary 保存电视剧分类
-// @Description 创建或更新电视剧分类配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer false "分类 ID，不填为新增"
-// @Param name body string true "分类名称"
-// @Param country_array body []string true "国家代码数组"
-// @Param genre_id_array body []integer true "分类 ID 数组"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tvshow-categories [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func SaveTvshowCategory(c *gin.Context) {
 	reqData := requests.TVShowCategoryRequest{}
 	if err := c.ShouldBindJSON(&reqData); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := reqData.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	tvshowCategory := &models.TvShowCategory{
@@ -180,79 +103,42 @@ func SaveTvshowCategory(c *gin.Context) {
 		Name: reqData.Name,
 	}
 	if err := tvshowCategory.Save(reqData.Name, reqData.GenreIDArray, reqData.CountryArray); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存电视剧分类失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "电视剧分类已保存", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "电视剧分类已保存")
 }
 
 // DeleteMovieCategory 删除电影分类
-// @Summary 删除电影分类
-// @Description 删除指定的电影分类
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "分类 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/movie-categories/:id [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteMovieCategory(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
 	if err := models.DeleteMovieCategory(idReq.ID); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "删除电影分类失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "电影分类已删除", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "电影分类已删除")
 }
 
 // DeleteTvshowCategory 删除电视剧分类
-// @Summary 删除电视剧分类
-// @Description 删除指定的电视剧分类
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "分类 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/tvshow-categories/:id [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteTvshowCategory(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := models.DeleteTvshowCategory(idReq.ID); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "删除电视剧分类失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "电视剧分类已删除", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "电视剧分类已删除")
 }
 
 // GetScrapeRecords 获取刮削记录
-// @Summary 获取刮削记录
-// @Description 分页获取刮削任务记录，支持筛选
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param page query integer false "页码"
-// @Param pageSize query integer false "每页数量"
-// @Param type query string false "媒体类型（movie/tvshow）"
-// @Param status query string false "记录状态"
-// @Param name query string false "视频名称"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/records [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetScrapeRecords(c *gin.Context) {
 	page := helpers.StringToInt(c.Query("page"))
 	if page == 0 {
@@ -266,7 +152,11 @@ func GetScrapeRecords(c *gin.Context) {
 	status := c.Query("status")
 	name := c.Query("name")
 	scrapePathesCache := make(map[uint]*models.ScrapePath)
-	total, scrapeRecords := models.GetScrapeMediaFiles(page, pageSize, mediaType, status, name)
+	total, scrapeRecords, err := models.GetScrapeMediaFiles(c.Request.Context(), page, pageSize, mediaType, status, name)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取刮削记录失败", Cause: err})
+		return
+	}
 	type scrapeMediaResp struct {
 		ID              uint   `json:"id"`
 		Type            string `json:"type"`
@@ -319,14 +209,14 @@ func GetScrapeRecords(c *gin.Context) {
 		var scrapePath *models.ScrapePath
 		var ok bool
 		if scrapePath, ok = scrapePathesCache[scrapeMedia.ScrapePathId]; !ok {
-			scrapePath = models.GetScrapePathByID(scrapeMedia.ScrapePathId)
-			if scrapePath == nil {
-				continue
+			scrapePath, err = models.ReadScrapePath(c.Request.Context(), scrapeMedia.ScrapePathId)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				scrapePath = &models.ScrapePath{}
+			} else if err != nil {
+				httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取刮削目录失败", Cause: err})
+				return
 			}
 			scrapePathesCache[scrapeMedia.ScrapePathId] = scrapePath
-		}
-		if scrapePath == nil {
-			continue
 		}
 		sourcePath := scrapeMedia.GetRemoteFullMoviePath()
 		destPath := scrapeMedia.GetDestFullMoviePath()
@@ -405,30 +295,18 @@ func GetScrapeRecords(c *gin.Context) {
 		// 	}
 		// }
 	}
-	c.JSON(http.StatusOK, APIResponse[scrapeListResp]{Code: Success, Message: "", Data: resp})
+	httpapi.Success(c, http.StatusOK, resp, "")
 }
 
 // ScrapeTmpImage 获取刮削临时图片
-// @Summary 获取临时图片
-// @Description 返回刮削临时文件中的图片内容
-// @Tags 刮削管理
-// @Accept json
-// @Produce image/jpeg
-// @Param path query string true "图片路径"
-// @Param type query string true "媒体类型"
-// @Success 200 {file} file "图片文件"
-// @Failure 200 {object} object
-// @Router /scrape/tmp-image [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ScrapeTmpImage(c *gin.Context) {
 	var req requests.TmpImageRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	imageRootPath := filepath.Join(helpers.ConfigDir, "tmp", "刮削临时文件")
@@ -440,20 +318,24 @@ func ScrapeTmpImage(c *gin.Context) {
 	var err error
 	imagePath, err := helpers.SafeJoin(imageRootPath, req.Path)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "图片路径不合法：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "图片路径不合法", Cause: err})
 		return
 	}
 	// 读取文件
 	file, err := os.Open(imagePath)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "读取文件失败：" + err.Error(), Data: nil})
+		if errors.Is(err, os.ErrNotExist) {
+			httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "SCRAPE_IMAGE_NOT_FOUND", Message: "刮削图片不存在", Cause: err})
+		} else {
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取刮削图片失败", Cause: err})
+		}
 		return
 	}
 	defer file.Close()
 	// 读取文件内容
 	fileContent, err := io.ReadAll(file)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "读取文件内容失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取图片内容失败", Cause: err})
 		return
 	}
 	// 返回文件内容
@@ -461,34 +343,23 @@ func ScrapeTmpImage(c *gin.Context) {
 }
 
 // ExportScrapeRecords 导出刮削记录。
-// @Summary 导出刮削记录
-// @Description 将选中的刮削记录导出 JSON 文件
-// @Tags 刮削管理
-// @Accept json
-// @Produce application/json
-// @Param ids query string true "记录 ID，用逗号分隔"
-// @Success 200 {file} file "JSON 文件"
-// @Failure 200 {object} object
-// @Router /scrape/records/export [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ExportScrapeRecords(c *gin.Context) {
-	ids := c.Query("ids")
-	if ids == "" {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请选择要导出的记录", Data: nil})
+	var req requests.IDCSVRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	// ids 用逗号分隔
-	idList := strings.Split(ids, ",")
-	// 转成 uint 数组
-	idUintList := make([]uint, 0)
-	for _, id := range idList {
-		idUint, _ := strconv.ParseUint(id, 10, 32)
-		idUintList = append(idUintList, uint(idUint))
+	if err := req.Validate(); err != nil {
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
+		return
 	}
-	scrapeRecords := models.GetScrapeMediaFilesByIds(idUintList)
+	scrapeRecords, err := models.GetScrapeMediaFilesByIds(c.Request.Context(), req.NormalizedIDs())
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取导出记录失败", Cause: err})
+		return
+	}
 	if len(scrapeRecords) == 0 {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "没有找到要导出的记录", Data: nil})
+		httpapi.Success(c, http.StatusOK, nil, "没有找到要导出的记录")
 		return
 	}
 	// 生成导出文件内容
@@ -516,7 +387,7 @@ func ExportScrapeRecords(c *gin.Context) {
 	// JSON 格式化 exportMediaList
 	exportMediaListJson, err := json.MarshalIndent(exportMediaList, "", "  ")
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "格式化导出记录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "生成导出记录失败", Cause: err})
 		return
 	}
 	c.Header("Content-Disposition", "attachment; filename=刮削记录.json")
@@ -525,58 +396,45 @@ func ExportScrapeRecords(c *gin.Context) {
 }
 
 // ReScrape 重新刮削记录
-// @Summary 重新刮削
-// @Description 重新刮削指定记录，使用新提供的名称和年份
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "记录 ID"
-// @Param name body string true "新名称"
-// @Param year body integer true "新年份"
-// @Param tmdb_id body integer false "TMDB ID"
-// @Param season body integer false "季数"
-// @Param episode body integer false "集数"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/re-scrape [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ReScrape(c *gin.Context) {
 	var req requests.RescrapeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 使用 ID 查询 ScrapeMediaFile
-	scrapeMedia := models.GetScrapeMediaFileById(req.ID)
-	if scrapeMedia == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要重新刮削的记录", Data: nil})
+	scrapeMedia, err := models.ReadScrapeMediaFile(c.Request.Context(), req.ID)
+	if err != nil {
+		status, failure := scrapeLookupError(err, "SCRAPE_RECORD_NOT_FOUND", "没有找到要重新刮削的记录")
+		httpapi.Failure(c, status, failure)
 		return
 	}
-	scrapePath := models.GetScrapePathByID(scrapeMedia.ScrapePathId)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到这条记录所属的刮削目录", Data: nil})
+	_, err = models.ReadScrapePath(c.Request.Context(), scrapeMedia.ScrapePathId)
+	if err != nil {
+		status, failure := scrapeLookupError(err, "SCRAPE_PATH_NOT_FOUND", "没有找到这条记录所属的刮削目录")
+		httpapi.Failure(c, status, failure)
 		return
 	}
 	oldStatus := scrapeMedia.Status
-	err := scrapeMedia.ReScrape(c.Request.Context(), req.Name, req.Year, req.TmdbID, req.Season, req.Episode)
+	err = scrapeMedia.ReScrape(c.Request.Context(), req.Name, req.Year, req.TmdbID, req.Season, req.Episode)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "重新刮削失败：" + err.Error(), Data: nil})
+		status, failure := rescrapeError(err)
+		httpapi.Failure(c, status, failure)
 		return
 	}
 	if oldStatus == models.ScrapeMediaStatusRenamed {
 		synccron.StartScrapeRollbackCron() // 触发一次
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "已移回源目录，下次扫描会按新的名称和年份重新刮削", Data: nil})
+		httpapi.Success(c, http.StatusAccepted, gin.H{"id": scrapeMedia.ID, "status": scrapeMedia.Status}, "已提交回滚，下次扫描会按新的名称和年份重新刮削")
 	} else {
 		data := make(map[string]any)
 		data["name"] = scrapeMedia.Name
 		data["year"] = scrapeMedia.Year
 		data["tmdb_id"] = scrapeMedia.TmdbId
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "下次扫描会按新的名称和年份重新刮削", Data: data})
+		httpapi.Success(c, http.StatusOK, data, "下次扫描会按新的名称和年份重新刮削")
 	}
 }
 
@@ -584,175 +442,123 @@ func ReScrape(c *gin.Context) {
 func ClearFailedScrapeRecords(c *gin.Context) {
 	err := models.ClearFailedScrapeRecords([]uint{})
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "清除失败的刮削记录失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "失败的刮削记录已清除", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "失败的刮削记录已清除")
 }
 
 // FinishScrapeMediaFile 完成刮削记录
-// @Summary 标记记录为已整理
-// @Description 完成整理中的记录，不继续整理
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "记录 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/finish [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func FinishScrapeMediaFile(c *gin.Context) {
 	var req requests.PositiveIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 使用 ID 查询 ScrapeMediaFile
-	scrapeMedia := models.GetScrapeMediaFileById(req.ID)
-	if scrapeMedia == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要整理的记录", Data: nil})
+	scrapeMedia, err := models.ReadScrapeMediaFile(c.Request.Context(), req.ID)
+	if err != nil {
+		status, failure := scrapeLookupError(err, "SCRAPE_RECORD_NOT_FOUND", "没有找到要整理的记录")
+		httpapi.Failure(c, status, failure)
 		return
 	}
-	scrapeMedia.FinishFromRenaming()
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "记录已标记为已整理", Data: nil})
+	if err := scrapeMedia.FinishFromRenaming(); err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存整理状态失败", Cause: err})
+		return
+	}
+	httpapi.Success(c, http.StatusOK, nil, "记录已标记为已整理")
 }
 
 // DeleteScrapeMediaFile 删除刮削记录
-// @Summary 删除刮削记录
-// @Description 删除选中的刮削记录
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param ids query string true "记录 ID，用逗号分隔"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/records [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteScrapeMediaFile(c *gin.Context) {
 	var req requests.IDCSVRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 删除记录
 	err := models.ClearFailedScrapeRecords(req.NormalizedIDs())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "删除记录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "删除刮削记录失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "记录已删除", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "记录已删除")
 }
 
 // RenameFailedScrapeMediaFile 标记记录为待整理
-// @Summary 标记为待整理
-// @Description 将选中的刮削记录标记为待整理
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param ids query string true "记录 ID，用逗号分隔"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/rename-failed [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func RenameFailedScrapeMediaFile(c *gin.Context) {
 	var req requests.IDCSVRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 将这些 ID 对应的记录标记为待整理
 	err := models.RenameFailedScrapeRecords(req.NormalizedIDs())
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "标记记录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "标记刮削记录失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "所选记录已标记为待整理", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "所选记录已标记为待整理")
 }
 
 // StopScrape 停止刮削任务
-// @Summary 停止刮削任务
-// @Description 停止指定刮削路径正在运行的刮削任务
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/stop [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func StopScrape(c *gin.Context) {
 	var req requests.PositiveIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	synccron.CancelNewSyncTask(req.ID, synccron.SyncTaskTypeScrape)
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削任务已停止", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "刮削任务已停止")
 }
 
 // TruncateAllScrapeRecords 一键清空所有刮削记录
-// @Summary 清空所有记录
-// @Description 清除数据库中所有的刮削记录
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/truncate-all [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func TruncateAllScrapeRecords(c *gin.Context) {
 	err := models.TruncateAllScrapeRecords()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "清空刮削记录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "清空刮削记录失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "所有刮削记录已清空", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "所有刮削记录已清空")
 }
 
 func SaveScrapeStrmPath(c *gin.Context) {
 	var req requests.SaveScrapeStrmPathRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		helpers.AppLogger.Errorf("绑定 JSON 数据失败：%v", err)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "解析请求数据失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	scrapePath := models.GetScrapePathByID(req.ScrapePathID)
-	if scrapePath == nil {
-		helpers.AppLogger.Errorf("刮削目录不存在：%v", req.ScrapePathID)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
+	scrapePath, err := models.ReadScrapePath(c.Request.Context(), req.ScrapePathID)
+	if err != nil {
+		status, failure := scrapeLookupError(err, "SCRAPE_PATH_NOT_FOUND", "刮削目录不存在")
+		httpapi.Failure(c, status, failure)
 		return
 	}
 	if err := scrapePath.SaveStrmPath(req.SyncPathIDs); err != nil {
-		helpers.AppLogger.Errorf("保存刮削目录关联的同步目录失败：%v", err)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存刮削目录关联的同步目录失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "保存关联同步目录失败", Cause: err})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "关联同步目录已保存", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "关联同步目录已保存")
 }
 
 func GetScrapeStrmPaths(c *gin.Context) {
@@ -761,12 +567,13 @@ func GetScrapeStrmPaths(c *gin.Context) {
 	}
 	var req GetScrapePathStrmPathsReq
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	scrapePath := models.GetScrapePathByID(req.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要操作的刮削目录", Data: nil})
+	scrapePath, err := models.ReadScrapePath(c.Request.Context(), req.ID)
+	if err != nil {
+		status, failure := scrapeLookupError(err, "SCRAPE_PATH_NOT_FOUND", "没有找到要操作的刮削目录")
+		httpapi.Failure(c, status, failure)
 		return
 	}
 	ssp := scrapePath.GetRelatStrmPath()
@@ -775,7 +582,7 @@ func GetScrapeStrmPaths(c *gin.Context) {
 		syncPathIds = append(syncPathIds, sp.StrmPathID)
 	}
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取关联同步目录成功", Data: syncPathIds})
+	httpapi.Success(c, http.StatusOK, syncPathIds, "获取关联同步目录成功")
 }
 
 type TmdbSearchResp struct {
@@ -790,17 +597,17 @@ type TmdbSearchResp struct {
 func TmdbSearch(c *gin.Context) {
 	var req requests.TMDBSearchRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	settings := models.GetScrapeSettingsSnapshot()
 	tmdbClient, err := settings.GetTmdbClient()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error()})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "创建 TMDB 客户端失败", Cause: err, Secrets: []string{settings.GetTmdbApiKey(), settings.GetTmdbAccessToken()}})
 		return
 	}
 	defer tmdbClient.Close()
@@ -810,11 +617,12 @@ func TmdbSearch(c *gin.Context) {
 			// 搜索电影
 			resp, err := tmdbClient.SearchMovie(c.Request.Context(), req.Name, req.Year, settings.GetTmdbLanguage(), true, false)
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电影失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+				status, failure := tmdbQueryError(err, "搜索电影失败", settings.GetTmdbApiKey(), settings.GetTmdbAccessToken())
+				httpapi.Failure(c, status, failure)
 				return
 			}
 			if len(resp.Results) == 0 {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到电影", Data: nil})
+				httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "TMDB_MEDIA_NOT_FOUND", Message: "没有找到电影"})
 				return
 			}
 			// 转换为响应结构体
@@ -829,12 +637,13 @@ func TmdbSearch(c *gin.Context) {
 					Overview:      r.Overview,
 				})
 			}
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "搜索电影成功", Data: tmdbResp})
+			httpapi.Success(c, http.StatusOK, tmdbResp, "搜索电影成功")
 			return
 		} else {
 			resp, err := tmdbClient.GetMovieDetail(c.Request.Context(), int64(req.TmdbID), settings.GetTmdbLanguage())
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电影详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+				status, failure := tmdbQueryError(err, "获取电影详情失败", settings.GetTmdbApiKey(), settings.GetTmdbAccessToken())
+				httpapi.Failure(c, status, failure)
 				return
 			}
 			tmdbResp := make([]TmdbSearchResp, 0)
@@ -847,7 +656,7 @@ func TmdbSearch(c *gin.Context) {
 				PosterUrl:     settings.ImageURL(resp.PosterPath),
 				Overview:      resp.Overview,
 			})
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取电影详情成功", Data: tmdbResp})
+			httpapi.Success(c, http.StatusOK, tmdbResp, "获取电影详情成功")
 			return
 		}
 	case models.MediaTypeTvShow:
@@ -855,11 +664,12 @@ func TmdbSearch(c *gin.Context) {
 			// 搜索电视剧
 			resp, err := tmdbClient.SearchTv(c.Request.Context(), req.Name, req.Year, settings.GetTmdbLanguage(), true)
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "搜索电视剧失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+				status, failure := tmdbQueryError(err, "搜索电视剧失败", settings.GetTmdbApiKey(), settings.GetTmdbAccessToken())
+				httpapi.Failure(c, status, failure)
 				return
 			}
 			if len(resp.Results) == 0 {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到电视剧", Data: nil})
+				httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "TMDB_MEDIA_NOT_FOUND", Message: "没有找到电视剧"})
 				return
 			}
 			// 转换为响应结构体
@@ -874,12 +684,13 @@ func TmdbSearch(c *gin.Context) {
 					Overview:      r.Overview,
 				})
 			}
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "搜索电视剧成功", Data: tmdbResp})
+			httpapi.Success(c, http.StatusOK, tmdbResp, "搜索电视剧成功")
 			return
 		} else {
 			resp, err := tmdbClient.GetTvDetail(c.Request.Context(), int64(req.TmdbID), settings.GetTmdbLanguage())
 			if err != nil {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取电视剧详情失败：" + helpers.RedactSensitiveLog(err.Error()), Data: nil})
+				status, failure := tmdbQueryError(err, "获取电视剧详情失败", settings.GetTmdbApiKey(), settings.GetTmdbAccessToken())
+				httpapi.Failure(c, status, failure)
 				return
 			}
 			tmdbResp := make([]TmdbSearchResp, 0)
@@ -892,12 +703,42 @@ func TmdbSearch(c *gin.Context) {
 				PosterUrl:     settings.ImageURL(resp.PosterPath),
 				Overview:      resp.Overview,
 			})
-			c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取电视剧详情成功", Data: tmdbResp})
+			httpapi.Success(c, http.StatusOK, tmdbResp, "获取电视剧详情成功")
 			return
 		}
 	default:
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：类型必须是 movie 或 tv_show", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误：类型必须是 movie 或 tv_show", Data: nil})
 		return
 	}
 
+}
+
+func scrapeLookupError(err error, code, message string) (int, httpapi.Error) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return http.StatusNotFound, httpapi.Error{Code: code, Message: message, Cause: err}
+	}
+	return http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取刮削数据失败", Cause: err}
+}
+
+func rescrapeError(err error) (int, httpapi.Error) {
+	if upstream, ok := errors.AsType[*models.ScrapeTMDBError](err); ok {
+		return tmdbQueryError(err, "重新刮削失败", upstream.Secrets...)
+	}
+	switch {
+	case errors.Is(err, models.ErrScrapeMediaAmbiguous):
+		return http.StatusBadRequest, httpapi.Error{Code: "SCRAPE_MEDIA_AMBIGUOUS", Message: "查询到多个匹配结果，请输入 TMDB ID 后重新识别", Cause: err}
+	case errors.Is(err, models.ErrScrapeMediaNotFound):
+		return http.StatusNotFound, httpapi.Error{Code: "TMDB_MEDIA_NOT_FOUND", Message: "没有找到匹配的媒体", Cause: err}
+	default:
+		settings := models.GetScrapeSettingsSnapshot()
+		return http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "重新刮削失败", Cause: err, Secrets: []string{settings.GetTmdbApiKey(), settings.GetTmdbAccessToken()}}
+	}
+}
+
+func tmdbQueryError(err error, message string, secrets ...string) (int, httpapi.Error) {
+	status, code := http.StatusBadGateway, "UPSTREAM_ERROR"
+	if timeout, ok := errors.AsType[net.Error](err); errors.Is(err, context.DeadlineExceeded) || ok && timeout.Timeout() {
+		status, code = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+	}
+	return status, httpapi.Error{Code: code, Message: message, Cause: err, Secrets: secrets}
 }

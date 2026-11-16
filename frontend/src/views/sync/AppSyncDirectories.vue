@@ -334,8 +334,10 @@
 </template>
 
 <script setup lang="ts">
+import type { SettingsSaveResult } from '@/api/types'
 import {
   deleteSyncPath,
+  directoryUploadScanResult,
   fetchDirectoryUploadRules,
   fetchSyncPaths,
   fetchSyncPathScrapeRelations,
@@ -442,6 +444,12 @@ interface SyncTaskEventPayload extends SyncLedgerState {
 }
 
 const http = useHttpClient()
+const showOperationResult = (result: SettingsSaveResult, fallbackMessage: string) => {
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || fallbackMessage)
+}
+
 const router = useRouter()
 
 const directories = ref<SyncDirectory[]>([])
@@ -839,8 +847,8 @@ const handleDelete = async (row: SyncDirectory, index: number) => {
 
     directories.value[index].deleting = true
 
-    await deleteSyncPath(http, row.id)
-    ElMessage.success('删除同步目录成功')
+    const result = await deleteSyncPath(http, row.id)
+    showOperationResult(result, '删除同步目录成功')
     void loadDirectories()
   } catch (error) {
     if (!isMessageBoxCancelError(error)) reportRequestError(error, '删除同步目录失败')
@@ -855,9 +863,9 @@ const handleFullStart = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].starting = true
 
-    const data = await startSyncPath(http, row.id, true)
-    applySyncPathRunningStatus(row.id, Number(data?.is_running ?? 1))
-    ElMessage.success(`同步目录“${row.local_path}”启动成功`)
+    const result = await startSyncPath(http, row.id, true)
+    applySyncPathRunningStatus(row.id, Number(result.data?.is_running ?? 1))
+    showOperationResult(result, `同步目录“${row.local_path}”请求已受理`)
   } catch (error) {
     reportRequestError(error, '启动同步目录失败')
   } finally {
@@ -871,9 +879,9 @@ const handleStart = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].starting = true
 
-    const data = await startSyncPath(http, row.id)
-    applySyncPathRunningStatus(row.id, Number(data?.is_running ?? 1))
-    ElMessage.success(`同步目录“${row.local_path}”启动成功`)
+    const result = await startSyncPath(http, row.id)
+    applySyncPathRunningStatus(row.id, Number(result.data?.is_running ?? 1))
+    showOperationResult(result, `同步目录“${row.local_path}”请求已受理`)
   } catch (error) {
     reportRequestError(error, '启动同步目录失败')
   } finally {
@@ -887,8 +895,8 @@ const handleStop = async (row: SyncDirectory, index: number) => {
   try {
     directories.value[index].stopping = true
 
-    await stopSyncPath(http, row.id)
-    ElMessage.success('已请求停止同步任务')
+    const result = await stopSyncPath(http, row.id)
+    showOperationResult(result, '已请求停止同步任务')
   } catch (error) {
     reportRequestError(error, '停止同步目录失败')
   } finally {
@@ -924,11 +932,25 @@ const scanDirectoryUploadRule = async (row: SyncDirectory) => {
     })
     const data = await scanSyncPathDirectoryUpload(http, row.id)
     const accepted = data?.accepted
-    ElMessage.success(
-      typeof accepted === 'number' ? `扫描完成，已加入 ${accepted} 个候选文件` : '扫描已触发',
+    const summary =
+      typeof accepted === 'number' ? `扫描完成，已加入 ${accepted} 个候选文件` : '扫描已触发'
+    showOperationResult(
+      { ...data, message: [data.message?.trim(), summary].filter(Boolean).join('；') },
+      summary,
     )
   } catch (error) {
-    reportRequestError(error, '触发扫描失败')
+    const failure = parseHttpError(error, {
+      publicMessages: syncPathPublicMessages,
+      fallbackMessage: '触发扫描失败',
+    })
+    if (!failure.shouldNotify) return
+    const partial = directoryUploadScanResult(failure)
+    if (partial) {
+      console.error('触发扫描失败', failure.diagnostics)
+      ElMessage.error(`已加入 ${partial.accepted} 个候选文件；${failure.message}`)
+    } else {
+      reportRequestError(error, '触发扫描失败')
+    }
   } finally {
     enabledRules.forEach((rule) => {
       rule.scanning = false
@@ -938,8 +960,8 @@ const scanDirectoryUploadRule = async (row: SyncDirectory) => {
 
 const toggleCron = async (row: SyncDirectory) => {
   try {
-    await toggleSyncPathCron(http, row.id)
-    ElMessage.success(row.enable_cron ? '开启定时同步成功' : '关闭定时同步成功')
+    const result = await toggleSyncPathCron(http, row.id)
+    showOperationResult(result, row.enable_cron ? '开启定时同步成功' : '关闭定时同步成功')
   } catch (error) {
     row.enable_cron = !row.enable_cron
     reportRequestError(error, '切换定时同步状态失败')
@@ -1004,9 +1026,11 @@ const saveScrapePathRelation = async () => {
 
   try {
     saveScrapePathLoading.value = true
-    await saveSyncPathScrapeRelations(http, directoryId, selectedIds)
+    const result = await saveSyncPathScrapeRelations(http, directoryId, selectedIds)
     if (!isScrapePathRequestCurrent(requestId, directoryId)) return
-    ElMessage.success('关联刮削目录成功')
+    if (result.warnings.length)
+      ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+    else ElMessage.success(result.message?.trim() || '关联刮削目录成功')
     showScrapePathDialog.value = false
   } catch (error) {
     if (!isScrapePathRequestCurrent(requestId, directoryId)) return

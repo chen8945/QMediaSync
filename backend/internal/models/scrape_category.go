@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 
 	"qmediasync/internal/db"
@@ -48,8 +49,19 @@ type ScrapePathCategory struct {
 
 // 查询电影分类列表，不分页
 func GetMovieCategory() []*MovieCategory {
+	categories, err := ReadMovieCategories(context.Background())
+	if err != nil {
+		helpers.AppLogger.Errorf("查询媒体分类失败：%v", err)
+	}
+	return categories
+}
+
+// ReadMovieCategories 返回电影分类及查询错误。
+func ReadMovieCategories(ctx context.Context) ([]*MovieCategory, error) {
 	var movieGenre []*MovieCategory
-	db.Db.Model(&MovieCategory{}).Find(&movieGenre)
+	if err := db.Db.WithContext(ctx).Model(&MovieCategory{}).Find(&movieGenre).Error; err != nil {
+		return nil, err
+	}
 	// 将 GenreIds 和 Language 转换为数组
 	for _, genre := range movieGenre {
 		genre.GenreIdArray = []int{}
@@ -68,12 +80,23 @@ func GetMovieCategory() []*MovieCategory {
 			}
 		}
 	}
-	return movieGenre
+	return movieGenre, nil
 }
 
 func GetTvshowCategory() []*TvShowCategory {
+	categories, err := ReadTVShowCategories(context.Background())
+	if err != nil {
+		helpers.AppLogger.Errorf("查询媒体分类失败：%v", err)
+	}
+	return categories
+}
+
+// ReadTVShowCategories 返回剧集分类及查询错误。
+func ReadTVShowCategories(ctx context.Context) ([]*TvShowCategory, error) {
 	var tvshowGenre []*TvShowCategory
-	db.Db.Model(&TvShowCategory{}).Find(&tvshowGenre)
+	if err := db.Db.WithContext(ctx).Model(&TvShowCategory{}).Find(&tvshowGenre).Error; err != nil {
+		return nil, err
+	}
 	// 将 GenreIds 和 Language 转换为数组
 	for _, genre := range tvshowGenre {
 		genre.GenreIdArray = []int{}
@@ -92,7 +115,7 @@ func GetTvshowCategory() []*TvShowCategory {
 			}
 		}
 	}
-	return tvshowGenre
+	return tvshowGenre, nil
 }
 
 // 保存或者更新电影分类
@@ -155,12 +178,10 @@ func (m *TvShowCategory) Save(name string, genreIdsArray []int, countryArray []s
 func DeleteMovieCategory(id uint) error {
 	delErr := db.Db.Delete(&MovieCategory{}, id).Error
 	if delErr != nil {
-		helpers.AppLogger.Errorf("删除电影分类失败：%v", delErr)
 		return delErr
 	}
 	// 尝试删除关联的 ScrapePathCategory
 	if delErr = db.Db.Delete(&ScrapePathCategory{}, "category_id = ?", id).Error; delErr != nil {
-		helpers.AppLogger.Errorf("删除关联的 ScrapePathCategory 失败：%v", delErr)
 		return delErr
 	}
 	return nil
@@ -170,12 +191,10 @@ func DeleteMovieCategory(id uint) error {
 func DeleteTvshowCategory(id uint) error {
 	delErr := db.Db.Delete(&TvShowCategory{}, id).Error
 	if delErr != nil {
-		helpers.AppLogger.Errorf("删除剧集分类失败：%v", delErr)
 		return delErr
 	}
 	// 尝试删除关联的 ScrapePathCategory
 	if delErr = db.Db.Delete(&ScrapePathCategory{}, "category_id = ?", id).Error; delErr != nil {
-		helpers.AppLogger.Errorf("删除关联的 ScrapePathCategory 失败：%v", delErr)
 		return delErr
 	}
 	return nil

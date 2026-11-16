@@ -1,6 +1,7 @@
 package synccron
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -24,30 +25,84 @@ func TestNewSyncQueuePerType(t *testing.T) {
 }
 
 func TestAddTask(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		task NewSyncTask
+	}{
+		{name: "saved STRM", task: NewSyncTask{ID: 7, TaskType: SyncTaskTypeStrm}},
+		{name: "saved scrape", task: NewSyncTask{ID: 7, TaskType: SyncTaskTypeScrape}},
+		{name: "manual STRM", task: NewSyncTask{SourcePathId: "remote-7", TaskType: SyncTaskTypeStrm}},
+	} {
+		for _, state := range []string{"waiting", "running"} {
+			t.Run(test.name+"/"+state, func(t *testing.T) {
+				queue := NewQueuePerType(models.SourceType115)
+				queue.Pause()
+				t.Cleanup(queue.Stop)
+				task := test.task
+				if state == "waiting" {
+					if err := queue.AddTask(&task); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					queue.currentTask = &task
+				}
+				duplicate := task
+				duplicate.TargetPath = "replacement"
+				err := queue.AddTask(&duplicate)
+				if !errors.Is(err, ErrTaskAlreadyExists) || !errors.Is(fmt.Errorf("enqueue: %w", err), ErrTaskAlreadyExists) {
+					t.Fatalf("duplicate task lost its error identity: %v", err)
+				}
+				if !strings.Contains(err.Error(), task.TaskType.DisplayName()) || !strings.Contains(err.Error(), fmt.Sprintf("ID=%d", task.ID)) {
+					t.Fatalf("duplicate error lost task context: %v", err)
+				}
+				if !queue.isTaskExists(&task) {
+					t.Fatal("duplicate removed original task")
+				}
+				if state == "waiting" {
+					if len(queue.waitingQueue) != 1 || queue.waitingQueue[task.Key()] != &task || queue.currentTask != nil {
+						t.Fatal("duplicate changed original waiting task")
+					}
+				} else if len(queue.waitingQueue) != 0 || queue.currentTask != &task {
+					t.Fatal("duplicate changed original running task")
+				}
+				distinct := task
+				if distinct.ID > 0 {
+					distinct.ID++
+				} else {
+					distinct.SourcePathId = "remote-8"
+				}
+				if err := queue.AddTask(&distinct); err != nil {
+					t.Fatalf("distinct task rejected: %v", err)
+				}
+				differentType := task
+				if task.TaskType == SyncTaskTypeStrm {
+					differentType.TaskType = SyncTaskTypeScrape
+				} else {
+					differentType.TaskType = SyncTaskTypeStrm
+				}
+				if err := queue.AddTask(&differentType); err != nil {
+					t.Fatalf("different task type rejected: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAddTaskQueueFullIsNotDuplicate(t *testing.T) {
 	queue := NewQueuePerType(models.SourceType115)
-
-	task := &NewSyncTask{
-		ID:       1,
-		TaskType: SyncTaskTypeStrm,
+	queue.Pause()
+	t.Cleanup(queue.Stop)
+	for id := uint(1); id <= 50; id++ {
+		if err := queue.AddTask(&NewSyncTask{ID: id, TaskType: SyncTaskTypeStrm}); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	err := queue.AddTask(task)
-	if err != nil {
-		t.Fatalf("Failed to add task: %v", err)
+	err := queue.AddTask(&NewSyncTask{ID: 51, TaskType: SyncTaskTypeStrm})
+	if err == nil || errors.Is(err, ErrTaskAlreadyExists) {
+		t.Fatalf("queue full misclassified: %v", err)
 	}
-
-	if !queue.isTaskExists(task) {
-		t.Error("Task should exist after adding")
-	}
-
-	duplicateTask := &NewSyncTask{
-		ID:       1,
-		TaskType: SyncTaskTypeStrm,
-	}
-
-	err = queue.AddTask(duplicateTask)
-	if err == nil {
-		t.Error("Should return error when adding duplicate task")
+	if len(queue.waitingQueue) != 50 || queue.CheckTaskStatus(51, SyncTaskTypeStrm) != TaskStatusNone {
+		t.Fatal("queue full changed accepted work")
 	}
 }
 

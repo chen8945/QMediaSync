@@ -19,11 +19,25 @@ const html = readFileSync(htmlPath, 'utf8')
 interface PendingRequest {
   url: string
   body: Record<string, unknown>
-  resolve: (result: Record<string, unknown>) => void
+  resolve: (result: Record<string, unknown> | string, status?: number) => void
   reject: (error: Error) => void
 }
 
-const existingDatabase = { success: true, dbExists: true, hasOtherTables: true }
+const success = (data: unknown = null, message = '', warnings?: string[]) => ({
+  status: 200,
+  data,
+  message,
+  ...(warnings ? { warnings } : {}),
+})
+const failure = (message: string, status = 400) => ({
+  status,
+  data: null,
+  message,
+  error_code: 'TEST_REQUEST_FAILED',
+  instance: '/request-errors/ComponentTestFailure0001',
+})
+
+const existingDatabase = success({ dbExists: true, hasOtherTables: true })
 const changedFields = [
   { field: 'host', value: 'postgres-b' },
   { field: 'port', value: '5433' },
@@ -71,8 +85,12 @@ function testConnection(): PendingRequest {
   return request
 }
 
-async function reply(request: PendingRequest, result: Record<string, unknown>) {
-  request.resolve(result)
+async function reply(
+  request: PendingRequest,
+  result: Record<string, unknown> | string,
+  status?: number,
+) {
+  request.resolve(result, status)
   await setImmediate()
 }
 
@@ -98,7 +116,12 @@ beforeEach(() => {
         requests.push({
           url: String(url),
           body: JSON.parse(String(options?.body)),
-          resolve: (result) => resolve(new page.Response(JSON.stringify(result))),
+          resolve: (result, status) =>
+            resolve(
+              new page.Response(typeof result === 'string' ? result : JSON.stringify(result), {
+                status: status ?? (typeof result === 'string' ? 200 : Number(result.status)),
+              }),
+            ),
           reject,
         })
       }),
@@ -122,20 +145,61 @@ afterEach(async () => {
 describe('数据库配置页面', () => {
   it.each([
     {
-      scenario: '自动启动',
-      message:
-        '配置已保存，正在启动 QMediaSync。启动完成后，请查看日志中的初始化码，刷新此页面创建管理员账号。',
+      kind: '非包络服务器错误',
+      body: { status: 500, data: null, message: 'private-response-sentinel' },
+      status: 500,
     },
     {
-      scenario: '手动重启',
-      message: '配置已保存。请重启 QMediaSync，查看日志中的初始化码，再刷新此页面创建管理员账号。',
+      kind: '非 JSON 错误页面',
+      body: '<pre>private-response-sentinel</pre>',
+      status: 502,
     },
-  ])('准确显示$scenario说明，等待用户手动刷新页面', async ({ message }) => {
-    await reply(testConnection(), { success: true, dbExists: false })
+    {
+      kind: '错误的公共消息类型',
+      body: { ...success({ dbExists: false }), message: { text: 'private-response-sentinel' } },
+      status: 200,
+    },
+    {
+      kind: 'HTTP 与正文状态不一致',
+      body: success({ dbExists: false }, 'private-response-sentinel'),
+      status: 500,
+    },
+  ])('连接测试拒绝$kind，隐藏原文并保持禁止保存', async ({ body, status }) => {
+    await reply(testConnection(), body, status)
+
+    expect(element('#message').textContent).not.toContain('private-response-sentinel')
+    expect(element('#message').classList.contains('error')).toBe(true)
+    expect(element<HTMLButtonElement>('#btn-test').disabled).toBe(false)
+    expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(true)
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it('保存时非包络错误使用安全反馈，保留输入并允许人工重试', async () => {
+    await reply(testConnection(), success({ dbExists: false }))
+    const originalHost = element<HTMLInputElement>('#host').value
+    element<HTMLButtonElement>('#btn-save').click()
+    await reply(
+      saveRequests()[0]!,
+      { status: 500, data: null, message: 'private-response-sentinel' },
+      500,
+    )
+
+    expect(element('#message').textContent).not.toContain('private-response-sentinel')
+    expect(element('#message').classList.contains('error')).toBe(true)
+    expect(element<HTMLInputElement>('#host').value).toBe(originalHost)
+    expect(element('#step-postgres-config').classList.contains('active')).toBe(true)
+    expect(element('#loading').classList.contains('active')).toBe(false)
+    expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(false)
+    expect(saveRequests()).toHaveLength(1)
+  })
+
+  it('保存成功显示服务端说明并停止加载，等待用户手动刷新页面', async () => {
+    const message = 'database-saved-feedback'
+    await reply(testConnection(), success({ dbExists: false }))
     const originalURL = page.location.href
     const schedule = vi.spyOn(page, 'setTimeout')
     element<HTMLButtonElement>('#btn-save').click()
-    await reply(saveRequests()[0]!, { success: true, message })
+    await reply(saveRequests()[0]!, success(null, message))
 
     expect(element('#message').textContent).toBe(message)
     expect(element('#message').classList.contains('success')).toBe(true)
@@ -146,12 +210,12 @@ describe('数据库配置页面', () => {
   })
 
   it('配置已保存但自动启动准备失败时保留表单，允许重试而无需重新测试连接', async () => {
-    await reply(testConnection(), { success: true, dbExists: false })
+    await reply(testConnection(), success({ dbExists: false }))
     element<HTMLButtonElement>('#btn-save').click()
     const firstSave = saveRequests()[0]!
     const message =
       '配置已保存，但未能自动启动。可点击保存重试；仍失败时，请停止后重新启动 QMediaSync。'
-    await reply(firstSave, { success: true, restartPending: true, message })
+    await reply(firstSave, success({ restartPending: true }, message, ['自动启动准备失败']))
 
     expect(element('#message').textContent).toBe(message)
     expect(element('#message').textContent).not.toContain('保存失败')
@@ -163,17 +227,17 @@ describe('数据库配置页面', () => {
     expect(saveRequests()[1]!.body).toEqual(firstSave.body)
 
     const successMessage = '配置已保存，正在启动 QMediaSync。启动后请手动刷新页面。'
-    await reply(saveRequests()[1]!, { success: true, message: successMessage })
+    await reply(saveRequests()[1]!, success(null, successMessage))
     expect(element('#message').textContent).toBe(successMessage)
     expect(page.document.querySelector('.step.active')).toBeNull()
     expect(page.location.href).toBe('http://localhost:12333/db-config.html')
   })
 
   it('保存失败时显示失败原因并保留当前输入，仍可再次保存', async () => {
-    await reply(testConnection(), { success: true, dbExists: false })
+    await reply(testConnection(), success({ dbExists: false }))
     const originalHost = element<HTMLInputElement>('#host').value
     element<HTMLButtonElement>('#btn-save').click()
-    await reply(saveRequests()[0]!, { success: false, error: '配置文件无法写入，请检查目录权限' })
+    await reply(saveRequests()[0]!, failure('配置文件无法写入，请检查目录权限', 500))
 
     expect(element('#message').textContent).toBe('配置文件无法写入，请检查目录权限')
     expect(element('#message').classList.contains('error')).toBe(true)
@@ -200,7 +264,7 @@ describe('数据库配置页面', () => {
     const oldRequest = testConnection()
     changeField('host', 'postgres-b')
     const newRequest = testConnection()
-    await reply(newRequest, { success: false, error: '新连接失败' })
+    await reply(newRequest, failure('新连接失败'))
 
     await reply(oldRequest, existingDatabase)
 
@@ -216,7 +280,7 @@ describe('数据库配置页面', () => {
     changeField('host', originalHost)
     const newRequest = testConnection()
     expect(newRequest.body).toEqual(oldRequest.body)
-    await reply(newRequest, { success: false, error: '本次连接失败' })
+    await reply(newRequest, failure('本次连接失败'))
 
     await reply(oldRequest, existingDatabase)
 
@@ -229,21 +293,21 @@ describe('数据库配置页面', () => {
 
   it('空端口的当前测试失败仍显示错误，不被当成旧响应忽略', async () => {
     changeField('port', '')
-    await reply(testConnection(), { success: false, error: '端口无效' })
+    await reply(testConnection(), failure('端口无效'))
 
     expect(element('#message').textContent).toBe('端口无效')
     expect(element<HTMLButtonElement>('#btn-test').disabled).toBe(false)
     expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(true)
   })
 
-  it.each(['业务失败', '请求异常'])('旧%s不会覆盖重新测试的成功', async (failure) => {
+  it.each(['业务失败', '请求异常'])('旧%s不会覆盖重新测试的成功', async (outcome) => {
     const oldRequest = testConnection()
     changeField('host', 'postgres-b')
     const newRequest = testConnection()
-    await reply(newRequest, { success: true, message: '新连接成功' })
+    await reply(newRequest, success({ dbExists: false, hasOtherTables: false }, '新连接成功'))
 
-    if (failure === '业务失败') {
-      await reply(oldRequest, { success: false, error: '旧连接失败' })
+    if (outcome === '业务失败') {
+      await reply(oldRequest, failure('旧连接失败'))
     } else {
       oldRequest.reject(new Error('旧请求异常'))
       await setImmediate()
@@ -269,7 +333,7 @@ describe('数据库配置页面', () => {
     element<HTMLButtonElement>('#btn-save').click()
     expect(saveRequests()).toHaveLength(0)
 
-    await reply(newRequest, { success: true, dbExists: false })
+    await reply(newRequest, success({ dbExists: false }))
     element<HTMLButtonElement>('#btn-save').click()
     expect(saveRequests()[0]?.body.dropDatabase).toBe(false)
     expect(confirm).toHaveBeenCalledTimes(1)
@@ -321,7 +385,7 @@ describe('数据库配置页面', () => {
     button('选择并配置 PostgreSQL').click()
 
     expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(true)
-    await reply(testConnection(), { success: true, dbExists: false })
+    await reply(testConnection(), success({ dbExists: false }))
     element<HTMLButtonElement>('#btn-save').click()
     expect(saveRequests()[0]?.body.dropDatabase).toBe(false)
   })
@@ -345,7 +409,7 @@ describe('数据库配置页面', () => {
   ])('当前参数测试成功后可以保存：$choice', async ({ existing, drop }) => {
     confirm.mockReturnValue(drop)
     const request = testConnection()
-    await reply(request, { success: true, dbExists: existing, hasOtherTables: existing })
+    await reply(request, success({ dbExists: existing, hasOtherTables: existing }))
 
     expect(confirm).toHaveBeenCalledTimes(existing ? 1 : 0)
     expect(element<HTMLButtonElement>('#btn-save').disabled).toBe(false)

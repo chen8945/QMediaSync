@@ -1,6 +1,5 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import { HttpResponseError } from '@/http/errors'
 import { unwrapResponse } from './response'
 import type { APIResponse } from './types'
 
@@ -44,27 +43,20 @@ export interface QueueStats {
 }
 
 export async function fetchAnnouncements(http: AxiosInstance): Promise<Announcement[]> {
-  const response = await http.get<APIResponse<Announcement[] | null> | Announcement[]>(
-    `${SERVER_URL}/announce`,
+  return (
+    unwrapResponse(await http.get<APIResponse<Announcement[] | null>>(`${SERVER_URL}/announce`))
+      .data ?? []
   )
-  // 公告保留旧版直接返回数组的兼容方式，但 HTTP 失败不能作为公告列表。
-  if (Array.isArray(response.data)) {
-    if (response.status < 200 || response.status >= 300) {
-      throw new HttpResponseError(response)
-    }
-    return response.data
-  }
-  return unwrapResponse({ ...response, data: response.data }) ?? []
 }
 
 export async function fetchHourlyStats(http: AxiosInstance): Promise<HourlyStatsData | null> {
   return unwrapResponse(
     await http.get<APIResponse<HourlyStatsData | null>>(`${SERVER_URL}/115/stats/hourly`),
-  )
+  ).data
 }
 
 export async function fetchQueueStats(http: AxiosInstance): Promise<QueueStats | null> {
   return unwrapResponse(
     await http.get<APIResponse<QueueStats | null>>(`${SERVER_URL}/115/queue/stats`),
-  )
+  ).data
 }

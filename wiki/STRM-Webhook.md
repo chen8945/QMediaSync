@@ -38,11 +38,11 @@ curl --request POST 'http://qms.example:12333/api/strm/webhook' \
 
 ## 收到成功响应后还要做什么
 
-成功接收时可能返回：
+任务已接收时返回 HTTP `202`，例如：
 
 ```json
 {
-  "code": 200,
+  "status": 202,
   "message": "STRM 生成任务已接收",
   "data": {
     "request_id": "strm_example_request",
@@ -215,12 +215,19 @@ curl 'http://qms.example:12333/api/strm/tasks?id=123' \
 | --- | --- |
 | HTTP `401` | 检查是否传入 QMediaSync API Key、密钥是否正确且已启用 |
 | HTTP `400` | 查看响应中的 `message`：常见原因是字段不完整、目录匹配歧义、文件超出同步范围、使用了 `local_path`，或把后续处理开关放进批量项 |
-| HTTP `200` 但有项目未接收 | 检查 `accepted_count`、`failed_count` 和逐项 `results`，只修正失败项 |
+| HTTP `400`，`error_code=UPSTREAM_CREDENTIALS_INVALID` | 在 QMediaSync 中重新授权对应的 115 网盘账号，再重试；无需更换 QMediaSync API Key |
+| HTTP `404` | 检查指定的同步目录和关联账号是否仍存在 |
+| HTTP `502`，`error_code=UPSTREAM_ERROR` | 检查 115 服务和 QMediaSync 的网络连接，结合日志中的请求实例定位原因 |
+| HTTP `504`，`error_code=UPSTREAM_TIMEOUT` | 115 远端解析等待超时，恢复连接后重试 |
+| HTTP `500` | 查看应用日志，排查数据库或服务故障 |
+| HTTP `200` 或 `202`，但有项目未接收 | 检查 `accepted_count`、`failed_count` 和逐项 `results`，只修正失败项 |
 | 已接收但没有生成文件 | 查询任务状态，确认最小视频大小、扩展名和名称排除规则；再检查网盘授权、本地目录权限和日志 |
 | 已生成 STRM，但没有字幕或图片 | 确认 `download_meta=true`、文件名符合匹配规则、扩展名已配置，并查看下载队列 |
 | STRM 已变化，但媒体服务器没更新 | 确认 `refresh_emby=true`，检查对应服务器的启用及刷新开关、媒体库关联和批量中是否有失败文件 |
 
 创建请求失败时，查看 **HTTP 状态和 `message`**。
+
+批量请求中未接收的项目没有任务 ID。需要排查时，使用响应中的 `request_id` 和对应项目的 `index` 查询应用日志，日志会保留脱敏后的失败原因。
 
 ## 与其他 Webhook 的区别
 

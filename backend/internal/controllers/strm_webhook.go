@@ -11,8 +11,10 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
+	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -75,6 +77,23 @@ type strmWebhookItemResult struct {
 	Accepted bool   `json:"accepted"`
 	TaskID   uint   `json:"task_id,omitempty"`
 	Error    string `json:"error,omitempty"`
+	cause    error
+}
+
+// strmWebhookRemoteError 保留上游错误链与已取得的诊断脱敏资料。
+type strmWebhookRemoteError struct {
+	cause   error
+	secrets []string
+}
+
+func (err *strmWebhookRemoteError) Error() string { return err.cause.Error() }
+func (err *strmWebhookRemoteError) Unwrap() error { return err.cause }
+
+func strmWebhookErrorSecrets(err error) []string {
+	if remoteErr, ok := errors.AsType[*strmWebhookRemoteError](err); ok {
+		return remoteErr.secrets
+	}
+	return nil
 }
 
 type strmWebhookOptions struct {
@@ -89,45 +108,79 @@ type strmWebhookPreparedFile struct {
 
 // StrmWebhook 接收外部请求创建 STRM 生成任务。
 func StrmWebhook(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
 	raw := apiKeyFromRequest(c)
 	if strings.TrimSpace(raw) == "" {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil, ErrorCode: ErrorCodeAuthenticationRequired})
+		c.Header("WWW-Authenticate", `QMediaSyncApiKey realm="QMediaSync"`)
+		httpapi.Failure(c, http.StatusUnauthorized, httpapi.Error{Code: ErrorCodeAuthenticationRequired, Message: "API Key 无效"})
 		return
 	}
 	apiKey, err := models.ValidateAPIKey(raw)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, APIResponse[any]{Code: BadRequest, Message: "API Key 无效", Data: nil, ErrorCode: authErrorCode(err, ErrorCodeAuthenticationInvalid)})
+		status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "API Key 验证失败"
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			status, code, message = http.StatusUnauthorized, ErrorCodeAuthenticationInvalid, "API Key 无效"
+			c.Header("WWW-Authenticate", `QMediaSyncApiKey realm="QMediaSync"`)
+		}
+		httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: err, Secrets: []string{raw}})
 		return
 	}
 	_ = apiKey.UpdateLastUsedAt()
 
 	var req strmWebhookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("请求参数错误：%v", err), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	resp, err := handleStrmWebhookRequest(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		if _, ok := errors.AsType[validation.Error](err); ok {
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "RESOURCE_NOT_FOUND", Message: "请求的同步目录或账号不存在", Cause: err, Secrets: strmWebhookErrorSecrets(err)})
+		} else if remoteErr, ok := errors.AsType[*strmWebhookRemoteError](err); ok {
+			writeCloudUpstreamError(c, err, "创建 STRM 任务失败", remoteErr.secrets...)
+		} else {
+			httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "创建 STRM 任务失败", Cause: err, Secrets: strmWebhookErrorSecrets(err)})
+		}
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[strmWebhookResponse]{Code: Success, Message: "STRM 生成任务已接收", Data: resp})
+	status := http.StatusOK
+	message := "STRM 请求处理完成"
+	if resp.AcceptedCount > 0 {
+		status, message = http.StatusAccepted, "STRM 生成任务已接收"
+	}
+	httpapi.Success(c, status, resp, message)
+}
+
+func strmWebhookRejectedItem(index int, err error) strmWebhookItemResult {
+	return strmWebhookItemResult{Index: index, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
+}
+
+func strmWebhookPublicError(err error) string {
+	if requestErr, ok := errors.AsType[validation.Error](err); ok {
+		return requestErr.Message
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "请求的同步目录或账号不存在"
+	}
+	return "STRM 项处理失败"
 }
 
 func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strmWebhookResponse, error) {
 	if strings.TrimSpace(req.LocalPath) != "" {
-		return strmWebhookResponse{}, errors.New("不允许通过 local_path 指定本地写入路径")
+		return strmWebhookResponse{}, validation.New("", "不允许通过 local_path 指定本地写入路径")
 	}
 	action := inferStrmWebhookAction(req)
 	if action == strmWebhookActionBatchFiles {
 		if len(req.Items) == 0 {
-			return strmWebhookResponse{}, errors.New("items 不能为空")
+			return strmWebhookResponse{}, validation.New("", "items 不能为空")
 		}
 		if err := validateStrmWebhookItemOptions(req.Items); err != nil {
 			return strmWebhookResponse{}, err
 		}
 	}
-	syncPath, err := resolveStrmWebhookSyncPath(req, action)
+	syncPath, err := resolveStrmWebhookSyncPath(ctx, req, action)
 	if err != nil {
 		return strmWebhookResponse{}, err
 	}
@@ -140,7 +193,7 @@ func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strm
 	case strmWebhookActionFile:
 		result := enqueueStrmWebhookFile(ctx, syncPath, 0, options, 0, req.strmWebhookFileItem)
 		if !result.Accepted {
-			return strmWebhookResponse{}, errors.New(result.Error)
+			return strmWebhookResponse{}, result.cause
 		}
 		resp.Results = append(resp.Results, result)
 	case strmWebhookActionBatchFiles:
@@ -154,11 +207,11 @@ func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strm
 	case strmWebhookActionDirectoryScan:
 		result := enqueueStrmWebhookDirectory(ctx, syncPath, req)
 		if !result.Accepted {
-			return strmWebhookResponse{}, errors.New(result.Error)
+			return strmWebhookResponse{}, result.cause
 		}
 		resp.Results = append(resp.Results, result)
 	default:
-		return strmWebhookResponse{}, fmt.Errorf("不支持的 action：%s", action)
+		return strmWebhookResponse{}, validation.New("action", "不支持的 action")
 	}
 	for _, result := range resp.Results {
 		if result.Accepted {
@@ -166,6 +219,13 @@ func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strm
 			resp.TaskIDs = append(resp.TaskIDs, result.TaskID)
 		} else {
 			resp.FailedCount++
+			if result.cause != nil && helpers.AppLogger != nil {
+				_, inputError := errors.AsType[validation.Error](result.cause)
+				if !inputError && !errors.Is(result.cause, gorm.ErrRecordNotFound) {
+					cause := strings.Join(strings.Fields(httpapi.SafeCause(result.cause, strmWebhookErrorSecrets(result.cause)...)), " ")
+					helpers.AppLogger.Errorf("[STRM Webhook] 项处理失败: request_id=%s index=%d error=%q", resp.RequestID, result.Index, cause)
+				}
+			}
 		}
 	}
 	if helpers.AppLogger != nil {
@@ -187,58 +247,58 @@ func handleStrmWebhookRequest(ctx context.Context, req strmWebhookRequest) (strm
 func validateStrmWebhookItemOptions(items []strmWebhookFileItem) error {
 	for _, item := range items {
 		if item.ItemDownloadMeta != nil || item.ItemRefreshEmby != nil {
-			return errors.New("items[] 不允许设置 download_meta 或 refresh_emby，请使用请求顶层字段统一控制")
+			return validation.New("", "items[] 不允许设置 download_meta 或 refresh_emby，请使用请求顶层字段统一控制")
 		}
 	}
 	return nil
 }
 
-func loadStrmWebhookSyncPath(syncPathID uint) (*models.SyncPath, error) {
+func loadStrmWebhookSyncPath(ctx context.Context, syncPathID uint) (*models.SyncPath, error) {
 	if syncPathID == 0 {
-		return nil, errors.New("sync_path_id 不能为空")
+		return nil, validation.New("", "sync_path_id 不能为空")
 	}
-	syncPath := models.GetSyncPathById(syncPathID)
-	if syncPath == nil {
-		return nil, fmt.Errorf("同步目录不存在：%d", syncPathID)
+	syncPath, err := models.GetSyncPathByID(ctx, syncPathID)
+	if err != nil {
+		return nil, fmt.Errorf("读取同步目录失败: %w", err)
 	}
 	if syncPath.SourceType != models.SourceType115 {
-		return nil, fmt.Errorf("sync_path_id 必须指向 115 同步目录：%d", syncPathID)
+		return nil, validation.New("sync_path_id", "sync_path_id 必须指向 115 同步目录")
 	}
 	return syncPath, nil
 }
 
-func resolveStrmWebhookSyncPath(req strmWebhookRequest, action string) (*models.SyncPath, error) {
+func resolveStrmWebhookSyncPath(ctx context.Context, req strmWebhookRequest, action string) (*models.SyncPath, error) {
 	if req.SyncPathID != 0 {
-		return loadStrmWebhookSyncPath(req.SyncPathID)
+		return loadStrmWebhookSyncPath(ctx, req.SyncPathID)
 	}
 	switch action {
 	case strmWebhookActionFile:
 		item := normalizeStrmWebhookFileItem(req.strmWebhookFileItem)
 		if item.Path == "" || item.FileName == "" {
-			return nil, errors.New("sync_path_id 为空时 file 请求必须提供 path + file_name")
+			return nil, validation.New("", "sync_path_id 为空时 file 请求必须提供 path + file_name")
 		}
-		return matchStrmWebhookSyncPathByRemotePath(item.Path)
+		return matchStrmWebhookSyncPathByRemotePath(ctx, item.Path)
 	case strmWebhookActionBatchFiles:
-		return resolveStrmWebhookBatchSyncPath(req.Items)
+		return resolveStrmWebhookBatchSyncPath(ctx, req.Items)
 	case strmWebhookActionDirectoryScan:
 		directoryPath := normalizeRemotePath(req.DirectoryPath)
 		if directoryPath == "" {
-			return nil, errors.New("sync_path_id 为空时 directory_scan 请求必须提供 directory_path")
+			return nil, validation.New("", "sync_path_id 为空时 directory_scan 请求必须提供 directory_path")
 		}
-		return matchStrmWebhookSyncPathByRemotePath(directoryPath)
+		return matchStrmWebhookSyncPathByRemotePath(ctx, directoryPath)
 	default:
-		return nil, fmt.Errorf("不支持的 action：%s", action)
+		return nil, validation.New("action", "不支持的 action")
 	}
 }
 
-func resolveStrmWebhookBatchSyncPath(items []strmWebhookFileItem) (*models.SyncPath, error) {
+func resolveStrmWebhookBatchSyncPath(ctx context.Context, items []strmWebhookFileItem) (*models.SyncPath, error) {
 	var matched *models.SyncPath
 	for index, item := range items {
 		item = normalizeStrmWebhookFileItem(item)
 		if item.Path == "" || item.FileName == "" {
-			return nil, fmt.Errorf("sync_path_id 为空时 items[%d] 必须提供 path + file_name", index)
+			return nil, validation.New("items", fmt.Sprintf("sync_path_id 为空时 items[%d] 必须提供 path + file_name", index))
 		}
-		syncPath, err := matchStrmWebhookSyncPathByRemotePath(item.Path)
+		syncPath, err := matchStrmWebhookSyncPathByRemotePath(ctx, item.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -247,22 +307,22 @@ func resolveStrmWebhookBatchSyncPath(items []strmWebhookFileItem) (*models.SyncP
 			continue
 		}
 		if matched.ID != syncPath.ID {
-			return nil, errors.New("batch_files 自动匹配到多个同步目录，请拆分请求或显式提供 sync_path_id")
+			return nil, validation.New("", "batch_files 自动匹配到多个同步目录，请拆分请求或显式提供 sync_path_id")
 		}
 	}
 	if matched == nil {
-		return nil, errors.New("items 不能为空")
+		return nil, validation.New("", "items 不能为空")
 	}
 	return matched, nil
 }
 
-func matchStrmWebhookSyncPathByRemotePath(remotePath string) (*models.SyncPath, error) {
+func matchStrmWebhookSyncPathByRemotePath(ctx context.Context, remotePath string) (*models.SyncPath, error) {
 	remotePath = normalizeRemotePath(remotePath)
 	if remotePath == "" {
-		return nil, errors.New("远端路径为空，无法自动匹配同步目录")
+		return nil, validation.New("", "远端路径为空，无法自动匹配同步目录")
 	}
 	var syncPaths []models.SyncPath
-	if err := db.Db.Where("source_type = ?", models.SourceType115).Find(&syncPaths).Error; err != nil {
+	if err := db.Db.WithContext(ctx).Where("source_type = ?", models.SourceType115).Find(&syncPaths).Error; err != nil {
 		return nil, fmt.Errorf("查询同步目录失败：%w", err)
 	}
 
@@ -287,10 +347,10 @@ func matchStrmWebhookSyncPathByRemotePath(remotePath string) (*models.SyncPath, 
 		}
 	}
 	if matched == nil {
-		return nil, fmt.Errorf("远端路径 %s 未匹配到 115 同步目录，请显式提供 sync_path_id", remotePath)
+		return nil, validation.New("path", "远端路径未匹配到 115 同步目录，请显式提供 sync_path_id")
 	}
 	if ambiguous {
-		return nil, fmt.Errorf("远端路径 %s 匹配到多个同步目录，请显式提供 sync_path_id", remotePath)
+		return nil, validation.New("sync_path_id", "远端路径匹配到多个同步目录，请显式提供 sync_path_id")
 	}
 	matched.ParseVideoAndMetaExt()
 	return matched, nil
@@ -333,14 +393,14 @@ func prepareStrmWebhookBatchFiles(ctx context.Context, syncPath *models.SyncPath
 
 func prepareStrmWebhookFileItem(ctx context.Context, syncPath *models.SyncPath, index int, item strmWebhookFileItem) (strmWebhookPreparedFile, strmWebhookItemResult) {
 	if strings.TrimSpace(item.LocalPath) != "" {
-		return strmWebhookPreparedFile{}, strmWebhookItemResult{Index: index, Accepted: false, Error: "不允许通过 local_path 指定本地写入路径"}
+		return strmWebhookPreparedFile{}, strmWebhookRejectedItem(index, validation.New("local_path", "不允许通过 local_path 指定本地写入路径"))
 	}
 	item = normalizeStrmWebhookFileItem(item)
 	if err := validateStrmWebhookFileItem(syncPath, item); err != nil {
-		return strmWebhookPreparedFile{}, strmWebhookItemResult{Index: index, Accepted: false, Error: err.Error()}
+		return strmWebhookPreparedFile{}, strmWebhookItemResult{Index: index, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
 	}
 	if err := resolveStrmWebhookFileItem(ctx, syncPath, &item); err != nil {
-		return strmWebhookPreparedFile{}, strmWebhookItemResult{Index: index, Accepted: false, Error: err.Error()}
+		return strmWebhookPreparedFile{}, strmWebhookItemResult{Index: index, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
 	}
 	return strmWebhookPreparedFile{index: index, item: item}, strmWebhookItemResult{Index: index, Accepted: true}
 }
@@ -357,7 +417,7 @@ func createStrmWebhookFileTask(syncPath *models.SyncPath, parentTaskID uint, opt
 		legacyStrmWebhookFileRequestHash(syncPath.ID, parentTaskID, options, item),
 	)
 	if err != nil {
-		return strmWebhookItemResult{Index: index, Accepted: false, Error: err.Error()}
+		return strmWebhookItemResult{Index: index, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
 	}
 	return strmWebhookItemResult{Index: index, Accepted: true, TaskID: task.ID}
 }
@@ -543,7 +603,7 @@ func resolveStrmWebhookFileItem(ctx context.Context, syncPath *models.SyncPath, 
 	if item == nil {
 		return nil
 	}
-	account, err := models.GetAccountById(syncPath.AccountId)
+	account, err := models.ReadAccount(ctx, syncPath.AccountId)
 	if err != nil {
 		return fmt.Errorf("查询同步账号失败: %w", err)
 	}
@@ -552,13 +612,13 @@ func resolveStrmWebhookFileItem(ctx context.Context, syncPath *models.SyncPath, 
 	if item.FileID != "" {
 		detail, err = resolveStrmWebhookFileDetailByID(ctx, account, item.FileID)
 		if err != nil {
-			return fmt.Errorf("解析远端文件详情失败: %w", err)
+			return fmt.Errorf("解析远端文件详情失败: %w", &strmWebhookRemoteError{cause: err, secrets: []string{account.Token, account.RefreshToken, account.Password}})
 		}
 	} else {
 		requestedFullPath = pathpkg.Join(item.Path, item.FileName)
 		detail, err = resolveStrmWebhookFileDetail(ctx, account, requestedFullPath)
 		if err != nil {
-			return fmt.Errorf("解析远端文件详情失败: %w", err)
+			return fmt.Errorf("解析远端文件详情失败: %w", &strmWebhookRemoteError{cause: err, secrets: []string{account.Token, account.RefreshToken, account.Password}})
 		}
 	}
 	if detail == nil || strings.TrimSpace(detail.FileId) == "" {
@@ -580,7 +640,7 @@ func resolveStrmWebhookFileItem(ctx context.Context, syncPath *models.SyncPath, 
 		return errors.New("解析远端文件详情失败：缺少远端路径")
 	}
 	if !remotePathWithin(item.Path, syncPath.RemotePath) {
-		return fmt.Errorf("远端路径 %s 不在同步远端目录 %s 下", item.Path, normalizeRemotePath(syncPath.RemotePath))
+		return validation.New("path", "远端路径不在同步远端目录下")
 	}
 	return nil
 }
@@ -622,12 +682,12 @@ func validateStrmWebhookFileItem(syncPath *models.SyncPath, item strmWebhookFile
 	hasPathName := item.Path != "" && item.FileName != ""
 	if item.FileID == "" && !hasPathName {
 		if item.PickCode != "" {
-			return errors.New("仅提供 pick_code 无法生成 STRM，请提供 file_id 或 path + file_name")
+			return validation.New("", "仅提供 pick_code 无法生成 STRM，请提供 file_id 或 path + file_name")
 		}
-		return errors.New("file_id 或 path + file_name 至少需要提供一组")
+		return validation.New("", "file_id 或 path + file_name 至少需要提供一组")
 	}
 	if item.Path != "" && !remotePathWithin(item.Path, syncPath.RemotePath) {
-		return fmt.Errorf("远端路径 %s 不在同步远端目录 %s 下", item.Path, normalizeRemotePath(syncPath.RemotePath))
+		return validation.New("path", "远端路径不在同步远端目录下")
 	}
 	return nil
 }
@@ -636,13 +696,13 @@ func enqueueStrmWebhookDirectory(ctx context.Context, syncPath *models.SyncPath,
 	directoryID := strings.TrimSpace(req.DirectoryID)
 	directoryPath := normalizeRemotePath(req.DirectoryPath)
 	if directoryID == "" && directoryPath == "" {
-		return strmWebhookItemResult{Index: 0, Accepted: false, Error: "directory_id 或 directory_path 至少需要提供一个"}
+		return strmWebhookRejectedItem(0, validation.New("directory_id", "directory_id 或 directory_path 至少需要提供一个"))
 	}
 	if directoryPath != "" && !remotePathWithin(directoryPath, syncPath.RemotePath) {
-		return strmWebhookItemResult{Index: 0, Accepted: false, Error: fmt.Sprintf("远端目录 %s 不在同步远端目录 %s 下", directoryPath, normalizeRemotePath(syncPath.RemotePath))}
+		return strmWebhookRejectedItem(0, validation.New("directory_path", "远端目录不在同步远端目录下"))
 	}
 	if err := validateStrmWebhookDirectoryDetail(ctx, syncPath, directoryID, directoryPath); err != nil {
-		return strmWebhookItemResult{Index: 0, Accepted: false, Error: err.Error()}
+		return strmWebhookItemResult{Index: 0, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
 	}
 	options := strmWebhookOptions{DownloadMeta: req.DownloadMeta, RefreshEmby: req.RefreshEmby}
 	task, err := models.EnqueueStrmGenerationTaskWithLegacyHashes(&models.StrmGenerationTask{
@@ -657,7 +717,7 @@ func enqueueStrmWebhookDirectory(ctx context.Context, syncPath *models.SyncPath,
 		RequestHash:   strmWebhookDirectoryRequestHash(syncPath.ID, options, directoryID, directoryPath),
 	}, legacyStrmWebhookDirectoryRequestHash(syncPath.ID, options, directoryID, directoryPath))
 	if err != nil {
-		return strmWebhookItemResult{Index: 0, Accepted: false, Error: err.Error()}
+		return strmWebhookItemResult{Index: 0, Accepted: false, Error: strmWebhookPublicError(err), cause: err}
 	}
 	return strmWebhookItemResult{Index: 0, Accepted: true, TaskID: task.ID}
 }
@@ -666,13 +726,13 @@ func validateStrmWebhookDirectoryDetail(ctx context.Context, syncPath *models.Sy
 	if directoryID == "" || directoryPath == "" {
 		return nil
 	}
-	account, err := models.GetAccountById(syncPath.AccountId)
+	account, err := models.ReadAccount(ctx, syncPath.AccountId)
 	if err != nil {
 		return fmt.Errorf("查询同步账号失败: %w", err)
 	}
 	detail, err := resolveStrmWebhookFileDetailByID(ctx, account, directoryID)
 	if err != nil {
-		return fmt.Errorf("解析远端目录详情失败: %w", err)
+		return fmt.Errorf("解析远端目录详情失败: %w", &strmWebhookRemoteError{cause: err, secrets: []string{account.Token, account.RefreshToken, account.Password}})
 	}
 	if detail == nil {
 		return errors.New("解析远端目录详情失败：目录不存在")
@@ -682,20 +742,20 @@ func validateStrmWebhookDirectoryDetail(ctx context.Context, syncPath *models.Sy
 		return errors.New("解析远端目录详情失败：返回空目录 ID")
 	}
 	if detailID != directoryID {
-		return fmt.Errorf("directory_id %s 解析为远端目录 %s，不一致", directoryID, detailID)
+		return validation.New("directory_id", "directory_id 与解析到的远端目录不一致")
 	}
 	if detail.FileCategory != v115open.TypeDir {
-		return fmt.Errorf("directory_id %s 指向的远端对象不是目录", directoryID)
+		return validation.New("directory_id", "directory_id 指向的远端对象不是目录")
 	}
 	detailPath := strmWebhookDirectoryDetailRemotePath(detail)
 	if detailPath == "" {
 		return errors.New("解析远端目录详情失败：缺少远端路径")
 	}
 	if detailPath != directoryPath {
-		return fmt.Errorf("directory_id %s 对应远端目录 %s，与 directory_path %s 不一致", directoryID, detailPath, directoryPath)
+		return validation.New("directory_id", "directory_id 与 directory_path 不一致")
 	}
 	if !remotePathWithin(detailPath, syncPath.RemotePath) {
-		return fmt.Errorf("远端目录 %s 不在同步远端目录 %s 下", detailPath, normalizeRemotePath(syncPath.RemotePath))
+		return validation.New("directory_path", "远端目录不在同步远端目录下")
 	}
 	return nil
 }

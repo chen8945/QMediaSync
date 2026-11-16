@@ -82,31 +82,32 @@ const mountSettings = async (
   loadBody?: APIResponse<unknown>,
 ) => {
   const reply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: logSettings,
   })
   const cronReply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: ['2026-09-21 02:00:00'],
   })
   const configReply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue(loadBody ?? { code: 200, message: '', data: settings })
+    .mockResolvedValue(loadBody ?? { status: 200, message: '', data: settings })
   if (loadError) configReply.mockRejectedValueOnce(loadError)
   const adapter = vi.fn(async (config) => {
+    const responseBody =
+      config.method === 'post'
+        ? await reply()
+        : config.url.endsWith('/cron')
+          ? await cronReply()
+          : await configReply()
     return {
       config,
-      status: 200,
+      status: (responseBody as { status: number }).status,
       statusText: 'OK',
       headers: {},
-      data:
-        config.method === 'post'
-          ? await reply()
-          : config.url.endsWith('/cron')
-            ? await cronReply()
-            : await configReply(),
+      data: responseBody,
     }
   })
   const wrapper = mount(component, {
@@ -133,7 +134,13 @@ const fieldInput = (wrapper: VueWrapper, label: string) => {
 const rejectedRequest = (errorCode: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, message: 'internal token-secret', error_code: errorCode, data: null },
+    data: {
+      status: status,
+      message: 'internal token-secret',
+      error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/setting/test?token=token-secret#fragment' },
   })
 
@@ -153,14 +160,30 @@ afterEach(() => {
 describe.each(pages)(
   '$name 设置失败反馈',
   ({ component, settings, field, changed, action, status }) => {
-    it('HTTP 200 业务失败保留输入且不显示成功，日志只含安全诊断', async () => {
+    it('保存消息透传，提交后的应用警告进入原有反馈', async () => {
+      const { wrapper, reply, act } = await mountSettings(component, settings)
+      const message = '服务器确认已保存测试配置'
+      reply.mockResolvedValueOnce({ status: 200, data: settings, message })
+      await act(action)
+      expect(wrapper.get(status).text()).toContain(message)
+      const warning = '测试配置已保存，运行应用需要重试'
+      reply.mockResolvedValueOnce({ status: 200, data: settings, message, warnings: [warning] })
+      await act(action)
+      expect(wrapper.get(status).text()).toContain(message)
+      expect(wrapper.get(status).text()).toContain(warning)
+      expect(wrapper.find('.el-alert--warning').exists()).toBe(true)
+    })
+
+    it('请求失败保留输入且不显示成功，日志只含安全诊断', async () => {
       const { wrapper, reply, act } = await mountSettings(component, settings)
       const input = fieldInput(wrapper, field)
       await input.setValue(changed)
       reply.mockResolvedValueOnce({
-        code: 500,
+        status: 500,
         message: '配置暂时不可写，请稍后重试',
         data: logSettings,
+        error_code: 'TEST_REQUEST_FAILED',
+        instance: '/request-errors/ComponentTestFailure0001',
       })
 
       await act(action)
@@ -174,7 +197,7 @@ describe.each(pages)(
       expect(ElMessage.success).not.toHaveBeenCalled()
       expect(console.error).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ method: 'POST', status: 200 }),
+        expect.objectContaining({ method: 'POST', status: 500 }),
       )
       expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret')
     })
@@ -195,9 +218,11 @@ describe.each(pages)(
 
     it('读取业务失败不会写入失败响应附带的配置', async () => {
       const { wrapper, adapter } = await mountSettings(component, settings, undefined, {
-        code: 500,
+        status: 500,
         message: '配置暂时不可读，请稍后重试',
         data: settings,
+        error_code: 'TEST_REQUEST_FAILED',
+        instance: '/request-errors/ComponentTestFailure0001',
       })
       expect(wrapper.get(status).text()).toContain('失败')
       expect((fieldInput(wrapper, field).element as HTMLInputElement).value).not.toBe(
@@ -284,9 +309,12 @@ describe('STRM 校验与 Cron', () => {
       new HttpResponseError({
         status: 400,
         data: {
-          code: 500,
-          message: 'exclude_name_regex_arr[0]：正则表达式无效：error parsing regexp: secret',
+          status: 400,
+          message: '正则表达式无效',
+          field_errors: [{ field: 'exclude_name_regex_arr[0]', message: '正则表达式无效' }],
           data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
         },
       }),
     )
@@ -304,9 +332,11 @@ describe('STRM 校验与 Cron', () => {
     expect(wrapper.text()).toContain('2026-09-21 02:00:00')
     await act('保存 STRM 配置')
     cronReply.mockResolvedValue({
-      code: 500,
+      status: 500,
       message: 'cron：仅支持 5 位 cron 表达式或 robfig 描述符',
       data: ['2030-01-01'],
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await fieldInput(wrapper, '定时同步表达式').setValue('bad cron')
     await vi.advanceTimersByTimeAsync(300)
@@ -331,7 +361,7 @@ describe('STRM 校验与 Cron', () => {
     const staleFailure = createDeferred<APIResponse<unknown>>()
     cronReply.mockReturnValueOnce(staleFailure.promise)
     await cron.setValue('0 4 * * *')
-    staleSuccess.resolve({ code: 200, message: '', data: ['过期时间'] })
+    staleSuccess.resolve({ status: 200, message: '', data: ['过期时间'] })
     await flushPromises()
     expect(wrapper.text()).not.toContain('过期时间')
     await vi.advanceTimersByTimeAsync(100)
@@ -341,7 +371,13 @@ describe('STRM 校验与 Cron', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(cronReply).toHaveBeenCalledTimes(3)
     await cron.setValue('')
-    staleFailure.resolve({ code: 500, message: '过期查询失败', data: null })
+    staleFailure.resolve({
+      status: 500,
+      message: '过期查询失败',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await flushPromises()
     await vi.advanceTimersByTimeAsync(300)
     expect(cronReply).toHaveBeenCalledTimes(3)
@@ -357,7 +393,7 @@ describe('日志生效配置', () => {
     const input = fieldInput(wrapper, '单文件最大大小')
     await input.setValue('30')
     reply.mockResolvedValueOnce({
-      code: 200,
+      status: 200,
       message: '',
       data: { level: 'warn', maxSizeMB: 25, maxBackups: 8, maxAgeDays: 20 },
     })

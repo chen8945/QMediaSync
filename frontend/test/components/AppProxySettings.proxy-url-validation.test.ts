@@ -21,9 +21,10 @@ const messageError = vi.spyOn(ElMessage, 'error').mockImplementation(() => undef
 
 const createHTTP = (httpProxy = '', credentialsMasked = '0') => ({
   get: vi.fn().mockResolvedValue({
-    data: { code: 200, data: { http_proxy: httpProxy, credentials_masked: credentialsMasked } },
+    data: { status: 200, data: { http_proxy: httpProxy, credentials_masked: credentialsMasked } },
+    status: 200,
   }),
-  post: vi.fn().mockResolvedValue({ data: { code: 200 } }),
+  post: vi.fn().mockResolvedValue({ data: { status: 200, data: null }, status: 200 }),
 })
 
 const mountProxySettings = async (httpProxy = '', credentialsMasked = '0') => {

@@ -19,17 +19,6 @@ var AppName string = "QMediaSync"
 //go:embed assets/db_config.html
 var embedFiles embed.FS
 
-// @title QMediaSync API
-// @version 1.0
-// @description 媒体同步和刮削系统 API
-// @host localhost:8115
-// @BasePath /
-// @securityDefinitions.apikey JwtAuth
-// @in header
-// @name Authorization
-// @securityDefinitions.apikey ApiKeyAuth
-// @in query
-// @name api_key
 func main() {
 	app.Run(app.Options{
 		Version:                 Version,

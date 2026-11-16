@@ -75,6 +75,7 @@
 </template>
 
 <script setup lang="ts">
+import type { SettingsSaveResult } from '@/api/types'
 import { ref, onMounted } from 'vue'
 import ResponsivePagination from '@/components/common/ResponsivePagination.vue'
 import ResponsiveRecordTable from '@/components/records/ResponsiveRecordTable.vue'
@@ -93,6 +94,12 @@ import { formatFileSize } from '@/utils/fileSizeUtils'
 import { formatTimestamp, formatDuration } from '@/utils/timeUtils'
 
 const http = useHttpClient()
+const showOperationResult = (result: SettingsSaveResult, fallbackMessage: string) => {
+  if (result.warnings.length)
+    ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+  else ElMessage.success(result.message?.trim() || fallbackMessage)
+}
+
 const backupStore = useBackupStore()
 const { isMobile } = useDeviceType()
 
@@ -233,8 +240,8 @@ const getBackupRecordRowKey = (row: BackupRecordListItem) => row.id
 const startManualBackup = async () => {
   backupStarting.value = true
   try {
-    await backupAPI.createBackup(http, '手动备份')
-    ElMessage.success('备份任务已启动')
+    const result = await backupAPI.createBackup(http, '手动备份')
+    showOperationResult(result, '备份任务已启动')
     backupStore.startProgressPolling('backup', undefined, http)
     setTimeout(() => {
       loadBackupRecords()
@@ -324,8 +331,8 @@ const deleteBackupRecord = async (recordId: number) => {
       },
     )
 
-    await backupAPI.deleteBackup(http, recordId)
-    ElMessage.success('备份记录已删除')
+    const result = await backupAPI.deleteBackup(http, recordId)
+    showOperationResult(result, '备份记录已删除')
     await loadBackupRecords()
   } catch (error: unknown) {
     reportError(error, '删除备份记录失败')
@@ -369,8 +376,8 @@ const restoreBackup = async (recordId: number) => {
     ElMessage.info('正在启动恢复任务…')
 
     const result = await backupAPI.restoreBackup(http, recordId)
-    ElMessage.success('恢复任务已启动')
-    backupStore.startProgressPolling('restore', undefined, http, result?.restore_receipt)
+    showOperationResult(result, '恢复任务已启动')
+    backupStore.startProgressPolling('restore', undefined, http, result.data?.restore_receipt)
   } catch (error) {
     reportError(error, '恢复备份失败')
   } finally {

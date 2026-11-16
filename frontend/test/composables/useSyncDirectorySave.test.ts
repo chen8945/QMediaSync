@@ -45,15 +45,14 @@ afterEach(() => vi.restoreAllMocks())
 describe('useSyncDirectorySave', () => {
   it('保存失败时保留字段错误且不执行成功回调', async () => {
     const http = mockHTTP({
+      status: 400,
       data: {
-        code: 500,
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 400,
         message: '目录监控上传规则校验失败',
-        data: {
-          error_code: 'DIRECTORY_UPLOAD_RULE_CONFLICT',
-          field_errors: [
-            { client_id: 'rule-2', field: 'monitor_path', message: '监控目录不能为空' },
-          ],
-        },
+        error_code: 'DIRECTORY_UPLOAD_RULE_CONFLICT',
+        data: null,
+        field_errors: [{ client_id: 'rule-2', field: 'monitor_path', message: '监控目录不能为空' }],
       },
     })
     const onSuccess = vi.fn()
@@ -74,8 +73,10 @@ describe('useSyncDirectorySave', () => {
       sync_path: { id: 12 },
       directory_upload: { enabled: false, rules: [] },
       warnings: ['同步目录已保存，但重载定时同步任务失败'],
+      message: '测试保存结果',
     }
-    const http = mockHTTP({ data: { code: 200, message: '保存成功', data: responseData } })
+    const { warnings, message, ...data } = responseData
+    const http = mockHTTP({ status: 200, data: { status: 200, message, warnings, data } })
     const onSuccess = vi.fn()
     const state = useSyncDirectorySave(http)
 
@@ -85,22 +86,18 @@ describe('useSyncDirectorySave', () => {
     expect(onSuccess).toHaveBeenCalledOnce()
     expect(onSuccess).toHaveBeenCalledWith(responseData)
   })
-  it('顶层错误码和字段优先，动态正则与路径消息不能透传', async () => {
+  it('字段定位读取顶层，动态正则与路径消息不能透传', async () => {
     const http = mockHTTP({
       status: 400,
       data: {
-        code: 500,
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 400,
         message: '参数校验失败',
         error_code: 'INVALID_REQUEST',
         field_errors: [
           { field: 'exclude_name_regex_arr[2]', message: '正则表达式无效：private secret' },
         ],
-        data: {
-          error_code: 'DIRECTORY_UPLOAD_RULE_CONFLICT',
-          field_errors: [
-            { client_id: '7', field: 'monitor_path', message: '/private/path overlaps' },
-          ],
-        },
+        data: null,
       },
     })
     const state = useSyncDirectorySave(http)
@@ -115,17 +112,16 @@ describe('useSyncDirectorySave', () => {
   it.each([
     ['REQUEST_ORIGIN_INVALID', '访问地址校验失败'],
     ['CSRF_TOKEN_INVALID', '请求安全校验失败'],
-  ])('%s 优先于嵌套字段错误，阻止回调且不误报网络', async (code, message) => {
+  ])('%s 不作为表单字段错误，阻止回调且不误报网络', async (code, message) => {
     const http = mockHTTP({
       status: 403,
       data: {
-        code: 500,
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 403,
         error_code: code,
         message: 'private',
-        data: {
-          error_code: 'INVALID_REQUEST',
-          field_errors: [{ field: 'local_path', message: '不能为空' }],
-        },
+        data: null,
+        field_errors: [{ field: 'local_path', message: '不能为空' }],
       },
     })
     const state = useSyncDirectorySave(http)
@@ -138,12 +134,21 @@ describe('useSyncDirectorySave', () => {
   })
 
   it('取消和已处理 401 静默清空上次错误，不执行成功回调', async () => {
-    const http = mockHTTP({ data: { code: 500, message: 'private', data: null } })
+    const http = mockHTTP({ status: 400, data: { status: 400, message: 'private', data: null } })
     const state = useSyncDirectorySave(http)
     const onSuccess = vi.fn()
     await state.saveAndRun(0, payload, 'key', onSuccess)
     vi.mocked(console.error).mockClear()
-    const handled = new HttpResponseError({ status: 401, data: { code: 401 } })
+    const handled = new HttpResponseError({
+      status: 401,
+      data: {
+        data: null,
+        message: '请求未完成',
+        error_code: 'INVALID_REQUEST',
+        instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 401,
+      },
+    })
     markAuthInvalidationHandled(handled)
     for (const error of [new CanceledError(), handled]) {
       vi.mocked(http.post).mockRejectedValueOnce(error)
@@ -157,12 +162,13 @@ describe('useSyncDirectorySave', () => {
 
   it('超时仅提交一次且不执行下游动作；未知提交后警告仍有安全提示', async () => {
     const http = mockHTTP({
+      status: 200,
       data: {
-        code: 200,
+        status: 200,
+        warnings: ['private postcommit exception'],
         data: {
           sync_path: { id: 12 },
           directory_upload: { enabled: false, rules: [] },
-          warnings: ['private postcommit exception'],
         },
       },
     })

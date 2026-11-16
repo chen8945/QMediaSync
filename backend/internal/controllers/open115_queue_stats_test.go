@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -11,10 +12,12 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func setupQueueStatsControllerTest(t *testing.T) *gin.Engine {
@@ -53,12 +56,12 @@ func TestGetQueueStats重启后从数据库返回请求统计(t *testing.T) {
 		t.Fatalf("HTTP status = %d，期望 200，body=%s", w.Code, w.Body.String())
 	}
 
-	var resp APIResponse[map[string]any]
+	var resp httpapi.APIResponse[map[string]any]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d，期望 %d，message=%s", resp.Code, Success, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Status = %d，期望 %d，message=%s", resp.Status, http.StatusOK, resp.Message)
 	}
 	if got := int64(resp.Data["total_requests"].(float64)); got != 2 {
 		t.Fatalf("total_requests = %d，期望 2", got)
@@ -86,12 +89,12 @@ func TestGetQueueStats限流中返回总等待时长(t *testing.T) {
 		t.Fatalf("HTTP status = %d，期望 200，body=%s", w.Code, w.Body.String())
 	}
 
-	var resp APIResponse[map[string]any]
+	var resp httpapi.APIResponse[map[string]any]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if resp.Code != Success {
-		t.Fatalf("Code = %d，期望 %d，message=%s", resp.Code, Success, resp.Message)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("Status = %d，期望 %d，message=%s", resp.Status, http.StatusOK, resp.Message)
 	}
 	if got := resp.Data["is_throttled"].(bool); !got {
 		t.Fatal("is_throttled = false，期望 true")
@@ -156,7 +159,7 @@ func TestUploadListIncludesResumeProgressFields(t *testing.T) {
 		t.Fatalf("HTTP status = %d，期望 200，body=%s", w.Code, w.Body.String())
 	}
 
-	var resp APIResponse[map[string]any]
+	var resp httpapi.APIResponse[map[string]any]
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
@@ -173,5 +176,41 @@ func TestUploadListIncludesResumeProgressFields(t *testing.T) {
 	}
 	if item["progress_percent"] != float64(40) {
 		t.Fatalf("progress_percent = %v，期望 40", item["progress_percent"])
+	}
+}
+
+func TestRequestStatsDoesNotReturnSuccessAfterCountFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		handler        gin.HandlerFunc
+		failCountQuery int
+	}{
+		{name: "daily total", handler: GetRequestStatsByDay, failCountQuery: 1},
+		{name: "daily throttled", handler: GetRequestStatsByDay, failCountQuery: 2},
+		{name: "hourly total", handler: GetRequestStatsByHour, failCountQuery: 1},
+		{name: "hourly throttled", handler: GetRequestStatsByHour, failCountQuery: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupQueueStatsControllerTest(t)
+			countQueries := 0
+			const callback = "test:request_stats_count_failure"
+			if err := db.Db.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				countQueries++
+				if countQueries == tc.failCountQuery {
+					tx.AddError(errors.New("count query database diagnostic"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Db.Callback().Query().Remove(callback) })
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/115/stats?start_date=2026-11-01&end_date=2026-11-02", nil)
+			tc.handler(c)
+			response := decodeAPIMessage(t, w.Body)
+			if w.Code != http.StatusInternalServerError || response.Status != w.Code || response.ErrorCode != "INTERNAL_ERROR" || response.Data != nil {
+				t.Fatalf("计数查询失败仍返回了成功统计: HTTP=%d response=%+v", w.Code, response)
+			}
+		})
 	}
 }

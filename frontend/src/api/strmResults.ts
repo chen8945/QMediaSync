@@ -28,7 +28,7 @@ export interface StrmResultQuery {
 export async function fetchStrmResults(http: AxiosInstance, params: StrmResultQuery) {
   return unwrapResponse<{ items: StrmResult[]; total: number }>(
     await http.get('/api/strm/tasks', { params }),
-  )
+  ).data
 }
 export function strmResultStatus(status: string): string {
   return (

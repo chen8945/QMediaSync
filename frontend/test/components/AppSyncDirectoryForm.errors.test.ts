@@ -45,39 +45,48 @@ const SelectorStub = defineComponent({
 const failure = (code: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, error_code: code, message: 'private SQL token' },
+    data: {
+      status: status,
+      error_code: code ?? 'TEST_REQUEST_FAILED',
+      message: 'private SQL token',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'put', url: '/api/sync/paths/12?token=private' },
   })
 const mountForm = async (edit = true, readError?: unknown, ruleError?: unknown) => {
   const getReply = vi.fn(async (url: string): Promise<unknown> => {
     if (url.endsWith('/version'))
-      return { version: 'v1', date: '', isWindows: false, isRelease: false }
+      return { status: 200, data: { version: 'v1', date: '', isWindows: false, isRelease: false } }
     if (url.endsWith('/sync/path/12')) {
       if (readError) throw readError
-      return { code: 200, data: directory }
+      return { status: 200, data: directory }
     }
     if (url.endsWith('/directory-upload/rules')) {
       if (ruleError) throw ruleError
-      return { code: 200, data: { list: [] } }
+      return { status: 200, data: { list: [] } }
     }
-    return { code: 200, data: [] }
+    return { status: 200, data: [] }
   })
   const saveReply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: {
       sync_path: { id: 12 },
       directory_upload: { enabled: false, rules: [] },
-      warnings: [],
     },
+    warnings: [],
   })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await getReply(config.url) : await saveReply(),
-  }))
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'get' ? await getReply(config.url) : await saveReply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -149,14 +158,14 @@ describe('同步目录表单错误行为', () => {
   it('业务失败保留输入、显示安全字段错误且不导航', async () => {
     const { wrapper, saveReply, replace, submit } = await mountForm()
     saveReply.mockResolvedValueOnce({
-      code: 500,
+      status: 400,
       message: '参数校验失败',
-      data: {
-        error_code: 'INVALID_REQUEST',
-        field_errors: [
-          { field: 'exclude_name_regex_arr[0]', message: '正则表达式无效：private token' },
-        ],
-      },
+      data: null,
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/ComponentTestFailure0001',
+      field_errors: [
+        { field: 'exclude_name_regex_arr[0]', message: '正则表达式无效：private token' },
+      ],
     })
     await submit()
     expect(saveReply).toHaveBeenCalledOnce()
@@ -206,22 +215,23 @@ describe('同步目录表单错误行为', () => {
     expect(saveReply).toHaveBeenCalledTimes(1)
     expect(replace).not.toHaveBeenCalled()
     saveReply.mockResolvedValueOnce({
-      code: 409,
+      status: 409,
       message: '相同幂等键的创建请求正在处理',
       error_code: 'IDEMPOTENCY_CONFLICT',
       data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await submit()
     expect(saveReply).toHaveBeenCalledTimes(2)
     expect(replace).not.toHaveBeenCalled()
     saveReply.mockResolvedValueOnce({
-      code: 200,
+      status: 200,
       message: '',
       data: {
         sync_path: { id: 12 },
         directory_upload: { enabled: false, rules: [] },
-        warnings: ['同步目录已保存，但重载定时同步任务失败'],
       },
+      warnings: ['同步目录已保存，但重载定时同步任务失败'],
     })
     await submit()
     const writes = adapter.mock.calls.filter(([config]) => config.method === 'post')

@@ -61,7 +61,7 @@ describe('系统设置 API', () => {
       statusText: 'OK',
       headers: {},
       data: {
-        code: 200,
+        status: 200,
         warnings,
         message: '',
         data: config.url.endsWith('/log')
@@ -78,9 +78,9 @@ describe('系统设置 API', () => {
     expect(await fetchStrmSettings(http)).toEqual(strm)
     expect(await fetchThreadSettings(http)).toEqual(threads)
     expect(await fetchLogSettings(http)).toEqual(logResponse)
-    await expect(saveStrmSettings(http, strm)).resolves.toBeUndefined()
+    await expect(saveStrmSettings(http, strm)).resolves.toEqual({ warnings })
     await expect(saveThreadSettings(http, threads)).resolves.toEqual({ warnings })
-    expect(await saveLogSettings(http, logs)).toEqual(logResponse)
+    expect(await saveLogSettings(http, logs)).toEqual({ ...logResponse, warnings })
     expect(await fetchCronTimes(http, strm.cron)).toEqual([])
 
     const configs = adapter.mock.calls.map(([config]) => config)
@@ -110,22 +110,37 @@ describe('系统设置 API', () => {
         status: 200,
         statusText: 'OK',
         headers: {},
-        data: { code: 200, message: '', data: times },
+        data: { status: 200, message: '', data: times },
       }),
     })
     expect(await fetchCronTimes(http, strm.cron)).toEqual(times)
   })
 
-  it('所有操作均拒绝 HTTP 200 业务失败，保留响应及字段详情', async () => {
+  it('日志保存必须返回实际配置，空正文不能被元信息变成成功配置', async () => {
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: { status: 200, data: null, message: '服务端测试反馈' },
+      }),
+    })
+    await expect(saveLogSettings(http, logs)).rejects.toBeInstanceOf(HttpResponseError)
+  })
+
+  it('所有操作均拒绝请求失败，保留响应及字段详情', async () => {
     const body = {
-      code: 500,
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
       message: 'internal secret',
       data: { field_errors: [{ field: 'cron', message: 'internal secret' }] },
     }
     const http = axios.create({
       adapter: async (config) => ({
         config,
-        status: 200,
+        status: 500,
         statusText: 'OK',
         headers: {},
         data: body,
@@ -142,7 +157,7 @@ describe('系统设置 API', () => {
     ]) {
       await expect(request()).rejects.toMatchObject({
         name: 'HttpResponseError',
-        response: { status: 200, data: body },
+        response: { status: 500, data: body },
       })
     }
   })
@@ -162,31 +177,34 @@ describe('系统设置 API', () => {
     })
   })
 
-  it('正则错误只提取字段位置与原因，丢弃内部详情且不覆盖来源或服务器失败', () => {
-    const parse = (message: string, status = 400, errorCode?: string) =>
+  it('正则错误按顶层字段定位，动态内部说明不作为公开原因', () => {
+    const parse = (field: string, message: string, status = 400, errorCode = 'INVALID_REQUEST') =>
       parseHttpError(
         new HttpResponseError({
           status,
-          data: { code: 500, message, error_code: errorCode, data: null },
+          data: {
+            status,
+            data: null,
+            message: '参数无效',
+            error_code: errorCode,
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            field_errors: [{ field, message }],
+          },
         }),
       )
-    const message = 'exclude_name_regex_arr[2]：正则表达式无效：error parsing regexp: secret'
-    expect(strmRegexValidationIssue(parse(message))).toEqual({ position: 3, reason: 'invalid' })
     expect(
-      strmRegexValidationIssue(parse('exclude_name_regex_arr[0]：正则表达式不能为空')),
-    ).toEqual({
-      position: 1,
-      reason: 'empty',
-    })
+      strmRegexValidationIssue(parse('exclude_name_regex_arr[2]', '正则表达式无效：secret')),
+    ).toEqual({ position: 3, reason: 'invalid' })
+    expect(
+      strmRegexValidationIssue(parse('exclude_name_regex_arr[0]', '正则表达式不能为空')),
+    ).toEqual({ position: 1, reason: 'empty' })
     for (const error of [
-      parse(message, 403, 'REQUEST_ORIGIN_INVALID'),
-      parse(message, 500),
-      parse('exclude_name_regex_arr[-1]：正则表达式无效'),
-      parse('exclude_name_regex_arr[9999999999999999]：正则表达式无效'),
-      parse('exclude_name_regex_arr[0]：secret'),
-      parse('prefix ' + message),
-    ]) {
+      parse('exclude_name_regex_arr[2]', '正则表达式无效', 403, 'REQUEST_ORIGIN_INVALID'),
+      parse('exclude_name_regex_arr[2]', '正则表达式无效', 500),
+      parse('exclude_name_regex_arr[-1]', '正则表达式无效'),
+      parse('exclude_name_regex_arr[9999999999999999]', '正则表达式无效'),
+      parse('other', '正则表达式无效'),
+    ])
       expect(strmRegexValidationIssue(error)).toBeUndefined()
-    }
   })
 })

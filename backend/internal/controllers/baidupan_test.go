@@ -111,8 +111,13 @@ func TestGetBaiduPanURLPropagatesCancellation(t *testing.T) {
 					t.Fatal("请求取消或超时没有传到实际百度请求")
 				}
 			}
-			if response.Code == http.StatusFound || response.Header().Get("Location") != "" {
-				t.Fatal("取消后仍返回播放直链")
+			wantStatus, wantCode := http.StatusServiceUnavailable, "REQUEST_CANCELED"
+			if tc.deadline {
+				wantStatus, wantCode = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT"
+			}
+			result := decodeAPIMessage(t, response.Body)
+			if response.Code != wantStatus || result.Status != response.Code || result.ErrorCode != wantCode || response.Header().Get("Location") != "" {
+				t.Fatalf("取消后错误类别或跳转不正确: HTTP=%d response=%+v", response.Code, result)
 			}
 			if len(db.Cache.Get("baidupanurl:123, ua=Baidu Player")) != 0 {
 				t.Fatal("取消后仍回填百度直链缓存")
@@ -297,5 +302,25 @@ func TestFnosNativePlaybackStopCancelsBaiduDetail(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("停止飞牛实例后百度取链或原生播放仍未结束")
 		}
+	}
+}
+
+func TestGetBaiduPanURLRejectsMissingUpstreamLink(t *testing.T) {
+	router, target := setupBaiduPlaybackTest(t)
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return proxy115TestResponse(r, http.StatusOK, `{"errno":0,"list":[{"fs_id":123}]}`, nil), nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header.Set("User-Agent", "Missing Link Player")
+	router.ServeHTTP(w, request)
+	result := decodeAPIMessage(t, w.Body)
+	if w.Code != http.StatusBadGateway || result.Status != w.Code || result.ErrorCode != "UPSTREAM_RESPONSE_INVALID" || w.Header().Get("Location") != "" {
+		t.Fatalf("缺少上游直链时未安全拒绝: HTTP=%d response=%+v", w.Code, result)
+	}
+	if len(db.Cache.Get("baidupanurl:123, ua=Missing Link Player")) != 0 {
+		t.Fatal("无效上游结果写入了播放缓存")
 	}
 }

@@ -1,4 +1,5 @@
 import { isAxiosError, isCancel } from 'axios'
+import { isAPIResponse } from './envelope'
 
 export type HttpErrorKind =
   | 'cancelled'
@@ -33,6 +34,7 @@ export interface HttpErrorDiagnostics {
   path?: string
   status?: number
   errorCode?: string
+  instance?: string
 }
 
 export interface ParsedHttpError {
@@ -83,14 +85,15 @@ export class FetchRequestError extends Error {
   }
 }
 
-const errorKinds: Record<string, HttpErrorKind> = {
-  REQUEST_ORIGIN_INVALID: 'origin',
-  CSRF_TOKEN_INVALID: 'csrf',
-  AUTHENTICATION_REQUIRED: 'unauthorized',
-  AUTHENTICATION_INVALID: 'unauthorized',
-  SESSION_INVALID: 'unauthorized',
-  FORBIDDEN: 'forbidden',
-  DATABASE_MAINTENANCE: 'maintenance',
+const errorKinds: Record<string, { status: number; kind: HttpErrorKind }> = {
+  REQUEST_ORIGIN_INVALID: { status: 403, kind: 'origin' },
+  CSRF_TOKEN_INVALID: { status: 403, kind: 'csrf' },
+  AUTHENTICATION_REQUIRED: { status: 401, kind: 'unauthorized' },
+  AUTHENTICATION_INVALID: { status: 401, kind: 'unauthorized' },
+  SESSION_INVALID: { status: 401, kind: 'unauthorized' },
+  RESTORE_RECEIPT_INVALID: { status: 401, kind: 'application' },
+  FORBIDDEN: { status: 403, kind: 'forbidden' },
+  DATABASE_MAINTENANCE: { status: 503, kind: 'maintenance' },
 }
 
 const messages: Record<HttpErrorKind, string> = {
@@ -116,16 +119,18 @@ const safeMethod = (method: unknown) =>
 // 丢弃协议、凭据、主机与查询参数，避免诊断日志泄露令牌。
 const safePath = (url: unknown) =>
   typeof url === 'string'
-    ? url.split(/[?#]/)[0]!.replace(/^[a-z][a-z\d+.-]*:\/\/[^/]*/i, '') || '/'
+    ? url.split(/[?#]/)[0]!.replace(/^(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*/i, '') || '/'
     : undefined
 
-// 兼容当前登录限流接口的明确等待文案，不从其他错误文本猜测原因。
-const getRetryAfterSeconds = (body: Record<string, unknown> | undefined) => {
+const getRetryAfterSeconds = (headers: unknown) => {
+  const record = asRecord(headers)
   const value =
-    typeof body?.message === 'string'
-      ? /^请求过于频繁，请 (\d+) 秒后再试$/.exec(body.message)?.[1]
-      : undefined
-  return value === undefined ? undefined : Number(value)
+    typeof record?.get === 'function'
+      ? record.get('retry-after')
+      : (record?.['retry-after'] ?? record?.['Retry-After'])
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) ? seconds : undefined
 }
 
 export function parseHttpError(
@@ -136,8 +141,9 @@ export function parseHttpError(
   const response = asRecord(record?.response) as HttpErrorResponse | undefined
   const body = asRecord(response?.data)
   const details = body?.data
-  const nested = asRecord(details)
-  const code = body?.error_code ?? nested?.error_code
+  const failureBody =
+    response && response.status >= 400 && isAPIResponse(response) ? body : undefined
+  const code = failureBody?.error_code
   const errorCode = typeof code === 'string' ? code : undefined
   const config = asRecord(record?.config) ?? asRecord(response?.config)
   const method = safeMethod(config?.method)
@@ -155,12 +161,12 @@ export function parseHttpError(
     (error instanceof FetchRequestError && transport?.name === 'TimeoutError')
   ) {
     kind = 'timeout'
-  } else if (errorCode && Object.hasOwn(errorKinds, errorCode)) {
-    kind = errorKinds[errorCode]!
-  } else if (!errorCode && status === 403 && body?.message === '请求来源无效') {
-    kind = 'origin'
-  } else if (!errorCode && status === 403 && body?.message === 'CSRF 校验失败') {
-    kind = 'csrf'
+  } else if (
+    errorCode &&
+    Object.hasOwn(errorKinds, errorCode) &&
+    errorKinds[errorCode]!.status === status
+  ) {
+    kind = errorKinds[errorCode]!.kind
   } else if (status === 401) {
     kind = 'unauthorized'
   } else if (status === 403) {
@@ -179,25 +185,39 @@ export function parseHttpError(
       (error instanceof FetchRequestError && transportError instanceof TypeError))
   ) {
     kind = 'network'
-  } else if (typeof body?.code === 'number' && body.code !== 200) {
+  } else if (failureBody) {
     kind = 'application'
   }
 
   let message = messages[kind]
   if (kind === 'application' || kind === 'unknown') {
     message = options.fallbackMessage ?? message
-    const reason = typeof body?.message === 'string' ? body.message.trim() : ''
-    if (kind === 'application' && reason) {
-      message =
-        options.publicMessages && Object.hasOwn(options.publicMessages, reason)
-          ? options.publicMessages[reason]!
-          : reason
-    }
+  }
+  if (kind === 'unauthorized' && errorCode === 'AUTHENTICATION_INVALID') {
+    message = '登录失败'
+  }
+  if (
+    failureBody &&
+    [
+      'application',
+      'forbidden',
+      'not-found',
+      'method-not-allowed',
+      'rate-limit',
+      'server',
+    ].includes(kind)
+  ) {
+    const reason = (failureBody.message as string).trim()
+    message =
+      options.publicMessages && Object.hasOwn(options.publicMessages, reason)
+        ? options.publicMessages[reason]!
+        : reason
   }
   if (kind === 'timeout' && method && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     message = '请求超时，操作结果尚未确认。请先检查操作是否已生效，避免重复提交'
   }
-  const retryAfterSeconds = kind === 'rate-limit' ? getRetryAfterSeconds(body) : undefined
+  const retryAfterSeconds =
+    kind === 'rate-limit' ? getRetryAfterSeconds(response?.headers) : undefined
   if (retryAfterSeconds !== undefined) {
     message = `请求过于频繁，请 ${retryAfterSeconds} 秒后再试`
   }
@@ -207,6 +227,7 @@ export function parseHttpError(
   if (path) diagnostics.path = path
   if (status !== undefined) diagnostics.status = status
   if (errorCode) diagnostics.errorCode = errorCode
+  if (typeof failureBody?.instance === 'string') diagnostics.instance = failureBody.instance
 
   return {
     kind,

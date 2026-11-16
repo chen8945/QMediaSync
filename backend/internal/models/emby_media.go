@@ -154,7 +154,10 @@ func CleanupDeletedEmbyLibraries(kind MediaServerType, activeLibraryIds []string
 		return err
 	}
 	if len(activeLibraryIds) == 0 {
-		return nil
+		if err := db.Db.Where("media_server_type = ?", kind).Delete(&EmbyLibrarySyncPath{}).Error; err != nil {
+			return err
+		}
+		return db.Db.Where("media_server_type = ?", kind).Delete(&EmbyLibrary{}).Error
 	}
 
 	// 级联清理关联的同步路径记录

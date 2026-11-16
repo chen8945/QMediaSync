@@ -20,6 +20,7 @@ const router = {
 
 const messageError = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
 const messageSuccess = vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+const messageWarning = vi.spyOn(ElMessage, 'warning').mockImplementation(() => undefined as never)
 vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
 vi.mock('vue-router', () => ({
@@ -65,9 +66,10 @@ describe('AppLogin 初始化模式', () => {
     const http = {
       get: vi.fn().mockResolvedValue({
         data: {
-          code: 200,
+          status: 200,
           data: { required: true },
         },
+        status: 200,
       }),
       post: vi.fn(),
     }
@@ -83,9 +85,10 @@ describe('AppLogin 初始化模式', () => {
     const http = {
       get: vi.fn().mockResolvedValue({
         data: {
-          code: 200,
+          status: 200,
           data: { required: false },
         },
+        status: 200,
       }),
       post: vi.fn(),
     }
@@ -114,8 +117,19 @@ describe('AppLogin 初始化模式', () => {
     ['创建管理员失败：username：不能为空', '创建管理员失败：用户名：不能为空'],
   ])('创建失败 %s 保留输入且不切换登录表单', async (message, expected) => {
     const http = {
-      get: vi.fn().mockResolvedValue({ data: { code: 200, data: { required: true } } }),
-      post: vi.fn().mockResolvedValue({ data: { code: 500, message, data: null } }),
+      get: vi
+        .fn()
+        .mockResolvedValue({ data: { status: 200, data: { required: true } }, status: 200 }),
+      post: vi.fn().mockResolvedValue({
+        data: {
+          status: 500,
+          message,
+          data: null,
+          instance: '/request-errors/ComponentTestFailure0001',
+          error_code: 'TEST_REQUEST_FAILED',
+        },
+        status: 500,
+      }),
     }
     const wrapper = mountLogin(http)
     await flushPromises()
@@ -139,15 +153,26 @@ describe('AppLogin 初始化模式', () => {
 
   it('创建成功接受空 data 并切换登录表单', async () => {
     const http = {
-      get: vi.fn().mockResolvedValue({ data: { code: 200, data: { required: true } } }),
-      post: vi.fn().mockResolvedValue({ data: { code: 200, data: null } }),
+      get: vi
+        .fn()
+        .mockResolvedValue({ data: { status: 200, data: { required: true } }, status: 200 }),
+      post: vi.fn().mockResolvedValue({
+        data: {
+          status: 201,
+          data: null,
+          message: '服务端管理员创建结果',
+          warnings: ['管理员创建提醒'],
+        },
+        status: 201,
+      }),
     }
     const wrapper = mountLogin(http)
     await flushPromises()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(messageSuccess).toHaveBeenCalledExactlyOnceWith('管理员创建成功，请登录')
+    expect(messageWarning).toHaveBeenCalledExactlyOnceWith('服务端管理员创建结果；管理员创建提醒')
+    expect(messageSuccess).not.toHaveBeenCalled()
     expect(messageError).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('系统登录')
     expect(wrapper.find('input[name="setup-token"]').exists()).toBe(false)
@@ -156,7 +181,9 @@ describe('AppLogin 初始化模式', () => {
 
   it('创建请求取消时静默保留初始化表单', async () => {
     const http = {
-      get: vi.fn().mockResolvedValue({ data: { code: 200, data: { required: true } } }),
+      get: vi
+        .fn()
+        .mockResolvedValue({ data: { status: 200, data: { required: true } }, status: 200 }),
       post: vi.fn().mockRejectedValue(new CanceledError()),
     }
     const wrapper = mountLogin(http)

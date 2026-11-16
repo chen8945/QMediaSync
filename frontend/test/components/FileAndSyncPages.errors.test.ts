@@ -39,7 +39,14 @@ const pageStub = defineComponent({
   emits: ['currentChange'],
   template: '<button @click="$emit(\'currentChange\', 2)">第二页</button>',
 })
-const envelope = (data: unknown, code = 200, message = '') => ({ code, data, message })
+const envelope = (data: unknown, status = 200, message = '') => ({
+  status,
+  data,
+  message,
+  ...(status >= 400
+    ? { error_code: 'TEST_REQUEST_FAILED', instance: '/request-errors/ComponentTestFailure0001' }
+    : {}),
+})
 const file = { id: 'file', name: 'movie.mkv', size: 1024, modified_time: 1, is_directory: false }
 const filesPage = { list: [file], total: 1, page: 1, page_size: 50 }
 const directory = { id: '/strm', name: '目标目录', path: '/strm' }
@@ -80,7 +87,13 @@ const accounts = [
 const failure = (errorCode: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, error_code: errorCode, message: 'private SQL token' },
+    data: {
+      status: status,
+      error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      message: 'private SQL token',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/path/create?token=private' },
   })
 const handled401 = () => {
@@ -94,7 +107,10 @@ const click = async (wrapper: VueWrapper, label: string) => {
   await button(wrapper, label).trigger('click')
   await flushPromises()
 }
-const mountPage = async (kind: 'files' | 'records' | 'directories' = 'files') => {
+const mountPage = async (
+  kind: 'files' | 'records' | 'directories' = 'files',
+  records = [record],
+) => {
   const readReply = vi.fn(
     async (url: string, params?: Record<string, unknown>): Promise<unknown> => {
       if (url.endsWith('/path/sort-options'))
@@ -107,17 +123,21 @@ const mountPage = async (kind: 'files' | 'records' | 'directories' = 'files') =>
       if (url.endsWith('/account/list')) return envelope(accounts)
       if (url.endsWith('/path/files')) return envelope(filesPage)
       if (url.endsWith('/path/list')) return envelope(params?.parent_id ? [] : [directory])
-      return envelope({ records: [record], total: 30 })
+      return envelope({ records, total: 30 })
     },
   )
   const writeReply = vi.fn(async (): Promise<unknown> => envelope(null))
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await readReply(config.url, config.params) : await writeReply(),
-  }))
+  const adapter = vi.fn(async (config) => {
+    const responseBody =
+      config.method === 'get' ? await readReply(config.url, config.params) : await writeReply()
+    return {
+      config,
+      status: (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/', component: { template: '<div />' } }],
@@ -175,7 +195,7 @@ beforeEach(() => {
 })
 
 describe('file manager HTTP feedback', () => {
-  it('keeps the create dialog and name on HTTP 200 business failure and allows retry', async () => {
+  it('keeps the create dialog and name on request failure and allows retry', async () => {
     const { wrapper, writeReply, adapter } = await mountPage()
     writeReply.mockResolvedValueOnce(envelope(null, 500, '创建目录失败：名称已存在'))
     await openCreate(wrapper)
@@ -362,20 +382,32 @@ describe('sync records HTTP feedback', () => {
     expect(readReply).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps batch selection after partial cleanup failure and uses safe complete message', async () => {
-    const { wrapper, writeReply, adapter } = await mountPage('records')
+  it('removes confirmed deletions, keeps failed selection and reports partial cleanup safely', async () => {
+    const remaining = { ...record, id: 2, remote_path: '未删除记录' }
+    const { wrapper, writeReply, readReply, adapter } = await mountPage('records', [
+      record,
+      remaining,
+    ])
     await wrapper.get('input[type="checkbox"]').setValue(true)
     await click(wrapper, '选择全部记录')
     writeReply.mockResolvedValueOnce(
       envelope(
-        { deleted_ids: [], failures: [{ id: 1, reason: 'private log path' }] },
+        { deleted_ids: [1], failures: [{ id: 2, reason: 'private log path' }] },
         500,
         '部分同步记录删除失败',
       ),
     )
+    readReply.mockResolvedValueOnce(envelope({ records: [remaining], total: 29 }))
     await click(wrapper, '批量删除')
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('部分同步记录删除失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
+      '已删除 1 条同步记录；部分同步记录删除失败',
+    )
     expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('原记录')
+    expect(wrapper.text()).toContain('未删除记录')
+    expect(JSON.stringify(vi.mocked(ElMessage.error).mock.calls)).not.toContain('private')
+    expect(readReply).toHaveBeenCalledTimes(2)
+    expect(writeReply).toHaveBeenCalledTimes(1)
     expect(button(wrapper, '批量删除').attributes('disabled')).toBeUndefined()
     const request = adapter.mock.calls.find(([config]) => config.method === 'post')![0]
     expect(request.timeout).toBe(60000)

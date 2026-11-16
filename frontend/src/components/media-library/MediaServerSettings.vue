@@ -189,8 +189,22 @@ const loadLibraries = async (afterSave = false) => {
   if (form.sync_all_libraries !== 0) return
   const requestId = libraryGate.next()
   try {
-    const libraries = await fetchMediaLibraryLibraries(http, serverType)
-    if (libraryGate.isCurrent(requestId)) availableLibraries.value = libraries
+    const result = await fetchMediaLibraryLibraries(http, serverType)
+    if (!libraryGate.isCurrent(requestId)) return
+    availableLibraries.value = result.libraries
+    if (result.warnings.length)
+      feedback.value = {
+        title: afterSave
+          ? '配置已保存，媒体库清理未完成'
+          : `${productName} 媒体库列表已更新，清理未完成`,
+        type: 'warning',
+        description: [
+          afterSave ? feedback.value?.description || `${productName} 配置已保存` : '',
+          ...result.warnings,
+        ]
+          .filter(Boolean)
+          .join('；'),
+      }
   } catch (error) {
     if (!libraryGate.isCurrent(requestId)) return
     const title = afterSave
@@ -245,7 +259,9 @@ const save = async () => {
     feedback.value = {
       title: result.warnings.length ? '配置已保存，尚未完全生效' : '保存成功',
       type: result.warnings.length ? 'warning' : 'success',
-      description: [`${productName} 配置已保存`, ...result.warnings].join('；'),
+      description: [result.message?.trim() || `${productName} 配置已保存`, ...result.warnings].join(
+        '；',
+      ),
     }
     if (await loadConfig(true)) await loadLibraries(true)
     void refreshStatus()
@@ -260,15 +276,22 @@ const save = async () => {
 }
 const extract = async () => {
   if (busy.value || syncStartLoading.value || !savedEnabled.value || !savedConnection.value) return
+  libraryGate.invalidate()
   busy.value = true
   clearFeedback()
   try {
-    await extractMediaLibraryMediaInfo(http, serverType)
+    const result = await extractMediaLibraryMediaInfo(http, serverType)
     if (mounted)
       feedback.value = {
         title: '触发提取媒体信息成功',
-        type: 'success',
-        description: '已提交提取任务，请在下载队列查看进度',
+        type: result.warnings.length ? 'warning' : 'success',
+        description: [
+          result.message?.trim(),
+          ...result.warnings,
+          '已提交提取任务，请在下载队列查看进度',
+        ]
+          .filter(Boolean)
+          .join('；'),
       }
   } catch (error) {
     if (mounted) showFailure(error, '触发提取媒体信息失败')
@@ -278,15 +301,18 @@ const extract = async () => {
 }
 const startSync = async () => {
   if (isStartSyncDisabled.value) return
+  libraryGate.invalidate()
   syncStartLoading.value = true
   clearFeedback()
   try {
-    await startMediaLibrarySync(http, serverType)
+    const result = await startMediaLibrarySync(http, serverType)
     if (!mounted) return
     feedback.value = {
-      title: '同步已启动',
-      type: 'success',
-      description: `${productName} 条目同步任务已启动`,
+      title: '同步请求已受理',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || `${productName} 条目同步请求已受理`,
     }
     await refreshStatus(true)
   } catch (error) {

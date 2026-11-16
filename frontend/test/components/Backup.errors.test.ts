@@ -35,28 +35,37 @@ const setup = async (
 ) => {
   const reply = vi
     .fn<() => Promise<APIResponse<unknown>>>()
-    .mockResolvedValue({ code: 200, message: '', data: null })
+    .mockResolvedValue({ status: 200, message: '', data: null })
   const read = vi.fn(async (url: string): Promise<unknown> => {
-    if (url.endsWith('/config')) return { code: 200, data: configData }
-    if (url.endsWith('/list')) return { code: 200, data: { list: records, total: records.length } }
+    if (url.endsWith('/config')) return { status: 200, data: configData }
+    if (url.endsWith('/list'))
+      return { status: 200, data: { list: records, total: records.length } }
     if (url.endsWith('/files'))
       return {
-        code: 200,
+        status: 200,
         data: {
           directory: '/config/backups',
           files: [{ file_name: 'stored-upload.zip', file_size: 512, modified_at: 1 }],
         },
       }
     if (url.includes('/download/')) return new Blob(['PK archive'])
-    return { code: 200, data: [] }
+    return { status: 200, data: [] }
   })
-  const adapter = vi.fn(async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: config.method === 'get' ? await read(config.url) : await reply(),
-  }))
+  const adapter = vi.fn(async (config) => {
+    const responseBody = config.method === 'get' ? await read(config.url) : await reply()
+    return {
+      config,
+      status:
+        responseBody instanceof Blob
+          ? /json/i.test(responseBody.type)
+            ? 404
+            : 200
+          : (responseBody as { status: number }).status,
+      statusText: 'OK',
+      headers: {},
+      data: responseBody,
+    }
+  })
   const pinia = createPinia()
   const store = useBackupStore(pinia)
   const poll = vi.spyOn(store, 'startProgressPolling').mockImplementation(() => {})
@@ -94,6 +103,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: vi.fn() }))
+  vi.spyOn(ElMessage, 'warning').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessage, 'info').mockImplementation(() => ({ close: vi.fn() }))
   vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -105,6 +115,20 @@ afterEach(() => {
 })
 
 describe('备份页面失败反馈', () => {
+  it('配置保存消息透传，应用警告保留已提交事实', async () => {
+    const { wrapper, reply } = await setup(AppBackupSettings)
+    const message = '服务器确认已保存备份测试配置'
+    reply.mockResolvedValueOnce({ status: 200, data: null, message })
+    await click(wrapper, '保存配置')
+    expect(ElMessage.success).toHaveBeenCalledWith(message)
+    vi.mocked(ElMessage.success).mockClear()
+    const warning = '测试备份配置应用需要重试'
+    reply.mockResolvedValueOnce({ status: 200, data: null, message, warnings: [warning] })
+    await click(wrapper, '保存配置')
+    expect(ElMessage.warning).toHaveBeenCalledWith(`${message}；${warning}`)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
   it('从服务器目录恢复文件只发送文件名，保留原有回执与进度流程', async () => {
     const { wrapper, adapter, reply, poll, read } = await setup(AppBackupRestore)
     expect(wrapper.text()).toContain('/config/backups')
@@ -112,7 +136,7 @@ describe('备份页面失败反馈', () => {
     expect(wrapper.text()).toContain('每次恢复时会校验所选备份')
     expect(read).toHaveBeenCalledExactlyOnceWith('/api/backup/files')
     reply.mockResolvedValueOnce({
-      code: 200,
+      status: 200,
       message: '',
       data: { restore_receipt: 'file-receipt' },
     })
@@ -125,7 +149,13 @@ describe('备份页面失败反馈', () => {
 
   it('服务器文件列表读取失败不伪装成空目录，允许刷新重试', async () => {
     const { wrapper, read, reply, poll } = await setup(AppBackupRestore)
-    read.mockResolvedValueOnce({ code: 500, message: '备份目录不可访问', data: null })
+    read.mockResolvedValueOnce({
+      status: 500,
+      message: '备份目录不可访问',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click(wrapper, '刷新文件列表')
     expect(wrapper.text()).toContain('备份目录不可访问')
     expect(wrapper.text()).toContain('stored-upload.zip')
@@ -140,7 +170,13 @@ describe('备份页面失败反馈', () => {
     vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
     await click(wrapper, '恢复')
     expect(reply).not.toHaveBeenCalled()
-    reply.mockResolvedValueOnce({ code: 500, message: '备份文件已不存在', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '备份文件已不存在',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click(wrapper, '恢复')
     expect(wrapper.text()).toContain('stored-upload.zip')
     expect(ElMessage.error).toHaveBeenCalledWith('备份文件已不存在')
@@ -176,12 +212,17 @@ describe('备份页面失败反馈', () => {
     async ({ component, upload, label }) => {
       const { wrapper, reply, poll } = await setup(component)
       if (upload) await selectFile(wrapper)
+      const message = '服务器受理测试恢复请求'
+      const warning = '测试恢复受理仍需等待完成'
       reply.mockResolvedValueOnce({
-        code: 200,
-        message: '',
+        status: 202,
+        message,
+        warnings: [warning],
         data: { restore_receipt: 'test-restore-receipt' },
       })
       await click(wrapper, label)
+      expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(`${message}；${warning}`)
+      expect(ElMessage.success).not.toHaveBeenCalled()
       expect(poll).toHaveBeenCalledWith(
         'restore',
         undefined,
@@ -211,7 +252,13 @@ describe('备份页面失败反馈', () => {
       .find((input) => input.attributes('role') === 'spinbutton')!
     await retention.setValue('12')
     await retention.trigger('change')
-    reply.mockResolvedValueOnce({ code: 500, message: '备份目录不可写', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '备份目录不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     read.mockClear()
     await click(wrapper, '保存配置')
     expect((retention.element as HTMLInputElement).value).toBe('12')
@@ -223,7 +270,13 @@ describe('备份页面失败反馈', () => {
 
   it('保存成功后的 Cron 刷新失败只报告刷新失败', async () => {
     const { wrapper, read } = await setup(AppBackupSettings)
-    read.mockResolvedValueOnce({ code: 500, message: 'Cron 表达式无效', data: null })
+    read.mockResolvedValueOnce({
+      status: 500,
+      message: 'Cron 表达式无效',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await click(wrapper, '保存配置')
     expect(ElMessage.success).toHaveBeenCalledWith('备份配置保存成功')
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('Cron 表达式无效')
@@ -235,15 +288,23 @@ describe('备份页面失败反馈', () => {
       const { wrapper, reply, poll, adapter } = await setup(AppBackupRestore)
       await selectFile(wrapper)
       if (kind === 'business')
-        reply.mockResolvedValueOnce({ code: 500, message: '恢复包格式不正确', data: null })
+        reply.mockResolvedValueOnce({
+          status: 500,
+          message: '恢复包格式不正确',
+          data: null,
+          error_code: 'TEST_REQUEST_FAILED',
+          instance: '/request-errors/ComponentTestFailure0001',
+        })
       else if (kind === 'limit')
         reply.mockRejectedValueOnce(
           new HttpResponseError({
             status: 413,
             data: {
-              code: 413,
-              error_code: 'BACKUP_ARCHIVE_LIMIT',
+              status: 413,
               message: '备份文件大小不能超过 1 GiB',
+              data: null,
+              instance: '/request-errors/ComponentTestFailure0001',
+              error_code: 'BACKUP_ARCHIVE_LIMIT',
             },
           }),
         )
@@ -260,9 +321,11 @@ describe('备份页面失败反馈', () => {
         const error = new HttpResponseError({
           status: kind === 'handled' ? 401 : 403,
           data: {
-            code: 500,
+            status: kind === 'handled' ? 401 : 403,
             error_code: kind === 'handled' ? 'SESSION_INVALID' : 'CSRF_TOKEN_INVALID',
             message: 'internal secret',
+            data: null,
+            instance: '/request-errors/ComponentTestFailure0001',
           },
         })
         if (kind === 'handled') markAuthInvalidationHandled(error)
@@ -289,7 +352,13 @@ describe('备份页面失败反馈', () => {
 
   it.each(['手动备份', '恢复', '删除'])('%s 业务失败没有成功后续动作', async (label) => {
     const { wrapper, reply, read, poll } = await setup(AppBackupRecords)
-    reply.mockResolvedValueOnce({ code: 500, message: '恢复包格式不正确', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '恢复包格式不正确',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     read.mockClear()
     await click(wrapper, label)
     await vi.advanceTimersByTimeAsync(2000)
@@ -305,9 +374,20 @@ describe('备份页面失败反馈', () => {
     const revokeURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     const clickLink = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     read.mockResolvedValueOnce(
-      new Blob(['{"code":500,"message":"备份记录不存在","data":null}'], {
-        type: 'application/json',
-      }),
+      new Blob(
+        [
+          JSON.stringify({
+            status: 404,
+            data: null,
+            message: '备份记录不存在',
+            error_code: 'BACKUP_NOT_FOUND',
+            instance: '/request-errors/ComponentTestFailure0001',
+          }),
+        ],
+        {
+          type: 'application/json',
+        },
+      ),
     )
     await click(wrapper, '下载')
     expect(createURL).not.toHaveBeenCalled()

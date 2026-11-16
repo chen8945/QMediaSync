@@ -18,7 +18,7 @@ describe('AppNotificationChannels Webhook headers', () => {
       status: 200,
       statusText: '',
       headers: {},
-      data: { code: 0, data: config.method === 'get' ? [] : null },
+      data: { status: 200, data: config.method === 'get' ? [] : null },
     }))
     const wrapper = mount(AppNotificationChannels, {
       global: {

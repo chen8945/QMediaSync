@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,13 +13,16 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/playback"
 	"qmediasync/internal/requests"
 	v115auth "qmediasync/internal/v115/auth"
 	v115open "qmediasync/internal/v115/openapi"
+	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type v115StatusResp struct {
@@ -81,30 +85,19 @@ func (kl *KeyLockWithTimeout) Unlock(key string) {
 }
 
 // Get115Status 查询 115 账号状态。
-// @Summary 查询 115 账号状态
-// @Description 获取指定 115 账号的登录状态及存储信息
-// @Tags 115 开放平台
-// @Accept json
-// @Produce json
-// @Param account_id query integer true "账号 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /auth/115-status [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func Get115Status(c *gin.Context) {
 	var req requests.AccountIDRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	client := account.Get115Client()
@@ -112,7 +105,7 @@ func Get115Status(c *gin.Context) {
 	// 获取用户信息
 	userInfo, err := client.UserInfo()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 用户信息失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取 115 用户信息失败", account.Token, account.RefreshToken)
 		return
 	}
 	resp.UserId = userInfo.UserId
@@ -126,7 +119,7 @@ func Get115Status(c *gin.Context) {
 		resp.ExpireTime = "未开通会员"
 	}
 	// 返回状态信息
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取 115 状态成功", Data: resp})
+	httpapi.Success(c, http.StatusOK, resp, "获取 115 状态成功")
 }
 
 func GetFileDetail(c *gin.Context) {
@@ -136,20 +129,20 @@ func GetFileDetail(c *gin.Context) {
 	}
 	var req fileDetailReq
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
-	account, err := models.GetAccountById(req.AccountId)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountId)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
-	fullPath := models.GetPathByPathFileId(account, req.FileId)
-	if fullPath == "" {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "文件 ID 不存在或未找到对应路径", Data: nil})
+	fullPath, err := models.GetPathByPathFileId(account, req.FileId)
+	if err != nil {
+		writeCloudUpstreamError(c, err, "查询文件详情失败")
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "获取文件详情成功", Data: fullPath})
+	httpapi.Success(c, http.StatusOK, fullPath, "获取文件详情成功")
 }
 
 var keyLock KeyLockWithTimeout
@@ -196,25 +189,14 @@ func v115URLValidityCheckTimeout(timeout time.Duration) time.Duration {
 }
 
 // Get115URLByPickCode 查询 115 直链并重定向。
-// @Summary 获取 115 文件直链
-// @Description 根据 PickCode 查询 115 文件直链并按需 302 跳转
-// @Tags 115 开放平台
-// @Accept json
-// @Produce json
-// @Param pickcode query string true "文件 PickCode"
-// @Param userid query string false "115 用户 ID"
-// @Param force query integer false "是否强制直链播放，1 为直链，0 使用本地代理时会走代理"
-// @Success 302 {string} string "重定向到文件直链"
-// @Failure 200 {object} object
-// @Router /115/newurl [get]
 func Get115UrlByPickCode(c *gin.Context) {
 	var req requests.RemoteFileURLRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 	pickCode := req.PickCode
@@ -222,15 +204,14 @@ func Get115UrlByPickCode(c *gin.Context) {
 	var account *models.Account
 	if userId == "" {
 		// 查询 SyncFile
-		syncFile := models.GetFileByPickCode(pickCode)
-		if syncFile == nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "文件 PickCode 不存在", Data: nil})
+		syncFile, err := models.GetFileByPickCode(pickCode)
+		if err != nil {
+			writeCloudFileLookupError(c, err)
 			return
 		}
-		var err error
-		account, err = models.GetAccountById(syncFile.AccountId)
+		account, err = models.ReadAccount(c.Request.Context(), syncFile.AccountId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+			writeAccountLookupError(c, err)
 			return
 		}
 		helpers.AppLogger.Debugf("通过 PickCode 查询到 115 账号：%s", account.Username)
@@ -239,7 +220,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 		// 通过 userId 查询账号
 		account, err = models.GetAccountByUserId(userId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "用户 ID 不存在", Data: nil})
+			writeAccountLookupError(c, err)
 			return
 		}
 		helpers.AppLogger.Debugf("通过用户 ID 查询到 115 账号：%s", account.Username)
@@ -255,7 +236,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 	playback.DefaultPreloader.Takeover(playbackPreloadIdentity(string(models.SourceType115), cacheKey))
 	if !keyLock.lockContext(ctx, cacheKey, v115URLCacheLockWait) {
 		helpers.AppLogger.Warnf("获取 115 下载链接缓存锁超时：PickCode=%s，ua=%s", pickCode, ua)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接超时，请稍后重试", Data: nil})
+		httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "RESOURCE_BUSY", Message: "获取 115 下载链接超时，请稍后重试", Cause: ctx.Err()})
 		return
 	}
 	defer keyLock.Unlock(cacheKey)
@@ -271,7 +252,7 @@ func Get115UrlByPickCode(c *gin.Context) {
 		if !models.IsURLValidityCheckEnabled() {
 			helpers.AppLogger.Debugf("115 缓存直链 HEAD 检查已关闭：文件=%q，PickCode=%s，UA=%q", fileName, pickCode, ua)
 		} else if valid := checkURLValidity(ctx, cachedUrl, ua, v115URLValidityCheckTimeout(models.URLValidityCheckTimeout())); ctx.Err() != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
+			writeCloudUpstreamError(c, ctx.Err(), "获取 115 下载链接失败")
 			return
 		} else if !valid {
 			helpers.AppLogger.Infof("115 缓存直链检查未通过，删除缓存并重新获取：文件=%q，PickCode=%s，UA=%q", fileName, pickCode, ua)
@@ -287,17 +268,34 @@ func Get115UrlByPickCode(c *gin.Context) {
 		if c.Request.TLS != nil {
 			originURL.Scheme = "https"
 		}
-		cachedUrl = resolve115URLMiss(ctx, v115Playback, source, slot, cacheKey, originURL.String(), multiPlaybackEnabled,
-			func(ctx context.Context) string { return client.GetDownloadUrl(ctx, pickCode, ua, true) },
+		var downloadErr error
+		cachedUrl, downloadErr = resolve115URLMiss(ctx, v115Playback, source, slot, cacheKey, originURL.String(), multiPlaybackEnabled,
+			func(ctx context.Context) (string, error) {
+				result, err := client.GetDownloadURLWithError(ctx, pickCode, ua, true)
+				if err != nil {
+					return "", err
+				}
+				return result.URL, nil
+			},
 			func(ctx context.Context) (string, error) { return copy115URL(ctx, account, pickCode, ua) },
 		)
-		if cachedUrl == "" {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
+		if downloadErr != nil {
+			if errors.Is(downloadErr, err115LocalFileLookup) {
+				if !errors.Is(downloadErr, context.Canceled) && !errors.Is(downloadErr, context.DeadlineExceeded) {
+					status, code, message := http.StatusInternalServerError, "INTERNAL_ERROR", "查询 115 原文件失败"
+					if errors.Is(downloadErr, gorm.ErrRecordNotFound) {
+						status, code, message = http.StatusNotFound, "RESOURCE_NOT_FOUND", "原文件不存在"
+					}
+					httpapi.Failure(c, status, httpapi.Error{Code: code, Message: message, Cause: downloadErr, Secrets: []string{account.Token, account.RefreshToken}})
+					return
+				}
+			}
+			writeCloudUpstreamError(c, downloadErr, "获取 115 下载链接失败", account.Token, account.RefreshToken)
 			return
 		}
 	}
 	if ctx.Err() != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 下载链接失败", Data: nil})
+		writeCloudUpstreamError(c, ctx.Err(), "获取 115 下载链接失败")
 		return
 	}
 	fileName := helpers.URLFileName(cachedUrl)
@@ -312,140 +310,99 @@ func Get115UrlByPickCode(c *gin.Context) {
 }
 
 // GetLoginQrCodeOpen 获取 115 开放平台登录二维码。
-// @Summary 获取 115 登录二维码
-// @Description 生成 115 开放平台登录二维码
-// @Tags 115 开放平台
-// @Accept json
-// @Produce json
-// @Param account_id body integer true "账号 ID"
-// @Param authorization_id body string false "更换授权会话 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /auth/115-qrcode-open [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetLoginQrCodeOpen(c *gin.Context) {
 	var req requests.QRCodeOpenRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	source, client, err := getV115AuthorizationTarget(account, req.AuthorizationID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountPersistenceError(c, err, "授权来源不正确")
 		return
 	}
 	if source.Provider != v115auth.ProviderOfficialPKCE {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是官方 PKCE 授权来源", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号不是官方 PKCE 授权来源"})
 		return
 	}
 	qrCodeData, err := client.GetQrCode()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取二维码失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取二维码失败", account.Token, account.RefreshToken)
 		return
 	}
 	saveOpen115AuthState(req.AccountID, qrCodeData, strings.TrimSpace(req.AuthorizationID))
-	c.JSON(http.StatusOK, APIResponse[any]{
-		Code:    Success,
-		Message: "获取二维码成功",
-		Data: gin.H{
-			"uid":     qrCodeData.Uid,
-			"time":    qrCodeData.Time,
-			"sign":    qrCodeData.Sign,
-			"qrcode":  qrCodeData.Qrcode,
-			"expires": 300,
-		},
-	})
+	httpapi.Success(c, http.StatusOK, gin.H{
+		"uid":     qrCodeData.Uid,
+		"time":    qrCodeData.Time,
+		"sign":    qrCodeData.Sign,
+		"qrcode":  qrCodeData.Qrcode,
+		"expires": 300,
+	}, "获取二维码成功")
 }
 
 // GetQrCodeStatus 查询二维码扫码状态
-// @Summary 查询 115 二维码扫码状态
-// @Description 查询指定二维码 UID 的扫码进度
-// @Tags 115 开放平台
-// @Accept json
-// @Produce json
-// @Param uid body string true "二维码 UID"
-// @Param account_id body integer true "账号 ID"
-// @Param authorization_id body string false "更换授权会话 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /auth/115-qrcode-status [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetQrCodeStatus(c *gin.Context) {
 	var req requests.QRCodeStatusRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 	state, ok := getOpen115AuthState(req.AccountID, req.UID)
 	if !ok {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "二维码授权状态不存在或已过期", Data: nil})
+		httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "AUTHORIZATION_STATE_NOT_FOUND", Message: "二维码授权状态不存在或已过期"})
 		return
 	}
 	if strings.TrimSpace(req.AuthorizationID) != state.AuthorizationID {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "二维码授权会话不匹配", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "AUTHORIZATION_MISMATCH", Message: "二维码授权会话不匹配"})
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	source, client, err := getV115AuthorizationTarget(account, state.AuthorizationID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountPersistenceError(c, err, "授权来源不正确")
 		return
 	}
 	status, err := client.QrCodeScanStatus(&state.CodeData.QrCodeData)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取二维码状态失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取二维码状态失败", account.Token, account.RefreshToken)
 		return
 	}
 	setOpen115AuthLastStatus(req.AccountID, req.UID, status)
 	if status != v115open.QrCodeScanStatusConfirmed {
-		c.JSON(http.StatusOK, APIResponse[any]{
-			Code:    Success,
-			Message: "",
-			Data:    gin.H{"status": status.String(), "tip": status.Tip()},
-		})
+		httpapi.Success(c, http.StatusOK, gin.H{"status": status.String(), "tip": status.Tip()}, "")
 		return
 	}
 	if !markOpen115AuthTokenSaving(req.AccountID, req.UID) {
-		c.JSON(http.StatusOK, APIResponse[any]{
-			Code:    Success,
-			Message: "",
-			Data:    gin.H{"status": "confirmed", "tip": "授权处理中"},
-		})
+		httpapi.Success(c, http.StatusOK, gin.H{"status": "confirmed", "tip": "授权处理中"}, "")
 		return
 	}
 	openToken, err := client.GetToken(state.CodeData)
 	if err != nil || openToken == nil {
 		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
-		errMsg := "获取 Token 失败"
-		if err != nil {
-			errMsg += "：" + err.Error()
-		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: errMsg, Data: nil})
+		writeCloudUpstreamError(c, err, "获取 Token 失败", account.Token, account.RefreshToken)
 		return
 	}
 	userInfo, err := client.UserInfo()
 	if err != nil {
 		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 用户信息失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取 115 用户信息失败", account.Token, account.RefreshToken, openToken.AccessToken, openToken.RefreshToken)
 		return
 	}
 	if !commitOpen115AuthState(req.AccountID, req.UID, func() bool {
@@ -453,15 +410,11 @@ func GetQrCodeStatus(c *gin.Context) {
 	}) {
 		resetOpen115AuthTokenSaving(req.AccountID, req.UID)
 		if !c.Writer.Written() {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "二维码授权状态不存在或已取消", Data: nil})
+			httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "AUTHORIZATION_INACTIVE", Message: "二维码授权状态不存在或已取消"})
 		}
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{
-		Code:    Success,
-		Message: "",
-		Data:    gin.H{"status": "confirmed", "tip": "授权成功"},
-	})
+	httpapi.Success(c, http.StatusOK, gin.H{"status": "confirmed", "tip": "授权成功"}, "")
 }
 
 type OAuthURLResponse struct {
@@ -475,31 +428,31 @@ type OAuthURLResponse struct {
 func GetOAuthUrl(c *gin.Context) {
 	var req requests.OAuthURLRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	authorizationID := strings.TrimSpace(req.AuthorizationID)
 	source, _, err := getV115AuthorizationTarget(account, authorizationID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountPersistenceError(c, err, "授权来源不正确")
 		return
 	}
 	if source.SourceType != v115auth.SourceTypeBuiltInRelay && source.SourceType != v115auth.SourceTypeThirdPartyService {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是网页授权来源", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号不是网页授权来源"})
 		return
 	}
 	provider, ok := v115auth.GetOAuthProvider(source.Provider)
 	if !ok {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的 115 网页授权服务", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的 115 网页授权服务"})
 		return
 	}
 	result, err := provider.BuildAuth(c.Request.Context(), v115auth.OAuthURLRequest{
@@ -511,34 +464,34 @@ func GetOAuthUrl(c *gin.Context) {
 		Source:          source,
 	})
 	if err != nil {
-		message := "生成 OAuth 登录地址失败：" + err.Error()
 		if source.SourceType == v115auth.SourceTypeBuiltInRelay && helpers.OAuthRelayEncryptionKey == "" {
-			message = "OAuth 中转未配置 OAUTH_RELAY_ENCRYPTION_KEY"
+			httpapi.Failure(c, http.StatusServiceUnavailable, httpapi.Error{Code: "OAUTH_RELAY_UNAVAILABLE", Message: "OAuth 中转未配置 OAUTH_RELAY_ENCRYPTION_KEY", Cause: err})
+			return
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: message, Data: nil})
+		writeCloudUpstreamError(c, err, "生成 OAuth 登录地址失败", account.Token, account.RefreshToken)
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[OAuthURLResponse]{Code: Success, Message: "获取 115 OAuth 登录地址成功", Data: OAuthURLResponse{
+	httpapi.Success(c, http.StatusOK, OAuthURLResponse{
 		AuthURL:   result.AuthURL,
 		State:     result.State,
 		Polling:   result.Polling,
 		ExpiresIn: result.ExpiresIn,
-	}})
+	}, "获取 115 OAuth 登录地址成功")
 }
 
 func ConfirmOAuthCode(c *gin.Context) {
 	var req requests.OAuthConfirmRequest
 	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	payload := req.Payload
@@ -551,23 +504,23 @@ func ConfirmOAuthCode(c *gin.Context) {
 	authorizationID := strings.TrimSpace(req.AuthorizationID)
 	if callbackAuthorizationID := strings.TrimSpace(payload["authorization_id"]); callbackAuthorizationID != "" {
 		if authorizationID != "" && authorizationID != callbackAuthorizationID {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "AUTHORIZATION_MISMATCH", Message: "OAuth 授权会话不匹配"})
 			return
 		}
 		authorizationID = callbackAuthorizationID
 	}
 	source, _, err := getV115AuthorizationTarget(account, authorizationID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountPersistenceError(c, err, "授权来源不正确")
 		return
 	}
 	if source.SourceType != v115auth.SourceTypeBuiltInRelay && source.SourceType != v115auth.SourceTypeThirdPartyService {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "当前账号不是网页授权来源", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "当前账号不是网页授权来源"})
 		return
 	}
 	provider, ok := v115auth.GetOAuthProvider(source.Provider)
 	if !ok {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的 115 网页授权服务", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的 115 网页授权服务"})
 		return
 	}
 	if authorizationID != "" {
@@ -575,55 +528,55 @@ func ConfirmOAuthCode(c *gin.Context) {
 	}
 	token, err := provider.Confirm(c.Request.Context(), payload)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "确认 OAuth 登录失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "确认 OAuth 登录失败", account.Token, account.RefreshToken, req.Data)
 		return
 	}
 	if !token.Done {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "授权处理中", Data: nil})
+		httpapi.Success(c, http.StatusOK, nil, "授权处理中")
 		return
 	}
 	if !save115OAuthToken(c, account, source, authorizationID, token, "") {
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "OAuth 登录已确认", Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, "OAuth 登录已确认")
 }
 
 func GetOAuthStatus(c *gin.Context) {
 	var req requests.OAuthStatusRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "参数错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
-	account, err := models.GetAccountById(req.AccountID)
+	account, err := models.ReadAccount(c.Request.Context(), req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "账号 ID 不存在", Data: nil})
+		writeAccountLookupError(c, err)
 		return
 	}
 	oauthState, ok := v115auth.GetOAuthStateForAccount(req.State, account.ID)
 	if !ok {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权状态不存在或已过期", Data: nil})
+		httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "AUTHORIZATION_STATE_NOT_FOUND", Message: "授权状态不存在或已过期"})
 		return
 	}
 	authorizationID := strings.TrimSpace(req.AuthorizationID)
 	if oauthState.AuthorizationID != "" {
 		if authorizationID != "" && authorizationID != oauthState.AuthorizationID {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "AUTHORIZATION_MISMATCH", Message: "OAuth 授权会话不匹配"})
 			return
 		}
 		authorizationID = oauthState.AuthorizationID
 	} else if authorizationID != "" {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权会话不匹配", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "AUTHORIZATION_MISMATCH", Message: "OAuth 授权会话不匹配"})
 		return
 	}
 	source := account.V115AuthSource()
 	if authorizationID != "" {
 		targetSession, sessionOK := v115auth.GetAuthorizationSession(authorizationID, account.ID)
 		if !sessionOK {
-			c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "授权会话不存在或已过期", Data: nil})
+			httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "AUTHORIZATION_INACTIVE", Message: "授权会话不存在或已过期"})
 			return
 		}
 		source = targetSession.Source
@@ -633,17 +586,17 @@ func GetOAuthStatus(c *gin.Context) {
 	if source.Provider != oauthState.Provider ||
 		(oauthState.Source.Provider != "" &&
 			(source.SourceType != oauthState.Source.SourceType || source.Provider != oauthState.Source.Provider || source.AppID != oauthState.Source.AppID)) {
-		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "OAuth 授权服务不匹配", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "OAuth 授权服务不匹配"})
 		return
 	}
 	provider, ok := v115auth.GetOAuthProvider(source.Provider)
 	if !ok {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "不支持的 115 网页授权服务", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "不支持的 115 网页授权服务"})
 		return
 	}
 	token, err := provider.Poll(c.Request.Context(), req.State)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询 OAuth 授权状态失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "查询 OAuth 授权状态失败", account.Token, account.RefreshToken)
 		return
 	}
 	if token.Done {
@@ -652,14 +605,14 @@ func GetOAuthStatus(c *gin.Context) {
 		currentState, stateStillActive := v115auth.GetOAuthStateForAccount(req.State, account.ID)
 		if !stateStillActive || currentState.AuthorizationID != oauthState.AuthorizationID {
 			v115auth.ReleaseOAuthState(req.State)
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权状态不存在或已取消", Data: nil})
+			httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "AUTHORIZATION_INACTIVE", Message: "授权状态不存在或已取消"})
 			return
 		}
 		if !save115OAuthToken(c, account, source, authorizationID, token, req.State) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, APIResponse[gin.H]{Code: Success, Message: "查询 OAuth 授权状态成功", Data: gin.H{"done": token.Done}})
+	httpapi.Success(c, http.StatusOK, gin.H{"done": token.Done}, "查询 OAuth 授权状态成功")
 }
 
 func getV115AuthorizationTarget(account *models.Account, authorizationID string) (v115auth.Source, *v115open.OpenClient, error) {
@@ -668,15 +621,15 @@ func getV115AuthorizationTarget(account *models.Account, authorizationID string)
 	if authorizationID != "" {
 		session, ok := v115auth.GetAuthorizationSession(authorizationID, account.ID)
 		if !ok {
-			return v115auth.Source{}, nil, fmt.Errorf("授权会话不存在或已过期")
+			return v115auth.Source{}, nil, v115auth.ErrAuthorizationSessionInactive
 		}
 		source = session.Source
 	}
 	if source.SourceType == "" || source.Provider == "" {
-		return v115auth.Source{}, nil, fmt.Errorf("115 授权来源无效")
+		return v115auth.Source{}, nil, validation.New("auth_source_type", "115 授权来源无效")
 	}
 	if authorizationID != "" && source.Deprecated {
-		return v115auth.Source{}, nil, fmt.Errorf("已废弃的 115 授权来源不能用于授权")
+		return v115auth.Source{}, nil, validation.New("auth_source_type", "已废弃的 115 授权来源不能用于授权")
 	}
 	return source, v115open.NewClient(account.ID, source.AppID, account.Token, account.RefreshToken), nil
 }
@@ -684,7 +637,7 @@ func getV115AuthorizationTarget(account *models.Account, authorizationID string)
 func begin115AuthorizationSession(c *gin.Context, account *models.Account, authorizationID string) (string, bool) {
 	authorizationID = strings.TrimSpace(authorizationID)
 	if authorizationID != "" && !v115auth.BeginAuthorizationSession(authorizationID, account.ID) {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "授权会话不存在、已过期或已取消", Data: nil})
+		httpapi.Failure(c, http.StatusConflict, httpapi.Error{Code: "AUTHORIZATION_INACTIVE", Message: "授权会话不存在、已过期或已取消"})
 		return "", false
 	}
 	return authorizationID, true
@@ -702,7 +655,7 @@ func save115Authorization(c *gin.Context, account *models.Account, source v115au
 		if authorizationID != "" {
 			v115auth.AbortAuthorizationSession(authorizationID)
 		}
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取 115 用户信息失败：" + err.Error(), Data: nil})
+		writeCloudUpstreamError(c, err, "获取 115 用户信息失败", account.Token, account.RefreshToken, token.AccessToken, token.RefreshToken)
 		return false
 	}
 	return commit115Authorization(c, account, source, authorizationID, token, *userInfo)
@@ -730,7 +683,7 @@ func commit115Authorization(c *gin.Context, account *models.Account, source v115
 		})
 	}
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "保存 115 授权失败：" + accountPersistenceMessage(err), Data: nil})
+		writeAccountPersistenceError(c, err, "保存 115 授权失败", token.AccessToken, token.RefreshToken)
 		return false
 	}
 	return true
@@ -759,18 +712,18 @@ func save115OAuthToken(c *gin.Context, account *models.Account, source v115auth.
 func GetQueueStats(c *gin.Context) {
 	var req requests.QueueStatsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 
 	now := time.Now().Unix()
 	stats, err := models.GetRequestStatsWindow(now, int(req.TimeWindow))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询队列统计数据失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询队列统计数据失败", Cause: err})
 		return
 	}
 
@@ -802,7 +755,7 @@ func GetQueueStats(c *gin.Context) {
 		"throttled_remaining_time": throttleStatus.RemainingTime.String(),
 	}
 
-	c.JSON(http.StatusOK, APIResponse[gin.H]{Code: Success, Message: "获取队列统计数据成功", Data: responseData})
+	httpapi.Success(c, http.StatusOK, responseData, "获取队列统计数据成功")
 }
 
 // SetQueueRateLimit 设置 115 开放平台请求队列的速率限制参数。
@@ -810,11 +763,11 @@ func SetQueueRateLimit(c *gin.Context) {
 	var req requests.QueueRateLimitRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 
@@ -823,18 +776,18 @@ func SetQueueRateLimit(c *gin.Context) {
 
 	helpers.AppLogger.Infof("115 开放平台队列速率限制已更新：QPS=%d，QPM=%d，QPH=%d", req.QPS, req.QPM, req.QPH)
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "速率限制配置已更新", Data: gin.H{
+	httpapi.Success(c, http.StatusOK, gin.H{
 		"qps": req.QPS,
 		"qpm": req.QPM,
 		"qph": req.QPH,
-	}})
+	}, "速率限制配置已更新")
 }
 
 // GetRequestStatsByDay 获取指定日期范围内的请求统计（按天分组）
 func GetRequestStatsByDay(c *gin.Context) {
 	var req requests.QueueStatsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if req.StartDate == "" {
@@ -844,7 +797,7 @@ func GetRequestStatsByDay(c *gin.Context) {
 		req.EndDate = time.Now().Format("2006-01-02")
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 
@@ -859,13 +812,21 @@ func GetRequestStatsByDay(c *gin.Context) {
 	// 获取按天分组的统计数据
 	dailyStats, err := models.GetDailyRequestStats(startTime, endTime)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询统计数据失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
 		return
 	}
 
 	// 获取总请求数和限流请求数
-	totalCount, _ := models.GetRequestStatsCount(startTime, endTime)
-	throttledCount, _ := models.GetThrottledRequestsCount(startTime, endTime)
+	totalCount, err := models.GetRequestStatsCount(startTime, endTime)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
+		return
+	}
+	throttledCount, err := models.GetThrottledRequestsCount(startTime, endTime)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
+		return
+	}
 
 	responseData := gin.H{
 		"start_date":            req.StartDate,
@@ -876,14 +837,14 @@ func GetRequestStatsByDay(c *gin.Context) {
 		"query_time_range_days": int(endDate.Sub(startDate).Hours() / 24),
 	}
 
-	c.JSON(http.StatusOK, APIResponse[gin.H]{Code: Success, Message: "获取日统计数据成功", Data: responseData})
+	httpapi.Success(c, http.StatusOK, responseData, "获取日统计数据成功")
 }
 
 // GetRequestStatsByHour 获取指定日期范围内的请求统计（按小时分组）
 func GetRequestStatsByHour(c *gin.Context) {
 	var req requests.QueueStatsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if req.StartDate == "" {
@@ -893,7 +854,7 @@ func GetRequestStatsByHour(c *gin.Context) {
 		req.EndDate = time.Now().Format("2006-01-02")
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 
@@ -908,13 +869,21 @@ func GetRequestStatsByHour(c *gin.Context) {
 	// 获取按小时分组的统计数据
 	hourlyStats, err := models.GetHourlyRequestStats(startTime, endTime)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询统计数据失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
 		return
 	}
 
 	// 获取总请求数和限流请求数
-	totalCount, _ := models.GetRequestStatsCount(startTime, endTime)
-	throttledCount, _ := models.GetThrottledRequestsCount(startTime, endTime)
+	totalCount, err := models.GetRequestStatsCount(startTime, endTime)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
+		return
+	}
+	throttledCount, err := models.GetThrottledRequestsCount(startTime, endTime)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "查询统计数据失败", Cause: err})
+		return
+	}
 
 	responseData := gin.H{
 		"start_date":            req.StartDate,
@@ -925,30 +894,30 @@ func GetRequestStatsByHour(c *gin.Context) {
 		"query_time_range_days": int(endDate.Sub(startDate).Hours() / 24),
 	}
 
-	c.JSON(http.StatusOK, APIResponse[gin.H]{Code: Success, Message: "获取小时统计数据成功", Data: responseData})
+	httpapi.Success(c, http.StatusOK, responseData, "获取小时统计数据成功")
 }
 
 // CleanOldRequestStats 清理旧的请求统计数据
 func CleanOldRequestStats(c *gin.Context) {
 	var req requests.CleanRequestStatsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.Error{Code: "INVALID_REQUEST", Message: "请求参数错误", Cause: err})
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeAccountValidationError(c, err)
 		return
 	}
 
 	err := models.CleanOldRequestStats(req.Days)
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "清理统计数据失败：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "清理统计数据失败", Cause: err})
 		return
 	}
 
 	helpers.AppLogger.Infof("已清理 %d 天前的请求统计数据", req.Days)
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: fmt.Sprintf("已清理 %d 天前的请求统计数据", req.Days), Data: nil})
+	httpapi.Success(c, http.StatusOK, nil, fmt.Sprintf("已清理 %d 天前的请求统计数据", req.Days))
 }
 
 // checkURLValidity 使用 HEAD 请求检查 URL 是否有效。

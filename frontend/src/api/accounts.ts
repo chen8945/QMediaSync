@@ -7,8 +7,8 @@ import type {
   V115QrCodePayload,
   V115QrCodeStatusPayload,
 } from '@/types/v115Auth'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface CloudAccount {
   id: number
@@ -148,7 +148,7 @@ export const authorizationPublicMessages: Readonly<Record<string, string>> = {
 }
 
 function unwrapRequiredData<T>(response: AxiosResponse<APIResponse<T | null>>): T {
-  const data = unwrapResponse(response)
+  const data = unwrapResponse(response).data
   if (data == null) throw new HttpResponseError(response)
   return data
 }
@@ -161,32 +161,40 @@ export async function listAccounts(
     `${SERVER_URL}/account/list`,
     sourceType === undefined ? undefined : { params: { source_type: sourceType } },
   )
-  return unwrapResponse(response) ?? []
+  return unwrapResponse(response).data ?? []
 }
 
 export async function createAccount(
   http: AxiosInstance,
   payload: CreateAccountPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<unknown>>(`${SERVER_URL}/account/add`, payload))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<unknown>>(`${SERVER_URL}/account/add`, payload),
+  )
 }
 
 export async function saveOpenListAccount(
   http: AxiosInstance,
   payload: OpenListAccountPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/account/openlist`, payload))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/account/openlist`, payload),
+  )
 }
 
 export async function updateAccount(
   http: AxiosInstance,
   payload: { id: number; name: string; app_id_name?: string },
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/account/update`, payload))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/account/update`, payload),
+  )
 }
 
-export async function deleteAccount(http: AxiosInstance, id: number): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/account/delete`, { id }))
+export async function deleteAccount(http: AxiosInstance, id: number): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/account/delete`, { id }),
+  )
 }
 
 export async function fetchAccountStatus(
@@ -253,8 +261,10 @@ export async function fetchV115OAuthStatus(
 export async function confirmV115OAuth(
   http: AxiosInstance,
   payload: OAuthConfirmPayload,
-): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/115/oauth-confirm`, payload))
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/115/oauth-confirm`, payload),
+  )
 }
 
 export async function fetchBaiduOAuthURL(
@@ -269,8 +279,8 @@ export async function fetchBaiduOAuthURL(
 export async function confirmBaiduOAuth(
   http: AxiosInstance,
   payload: OAuthConfirmPayload,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/baidupan/oauth-confirm`, payload),
   )
 }

@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 )
 
@@ -70,17 +71,17 @@ func TestStrmConfigPreloadCompatibilityAndRoundTrip(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
-			var result APIResponse[any]
+			var result httpapi.APIResponse[any]
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			wantHTTP, wantCode := http.StatusOK, Success
+			wantHTTP, wantCode := http.StatusOK, http.StatusOK
 			if tt.invalid {
-				wantHTTP, wantCode = http.StatusBadRequest, BadRequest
+				wantHTTP, wantCode = http.StatusBadRequest, http.StatusBadRequest
 			} else if tt.failWrite {
-				wantCode = BadRequest
+				wantHTTP, wantCode = http.StatusInternalServerError, http.StatusInternalServerError
 			}
-			if response.Code != wantHTTP || result.Code != wantCode {
+			if response.Code != wantHTTP || result.Status != wantCode {
 				t.Fatalf("保存响应不符：HTTP=%d body=%s", response.Code, response.Body)
 			}
 			if (tt.invalid || tt.failWrite) && models.GetPlaybackSettingsSnapshot() != before {
@@ -92,7 +93,7 @@ func TestStrmConfigPreloadCompatibilityAndRoundTrip(t *testing.T) {
 			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/setting/strm-config", nil))
-			var loaded APIResponse[map[string]any]
+			var loaded httpapi.APIResponse[map[string]any]
 			if err := json.Unmarshal(response.Body.Bytes(), &loaded); err != nil || loaded.Data["strm_preload_enabled"] != float64(tt.want) {
 				t.Fatalf("GET 未读回开关：%s err=%v", response.Body, err)
 			}

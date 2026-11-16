@@ -129,8 +129,9 @@ describe('useSyncTaskStream', () => {
     vi.stubGlobal('EventSource', undefined)
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
+      status: 200,
       json: vi.fn().mockResolvedValue({
-        code: 200,
+        status: 200,
         data: { ...snapshot.task, status, finish_at: 100, scan_result: scanResult },
       }),
     })
@@ -224,7 +225,7 @@ describe('useSyncTaskStream', () => {
     vi.useFakeTimers()
     vi.stubGlobal('EventSource', undefined)
     const generated = { ...snapshot.task, status: 2, finish_at: 100 }
-    const reply = (data: unknown) => new Response(JSON.stringify({ code: 200, data }))
+    const reply = (data: unknown) => new Response(JSON.stringify({ status: 200, data }))
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(reply({ ...generated, ledger_status: 'pending' }))
@@ -316,7 +317,8 @@ describe('useSyncTaskStream', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ code: 200, data: { ...snapshot.task } }),
+      status: 200,
+      json: vi.fn().mockResolvedValue({ status: 200, data: { ...snapshot.task } }),
     })
     vi.stubGlobal('fetch', fetchMock)
     const stream = withSetup(() => useSyncTaskStream(8))
@@ -387,7 +389,8 @@ describe('useSyncTaskStream', () => {
     vi.stubGlobal('EventSource', undefined)
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ code: 200, data: { ...snapshot.task } }),
+      status: 200,
+      json: vi.fn().mockResolvedValue({ status: 200, data: { ...snapshot.task } }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -429,10 +432,13 @@ describe('useSyncTaskStream', () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            code: 500,
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 400,
             message: '同步任务读取失败，请稍后重试',
             data: null,
           }),
+          { status: 400 },
         ),
       ),
     )
@@ -449,14 +455,23 @@ describe('useSyncTaskStream', () => {
     vi.stubGlobal('EventSource', undefined)
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 200, data: snapshot.task })))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: 500 }), {
-          status: 503,
-        }),
+        new Response(
+          JSON.stringify({
+            data: null,
+            message: '请求未完成',
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/aaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 400,
+          }),
+          {
+            status: 503,
+          },
+        ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: 200, data: { ...snapshot.task, status: 2 } })),
+        new Response(JSON.stringify({ status: 200, data: { ...snapshot.task, status: 2 } })),
       )
     vi.stubGlobal('fetch', fetch)
     const stream = withSetup(() => useSyncTaskStream(8))
@@ -486,7 +501,7 @@ describe('useSyncTaskStream', () => {
     )
     const stream = withSetup(() => useSyncTaskStream(8))
     stream.disconnect()
-    resolve(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+    resolve(new Response(JSON.stringify({ status: 200, data: snapshot.task })))
     await flushPromises()
     expect(stream.task.value).toBeNull()
     expect(vi.getTimerCount()).toBe(0)
@@ -498,7 +513,7 @@ describe('useSyncTaskStream', () => {
     let resolve!: (value: Response) => void
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 200, data: snapshot.task })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 200, data: snapshot.task })))
       .mockImplementation(
         () =>
           new Promise((done) => {
@@ -510,7 +525,7 @@ describe('useSyncTaskStream', () => {
     await flushPromises()
     await vi.advanceTimersByTimeAsync(15000)
     expect(fetch).toHaveBeenCalledTimes(2)
-    resolve(new Response(JSON.stringify({ code: 200, data: { ...snapshot.task, status: 2 } })))
+    resolve(new Response(JSON.stringify({ status: 200, data: { ...snapshot.task, status: 2 } })))
     await flushPromises()
     expect(stream.terminal.value).toBe(true)
     expect(vi.getTimerCount()).toBe(0)

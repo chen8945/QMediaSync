@@ -7,8 +7,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +20,10 @@ import (
 	"strings"
 	"testing"
 
+	"qmediasync/internal/github"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
+	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,12 +55,13 @@ func TestUpdateProgressReturnsSnapshotForTerminalStatus(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP 状态码 = %d，期望 %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !containsAll(body, []string{`"code":200`, `"status":"completed"`, `"progress":100`}) {
-		t.Fatalf("响应体 = %s，期望包含 completed 终态快照", body)
+	var body httpapi.APIResponse[updateInfo]
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Status != rec.Code || body.Data.Status != string(updateStatusCompleted) || body.Data.Progress != 100 {
+		t.Fatalf("响应体 = %s，期望包含 completed 终态快照: %v", rec.Body, err)
 	}
 }
 
-func TestUpdateProgressReturnsBadRequestWhenNoSnapshot(t *testing.T) {
+func TestUpdateProgressReturnsIdleWhenNoSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldInfo := currentUpdateInfo
 	oldCancel := currentUpdateCancel
@@ -75,8 +82,26 @@ func TestUpdateProgressReturnsBadRequestWhenNoSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP 状态码 = %d，期望 %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); !containsAll(body, []string{`"code":500`, "未开始更新"}) {
-		t.Fatalf("响应体 = %s，期望提示未开始更新", body)
+	var body httpapi.APIResponse[updateInfo]
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Status != rec.Code || body.Data.Status != string(updateStatusIdle) || body.ErrorCode != "" {
+		t.Fatalf("响应体 = %s，期望成功查询空闲状态: %v", rec.Body, err)
+	}
+}
+
+func TestUpdateProgressReturnsFailedTaskWithoutInternalCause(t *testing.T) {
+	oldInfo, oldCancel := currentUpdateInfo, currentUpdateCancel
+	t.Cleanup(func() { currentUpdateInfo, currentUpdateCancel = oldInfo, oldCancel })
+	setCurrentUpdateInfoForTest(&updateInfo{Status: string(updateStatusFailed), ErrorMessage: "permission denied: /private/update/QMediaSync"})
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/update/progress", nil)
+	UpdateProgress(c)
+	var body httpapi.APIResponse[updateInfo]
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusOK || body.Status != response.Code || body.Data.Status != string(updateStatusFailed) || body.Data.ErrorMessage == "" || body.ErrorCode != "" {
+		t.Fatalf("failed task must remain a successful snapshot query: %s, %v", response.Body, err)
+	}
+	if strings.Contains(response.Body.String(), "/private/update") || currentUpdateInfo.ErrorMessage != "permission denied: /private/update/QMediaSync" {
+		t.Fatalf("public projection must be safe and preserve internal task state: %s", response.Body)
 	}
 }
 
@@ -123,14 +148,14 @@ func TestCancelUpdateRejectsTaskPastDownload(t *testing.T) {
 	finished := make(chan struct{})
 	close(finished)
 	for _, tc := range []struct {
-		name    string
-		status  updateStatus
-		done    chan struct{}
-		message string
+		name   string
+		status updateStatus
+		done   chan struct{}
+		code   string
 	}{
-		{name: "上一轮已结束", status: updateStatusFailed, done: finished, message: "未开始更新"},
-		{name: "安装中", status: updateStatusInstall, done: make(chan struct{}), message: "正在安装更新，无法取消"},
-		{name: "安装完成等待重启", status: updateStatusCompleted, done: make(chan struct{}), message: "正在安装更新，无法取消"},
+		{name: "上一轮已结束", status: updateStatusFailed, done: finished, code: "UPDATE_NOT_RUNNING"},
+		{name: "安装中", status: updateStatusInstall, done: make(chan struct{}), code: "UPDATE_CANNOT_CANCEL"},
+		{name: "安装完成等待重启", status: updateStatusCompleted, done: make(chan struct{}), code: "UPDATE_CANNOT_CANCEL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cancelCalled := false
@@ -146,8 +171,9 @@ func TestCancelUpdateRejectsTaskPastDownload(t *testing.T) {
 
 			CancelUpdate(c)
 
-			if body := rec.Body.String(); !containsAll(body, []string{`"code":500`, tc.message}) {
-				t.Fatalf("响应体 = %s，期望提示 %s", body, tc.message)
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusConflict || body.Status != rec.Code || body.ErrorCode != tc.code || body.Instance == "" {
+				t.Fatalf("取消拒绝响应不符合状态契约: %s, %v", rec.Body, err)
 			}
 			if info := getCurrentUpdateInfoSnapshot(); cancelCalled || info.Status != string(tc.status) {
 				t.Fatalf("取消被拒绝后状态 = %s，取消函数调用 = %v", info.Status, cancelCalled)
@@ -249,12 +275,13 @@ func TestUpdateToVersionRejectsSystemdInstallBeforeDownload(t *testing.T) {
 	t.Setenv("INVOCATION_ID", "test")
 
 	for _, tc := range []struct {
-		name, rootDir, message string
+		name, rootDir, code string
+		status              int
 	}{
 		// 以 root 运行测试时权限位无法模拟不可写，改用不存在的目录让临时文件创建失败。
-		{name: "安装目录不可写", rootDir: filepath.Join(t.TempDir(), "missing"), message: "安装目录不可写"},
+		{name: "安装目录不可写", rootDir: filepath.Join(t.TempDir(), "missing"), code: "UPDATE_INSTALL_DIRECTORY_UNWRITABLE", status: http.StatusInternalServerError},
 		// 测试进程是 controllers.test，不是安装目录下的 QMediaSync。
-		{name: "运行中的程序不在安装目录", rootDir: t.TempDir(), message: "当前运行方式不支持在线更新"},
+		{name: "运行中的程序不在安装目录", rootDir: t.TempDir(), code: "UPDATE_UNSUPPORTED", status: http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			helpers.RootDir = tc.rootDir
@@ -266,11 +293,96 @@ func TestUpdateToVersionRejectsSystemdInstallBeforeDownload(t *testing.T) {
 
 			UpdateToVersion(c)
 
-			if body := rec.Body.String(); !containsAll(body, []string{`"code":500`, tc.message}) {
-				t.Fatalf("响应体 = %s，期望在下载前提示 %s", body, tc.message)
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != tc.status || body.Status != rec.Code || body.ErrorCode != tc.code || body.Instance == "" {
+				t.Fatalf("下载前拒绝响应不符合状态契约: %s, %v", rec.Body, err)
 			}
 			if info := getCurrentUpdateInfoSnapshot(); info != nil {
 				t.Fatalf("下载前拒绝时不能创建更新任务：%+v", info)
+			}
+		})
+	}
+}
+
+func TestUpdateToVersionRejectsUnavailableTargetsBeforeDownload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldInfo, oldCancel := currentUpdateInfo, currentUpdateCancel
+	oldFnOS, oldRoot, oldLogger := helpers.IsFnOS, helpers.RootDir, helpers.AppLogger
+	oldTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		currentUpdateInfo, currentUpdateCancel = oldInfo, oldCancel
+		helpers.IsFnOS, helpers.RootDir, helpers.AppLogger = oldFnOS, oldRoot, oldLogger
+		http.DefaultTransport = oldTransport
+		github.UpdateConfig(models.GetHTTPProxy())
+	})
+	helpers.IsFnOS = false
+	helpers.RootDir = t.TempDir()
+	var diagnostics strings.Builder
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&diagnostics, "", 0)}
+	t.Setenv("DOCKER", "1")
+	t.Setenv("QMS_SYSTEMD_UPDATE", "")
+	t.Setenv("INVOCATION_ID", "")
+	github.GetManager()
+
+	for _, tc := range []struct {
+		name, releases, code string
+		lookupStatus, status int
+		lookupError          error
+	}{
+		{name: "missing version", releases: `[{"tag_name":"v1.0.0","assets":[]}]`, status: http.StatusBadRequest, code: "UPDATE_TARGET_UNAVAILABLE"},
+		{name: "no platform asset", releases: `[{"tag_name":"v9.9.9","assets":[{"name":"qmediasync_other-platform.tar.gz","browser_download_url":"https://download.invalid/package"},{"name":"checksums.txt","browser_download_url":"https://download.invalid/checksums"}]}]`, status: http.StatusBadRequest, code: "UPDATE_TARGET_UNAVAILABLE"},
+		{name: "release query failed", lookupStatus: http.StatusBadGateway, status: http.StatusInternalServerError, code: "UPDATE_RELEASE_LOOKUP_FAILED"},
+		{name: "wrapped query failure with target wording", lookupError: fmt.Errorf("release query: %w", errors.New("未找到版本：v9.9.9")), status: http.StatusInternalServerError, code: "UPDATE_RELEASE_LOOKUP_FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics.Reset()
+			setCurrentUpdateInfoForTest(nil)
+			github.UpdateConfig("")
+			requests := 0
+			http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				if req.URL.Host != "api.github.com" || req.URL.Path != "/repos/chen8945/QMediaSync/releases" {
+					t.Errorf("target refusal attempted a download: %s", req.URL)
+					return nil, errors.New("unexpected download")
+				}
+				status, body := http.StatusOK, "[]"
+				// The manager's connection probe succeeds; the real release query determines the result.
+				if requests > 1 {
+					if tc.lookupError != nil {
+						return nil, tc.lookupError
+					}
+					body = tc.releases
+					if tc.lookupStatus != 0 {
+						status = tc.lookupStatus
+					}
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/update/to-version", strings.NewReader(`{"version":"v9.9.9","channel":"github"}`))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			UpdateToVersion(c)
+
+			var body httpapi.APIResponse[any]
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != tc.status || body.Status != rec.Code || body.ErrorCode != tc.code || body.Instance == "" || body.Message == "" {
+				t.Errorf("release lookup response = %s (HTTP %d), want %d/%s", rec.Body, rec.Code, tc.status, tc.code)
+			}
+			if strings.Contains(body.Message, "未找到版本：") || strings.Contains(body.Message, "GitHub API") {
+				t.Errorf("public response exposed the lookup cause: %s", body.Message)
+			}
+			if tc.lookupError != nil && !strings.Contains(diagnostics.String(), tc.lookupError.Error()) {
+				t.Error("lookup diagnostic lost the wrapped upstream cause")
+			}
+			if requests != 2 || getCurrentUpdateInfoSnapshot() != nil {
+				t.Errorf("refusal must stop after probe/query without starting an update: requests=%d, task=%+v", requests, getCurrentUpdateInfoSnapshot())
+			}
+			if entries, err := os.ReadDir(helpers.RootDir); err != nil || len(entries) != 0 {
+				t.Errorf("refusal created update files: %v, %v", entries, err)
 			}
 		})
 	}
@@ -554,8 +666,9 @@ func TestUpdateToVersionRejectsUnsupportedRuntime(t *testing.T) {
 
 	UpdateToVersion(c)
 
-	if body := rec.Body.String(); !containsAll(body, []string{`"code":500`, "当前运行方式不支持在线更新"}) {
-		t.Fatalf("响应体 = %s，期望拒绝不支持的运行方式", body)
+	var body httpapi.APIResponse[any]
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusServiceUnavailable || body.Status != rec.Code || body.ErrorCode != "UPDATE_UNSUPPORTED" || body.Instance == "" {
+		t.Fatalf("响应体 = %s，期望拒绝不支持的运行方式: %v", rec.Body, err)
 	}
 	if info := getCurrentUpdateInfoSnapshot(); info != nil {
 		t.Fatalf("不支持的运行方式不能创建更新任务：%+v", info)
@@ -573,15 +686,6 @@ func TestCleanupUpdatePackageOnDownloadErrorRemovesPartialFile(t *testing.T) {
 	if _, err := os.Stat(updateFilename); !os.IsNotExist(err) {
 		t.Fatalf("下载失败后临时更新包仍存在，stat err = %v", err)
 	}
-}
-
-func containsAll(raw string, parts []string) bool {
-	for _, part := range parts {
-		if !strings.Contains(raw, part) {
-			return false
-		}
-	}
-	return true
 }
 
 func TestVerifyUpdatePackageChecksSha256(t *testing.T) {

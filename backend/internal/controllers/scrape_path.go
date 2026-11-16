@@ -1,118 +1,103 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	"qmediasync/internal/synccron"
 )
 
 // GetScrapePathes 获取刮削路径列表
-// @Summary 获取刮削路径列表
-// @Description 获取所有配置的刮削路径列表
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetScrapePathes(c *gin.Context) {
 	sourceType := c.Query("source_type")
-	scrapePathes := models.GetScrapePathes(sourceType)
+	scrapePathes, err := models.ReadScrapePaths(c.Request.Context(), sourceType)
+	if err != nil {
+		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "获取刮削目录列表失败", Cause: err})
+		return
+	}
 	for _, scrapePath := range scrapePathes {
 		// 检查是否正在运行
 		scrapePath.IsTaskRunning = synccron.CheckNewTaskStatus(scrapePath.ID, synccron.SyncTaskTypeScrape)
 	}
-	c.JSON(http.StatusOK, APIResponse[[]*models.ScrapePath]{Code: Success, Message: "", Data: scrapePathes})
+	httpapi.Success(c, http.StatusOK, scrapePathes, "")
 }
 
 // GetScrapePath 获取刮削路径详情
-// @Summary 获取刮削路径详情
-// @Description 根据 ID 获取指定刮削路径的详细配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "刮削路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/:id [get]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func GetScrapePath(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
-	scrapePath := models.GetScrapePathByID(idReq.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
+	scrapePath, err := models.ReadScrapePath(c.Request.Context(), idReq.ID)
+	if err != nil {
+		writeScrapePathError(c, err, "获取刮削目录失败")
 		return
 	}
 	if scrapePath.EnableAi == "" {
 		scrapePath.EnableAi = models.AiActionOff
 	}
-	c.JSON(http.StatusOK, APIResponse[*models.ScrapePath]{Code: Success, Message: "", Data: scrapePath})
+	httpapi.Success(c, http.StatusOK, scrapePath, "")
 }
 
 // SaveScrapePath 保存刮削路径
-// @Summary 保存刮削路径
-// @Description 创建或更新刮削路径配置
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer false "路径 ID，不填为新增"
-// @Param source_type body integer true "来源类型"
-// @Param source_path body string true "来源路径"
-// @Param dest_path body string true "目标路径"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func SaveScrapePath(c *gin.Context) {
 	var req requests.SaveScrapePathRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	var oldScrapePath *models.ScrapePath
 	if req.ID > 0 {
-		oldScrapePath = models.GetScrapePathByID(req.ID)
+		var err error
+		oldScrapePath, err = models.ReadScrapePath(c.Request.Context(), req.ID)
+		if err != nil {
+			writeScrapePathError(c, err, "获取刮削目录失败")
+			return
+		}
 		if err := req.ValidateUpdate(oldScrapePath); err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 			return
 		}
 	} else if err := req.ValidateCreate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	reqData := req.ToModel()
 	// 如果是 115，用 ID 查询实际目录
 	if reqData.SourceType == models.SourceType115 {
 		// 用 ID 查询实际目录
-		account, err := models.GetAccountById(reqData.AccountId)
+		account, err := models.ReadAccount(c.Request.Context(), reqData.AccountId)
 		if err != nil {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+			writePathOperationError(c, err, "获取账号信息失败")
 			return
 		}
 		// 用 ID 查询实际目录
-		sourcePath := models.GetPathByPathFileId(account, reqData.SourcePathId)
+		sourcePath, err := models.GetPathByPathFileId(account, reqData.SourcePathId)
+		if err != nil {
+			writeCloudUpstreamError(c, err, "查询来源目录失败", account.Token, account.RefreshToken, account.Password)
+			return
+		}
 		if sourcePath == "" {
-			c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询来源目录失败", Data: nil})
+			httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "RESOURCE_NOT_FOUND", Message: "来源目录不存在"})
 			return
 		}
 		reqData.SourcePath = sourcePath
 		if reqData.DestPathId != "" {
-			destPath := models.GetPathByPathFileId(account, reqData.DestPathId)
+			destPath, err := models.GetPathByPathFileId(account, reqData.DestPathId)
+			if err != nil {
+				writeCloudUpstreamError(c, err, "查询目标目录失败", account.Token, account.RefreshToken, account.Password)
+				return
+			}
 			if destPath == "" {
-				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "查询目标目录失败", Data: nil})
+				httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "RESOURCE_NOT_FOUND", Message: "目标目录不存在"})
 				return
 			}
 			reqData.DestPath = destPath
@@ -121,7 +106,7 @@ func SaveScrapePath(c *gin.Context) {
 	helpers.AppLogger.Infof("最大线程数：%d", reqData.MaxThreads)
 
 	if err := reqData.Save(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeScrapePathError(c, err, "保存刮削目录失败")
 		return
 	}
 
@@ -129,26 +114,19 @@ func SaveScrapePath(c *gin.Context) {
 }
 
 // DeleteScrapePath 删除刮削路径
-// @Summary 删除刮削路径
-// @Description 删除指定的刮削路径
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/:id [delete]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func DeleteScrapePath(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "ID 参数格式错误", Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 
+	if _, err := models.ReadScrapePath(c.Request.Context(), idReq.ID); err != nil {
+		writeScrapePathError(c, err, "获取刮削目录失败")
+		return
+	}
 	if err := models.DeleteScrapePath(idReq.ID); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		writeScrapePathError(c, err, "删除刮削目录失败")
 		return
 	}
 
@@ -156,31 +134,20 @@ func DeleteScrapePath(c *gin.Context) {
 }
 
 // ScanScrapePath 启动刮削路径扫描
-// @Summary 启动刮削任务
-// @Description 启动指定刮削路径的扫描任务
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/start [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ScanScrapePath(c *gin.Context) {
 	var req requests.PositiveIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 查询 ScrapePath
-	scrapePath := models.GetScrapePathByID(req.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录不存在", Data: nil})
+	scrapePath, err := models.ReadScrapePath(c.Request.Context(), req.ID)
+	if err != nil {
+		writeScrapePathError(c, err, "获取刮削目录失败")
 		return
 	}
 	// 添加刮削任务到队列
@@ -195,45 +162,34 @@ func ScanScrapePath(c *gin.Context) {
 		TaskType:     synccron.SyncTaskTypeScrape,
 	}
 	if err := synccron.AddNewSyncTask(taskObj); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "添加刮削任务失败：" + err.Error(), Data: nil})
+		writeTaskEnqueueError(c, err, "添加刮削任务失败")
 		return
 	}
 
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削任务已添加到队列", Data: nil})
+	httpapi.Success(c, http.StatusAccepted, gin.H{"task_id": taskObj.ID, "status": "submitted"}, "刮削任务已添加到队列")
 }
 
 // ToggleScrapePathCron 切换刮削路径的定时任务
-// @Summary 切换定时刮削
-// @Description 开启或关闭刮削路径的定时刮削任务
-// @Tags 刮削管理
-// @Accept json
-// @Produce json
-// @Param id body integer true "路径 ID"
-// @Success 200 {object} object
-// @Failure 200 {object} object
-// @Router /scrape/pathes/toggle-cron [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func ToggleScrapePathCron(c *gin.Context) {
 	var req requests.PositiveIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请求参数错误：" + err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	if err := req.Validate(); err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: err.Error(), Data: nil})
+		httpapi.Failure(c, http.StatusBadRequest, httpapi.InvalidRequest(err))
 		return
 	}
 	// 使用 ID 查询 ScrapePath
-	scrapePath := models.GetScrapePathByID(req.ID)
-	if scrapePath == nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要操作的刮削目录", Data: nil})
+	scrapePath, err := models.ReadScrapePath(c.Request.Context(), req.ID)
+	if err != nil {
+		writeScrapePathError(c, err, "获取刮削目录失败")
 		return
 	}
 	// 切换定时刮削
-	err := scrapePath.ToggleCron()
+	err = scrapePath.ToggleCron()
 	if err != nil {
-		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "切换定时刮削失败：" + err.Error(), Data: nil})
+		writeScrapePathError(c, err, "切换定时刮削失败")
 		return
 	}
 
@@ -246,5 +202,13 @@ func completeScrapePathSave(c *gin.Context, message string) {
 		helpers.AppLogger.Warnf("刮削目录已保存，但定时任务应用失败：%v", err)
 		warnings = append(warnings, "设置已保存，但定时任务应用失败，请重新保存重试")
 	}
-	c.JSON(http.StatusOK, gin.H{"code": Success, "message": message, "data": nil, "warnings": warnings})
+	httpapi.Success(c, http.StatusOK, nil, message, warnings...)
+}
+
+func writeScrapePathError(c *gin.Context, err error, message string) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "SCRAPE_PATH_NOT_FOUND", Message: "刮削目录不存在", Cause: err})
+		return
+	}
+	httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: message, Cause: err})
 }

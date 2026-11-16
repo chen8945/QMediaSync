@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -41,14 +43,24 @@ func TestCreateAPIKeyLogsUsernameAndKeyName(t *testing.T) {
 
 	CreateAPIKey(c)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
+	var response httpapi.APIResponse[CreateAPIKeyResponse]
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != w.Code || response.Data.ID == 0 || response.Data.Key == "" || response.ErrorCode != "" {
+		t.Fatalf("创建响应缺少可识别密钥：%s", w.Body.String())
+	}
+	if w.Header().Get("Cache-Control") != "no-store, private" {
+		t.Fatal("完整 API Key 响应不应被缓存")
+	}
 	logText := logBuf.String()
-	if !strings.Contains(logText, "用户 admin（ID：1）创建了 API Key：测试（ID：1）") {
+	if !strings.Contains(logText, user.Username) || !strings.Contains(logText, response.Data.Name) {
 		t.Fatalf("创建日志未包含真实用户名和 API Key 名称: %s", logText)
 	}
-	if strings.Contains(logText, "qms_") {
+	if strings.Contains(logText, response.Data.Key) {
 		t.Fatalf("创建日志不应包含完整 API Key: %s", logText)
 	}
 }
@@ -75,7 +87,7 @@ func TestDeleteAPIKeyLogsUsernameAndKeyName(t *testing.T) {
 		t.Fatalf("HTTP = %d, body=%s", w.Code, w.Body.String())
 	}
 	logText := logBuf.String()
-	if !strings.Contains(logText, "用户 admin（ID：1）删除了 API Key：测试（ID：1）") {
+	if !strings.Contains(logText, user.Username) || !strings.Contains(logText, apiKey.Name) {
 		t.Fatalf("删除日志未包含真实用户名和 API Key 名称: %s", logText)
 	}
 	var count int64

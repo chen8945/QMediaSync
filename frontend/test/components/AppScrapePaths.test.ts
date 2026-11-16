@@ -16,6 +16,7 @@ import AppScrapePathes from '@/views/scrape/AppScrapePathes.vue'
 import { httpKey } from '@/http/client'
 import { HttpResponseError, markAuthInvalidationHandled } from '@/http/errors'
 import type { ScrapePath } from '@/api/scrapePaths'
+import type { APIResponse } from '@/api/types'
 import { createDeferred } from '../support/deferred'
 
 const { route, router, realtimeListeners } = vi.hoisted(() => ({
@@ -61,9 +62,21 @@ const directory: ScrapePath = {
   max_threads: 5,
   is_running: 0,
 }
-const success = (data: unknown = null) => ({ status: 200, data: { code: 200, data } })
+const success = (data: unknown = null): { status: number; data: APIResponse<unknown> } => ({
+  status: 200,
+  data: { status: 200, data },
+})
 const failure = (status: number, message = 'internal secret', error_code?: string) =>
-  new HttpResponseError({ status, data: { code: 500, message, error_code } })
+  new HttpResponseError({
+    status,
+    data: {
+      status: status,
+      message,
+      error_code: error_code ?? 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
+  })
 
 const createHTTP = (row: ScrapePath = directory) => ({
   get: vi.fn<
@@ -143,10 +156,13 @@ describe.each([
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(
       '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置',
     )
-    expect(console.error).toHaveBeenCalledExactlyOnceWith('加载账号列表失败：', {
-      status: 403,
-      errorCode: 'REQUEST_ORIGIN_INVALID',
-    })
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      '加载账号列表失败：',
+      expect.objectContaining({
+        status: 403,
+        errorCode: 'REQUEST_ORIGIN_INVALID',
+      }),
+    )
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
@@ -167,7 +183,7 @@ describe.each([
 describe('刮削目录表单', () => {
   it('详情读取失败时禁止保存，重试成功后才能编辑原目录', async () => {
     const http = createHTTP()
-    http.get.mockRejectedValueOnce(failure(403, '', 'REQUEST_ORIGIN_INVALID'))
+    http.get.mockRejectedValueOnce(failure(403, '请求来源无效', 'REQUEST_ORIGIN_INVALID'))
     const wrapper = await mountPage(AppScrapePathForm, http)
     const save = wrapper.findAll('button').find((button) => button.text() === '保存修改')!
     expect(save.attributes('disabled')).toBeDefined()
@@ -201,14 +217,14 @@ describe('刮削目录表单', () => {
   })
 
   it.each([
-    [failure(200, 'source_path：不能为空'), '来源目录不能为空'],
-    [failure(200, '目录已被占用'), '目录已被占用'],
+    [failure(400, 'source_path：不能为空'), '来源目录不能为空'],
+    [failure(400, '目录已被占用'), '目录已被占用'],
     [
-      failure(403, '请求来源无效'),
+      failure(403, '请求来源无效', 'REQUEST_ORIGIN_INVALID'),
       '访问地址校验失败。使用反向代理时，请检查域名、协议和端口的转发配置',
     ],
     [
-      failure(403, '', 'CSRF_TOKEN_INVALID'),
+      failure(403, '请求安全校验失败', 'CSRF_TOKEN_INVALID'),
       '请求安全校验失败，请刷新页面后重试；若问题持续，请重新登录',
     ],
   ])('保存失败保留输入且不跳转：%s', async (error, message) => {
@@ -238,11 +254,17 @@ describe('刮削目录表单', () => {
     )
   })
 
-  it('HTTP 200 业务失败不执行保存后的跳转', async () => {
+  it('请求失败不执行保存后的跳转', async () => {
     const http = createHTTP()
     http.post.mockResolvedValue({
-      status: 200,
-      data: { code: 500, message: '目录已被占用', data: null },
+      status: 500,
+      data: {
+        status: 500,
+        message: '目录已被占用',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
     })
     const wrapper = await mountPage(AppScrapePathForm, http)
     await clickButton(wrapper, '保存修改')
@@ -261,7 +283,10 @@ describe('刮削目录表单', () => {
   it('目录已保存但定时应用失败仍返回列表，保留本次 AI 提示词和定时设置', async () => {
     const http = createHTTP({ ...directory, enable_ai: 'assist' })
     const warning = '设置已保存，但定时任务应用失败，请重新保存重试'
-    http.post.mockResolvedValue({ status: 200, data: { code: 200, data: null, warnings: [warning] } })
+    http.post.mockResolvedValue({
+      status: 200,
+      data: { status: 200, data: null, message: '服务器确认已保存测试目录', warnings: [warning] },
+    })
     const wrapper = await mountPage(AppScrapePathForm, http)
     const fields = wrapper.findAllComponents(ElFormItem)
     const prompt = fields.find((item) => item.props('prop') === 'ai_prompt')!.get('textarea')
@@ -282,7 +307,9 @@ describe('刮削目录表单', () => {
         cron_expression: directory.cron_expression,
       }),
     )
-    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
+    expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(
+      `服务器确认已保存测试目录；${warning}`,
+    )
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(ElMessage.error).not.toHaveBeenCalled()
     expect(router.replace).toHaveBeenCalledExactlyOnceWith({ name: 'scrape-pathes' })
@@ -290,7 +317,7 @@ describe('刮削目录表单', () => {
 
   it('Cron 验证保留修剪规则，安全校验失败不覆盖已输入表达式或描述', async () => {
     const http = createHTTP({ ...directory, enable_cron: true })
-    http.post.mockRejectedValue(failure(403, '', 'CSRF_TOKEN_INVALID'))
+    http.post.mockRejectedValue(failure(403, '请求安全校验失败', 'CSRF_TOKEN_INVALID'))
     const wrapper = await mountPage(AppScrapePathForm, http)
     const item = wrapper
       .findAllComponents(ElFormItem)
@@ -397,7 +424,7 @@ describe('刮削目录实时刷新', () => {
     const http = createHTTP()
     const wrapper = await mountPage(AppScrapePathes, http)
     const get = http.get.getMockImplementation()!
-    http.get.mockRejectedValue(failure(403, '', 'CSRF_TOKEN_INVALID'))
+    http.get.mockRejectedValue(failure(403, '请求安全校验失败', 'CSRF_TOKEN_INVALID'))
     emitItems(20)
     await flushPromises()
     reconnect()
@@ -411,7 +438,7 @@ describe('刮削目录实时刷新', () => {
     http.get.mockImplementation(get)
     emitItems()
     await flushPromises()
-    http.get.mockRejectedValue(failure(403, '', 'REQUEST_ORIGIN_INVALID'))
+    http.get.mockRejectedValue(failure(403, '请求来源无效', 'REQUEST_ORIGIN_INVALID'))
     emitItems()
     await flushPromises()
     expect(ElMessage.error).toHaveBeenCalledTimes(2)
@@ -433,7 +460,7 @@ describe('刮削目录实时刷新', () => {
     expect(ElMessage.error).not.toHaveBeenCalled()
     expect(console.error).not.toHaveBeenCalled()
 
-    http.get.mockRejectedValueOnce(failure(200, '目录状态读取失败'))
+    http.get.mockRejectedValueOnce(failure(400, '目录状态读取失败'))
     emitItems()
     await flushPromises()
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('目录状态读取失败')
@@ -450,7 +477,17 @@ describe('刮削目录实时刷新', () => {
       const readsBeforeUnmount = pathReadCount(http)
       wrapper.unmount()
       if (result === 'success') pending.resolve(success([{ ...directory, is_running: 2 }]))
-      else pending.resolve({ status: 200, data: { code: 500, data: null } })
+      else
+        pending.resolve({
+          status: 500,
+          data: {
+            status: 500,
+            data: null,
+            message: '请求处理失败',
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'TEST_REQUEST_FAILED',
+          },
+        })
       await flushPromises()
       emitItems()
       reconnect()
@@ -474,7 +511,17 @@ describe('刮削目录实时刷新', () => {
       visible.value = false
       await flushPromises()
       if (result === 'success') pending.resolve(success([{ ...directory, is_running: 2 }]))
-      else pending.resolve({ status: 200, data: { code: 500, data: null } })
+      else
+        pending.resolve({
+          status: 500,
+          data: {
+            status: 500,
+            data: null,
+            message: '请求处理失败',
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'TEST_REQUEST_FAILED',
+          },
+        })
       await flushPromises()
       expect(pathReadCount(http)).toBe(readsBeforeDeactivate)
       expect(page.text()).toContain('启动')
@@ -504,7 +551,16 @@ describe('刮削目录实时刷新', () => {
     emitItems(20)
     expect(pathReadCount(http)).toBe(2)
 
-    stale.resolve({ status: 200, data: { code: 500, data: null } })
+    stale.resolve({
+      status: 500,
+      data: {
+        status: 500,
+        data: null,
+        message: '请求处理失败',
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
+    })
     await flushPromises()
     expect(pathReadCount(http)).toBe(3)
     expect(wrapper.text()).toContain('/media')
@@ -526,8 +582,14 @@ describe('刮削目录列表', () => {
   ] as const)('状态 %s 操作的业务失败不误报成功', async (is_running, label, action) => {
     const http = createHTTP({ ...directory, is_running })
     http.post.mockResolvedValue({
-      status: 200,
-      data: { code: 500, message: '任务状态冲突', data: null },
+      status: 500,
+      data: {
+        status: 500,
+        message: '任务状态冲突',
+        data: null,
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
     })
     const wrapper = await mountPage(AppScrapePathes, http)
     await clickButton(wrapper, label)
@@ -546,13 +608,22 @@ describe('刮削目录列表', () => {
     // 当前 Element Plus 将返回类型声明成交叉类型，confirm 运行时仍返回动作字符串。
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
     const http = createHTTP()
-    http.delete.mockResolvedValue({ status: 200, data: { code: 500, data: null } })
+    http.delete.mockResolvedValue({
+      status: 500,
+      data: {
+        status: 500,
+        data: null,
+        message: '请求处理失败',
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
+    })
     const wrapper = await mountPage(AppScrapePathes, http)
     await clickButton(wrapper, '删除')
     expect(wrapper.text()).toContain('/media')
     expect(http.get).toHaveBeenCalledTimes(2)
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('删除刮削目录失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('请求处理失败')
   })
 
   it('删除已提交的应用警告与后续列表读取失败分别报告', async () => {
@@ -562,9 +633,9 @@ describe('刮削目录列表', () => {
     const warning = '目录已删除，但定时任务应用失败，请重试'
     http.delete.mockResolvedValueOnce({
       status: 200,
-      data: { code: 200, data: null, warnings: [warning] },
+      data: { status: 200, data: null, warnings: [warning] },
     })
-    http.get.mockRejectedValueOnce(failure(200, '目录列表读取失败'))
+    http.get.mockRejectedValueOnce(failure(400, '目录列表读取失败'))
     await clickButton(wrapper, '删除')
 
     expect(ElMessage.warning).toHaveBeenCalledExactlyOnceWith(warning)
@@ -577,7 +648,10 @@ describe('刮削目录列表', () => {
     const http = createHTTP({ ...directory, enable_cron: enabled })
     const wrapper = await mountPage(AppScrapePathes, http)
     const warning = '设置已保存，但定时任务应用失败，请重新保存重试'
-    http.post.mockResolvedValueOnce({ status: 200, data: { code: 200, data: null, warnings: [warning] } })
+    http.post.mockResolvedValueOnce({
+      status: 200,
+      data: { status: 200, data: null, warnings: [warning] },
+    })
     await wrapper.get('[role="switch"]').trigger('click')
     await flushPromises()
 
@@ -589,7 +663,7 @@ describe('刮削目录列表', () => {
 
   it('定时任务切换失败回退开关', async () => {
     const http = createHTTP()
-    http.post.mockRejectedValue(failure(403, '', 'CSRF_TOKEN_INVALID'))
+    http.post.mockRejectedValue(failure(403, '请求安全校验失败', 'CSRF_TOKEN_INVALID'))
     const wrapper = await mountPage(AppScrapePathes, http)
     await wrapper.get('[role="switch"]').trigger('click')
     await flushPromises()
@@ -602,7 +676,16 @@ describe('刮削目录列表', () => {
 
   it('关联保存失败保持弹窗和已选目录', async () => {
     const http = createHTTP({ ...directory, source_type: '115' })
-    http.post.mockResolvedValue({ status: 200, data: { code: 500, data: null } })
+    http.post.mockResolvedValue({
+      status: 500,
+      data: {
+        status: 500,
+        data: null,
+        message: '请求处理失败',
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
+    })
     const wrapper = await mountPage(AppScrapePathes, http)
     await clickButton(wrapper, '关联')
     const dialog = wrapper.findComponent(ElDialog)
@@ -614,7 +697,7 @@ describe('刮削目录列表', () => {
     expect(dialog.props('modelValue')).toBe(true)
     expect(wrapper.findComponent(ElSelect).props('modelValue')).toEqual([8])
     expect(ElMessage.success).not.toHaveBeenCalled()
-    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('关联同步目录失败')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('请求处理失败')
   })
 
   it('关联候选目录查询保留来源参数并按公共策略提示失败', async () => {
@@ -671,7 +754,7 @@ describe('刮削目录列表', () => {
       const get = http.get.getMockImplementation()!
       http.get.mockImplementation((url, config) =>
         failed && url.endsWith(endpoint)
-          ? Promise.reject(failure(403, '', 'CSRF_TOKEN_INVALID'))
+          ? Promise.reject(failure(403, '请求安全校验失败', 'CSRF_TOKEN_INVALID'))
           : get(url, config),
       )
       const wrapper = await mountPage(AppScrapePathes, http)
@@ -732,7 +815,13 @@ describe('刮削目录列表', () => {
       else
         pending.resolve({
           status: 403,
-          data: { code: 500, data: null, error_code: 'CSRF_TOKEN_INVALID' },
+          data: {
+            status: 403,
+            data: null,
+            message: '请求处理失败',
+            instance: '/request-errors/ComponentTestFailure0001',
+            error_code: 'CSRF_TOKEN_INVALID',
+          },
         } as ReturnType<typeof success>)
       await flushPromises()
       expect(dialog.findComponent(ElSelect).props('modelValue')).toEqual([9])
@@ -822,7 +911,16 @@ describe('刮削目录列表', () => {
     const wrapper = await mountPage(AppScrapePathes, http)
     await clickButton(wrapper, '关联')
     wrapper.unmount()
-    pending.resolve({ status: 200, data: { code: 500, data: null } })
+    pending.resolve({
+      status: 500,
+      data: {
+        status: 500,
+        data: null,
+        message: '请求处理失败',
+        instance: '/request-errors/ComponentTestFailure0001',
+        error_code: 'TEST_REQUEST_FAILED',
+      },
+    })
     await flushPromises()
     expect(ElMessage.error).not.toHaveBeenCalled()
     expect(console.error).not.toHaveBeenCalled()

@@ -13,7 +13,7 @@ describe('AppBackupSettings', () => {
       if (url === '/api/backup/config') {
         return {
           data: {
-            code: 200,
+            status: 200,
             data: {
               backup_enabled: 1,
               backup_cron: '0 4 * * *',
@@ -22,9 +22,10 @@ describe('AppBackupSettings', () => {
               backup_compress: 1,
             },
           },
+          status: 200,
         }
       }
-      return { data: { code: 200, data: ['2026-07-30 04:00:00'] } }
+      return { data: { status: 200, data: ['2026-07-30 04:00:00'] }, status: 200 }
     })
 
     mount(AppBackupSettings, {

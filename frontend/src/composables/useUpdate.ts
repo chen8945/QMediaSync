@@ -85,8 +85,7 @@ export function useUpdate() {
     } catch (error) {
       if (!pageActive || generation !== pollingGeneration) return
       const parsed = parseHttpError(error)
-      if (parsed.shouldNotify && !updateAPI.isUpdateNotStarted(parsed))
-        console.error('检查更新状态失败', parsed.diagnostics)
+      if (parsed.shouldNotify) console.error('检查更新状态失败', parsed.diagnostics)
     }
   }
 
@@ -208,6 +207,29 @@ export function useUpdate() {
       const status = progressData.status
       if (status !== undefined) {
         updateProgress.value.status = status
+        if (status === 'idle') {
+          if (!updatingVersion.value) return
+          try {
+            const installed = await fetchSystemVersion(http)
+            if (!pageActive || document.hidden || generation !== pollingGeneration) return
+            if (installed.version === updatingVersion.value) {
+              operationGeneration += 1
+              stopProgressPolling()
+              updateProgress.value.status = 'completed'
+              updateProgress.value.progress = 100
+              showUpdateCompleteNotification()
+              return
+            }
+            stopProgressPolling()
+            ElMessage.error('更新未生效，请查看服务日志或手动下载安装')
+            scheduleUpdateListRefresh(2000, true)
+          } catch (versionError) {
+            if (!pageActive || document.hidden || generation !== pollingGeneration) return
+            const failure = parseHttpError(versionError)
+            if (failure.shouldNotify) console.error('确认更新版本失败', failure.diagnostics)
+          }
+          return
+        }
         if (status === 'completed') {
           operationGeneration += 1
           stopProgressPolling()
@@ -239,32 +261,10 @@ export function useUpdate() {
         publicMessages: updateAPI.updatePublicMessages,
       })
       if (!parsed.shouldNotify) return
-      if (updateAPI.isUpdateNotStarted(parsed) && updatingVersion.value) {
-        try {
-          const installed = await fetchSystemVersion(http)
-          if (!pageActive || document.hidden || generation !== pollingGeneration) return
-          if (installed.version === updatingVersion.value) {
-            operationGeneration += 1
-            stopProgressPolling()
-            updateProgress.value.status = 'completed'
-            updateProgress.value.progress = 100
-            showUpdateCompleteNotification()
-            return
-          }
-          ElMessage.error('更新未生效，请查看服务日志或手动下载安装')
-        } catch (versionError) {
-          if (!pageActive || document.hidden || generation !== pollingGeneration) return
-          const failure = parseHttpError(versionError)
-          if (failure.shouldNotify) console.error('确认更新版本失败', failure.diagnostics)
-          return
-        }
-      }
-      if (!updateAPI.isUpdateNotStarted(parsed)) {
-        console.error('查询更新进度失败', parsed.diagnostics)
-      }
+      console.error('查询更新进度失败', parsed.diagnostics)
       if (parsed.kind === 'application') {
         stopProgressPolling()
-        if (!updateAPI.isUpdateNotStarted(parsed)) ElMessage.error(parsed.message)
+        ElMessage.error(parsed.message)
         scheduleUpdateListRefresh(2000, true)
       }
     } finally {
@@ -305,11 +305,13 @@ export function useUpdate() {
   const cancelUpdate = async () => {
     const generation = operationGeneration
     try {
-      await updateAPI.cancelUpdate(http)
+      const result = await updateAPI.cancelUpdate(http)
       if (!pageActive || generation !== operationGeneration) return
       stopProgressPolling()
       resetUpdateState()
-      ElMessage.success('已取消更新')
+      if (result.warnings.length)
+        ElMessage.warning([result.message?.trim(), ...result.warnings].filter(Boolean).join('；'))
+      else ElMessage.success(result.message?.trim() || '已取消更新')
       scheduleUpdateListRefresh(1000)
     } catch (error) {
       if (!pageActive || generation !== operationGeneration) return

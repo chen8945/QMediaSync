@@ -16,13 +16,27 @@ const createPayload = { ...directoryQuery, name: '电影' }
 const deleteQuery = { parent_id: 'root', file_id: 'file', account_id: 3 }
 const manualPayload = { path_id: 'file', target_path: '/strm', account_id: 3 }
 const recordsQuery = { page: 2, page_size: 20 }
-const createHTTP = (data: unknown = null, code = 200, status = 200, message = '') => {
+const createHTTP = (
+  data: unknown = null,
+  code = 200,
+  status = code,
+  message = '',
+  warnings?: string[],
+) => {
   const adapter = vi.fn(async (config) => ({
     config,
     status,
     statusText: '',
     headers: {},
-    data: { code, message, data },
+    data: {
+      status: code,
+      message,
+      ...(warnings ? { warnings } : {}),
+      data,
+      ...(code >= 400
+        ? { instance: '/request-errors/abcdefghijklmnopqrstuvwx', error_code: 'INVALID_REQUEST' }
+        : {}),
+    },
   }))
   return { http: axios.create({ adapter }), adapter }
 }
@@ -38,6 +52,31 @@ const operations: Array<(http: AxiosInstance) => Promise<unknown>> = [
 ]
 
 describe('file and sync record APIs', () => {
+  it('keeps mutation feedback with nullable transfer results and task identities', async () => {
+    const payload = { parent_id: 'root', file_ids: ['file'], account_id: 3, target_parent_id: '/' }
+    for (const operation of [files.moveFiles, files.copyFiles]) {
+      const data = { status: 'submitted', task_ids: ['task-1'] }
+      expect(
+        await operation(
+          createHTTP(data, 202, 202, '服务端操作反馈', ['测试应用警告']).http,
+          payload,
+        ),
+      ).toMatchObject({ data, message: '服务端操作反馈', warnings: ['测试应用警告'] })
+    }
+    expect(
+      await files.createDirectory(
+        createHTTP(directory, 200, 200, '服务端操作反馈', ['测试应用警告']).http,
+        createPayload,
+      ),
+    ).toMatchObject({ data: directory, message: '服务端操作反馈', warnings: ['测试应用警告'] })
+    expect(
+      await files.deleteFiles(
+        createHTTP(null, 200, 200, '服务端操作反馈', ['测试应用警告']).http,
+        payload,
+      ),
+    ).toEqual({ message: '服务端操作反馈', warnings: ['测试应用警告'] })
+  })
+
   it('保留排序能力、置顶关闭、目录刷新和取消参数', async () => {
     const { http, adapter } = createHTTP({
       fields: ['name'],
@@ -70,7 +109,7 @@ describe('file and sync record APIs', () => {
     })
   })
 
-  it('preserves transfer status/task IDs and accepts legacy null responses', async () => {
+  it('preserves transfer status/task IDs and nullable results', async () => {
     const payload = {
       account_id: 3,
       parent_id: '/source',
@@ -83,7 +122,7 @@ describe('file and sync record APIs', () => {
         { status: 'completed', task_ids: [] },
         { status: 'submitted', task_ids: ['task-2', 'task-1'] },
       ]) {
-        expect(await operation(createHTTP(result).http, payload)).toEqual(result)
+        expect((await operation(createHTTP(result).http, payload)).data).toEqual(result)
       }
     }
   })
@@ -120,7 +159,7 @@ describe('file and sync record APIs', () => {
 
   it('keeps file DELETE in query and preserves write bodies and per-operation timeouts', async () => {
     const { http, adapter } = createHTTP(directory)
-    expect(await files.createDirectory(http, createPayload)).toBe(directory)
+    expect((await files.createDirectory(http, createPayload)).data).toBe(directory)
     await files.deleteFile(http, deleteQuery)
     await files.generateManualStrm(http, manualPayload)
     await records.deleteSyncRecords(http, [1])
@@ -149,11 +188,13 @@ describe('file and sync record APIs', () => {
       expect(configs[index].headers.get('Content-Type')).toBe('application/json')
       expect(JSON.parse(configs[index].data)).toEqual({ ids })
     }
-    await expect(files.deleteFile(createHTTP().http, deleteQuery)).resolves.toBeUndefined()
-    await expect(
-      files.generateManualStrm(createHTTP().http, manualPayload),
-    ).resolves.toBeUndefined()
-    await expect(records.deleteSyncRecords(createHTTP().http, [1])).resolves.toBeNull()
+    await expect(files.deleteFile(createHTTP().http, deleteQuery)).resolves.toEqual({
+      warnings: [],
+    })
+    await expect(files.generateManualStrm(createHTTP().http, manualPayload)).resolves.toMatchObject(
+      { data: null, warnings: [] },
+    )
+    expect((await records.deleteSyncRecords(createHTTP().http, [1])).data).toBeNull()
   })
 
   it.each([0, 400, 500])(
@@ -162,7 +203,7 @@ describe('file and sync record APIs', () => {
       for (const operation of operations) {
         await expect(operation(createHTTP({ private: 'secret' }, code).http)).rejects.toMatchObject(
           {
-            response: { status: 200, data: { code, data: { private: 'secret' } } },
+            response: { status: code, data: { status: code, data: { private: 'secret' } } },
           },
         )
       }
@@ -179,11 +220,28 @@ describe('file and sync record APIs', () => {
 
   it('preserves partial-delete details', async () => {
     const details = { deleted_ids: [1], failures: [{ id: 2, reason: 'private SQL' }] }
-    const error = await records
-      .deleteSyncRecords(createHTTP(details, 400, 200, '部分同步记录删除失败').http, [1, 2])
-      .catch((error: unknown) => error)
+    const { http, adapter } = createHTTP(details, 400, 400, '测试请求失败')
+    const error = await records.deleteSyncRecords(http, [1, 2]).catch((error: unknown) => error)
     const parsed = parseHttpError(error, { publicMessages: records.syncRecordPublicMessages })
-    expect(parsed.message).toBe('部分同步记录删除失败')
+    expect(parsed.message).toBe('测试请求失败')
     expect(parsed.details).toEqual(details)
+    expect(records.syncRecordDeleteResult(parsed)).toEqual(details)
+    expect(adapter).toHaveBeenCalledTimes(1)
+    expect(records.syncRecordDeleteResult(parseHttpError(new Error('network')))).toBeUndefined()
+    expect(
+      records.syncRecordDeleteResult({
+        ...parsed,
+        response: {
+          status: 400,
+          data: {
+            status: 400,
+            message: '测试请求失败',
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            data: { deleted_ids: [0], failures: [] },
+          },
+        },
+      }),
+    ).toBeUndefined()
   })
 })

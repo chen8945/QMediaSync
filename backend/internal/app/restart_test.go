@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/httpapi"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 )
@@ -90,7 +91,10 @@ func TestInitialConfigSaveRetryAndConcurrency(t *testing.T) {
 		t.Fatalf("invalid configuration: %s", response.Body)
 	}
 	response := post(`{"engine":"sqlite"}`)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), `"restartPending":true`) || exited.Load() != 0 {
+	result := readHTTPResponse[struct {
+		RestartPending bool `json:"restartPending"`
+	}](t, response)
+	if response.Code != 200 || !result.Data.RestartPending || len(result.Warnings) == 0 || exited.Load() != 0 {
 		t.Fatalf("preparation failure = %d %s", response.Code, response.Body)
 	}
 	configPath := filepath.Join(helpers.ConfigDir, "config.yaml")
@@ -103,8 +107,9 @@ func TestInitialConfigSaveRetryAndConcurrency(t *testing.T) {
 		wg.Go(func() {
 			// 已保存后不应再次验证、改写配置或执行 PostgreSQL 清库。
 			response := post(`{"engine":"postgres","dropDatabase":true}`)
-			if response.Code != 200 || !strings.Contains(response.Body.String(), "正在启动 QMediaSync") {
-				t.Errorf("retry: %d %s", response.Code, response.Body)
+			var result httpapi.APIResponse[any]
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || result.Status != response.Code || result.ErrorCode != "" {
+				t.Errorf("retry: %d %s (%v)", response.Code, response.Body, err)
 			}
 		})
 	}
@@ -139,7 +144,7 @@ func TestInitialConfigSaveFailureAndManualExit(t *testing.T) {
 	if err := os.MkdirAll(helpers.ConfigDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if response := post(); response.Code != 200 || !strings.Contains(response.Body.String(), "按当前部署方式重启") {
+	if response := post(); response.Code != 200 || readHTTPResponse[any](t, response).ErrorCode != "" {
 		t.Fatalf("manual exit: %d %s", response.Code, response.Body)
 	}
 	select {
@@ -234,12 +239,15 @@ func TestInitialConfigPostgresDropRetry(t *testing.T) {
 			}
 			first := post(body)
 			if scenario == "drop failure" {
-				if first.Code != 200 || !strings.Contains(first.Body.String(), "清空数据库失败") || strings.Contains(first.Body.String(), `"success":true`) {
+				if first.Code != 500 || readHTTPResponse[any](t, first).ErrorCode != "DATABASE_RESET_FAILED" {
 					t.Fatalf("failed drop claimed a saved configuration: %d %s", first.Code, first.Body)
 				}
 				denyDrop.Store(false)
 			} else {
-				if first.Code != 500 || !strings.Contains(first.Body.String(), "数据库已清空") {
+				failure := readHTTPResponse[struct {
+					DatabaseCleared bool `json:"databaseCleared"`
+				}](t, first)
+				if first.Code != 500 || failure.ErrorCode != "CONFIG_SAVE_FAILED" || !failure.Data.DatabaseCleared {
 					t.Fatalf("save failure after drop: %d %s", first.Code, first.Body)
 				}
 				// 已清空数据库的保存重试固定使用原设置，不接受另一套库配置。
@@ -251,7 +259,7 @@ func TestInitialConfigPostgresDropRetry(t *testing.T) {
 			if err := os.Mkdir(helpers.ConfigDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if retry := post(body); retry.Code != 200 || !strings.Contains(retry.Body.String(), `"success":true`) {
+			if retry := post(body); retry.Code != 200 || readHTTPResponse[any](t, retry).ErrorCode != "" {
 				t.Fatalf("save retry: %d %s", retry.Code, retry.Body)
 			}
 			wantDrops := int32(1)

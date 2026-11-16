@@ -1,7 +1,6 @@
 import axios, { AxiosError, CanceledError, type AxiosInstance } from 'axios'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  accountPublicMessages,
   authorizationPublicMessages,
   cancelAccountAuthorization,
   confirmBaiduOAuth,
@@ -103,7 +102,7 @@ describe('账号与授权 API', () => {
     const adapter = vi.fn(async (config) => ({
       config,
       data: {
-        code: 200,
+        status: 200,
         data: config.url.endsWith('/account/list')
           ? []
           : {
@@ -178,9 +177,11 @@ describe('账号与授权 API', () => {
   })
 
   // 业务失败拒绝由共享 unwrapResponse 保证，这里只保留一个代表性写入操作验证凭据不外泄。
-  it('拒绝 HTTP 200 业务失败并保留原响应', async () => {
+  it('拒绝 HTTP 500 请求失败并保留原响应', async () => {
     const body = {
-      code: 500,
+      error_code: 'INVALID_REQUEST',
+      instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+      status: 500,
       message: '账号授权已过期',
       data: { error_code: 'ACCOUNT_CONFLICT' },
     }
@@ -188,14 +189,14 @@ describe('账号与授权 API', () => {
       adapter: async (config) => ({
         config,
         data: body,
-        status: 200,
+        status: 500,
         statusText: 'OK',
         headers: {},
       }),
     })
     const error = await createAccount(http, createPayload).catch((failure: unknown) => failure)
     expect(error).toBeInstanceOf(HttpResponseError)
-    expect(error).toMatchObject({ response: { status: 200, data: body } })
+    expect(error).toMatchObject({ response: { status: 500, data: body } })
     expect(parseHttpError(error, { publicMessages: authorizationPublicMessages }).message).toBe(
       body.message,
     )
@@ -204,7 +205,7 @@ describe('账号与授权 API', () => {
   it('空账号列表、空写入结果与 done=false 都按各自契约保留', async () => {
     const adapter = vi.fn(async (config) => ({
       config,
-      data: { code: 200, data: config.url.endsWith('/oauth-status') ? { done: false } : null },
+      data: { status: 200, data: config.url.endsWith('/oauth-status') ? { done: false } : null },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -220,10 +221,10 @@ describe('账号与授权 API', () => {
         username: '',
         password: '',
       }),
-    ).resolves.toBeUndefined()
-    await expect(deleteAccount(http, 12)).resolves.toBeUndefined()
-    await expect(confirmV115OAuth(http, callbackPayload)).resolves.toBeUndefined()
-    await expect(confirmBaiduOAuth(http, callbackPayload)).resolves.toBeUndefined()
+    ).resolves.toEqual({ warnings: [] })
+    await expect(deleteAccount(http, 12)).resolves.toEqual({ warnings: [] })
+    await expect(confirmV115OAuth(http, callbackPayload)).resolves.toEqual({ warnings: [] })
+    await expect(confirmBaiduOAuth(http, callbackPayload)).resolves.toEqual({ warnings: [] })
     await expect(
       cancelAccountAuthorization(http, 12, 'replacement-session'),
     ).resolves.toBeUndefined()
@@ -238,7 +239,7 @@ describe('账号与授权 API', () => {
       const http = axios.create({
         adapter: async (config) => ({
           config,
-          data: { code: 200, data },
+          data: { status: 200, data },
           status: 200,
           statusText: 'OK',
           headers: {},
@@ -280,13 +281,21 @@ describe('账号与授权 API', () => {
     const allowed = '保存 115 授权失败：当前账号已存在，不允许添加重复账号'
     const parse = (message: string) =>
       parseHttpError(
-        { response: { status: 200, data: { code: 500, message } } },
+        {
+          response: {
+            status: 500,
+            data: {
+              data: null,
+              error_code: 'INVALID_REQUEST',
+              instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+              status: 500,
+              message,
+            },
+          },
+        },
         { publicMessages: authorizationPublicMessages, fallbackMessage: '授权失败' },
       )
     expect(parse(allowed).message).toBe('当前账号已存在，不允许添加重复账号')
-    expect(accountPublicMessages['创建开放平台账号失败：账号备注已存在，请换一个']).toBe(
-      '账号备注已存在，请换一个',
-    )
     const http = axios.create({
       adapter: async (config) => ({
         config: {
@@ -294,7 +303,8 @@ describe('账号与授权 API', () => {
           url: `${config.url}?authorization_id=private-session#private-fragment`,
         },
         data: {
-          code: 500,
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 401,
           error_code: 'SESSION_INVALID',
           message: 'private-token',
           data: callbackPayload,
@@ -306,7 +316,7 @@ describe('账号与授权 API', () => {
     })
     const error = await confirmV115OAuth(http, callbackPayload).catch((failure: unknown) => failure)
     const parsed = parseHttpError(error, { publicMessages: authorizationPublicMessages })
-    expect(parsed.diagnostics).toEqual({
+    expect(parsed.diagnostics).toMatchObject({
       method: 'POST',
       path: `${SERVER_URL}/115/oauth-confirm`,
       status: 401,

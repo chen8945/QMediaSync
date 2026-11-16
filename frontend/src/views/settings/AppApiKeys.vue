@@ -142,6 +142,7 @@ import {
   type CreatedApiKey,
 } from '@/api/apiKeys'
 import { notifyHttpError } from '@/utils/httpErrorNotification'
+import type { SettingsSaveResult } from '@/api/types'
 import { isMessageBoxCancelError } from '@/utils/messageBoxUtils'
 import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/timeUtils'
@@ -162,6 +163,12 @@ const { isMobile: isMobileView } = useDeviceType()
 
 const formatDateSafe = (value?: number | null) => {
   return formatDateTime(value || 0)
+}
+
+const showOperationResult = (result: SettingsSaveResult, fallback: string) => {
+  const message = result.message?.trim() || fallback
+  if (result.warnings.length) ElMessage.warning([message, ...result.warnings].join('；'))
+  else ElMessage.success(message)
 }
 
 const loadKeys = async (refreshAfterSuccess = false) => {
@@ -192,10 +199,11 @@ const createKey = async () => {
   }
   try {
     creating.value = true
-    createdKey.value = await createApiKey(http, createForm.name.trim())
+    const result = await createApiKey(http, createForm.name.trim())
+    createdKey.value = result.data
     createDialogVisible.value = false
     createdKeyDialogVisible.value = true
-    ElMessage.success('API Key 创建成功')
+    showOperationResult(result, 'API Key 创建成功')
     await loadKeys(true)
   } catch (error) {
     notifyHttpError(error, '创建 API Key 失败', {
@@ -213,8 +221,8 @@ const toggleStatus = async (row: ApiKeyItem, isActive: boolean) => {
   row.is_active = isActive
   row._updating = true
   try {
-    await updateApiKeyStatus(http, row.id, isActive)
-    ElMessage.success(isActive ? '已启用' : '已禁用')
+    const result = await updateApiKeyStatus(http, row.id, isActive)
+    showOperationResult(result, isActive ? '已启用' : '已禁用')
     // 刷新时间等可能变化；回读失败不撤销已经成功的状态更新。
     await loadKeys(true)
   } catch (error) {
@@ -240,8 +248,8 @@ const confirmDelete = async (row: ApiKey) => {
       },
     )
 
-    await deleteApiKey(http, row.id)
-    ElMessage.success('删除成功')
+    const result = await deleteApiKey(http, row.id)
+    showOperationResult(result, '删除成功')
     await loadKeys(true)
   } catch (error) {
     if (!isMessageBoxCancelError(error)) {

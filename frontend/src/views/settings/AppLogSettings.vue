@@ -150,9 +150,11 @@ async function saveLogSetting() {
     formData.maxBackups = normalizeNumber(settings.maxBackups, formData.maxBackups)
     formData.maxAgeDays = normalizeNumber(settings.maxAgeDays, formData.maxAgeDays)
     saveStatus.value = {
-      title: '保存成功',
-      type: 'success',
-      description: '日志设置已保存',
+      title: settings.warnings.length ? '设置已保存，尚未完全生效' : '保存成功',
+      type: settings.warnings.length ? 'warning' : 'success',
+      description: settings.warnings.length
+        ? [settings.message?.trim(), ...settings.warnings].filter(Boolean).join('；')
+        : settings.message?.trim() || '日志设置已保存',
     }
     saveStatusTimer = setTimeout(() => {
       saveStatus.value = null

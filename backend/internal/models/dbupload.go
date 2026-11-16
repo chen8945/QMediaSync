@@ -1019,29 +1019,32 @@ func GetPendingUploadTasks(limit int, excludedIDs ...uint) []*DbUploadTask {
 	return tasks
 }
 
-func GetUploadingCount() int64 {
+func GetUploadingCount(ctx context.Context) (int64, error) {
 	var count int64
-	db.Db.Model(&DbUploadTask{}).
+	err := db.Db.WithContext(ctx).Model(&DbUploadTask{}).
 		Where("status IN ?", []UploadStatus{UploadStatusUploading, UploadStatusRemoteCompletedFinalizing}).
-		Count(&count)
-	return count
+		Count(&count).Error
+	return count, err
 }
 
 // 查询上传队列任务列表
-func GetUploadTaskList(status UploadStatus, page, pageSize int) ([]*DbUploadTask, int64) {
+func GetUploadTaskList(ctx context.Context, status UploadStatus, page, pageSize int) ([]*DbUploadTask, int64, error) {
 	var tasks []*DbUploadTask
 	var total int64
-	tx := db.Db.Model(&DbUploadTask{})
+	tx := db.Db.WithContext(ctx).Model(&DbUploadTask{})
 	if status >= 0 {
 		tx.Where("status = ?", status)
 	}
-	tx.Count(&total).
+	err := tx.Count(&total).
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Order("id DESC").
-		Find(&tasks)
+		Find(&tasks).Error
+	if err != nil {
+		return nil, 0, err
+	}
 	hydrateUploadTaskQueueFields(tasks)
-	return tasks, total
+	return tasks, total, nil
 }
 
 func ClearPendingUploadTasks() error {

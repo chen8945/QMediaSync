@@ -1,8 +1,8 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
 import type { QueueStatusSnapshot } from '@/utils/queueStatusUtils'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface DownloadTask {
   id: string
@@ -46,7 +46,7 @@ export async function fetchDownloadQueue(
 ): Promise<DownloadQueueSnapshot> {
   return unwrapResponse(
     await http.get<APIResponse<DownloadQueueSnapshot>>(queueURL, { params: query }),
-  )
+  ).data
 }
 
 export async function fetchDownloadQueueStatus(
@@ -54,25 +54,29 @@ export async function fetchDownloadQueueStatus(
 ): Promise<QueueStatusSnapshot | boolean> {
   return unwrapResponse(
     await http.get<APIResponse<QueueStatusSnapshot | boolean>>(`${queueURL}/status`),
+  ).data
+}
+
+export async function clearPendingDownloadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/clear-pending`))
+}
+
+export async function clearCompletedDownloadQueue(
+  http: AxiosInstance,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${queueURL}/clear-success-failed`),
   )
 }
 
-export async function clearPendingDownloadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/clear-pending`))
+export async function retryFailedDownloadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/retry-failed`))
 }
 
-export async function clearCompletedDownloadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/clear-success-failed`))
+export async function pauseDownloadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/stop`))
 }
 
-export async function retryFailedDownloadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/retry-failed`))
-}
-
-export async function pauseDownloadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/stop`))
-}
-
-export async function resumeDownloadQueue(http: AxiosInstance): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${queueURL}/start`))
+export async function resumeDownloadQueue(http: AxiosInstance): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(await http.post<APIResponse<null>>(`${queueURL}/start`))
 }

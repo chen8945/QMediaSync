@@ -2,10 +2,12 @@ package controllers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"qmediasync/internal/httpapi"
 	"qmediasync/internal/models"
 	"qmediasync/internal/requests"
 	syncconfig "qmediasync/internal/strm/config"
@@ -23,39 +25,11 @@ type saveSyncPathAggregateRequest struct {
 var newSyncPathConfigService = syncconfig.NewDefaultService
 
 // CreateSyncPathAggregate 原子创建同步目录和目录监控上传规则。
-// @Summary 原子创建同步目录
-// @Description 原子创建同步目录基础配置和目录监控上传规则
-// @Tags 同步管理
-// @Accept json
-// @Produce json
-// @Param Idempotency-Key header string false "创建幂等键"
-// @Param request body saveSyncPathAggregateRequest true "同步目录聚合配置"
-// @Success 200 {object} object
-// @Failure 400 {object} object
-// @Failure 409 {object} object
-// @Failure 500 {object} object
-// @Router /sync/paths [post]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func CreateSyncPathAggregate(c *gin.Context) {
 	saveSyncPathAggregate(c, 0)
 }
 
 // UpdateSyncPathAggregate 原子更新同步目录和目录监控上传规则。
-// @Summary 原子更新同步目录
-// @Description 原子更新同步目录基础配置和目录监控上传规则
-// @Tags 同步管理
-// @Accept json
-// @Produce json
-// @Param id path integer true "同步目录 ID"
-// @Param request body saveSyncPathAggregateRequest true "同步目录聚合配置"
-// @Success 200 {object} object
-// @Failure 400 {object} object
-// @Failure 404 {object} object
-// @Failure 500 {object} object
-// @Router /sync/paths/{id} [put]
-// @Security JwtAuth
-// @Security ApiKeyAuth
 func UpdateSyncPathAggregate(c *gin.Context) {
 	syncPathID, ok := parseSyncPathAggregateIDParam(c, "id")
 	if !ok {
@@ -74,6 +48,7 @@ func parseSyncPathAggregateIDParam(c *gin.Context, name string) (uint, bool) {
 			syncconfig.ErrorCodeInvalidRequest,
 			"请求参数错误",
 			[]syncconfig.FieldError{{Field: name, Message: "格式错误"}},
+			err,
 		)
 		return 0, false
 	}
@@ -83,16 +58,16 @@ func parseSyncPathAggregateIDParam(c *gin.Context, name string) (uint, bool) {
 func saveSyncPathAggregate(c *gin.Context, syncPathID uint) {
 	var req saveSyncPathAggregateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, "请求格式错误", syncPathRequestFieldErrors(err))
+		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, "请求格式错误", syncPathRequestFieldErrors(err), err)
 		return
 	}
 	if err := req.SyncPath.Validate(); err != nil {
-		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, err.Error(), syncPathRequestFieldErrors(err))
+		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, err.Error(), syncPathRequestFieldErrors(err), err)
 		return
 	}
 	directoryInput, err := buildDirectoryUploadCommandInput(req.DirectoryUpload)
 	if err != nil {
-		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, err.Error(), nil)
+		writeSyncPathSaveError(c, http.StatusBadRequest, syncconfig.ErrorCodeInvalidRequest, err.Error(), nil, err)
 		return
 	}
 	result, err := newSyncPathConfigService().Save(c.Request.Context(), syncconfig.SaveSyncPathCommand{
@@ -121,17 +96,22 @@ func saveSyncPathAggregate(c *gin.Context, syncPathID uint) {
 			case syncconfig.ErrorCodeDatabaseSave:
 				status = http.StatusInternalServerError
 			}
-			writeSyncPathSaveError(c, status, saveErr.Code, saveErr.Message, saveErr.FieldErrors)
+			writeSyncPathSaveError(c, status, saveErr.Code, saveErr.Message, saveErr.FieldErrors, err)
 			return
 		}
-		writeSyncPathSaveError(c, http.StatusInternalServerError, syncconfig.ErrorCodeDatabaseSave, "保存同步目录失败", nil)
+		writeSyncPathSaveError(c, http.StatusInternalServerError, syncconfig.ErrorCodeDatabaseSave, "保存同步目录失败", nil, err)
 		return
 	}
 	message := "保存同步目录成功"
 	if syncPathID == 0 {
 		message = "添加同步目录成功"
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: message, Data: result})
+	status := http.StatusOK
+	if syncPathID == 0 {
+		status = http.StatusCreated
+		c.Header("Location", fmt.Sprintf("/api/sync/path/%d", result.SyncPath.ID))
+	}
+	httpapi.Success(c, status, gin.H{"sync_path": result.SyncPath, "directory_upload": result.DirectoryUpload}, message, result.Warnings...)
 }
 
 // syncPathRequestFieldErrors 将请求绑定和基础配置校验错误映射到表单字段。
@@ -226,16 +206,10 @@ func buildDirectoryUploadCommandInput(req *directoryUploadRulesSaveRequest) (*sy
 	return result, nil
 }
 
-func writeSyncPathSaveError(c *gin.Context, status int, errorCode string, message string, fieldErrors []syncconfig.FieldError) {
-	if fieldErrors == nil {
-		fieldErrors = []syncconfig.FieldError{}
+func writeSyncPathSaveError(c *gin.Context, status int, errorCode string, message string, fieldErrors []syncconfig.FieldError, cause error) {
+	fields := make([]httpapi.FieldError, 0, len(fieldErrors))
+	for _, field := range fieldErrors {
+		fields = append(fields, httpapi.FieldError{Field: field.Field, Message: field.Message, ClientID: field.ClientID})
 	}
-	c.JSON(status, APIResponse[any]{
-		Code:    BadRequest,
-		Message: message,
-		Data: gin.H{
-			"error_code":   errorCode,
-			"field_errors": fieldErrors,
-		},
-	})
+	httpapi.Failure(c, status, httpapi.Error{Code: errorCode, Message: message, Cause: cause, FieldErrors: fields})
 }

@@ -92,7 +92,7 @@ func TestSyncDeletedRecordRejectsAllLateUpdates(t *testing.T) {
 				t.Fatalf("expected delete: %+v", event)
 			}
 			err := tt.update(task)
-			if !errors.Is(err, errSyncRecordNotFound) && !errors.Is(err, ErrSyncLedgerRecordDeleted) {
+			if !errors.Is(err, ErrSyncRecordNotFound) && !errors.Is(err, ErrSyncLedgerRecordDeleted) {
 				t.Fatalf("late update: %v", err)
 			}
 			select {

@@ -36,20 +36,21 @@ const mountSettings = async (
   if (loadError) loadReply.mockRejectedValueOnce(loadError)
   if (initialRead) loadReply.mockReturnValueOnce(initialRead)
   const reply = vi.fn<() => Promise<APIResponse<unknown>>>().mockResolvedValue({
-    code: 200,
+    status: 200,
     message: '',
     data: null,
   })
   const adapter = vi.fn(async (config) => {
+    const responseBody =
+      config.method === 'get'
+        ? { status: 200, message: '', data: await loadReply() }
+        : await reply()
     return {
       config,
-      status: 200,
+      status: (responseBody as { status: number }).status,
       statusText: 'OK',
       headers: {},
-      data:
-        config.method === 'get'
-          ? { code: 200, message: '', data: await loadReply() }
-          : await reply(),
+      data: responseBody,
     }
   })
   const http = axios.create({ adapter })
@@ -77,7 +78,13 @@ const fieldInput = (wrapper: VueWrapper, label: string) => {
 const rejectedRequest = (errorCode: string, status = 403) =>
   new HttpResponseError({
     status,
-    data: { code: 500, message: 'internal token-secret', error_code: errorCode, data: null },
+    data: {
+      status: status,
+      message: 'internal token-secret',
+      error_code: errorCode ?? 'TEST_REQUEST_FAILED',
+      data: null,
+      instance: '/request-errors/ComponentTestFailure0001',
+    },
     config: { method: 'post', url: '/api/scrape/test?api_key=token-secret' },
   })
 
@@ -102,11 +109,42 @@ describe.each([
     urlLabel: 'TMDB 接口地址',
   },
 ])('$name 设置失败反馈', ({ component, urlLabel }) => {
-  it('HTTP 200 业务失败保留输入，恢复操作按钮，且不显示保存成功', async () => {
+  it('保存消息透传，提交后的应用警告进入原有反馈', async () => {
+    const { wrapper, reply, act } = await mountSettings(component)
+    const message = '服务器确认已保存测试配置'
+    reply.mockResolvedValueOnce({ status: 200, data: null, message })
+    await act('保存设置')
+    expect(wrapper.get('.save-status').text()).toContain(message)
+    const warning = '测试配置已保存，运行应用需要重试'
+    reply.mockResolvedValueOnce({ status: 200, data: null, message, warnings: [warning] })
+    await act('保存设置')
+    expect(wrapper.get('.save-status').text()).toContain(message)
+    expect(wrapper.get('.save-status').text()).toContain(warning)
+    expect(wrapper.find('.el-alert--warning').exists()).toBe(true)
+  })
+
+  it('连通性测试保留服务端消息和警告，TMDB 仍使用布尔结果判断', async () => {
+    const { wrapper, reply, act } = await mountSettings(component)
+    const message = '服务器确认测试连接结果'
+    const warning = '测试连接需要人工检查'
+    reply.mockResolvedValueOnce({ status: 200, data: true, message, warnings: [warning] })
+    await act('测试连通性')
+    expect(wrapper.get('.test-status').text()).toContain(message)
+    expect(wrapper.get('.test-status').text()).toContain(warning)
+    expect(wrapper.find('.el-alert--warning').exists()).toBe(true)
+  })
+
+  it('请求失败保留输入，恢复操作按钮，且不显示保存成功', async () => {
     const { wrapper, reply, act } = await mountSettings(component)
     const input = fieldInput(wrapper, urlLabel)
     await input.setValue('https://changed.example.com')
-    reply.mockResolvedValueOnce({ code: 500, message: '配置文件不可写', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '配置文件不可写',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
 
     await act('保存设置')
 
@@ -118,14 +156,20 @@ describe.each([
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(console.error).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ method: 'POST', status: 200 }),
+      expect.objectContaining({ method: 'POST', status: 500 }),
     )
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret')
   })
 
   it('测试的业务失败即使携带 data:true 也不显示连接成功', async () => {
     const { wrapper, reply, act } = await mountSettings(component)
-    reply.mockResolvedValueOnce({ code: 500, message: '接口地址不可达', data: true })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: '接口地址不可达',
+      data: true,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('测试连通性')
     expect(wrapper.get('.test-status').text()).toContain('测试失败')
     expect(wrapper.get('.test-status').text()).not.toContain('连接成功')
@@ -218,7 +262,7 @@ describe.each([
     ['测试连通性', '.test-status'],
   ])('%s 提示关闭后，新错误仍显示且不被旧成功计时器清除', async (action, statusSelector) => {
     const { wrapper, reply, act } = await mountSettings(component)
-    reply.mockResolvedValueOnce({ code: 200, message: '', data: true })
+    reply.mockResolvedValueOnce({ status: 200, message: '', data: true })
     await act(action)
     await wrapper.get(`${statusSelector} .el-alert__close-btn`).trigger('click')
     expect(wrapper.find(statusSelector).exists()).toBe(false)
@@ -278,14 +322,22 @@ describe('AI 识别设置', () => {
   it('业务失败展示字段原因与服务端测试失败原因', async () => {
     const { wrapper, reply, act } = await mountSettings(AppAiSettings)
     reply.mockResolvedValueOnce({
-      code: 500,
+      status: 500,
       message: 'ai_base_url：只支持 http 或 https',
       data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
     })
     await act('保存设置')
     expect(wrapper.get('.save-status').text()).toContain('AI 接口地址只支持 HTTP 或 HTTPS')
 
-    reply.mockResolvedValueOnce({ code: 500, message: 'AI 服务返回 401', data: null })
+    reply.mockResolvedValueOnce({
+      status: 500,
+      message: 'AI 服务返回 401',
+      data: null,
+      error_code: 'TEST_REQUEST_FAILED',
+      instance: '/request-errors/ComponentTestFailure0001',
+    })
     await act('测试连通性')
     expect(wrapper.get('.test-status').text()).toContain('AI 服务返回 401')
     expect(wrapper.get('.test-status').text()).not.toContain('测试成功')
@@ -330,11 +382,11 @@ describe('AI 识别设置', () => {
 describe('TMDB 刮削设置', () => {
   it('请求成功但 data:false 表示连接失败，之前测试成功的计时器不清除错误条', async () => {
     const { wrapper, reply, act } = await mountSettings(AppTmdbSettings)
-    reply.mockResolvedValueOnce({ code: 200, message: '', data: true })
+    reply.mockResolvedValueOnce({ status: 200, message: '', data: true })
     await act('测试连通性')
     expect(wrapper.get('.test-status').text()).toContain('连接成功')
 
-    reply.mockResolvedValueOnce({ code: 200, message: '', data: false })
+    reply.mockResolvedValueOnce({ status: 200, message: '', data: false })
     await act('测试连通性')
     expect(wrapper.get('.test-status').text()).toContain('连接失败')
     expect(wrapper.get('.test-status').text()).toContain('TMDB 连通性测试失败，请检查设置')

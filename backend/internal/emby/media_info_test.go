@@ -2,6 +2,7 @@ package emby
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -74,10 +75,10 @@ func TestStartParseEmbyMediaInfoRunsOneAtATime(t *testing.T) {
 	if StartParseEmbyMediaInfo() {
 		t.Fatal("same endpoint cannot start overlapping scan")
 	}
-	if !StartParseMediaLibraryInfo(models.MediaServerJellyfin) {
+	if err := StartParseMediaLibraryInfo(models.MediaServerJellyfin); err != nil {
 		t.Fatal("slow Emby scan must not block Jellyfin scan")
 	}
-	if StartParseMediaLibraryInfo(models.MediaServerJellyfin) {
+	if err := StartParseMediaLibraryInfo(models.MediaServerJellyfin); !errors.Is(err, ErrMediaLibraryUnavailable) {
 		t.Fatal("same Jellyfin endpoint cannot overlap")
 	}
 	releaseServer()

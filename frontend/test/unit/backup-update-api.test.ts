@@ -31,19 +31,52 @@ const operations = (http: AxiosInstance) => [
 ]
 
 describe('备份和更新 API', () => {
+  it('现有写入反馈保留服务端消息与警告，恢复仍保留查询凭证', async () => {
+    const message = '服务器受理测试操作'
+    const warnings = ['测试操作尚待处理']
+    const receipt = 'test-feedback-receipt'
+    const http = axios.create({
+      adapter: async (config) => ({
+        config,
+        status: 202,
+        statusText: '',
+        headers: {},
+        data: { status: 202, data: { restore_receipt: receipt }, message, warnings },
+      }),
+    })
+    for (const request of [
+      () => backup.createBackup(http, 'test'),
+      () => backup.deleteBackup(http, 7),
+      () => update.cancelUpdate(http),
+    ])
+      await expect(request()).resolves.toEqual({ message, warnings })
+    for (const request of [
+      () => backup.restoreBackup(http, 7),
+      () => backup.uploadAndRestoreBackup(http, file),
+    ])
+      await expect(request()).resolves.toMatchObject({
+        data: { restore_receipt: receipt },
+        message,
+        warnings,
+      })
+  })
+
   it('备份目录列表只读元数据，文件恢复提交文件名而非目录或记录 ID', async () => {
     const listing = {
       directory: '/config/backups',
       files: [{ file_name: '历史备份.ZIP', file_size: 4096, modified_at: 123 }],
     }
-    const get = vi.fn().mockResolvedValue({ data: { code: 200, data: listing } })
-    const post = vi
-      .fn()
-      .mockResolvedValue({ data: { code: 200, data: { restore_receipt: 'receipt' } } })
+    const get = vi.fn().mockResolvedValue({ status: 200, data: { status: 200, data: listing } })
+    const post = vi.fn().mockResolvedValue({
+      status: 200,
+      data: { status: 200, data: { restore_receipt: 'receipt' } },
+    })
     const http = { get, post } as unknown as AxiosInstance
     await expect(backup.fetchBackupFiles(http)).resolves.toEqual(listing)
     expect(get).toHaveBeenCalledExactlyOnceWith('/api/backup/files')
-    await expect(backup.restoreBackup(http, { file_name: '历史备份.ZIP' })).resolves.toEqual({
+    await expect(
+      backup.restoreBackup(http, { file_name: '历史备份.ZIP' }).then((result) => result.data),
+    ).resolves.toEqual({
       restore_receipt: 'receipt',
     })
     expect(post).toHaveBeenCalledExactlyOnceWith('/api/backup/restore', {
@@ -58,7 +91,9 @@ describe('备份和更新 API', () => {
         statusText: '',
         headers: {},
         data: {
-          code: 413,
+          data: null,
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 413,
           error_code: 'BACKUP_ARCHIVE_LIMIT',
           message: '备份文件大小不能超过 1 GiB',
         },
@@ -93,7 +128,7 @@ describe('备份和更新 API', () => {
       status,
       statusText: '',
       headers: {},
-      data: { code: status, data: { restore_receipt: receipt } },
+      data: { status: status, data: { restore_receipt: receipt } },
     }))
     const http = axios.create({ adapter })
     const clearAuth = vi.fn()
@@ -108,8 +143,12 @@ describe('备份和更新 API', () => {
       onAuthenticationInvalidated,
     })
 
-    await expect(backup.restoreBackup(http, 7)).resolves.toEqual({ restore_receipt: receipt })
-    await expect(backup.uploadAndRestoreBackup(http, file)).resolves.toEqual({
+    await expect(backup.restoreBackup(http, 7).then((result) => result.data)).resolves.toEqual({
+      restore_receipt: receipt,
+    })
+    await expect(
+      backup.uploadAndRestoreBackup(http, file).then((result) => result.data),
+    ).resolves.toEqual({
       restore_receipt: receipt,
     })
     await backup.fetchBackupStatus(http, receipt)
@@ -151,7 +190,7 @@ describe('备份和更新 API', () => {
       status: 200,
       statusText: 'OK',
       headers: {},
-      data: { code: 200, message: '', data: config.url.endsWith('is-fn-os') ? false : null },
+      data: { status: 200, message: '', data: config.url.endsWith('is-fn-os') ? false : null },
     }))
     const http = axios.create({ adapter, timeout: 8765 })
     for (const request of operations(http)) await request()
@@ -182,10 +221,11 @@ describe('备份和更新 API', () => {
     expect(JSON.parse(calls[10].data)).toEqual({ version: 'v1.2.3', channel: 'github' })
     expect(calls.filter((_, i) => i !== 6).every((config) => config.timeout === 8765)).toBe(true)
     await expect(update.fetchIsFnOS(http)).resolves.toBe(false)
+    await expect(backup.restoreBackup(http, 7).then((result) => result.data)).resolves.toBeNull()
   })
 
   it.each([200, 403, 503])('HTTP %i 的失败响应不会完成操作', async (status) => {
-    const body = { code: status === 200 ? 500 : 200, message: 'internal secret', data: null }
+    const body = { status: status === 200 ? 500 : 200, message: 'internal secret', data: null }
     const http = axios.create({
       adapter: async (config) => ({ config, status, statusText: '', headers: {}, data: body }),
     })
@@ -209,10 +249,29 @@ describe('备份和更新 API', () => {
     await expect(backup.downloadBackup(axios.create({ adapter }), 7)).resolves.toBe(zip)
     expect(adapter.mock.calls[0][0].responseType).toBe('blob')
     for (const body of [
-      new Blob([JSON.stringify({ code: 500, message: '备份记录不存在', data: null })], {
-        type: 'application/json',
-      }),
-      new Blob([JSON.stringify({ code: 500, message: 'internal secret', data: null })]),
+      new Blob(
+        [
+          JSON.stringify({
+            error_code: 'INVALID_REQUEST',
+            instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+            status: 500,
+            message: '备份记录不存在',
+            data: null,
+          }),
+        ],
+        {
+          type: 'application/json',
+        },
+      ),
+      new Blob([
+        JSON.stringify({
+          error_code: 'INVALID_REQUEST',
+          instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+          status: 500,
+          message: 'internal secret',
+          data: null,
+        }),
+      ]),
       new Blob(['<html>secret</html>'], { type: 'text/html' }),
     ]) {
       const http = axios.create({
@@ -241,8 +300,10 @@ describe('备份和更新 API', () => {
             data: new Blob(
               [
                 JSON.stringify({
-                  code: 500,
-                  message: 'internal secret',
+                  data: null,
+                  instance: '/request-errors/abcdefghijklmnopqrstuvwx',
+                  status,
+                  message: '测试拒绝',
                   error_code: status === 403 ? 'CSRF_TOKEN_INVALID' : 'SESSION_INVALID',
                 }),
               ],

@@ -119,13 +119,21 @@ const save = async () => {
     if (!mounted) return
     applySettings(result)
     feedback.value =
-      result.runtime.last_error || result.runtime.restart_required
+      result.warnings.length || result.runtime.last_error || result.runtime.restart_required
         ? {
             title: '设置未完全应用',
             type: 'warning',
-            description: '设置已保存，请检查运行状态后重新保存',
+            description: result.warnings.length
+              ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+              : [result.message?.trim(), '设置已保存，请检查运行状态后重新保存']
+                  .filter(Boolean)
+                  .join('；'),
           }
-        : { title: '保存成功', type: 'success', description: '设置已保存并应用' }
+        : {
+            title: '保存成功',
+            type: 'success',
+            description: result.message?.trim() || '设置已保存并应用',
+          }
   } catch (error) {
     if (mounted) showFailure(error, '保存失败')
   } finally {

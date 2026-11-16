@@ -66,7 +66,7 @@ server {
 
 ## 浏览器写入请求被拒绝
 
-搜索、列表读取正常，但保存、删除或手动启动失败时，先查看失败请求的 HTTP 状态和响应体。HTTP `403` 中的 `REQUEST_ORIGIN_INVALID` 表示来源校验失败；响应体的业务 `code=500` 不表示 HTTP `500`。旧版本对应文案为“请求来源无效”。其他错误含义见 [请求错误码](../architecture/authentication-sessions.md#请求错误码)。
+搜索、列表读取正常，但保存、删除或手动启动失败时，先查看失败请求的 HTTP 状态和响应体。HTTP `403` 中的顶层 `REQUEST_ORIGIN_INVALID` 表示来源校验失败；正文 `status` 与 HTTP 状态一致，通用字段见 [公共响应契约](../reference/api-response.md)。其他错误含义见 [请求错误码](../architecture/authentication-sessions.md#请求错误码)。
 
 来源校验比较浏览器 `Origin`（缺失时使用 `Referer`）与后端识别的协议、主机和端口。当前同源判断使用实际请求 `Host`，不会用 `X-Forwarded-Host` 替代它，因此仅设置后者不能修复被改写为 `127.0.0.1` 的 `Host`。
 

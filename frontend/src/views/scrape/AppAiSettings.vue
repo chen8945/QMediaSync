@@ -262,12 +262,14 @@ async function saveSettings() {
     loading.value = true
     saveStatus.value = null
 
-    await saveAiSettings(http, buildSettingsPayload())
+    const result = await saveAiSettings(http, buildSettingsPayload())
 
     saveStatus.value = {
-      title: '保存成功',
-      type: 'success',
-      description: 'AI 识别设置已成功保存',
+      title: result.warnings.length ? '设置已保存，尚未完全生效' : '保存成功',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || 'AI 识别设置已成功保存',
     }
     void revealSaveFeedback()
 
@@ -296,12 +298,14 @@ async function testConnection() {
     testing.value = true
     testStatus.value = null
 
-    await testAiConnection(http, buildSettingsPayload())
+    const result = await testAiConnection(http, buildSettingsPayload())
 
     testStatus.value = {
       title: '测试成功',
-      type: 'success',
-      description: 'AI 识别连接测试成功',
+      type: result.warnings.length ? 'warning' : 'success',
+      description: result.warnings.length
+        ? [result.message?.trim(), ...result.warnings].filter(Boolean).join('；')
+        : result.message?.trim() || 'AI 识别连接测试成功',
     }
 
     const status = testStatus.value

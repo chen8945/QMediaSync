@@ -2,6 +2,7 @@ package synccron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -68,6 +69,9 @@ const (
 	TaskStatusWaiting = 1
 	TaskStatusRunning = 2
 )
+
+// ErrTaskAlreadyExists 表示同一任务已在等待或运行。
+var ErrTaskAlreadyExists = errors.New("任务已存在")
 
 type NewSyncTask struct {
 	ID           uint
@@ -138,7 +142,7 @@ func (q *NewSyncQueuePerType) AddTask(task *NewSyncTask) error {
 
 	if q.isTaskExistsUnsafe(task) {
 		q.mutex.Unlock()
-		return fmt.Errorf("任务已存在：类型=%s，ID=%d", task.TaskType.DisplayName(), task.ID)
+		return fmt.Errorf("%w：类型=%s，ID=%d", ErrTaskAlreadyExists, task.TaskType.DisplayName(), task.ID)
 	}
 
 	if len(q.waitingQueue) >= cap(q.taskChan) {

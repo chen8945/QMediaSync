@@ -1,7 +1,7 @@
 import type { AxiosInstance } from 'axios'
 import { SERVER_URL } from '@/const'
-import { unwrapResponse } from './response'
-import type { APIResponse } from './types'
+import { getSettingsSaveResult, unwrapResponse } from './response'
+import type { APIResponse, SettingsSaveResult } from './types'
 
 export interface AiSettings {
   ai_base_url: string
@@ -47,17 +47,23 @@ export const scrapeSettingsPublicMessages: Readonly<Record<string, string>> = {
 
 export async function fetchAiSettings(http: AxiosInstance): Promise<AiSettings> {
   return unwrapResponse(await http.get<APIResponse<AiSettings>>(`${SERVER_URL}/scrape/ai-settings`))
+    .data
 }
 
-export async function saveAiSettings(http: AxiosInstance, payload: AiSettings): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/ai-settings`, payload))
+export async function saveAiSettings(
+  http: AxiosInstance,
+  payload: AiSettings,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/ai-settings`, payload),
+  )
 }
 
 export async function testAiConnection(
   http: AxiosInstance,
   payload: AiConnectionSettings,
-): Promise<void> {
-  unwrapResponse(
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
     await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/ai-test`, payload, {
       timeout: 120000,
     }),
@@ -65,18 +71,23 @@ export async function testAiConnection(
 }
 
 export async function fetchTmdbSettings(http: AxiosInstance): Promise<TmdbSettings> {
-  return unwrapResponse(await http.get<APIResponse<TmdbSettings>>(`${SERVER_URL}/scrape/tmdb`))
+  return unwrapResponse(await http.get<APIResponse<TmdbSettings>>(`${SERVER_URL}/scrape/tmdb`)).data
 }
 
-export async function saveTmdbSettings(http: AxiosInstance, payload: TmdbSettings): Promise<void> {
-  unwrapResponse(await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/tmdb`, payload))
+export async function saveTmdbSettings(
+  http: AxiosInstance,
+  payload: TmdbSettings,
+): Promise<SettingsSaveResult> {
+  return getSettingsSaveResult(
+    await http.post<APIResponse<null>>(`${SERVER_URL}/scrape/tmdb`, payload),
+  )
 }
 
 // false 表示 TMDB 连接测试未通过；来源、安全校验等请求失败仍由 unwrapResponse 抛出。
 export async function testTmdbConnection(
   http: AxiosInstance,
   payload: TmdbConnectionSettings,
-): Promise<boolean> {
+): Promise<SettingsSaveResult & { data: boolean }> {
   return unwrapResponse(
     await http.post<APIResponse<boolean>>(`${SERVER_URL}/scrape/tmdb-test`, payload, {
       timeout: 20000,
