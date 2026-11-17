@@ -78,7 +78,7 @@ func (s *SyncStrm) Start115Sync() {
 		s.Sync.Logger.Infof("开始预取两层目录")
 		err := s.Preload115Dirs(firstFileId)
 		if err != nil {
-			s.Sync.Logger.Errorf("预取 115 目录失败：%v", err)
+			s.Sync.Logger.Errorf("预取 115 目录失败：错误类型=%T", err)
 			s.recordScanFailure(s.SourcePath, err)
 			if isFatalSyncError(err) {
 				s.PathErrChan <- err
@@ -91,7 +91,7 @@ func (s *SyncStrm) Start115Sync() {
 	s.Sync.Logger.Infof("启动 115 文件调度器，文件总数：%d", total)
 	filerr := s.Start115FileDispathcer(total)
 	if filerr != nil {
-		s.Sync.Logger.Errorf("启动 115 文件调度器失败：%v", filerr)
+		s.Sync.Logger.Errorf("启动 115 文件调度器失败：错误类型=%T", filerr)
 		s.PathErrChan <- filerr
 		return
 	}
@@ -99,12 +99,12 @@ func (s *SyncStrm) Start115Sync() {
 	s.Sync.Logger.Infof("启动 115 路径调度器")
 	patherr := s.Start115PathDispathcer()
 	if patherr != nil {
-		s.Sync.Logger.Errorf("启动 115 路径调度器失败：%v", patherr)
+		s.Sync.Logger.Errorf("启动 115 路径调度器失败：错误类型=%T", patherr)
 		s.PathErrChan <- patherr
 		return
 	}
 	if err := s.process115CollectedFiles(); err != nil {
-		s.Sync.Logger.Errorf("处理 115 文件失败：%v", err)
+		s.Sync.Logger.Errorf("处理 115 文件失败：错误类型=%T", err)
 		s.PathErrChan <- err
 		return
 	}

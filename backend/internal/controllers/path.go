@@ -731,7 +731,7 @@ func get115Dirs(parentId string, account *models.Account, page, pageSize int) (n
 	}
 	resp, err := client.GetFsList(ctx, parentId, true, false, true, (page-1)*pageSize, pageSize)
 	if err != nil {
-		helpers.AppLogger.Warnf("获取 115 目录列表失败：父目录=%s，错误=%v", parentId, err)
+		helpers.AppLogger.Warnf("获取 115 目录列表失败：父目录=%s，错误类型=%T", parentId, err)
 		return netFileListPage{}, err
 	}
 	helpers.AppLogger.Infof("成功获取 115 文件列表，父目录 ID：%s，文件数量：%d", parentId, len(resp.Data))

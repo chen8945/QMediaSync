@@ -30,14 +30,14 @@ func (s *ScanOpenlistImpl) CheckPathExists() error {
 	// 检查来源目录 ID 是否存在
 	_, err := s.client.FileDetail(s.scrapePath.SourcePathId)
 	if err != nil {
-		ferr := fmt.Errorf("刮削来源目录 %s 疑似不存在，请检查或编辑后重新选择来源目录：%v", s.scrapePath.SourcePathId, err)
+		ferr := fmt.Errorf("刮削来源目录 %s 疑似不存在，请检查或编辑后重新选择来源目录：%w", s.scrapePath.SourcePathId, err)
 		return ferr
 	}
 	if s.scrapePath.ScrapeType != models.ScrapeTypeOnly {
 		// 检查目标目录 ID 是否存在
 		_, err = s.client.FileDetail(s.scrapePath.DestPathId)
 		if err != nil {
-			ferr := fmt.Errorf("刮削目标目录 %s 疑似不存在，请检查或编辑后重新选择目标目录：%v", s.scrapePath.DestPathId, err)
+			ferr := fmt.Errorf("刮削目标目录 %s 疑似不存在，请检查或编辑后重新选择目标目录：%w", s.scrapePath.DestPathId, err)
 			return ferr
 		}
 	}
@@ -57,7 +57,7 @@ func (s *ScanOpenlistImpl) GetNetFileFiles() error {
 	// 检查源目录是否存在
 	_, err := s.client.FileDetail(s.scrapePath.SourcePathId)
 	if err != nil {
-		return fmt.Errorf("源目录 %s 不存在或者其他错误：%v", s.scrapePath.SourcePathId, err)
+		return fmt.Errorf("源目录 %s 不存在或者其他错误：%w", s.scrapePath.SourcePathId, err)
 	}
 	// 初始化路径队列，容量为接口线程数
 	threadCount := models.GetThreadSettingsSnapshot().FileDetailThreads
@@ -124,7 +124,7 @@ func (s *ScanOpenlistImpl) startPathWorkWithLimiter(workerID int) {
 						helpers.AppLogger.Infof("worker %d 处理目录 %s 失败：上下文已取消", workerID, pathId)
 						return
 					}
-					helpers.AppLogger.Errorf("worker %d 处理目录 %s 失败：%v", workerID, pathId, err)
+					helpers.AppLogger.Errorf("worker %d 处理目录 %s 失败：错误类型=%T", workerID, pathId, err)
 					continue pageloop
 				}
 				parentPath = pathId

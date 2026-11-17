@@ -51,18 +51,18 @@ func (c *OpenClient) GetQrCode() (*QrCodeDataReturn, error) {
 	qrData := StructOrArray[QrCodeData]{}
 	_, respData, err := c.doRequest("https://passportapi.115.com/open/authDeviceCode", req, MakeRequestConfig(0, 0, 0))
 	if err != nil {
-		helpers.V115Log.Errorf("获取 115 开放平台授权二维码失败：%s", err.Error())
 		return nil, err
 	}
 	if respData.State != 1 {
-		helpers.V115Log.Errorf("获取 115 开放平台授权二维码失败：%+v", respData)
-		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "获取 115 开放平台授权二维码失败")
+		err := helpers.WithLogSecrets(NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "获取 115 开放平台授权二维码失败"), requestLogSecrets(req)...)
+		helpers.V115Log.Errorf("获取 115 开放平台授权二维码失败，state=%d，code=%d，errno=%d，原因=%q", respData.State, respData.Code, respData.Errno, helpers.SafeLogError(err))
+		return nil, err
 	}
 	// 解析 respData.Data
 	qrData.UnmarshalJSON(respData.Data)
 	if qrData.Value == nil {
 		// 获取二维码失败
-		helpers.V115Log.Errorf("获取二维码失败：%+v", qrData)
+		helpers.V115Log.Errorf("获取二维码失败：响应数据格式无效")
 		return nil, fmt.Errorf("获取二维码失败")
 	}
 	var returnData QrCodeDataReturn
@@ -80,19 +80,19 @@ func (c *OpenClient) QrCodeScanStatus(codeData *QrCodeData) (QrCodeScanStatus, e
 	data["time"] = fmt.Sprint(codeData.Time)
 	data["sign"] = codeData.Sign
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
-	_, respData, err := c.doRequest("https://qrcodeapi.115.com/get/status/", req, MakeRequestConfig(1, 1, 60))
+	_, respData, err := c.doRequest("https://qrcodeapi.115.com/get/status/", req, MakeRequestConfig(1, 1, 60), codeData.Uid, codeData.Sign)
 	if err != nil {
-		helpers.V115Log.Errorf("获取二维码状态失败：%s", err.Error())
 		return QrCodeScanStatusExpired, err
 	}
 	if respData.State != 1 {
-		helpers.V115Log.Errorf("获取二维码状态失败：%+v", respData)
-		return QrCodeScanStatusExpired, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "获取二维码状态失败")
+		err := helpers.WithLogSecrets(NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "获取二维码状态失败"), requestLogSecrets(req)...)
+		helpers.V115Log.Errorf("获取二维码状态失败，state=%d，code=%d，errno=%d，原因=%q", respData.State, respData.Code, respData.Errno, helpers.SafeLogError(err))
+		return QrCodeScanStatusExpired, err
 	}
 	qrStatusData := StructOrArray[QrCodeStatus]{}
 	qrStatusData.UnmarshalJSON(respData.Data)
 	if qrStatusData.Value == nil {
-		helpers.V115Log.Errorf("获取二维码状态失败：%+v", qrStatusData)
+		helpers.V115Log.Errorf("获取二维码状态失败：响应数据格式无效")
 		return QrCodeScanStatusExpired, fmt.Errorf("获取二维码状态失败")
 	}
 	qrCodeStatus := qrStatusData.Value
@@ -144,16 +144,15 @@ func (c *OpenClient) GetToken(codeData *QrCodeDataReturn) (*TokenData, error) {
 	data["uid"] = codeData.Uid
 	data["code_verifier"] = codeData.CodeVerifier
 	req := c.client.R().SetFormData(data).SetMethod("POST")
-	_, respData, err := c.doRequest("https://passportapi.115.com/open/deviceCodeToToken", req, MakeRequestConfig(0, 0, 0))
+	_, respData, err := c.doRequest("https://passportapi.115.com/open/deviceCodeToToken", req, MakeRequestConfig(0, 0, 0), codeData.Uid, codeData.CodeVerifier)
 	if err != nil {
-		helpers.V115Log.Errorf("115 开放平台获取访问凭证失败：%s", err.Error())
 		return nil, err
 	}
 	tokenDataOrArray := StructOrArray[TokenData]{}
 	tokenDataOrArray.UnmarshalJSON(respData.Data)
 	tokenData := tokenDataOrArray.Value
 	if tokenData == nil {
-		helpers.V115Log.Errorf("获取访问凭证失败：%+v", tokenDataOrArray)
+		helpers.V115Log.Errorf("获取访问凭证失败：响应数据格式无效")
 		return nil, fmt.Errorf("获取访问凭证失败")
 	}
 	helpers.V115Log.Infof("115 开放平台获取访问凭证成功")
@@ -185,15 +184,17 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 		RetryDelay: refreshTokenRetryDelay,
 		Timeout:    300 * time.Second,
 	}
-	_, respData, err := c.doRequest("https://passportapi.115.com/open/refreshToken", req, refreshConfig)
+	_, respData, err := c.doRequest("https://passportapi.115.com/open/refreshToken", req, refreshConfig, expectedAccessToken, expectedRefreshToken)
 	if err != nil {
 		refreshErr := err
 		if respData != nil && respData.Code != 0 {
 			refreshErr = NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
 		}
+		refreshErr = helpers.WithLogSecrets(refreshErr, requestLogSecrets(req)...)
 		if IsRefreshTokenDead(refreshErr) {
 			c.SetAuthToken("", "")
-			helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败：%v", refreshErr)
+			helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，原因=%q，错误类型=%T",
+				helpers.SafeLogError(refreshErr), refreshErr)
 			// refresh_token 已无法使用，清空 Token，让用户重新授权
 			helpers.PublishSync(helpers.V115TokenInValidEvent, map[string]any{
 				"account_id":    c.AccountId,
@@ -204,20 +205,22 @@ func (c *OpenClient) RefreshToken(refreshToken string) (*TokenData, error) {
 			return nil, refreshErr
 		}
 		// 网络错误或可重试的业务失败（频控、40140121 等）保留凭据，等待下一轮定时刷新
-		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试：%v", refreshErr)
+		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试，原因=%q，错误类型=%T",
+			helpers.SafeLogError(refreshErr), refreshErr)
 		return nil, refreshErr
 	}
 	if respData.State != 1 {
 		// 无错误码的失败响应按可重试处理，保留凭据等待下一轮定时刷新
-		refreshErr := NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败")
-		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试：%v", refreshErr)
+		refreshErr := helpers.WithLogSecrets(NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 开放平台刷新访问凭证失败"), requestLogSecrets(req)...)
+		helpers.AppLogger.Errorf("115 开放平台刷新访问凭证失败，保留凭据等待下轮重试，原因=%q，错误类型=%T",
+			helpers.SafeLogError(refreshErr), refreshErr)
 		return nil, refreshErr
 	}
 	tokenDataOrArray := StructOrArray[TokenData]{}
 	tokenDataOrArray.UnmarshalJSON(respData.Data)
 	tokenData := tokenDataOrArray.Value
 	if tokenData == nil {
-		helpers.AppLogger.Errorf("115 获取访问凭证失败：%+v", tokenDataOrArray)
+		helpers.AppLogger.Errorf("115 获取访问凭证失败：响应数据格式无效")
 		return nil, fmt.Errorf("115 获取访问凭证失败")
 	}
 	helpers.AppLogger.Debugf("115 开放平台刷新访问凭证成功")

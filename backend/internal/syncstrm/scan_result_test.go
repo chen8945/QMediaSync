@@ -1,9 +1,11 @@
 package syncstrm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -302,7 +304,12 @@ func TestSuccessfulFullSyncUsesLocalDayAndRealSuccess(t *testing.T) {
 
 func TestScanResultFailureReasonsRedactCredentials(t *testing.T) {
 	s := newScanResultTestSync(t)
-	cause := errors.New("GET https://example.test/files?access_token=secret-token failed")
+	var output bytes.Buffer
+	s.Sync.Logger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	oldLevel := helpers.ConfiguredLogLevel()
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() { helpers.SetGlobalLogLevel(oldLevel) })
+	cause := errors.New("目录读取失败 GET https://example.test/files?access_token=secret-token failed")
 	s.recordScanFailure(s.SourcePath, cause)
 	s.recordFileFailure(&SyncFileCache{FileId: "file", FileName: "movie.mkv"}, cause)
 	for _, failure := range s.scanResultSnapshot().Failures {
@@ -310,7 +317,7 @@ func TestScanResultFailureReasonsRedactCredentials(t *testing.T) {
 			t.Fatalf("失败明细泄露凭据: %+v", failure)
 		}
 	}
-	s.Sync = &models.Sync{Logger: helpers.AppLogger, Status: models.SyncStatusInProgress}
+	s.Sync.Status = models.SyncStatusInProgress
 	if err := db.Db.Create(s.Sync).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +330,10 @@ func TestScanResultFailureReasonsRedactCredentials(t *testing.T) {
 	}
 	if strings.Contains(row.FailReason, "secret-token") {
 		t.Fatalf("任务原因泄露凭据: %+v", row)
+	}
+	got := output.String()
+	if strings.Contains(got, "secret-token") || !strings.Contains(got, "目录读取失败") || !strings.Contains(got, "/source") || !strings.Contains(got, "movie.mkv") || !strings.Contains(got, "STRM 同步结束") {
+		t.Fatalf("未完成项及任务结论缺少具体原因或泄露凭据: %s", got)
 	}
 }
 

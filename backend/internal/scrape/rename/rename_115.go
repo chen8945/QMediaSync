@@ -48,7 +48,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 	if detail == nil || detailErr != nil || detail.FileId == "" {
 		_, err := r.client.Move(r.ctx, []string{mediaFile.VideoFileId}, destPathId)
 		if err != nil {
-			helpers.AppLogger.Errorf("115 移动文件失败：%v", err)
+			helpers.AppLogger.Errorf("115 移动文件失败：错误类型=%T", err)
 			return err
 		} else {
 			helpers.AppLogger.Infof("文件 %s 成功移动到 %s", mediaFile.Path+"/"+mediaFile.VideoFilename, destPath+"/"+newName)
@@ -57,7 +57,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 改名
 			_, err := r.client.ReName(r.ctx, mediaFile.VideoFileId, newName)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 重命名文件失败：%v", err)
+				helpers.AppLogger.Errorf("115 重命名文件失败：错误类型=%T", err)
 				return err
 			} else {
 				helpers.AppLogger.Infof("文件 %s 成功重命名为 %s", mediaFile.VideoFilename, newName)
@@ -103,7 +103,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 移动字幕文件到新目录
 			_, err := r.client.Move(r.ctx, []string{sub.FileId}, destPathId)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 移动字幕文件 %s 失败：%v", sub.FileName, err)
+				helpers.AppLogger.Errorf("115 移动字幕文件 %s 失败：错误类型=%T", sub.FileName, err)
 				continue
 			}
 			// 检查是否需要改名
@@ -114,7 +114,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 					// 改名
 					_, err := r.client.ReName(r.ctx, sub.FileId, newSubName)
 					if err != nil {
-						helpers.AppLogger.Errorf("115 重命名字幕文件 %s 失败：%v", sub.FileName, err)
+						helpers.AppLogger.Errorf("115 重命名字幕文件 %s 失败：错误类型=%T", sub.FileName, err)
 						continue
 					} else {
 						helpers.AppLogger.Infof("字幕文件 %s 成功重命名为 %s", sub.FileName, newSubName)
@@ -139,7 +139,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 				// 移动图片文件到新目录
 				_, err := r.client.Move(r.ctx, []string{imageFile.FileId}, destPathId)
 				if err != nil {
-					helpers.AppLogger.Errorf("115 移动图片文件 %s 失败：%v", imageFile.FileName, err)
+					helpers.AppLogger.Errorf("115 移动图片文件 %s 失败：错误类型=%T", imageFile.FileName, err)
 					continue
 				}
 				newSubName := strings.Replace(imageFile.FileName, oldBaseName, mediaFile.NewVideoBaseName, 1)
@@ -148,7 +148,7 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 					// 改名
 					_, err := r.client.ReName(r.ctx, imageFile.FileId, newSubName)
 					if err != nil {
-						helpers.AppLogger.Errorf("115 重命名图片文件 %s 失败：%v", imageFile.FileName, err)
+						helpers.AppLogger.Errorf("115 重命名图片文件 %s 失败：错误类型=%T", imageFile.FileName, err)
 						continue
 					} else {
 						helpers.AppLogger.Infof("图片文件 %s 成功重命名为 %s", imageFile.FileName, newSubName)
@@ -162,14 +162,14 @@ func (r *Rename115) move(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 移动 NFO 文件到新目录
 			_, err := r.client.Move(r.ctx, []string{mediaFile.NfoFileId}, destPathId)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 移动 NFO 文件 %s 失败：%v", mediaFile.NfoFileName, err)
+				helpers.AppLogger.Errorf("115 移动 NFO 文件 %s 失败：错误类型=%T", mediaFile.NfoFileName, err)
 			}
 			// 检查是否需要改名
 			if newNfoName != mediaFile.NfoFileName {
 				// 改名
 				_, err := r.client.ReName(r.ctx, mediaFile.NfoFileId, newNfoName)
 				if err != nil {
-					helpers.AppLogger.Errorf("115 重命名 NFO 文件 %s 失败：%v", mediaFile.NfoFileName, err)
+					helpers.AppLogger.Errorf("115 重命名 NFO 文件 %s 失败：错误类型=%T", mediaFile.NfoFileName, err)
 				} else {
 					helpers.AppLogger.Infof("NFO 文件 %s 成功重命名为 %s", mediaFile.NfoFileName, newNfoName)
 				}
@@ -190,14 +190,14 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 	if detail == nil || detailErr != nil || detail.FileId == "" {
 		_, err = r.client.Copy(r.ctx, []string{mediaFile.VideoFileId}, destPathId, false)
 		if err != nil {
-			helpers.AppLogger.Errorf("115 复制文件失败：%v", err)
+			helpers.AppLogger.Errorf("115 复制文件失败：错误类型=%T", err)
 			return err
 		} else {
 			helpers.AppLogger.Infof("文件 %s 成功复制到 %s", filepath.Join(mediaFile.Path, mediaFile.VideoFilename), filepath.Join(destPath, newName))
 			// 查询新文件 ID
 			newDetail, newDetailErr := r.client.GetFsDetailByPath(r.ctx, filepath.Join(destPath, mediaFile.VideoFilename))
 			if newDetailErr != nil || newDetail.FileId == "" {
-				helpers.AppLogger.Errorf("复制文件 %s 到 %s 后，查询新文件 ID 失败：%v", mediaFile.VideoFileId, filepath.Join(destPath, newName), newDetailErr)
+				helpers.AppLogger.Errorf("复制文件 %s 到 %s 后，查询新文件 ID 失败：错误类型=%T", mediaFile.VideoFileId, filepath.Join(destPath, newName), newDetailErr)
 				return newDetailErr
 			}
 			helpers.AppLogger.Infof("复制文件 %s 到 %s 后，新文件 ID 为 %s", mediaFile.VideoFilename, filepath.Join(destPath, mediaFile.VideoFilename), newDetail.FileId)
@@ -208,7 +208,7 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 改名
 			_, err := r.client.ReName(r.ctx, videoFileId, newName)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 重命名文件失败：%s => %s，%v", videoFileId, newName, err)
+				helpers.AppLogger.Errorf("115 重命名文件失败：%s => %s，错误类型=%T", videoFileId, newName, err)
 				return err
 			} else {
 				helpers.AppLogger.Infof("文件 %s 成功重命名为 %s", filepath.Join(mediaFile.Path, mediaFile.VideoFilename), filepath.Join(destPath, newName))
@@ -264,13 +264,13 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 复制字幕文件到新目录
 			_, err := r.client.Copy(r.ctx, []string{sub.FileId}, destPathId, false)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 复制字幕文件 %s 失败：%v", sub.FileName, err)
+				helpers.AppLogger.Errorf("115 复制字幕文件 %s 失败：错误类型=%T", sub.FileName, err)
 				continue
 			}
 			// 查询新文件 ID
 			newSubDetail, newSubDetailErr = r.client.GetFsDetailByPath(r.ctx, filepath.Join(destPath, sub.FileName))
 			if newSubDetailErr != nil {
-				helpers.AppLogger.Errorf("复制字幕文件 %s 到 %s 后，查询新文件 ID 失败：%v", sub.FileId, filepath.Join(destPath, sub.FileName), newSubDetailErr)
+				helpers.AppLogger.Errorf("复制字幕文件 %s 到 %s 后，查询新文件 ID 失败：错误类型=%T", sub.FileId, filepath.Join(destPath, sub.FileName), newSubDetailErr)
 				continue
 			}
 			newSub.FileId = newSubDetail.FileId
@@ -281,7 +281,7 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 				// 改名
 				_, err := r.client.ReName(r.ctx, newSub.FileId, newSubName)
 				if err != nil {
-					helpers.AppLogger.Errorf("115 重命名字幕文件 %s 失败：%v", sub.FileName, err)
+					helpers.AppLogger.Errorf("115 重命名字幕文件 %s 失败：错误类型=%T", sub.FileName, err)
 					continue
 				} else {
 					helpers.AppLogger.Infof("字幕文件 %s 成功重命名为 %s", sub.FileName, newSubName)
@@ -303,13 +303,13 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 				// 移动图片文件到新目录
 				_, err := r.client.Copy(r.ctx, []string{imageFile.FileId}, destPathId, false)
 				if err != nil {
-					helpers.AppLogger.Errorf("115 复制图片文件 %s 失败：%v", imageFile.FileName, err)
+					helpers.AppLogger.Errorf("115 复制图片文件 %s 失败：错误类型=%T", imageFile.FileName, err)
 					continue
 				}
 				// 查询新文件 ID
 				newImageDetail, newImageDetailErr := r.client.GetFsDetailByPath(r.ctx, filepath.Join(destPath, imageFile.FileName))
 				if newImageDetailErr != nil {
-					helpers.AppLogger.Errorf("复制图片文件 %s 到 %s 后，查询新文件 ID 失败：%v", imageFile.FileId, filepath.Join(destPath, imageFile.FileName), newImageDetailErr)
+					helpers.AppLogger.Errorf("复制图片文件 %s 到 %s 后，查询新文件 ID 失败：错误类型=%T", imageFile.FileId, filepath.Join(destPath, imageFile.FileName), newImageDetailErr)
 					continue
 				}
 				imageFile.FileId = newImageDetail.FileId
@@ -319,7 +319,7 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 					// 改名
 					_, err := r.client.ReName(r.ctx, imageFile.FileId, newSubName)
 					if err != nil {
-						helpers.AppLogger.Errorf("115 重命名图片文件 %s 失败：%v", imageFile.FileName, err)
+						helpers.AppLogger.Errorf("115 重命名图片文件 %s 失败：错误类型=%T", imageFile.FileName, err)
 						continue
 					} else {
 						helpers.AppLogger.Infof("图片文件 %s 成功重命名为 %s", imageFile.FileName, newSubName)
@@ -333,12 +333,12 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 			// 移动 NFO 文件到新目录
 			_, err := r.client.Copy(r.ctx, []string{mediaFile.NfoFileId}, destPathId, false)
 			if err != nil {
-				helpers.AppLogger.Errorf("115 复制 NFO 文件 %s 失败：%v", mediaFile.NfoFileName, err)
+				helpers.AppLogger.Errorf("115 复制 NFO 文件 %s 失败：错误类型=%T", mediaFile.NfoFileName, err)
 			}
 			// 查询新文件 ID
 			newNfoDetail, newNfoDetailErr := r.client.GetFsDetailByPath(r.ctx, filepath.Join(destPath, newNfoName))
 			if newNfoDetailErr != nil {
-				helpers.AppLogger.Errorf("复制 NFO 文件 %s 到 %s 后，查询新文件 ID 失败：%v", mediaFile.NfoFileId, filepath.Join(destPath, newNfoName), newNfoDetailErr)
+				helpers.AppLogger.Errorf("复制 NFO 文件 %s 到 %s 后，查询新文件 ID 失败：错误类型=%T", mediaFile.NfoFileId, filepath.Join(destPath, newNfoName), newNfoDetailErr)
 			} else {
 				mediaFile.NfoFileId = newNfoDetail.FileId
 				// 检查是否需要改名
@@ -346,7 +346,7 @@ func (r *Rename115) copy(mediaFile *models.ScrapeMediaFile, destPathId, destPath
 					// 改名
 					_, err := r.client.ReName(r.ctx, mediaFile.NfoFileId, newNfoName)
 					if err != nil {
-						helpers.AppLogger.Errorf("115 重命名 NFO 文件 %s 失败：%v", mediaFile.NfoFileName, err)
+						helpers.AppLogger.Errorf("115 重命名 NFO 文件 %s 失败：错误类型=%T", mediaFile.NfoFileName, err)
 					} else {
 						helpers.AppLogger.Infof("NFO 文件 %s 成功重命名为 %s", mediaFile.NfoFileName, newNfoName)
 					}
@@ -384,7 +384,7 @@ func (r *Rename115) CheckAndMkDir(destFullPath string, rootPath, rootPathId stri
 		// 分段创建目录
 		cpId, mErr := r.client.MkDir(r.ctx, currentParentId, p)
 		if mErr != nil {
-			helpers.AppLogger.Errorf("创建父文件夹 %s 失败：%v", currentCheckPath, mErr)
+			helpers.AppLogger.Errorf("创建父文件夹 %s 失败：错误类型=%T", currentCheckPath, mErr)
 			return "", mErr
 		} else {
 			helpers.AppLogger.Infof("父文件夹创建成功，路径：%s，目录 ID：%s", currentCheckPath, cpId)
@@ -411,7 +411,7 @@ func (r *Rename115) RemoveMediaSourcePath(mediaFile *models.ScrapeMediaFile, sp 
 	// 查询 mediaFile.PathId 下是否为空
 	fsList, err := r.client.GetFsList(r.ctx, sourcePathId, true, false, true, 1, 10)
 	if err != nil {
-		helpers.AppLogger.Errorf("获取 115 文件详情失败：路径：%s，文件夹 ID：%s，%v", sourcePath, sourcePathId, err)
+		helpers.AppLogger.Errorf("获取 115 文件详情失败：路径：%s，文件夹 ID：%s，错误类型=%T", sourcePath, sourcePathId, err)
 		return err
 	}
 	if fsList.Count > 0 {
@@ -435,7 +435,7 @@ func (r *Rename115) RemoveMediaSourcePath(mediaFile *models.ScrapeMediaFile, sp 
 		// 删除季文件夹
 		_, err = r.client.Del(r.ctx, []string{sourcePathId}, parentId)
 		if err != nil {
-			helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，文件夹 ID：%s，%v", mediaFile.Path, mediaFile.PathId, err)
+			helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，文件夹 ID：%s，错误类型=%T", mediaFile.Path, mediaFile.PathId, err)
 			return err
 		}
 		helpers.AppLogger.Infof("刮削完成，已尝试删除 115 中的文件夹，路径：%s，文件夹 ID：%s", sourcePath, sourcePathId)
@@ -454,7 +454,7 @@ func (r *Rename115) RemoveMediaSourcePath(mediaFile *models.ScrapeMediaFile, sp 
 			// 如果含有季目录，需要检查电视剧目录下是否已经没有季目录
 			tvshowFileList, err := r.client.GetFsList(r.ctx, mediaFile.TvshowPathId, true, false, true, 1, 10)
 			if err != nil {
-				helpers.AppLogger.Errorf("获取 115 文件详情失败：路径：%s，文件夹 ID：%s，%v", mediaFile.TvshowPath, mediaFile.TvshowPathId, err)
+				helpers.AppLogger.Errorf("获取 115 文件详情失败：路径：%s，文件夹 ID：%s，错误类型=%T", mediaFile.TvshowPath, mediaFile.TvshowPathId, err)
 				return err
 			}
 			for _, tvshowFile := range tvshowFileList.Data {
@@ -474,7 +474,7 @@ func (r *Rename115) RemoveMediaSourcePath(mediaFile *models.ScrapeMediaFile, sp 
 			tvshowParentId := tvshowDetail.Paths[len(fsDetail.Paths)-1].FileId
 			_, err = r.client.Del(r.ctx, []string{mediaFile.TvshowPathId}, tvshowParentId)
 			if err != nil {
-				helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，文件夹 ID：%s，%v", mediaFile.TvshowPath, mediaFile.TvshowPathId, err)
+				helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，文件夹 ID：%s，错误类型=%T", mediaFile.TvshowPath, mediaFile.TvshowPathId, err)
 				return err
 			}
 			helpers.AppLogger.Infof("刮削完成，已删除 115 中的电视剧文件夹，路径：%s，文件夹 ID：%s", mediaFile.TvshowPath, mediaFile.TvshowPathId)
@@ -493,7 +493,7 @@ func (r *Rename115) ReadFileContent(fileId string) ([]byte, error) {
 	// 读取 URL 的内容
 	content, err := helpers.ReadFromUrl(url, v115open.DEFAULTUA)
 	if err != nil {
-		helpers.AppLogger.Errorf("115 读取文件下载链接内容失败：PickCode=%s，URL=%s，%v", fileId, url, err)
+		helpers.AppLogger.Errorf("115 读取文件下载链接内容失败：PickCode=%s，原因=%q，错误类型=%T", fileId, helpers.SafeLogError(err), err)
 		return nil, err
 	}
 	return content, nil
@@ -511,12 +511,12 @@ func (r *Rename115) CheckAndDeleteFiles(mediaFile *models.ScrapeMediaFile, files
 		parentPath := filepath.Dir(f.FullFilePath)
 		parentDetail, err := r.client.GetFsDetailByPath(r.ctx, parentPath)
 		if err != nil || (parentDetail != nil && parentDetail.FileId == "") {
-			helpers.AppLogger.Errorf("获取 115 父目录 ID 失败：路径：%s，%v", parentPath, err)
+			helpers.AppLogger.Errorf("获取 115 父目录 ID 失败：路径：%s，错误类型=%T", parentPath, err)
 			continue
 		}
 		_, err = r.client.Del(r.ctx, []string{fsDetail.FileId}, parentDetail.FileId)
 		if err != nil {
-			helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，%v", f.FullFilePath, err)
+			helpers.AppLogger.Errorf("删除 115 文件失败：路径：%s，错误类型=%T", f.FullFilePath, err)
 			continue
 		}
 		helpers.AppLogger.Infof("删除 115 文件成功，路径：%s", f.FullFilePath)
@@ -534,7 +534,7 @@ func (r *Rename115) MoveFiles(f models.MoveNewFileToSourceFile) error {
 	// 移动文件
 	_, err = r.client.Move(r.ctx, []string{f.FileId}, f.PathId)
 	if err != nil {
-		helpers.AppLogger.Errorf("移动 115 文件失败：新路径：%s，%v", f.FileFullPath, err)
+		helpers.AppLogger.Errorf("移动 115 文件失败：新路径：%s，错误类型=%T", f.FileFullPath, err)
 		return err
 	}
 	helpers.AppLogger.Infof("移动 115 文件成功，%s => %s", f.FileId, f.FileFullPath)
@@ -545,13 +545,13 @@ func (r *Rename115) DeleteDir(path, pathId string) error {
 	parentPath := filepath.Dir(path)
 	parentDetail, err := r.client.GetFsDetailByPath(r.ctx, parentPath)
 	if err != nil || (parentDetail != nil && parentDetail.FileId == "") {
-		helpers.AppLogger.Errorf("获取 115 父目录 ID 失败：路径：%s，%v", parentPath, err)
+		helpers.AppLogger.Errorf("获取 115 父目录 ID 失败：路径：%s，错误类型=%T", parentPath, err)
 		return err
 	}
 	// 删除目录
 	_, err = r.client.Del(r.ctx, []string{pathId}, parentDetail.FileId)
 	if err != nil {
-		helpers.AppLogger.Errorf("删除 115 目录失败：路径：%s，%v", pathId, err)
+		helpers.AppLogger.Errorf("删除 115 目录失败：路径：%s，错误类型=%T", pathId, err)
 		return err
 	}
 	helpers.AppLogger.Infof("删除 115 目录成功，路径：%s", pathId)
@@ -562,7 +562,7 @@ func (r *Rename115) Rename(fileId, newName string) error {
 	// 重命名文件
 	_, err := r.client.ReName(r.ctx, fileId, newName)
 	if err != nil {
-		helpers.AppLogger.Errorf("重命名 115 文件失败：%s => %s，错误：%v", fileId, newName, err)
+		helpers.AppLogger.Errorf("重命名 115 文件失败：%s => %s，错误类型=%T", fileId, newName, err)
 		return err
 	}
 	helpers.AppLogger.Infof("重命名 115 文件成功，%s => %s", fileId, newName)
@@ -585,7 +585,7 @@ func (r *Rename115) ExistsAndRename(fileId, newName string) (string, error) {
 	// 重命名文件
 	_, err = r.client.ReName(r.ctx, fileId, newName)
 	if err != nil {
-		helpers.AppLogger.Errorf("重命名 115 文件失败：%s => %s，错误：%v", fileId, newName, err)
+		helpers.AppLogger.Errorf("重命名 115 文件失败：%s => %s，错误类型=%T", fileId, newName, err)
 		return "", err
 	}
 	helpers.AppLogger.Infof("重命名 115 文件成功，%s => %s", fileId, newName)

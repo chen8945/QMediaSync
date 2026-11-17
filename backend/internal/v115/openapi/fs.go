@@ -220,18 +220,19 @@ func (c *OpenClient) GetFsListWithOptions(
 	req := c.client.R().SetQueryParams(data).SetMethod("GET")
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(3, 1, 15), nil)
 	if err != nil {
-		helpers.V115Log.Errorf("调用 115 文件列表接口失败：%v", err)
+		helpers.V115Log.Errorf("调用 115 文件列表接口失败：错误类型=%T", err)
 		return nil, err
 	}
 	// 解码
 	respData := FileListResp{}
 	jsonErr := json.Unmarshal(respBytes, &respData)
 	if jsonErr != nil {
-		helpers.V115Log.Errorf("解析文件列表接口响应失败：%v", jsonErr)
+		jsonErr = helpers.WithLogSecrets(jsonErr, requestLogSecrets(req)...)
+		helpers.V115Log.Errorf("解析文件列表接口响应失败，原因=%q", helpers.SafeLogError(jsonErr))
 		return nil, jsonErr
 	}
 	if !respData.State || respData.Code != 0 || respData.Errno != 0 {
-		return nil, NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 文件列表请求失败")
+		return nil, helpers.WithLogSecrets(NewOpenAPIResponseError(respData.Code, respData.Errno, respData.Message, respData.Error, "115 文件列表请求失败"), requestLogSecrets(req)...)
 	}
 	var envelope struct {
 		Count *int            `json:"count"`
@@ -276,7 +277,7 @@ func (c *OpenClient) GetFsDetailByPath(ctx context.Context, path string) (*FileD
 	if err != nil {
 		err = deletionDetailAbsenceError(bodyBytes, err)
 		if !c.playback || !IsAlreadyDeleted(err) {
-			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+			helpers.V115Log.Errorf("调用文件详情接口失败：错误类型=%T", err)
 		}
 		return nil, err
 	}
@@ -290,12 +291,13 @@ func (c *OpenClient) GetFsDetailByPath(ctx context.Context, path string) (*FileD
 	}
 	bodyErr := json.Unmarshal(bodyBytes, &resp)
 	if bodyErr != nil {
-		helpers.V115Log.Errorf("解析文件详情接口响应失败：%v", bodyErr)
+		bodyErr = helpers.WithLogSecrets(bodyErr, requestLogSecrets(req)...)
+		helpers.V115Log.Errorf("解析文件详情接口响应失败，原因=%q", helpers.SafeLogError(bodyErr))
 		return nil, bodyErr
 	}
 	state := strings.TrimSpace(string(resp.State))
 	if (state != "true" && state != "1") || resp.Code != 0 || resp.Errno != 0 {
-		err := NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
+		err := helpers.WithLogSecrets(NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功"), requestLogSecrets(req)...)
 		return nil, deletionDetailAbsenceError(bodyBytes, err)
 	}
 	// 路径查询可能成功返回空数组，只能要求调用方补查，不能据此确认删除。
@@ -359,7 +361,7 @@ func (c *OpenClient) getFsDetailByCid(ctx context.Context, fileId string, forDel
 			err = deletionDetailAbsenceError(bodyBytes, err)
 		}
 		if (!c.playback && !forDeletion) || !IsAlreadyDeleted(err) {
-			helpers.V115Log.Errorf("调用文件详情接口失败：%v", err)
+			helpers.V115Log.Errorf("调用文件详情接口失败：错误类型=%T", err)
 		}
 		return nil, err
 	}
@@ -367,12 +369,13 @@ func (c *OpenClient) getFsDetailByCid(ctx context.Context, fileId string, forDel
 	// helpers.V115Log.Debugf("调用文件详情接口，fileId：%s => %s", fileId, string(bodyBytes))
 	bodyErr := json.Unmarshal(bodyBytes, resp)
 	if bodyErr != nil {
-		helpers.V115Log.Errorf("解析文件详情接口响应失败：%s => %v", string(bodyBytes), bodyErr)
+		bodyErr = helpers.WithLogSecrets(bodyErr, requestLogSecrets(req)...)
+		helpers.V115Log.Errorf("解析文件详情接口响应失败，原因=%q", helpers.SafeLogError(bodyErr))
 		return respData, bodyErr
 	}
 	if !resp.State || resp.Code != 0 || resp.Errno != 0 {
 		// helpers.V115Log.Errorf("文件 %s 不存在：%v", fileId, err)
-		err := NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功")
+		err := helpers.WithLogSecrets(NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功"), requestLogSecrets(req)...)
 		if forDeletion {
 			err = deletionDetailAbsenceError(bodyBytes, err)
 		}
@@ -426,13 +429,17 @@ func (c *OpenClient) ReName(ctx context.Context, fileId string, newName string) 
 	respData := RespBaseBool[any]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件更新接口失败：%v", err)
+		helpers.V115Log.Errorf("调用文件更新接口失败：错误类型=%T", err)
 		return false, err
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
 	if jsonErr != nil || !respData.State {
-		helpers.V115Log.Errorf("重命名 %s => %s 失败：%v", fileId, newName, jsonErr)
-		return false, jsonErr
+		if jsonErr != nil {
+			helpers.V115Log.Errorf("重命名 %s => %s 失败，原因=%q", fileId, newName, helpers.SafeLogError(jsonErr, requestLogSecrets(req)...))
+		} else {
+			helpers.V115Log.Errorf("重命名 %s => %s 失败", fileId, newName)
+		}
+		return false, helpers.WithLogSecrets(jsonErr, requestLogSecrets(req)...)
 	}
 
 	return respData.State, nil
@@ -450,13 +457,17 @@ func (c *OpenClient) Move(ctx context.Context, fileIds []string, toFileId string
 	respData := RespBaseBool[any]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件移动接口失败：%v", err)
+		helpers.V115Log.Errorf("调用文件移动接口失败：错误类型=%T", err)
 		return false, err
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
 	if jsonErr != nil || !respData.State {
-		helpers.V115Log.Errorf("移动文件失败：%+v => %s：%v", fileIds, toFileId, jsonErr)
-		return false, jsonErr
+		if jsonErr != nil {
+			helpers.V115Log.Errorf("移动文件失败：%+v => %s，原因=%q", fileIds, toFileId, helpers.SafeLogError(jsonErr, requestLogSecrets(req)...))
+		} else {
+			helpers.V115Log.Errorf("移动文件失败：%+v => %s", fileIds, toFileId)
+		}
+		return false, helpers.WithLogSecrets(jsonErr, requestLogSecrets(req)...)
 	}
 	return respData.State, nil
 }
@@ -465,7 +476,7 @@ func (c *OpenClient) Move(ctx context.Context, fileIds []string, toFileId string
 // POST 域名 + /open/ufile/copy
 // 多个文件用半角逗号分隔
 func (c *OpenClient) Copy(ctx context.Context, fileIds []string, toFileId string, overwrite bool) (bool, error) {
-	resp, err := c.copyFiles(ctx, fileIds, toFileId, overwrite)
+	resp, _, err := c.copyFiles(ctx, fileIds, toFileId, overwrite)
 	if err != nil {
 		return false, err
 	}
@@ -482,12 +493,12 @@ func (c *OpenClient) CopyWithResult(ctx context.Context, fileIDs []string, targe
 			return nil, fmt.Errorf("复制文件 ID 不能为空")
 		}
 	}
-	resp, err := c.copyFiles(ctx, fileIDs, targetID, allowDuplicates)
+	resp, secrets, err := c.copyFiles(ctx, fileIDs, targetID, allowDuplicates)
 	if err != nil {
 		return nil, err
 	}
 	if !resp.State {
-		return nil, NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件复制失败")
+		return nil, helpers.WithLogSecrets(NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件复制失败"), secrets...)
 	}
 	result := &CopyResult{Data: resp.Data}
 	var entries []json.RawMessage
@@ -530,7 +541,7 @@ func copyFileID(raw json.RawMessage) string {
 	return value
 }
 
-func (c *OpenClient) copyFiles(ctx context.Context, fileIDs []string, targetID string, allowDuplicates bool) (*RespBaseBool[json.RawMessage], error) {
+func (c *OpenClient) copyFiles(ctx context.Context, fileIDs []string, targetID string, allowDuplicates bool) (*RespBaseBool[json.RawMessage], []string, error) {
 	data := make(map[string]string)
 	data["file_id"] = strings.Join(fileIDs, ",")
 	data["pid"] = targetID
@@ -543,15 +554,16 @@ func (c *OpenClient) copyFiles(ctx context.Context, fileIDs []string, targetID s
 	req := c.client.R().SetFormData(data).SetMethod("POST")
 	respData := RespBaseBool[json.RawMessage]{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), nil)
+	secrets := requestLogSecrets(req)
 	if err != nil {
-		helpers.V115Log.Errorf("调用文件复制接口失败：%v", err)
-		return nil, err
+		helpers.V115Log.Errorf("调用文件复制接口失败：错误类型=%T", err)
+		return nil, secrets, err
 	}
 	jsonErr := json.Unmarshal(respBytes, &respData)
 	if jsonErr != nil {
-		return nil, jsonErr
+		return nil, secrets, helpers.WithLogSecrets(jsonErr, secrets...)
 	}
-	return &respData, nil
+	return &respData, secrets, nil
 }
 
 // 批量删除文件（夹）
@@ -589,6 +601,7 @@ func (c *OpenClient) deleteFiles(ctx context.Context, fileIds []string, parentFi
 	req := c.client.R().SetFormData(data).SetMethod("POST")
 	respData := RespBaseBool[any]{}
 	response, respBytes, err := c.doAuthRequest(ctx, url, req, options, nil)
+	defer func() { err = helpers.WithLogSecrets(err, requestLogSecrets(req)...) }()
 	// 只记录数值和固定类别，不把上游错误消息、URL 或响应正文带入诊断。
 	defer func() {
 		if err == nil || helpers.V115Log == nil || c.playback && IsAlreadyDeleted(err) {
@@ -659,14 +672,18 @@ func (c *OpenClient) MkDir(ctx context.Context, parentFileId string, fileName st
 	respData := &MkDirData{}
 	_, respBytes, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), respData)
 	if err != nil {
-		helpers.V115Log.Errorf("调用新建文件夹接口失败：%v", err)
+		helpers.V115Log.Errorf("调用新建文件夹接口失败：错误类型=%T", err)
 		return "", err
 	}
 	resp := RespBaseBool[json.RawMessage]{}
 	jsonErr := json.Unmarshal(respBytes, &resp)
 	if jsonErr != nil || !resp.State {
-		helpers.V115Log.Errorf("新建文件夹失败：%v", jsonErr)
-		return "", jsonErr
+		if jsonErr != nil {
+			helpers.V115Log.Errorf("解析新建文件夹响应失败，原因=%q", helpers.SafeLogError(jsonErr, requestLogSecrets(req)...))
+		} else {
+			helpers.V115Log.Errorf("新建文件夹失败")
+		}
+		return "", helpers.WithLogSecrets(jsonErr, requestLogSecrets(req)...)
 	}
 	return respData.FileId, nil
 }

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,62 @@ import (
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"gorm.io/gorm"
 )
+
+func TestUpload115CallbackKeepsResultAndSafeFailureReason(t *testing.T) {
+	for _, success := range []bool{false, true} {
+		t.Run(fmt.Sprintf("success=%t", success), func(t *testing.T) {
+			setupUpload115ProcessedTestDB(t)
+			oldUpload, oldLogger, oldLevel := upload115MultipartWithResult, helpers.V115Log, helpers.ConfiguredLogLevel()
+			t.Cleanup(func() {
+				upload115MultipartWithResult, helpers.V115Log = oldUpload, oldLogger
+				helpers.SetGlobalLogLevel(oldLevel)
+			})
+			var output bytes.Buffer
+			helpers.V115Log = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+			helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+			message := ""
+			if !success {
+				message = "目标目录不存在 access_token=callback-fixture-token"
+			}
+			callback := map[string]any{"state": success, "message": message, "data": map[string]any{
+				"file_id": "completed-file", "pick_code": "completed-pick", "parent_id": "parent", "sha1": "remote-sha1", "size": 512, "mtime": 123,
+			}}
+			calls := 0
+			upload115MultipartWithResult = func(_ context.Context, _ *v115open.OpenClient, input v115open.UploadMultipartInput) (v115open.OSSMultipartUploadResult, error) {
+				calls++
+				if input.Bucket != "bucket" || input.Object != "object" || input.Callback != "callback-input" {
+					t.Fatalf("日志改变了上传输入: %+v", input)
+				}
+				return v115open.OSSMultipartUploadResult{CallbackResult: callback, UploadId: "upload-id", PartSize: 256, TotalParts: 2, UploadedParts: 2, UploadedBytes: 512}, nil
+			}
+			task := &DbUploadTask{FileName: "movie.mkv", FileSize: 512, Status: UploadStatusUploading}
+			if err := db.Db.Create(task).Error; err != nil {
+				t.Fatal(err)
+			}
+			session := &UploadSession{UploadTaskId: task.ID, Bucket: "bucket", Object: "object", Callback: "callback-input"}
+			if err := session.Save(); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (open115UploadRunner{}).uploadMultipart(t.Context(), task, nil, session, upload115LocalFileInfo{FileSize: 512})
+			saved, readErr := GetUploadSessionByUploadTaskId(task.ID)
+			if readErr != nil || calls != 1 || callback["message"] != message || saved.UploadId != "upload-id" || saved.UploadedBytes != 512 {
+				t.Fatalf("callback处理改变输入或上传状态: session=%+v err=%v calls=%d", saved, readErr, calls)
+			}
+			if success {
+				if err != nil || result.CompletedRemoteFileId != "completed-file" || result.CompletedSha1 != "remote-sha1" || saved.Status != UploadSessionStatusCompleted || saved.CompletedMtime != 123 {
+					t.Fatalf("成功 callback 结果被改变: result=%+v session=%+v err=%v", result, saved, err)
+				}
+			} else {
+				if err == nil || saved.Status != UploadSessionStatusFailed || saved.CompleteCallbackError != err.Error() || !strings.Contains(err.Error(), message) {
+					t.Fatalf("失败 callback 结果丢失: session=%+v err=%v", saved, err)
+				}
+				if got := output.String(); !strings.Contains(got, "目标目录不存在") || !strings.Contains(got, "upload-id") || strings.Contains(got, "callback-fixture-token") {
+					t.Fatalf("callback日志缺少可读原因或泄露凭据: %s", got)
+				}
+			}
+		})
+	}
+}
 
 func setupUpload115ProcessedTestDB(t *testing.T) {
 	t.Helper()

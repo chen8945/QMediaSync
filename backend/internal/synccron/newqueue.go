@@ -347,7 +347,12 @@ func (q *NewSyncQueuePerType) executeStrmSync(task *NewSyncTask) {
 		}
 		realtime.BroadcastEvent(realtime.EventStrmSyncTaskComplete, completePayload)
 	} else {
-		logError("STRM 同步任务执行失败：ID=%d，错误=%v", task.ID, startErr)
+		var secrets []string
+		// 取消任务可能已并发将 q.strmSync 置空，先取快照再解引用。
+		if strmSync := q.strmSync; strmSync != nil && strmSync.Account != nil {
+			secrets = []string{strmSync.Account.Token, strmSync.Account.RefreshToken, strmSync.Account.Password}
+		}
+		logError("STRM 同步任务执行失败：ID=%d，原因=%q，错误类型=%T", task.ID, helpers.SafeLogError(startErr, secrets...), startErr)
 		// 触发 STRM 同步任务完成事件（失败）
 		completePayload := map[string]any{
 			"task_id": task.ID,

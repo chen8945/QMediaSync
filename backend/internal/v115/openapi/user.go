@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"qmediasync/internal/helpers"
 )
 
 type UserInfoSpace struct {
@@ -38,7 +36,6 @@ func (c *OpenClient) UserInfo() (*UserInfo, error) {
 	respData := &UserInfo{}
 	_, _, err := c.doAuthRequest(context.Background(), url, req, MakeRequestConfig(1, 1, 15), respData)
 	if err != nil {
-		helpers.V115Log.Errorf("调用用户信息接口失败：%v", err)
 		return nil, err
 	}
 	return respData, nil

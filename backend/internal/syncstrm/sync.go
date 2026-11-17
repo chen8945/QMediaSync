@@ -380,7 +380,18 @@ func (s *SyncStrm) completeSync() error {
 	return nil
 }
 
-func (s *SyncStrm) failSync(cause error) error {
+func (s *SyncStrm) failSync(cause error) (resultErr error) {
+	defer func() {
+		var secrets []string
+		if s.Account != nil {
+			secrets = []string{s.Account.Token, s.Account.RefreshToken, s.Account.Password}
+		}
+		logf := s.Sync.Logger.Errorf
+		if s.Context.Err() != nil || s.stopped.Load() {
+			logf = s.Sync.Logger.Debugf
+		}
+		logf("STRM 同步结束：sync_id=%d，目录=%q，原因=%q，错误类型=%T", s.Sync.ID, s.SourcePath, helpers.SafeLogError(resultErr, secrets...), resultErr)
+	}()
 	// 取消后仍有最多 5 秒用于等待旧发布并保存真实失败，不能无限阻塞来源队列。
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.Context), 5*time.Second)
 	defer cancel()
@@ -1136,7 +1147,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							// 递归创建目录，调用对应的 driver
 							parentPathId, remotePath, err = s.SyncDriver.CreateDirRecursively(s.Context, parentDir)
 							if err != nil {
-								s.Sync.Logger.Errorf("创建目录 %s 失败：%v", parentDir, err)
+								s.Sync.Logger.Errorf("创建目录 %s 失败：错误类型=%T", parentDir, err)
 								s.recordLocalFileFailure(path, err)
 								if isFatalSyncError(err) {
 									return err
@@ -1221,7 +1232,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 							// 1. 删除网盘旧文件
 							err := s.SyncDriver.DeleteFile(s.Context, existsFile.ParentId, []string{existsFile.GetFileId()})
 							if err != nil {
-								s.Sync.Logger.Errorf("删除网盘旧文件 %s 失败：%v", existsFile.GetFileId(), err)
+								s.Sync.Logger.Errorf("删除网盘旧文件 %s 失败：错误类型=%T", existsFile.GetFileId(), err)
 								s.recordLocalFileFailure(path, err)
 								if isFatalSyncError(err) {
 									return err

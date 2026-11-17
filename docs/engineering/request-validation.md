@@ -86,7 +86,7 @@ Telegram、MeoW、Bark 和 ServerChan 创建请求的必填字符串，以及更
 
 STRM 的 `strm_base_url/cron`、日志 `level`、Cron 查询/验证、队列 `qps/qpm/qph` 与统计清理 `days`、API Key 的 `name/is_active`、同步路径必填字段及 TMDB 搜索 `type` 也由已有 DTO 校验处理，不重复添加 `binding:"required"`。缺失、`null`、空字符串或不合法的零值返回对应 `field_errors`；同步路径聚合保留现有字段定位，不额外修改 DTO 或领域错误的字段路径。API Key `is_active=false` 保持合法，字段省略仍由原 nil 校验拒绝；JSON/字段类型错误保持绑定层的安全拒绝，不放宽范围或可选值语义。
 
-通知规则按已有的查询后创建／更新流程保存。缺失规则的首次写入也必须保存请求中的 `is_enabled=false`，不能由 GORM 的 `default:true` 覆盖；创建／更新时间沿用数据库连接的 `NowFunc`。
+通知规则只能保存到仍存在的渠道；不存在或已删除时不写库、不应用规则。查询后创建／更新在模型事务中完成，与渠道删除的并发边界见 [通知规则](../reference/database-schema.md#notification_rules)。缺失规则的首次写入也必须保存请求中的 `is_enabled=false`，不能由 GORM 的 `default:true` 覆盖；创建／更新时间沿用数据库连接的 `NowFunc`。
 
 模型层仍负责：
 

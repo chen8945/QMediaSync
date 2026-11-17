@@ -173,7 +173,7 @@ func (s *Scrape) Start() bool {
 	// 检查来源目录和目标目录是否存在
 	err := s.scanImpl.CheckPathExists()
 	if err != nil {
-		helpers.AppLogger.Errorf("检查来源目录 %s 或目标目录 %s 异常：%v", s.scrapePath.SourcePathId, s.scrapePath.DestPathId, err)
+		helpers.AppLogger.Errorf("检查来源目录 %s 或目标目录 %s 异常：原因=%q，错误类型=%T", s.scrapePath.SourcePathId, s.scrapePath.DestPathId, helpers.SafeLogError(err), err)
 		return false
 	}
 	// 先生成所有二级分类
@@ -184,13 +184,13 @@ func (s *Scrape) Start() bool {
 	// 获取视频文件列表并从文件名中提取媒体信息用来刮削
 	eerr := s.scanImpl.GetNetFileFiles()
 	if eerr != nil {
-		helpers.AppLogger.Errorf("获取目录 %s 视频文件列表失败：%v", s.scrapePath.SourcePath, eerr)
+		helpers.AppLogger.Errorf("获取目录 %s 视频文件列表失败：原因=%q，错误类型=%T", s.scrapePath.SourcePath, helpers.SafeLogError(eerr), eerr)
 		return false
 	}
 	helpers.AppLogger.Infof("获取目录 %s 视频文件列表成功", s.scrapePath.SourcePath)
 	err = s.scrapeImpl.Start()
 	if err != nil {
-		helpers.AppLogger.Errorf("启动刮削 %s 失败：%v", s.scrapePath.SourcePath, err)
+		helpers.AppLogger.Errorf("启动刮削 %s 失败：原因=%q", s.scrapePath.SourcePath, helpers.SafeLogError(err))
 		return false
 	}
 	helpers.AppLogger.Infof("刮削整理 #%d %s 成功", s.scrapePath.ID, s.scrapePath.SourcePath)

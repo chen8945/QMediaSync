@@ -555,8 +555,8 @@ func GetSyncPathListWithContext(ctx context.Context, page, pageSize int, enableC
 }
 
 // 根据账号 ID 获取同步路径列表
-func GetAllSyncPathByAccountId(accountId uint) []SyncPath {
+func GetAllSyncPathByAccountId(accountId uint) ([]SyncPath, error) {
 	var syncPaths []SyncPath
-	db.Db.Where("account_id = ?", accountId).Find(&syncPaths)
-	return syncPaths
+	err := db.Db.Where("account_id = ?", accountId).Find(&syncPaths).Error
+	return syncPaths, err
 }

@@ -55,10 +55,11 @@ func TestManagerSharesTailerForSamePath(t *testing.T) {
 	assertLine("second", second)
 }
 
-func TestTailerResyncsAndClearsOversizedPartialLine(t *testing.T) {
+func TestTailerPreservesLongPartialLineUntilCompleted(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync.log")
-	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxScannerBytes+1)), 0o644); err != nil {
+	longLine := "头部" + strings.Repeat("中", 360000) + "尾部"
+	if err := os.WriteFile(path, []byte(longLine), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,17 +68,40 @@ func TestTailerResyncsAndClearsOversizedPartialLine(t *testing.T) {
 	tailer.subs[sub] = struct{}{}
 
 	tailer.readAvailable()
+	tailer.sendCatchUp(sub, 0)
 
 	select {
 	case msg := <-sub.ch:
-		if msg.Type != "resync_required" || msg.Reason != "partial_line_too_long" {
-			t.Fatalf("msg = %+v，期望 partial_line_too_long resync_required", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("未收到超长半行重同步消息")
+		t.Fatalf("未完成半行不应投递或要求重同步: type=%s reason=%s", msg.Type, msg.Reason)
+	default:
 	}
-	if len(tailer.leftover) != 0 {
-		t.Fatalf("leftover length = %d，期望 0", len(tailer.leftover))
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\nnext\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tailer.readAvailable()
+	for _, want := range []string{longLine, "next"} {
+		select {
+		case msg := <-sub.ch:
+			if msg.Type != "log_append" || msg.Entry.Message != want {
+				t.Fatalf("完整日志被截断或顺序错误: type=%s length=%d", msg.Type, len(msg.Entry.Message))
+			}
+		default:
+			t.Fatal("补齐换行后未投递完整日志")
+		}
+	}
+	tailer.readAvailable()
+	select {
+	case msg := <-sub.ch:
+		t.Fatalf("重复投递: type=%s", msg.Type)
+	default:
 	}
 }
 

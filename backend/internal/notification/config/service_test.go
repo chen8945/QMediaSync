@@ -15,6 +15,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/models"
 	"qmediasync/internal/notification"
 	"qmediasync/internal/notificationmanager"
 	"qmediasync/internal/validation"
@@ -206,6 +207,73 @@ func TestNewRulePreservesRequestedEnabledState(t *testing.T) {
 			}
 			if saved.IsEnabled != test.enabled || saved.CreatedAt.IsZero() || saved.UpdatedAt.IsZero() {
 				t.Fatalf("saved rule: enabled=%v created_at=%v updated_at=%v", saved.IsEnabled, saved.CreatedAt, saved.UpdatedAt)
+			}
+		})
+	}
+}
+
+func TestRuleRejectsUnavailableChannelWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		deleted       bool
+		lookupFailure bool
+		canceled      bool
+	}{
+		{name: "missing"},
+		{name: "deleted", deleted: true},
+		{name: "database failure", lookupFailure: true},
+		{name: "canceled", canceled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := setupConfigTest(t)
+			channel := notification.NotificationChannel{ChannelType: "webhook", ChannelName: "existing"}
+			if err := conn.Create(&channel).Error; err != nil {
+				t.Fatal(err)
+			}
+			id := channel.ID
+			if tc.deleted {
+				if err := models.DeleteNotificationChannel(t.Context(), id); err != nil {
+					t.Fatal(err)
+				}
+			} else if !tc.lookupFailure && !tc.canceled {
+				id++
+			}
+			lookupErr := errors.New("notification channel lookup failed")
+			if tc.lookupFailure {
+				if err := conn.Callback().Query().Before("gorm:query").Register("test:rule_channel_lookup_failure", func(tx *gorm.DB) {
+					if tx.Statement.Table == "notification_channels" {
+						tx.AddError(lookupErr)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			result, err := UpdateRule(ctx, notification.NotificationRule{ChannelID: id, EventType: string(notification.SystemAlert)})
+			if tc.lookupFailure {
+				if removeErr := conn.Callback().Query().Remove("test:rule_channel_lookup_failure"); removeErr != nil {
+					t.Fatal(removeErr)
+				}
+				if !errors.Is(err, lookupErr) || errors.Is(err, ErrChannelNotFound) {
+					t.Errorf("渠道查询错误被吞掉或误报不存在: %v", err)
+				}
+			} else if tc.canceled {
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("取消原因未保留: %v", err)
+				}
+			} else if !errors.Is(err, ErrChannelNotFound) {
+				t.Errorf("不可用渠道未拒绝规则写入: %v", err)
+			}
+			var count int64
+			if err := conn.Model(&notification.NotificationRule{}).Count(&count).Error; err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 || len(result.Warnings) != 0 {
+				t.Errorf("拒绝后仍持久化或应用规则: count=%d result=%+v", count, result)
 			}
 		})
 	}

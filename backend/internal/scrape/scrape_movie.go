@@ -97,7 +97,8 @@ func (m *movieScrapeImpl) scrapeWorker(taskIndex int, wg *sync.WaitGroup) {
 		err := m.Process(mediaFile)
 		wg.Done() // 处理完成后，计数-1
 		if err != nil {
-			helpers.AppLogger.Errorf("任务队列 %d 刮削文件 %s 失败：%v", taskIndex, mediaFile.VideoFilename, err)
+			helpers.AppLogger.Errorf("任务队列 %d 刮削文件 %s 失败：原因=%q，错误类型=%T", taskIndex, mediaFile.VideoFilename,
+				helpers.SafeLogError(err, m.settings.GetTmdbApiKey(), m.settings.GetTmdbAccessToken(), m.settings.GetFanartApiKey(), m.settings.GetAiApiKey()), err)
 		}
 		// 触发单个刮削项完成事件
 		realtime.BroadcastEvent(realtime.EventScraperItemComplete, map[string]any{
@@ -623,7 +624,7 @@ func (m *movieScrapeImpl) MakeParentPath(mediaFile *models.ScrapeMediaFile, cate
 	helpers.AppLogger.Infof("影视剧文件夹，目标路径：%s，根目录 ID：%s", destFullPath, parentId)
 	newPathId, err := m.renameImpl.CheckAndMkDir(destFullPath, mediaFile.DestPath, mediaFile.DestPathId)
 	if err != nil {
-		helpers.AppLogger.Errorf("创建父文件夹失败：%v", err)
+		helpers.AppLogger.Errorf("创建父文件夹失败：错误类型=%T", err)
 		return err
 	}
 	mediaFile.NewPathId = newPathId
@@ -669,7 +670,7 @@ func (m *movieScrapeImpl) FinishMovie(mediaFile *models.ScrapeMediaFile) {
 	}
 	err := m.renameImpl.RemoveMediaSourcePath(mediaFile, m.scrapePath)
 	if err != nil {
-		helpers.AppLogger.Errorf("删除来源路径 %s 失败：%v", mediaFile.PathId, err)
+		helpers.AppLogger.Errorf("删除来源路径 %s 失败：错误类型=%T", mediaFile.PathId, err)
 	}
 }
 
@@ -953,7 +954,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 		// 删除这些文件
 		err := m.renameImpl.CheckAndDeleteFiles(mediaFile, files)
 		if err != nil {
-			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：%v", err)
+			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：错误类型=%T", err)
 			return err
 		}
 		helpers.AppLogger.Infof("删除已上传的元数据文件成功：%v", files)
@@ -986,7 +987,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 			var eerr error
 			existsPathId, eerr = m.renameImpl.ExistsAndRename(mediaFile.PathId, newBaseName)
 			if eerr != nil {
-				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：%v", mediaFile.PathId, eerr)
+				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：错误类型=%T", mediaFile.PathId, eerr)
 				return eerr
 			}
 		}
@@ -995,7 +996,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 				var err error
 				pathId, err = m.renameImpl.CheckAndMkDir(newPath, mediaFile.SourcePath, mediaFile.SourcePathId)
 				if err != nil {
-					helpers.AppLogger.Errorf("创建父文件夹 %s 失败：%v", newPath, err)
+					helpers.AppLogger.Errorf("创建父文件夹 %s 失败：错误类型=%T", newPath, err)
 					return err
 				}
 			} else {
@@ -1056,7 +1057,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 			}
 			merr := m.renameImpl.MoveFiles(moveFile)
 			if merr != nil {
-				helpers.AppLogger.Errorf("移动视频文件失败：%v", merr)
+				helpers.AppLogger.Errorf("移动视频文件失败：错误类型=%T", merr)
 				return merr
 			}
 			if mediaFile.SourceType != models.SourceType115 {
@@ -1068,7 +1069,7 @@ func (m *movieScrapeImpl) Rollback(mediaFile *models.ScrapeMediaFile) error {
 		// 删除目标目录
 		derr := m.renameImpl.DeleteDir(mediaFile.Media.Path, mediaFile.Media.PathId)
 		if derr != nil {
-			helpers.AppLogger.Errorf("删除目标目录失败：%v", derr)
+			helpers.AppLogger.Errorf("删除目标目录失败：错误类型=%T", derr)
 			return derr
 		}
 	}

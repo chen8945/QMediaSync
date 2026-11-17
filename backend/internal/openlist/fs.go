@@ -132,7 +132,6 @@ func (c *Client) DirList(ctx context.Context, path string, forceRoot bool) ([]Di
 	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/dirs", req, nil)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 获取文件夹列表失败：%s", err.Error())
 		return nil, err
 	}
 	return result.Data, nil
@@ -167,7 +166,6 @@ func (c *Client) FileListWithRefresh(ctx context.Context, path string, page int,
 	req.SetContext(ctx)
 	response, err := c.doRequest("/api/fs/list", req, nil)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 获取文件列表失败：%s", err.Error())
 		return nil, err
 	}
 	var envelope struct {
@@ -217,7 +215,6 @@ func (c *Client) fileDetailContext(ctx context.Context, path string, options *Re
 	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/get", req, options)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 获取文件详情失败：%s", err.Error())
 		return nil, err
 	}
 	return &result.Data, nil
@@ -250,14 +247,21 @@ func (c *Client) UploadContext(ctx context.Context, localFile string, remotePath
 	options.waitAuthRefresh = true
 	_, err := c.doRequest("/api/fs/form", req, options)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 上传文件失败：%s", err.Error())
 		return nil, err
 	}
-	helpers.OpenListLog.Infof("OpenList 上传文件成功：%s", result.Data.Task.ID)
+	helpers.OpenListLog.Infof("OpenList 上传文件成功，上游任务 ID=%q", result.Data.Task.ID)
 	return &result.Data.Task, nil
 }
 
-func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResult, error) {
+func (c *Client) UploadUseHttp(filePath string, remotePath string) (uploadResult *UploadResult, err error) {
+	var status int
+	var code *int
+	state := c.snapshot()
+	secrets := requestLogSecrets(state, nil)
+	defer func() {
+		c.logRequestFailure(http.MethodPut, "/api/fs/form", status, code, err, state, secrets...)
+		err = helpers.WithLogSecrets(err, secrets...)
+	}()
 	remotePath = strings.ReplaceAll(remotePath, "\\", "/")
 	if !strings.HasPrefix(remotePath, "/") {
 		remotePath = "/" + remotePath
@@ -266,7 +270,6 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 	// 打开本地文件
 	file, err := os.Open(filePath)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 上传文件失败：%s", err.Error())
 		return nil, fmt.Errorf("打开本地文件失败：%w", err)
 	}
 	defer file.Close()
@@ -275,7 +278,8 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 	// URL 编码远程路径（保留斜杠，避免转义）
 	encodedPath := helpers.UrlEncode(remotePath)
 	// 构造上传请求 URL
-	state := c.snapshot()
+	state = c.snapshot()
+	secrets = append(secrets, requestLogSecrets(state, nil)...)
 	reqURL := strings.TrimRight(state.baseURL, "/") + "/api/fs/form"
 
 	// 创建 multipart/form-data 请求体
@@ -304,6 +308,11 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 	req.Header.Set("Authorization", state.accessToken)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("File-Path", encodedPath)
+	if helpers.ConfiguredLogLevel() == helpers.LogLevelDebug {
+		label := fmt.Sprintf("OpenList PUT /api/fs/form，账号=%d", state.accountID)
+		helpers.OpenListLog.SensitiveDebugText(label+" 请求地址", reqURL, secrets...)
+		helpers.OpenListLog.SensitiveDebugText(label+" multipart 参数（不记录文件内容）", fmt.Sprintf("文件=%s，File-Path=%s，字节=%d", filePath, encodedPath, body.Len()), secrets...)
+	}
 	// 延长上传超时（大文件上传可能需要更长时间，此处设 5 分钟）
 	req.Close = true
 	client := &http.Client{
@@ -311,21 +320,41 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 	}
 	// 发送上传请求
 	resp, err := client.Do(req)
+	if resp != nil {
+		status = resp.StatusCode
+	}
 	if err != nil {
+		if resp != nil {
+			helpers.OpenListLog.Debugf("OpenList PUT /api/fs/form 响应正文未读取，HTTP=%d", resp.StatusCode)
+		}
 		return nil, fmt.Errorf("发送上传请求失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	// 读取响应体
 	respBody, err := io.ReadAll(resp.Body)
+	if helpers.ConfiguredLogLevel() == helpers.LogLevelDebug {
+		responseLabel := fmt.Sprintf("OpenList PUT /api/fs/form，账号=%d 响应", state.accountID)
+		if err != nil {
+			responseLabel += "（读取失败时已取得的内容）"
+		}
+		helpers.OpenListLog.SensitiveDebugText(responseLabel, string(respBody), secrets...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("读取上传响应失败：%w", err)
 	}
-	helpers.OpenListLog.Infof("OpenList 上传文件响应：%s", string(respBody))
+	source, apiPath := requestLogLocation(reqURL, secrets)
+	helpers.OpenListLog.Infof("OpenList 上传文件响应，账号=%d，来源=%q，接口路径=%q，HTTP=%d", state.accountID, source, apiPath, resp.StatusCode)
 	// 解析上传响应
 	result := &Resp[UploadTask]{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("解析上传响应失败，响应体：%s，原因：%w", string(respBody), err)
+		return nil, fmt.Errorf("解析上传响应失败：%w", err)
+	}
+	var envelope struct {
+		Code *int `json:"code"`
+	}
+	if json.Unmarshal(respBody, &envelope) == nil {
+		code = envelope.Code
 	}
 
 	// 检查上传结果
@@ -334,13 +363,14 @@ func (c *Client) UploadUseHttp(filePath string, remotePath string) (*UploadResul
 			resp.StatusCode, result.Code, result.Message)
 	}
 
+	helpers.OpenListLog.Infof("OpenList 上传文件成功，上游任务 ID=%q", result.Data.Task.ID)
 	return &result.Data.Task, nil
 }
 
 func (c *Client) GetRawUrl(filePath string) string {
 	fileDetail, err := c.FileDetail(filePath)
 	if err != nil {
-		helpers.OpenListLog.Errorf("获取文件详情失败：%v", err)
+		helpers.OpenListLog.Errorf("获取 OpenList 文件直链失败，路径=%q，错误类型=%T", filePath, err)
 		return ""
 	}
 	if fileDetail.RawURL == "" {
@@ -364,7 +394,6 @@ func (c *Client) Mkdir(path string) error {
 	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost)
 	_, err := c.doRequest("/api/fs/mkdir", req, nil)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 创建目录失败：%s", err.Error())
 		return err
 	}
 	return nil
@@ -404,7 +433,6 @@ func (c *Client) MoveWithTasks(oldPath, newPath string, names []string) ([]strin
 	// 响应丢失时操作可能已生效，不自动重发写入；认证恢复沿用客户端逻辑。
 	_, err := c.doRequest("/api/fs/move", req, MakeRequestConfig(0, 0, 0))
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 移动文件失败：%s", err.Error())
 		return nil, err
 	}
 	if result.Code != 200 {
@@ -451,7 +479,6 @@ func (c *Client) CopyWithTasks(oldPath, newPath string, names []string) ([]strin
 	// 响应丢失时操作可能已生效，不自动重发写入；认证恢复沿用客户端逻辑。
 	_, err := c.doRequest("/api/fs/copy", req, MakeRequestConfig(0, 0, 0))
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 复制文件失败：%s", err.Error())
 		return nil, err
 	}
 	if result.Code != 200 {
@@ -515,7 +542,6 @@ func (c *Client) Rename(path, oldName, newName string) error {
 	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/batch_rename", req, nil)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 重命名文件失败：%s", err.Error())
 		return err
 	}
 	if result.Code != 200 {
@@ -552,7 +578,6 @@ func (c *Client) deleteFiles(ctx context.Context, path string, names []string, o
 	req := c.client.R().SetContext(ctx).SetBody(reqData).SetMethod(http.MethodPost).SetResult(result)
 	_, err := c.doRequest("/api/fs/remove", req, options)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 删除目录失败：%s", err.Error())
 		return err
 	}
 	if result.Code != 200 {

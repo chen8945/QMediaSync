@@ -3,8 +3,12 @@ package v115open
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +31,14 @@ type clientCredentials struct {
 	appID        string
 	accessToken  string
 	refreshToken string
+}
+
+type requestLogSecretsContextKey struct{}
+
+// requestLogSecrets 为响应后的校验保留实际请求凭据，缓存更新不影响该副本。
+func requestLogSecrets(req *resty.Request) []string {
+	secrets, _ := req.Context().Value(requestLogSecretsContextKey{}).([]string)
+	return append(append([]string(nil), secrets...), req.AuthToken)
 }
 
 // 全局 HTTP 客户端实例
@@ -160,7 +172,15 @@ func (c *OpenClient) setAuthTokenIfCurrent(expectedToken, expectedRefreshToken, 
 }
 
 // doRequest 带重试的请求方法（使用全局队列）
-func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestConfig) (*resty.Response, *RespBase[json.RawMessage], error) {
+func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestConfig, secrets ...string) (response *resty.Response, data *RespBase[json.RawMessage], err error) {
+	credentials := c.credentialSnapshot()
+	logSecrets := append([]string{credentials.accessToken, credentials.refreshToken}, secrets...)
+	req.SetContext(context.WithValue(req.Context(), requestLogSecretsContextKey{}, append([]string(nil), logSecrets...)))
+	var lastRequest *RequestResponse
+	defer func() {
+		c.logRequestFailure(req.Method, url, lastRequest, requestLogFailureCause(lastRequest, err), logSecrets...)
+		err = helpers.WithLogSecrets(err, logSecrets...)
+	}()
 	// 设置超时时间
 	req.SetTimeout(options.Timeout)
 	// 设置默认头
@@ -183,6 +203,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 			ResponseChan:    respChan,
 			CreatedAt:       time.Now(),
 			Ctx:             context.Background(),
+			logSecrets:      logSecrets,
 		}
 
 		// 将请求加入队列
@@ -190,6 +211,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 
 		// 等待响应
 		queueResp := <-respChan
+		lastRequest = queueResp
 
 		if queueResp.Error == nil && queueResp.RespData != nil {
 			// 请求成功，转换为 RespBase 格式
@@ -251,7 +273,7 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 
 		// 其他错误开始重试
 		if attempt < options.MaxRetries && lastErr != nil {
-			helpers.V115Log.Warnf("%s %s 请求失败：%+v", req.Method, url, lastErr)
+			helpers.V115Log.Warnf("%s %s 请求失败，错误类型=%T", req.Method, url, lastErr)
 			helpers.V115Log.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试）", req.Method, url, options.RetryDelay.Seconds(), attempt+1)
 			time.Sleep(options.RetryDelay)
 		}
@@ -260,15 +282,29 @@ func (c *OpenClient) doRequest(url string, req *resty.Request, options *RequestC
 }
 
 // doAuthRequest 带重试的认证请求方法（使用全局队列）
-func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.Request, options *RequestConfig, respData any) (*resty.Response, []byte, error) {
+func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.Request, options *RequestConfig, respData any) (response *resty.Response, raw []byte, err error) {
 	defer beginRequestDirectoryWrite(c.AccountId, url, req)()
+	credentials := c.credentialSnapshot()
+	logSecrets := []string{credentials.accessToken, credentials.refreshToken}
+	ctx = context.WithValue(ctx, requestLogSecretsContextKey{}, append([]string(nil), logSecrets...))
+	req.SetContext(ctx)
+	var lastRequest *RequestResponse
+	defer func() {
+		cause := requestLogFailureCause(lastRequest, err)
+		if options != nil && options.DeletionDetail && lastRequest != nil {
+			cause = deletionDetailAbsenceError(lastRequest.RespBytes, cause)
+		}
+		if !c.playback && !isPreloadOperation(ctx) && !(options != nil && options.DeletionDetail && IsAlreadyDeleted(cause)) {
+			c.logRequestFailure(req.Method, url, lastRequest, cause, logSecrets...)
+		}
+		err = helpers.WithLogSecrets(err, logSecrets...)
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
 	if c.playback {
 		return c.doPlaybackRequest(ctx, url, req, options, respData)
 	}
-	credentials := c.credentialSnapshot()
 	if credentials.accessToken == "" {
 		// 没有 Token，直接报错
 		return nil, nil, NewOpenAPIError(ACCESS_AUTH_INVALID, "115 账号授权失效，请在网盘账号管理中重新授权")
@@ -279,7 +315,6 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		req.Header.Set("User-Agent", DEFAULTUA)
 	}
 	req.SetAuthToken(credentials.accessToken).SetResponseDoNotParse(true)
-	req.SetContext(ctx)
 
 	var lastErr error
 	var lastRespBytes []byte
@@ -302,6 +337,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			Ctx:             ctx,
 			BeforeSend:      options.BeforeSend,
 			DeletionDetail:  options.DeletionDetail,
+			logSecrets:      logSecrets,
 		}
 
 		// 将请求加入队列
@@ -314,6 +350,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			return nil, nil, ctx.Err()
 		case queueResp = <-respChan:
 		}
+		lastRequest = queueResp
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
@@ -322,13 +359,12 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 			// 请求成功
 			if respData != nil && queueResp.RespData.State {
 				// 解包响应数据
-				helpers.V115Log.Debugf("解包 %s", string(queueResp.RespData.Data))
 				if unmarshalErr := json.Unmarshal(queueResp.RespData.Data, respData); unmarshalErr != nil {
-					helpers.V115Log.Errorf("解包响应数据失败：%s", unmarshalErr.Error())
+					helpers.V115Log.Errorf("115 %s %s 解包响应数据失败，账号=%d，原因=%q，错误类型=%T",
+						req.Method, requestLogEndpoint(url), c.AccountId, helpers.SafeLogError(unmarshalErr, logSecrets...), unmarshalErr)
 					return queueResp.Response, queueResp.RespBytes, nil
 				}
 			}
-			helpers.V115Log.Debugf("请求 %s %s 响应：%s", req.Method, url, string(queueResp.RespBytes))
 			return queueResp.Response, queueResp.RespBytes, nil
 		}
 
@@ -362,7 +398,7 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 
 		// 其他错误开始重试
 		if attempt < options.MaxRetries && lastErr != nil {
-			helpers.V115Log.Warnf("%s %s 请求失败：%+v", req.Method, url, lastErr)
+			helpers.V115Log.Warnf("%s %s 请求失败，错误类型=%T", req.Method, url, lastErr)
 			helpers.V115Log.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试）", req.Method, url, options.RetryDelay.Seconds(), attempt+1)
 			if err := sleepWithTimer(ctx, options.RetryDelay); err != nil {
 				return nil, nil, err
@@ -371,4 +407,94 @@ func (c *OpenClient) doAuthRequest(ctx context.Context, url string, req *resty.R
 		lastRespBytes = queueResp.RespBytes
 	}
 	return nil, lastRespBytes, lastErr
+}
+
+type responseLogFields struct {
+	State json.RawMessage `json:"state"`
+	Code  *int            `json:"code"`
+	Errno *int            `json:"errno"`
+}
+
+func parseResponseLogFields(raw []byte) responseLogFields {
+	var fields responseLogFields
+	if json.Unmarshal(raw, &fields) != nil {
+		return responseLogFields{}
+	}
+	return fields
+}
+
+func logResponseCode(code *int) any {
+	if code == nil {
+		return "unknown"
+	}
+	return *code
+}
+
+// requestLogFailureCause 只补诊断，不把缺失 state 的默认 false 当成失败或改变返回值。
+func requestLogFailureCause(result *RequestResponse, err error) error {
+	if err != nil || result == nil || result.RespData == nil {
+		return err
+	}
+	fields := parseResponseLogFields(result.RespBytes)
+	state := strings.TrimSpace(string(fields.State))
+	if state != "false" && state != "0" &&
+		(fields.Code == nil || *fields.Code == 0) && (fields.Errno == nil || *fields.Errno == 0) {
+		return nil
+	}
+	return NewOpenAPIResponseError(result.RespData.Code, result.RespData.Errno, result.RespData.Message, result.RespData.Error, "115 开放平台请求未成功")
+}
+
+func (c *OpenClient) logRequestFailure(method, url string, result *RequestResponse, err error, secrets ...string) {
+	if err == nil {
+		return
+	}
+	var status int
+	var code, errno any = "unknown", "unknown"
+	if result != nil {
+		if result.Response != nil {
+			status = result.Response.StatusCode()
+		}
+		fields := parseResponseLogFields(result.RespBytes)
+		code, errno = logResponseCode(fields.Code), logResponseCode(fields.Errno)
+	}
+	if apiErr, ok := errors.AsType[*OpenAPIError](err); ok {
+		if apiErr.Code != 0 && (result == nil || result.RespData == nil) {
+			code = apiErr.Code
+		}
+		if status == 0 {
+			status = apiErr.HTTPStatus
+		}
+	}
+	category := "请求失败"
+	logf := helpers.V115Log.Errorf
+	if errors.Is(err, context.Canceled) {
+		category, logf = "已取消", helpers.V115Log.Debugf
+	} else if networkErr, ok := errors.AsType[net.Error](err); ok {
+		category = "网络错误"
+		if networkErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+			category = "超时"
+		}
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		category = "超时"
+	} else if _, ok := errors.AsType[*json.SyntaxError](err); ok {
+		category = "响应解析失败"
+	} else if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		category = "响应解析失败"
+	} else if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		category = "HTTP 拒绝"
+	} else if _, ok := errors.AsType[*OpenAPIError](err); ok {
+		category = "业务拒绝"
+	}
+	logf("115 %s %s 最终失败，账号=%d，HTTP=%d，code=%v，errno=%v，类别=%s，原因=%q，错误类型=%T",
+		method, requestLogEndpoint(url), c.AccountId, status, code, errno, category, helpers.SafeLogError(err, secrets...), err)
+}
+
+// requestLogEndpoint 保留接口来源及路径，参数由单独的 DEBUG 记录提供。
+func requestLogEndpoint(rawURL string) string {
+	endpoint, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	endpoint.User, endpoint.RawQuery, endpoint.Fragment = nil, "", ""
+	return endpoint.String()
 }

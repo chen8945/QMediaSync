@@ -47,9 +47,10 @@ var (
 	ErrAccountHasSyncPaths         = errors.New("账号仍有关联的同步目录")
 )
 
-// OpenListVerificationError 区分远端凭据验证失败与本地持久化失败。
+// OpenListVerificationError 保留远端验证原因及调用凭据，供边界分类和安全诊断。
 type OpenListVerificationError struct {
-	Cause error
+	Cause   error
+	Secrets []string
 }
 
 func (e *OpenListVerificationError) Error() string {
@@ -385,7 +386,10 @@ func (account *Account) GetBaiDuPanClient() *baidupan.Client {
 
 func (account *Account) Delete() error {
 	// 检查是否有关联的同步目录没有删除
-	syncPaths := GetAllSyncPathByAccountId(account.ID)
+	syncPaths, err := GetAllSyncPathByAccountId(account.ID)
+	if err != nil {
+		return err
+	}
 	if len(syncPaths) > 0 {
 		return fmt.Errorf("开放平台账号 %v: %w", account.ID, ErrAccountHasSyncPaths)
 	}
@@ -516,14 +520,16 @@ func (account *Account) UpdateOpenList(baseUrl string, username string, password
 	}
 	client := openlist.NewTemporaryClient(candidate.BaseUrl, candidate.Username, candidate.Password, candidate.Token)
 	defer client.Close()
+	secrets := []string{candidate.Password, candidate.Token}
 	if needsNewToken {
 		if _, err := client.GetToken(); err != nil {
-			return &OpenListVerificationError{Cause: err}
+			return &OpenListVerificationError{Cause: err, Secrets: append(secrets, client.GetAuthToken())}
 		}
 	}
-	userInfo, err := client.GetUserInfo(client.GetAuthToken())
+	verificationToken := client.GetAuthToken()
+	userInfo, err := client.GetUserInfo(verificationToken)
 	if err != nil {
-		return &OpenListVerificationError{Cause: err}
+		return &OpenListVerificationError{Cause: err, Secrets: append(secrets, verificationToken, client.GetAuthToken())}
 	}
 	// 用户信息查询可能自动刷新 Token，保存最终验证过的实际值。
 	candidate.Token = client.GetAuthToken()
@@ -646,15 +652,17 @@ func CreateOpenListAccount(baseUrl string, username string, password string, tok
 
 	client := openlist.NewTemporaryClient(baseUrl, username, password, token)
 	defer client.Close()
+	secrets := []string{password, token}
 	// 如果提供了 Token，优先使用 Token，否则使用用户名密码获取 Token
 	if token == "" {
 		if _, err := client.GetToken(); err != nil {
-			return nil, &OpenListVerificationError{Cause: err}
+			return nil, &OpenListVerificationError{Cause: err, Secrets: append(secrets, client.GetAuthToken())}
 		}
 	}
-	userInfo, err := client.GetUserInfo(client.GetAuthToken())
+	verificationToken := client.GetAuthToken()
+	userInfo, err := client.GetUserInfo(verificationToken)
 	if err != nil {
-		return nil, &OpenListVerificationError{Cause: err}
+		return nil, &OpenListVerificationError{Cause: err, Secrets: append(secrets, verificationToken, client.GetAuthToken())}
 	}
 	account.Token = client.GetAuthToken()
 	account.UserId = fmt.Sprintf("%d", userInfo.ID)

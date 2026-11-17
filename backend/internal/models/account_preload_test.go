@@ -131,7 +131,7 @@ func TestAccountCommitCancelsOldPreload(t *testing.T) {
 }
 
 func TestAccountFailedWriteKeepsPreload(t *testing.T) {
-	for _, test := range []string{"database_failure", "stale_refresh", "stale_clear", "duplicate_identity", "missing_account"} {
+	for _, test := range []string{"database_failure", "delete_lookup_failure", "stale_refresh", "stale_clear", "duplicate_identity", "missing_account"} {
 		t.Run(test, func(t *testing.T) {
 			setupOpenListAccountTest(t)
 			account := &Account{SourceType: SourceType115, UserId: "old-user", Token: "old-token", RefreshToken: "old-refresh"}
@@ -146,6 +146,25 @@ func TestAccountFailedWriteKeepsPreload(t *testing.T) {
 				}
 				if account.UpdateToken("new", "refresh", 3600) {
 					t.Fatal("失败写入被接受")
+				}
+			case "delete_lookup_failure":
+				if err := db.Db.AutoMigrate(&SyncPath{}); err != nil {
+					t.Fatal(err)
+				}
+				lookupErr := errors.New("sync path lookup failed")
+				if err := db.Db.Callback().Query().After("gorm:query").Register("test:preload_delete_lookup_failure", func(tx *gorm.DB) {
+					if tx.Statement.Table == "sync_paths" {
+						tx.AddError(lookupErr)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				deleteErr := account.Delete()
+				if err := db.Db.Callback().Query().Remove("test:preload_delete_lookup_failure"); err != nil {
+					t.Fatal(err)
+				}
+				if !errors.Is(deleteErr, lookupErr) {
+					t.Fatalf("删除未返回原始查询错误: %v", deleteErr)
 				}
 			case "stale_refresh", "stale_clear":
 				account.Token = "stale-token"

@@ -1,10 +1,14 @@
 package openlist
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -128,7 +132,14 @@ func (c *Client) doRequest(path string, req *resty.Request, options *RequestConf
 	return c.doRequestWithState(path, req, options, c.snapshot())
 }
 
-func (c *Client) doRequestWithState(path string, req *resty.Request, options *RequestConfig, state clientState) (*resty.Response, error) {
+func (c *Client) doRequestWithState(path string, req *resty.Request, options *RequestConfig, state clientState) (response *resty.Response, err error) {
+	var status int
+	var code *int
+	secrets := requestLogSecrets(state, req)
+	defer func() {
+		c.logRequestFailure(req.Method, path, status, code, err, state, secrets...)
+		err = helpers.WithLogSecrets(err, secrets...)
+	}()
 	if options == nil {
 		options = DefaultRequestConfig()
 	}
@@ -147,7 +158,11 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 		// 保留未执行的模板，让 multipart 每次重新打开文件；Clone 默认会新建 Result。
 		attemptReq := req.Clone(req.Context())
 		attemptReq.Result = req.Result
-		resp, err := c.request(path, attemptReq, &state)
+		resp, responseCode, err := c.request(path, attemptReq, &state, &secrets)
+		status, code = 0, responseCode
+		if resp != nil {
+			status = resp.StatusCode()
+		}
 		if contextErr := req.Context().Err(); contextErr != nil {
 			return nil, contextErr
 		}
@@ -188,6 +203,7 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 					return nil, ErrTokenExpired
 				}
 				state.accessToken = refreshed.Val.(*TokenData).Token
+				secrets = append(secrets, state.accessToken)
 			}
 			authRetried = true
 			helpers.OpenListLog.Warn("访问凭证已更新，重新发送请求")
@@ -195,8 +211,7 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 		}
 		// 其他错误开始重试
 		if attempt < options.MaxRetries {
-			// helpers.OpenListLog.Warnf("%s %s 请求失败：%+v", req.Method, req.URL, lastErr)
-			helpers.OpenListLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误：%+v", attemptReq.Method, attemptReq.URL, options.RetryDelay.Seconds(), attempt+1, lastErr)
+			helpers.OpenListLog.Warnf("%s %s 请求失败，%.0f 秒后重试（第 %d 次尝试），错误类型=%T", attemptReq.Method, path, options.RetryDelay.Seconds(), attempt+1, lastErr)
 			timer := time.NewTimer(options.RetryDelay)
 			select {
 			case <-req.Context().Done():
@@ -210,34 +225,38 @@ func (c *Client) doRequestWithState(path string, req *resty.Request, options *Re
 	return nil, lastErr
 }
 
-func (c *Client) request(path string, req *resty.Request, state *clientState) (*resty.Response, error) {
+func (c *Client) request(path string, req *resty.Request, state *clientState, secrets *[]string) (response *resty.Response, code *int, err error) {
 	// req.SetResponseForceContentType("application/json")
-	var response *resty.Response
-	var err error
 	req.SetResponseBodyUnlimitedReads(true)
 	// URL 和凭据来自同一快照，锁不跨 HTTP 请求或同步事件回调。
-	url := strings.TrimRight(state.baseURL, "/") + path
+	requestURL := strings.TrimRight(state.baseURL, "/") + path
+	defer func() { logRequestDetails(path, requestURL, state.accountID, req, response, err, *secrets) }()
 	if state.accessToken != "" {
 		req.SetHeader("Authorization", state.accessToken)
 	}
 	switch req.Method {
 	case "GET":
-		response, err = req.Get(url)
+		response, err = req.Get(requestURL)
 	case "POST":
-		response, err = req.Post(url)
+		response, err = req.Post(requestURL)
 	case "PUT":
-		response, err = req.Put(url)
+		response, err = req.Put(requestURL)
 	default:
-		return nil, fmt.Errorf("不支持的 HTTP 方法：%s", req.Method)
+		return nil, nil, fmt.Errorf("不支持的 HTTP 方法：%s", req.Method)
+	}
+	if path == "/api/auth/login" {
+		if result, ok := req.Result.(*Resp[TokenData]); ok {
+			*secrets = append(*secrets, result.Data.Token)
+		}
 	}
 	if err != nil {
-		return response, err
+		return response, nil, err
 	}
 	if response.StatusCode() == http.StatusUnauthorized {
-		return response, ErrTokenExpired
+		return response, nil, ErrTokenExpired
 	}
 	if response.StatusCode() < http.StatusOK || response.StatusCode() >= http.StatusMultipleChoices {
-		return response, fmt.Errorf("OpenList HTTP 状态异常：%d", response.StatusCode())
+		return response, nil, fmt.Errorf("OpenList HTTP 状态异常：%d", response.StatusCode())
 	}
 	data := response.Bytes()
 	var envelope struct {
@@ -245,23 +264,133 @@ func (c *Client) request(path string, req *resty.Request, state *clientState) (*
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return response, fmt.Errorf("OpenList 响应格式无效：%w", err)
-	}
-	if path != "/api/auth/login" {
-		helpers.OpenListLog.Infof("%s %s 请求数据：%+v 返回值：%s\n", req.Method, req.URL, req.Body, string(data))
+		return response, nil, fmt.Errorf("OpenList 响应格式无效：%w", err)
 	}
 	if envelope.Code == nil {
-		return response, fmt.Errorf("OpenList 响应缺少业务状态")
+		return response, nil, fmt.Errorf("OpenList 响应缺少业务状态")
 	}
+	source, apiPath := requestLogLocation(requestURL, *secrets)
+	helpers.OpenListLog.Infof("OpenList %s %s，账号=%d，来源=%q，接口路径=%q，HTTP=%d，code=%d", req.Method, path, state.accountID, source, apiPath, response.StatusCode(), *envelope.Code)
 	if *envelope.Code == http.StatusUnauthorized {
-		return response, ErrTokenExpired
+		return response, envelope.Code, ErrTokenExpired
 	}
 	if *envelope.Code != http.StatusOK {
 		if envelope.Message != "" {
-			return response, fmt.Errorf("%s", envelope.Message)
+			return response, envelope.Code, fmt.Errorf("%s", envelope.Message)
 		}
-		return response, fmt.Errorf("OpenList 业务状态异常：%d", *envelope.Code)
+		return response, envelope.Code, fmt.Errorf("OpenList 业务状态异常：%d", *envelope.Code)
+	}
+	if path == "/api/me" {
+		if result, ok := req.Result.(*RespWrapper); ok {
+			helpers.OpenListLog.Infof("Token 验证成功，用户 ID：%d，用户名=%q", result.Data.ID, helpers.RedactSensitiveLog(result.Data.Username, (*secrets)...))
+		}
 	}
 
-	return response, nil
+	return response, envelope.Code, nil
+}
+
+func requestLogSecrets(state clientState, req *resty.Request) []string {
+	secrets := []string{state.password, state.accessToken}
+	if req != nil {
+		secrets = append(secrets, req.Header.Get("Authorization"), req.AuthToken)
+	}
+	if parsed, err := url.Parse(state.baseURL); err == nil && parsed.User != nil {
+		password, _ := parsed.User.Password()
+		secrets = append(secrets, password)
+	}
+	return secrets
+}
+
+func requestLogLocation(requestURL string, secrets []string) (source, apiPath string) {
+	source = helpers.SafeLogText(requestURL, secrets...)
+	if parsed, err := url.Parse(requestURL); err == nil {
+		apiPath = helpers.RedactSensitiveLog(parsed.EscapedPath(), secrets...)
+	}
+	return source, apiPath
+}
+
+func logRequestDetails(path, requestURL string, accountID uint, req *resty.Request, response *resty.Response, requestErr error, secrets []string) {
+	if helpers.ConfiguredLogLevel() > helpers.LogLevelDebug {
+		return
+	}
+	label := fmt.Sprintf("OpenList %s %s，账号=%d", req.Method, path, accountID)
+	if req.RawRequest != nil && req.RawRequest.URL != nil {
+		requestURL = req.RawRequest.URL.String()
+	}
+	helpers.OpenListLog.SensitiveDebugText(label+" 请求地址", requestURL, secrets...)
+	if strings.HasPrefix(req.Header.Get("Content-Type"), "multipart/") {
+		params := fmt.Sprintf("File-Path=%s，As-Task=%s，overwrite=%s", req.Header.Get("File-Path"), req.Header.Get("As-Task"), req.Header.Get("overwrite"))
+		helpers.OpenListLog.SensitiveDebugText(label+" multipart 参数（不记录文件内容）", params, secrets...)
+	} else if len(req.FormData) != 0 {
+		helpers.OpenListLog.SensitiveDebugText(label+" 请求表单", req.FormData.Encode(), secrets...)
+	} else {
+		switch body := req.Body.(type) {
+		case nil:
+		case string:
+			helpers.OpenListLog.SensitiveDebugText(label+" 请求体", body, secrets...)
+		case []byte:
+			helpers.OpenListLog.SensitiveDebugText(label+" 请求体", string(body), secrets...)
+		case io.Reader:
+			helpers.OpenListLog.Debugf("%s 请求体未读取（发送流）", label)
+		default:
+			data, err := json.Marshal(req.Body)
+			if err != nil {
+				helpers.OpenListLog.Debugf("%s 无法生成请求体 JSON 表示，原因=%q", label, helpers.SafeLogText(err.Error(), secrets...))
+			} else {
+				helpers.OpenListLog.SensitiveDebugText(label+" 请求体 JSON 表示", string(data), secrets...)
+			}
+		}
+	}
+	if response == nil || response.RawResponse == nil {
+		return
+	}
+	if !response.IsRead {
+		helpers.OpenListLog.Debugf("%s 响应正文未读取，HTTP=%d", label, response.StatusCode())
+		return
+	}
+	data := response.Bytes()
+	if requestErr != nil && data == nil {
+		helpers.OpenListLog.Debugf("%s 响应正文未缓存（请求失败），HTTP=%d", label, response.StatusCode())
+		return
+	}
+	if requestErr != nil {
+		label += " 响应（请求失败时已取得的内容）"
+	} else {
+		label += " 响应"
+	}
+	helpers.OpenListLog.SensitiveDebugText(label, string(data), secrets...)
+}
+
+func (c *Client) logRequestFailure(method, path string, status int, code *int, err error, state clientState, secrets ...string) {
+	if err == nil {
+		return
+	}
+	category := "请求失败"
+	logf := helpers.OpenListLog.Errorf
+	if errors.Is(err, context.Canceled) {
+		category, logf = "已取消", helpers.OpenListLog.Debugf
+	} else if networkErr, ok := errors.AsType[net.Error](err); ok {
+		category = "网络错误"
+		if networkErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+			category = "超时"
+		}
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		category = "超时"
+	} else if errors.Is(err, ErrTokenExpired) {
+		category = "访问凭据失效"
+	} else if _, ok := errors.AsType[*json.SyntaxError](err); ok {
+		category = "响应解析失败"
+	} else if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		category = "响应解析失败"
+	} else if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		category = "HTTP 拒绝"
+	} else if code != nil && *code != http.StatusOK {
+		category = "业务拒绝"
+	}
+	var businessCode any = "unknown"
+	if code != nil {
+		businessCode = *code
+	}
+	source, apiPath := requestLogLocation(strings.TrimRight(state.baseURL, "/")+path, secrets)
+	logf("OpenList %s %s 最终失败，账号=%d，来源=%q，接口路径=%q，HTTP=%d，code=%v，类别=%s，原因=%q，错误类型=%T", method, path, state.accountID, source, apiPath, status, businessCode, category, helpers.SafeLogError(err, secrets...), err)
 }

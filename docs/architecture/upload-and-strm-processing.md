@@ -50,6 +50,8 @@ STRM 元数据回传的根目录识别和目录层级保留遵循[同步编排](
 
 OSS `CompleteMultipartUpload` 完成后，必须带回 115 init 返回的 `callback` / `callback_var`。官方 `callback` 可能是单个对象或对象数组；对象数组会取第一个回调配置。传给 OSS 时只把 115 返回的 callback JSON 原样 Base64 编码为 `x-oss-callback` / `x-oss-callback-var`，由 OSS 处理 `${bucket}`、`${object}`、`${size}`、`${sha1}` 和 `${x:...}` 占位符；后端不要提前展开 `callbackBody`，也不要向 `callback_var` 增加非 `x:` 字段。本地 SHA1 不传给 OSS multipart，`callbackBody` 中的 `${sha1}` 以 OSS 完成对象后返回的最终 SHA1 为准。如果 115 callback 响应 `state=false`、缺少远端文件 ID、缺少 PickCode 或响应无法解析，任务不会视为上传成功，也不会创建后续 STRM 生成任务；错误会写入上传任务和 `upload_sessions.complete_callback_error` 供排查。
 
+115 上传失败日志保留任务、对象、上传标识、进度和具体脱敏原因；OSS 成功核验字段与 DEBUG 参数／callback 详情遵循 [日志行为与脱敏](../operations/configuration.md#日志行为与脱敏)。本次实际 STS 凭据随错误及完成结果的私有诊断上下文传到后续 callback 校验，日志保护刷新前后值；不改 callback map、校验时机或 checkpoint。续传重建、秒传详情兜底和上传收尾仍保留原始错误链及既有任务／会话失败字段。
+
 `preid` 按 115 官方「文件上传」文档使用文件前 `128 KiB` 的 SHA1。该窗口应封装为可测试实现，不能在上传流程中散落协议常量。115 直链缓存有效性检查只对命中的缓存 URL 发起 HEAD 请求；关闭检查后直接使用缓存链接，百度网盘和 OpenList 不使用这套机制。
 
 ## 115 STRM 直链解析

@@ -41,11 +41,10 @@ func (c *Client) getToken(state clientState) (*TokenData, error) {
 	req := c.client.R().SetBody(reqData).SetMethod(http.MethodPost).SetResult(&result)
 	_, err := c.doRequestWithState("/api/auth/login", req, MakeRequestConfig(0, 1, 5), state)
 	if err != nil {
-		helpers.OpenListLog.Errorf("OpenList 获取访问凭证失败：%s", err.Error())
 		return nil, err
 	}
 	tokenData := result.Data
-	helpers.OpenListLog.Infof("OpenList 获取访问凭证成功")
+	helpers.OpenListLog.Infof("OpenList 获取访问凭证成功，账号=%d，用户名=%q", state.accountID, helpers.RedactSensitiveLog(state.username, state.password, state.accessToken, tokenData.Token))
 	if c.snapshot() == state && state.accountID != 0 {
 		// 同步保存不持有客户端锁；数据库必须继续比较登录前的原始配置。
 		helpers.PublishSync(helpers.SaveOpenListTokenEvent, TokenSaveEvent{
@@ -90,12 +89,10 @@ func (c *Client) GetUserInfo(token string) (*UserInfoResp, error) {
 		SetResult(&result)
 	_, err := c.doRequest("/api/me", req, MakeRequestConfig(1, 1, 5))
 	if err != nil {
-		helpers.OpenListLog.Errorf("验证 Token 失败：%s", err.Error())
 		return nil, err
 	}
 	if result.Code != http.StatusOK {
 		return nil, fmt.Errorf("Token 验证失败：%s", result.Message)
 	}
-	helpers.OpenListLog.Infof("Token 验证成功，用户：%s（ID：%d）", result.Data.Username, result.Data.ID)
 	return &result.Data, nil
 }

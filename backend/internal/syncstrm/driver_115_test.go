@@ -1,6 +1,7 @@
 package syncstrm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,35 @@ import (
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 )
+
+func TestOpen115DriverFailureLogsDoNotExposeUpstreamCause(t *testing.T) {
+	const secret = "opaque-sync-list-cause"
+	requestErr := v115open.NewOpenAPIError(123456, secret)
+	oldList, oldLevel := list115FilesPage, helpers.ConfiguredLogLevel()
+	t.Cleanup(func() {
+		list115FilesPage = oldList
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	helpers.SetGlobalLogLevel(helpers.LogLevelDebug)
+	calls := 0
+	list115FilesPage = func(context.Context, *v115open.OpenClient, string, bool, bool, bool, int, int) (*v115open.FileListResp, error) {
+		calls++
+		return nil, requestErr
+	}
+	var output bytes.Buffer
+	driver := NewOpen115Driver(nil)
+	driver.SetSyncStrm(&SyncStrm{
+		threadSettings: models.SettingThreadAndRapidWait{SettingThreads: models.SettingThreads{FileListPageSize: 100}},
+		Sync:           &models.Sync{Logger: &helpers.QLogger{Logger: log.New(&output, "", 0)}},
+	})
+	files, err := driver.GetNetFileFiles(t.Context(), "/media", "dir-1")
+	if files != nil || err != requestErr || calls != 1 {
+		t.Fatalf("文件列表失败改变了返回或调用次数: files=%v err=%v calls=%d", files, err, calls)
+	}
+	if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), "获取 115 网盘文件列表失败") || !strings.Contains(output.String(), "dir-1") {
+		t.Fatalf("同步日志泄露原始错误或缺少操作标识: %s", output.String())
+	}
+}
 
 func TestOpen115DriverGetNetFileFilesAccumulatesAllPages(t *testing.T) {
 	helpers.AppLogger = &helpers.QLogger{Logger: log.New(io.Discard, "", 0)}

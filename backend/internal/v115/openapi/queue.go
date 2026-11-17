@@ -32,6 +32,8 @@ type QueuedRequest struct {
 	Ctx context.Context
 	// 排队结束后、发送 HTTP 前核验；不能在回调中等待同一队列请求。
 	BeforeSend func() error
+	// 请求局部凭据副本，仅供诊断；入队后不再修改。
+	logSecrets []string
 }
 
 // RequestResponse 请求响应

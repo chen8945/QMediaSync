@@ -1,13 +1,62 @@
 package models
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
 	"qmediasync/internal/baidupan"
 	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
 )
+
+func TestUploadFailureLogsKeepSafeReasonAndOriginalTaskError(t *testing.T) {
+	const oldToken, currentToken = "saved-upload-token", "actual-upload-token"
+	for _, tt := range []struct {
+		name, level string
+		cause       error
+	}{
+		{name: "failed", level: "[ERROR]", cause: fmt.Errorf("目标目录不存在，upstream echo %s %s", oldToken, currentToken)},
+		{name: "cancelled", level: "[DEBUG]", cause: fmt.Errorf("上传已取消，upstream echo %s：%w", currentToken, context.Canceled)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupQueueStatusTestDB(t)
+			oldLogger, oldLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+			t.Cleanup(func() {
+				helpers.AppLogger = oldLogger
+				helpers.SetGlobalLogLevel(oldLevel)
+			})
+			var output bytes.Buffer
+			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+			helpers.SetGlobalLogLevel(helpers.LogLevelDebug)
+			task := &DbUploadTask{AccountId: 7, FileName: "movie.nfo", Status: UploadStatusUploading, Account: &Account{Token: oldToken}}
+			if err := db.Db.Create(task).Error; err != nil {
+				t.Fatal(err)
+			}
+			cause := helpers.WithLogSecrets(tt.cause, currentToken)
+			task.Fail(fmt.Errorf("上传结果：%w", cause))
+			var saved DbUploadTask
+			if err := db.Db.First(&saved, task.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != UploadStatusFailed || saved.Error != "上传结果："+tt.cause.Error() || task.Error != saved.Error || saved.EndTime == 0 {
+				t.Fatalf("日志处理改变任务失败结果: status=%v error=%q end=%d", saved.Status, saved.Error, saved.EndTime)
+			}
+			got := output.String()
+			if !strings.Contains(got, tt.level) || !strings.Contains(got, "movie.nfo") || !strings.Contains(got, "上传结果") || strings.Contains(got, oldToken) || strings.Contains(got, currentToken) {
+				t.Fatalf("任务结论缺少上下文或泄露实际凭据: %s", got)
+			}
+			if tt.name == "failed" && !strings.Contains(got, "目标目录不存在") {
+				t.Fatalf("任务日志缺少具体业务原因: %s", got)
+			}
+		})
+	}
+}
 
 func TestApplyBaiduUploadResponseOnlyUsesAvailableRemoteFields(t *testing.T) {
 	fsID := int64(123456)

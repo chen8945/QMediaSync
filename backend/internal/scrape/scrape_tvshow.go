@@ -125,7 +125,8 @@ func (t *tvShowScrapeImpl) scrapeTvShow(taskIndex int, wg *sync.WaitGroup, episo
 		err := t.ProcessTvShow(tt)
 		if err != nil {
 			wg.Done()
-			helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), err)
+			helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 失败：原因=%q，错误类型=%T", taskIndex, filepath.Base(tt.mediaFile.TvshowPath),
+				helpers.SafeLogError(err, t.settings.GetTmdbApiKey(), t.settings.GetTmdbAccessToken(), t.settings.GetFanartApiKey(), t.settings.GetAiApiKey()), err)
 			continue
 		}
 		helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s", taskIndex, filepath.Base(tt.mediaFile.TvshowPath))
@@ -139,7 +140,8 @@ func (t *tvShowScrapeImpl) scrapeTvShow(taskIndex int, wg *sync.WaitGroup, episo
 			helpers.AppLogger.Infof("电视剧工作线程 %d 开始处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
 			serr := t.ProcessSeason(seasonMediaFile)
 			if serr != nil {
-				helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 季 %d 失败：%v", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber, serr)
+				helpers.AppLogger.Errorf("电视剧工作线程 %d 刮削电视剧 %s 季 %d 失败：原因=%q，错误类型=%T", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber,
+					helpers.SafeLogError(serr, t.settings.GetTmdbApiKey(), t.settings.GetTmdbAccessToken(), t.settings.GetFanartApiKey(), t.settings.GetAiApiKey()), serr)
 				continue seasonloop
 			}
 			helpers.AppLogger.Infof("电视剧工作线程 %d 完成处理电视剧 %s 季 %d", taskIndex, filepath.Base(tt.mediaFile.TvshowPath), seasonMediaFile.SeasonNumber)
@@ -228,7 +230,7 @@ func (t *tvShowScrapeImpl) FillTvshowPath(mediaFile *models.ScrapeMediaFile) err
 		// 从 115 中查询 tvshowPathId
 		tvshowPathDetail, err := t.v115Client.GetFsDetailByPath(t.ctx, mediaFile.TvshowPath)
 		if err != nil {
-			helpers.AppLogger.Errorf("从 115 中查询电视剧目录详情 %s 失败：%v", mediaFile.TvshowPath, err)
+			helpers.AppLogger.Errorf("从 115 中查询电视剧目录详情 %s 失败：错误类型=%T", mediaFile.TvshowPath, err)
 			return err
 		}
 		mediaFile.TvshowPathId = tvshowPathDetail.FileId
@@ -574,7 +576,7 @@ func (t *tvShowScrapeImpl) MakeTvshowPath(mediaFile *models.ScrapeMediaFile, cat
 		var err error
 		newPathId, err = t.renameImpl.CheckAndMkDir(destFullPath, mediaFile.DestPath, mediaFile.DestPathId)
 		if err != nil {
-			helpers.AppLogger.Errorf("创建电视剧文件夹失败：%v", err)
+			helpers.AppLogger.Errorf("创建电视剧文件夹失败：错误类型=%T", err)
 			return err
 		}
 	}
@@ -712,7 +714,7 @@ func (t *tvShowScrapeImpl) RollbackTvShow(mediaFile *models.ScrapeMediaFile) err
 		// 删除这些文件
 		err := t.renameImpl.CheckAndDeleteFiles(mediaFile, files)
 		if err != nil {
-			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：%v", err)
+			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：错误类型=%T", err)
 			return err
 		}
 		helpers.AppLogger.Infof("删除已上传的元数据文件成功：%v", files)
@@ -735,7 +737,7 @@ func (t *tvShowScrapeImpl) RollbackTvShow(mediaFile *models.ScrapeMediaFile) err
 			var eerr error
 			existsPathId, eerr = t.renameImpl.ExistsAndRename(mediaFile.TvshowPathId, newBaseName)
 			if eerr != nil {
-				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：%v", mediaFile.TvshowPathId, eerr)
+				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：错误类型=%T", mediaFile.TvshowPathId, eerr)
 				return eerr
 			}
 		}
@@ -744,7 +746,7 @@ func (t *tvShowScrapeImpl) RollbackTvShow(mediaFile *models.ScrapeMediaFile) err
 				var err error
 				pathId, err = t.renameImpl.CheckAndMkDir(newPath, mediaFile.SourcePath, mediaFile.SourcePathId)
 				if err != nil {
-					helpers.AppLogger.Errorf("创建父文件夹 %s 失败：%v", newPath, err)
+					helpers.AppLogger.Errorf("创建父文件夹 %s 失败：错误类型=%T", newPath, err)
 					return err
 				}
 			} else {

@@ -367,6 +367,17 @@ func (task *DbUploadTask) revertRemoteCompletedFinalizing(err error) error {
 }
 
 func (task *DbUploadTask) Fail(err error) {
+	var secrets []string
+	if task.Account != nil {
+		secrets = []string{task.Account.Token, task.Account.RefreshToken, task.Account.Password}
+	}
+	logf := helpers.AppLogger.Errorf
+	result := "失败"
+	if errors.Is(err, context.Canceled) {
+		logf = helpers.AppLogger.Debugf
+		result = "已取消"
+	}
+	logf("[上传] 本次上传%s：task_id=%d，账号=%d，文件=%q，原因=%q，错误类型=%T", result, task.ID, task.AccountId, task.FileName, helpers.SafeLogError(err, secrets...), err)
 	// 标记为失败
 	task.Status = UploadStatusFailed
 	task.EndTime = time.Now().Unix()
@@ -462,7 +473,7 @@ func (task *DbUploadTask) UploadContext(ctx context.Context) {
 	task.uploadSettings = &settings
 	if task.Status == UploadStatusRemoteCompletedPendingFinalize {
 		if err := task.finalizeRemoteCompletedUploadWithClaim(ctx); err != nil {
-			helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d err=%v", task.ID, err)
+			helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d，原因=%q，错误类型=%T", task.ID, helpers.SafeLogError(err), err)
 		}
 		return
 	}
@@ -526,7 +537,7 @@ func (task *DbUploadTask) UploadContext(ctx context.Context) {
 		return
 	}
 	if err := task.finalizeRemoteCompletedUploadWithClaim(ctx); err != nil {
-		helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d err=%v", task.ID, err)
+		helpers.AppLogger.Warnf("[上传] 远端完成任务收尾失败：task_id=%d，原因=%q，错误类型=%T", task.ID, helpers.SafeLogError(err), err)
 	}
 }
 
@@ -686,7 +697,7 @@ func (task *DbUploadTask) Upload115File(ctx context.Context) bool {
 	}
 	result, err := currentUpload115Runner.Upload(ctx, task, client)
 	if err != nil {
-		task.Fail(fmt.Errorf("调用 115 上传 API 失败：%v", err))
+		task.Fail(fmt.Errorf("调用 115 上传 API 失败：%w", err))
 		return false
 	}
 	task.applyUpload115TaskResult(result)
@@ -720,7 +731,7 @@ func (task *DbUploadTask) UploadBaiduPanFile(ctx context.Context) bool {
 	// 调用上传方法
 	resp, err := client.Upload(ctx, task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
-		task.Fail(fmt.Errorf("百度网盘上传文件 %s 失败：%v", task.FileName, err))
+		task.Fail(fmt.Errorf("百度网盘上传文件 %s 失败：%w", task.FileName, err))
 		return false
 	}
 	if resp == nil {
@@ -783,14 +794,14 @@ func (task *DbUploadTask) UploadOpenListFile(ctx context.Context) bool {
 	}
 	_, err := client.UploadContext(ctx, task.LocalFullPath, task.RemoteFullPath)
 	if err != nil {
-		task.Fail(fmt.Errorf("OpenList 上传文件 %s 失败：%v", task.FileName, err))
+		task.Fail(fmt.Errorf("OpenList 上传文件 %s 失败：%w", task.FileName, err))
 		return false
 	}
 	if task.Source == UploadSourceStrm {
 		// 查询文件详情
 		detail, err := client.UploadFileDetailContext(ctx, task.RemoteFullPath)
 		if err != nil {
-			task.Fail(fmt.Errorf("OpenList 查询文件详情 %s 失败：%s", task.RemoteFullPath, err.Error()))
+			task.Fail(fmt.Errorf("OpenList 查询文件详情 %s 失败：%w", task.RemoteFullPath, err))
 			return false
 		}
 		sha1, md5 := openlist.KnownHashes(detail.HashInfoMap)

@@ -101,6 +101,12 @@ go test -p 1 ./internal/notification ./internal/notification/config ./internal/m
 
 公共用例核对真实 HTTP 与正文状态、合法空值、消息／警告、字段定位、部分执行数据、默认等级实例关联与已有等级过滤、AppLogger 未初始化时的标准日志、脱敏和编码失败回退。领域用例保护原事务、幂等、部分更新和提交后应用顺序；真实 Gin 路由核对 OPTIONS、认证、维护、404/405 及原生流／文件出口。广泛控制器类型或 app 组装变更再运行全后端 `go test -p 1 ./...`、`go vet -p 1 ./...` 和受影响包的 race，按 [后端命令](#后端命令) 控制资源占用。
 
+响应写出后的失败与 panic 必须仍有安全 `ERROR` 关联诊断，并保留原状态、正文和响应头；panic 说明、触发函数和当前请求调用栈可在日志定位，不进入公开响应，error 链保持。HEAD／原生流同样保持输出保护，重复成功写入不误报失败。OpenList 临时验证诊断覆盖创建、编辑、密码登录及请求内自动刷新，核对开始和结束 Token 均已脱敏、普通用户名保留，失败不写库、不覆盖共享客户端，原始原因和错误链不变。
+
+账号删除回归分别注入没有关联行和已返回关联行的查询错误，核对安全 `500`、账号及目录保留、原始错误链和有效预加载不被撤销；正常关联冲突和成功删除继续覆盖。通知规则保存核对不存在／已删除渠道拒绝写入、查询故障与缺失区分、显式 `false` 和提交后应用。提供隔离 `QMS_TEST_POSTGRES_DSN`，运行 `go test -p 1 -tags=integration ./internal/models -run '^TestNotification(Persistence|WriteDeleteSerialization)Postgres$'`，由 PostgreSQL 自身确认锁等待，覆盖规则保存及同时修改配置字段、渠道名称的编辑与删除的两种先后顺序，核对写入前先锁渠道及删除后拒绝写入；缺少 DSN 的跳过不算 PostgreSQL 验证。
+
+SDK、OSS 和后台结论的日志验证见 [SDK 日志与完整行验证](#sdk-日志与完整行验证)。默认 DEBUG 的业务材料、响应结构和普通文件签名地址应该可查；凭据保护不能演变为所有等级均禁止任意上游内容的断言。
+
 依赖 115 全局队列执行器的取链测试须在本用例初始化日志与数据库后显式 `Start`，通过 `t.Cleanup` 停止并等待 worker 退出，再释放夹具。`GetGlobalExecutor` 仅首次获取时自动启动；验证应包含队列统计测试清理后再执行取链的组合，不能只看独立运行结果。来源排序拒绝经真实 Gin 核对字段定位及零上游请求，保留真正的上游失败分类测试。
 
 重复任务分类运行 `go test -p 1 ./internal/controllers ./internal/synccron`，并对两包运行 race 和 vet：用真实队列验证等待／运行时的重复拒绝，普通／全量／手动同步及刮削扫描首次受理为 `202`、重复为 `409 / TASK_ALREADY_EXISTS`，原任务状态和数量保持；错误链包装后仍可分类，未知或队列满错误不得误报重复冲突。
@@ -110,6 +116,29 @@ go test -p 1 ./internal/notification ./internal/notification/config ./internal/m
 前端运行公共解析、认证与相应领域／组件用例，最终按 [前端命令](#前端命令) 完成全量测试和生产构建。保存用例使用专用服务端文案验证消息与顶层警告到达已有反馈，保存响应有业务数据时同时验证数据保留；缺省消息仍使用操作级回退。首次向导使用既有 app 路由与真实 HTML 脚本用例，验证独立 fetch 的成功／失败反馈、HTTP 与正文状态不一致的拒绝，以及非包络 JSON／非 JSON 错误页的安全回退。
 
 用同一候选构建的后端、主站静态资源和向导，在临时配置下启动一次，用浏览器核对代表性 JSON 调用的数据与反馈并记录结果。复用现有构建、启动和检查方式，不新增测试设施或扩大供应商／数据库矩阵；无法运行的条件如实记录。现有事务和 manager 可选择代表性 SQLite 验证；实际涉及事务实现、恢复或数据库并发时，再按对应规范补隔离 PostgreSQL，skip 不计通过。
+
+## SDK 日志与完整行验证
+
+从 `backend/` 运行公共日志及 SDK 回归：
+
+```bash
+go test -p 1 ./internal/helpers ./internal/logstream ./internal/httpapi ./internal/app ./internal/openlist ./internal/v115/openapi
+go vet -p 1 ./internal/helpers ./internal/logstream ./internal/httpapi ./internal/app ./internal/openlist ./internal/v115/openapi
+go test -p 1 ./internal/controllers -run '^(TestLogStreamEmits.*|TestLogSnapshotAndNativeRangeDownload|TestBuildSyncTaskSnapshotMessage.*|TestSyncTaskStreamFlushesFinalLogsBeforeComplete)$'
+```
+
+扩充现有长期用例保护六类行为，不按每条日志或所有大小、供应商、数据库组合建立矩阵：
+
+- 公共正文先脱敏再引用，保持中文、换行的单行表示、空值、业务字段及长响应尾部；实际凭据裸回显和 JSON 转义、`token`／`AccessKeySecrett` 被遮蔽，短口令不破坏普通数字或键名。反斜杠凭据不切开 JSON 转义，编码匹配不从业务字符串的反斜杠或 Unicode 转义中间开始，输出仍为合法 JSON 且非秘密部分的原表示保持。普通原因再次脱敏仍保留引用边界、调用栈和格式后缀，不放过后续凭据字段或以掩码开头的实际凭据。DEBUG 等级和 unsafe 分开验证，普通 INFO／ERROR 始终安全，原数据不变。
+- 本地 HTTP／transport 替身覆盖 SDK 成功、业务／HTTP／解析失败、适用请求体表示、实际新旧凭据、原错误链及重试／取消。未知业务码显示 `unknown`，实际零码仍为 `0`；恢复成功没有最终失败。默认 DEBUG 的业务响应及普通签名直链可查，播放／预加载排除保持。
+- 现有 HTTP panic 用例覆盖可读说明、触发帧和响应前后关联，保留原 error 链与已提交输出；不锁定 goroutine 编号、精确行号、绝对路径或 runtime 偏移。
+- OSS 回归核对已有 ETag／CRC64／callback 参数和完整返回结果、实际上传流与 checkpoint 不变，刷新前后 STS 在摘要和 DEBUG 中被保护。模型 callback 校验与任务结论保留具体安全原因、错误链及持久化状态，不强制禁止普通业务原文。
+- 历史双向分页、任务快照与实时补读覆盖跨 64 KiB／超过 1 MiB 的完整行头尾、中文、顺序和真实位置；半行补齐只投递一次，不因正常长度 resync，真实截断／轮转继续使用原回归。
+- 一个小轮转上限故障用例核对原写入错误、stderr 短告警和正文未落盘；不转储正文，不把告警出现当成已保存。
+
+任务结论实际涉及 `models`、`syncstrm`、`scrape`／`synccron` 时，加测对应包已有失败回归。请求局部日志凭据跨 goroutine、刷新数据流或 tailer 状态改变时，加测相应 `openlist`／`v115/openapi`／`logstream` 的 race；只改格式的调用方不新增压力测试。全局 logger、等级和环境开关测试保持串行隔离，队列退出后再恢复夹具。整合需要时仅最后运行一轮全后端普通回归和 vet。
+
+验证使用虚构凭据及本地替身，不代表真实供应商、PostgreSQL、图形浏览器或大文件压测通过；不因日志变更无条件扩展这些矩阵。格式与文档检查沿用已有入口，行为边界见 [日志配置](../operations/configuration.md#日志行为与脱敏) 和 [实时事件](../architecture/realtime-events.md#日志-tailer-与事件字段)。
 
 ## 网页设置应用验证
 

@@ -122,24 +122,72 @@ func TestMainRouterOptionsStopsBeforeAuthMaintenanceAndFramework(t *testing.T) {
 }
 
 func TestJSONPanicBeforeAndAfterResponse(t *testing.T) {
+	oldLogger, oldLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+	var logs bytes.Buffer
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	t.Cleanup(func() {
+		helpers.AppLogger = oldLogger
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
 	router := gin.New()
 	configureHTTPResponses(router)
-	router.GET("/api/panic", func(c *gin.Context) { panic(errors.New("password=private-panic-secret")) })
+	router.GET("/api/panic", func(c *gin.Context) {
+		triggerJSONTestPanic(errors.New("handler calculation failed: password=private-panic-secret"))
+	})
 	router.GET("/api/written", func(c *gin.Context) {
 		httpapi.Success(c, http.StatusOK, false, "")
-		panic("private-panic-secret")
+		triggerJSONTestPanic("post-response cleanup failed: password=private-panic-secret")
 	})
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/panic", nil))
-	body := readHTTPResponse[any](t, response)
-	if body.Status != http.StatusInternalServerError || body.ErrorCode != "INTERNAL_ERROR" || body.Instance == "" || strings.Contains(response.Body.String(), "private-panic-secret") {
-		t.Fatalf("unsafe panic response: %s", response.Body)
+	for _, tc := range []struct {
+		name, path, detail string
+		status             int
+	}{
+		{"error before response", "/api/panic", "handler calculation failed", http.StatusInternalServerError},
+		{"string after response", "/api/written", "post-response cleanup failed", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs.Reset()
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			body := readHTTPResponse[any](t, response)
+			if body.Status != tc.status {
+				t.Fatalf("panic changed response status: %s", response.Body)
+			}
+			if tc.status == http.StatusOK {
+				if body.Data != false || body.ErrorCode != "" || body.Instance != "" {
+					t.Fatalf("panic changed an already written response: %s", response.Body)
+				}
+			} else if body.ErrorCode != "INTERNAL_ERROR" || body.Instance == "" || !strings.Contains(logs.String(), body.Instance) {
+				t.Fatalf("panic response lost its correlated failure: %s logs=%s", response.Body, &logs)
+			}
+			for _, private := range []string{"private-panic-secret", tc.detail, "goroutine", "triggerJSONTestPanic"} {
+				if strings.Contains(response.Body.String(), private) {
+					t.Fatalf("panic details reached client: %s", response.Body)
+				}
+			}
+			if strings.Contains(logs.String(), "private-panic-secret") || strings.Count(logs.String(), "[ERROR]") != 1 || strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("panic diagnostics leaked credentials or duplicated output: %s", &logs)
+			}
+			for _, diagnostic := range []string{tc.detail, `\ngoroutine `, "triggerJSONTestPanic", "http_response_test.go:", "/request-errors/"} {
+				if !strings.Contains(logs.String(), diagnostic) {
+					t.Fatalf("panic diagnostics lost %q: %s", diagnostic, &logs)
+				}
+			}
+		})
 	}
-	response = httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/written", nil))
-	written := readHTTPResponse[bool](t, response)
-	if written.Status != http.StatusOK || written.Data || written.ErrorCode != "" {
-		t.Fatalf("panic changed an already written response: %s", response.Body)
+}
+
+func triggerJSONTestPanic(value any) { panic(value) }
+
+func TestHTTPPanicCausePreservesErrorChain(t *testing.T) {
+	original := &os.PathError{Op: "open", Path: "/media/movie.mkv", Err: os.ErrPermission}
+	cause := httpPanicCause(original, []byte("test stack"))
+	if !errors.Is(cause, os.ErrPermission) {
+		t.Fatalf("panic lost wrapped permission cause: %v", cause)
+	}
+	if got, ok := errors.AsType[*os.PathError](cause); !ok || got != original || !strings.Contains(cause.Error(), "test stack") {
+		t.Fatalf("panic lost original typed cause or stack: %v", cause)
 	}
 }
 

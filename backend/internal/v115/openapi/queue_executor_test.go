@@ -383,24 +383,39 @@ func TestQueueExecutorNonPlaybackReadFailurePreservesAuthorizationStatus(t *test
 	ensureOpenAPITestLoggers()
 	for _, status := range []int{401, 429} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			logs, global := captureOpenAPIRequestLogs(t)
+			const token = "partial-response-access-sentinel"
+			const partialBody = "provider-partial-result " + token
 			client := NewPlaybackClient(1, "app", "token", "refresh")
 			setPlaybackTestTransport(t, client, playbackTransportFunc(func(req *http.Request) (*http.Response, error) {
 				response := playbackTestResponse(req, status, "")
-				response.Body = io.NopCloser(iotest.ErrReader(io.ErrUnexpectedEOF))
+				response.Body = io.NopCloser(io.MultiReader(strings.NewReader(partialBody), iotest.ErrReader(io.ErrUnexpectedEOF)))
 				return response, nil
 			}))
 			executor := NewQueueExecutor(1, 1, 1)
-			_, _, _, err := executor.executeRequest(&QueuedRequest{
-				URL: OPEN_BASE_URL + "/open/ufile/copy",
+			_, _, raw, err := executor.executeRequest(&QueuedRequest{
+				URL:        OPEN_BASE_URL + "/open/ufile/copy",
+				Method:     http.MethodPost,
+				Ctx:        t.Context(),
+				logSecrets: []string{token},
 				Request: client.client.R().SetMethod(http.MethodPost).SetContext(t.Context()).
 					SetResponseDoNotParse(true),
 			})
+			global.Stop()
 			if status == http.StatusUnauthorized {
 				if apiErr, ok := errors.AsType[*OpenAPIError](err); !ok || apiErr.HTTPStatus != status {
 					t.Errorf("明确授权失败被读取错误掩盖：%v", err)
 				}
+				if strings.Contains(logs.String(), "provider-partial-result") || !strings.Contains(logs.String(), "未读取") {
+					t.Errorf("401 提前返回的未读取契约被改变: %s", logs.String())
+				}
 			} else if err != io.ErrUnexpectedEOF {
 				t.Errorf("普通请求的读取错误被改变：%v", err)
+			} else if !strings.Contains(logs.String(), "provider-partial-result") || !strings.Contains(logs.String(), "部分") {
+				t.Errorf("读取失败没有可用部分正文: %s", logs.String())
+			}
+			if raw != nil || strings.Contains(logs.String(), token) {
+				t.Errorf("部分正文日志改变了返回字节或泄露凭据: raw=%q logs=%s", raw, logs.String())
 			}
 		})
 	}

@@ -61,12 +61,19 @@ func (s *SyncStrm) recordScanFailure(remotePath string, err error) {
 		remotePath = s.SourcePath
 	}
 	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
 	if s.scanFailures == nil {
 		s.scanFailures = make(map[string]realtime.SyncScanFailure)
 	}
 	remotePath = normalizedScanPath(remotePath)
 	s.scanFailures["directory:"+remotePath] = realtime.SyncScanFailure{Kind: "directory", Path: remotePath, Reason: helpers.RedactSensitiveLog(err.Error())}
+	s.scanMu.Unlock()
+	if s.Sync != nil {
+		logf := s.Sync.Logger.Errorf
+		if errors.Is(err, context.Canceled) {
+			logf = s.Sync.Logger.Debugf
+		}
+		logf("STRM 同步目录未完成：sync_id=%d，目录=%q，原因=%q", s.Sync.ID, remotePath, helpers.SafeLogError(err))
+	}
 }
 
 // 百度路径会随移动改变；失败目录的 fs_id 仅用于关联同一账号和同步目录的旧保护范围。
@@ -114,7 +121,6 @@ func (s *SyncStrm) recordFileFailure(file *SyncFileCache, err error) {
 		return
 	}
 	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
 	if s.scanFiles == nil {
 		s.scanFiles = make(map[string]string)
 	}
@@ -145,6 +151,14 @@ func (s *SyncStrm) recordFileFailure(file *SyncFileCache, err error) {
 	copy := *file
 	if local := copy.GetLocalFilePath(s.TargetPath, s.SourcePath); local != "" {
 		s.protectedLocalPaths[normalizedScanPath(local)] = true
+	}
+	s.scanMu.Unlock()
+	if s.Sync != nil {
+		logf := s.Sync.Logger.Errorf
+		if errors.Is(err, context.Canceled) {
+			logf = s.Sync.Logger.Debugf
+		}
+		logf("STRM 同步文件未完成：sync_id=%d，file_id=%q，路径=%q，原因=%q", s.Sync.ID, file.GetFileId(), file.GetFullRemotePath(), helpers.SafeLogError(err))
 	}
 }
 

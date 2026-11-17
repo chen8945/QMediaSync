@@ -103,7 +103,7 @@ QMediaSync 是媒体同步和刮削系统，用于管理 115 网盘、百度网�
 - 本机敏感数据密钥由 `helpers.InitEncryptionKey()` 每实例生成并保存到 `config/encryption.key`，不使用 `ENCRYPTION_KEY` 环境变量或 ldflags。
 - OAuth 中转共享密钥为 `OAUTH_RELAY_ENCRYPTION_KEY`；环境变量或 `config/.env` 优先于 `main.OAuthRelayEncryptionKey` ldflags。
 - 使用 `helpers.GlobalConfig` 读取全局配置。涉及优先级、密钥或浏览器安全时，同时更新配置与认证会话契约。
-- 使用 `QLogger`：`AppLogger` 为主日志，115、OpenList、百度网盘和 TMDB 分别使用其子系统 logger。可用级别为 `Infof`、`Warnf`、`Errorf`、`Debugf`、`Fatalf`；日志不得泄露密钥、Token、Cookie 或完整敏感配置。
+- 使用 `QLogger`：`AppLogger` 为主日志，115、OpenList、百度网盘和 TMDB 分别使用其子系统 logger。可用级别为 `Infof`、`Warnf`、`Errorf`、`Debugf`、`Fatalf`，等级前缀由 logger 添加。普通 SDK 正文使用 `SensitiveDebugText` 先脱敏再引用；具体错误使用 `SafeLogError` 保留错误链中的实际凭据保护。账号／会话凭据、完整敏感配置的保护与普通 SDK DEBUG 文件签名直链例外统一见 [日志规则](../operations/configuration.md#日志行为与脱敏)。
 
 ## 前端约定
 

@@ -1,11 +1,14 @@
 package syncstrm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,6 +16,37 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/openlist"
 )
+
+func TestOpenListDriverFailureLogsDoNotExposeUpstreamCause(t *testing.T) {
+	const secret = "opaque-openlist-sync-cause"
+	oldLogger, oldLevel := helpers.OpenListLog, helpers.ConfiguredLogLevel()
+	t.Cleanup(func() {
+		helpers.OpenListLog = oldLogger
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	var output bytes.Buffer
+	logger := &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	helpers.OpenListLog = logger
+	helpers.SetGlobalLogLevel(helpers.LogLevelDebug)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 500, "message": secret})
+	}))
+	t.Cleanup(server.Close)
+	client := openlist.NewTemporaryClient(server.URL, "", "", secret)
+	t.Cleanup(func() { _ = client.Close() })
+	driver := NewOpenListDriver(client)
+	driver.SetSyncStrm(&SyncStrm{Sync: &models.Sync{Logger: logger}})
+	files, err := driver.GetNetFileFiles(t.Context(), "/media", "/media")
+	if files != nil || err == nil || err.Error() != secret || calls.Load() != 4 {
+		t.Fatalf("文件列表失败改变了返回或重试次数: files=%v err=%v calls=%d", files, err, calls.Load())
+	}
+	if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), "获取 OpenList 文件列表失败") || !strings.Contains(output.String(), "/media") {
+		t.Fatalf("同步日志泄露原始错误或缺少操作标识: %s", output.String())
+	}
+}
 
 func TestOpenListDriverDirectoryAuthenticationStopsLocalComparison(t *testing.T) {
 	for _, stage := range []string{"probe", "create"} {

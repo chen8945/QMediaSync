@@ -14,9 +14,9 @@ log:
   # 主程序日志，包含 Web、控制器、模型、Emby 302 等通用日志。
   # 115 新取链成功时记录一次原始和最终地址；缓存命中、HEAD 检查和 Emby 跳转使用简短日志。
   app: logs/app.log
-  # 115 开放平台相关请求和队列日志。
+  # 115 请求和队列日志；最终失败含脱敏原因，debug 可查看适用参数与已取得响应。
   v115: logs/115.log
-  # OpenList 相关日志。
+  # OpenList 接口、状态和重试日志；debug 可查看脱敏请求／响应与普通文件签名链接。
   openList: logs/openList.log
   # TMDB 刮削相关日志。
   tmdb: logs/tmdb.log

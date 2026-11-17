@@ -37,25 +37,37 @@ type UploadInitRequest struct {
 
 // UploadInitResult 是 /open/upload/init 或 /open/upload/resume 的调度结果。
 type UploadInitResult struct {
-	PickCode  string
-	Status    int
-	FileId    string
-	Target    string
-	Bucket    string
-	Object    string
-	SignKey   string
-	SignCheck string
-	Callback  UploadResultCallBack
+	PickCode   string
+	Status     int
+	FileId     string
+	Target     string
+	Bucket     string
+	Object     string
+	SignKey    string
+	SignCheck  string
+	Callback   UploadResultCallBack
+	logSecrets []string
 }
 
 // UploadResumeResult 是 /open/upload/resume 的调度结果。
 type UploadResumeResult struct {
-	PickCode string
-	Target   string
-	Version  string
-	Bucket   string
-	Object   string
-	Callback UploadResultCallBack
+	PickCode   string
+	Target     string
+	Version    string
+	Bucket     string
+	Object     string
+	Callback   UploadResultCallBack
+	logSecrets []string
+}
+
+// WithLogSecrets 为后续二次校验的失败保留本次初始化凭据。
+func (result UploadInitResult) WithLogSecrets(err error) error {
+	return helpers.WithLogSecrets(err, result.logSecrets...)
+}
+
+// WithLogSecrets 为后续续传校验的失败保留本次请求凭据。
+func (result UploadResumeResult) WithLogSecrets(err error) error {
+	return helpers.WithLogSecrets(err, result.logSecrets...)
 }
 
 type uploadScheduleAPIResult struct {
@@ -132,7 +144,12 @@ func (c *OpenClient) UploadInit(ctx context.Context, input UploadInitRequest) (*
 	if _, _, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(1, 1, 15), respData); err != nil {
 		return nil, err
 	}
-	return respData.toUploadInitResult()
+	result, err := respData.toUploadInitResult()
+	if err != nil {
+		return nil, helpers.WithLogSecrets(err, requestLogSecrets(req)...)
+	}
+	result.logSecrets = requestLogSecrets(req)
+	return result, nil
 }
 
 func buildUploadInitForm(input UploadInitRequest) map[string]string {

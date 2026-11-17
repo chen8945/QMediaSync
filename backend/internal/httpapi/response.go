@@ -87,6 +87,9 @@ func errorResponse(c *gin.Context, status int, failure Error) APIResponse[any] {
 
 func writeResponse(c *gin.Context, response APIResponse[any], cause error, secrets []string) {
 	if c.Writer.Written() {
+		if response.Instance != "" {
+			logFailure(c, response, cause, secrets, false)
+		}
 		return
 	}
 	encoded, err := json.Marshal(response)

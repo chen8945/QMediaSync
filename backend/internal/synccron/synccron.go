@@ -179,10 +179,10 @@ func RefreshOAuthAccessToken() {
 			if err != nil {
 				if !v115open.IsRefreshTokenDead(err) {
 					// 网络错误或可重试的业务失败保留凭据，等待下一轮定时刷新
-					helpers.AppLogger.Warnf("刷新 115 访问凭证失败，保留凭据等待下轮重试，账号 ID：%d：%s", account.ID, err.Error())
+					helpers.AppLogger.Warnf("刷新 115 访问凭证失败，保留凭据等待下轮重试，账号 ID：%d，原因=%q，错误类型=%T", account.ID, helpers.SafeLogError(err, expectedToken, expectedRefreshToken), err)
 					continue
 				}
-				helpers.AppLogger.Errorf("刷新 115 访问凭证失败：%s", err.Error())
+				helpers.AppLogger.Errorf("刷新 115 访问凭证失败：账号 ID=%d，原因=%q，错误类型=%T", account.ID, helpers.SafeLogError(err, expectedToken, expectedRefreshToken), err)
 				// 清空 Token
 				if !account.ClearTokenIfCurrent(err.Error()) {
 					continue
@@ -397,7 +397,7 @@ func StartScrapeRollbackCron() {
 				scrape := scrape.NewScrape(scrapePath)
 				err := scrape.Rollback(mediaFile)
 				if err != nil {
-					helpers.AppLogger.Errorf("回滚媒体文件 %s 失败：%v", mediaFile.Name, err)
+					helpers.AppLogger.Errorf("回滚媒体文件 %s 失败：原因=%q，错误类型=%T", mediaFile.Name, helpers.SafeLogError(err), err)
 				} else {
 					helpers.AppLogger.Infof("成功回滚媒体文件 %s", mediaFile.Name)
 				}

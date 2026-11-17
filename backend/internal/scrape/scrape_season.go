@@ -129,7 +129,7 @@ func (t *tvShowScrapeImpl) MakeSeasonPath(seasonMediaFile *models.ScrapeMediaFil
 	// 非仅刮削需要创建目标目录
 	newPathId, err := t.renameImpl.CheckAndMkDir(destFullPath, seasonMediaFile.DestPath, seasonMediaFile.DestPathId)
 	if err != nil {
-		helpers.AppLogger.Errorf("创建目录 %s 失败，失败原因：%v", destFullPath, err)
+		helpers.AppLogger.Errorf("创建目录 %s 失败，错误类型=%T", destFullPath, err)
 		return err
 	}
 	seasonMediaFile.NewSeasonPathId = newPathId
@@ -277,7 +277,7 @@ func (t *tvShowScrapeImpl) RollbackTvShowSeason(mediaFile *models.ScrapeMediaFil
 		// 删除这些文件
 		err := t.renameImpl.CheckAndDeleteFiles(mediaFile, files)
 		if err != nil {
-			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：%v", err)
+			helpers.AppLogger.Errorf("删除已上传的元数据文件失败：错误类型=%T", err)
 			return err
 		}
 		helpers.AppLogger.Infof("删除已上传的元数据文件成功：%v", files)
@@ -295,7 +295,7 @@ func (t *tvShowScrapeImpl) RollbackTvShowSeason(mediaFile *models.ScrapeMediaFil
 			var eerr error
 			existsPathId, eerr = t.renameImpl.ExistsAndRename(mediaFile.PathId, mediaFile.NewSeasonPathName)
 			if eerr != nil {
-				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：%v", mediaFile.Path, eerr)
+				helpers.AppLogger.Errorf("重命名旧文件夹 %s 失败：错误类型=%T", mediaFile.Path, eerr)
 				return eerr
 			}
 		}
@@ -303,7 +303,7 @@ func (t *tvShowScrapeImpl) RollbackTvShowSeason(mediaFile *models.ScrapeMediaFil
 			var err error
 			pathId, err = t.renameImpl.CheckAndMkDir(newPath, mediaFile.TvshowPath, mediaFile.TvshowPathId)
 			if err != nil {
-				helpers.AppLogger.Errorf("创建父文件夹 %s 失败：%v", newPath, err)
+				helpers.AppLogger.Errorf("创建父文件夹 %s 失败：错误类型=%T", newPath, err)
 				return err
 			}
 		} else {

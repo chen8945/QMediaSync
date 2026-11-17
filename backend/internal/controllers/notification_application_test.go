@@ -288,6 +288,16 @@ func TestNotificationWriteErrorsDistinguishInputMissingAndDatabase(t *testing.T)
 		},
 		{name: "missing channel", id: channel.ID + 1, status: http.StatusNotFound, code: "NOTIFICATION_CHANNEL_NOT_FOUND"},
 		{
+			name: "rule missing channel", method: http.MethodPut, handler: UpdateNotificationRule,
+			payload: map[string]any{"channel_id": channel.ID + 1, "event_type": "system_alert", "is_enabled": false},
+			status:  http.StatusNotFound, code: "NOTIFICATION_CHANNEL_NOT_FOUND",
+		},
+		{
+			name: "rule channel database failure", method: http.MethodPut, handler: UpdateNotificationRule,
+			payload:         map[string]any{"channel_id": channel.ID, "event_type": "system_alert", "is_enabled": false},
+			databaseFailure: true, status: http.StatusInternalServerError, code: "INTERNAL_ERROR",
+		},
+		{
 			name:            "database failure",
 			id:              channel.ID,
 			databaseFailure: true,

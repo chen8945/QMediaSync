@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"qmediasync/internal/db"
@@ -19,6 +20,7 @@ import (
 	"qmediasync/internal/validation"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func setupAccountControllerTest(t *testing.T) {
@@ -188,6 +190,7 @@ func TestDeleteAccount(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		hasSyncPath  bool
+		failLookup   bool
 		failDelete   bool
 		wantStatus   int
 		wantCode     string
@@ -195,6 +198,8 @@ func TestDeleteAccount(t *testing.T) {
 	}{
 		{name: "linked sync directory", hasSyncPath: true, wantStatus: http.StatusConflict, wantCode: "ACCOUNT_HAS_SYNC_PATHS", wantAccounts: 1},
 		{name: "no linked directory", wantStatus: http.StatusOK},
+		{name: "directory lookup failure", failLookup: true, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_ERROR", wantAccounts: 1},
+		{name: "directory lookup failure with rows", hasSyncPath: true, failLookup: true, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_ERROR", wantAccounts: 1},
 		{name: "database delete failure", failDelete: true, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_ERROR", wantAccounts: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -217,6 +222,15 @@ func TestDeleteAccount(t *testing.T) {
 				}
 			}
 			const databaseError = "account-delete-database-fault-sentinel"
+			if tc.failLookup {
+				if err := db.Db.Callback().Query().After("gorm:query").Register("test:account_delete_lookup_failure", func(tx *gorm.DB) {
+					if tx.Statement.Table == "sync_paths" {
+						tx.AddError(errors.New(databaseError))
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.failDelete {
 				if err := db.Db.Exec(`CREATE TRIGGER fail_account_delete BEFORE DELETE ON account
 					BEGIN SELECT RAISE(FAIL, '` + databaseError + `'); END`).Error; err != nil {
@@ -233,6 +247,11 @@ func TestDeleteAccount(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, request)
+			if tc.failLookup {
+				if err := db.Db.Callback().Query().Remove("test:account_delete_lookup_failure"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response := decodeAPIMessage(t, w.Body)
 			if w.Code != tc.wantStatus || response.Status != w.Code || response.ErrorCode != tc.wantCode {
 				t.Errorf("账号删除错误分类不正确: HTTP=%d response=%+v", w.Code, response)
@@ -240,7 +259,7 @@ func TestDeleteAccount(t *testing.T) {
 			if tc.wantCode != "" && (response.Message == "" || response.Instance == "") {
 				t.Errorf("删除失败缺少安全说明或诊断关联: %+v", response)
 			}
-			if tc.hasSyncPath {
+			if tc.hasSyncPath && !tc.failLookup {
 				if !strings.Contains(response.Message, "同步目录") || !strings.Contains(response.Message, "先删除") {
 					t.Errorf("关联目录拒绝缺少原因和处理提示: %q", response.Message)
 				}
@@ -800,33 +819,88 @@ func TestCreateTmpAccountNameConflictPreservesExistingAccount(t *testing.T) {
 }
 
 func TestOpenListVerificationFailureUsesSafeRequestDiagnostic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
-		name            string
-		updating, reuse bool
+		name                               string
+		updating, reuse, password, refresh bool
 	}{
 		{name: "create"},
 		{name: "update", updating: true},
 		{name: "reuse credential", updating: true, reuse: true},
+		{name: "create password", password: true},
+		{name: "update password", updating: true, password: true},
+		{name: "create password then refresh", password: true, refresh: true},
+		{name: "reuse old credential then refresh", updating: true, reuse: true, password: true, refresh: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			const loginToken = "login-token-sentinel"
+			const refreshedToken = "refreshed-token-sentinel"
+			username, password := "validation-user-sentinel", "validation-password-sentinel"
+			if test.reuse {
+				username, password = "saved-user-sentinel", "saved-password-sentinel"
+			}
 			token := "request-token-sentinel"
 			if test.reuse {
 				token = "fixture-token"
 			}
+			verifiedTokens := []string{token}
+			if test.password && !test.reuse {
+				verifiedTokens = []string{loginToken}
+			}
+			if test.refresh {
+				verifiedTokens = append(verifiedTokens, refreshedToken)
+			}
+			echoes := append([]string(nil), verifiedTokens...)
+			if test.password {
+				echoes = append(echoes, username, password)
+			}
+			const diagnostic = "fixture verification failed"
+			message := diagnostic + ": " + strings.Join(echoes, " ") + " https://diagnostic.example/private-strm/link?sign=private-signature"
+			var logins atomic.Int64
 			account := setupOpenListFileOperationTest(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"code": 500, "message": "fixture verification failed: " + token})
+				switch r.URL.Path {
+				case "/api/auth/login":
+					newToken := loginToken
+					if attempt := logins.Add(1); test.refresh && (test.reuse || attempt > 1) {
+						newToken = refreshedToken
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": newToken}})
+				case "/api/me":
+					if test.refresh && r.Header.Get("Authorization") != refreshedToken {
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": 401, "message": "expired"})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 500, "message": message})
+				default:
+					t.Errorf("意外请求：%s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
 			})
+			if test.password {
+				account.Username, account.Password = "saved-user-sentinel", "saved-password-sentinel"
+				if err := db.Db.Save(account).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			sharedClient := account.GetOpenListClient()
 			var logs bytes.Buffer
 			oldLogger := helpers.AppLogger
 			helpers.AppLogger = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
 			t.Cleanup(func() { helpers.AppLogger = oldLogger })
 			payload := map[string]any{"base_url": account.BaseUrl, "auth_type": "token", "token": token}
+			if test.password {
+				payload["auth_type"] = "password"
+				payload["username"], payload["password"] = username, password
+				delete(payload, "token")
+			}
 			if test.updating {
 				payload["id"] = account.ID
 			}
 			if test.reuse {
 				delete(payload, "token")
+				delete(payload, "username")
+				delete(payload, "password")
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
@@ -842,12 +916,44 @@ func TestOpenListVerificationFailureUsesSafeRequestDiagnostic(t *testing.T) {
 			if response.Code != http.StatusBadGateway || result.ErrorCode != "UPSTREAM_ERROR" || result.Instance == "" {
 				t.Fatalf("验证失败分类错误：%d %+v", response.Code, result)
 			}
-			if strings.Contains(logs.String(), token) || strings.Contains(response.Body.String(), token) {
-				t.Fatal("请求失败日志或响应泄露已知凭据")
+			secrets := append([]string{account.Token, account.Password}, verifiedTokens...)
+			if test.password {
+				secrets = append(secrets, password)
+				if !strings.Contains(logs.String(), username) || strings.Contains(response.Body.String(), username) {
+					t.Error("内部诊断应保留普通用户名，公开响应仍使用安全说明")
+				}
+			}
+			for _, secret := range secrets {
+				if secret != "" && (strings.Contains(logs.String(), secret) || strings.Contains(response.Body.String(), secret)) {
+					t.Errorf("请求失败日志或响应泄露凭据：%s", secret)
+				}
+			}
+			if strings.Contains(logs.String(), "/private-strm/") || !strings.Contains(logs.String(), diagnostic) {
+				t.Errorf("失败诊断未保留安全原因或泄露完整 URL：%s", logs.String())
 			}
 			if strings.Count(logs.String(), result.Instance) != 1 || strings.Count(logs.String(), "\n") != 1 {
 				t.Fatalf("失败应只由公共出口记录关联诊断：%s", logs.String())
 			}
+			accounts, err := models.ReadAccounts(request.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(accounts) != 1 || accounts[0].ID != account.ID || accounts[0].Token != account.Token || accounts[0].Password != account.Password || accounts[0].Username != account.Username {
+				t.Fatalf("失败验证改变了已保存账号：%+v", accounts)
+			}
+			if sharedClient.GetAuthToken() != account.Token || sharedClient.Username != account.Username || sharedClient.Password != account.Password {
+				t.Fatal("失败验证改变了共享客户端凭据")
+			}
 		})
+	}
+}
+
+func TestOpenListVerificationErrorPreservesCause(t *testing.T) {
+	cause := errors.New("raw verification cause: private-token")
+	verification := &models.OpenListVerificationError{Cause: cause}
+	wrapped := errors.Join(errors.New("outer verification context"), verification)
+	matched, ok := errors.AsType[*models.OpenListVerificationError](wrapped)
+	if !ok || matched != verification || !errors.Is(wrapped, cause) || !strings.Contains(wrapped.Error(), cause.Error()) {
+		t.Fatalf("验证错误未保留原始原因和错误链：%v", wrapped)
 	}
 }

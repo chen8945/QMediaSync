@@ -257,8 +257,8 @@ func CleanFileName(name string) string {
 	return cleaned
 }
 
-// ReadLines 从指定位置读取指定行数，支持向前或向后读取
-// direction："forward" 向前读取，"backward" 向后读取
+// ReadLines 从指定位置读取完整行，forward 向文件头取历史行，backward 向文件尾读取。
+// forward 返回最新行在前，backward 返回较早行在前。
 // 返回：读取到的行，新的读取位置，错误信息
 func ReadLines(filename string, startPos int64, maxLines int, direction string) ([]string, int64, error) {
 	if direction == "backward" {
@@ -267,7 +267,7 @@ func ReadLines(filename string, startPos int64, maxLines int, direction string) 
 	return readLinesForward(filename, startPos, maxLines)
 }
 
-// 向后读取（原始逻辑）
+// 向后读取
 func readLinesBackward(filename string, startPos int64, maxLines int) ([]string, int64, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -297,18 +297,22 @@ func readLinesBackward(filename string, startPos int64, maxLines int) ([]string,
 	}
 
 	lines := make([]string, 0, maxLines)
-	scanner := bufio.NewScanner(file)
+	reader := bufio.NewReader(file)
 	var bytesRead int64
 
-	for scanner.Scan() && len(lines) < maxLines {
-		line := scanner.Text()
-		lines = append(lines, line)
-		// 估算读取的字节数（包括换行符）
-		bytesRead += int64(len(line) + 1) // +1 for newline
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+	for len(lines) < maxLines {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, 0, err
+		}
+		if len(line) == 0 {
+			break
+		}
+		bytesRead += int64(len(line))
+		lines = append(lines, strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"))
+		if err == io.EOF {
+			break
+		}
 	}
 
 	newPosition := min(startPos+bytesRead, fileSize)
@@ -341,7 +345,8 @@ func readLinesForward(filename string, startPos int64, maxLines int) ([]string, 
 	buf := make([]byte, bufferSize)
 
 	currentPos := startPos
-	var totalBytesRead int64
+	lineEnd := startPos
+	newPosition := startPos
 
 	for currentPos > 0 && len(lines) < maxLines {
 		// 计算本次读取的大小
@@ -362,31 +367,31 @@ func readLinesForward(filename string, startPos int64, maxLines int) ([]string, 
 			// 查找上一个换行符
 			newlinePos := bytes.LastIndexByte(buf[:scanPos], '\n')
 
-			if newlinePos == -1 {
-				// 没有找到换行符，这是一个长行或者文件开头
-				if readPos == 0 {
-					// 文件开头，读取剩余内容作为一行
-					line := string(buf[:scanPos])
-					lines = append([]string{line}, lines...)
-					totalBytesRead += int64(scanPos)
-					currentPos = 0
-					break
+			if newlinePos == -1 && readPos > 0 {
+				// 保留 lineEnd，找到前一个块中的行首后再读取整行。
+				break
+			}
+
+			lineStart := readPos + int64(newlinePos+1)
+			if lineStart < lineEnd {
+				var line string
+				if lineEnd <= readPos+int64(n) {
+					line = string(buf[lineStart-readPos : lineEnd-readPos])
 				} else {
-					// 需要读取更多数据来处理这个长行
-					break
+					data := make([]byte, lineEnd-lineStart)
+					if _, err := file.ReadAt(data, lineStart); err != nil {
+						return nil, 0, err
+					}
+					line = string(data)
 				}
+				lines = append(lines, line)
+			}
+			newPosition = lineStart
+			if newlinePos == -1 {
+				break
 			}
 
-			if newlinePos < scanPos-1 {
-				// 找到完整的行（跳过空行）
-				line := string(buf[newlinePos+1 : scanPos])
-				lines = append([]string{line}, lines...)
-				totalBytesRead += int64(scanPos - newlinePos - 1)
-			} else {
-				// 空行，只计入换行符
-				totalBytesRead += 1
-			}
-
+			lineEnd = readPos + int64(newlinePos)
 			scanPos = newlinePos
 		}
 
@@ -397,17 +402,10 @@ func readLinesForward(filename string, startPos int64, maxLines int) ([]string, 
 			break
 		}
 	}
-	// 翻转 lines
-	newLines := make([]string, len(lines))
-	// 从后往前循环 lines
-	for i, line := range slices.Backward(lines) {
-		newLines[len(lines)-1-i] = line
+	if currentPos == 0 && len(lines) < maxLines {
+		newPosition = 0
 	}
-
-	// 计算新的读取位置
-	newPosition := max(startPos-totalBytesRead, 0)
-
-	return newLines, newPosition, nil
+	return lines, newPosition, nil
 }
 
 // CreateDirWithPerm 创建文件夹并设置权限

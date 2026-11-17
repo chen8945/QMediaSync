@@ -136,7 +136,8 @@ func writeCloudFileLookupError(c *gin.Context, err error) {
 }
 
 func writeAccountPersistenceError(c *gin.Context, err error, message string, secrets ...string) {
-	if _, ok := errors.AsType[*models.OpenListVerificationError](err); ok {
+	if verification, ok := errors.AsType[*models.OpenListVerificationError](err); ok {
+		secrets = append(secrets, verification.Secrets...)
 		writeCloudUpstreamError(c, err, "验证 OpenList 账号失败", secrets...)
 		return
 	}

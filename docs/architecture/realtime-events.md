@@ -64,7 +64,11 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 ## 日志 tailer 与事件字段
 
-通用日志与同步任务日志共享 `logstream.GlobalManager`，按绝对路径复用 tailer。tailer 发现文件缺失、截断、半行过长或订阅者缓冲满时会通知 `resync_required` 或结束慢订阅；不会阻塞同步、上传、下载或刮削业务。
+通用日志与同步任务日志共享 `logstream.GlobalManager`，按绝对路径复用 tailer。tailer 发现文件缺失、截断、轮转或订阅者缓冲满时会通知 `resync_required` 或结束慢订阅；不会阻塞同步、上传、下载或刮削业务。
+
+历史日志、任务快照和 cursor 补读按完整行读取，正常长行不受 64 KiB／1 MiB 的固定上限影响。历史 `direction=forward` 保持从指定位置向文件头取行、按新到旧返回，`backward` 保持向 EOF 读取；分页位置按真实字节落在完整行边界。静态历史与 `ReadTailEntries` 仍接受无换行的 EOF 尾行，快照 cursor 指向读取时的 EOF。
+
+实时 tailer 保留跨多次写入的未完成行，直到换行补齐后投递一次；cursor 补读同样只推进完整换行记录，未完成尾行不算落后或超限，不因长度触发重同步。翻页和补读保持原条数与顺序，不丢长行头尾。完整长行增加内存和传输量，磁盘保留与单次轮转写入边界见 [日志配置](../operations/configuration.md#日志行为与脱敏)。`GET /api/logs/download` 仅下发已保存文件，不能找回被 writer 拒绝的正文。
 
 同步任务结构化 payload 由 `backend/internal/realtime/sync_task_events.go` 定义。`sync_id` 是真实同步记录 ID；`sequence` 仍按任务递增，以兼容全局事件消费者。生成与后台均终结时会清理该任务的 sequence 状态，因此后续 `deleted=true` 事件可能从新的 sequence 重新开始；全局列表不得因旧 sequence 忽略删除事件，并在处理后清除该任务的本地去重记录。`sync_path_id`、`status`、`sub_status`、统计字段、阶段时间、`log_path`、`event_time`、路径和失败原因保持既有含义。
 
@@ -81,9 +85,11 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 - 同步任务 patch 仅在同一 `stream_epoch` 且缓存连续时回放；其他情况必须回退到完整 snapshot，日志不参与回放。
 - `complete` 不回放，终态客户端收到唯一完成事件后关闭 source；终态任务的新连接通过 snapshot 或 `deleted complete` 收敛。
 - SSE 不支持跨 origin Cookie 通道，也不得因为浏览器不支持 EventSource 而引入全局轮询。
+- 正常长行保持完整内容和真实行边界；实时半行补齐后只投递一次，真实轮转、截断与队列异常仍触发原重同步。
 
 ## 验证方式
 
 - 运行 `(cd backend && go test ./internal/controllers/ -run 'Test.*(Event|Stream|Log)')` 和 `(cd backend && go test ./internal/realtime/)`。
+- `helpers`／`logstream` 及现有日志、任务流回归覆盖长行头尾、中文、双向分页、cursor 补读和跨次半行；tailer 状态变化加测 `logstream` race，具体入口见 [验证说明](../engineering/verification.md#sdk-日志与完整行验证)。
 - 前端改动按 [验证说明](../engineering/verification.md) 选择相应验证。
 - 修改代理层时在测试环境订阅三个 SSE 路由，确认流式响应未被缓冲、断线恢复按 snapshot 收敛。

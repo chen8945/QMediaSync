@@ -1,15 +1,19 @@
 package helpers
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -36,12 +40,16 @@ const (
 )
 
 var (
-	sensitiveLogQuotedRegexp           = regexp.MustCompile(`(?i)(["']?(?:api_key|apikey|x-emby-token|authorization|x-emby-authorization|x-api-key|password|access_token|refresh_token|accesskeysecret|securitytoken|cookie|set-cookie)["']?\s*:\s*["'])([^"']*)(["'])`)
+	sensitiveLogQuotedRegexp           = regexp.MustCompile(`(?i)(["']?(?:api_key|apikey|x-emby-token|authorization|x-emby-authorization|x-api-key|password|token|access_token|refresh_token|accesskeysecret|accesskeysecrett|securitytoken|cookie|set-cookie)["']?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`)
 	sensitiveLogMediaBrowserAuthRegexp = regexp.MustCompile(`(?i)(\b(?:authorization|x-emby-authorization)\b\s*[:=]\s*MediaBrowser\s+Token=")([^"]*)(")`)
 	sensitiveLogAuthRegexp             = regexp.MustCompile(`(?i)(\b(?:authorization|x-emby-authorization)\b\s*[:=]\s*)((?:Bearer|Basic|Token)\s+)?(\[[^\]]*\]|"[^"]*"|'[^']*'|[^\s&,;\]\}]+)`)
 	sensitiveLogCookieRegexp           = regexp.MustCompile(`(?i)(\b(?:cookie|set-cookie)\b\s*[:=]\s*)(\[[^\]]*\]|"[^"]*"|'[^']*'|[^,;\]\}\n]+)`)
 	sensitiveLogSpaceKeyValueRegexp    = regexp.MustCompile(`(?i)(^|[\s,])(\b(?:password)\b\s*[:=]\s*)(\[[^\]]*\]|"[^"]*"|'[^']*'|[^\s,\]\}]+)`)
-	sensitiveLogKeyValueRegexp         = regexp.MustCompile(`(?i)(\b(?:api_key|apikey|x-emby-token|x-api-key|password|access_token|refresh_token|accesskeysecret|securitytoken)\b\s*[:=]\s*)(\[[^\]]*\]|"[^"]*"|'[^']*'|[^&\s,\]\}]+)`)
+	sensitiveLogKeyValueRegexp         = regexp.MustCompile(`(?i)(\b(?:api_key|apikey|x-emby-token|x-api-key|password|token|access_token|refresh_token|accesskeysecret|accesskeysecrett|securitytoken)\b\s*[:=]\s*)(\[[^\]]*\]|"[^"]*"|'[^']*'|[^&\s,\]\}]+)`)
+	logURLPattern                      = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
+	sensitiveLogURLUserinfoRegexp      = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/\s"'<>@]*@`)
+	logJSONKeyRegexp                   = regexp.MustCompile(`(?:^|[{,])\s*"(?:\\.|[^"\\])*"\s*:`)
+	logJSONStringRegexp                = regexp.MustCompile(`"(?:\\.|[^"\\])*"(?:\s*:)?`)
 )
 
 type QLogger struct {
@@ -65,11 +73,21 @@ func newRotationWriter(logger *lumberjack.Logger) *rotationWriter {
 
 func (w *rotationWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.logger == nil {
+		w.mu.Unlock()
 		return 0, os.ErrInvalid
 	}
-	return w.logger.Write(p)
+	n, err := w.logger.Write(p)
+	filename, maxSize := w.logger.Filename, w.logger.MaxSize
+	w.mu.Unlock()
+	if err != nil {
+		if maxSize == 0 {
+			maxSize = 100 // lumberjack 的未配置默认值，单位 MiB。
+		}
+		// 不能通过同一 logger 告警，否则写入失败会递归。
+		fmt.Fprintf(os.Stderr, "[ERROR] 日志写入失败 file=%q bytes=%d max_bytes=%d cause=%q\n", filename, len(p), int64(maxSize)*1024*1024, SafeLogText(err.Error()))
+	}
+	return n, err
 }
 
 func (w *rotationWriter) updateConfig(maxSize int, maxBackups int, maxAge int) {
@@ -144,18 +162,186 @@ func RedactSensitiveLog(input string, secrets ...string) string {
 	if input == "" {
 		return input
 	}
+	isJSON := json.Valid([]byte(input))
 	for _, secret := range secrets {
-		if secret != "" {
-			input = strings.ReplaceAll(input, secret, redactedLogValue)
+		// 短口令只按明确字段处理，避免替换普通数字或 data/token 等键名。
+		if utf8.RuneCountInString(secret) < 6 {
+			continue
+		}
+		if !isJSON {
+			input = replaceLogSecret(input, secret)
+		}
+		quoted, _ := json.Marshal(secret) // string 的 JSON 编码不会失败。
+		input = replaceLogSecret(input, string(quoted[1:len(quoted)-1]))
+		var unescaped bytes.Buffer
+		encoder := json.NewEncoder(&unescaped)
+		encoder.SetEscapeHTML(false)
+		_ = encoder.Encode(secret)
+		encoded := unescaped.Bytes()
+		input = replaceLogSecret(input, string(encoded[1:len(encoded)-2]))
+	}
+	output := redactLogValue(sensitiveLogQuotedRegexp, input, 2)
+	output = redactLogValue(sensitiveLogMediaBrowserAuthRegexp, output, 2)
+	output = redactLogValue(sensitiveLogAuthRegexp, output, 3)
+	output = redactLogValue(sensitiveLogCookieRegexp, output, 2)
+	output = redactLogValue(sensitiveLogSpaceKeyValueRegexp, output, 3)
+	output = redactLogValue(sensitiveLogKeyValueRegexp, output, 2)
+	return output
+}
+
+func replaceLogSecret(input, secret string) string {
+	if !strings.Contains(input, secret) {
+		return input
+	}
+	if json.Valid([]byte(input)) {
+		// 只替换字符串值，保留同值业务数字、空值、键名和原始 JSON 表示。
+		return logJSONStringRegexp.ReplaceAllStringFunc(input, func(value string) string {
+			if strings.HasSuffix(value, ":") || !strings.Contains(value, secret) {
+				return value
+			}
+			var output strings.Builder
+			output.WriteByte('"')
+			for i := 1; i < len(value)-1; {
+				if strings.HasPrefix(value[i:], secret) {
+					output.WriteString(redactedLogValue)
+					i += len(secret)
+					continue
+				}
+				size := 1
+				// 有效 JSON 的转义作为整体跳过，不能从反斜杠或 Unicode 转义中间匹配。
+				if value[i] == '\\' {
+					size = 2
+					if value[i+1] == 'u' {
+						size = 6
+					}
+				}
+				output.WriteString(value[i : i+size])
+				i += size
+			}
+			output.WriteByte('"')
+			return output.String()
+		})
+	}
+	// 保留 JSON 键的原文本，不解包正文或改写未知字段与数值。
+	var output strings.Builder
+	start := 0
+	for _, key := range logJSONKeyRegexp.FindAllStringIndex(input, -1) {
+		output.WriteString(strings.ReplaceAll(input[start:key[0]], secret, redactedLogValue))
+		output.WriteString(input[key[0]:key[1]])
+		start = key[1]
+	}
+	output.WriteString(strings.ReplaceAll(input[start:], secret, redactedLogValue))
+	return output.String()
+}
+
+func redactLogValue(pattern *regexp.Regexp, input string, valueGroup int) string {
+	var output strings.Builder
+	position := 0
+	for {
+		indices := pattern.FindStringSubmatchIndex(input[position:])
+		if indices == nil {
+			if position == 0 {
+				return input
+			}
+			output.WriteString(input[position:])
+			return output.String()
+		}
+		start, end := position+indices[valueGroup*2], position+indices[valueGroup*2+1]
+		value := input[start:end]
+		output.WriteString(input[position:start])
+		if value == "" || value == `""` || value == "''" || value == "null" {
+			output.WriteString(value)
+			position = end
+			continue
+		}
+		if prefix := quotedRedactedLogPrefix(input, start, value); prefix != 0 {
+			// 只消费已掩码前缀，后缀仍要检查，不能放过其中的其他凭据。
+			output.WriteString(value[:prefix])
+			position = start + prefix
+			continue
+		}
+		mask := redactedLogValue
+		if (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			mask = string(value[0]) + mask + string(value[0])
+		}
+		output.WriteString(mask)
+		position = end
+	}
+}
+
+func quotedRedactedLogPrefix(input string, start int, value string) int {
+	for _, mask := range []string{redactedLogValue, `\"` + redactedLogValue + `\"`} {
+		suffix, ok := strings.CutPrefix(value, mask)
+		if !ok {
+			continue
+		}
+		boundary := suffix == "" || suffix[0] == '"' || suffix[0] == '\'' ||
+			strings.HasPrefix(suffix, `\n`) || strings.HasPrefix(suffix, `\r`) ||
+			strings.HasPrefix(suffix, `\t`) || strings.HasPrefix(suffix, `\"`)
+		if boundary {
+			// 必须处于完整引用文本内部；原凭据中的字面量 \n 不是格式边界。
+			for _, quoted := range logJSONStringRegexp.FindAllStringIndex(input, -1) {
+				if quoted[0] < start && start < quoted[1]-1 {
+					return len(mask)
+				}
+			}
 		}
 	}
-	output := sensitiveLogQuotedRegexp.ReplaceAllString(input, "${1}"+redactedLogValue+"${3}")
-	output = sensitiveLogMediaBrowserAuthRegexp.ReplaceAllString(output, "${1}"+redactedLogValue+"${3}")
-	output = sensitiveLogAuthRegexp.ReplaceAllString(output, "${1}${2}"+redactedLogValue)
-	output = sensitiveLogCookieRegexp.ReplaceAllString(output, "${1}"+redactedLogValue)
-	output = sensitiveLogSpaceKeyValueRegexp.ReplaceAllString(output, "${1}${2}"+redactedLogValue)
-	output = sensitiveLogKeyValueRegexp.ReplaceAllString(output, "${1}"+redactedLogValue)
-	return output
+	return 0
+}
+
+// SafeLogText 返回安全的普通日志原因，保留 URL 来源并清理已知凭据。
+func SafeLogText(input string, secrets ...string) string {
+	detail := RedactSensitiveLog(input, secrets...)
+	return logURLPattern.ReplaceAllStringFunc(detail, func(raw string) string {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Host == "" {
+			return "<url>"
+		}
+		return parsed.Scheme + "://" + parsed.Host
+	})
+}
+
+type logSecretsError struct {
+	error
+	secrets []string
+}
+
+func (e *logSecretsError) Unwrap() error { return e.error }
+
+// WithLogSecrets 为原错误附上本次请求的日志凭据副本，保留文本和错误链。
+func WithLogSecrets(err error, secrets ...string) error {
+	if err == nil || len(secrets) == 0 {
+		return err
+	}
+	return &logSecretsError{error: err, secrets: append([]string(nil), secrets...)}
+}
+
+// SafeLogError 累计错误链中的请求凭据后生成安全原因，不受 unsafe 开关影响。
+func SafeLogError(err error, secrets ...string) string {
+	if err == nil {
+		return ""
+	}
+	known := append([]string(nil), secrets...)
+	var collect func(error)
+	collect = func(cause error) {
+		if cause == nil {
+			return
+		}
+		if wrapped, ok := cause.(*logSecretsError); ok {
+			known = append(known, wrapped.secrets...)
+		}
+		switch wrapped := cause.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				collect(child)
+			}
+		case interface{ Unwrap() error }:
+			collect(wrapped.Unwrap())
+		}
+	}
+	collect(err)
+	return SafeLogText(err.Error(), known...)
 }
 
 // UnsafeSensitiveLogEnabled 判断是否允许 unsafe 敏感调试日志输出完整值。
@@ -290,6 +476,20 @@ func (q *QLogger) SensitiveDebugf(format string, args ...any) {
 		message = RedactSensitiveLog(message)
 	}
 	q.Logger.Printf("[DEBUG] %s", message)
+}
+
+// SensitiveDebugText 对原始正文先脱敏再引用，保留单行、完整的 DEBUG 诊断。
+func (q *QLogger) SensitiveDebugText(label, rawText string, secrets ...string) {
+	if q == nil || q.Logger == nil || !q.shouldLog(LogLevelDebug) {
+		return
+	}
+	if !UnsafeSensitiveLogEnabled() {
+		label = RedactSensitiveLog(label, secrets...)
+		rawText = RedactSensitiveLog(rawText, secrets...)
+		label = sensitiveLogURLUserinfoRegexp.ReplaceAllString(label, "${1}"+redactedLogValue+"@")
+		rawText = sensitiveLogURLUserinfoRegexp.ReplaceAllString(rawText, "${1}"+redactedLogValue+"@")
+	}
+	q.Logger.Printf("[DEBUG] %s=%q", label, rawText)
 }
 
 func (q *QLogger) SensitiveDebug(format string) {

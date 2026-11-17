@@ -108,7 +108,7 @@ func (s *SyncStrm) process115FilePage(ctx context.Context, page, limit int) erro
 	var err error
 	files, err = s.SyncDriver.GetFilesByPathId(ctx, s.SourcePathId, offset, limit)
 	if err != nil {
-		s.Sync.Logger.Errorf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，%v", s.SourcePathId, offset, limit, err)
+		s.Sync.Logger.Errorf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，错误类型=%T", s.SourcePathId, offset, limit, err)
 		return err
 	}
 	s.sync115.pageMu.Lock()

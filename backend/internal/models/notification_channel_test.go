@@ -105,6 +105,24 @@ func testNotificationPersistence(t *testing.T, conn *gorm.DB) {
 	if err := conn.Callback().Update().Remove("test:fail_channel"); err != nil {
 		t.Fatal(err)
 	}
+	var rule NotificationRule
+	for _, missing := range []bool{false, true} {
+		if missing {
+			if err := conn.Delete(&rule).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := UpdateNotificationRule(t.Context(), NotificationRule{ChannelID: channel.ID, EventType: string(SystemAlert), IsEnabled: false}); err != nil {
+			t.Fatal(err)
+		}
+		rule = NotificationRule{}
+		if err := conn.Where("channel_id = ? AND event_type = ?", channel.ID, SystemAlert).First(&rule).Error; err != nil {
+			t.Fatal(err)
+		}
+		if rule.IsEnabled || rule.CreatedAt.IsZero() || rule.UpdatedAt.IsZero() {
+			t.Fatalf("规则未保留显式 false 或时间字段: %+v", rule)
+		}
+	}
 	if err := DeleteNotificationChannel(context.Background(), channel.ID); err != nil {
 		t.Fatal(err)
 	}

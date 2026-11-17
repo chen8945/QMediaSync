@@ -2,9 +2,11 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/notification"
@@ -80,7 +82,7 @@ func CreateNotificationChannel(ctx context.Context, channel *NotificationChannel
 func UpdateNotificationChannel(ctx context.Context, channel *NotificationChannel, config any, fields map[string]any, name, description string) error {
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current NotificationChannel
-		if err := tx.First(&current, channel.ID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, channel.ID).Error; err != nil {
 			return err
 		}
 		if current.ChannelType != channel.ChannelType {
@@ -116,11 +118,39 @@ func UpdateNotificationChannel(ctx context.Context, channel *NotificationChannel
 	})
 }
 
+// UpdateNotificationRule 核对并锁定渠道后保存规则，与渠道删除串行提交。
+func UpdateNotificationRule(ctx context.Context, input NotificationRule) error {
+	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var channel NotificationChannel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&channel, input.ChannelID).Error; err != nil {
+			return err
+		}
+		var rule NotificationRule
+		err := tx.Where("channel_id = ? AND event_type = ?", input.ChannelID, input.EventType).First(&rule).Error
+		if err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("load notification rule: %w", err)
+			}
+			// 显式列保存 false，避免结构体创建时被 default:true 替换。
+			now := tx.NowFunc()
+			if err := tx.Model(&NotificationRule{}).Create(map[string]any{
+				"channel_id": input.ChannelID, "event_type": input.EventType, "is_enabled": input.IsEnabled,
+				"created_at": now, "updated_at": now,
+			}).Error; err != nil {
+				return fmt.Errorf("create notification rule: %w", err)
+			}
+		} else if err := tx.Model(&rule).Update("is_enabled", input.IsEnabled).Error; err != nil {
+			return fmt.Errorf("update notification rule: %w", err)
+		}
+		return nil
+	})
+}
+
 // DeleteNotificationChannel 原子删除规则、类型配置和渠道。
 func DeleteNotificationChannel(ctx context.Context, id uint) error {
 	return db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var channel NotificationChannel
-		if err := tx.First(&channel, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&channel, id).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("channel_id = ?", id).Delete(&NotificationRule{}).Error; err != nil {

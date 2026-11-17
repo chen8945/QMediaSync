@@ -2,8 +2,76 @@ package helpers
 
 import (
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
+
+func TestReadLinesPreservesLongLinesAndPagePositions(t *testing.T) {
+	longLine := "头部" + strings.Repeat("中", 24000) + "尾部"
+	for _, tt := range []struct {
+		name    string
+		newline bool
+	}{
+		{name: "terminated", newline: true},
+		{name: "unterminated_eof"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "app.log")
+			content := "first\n\n" + longLine + "\nlast"
+			if tt.newline {
+				content += "\n"
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			lines, pos, err := ReadLines(path, -1, 2, "forward")
+			if err != nil || !slices.Equal(lines, []string{"last", longLine}) || pos != int64(len("first\n\n")) {
+				t.Fatalf("forward page: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+			lines, pos, err = ReadLines(path, pos, 2, "forward")
+			if err != nil || !slices.Equal(lines, []string{"first"}) || pos != 0 {
+				t.Fatalf("older page: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+
+			lines, pos, err = ReadLines(path, -1, 2, "backward")
+			if err != nil || !slices.Equal(lines, []string{"first", ""}) || pos != int64(len("first\n\n")) {
+				t.Fatalf("backward page: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+			lines, pos, err = ReadLines(path, pos, 2, "backward")
+			if err != nil || !slices.Equal(lines, []string{longLine, "last"}) || pos != int64(len(content)) {
+				t.Fatalf("newer page: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+			lines, pos, err = ReadLines(path, pos, 2, "backward")
+			if err != nil || len(lines) != 0 || pos != int64(len(content)) {
+				t.Fatalf("EOF page: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+		})
+	}
+}
+
+func TestReadLinesForwardStopsAtEmptyOrBlankFile(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content string
+	}{
+		{name: "empty"},
+		{name: "blank", content: "\n\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "app.log")
+			if err := os.WriteFile(path, []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			lines, pos, err := ReadLines(path, -1, 10, "forward")
+			if err != nil || len(lines) != 0 || pos != 0 {
+				t.Fatalf("empty page must stop: lines=%d pos=%d err=%v", len(lines), pos, err)
+			}
+		})
+	}
+}
 
 const (
 	testFilePath = "C:\\Users\\qicfa\\Videos\\NarakaBladepoint\\Record\\Naraka-record-20251228-18-13-54.mp4"

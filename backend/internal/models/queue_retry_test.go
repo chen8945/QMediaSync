@@ -1,14 +1,18 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/helpers"
 	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -401,6 +405,89 @@ func TestUploadMultipartRetriesInvalidOSSCheckpointWithNewMultipart(t *testing.T
 	}
 	if gotTask.ResumeState != UploadResumeStateSessionExpiredRestarted || gotTask.UploadedBytes != 1024 {
 		t.Fatalf("上传任务 = %+v，期望记录 session_expired_restarted 并同步新 multipart 进度", gotTask)
+	}
+}
+
+func TestUploadMultipartCallbackFailureKeepsErrorWithoutLoggingBody(t *testing.T) {
+	setupQueueStatusTestDB(t)
+
+	task := &DbUploadTask{
+		AccountId:     1,
+		Status:        UploadStatusUploading,
+		Source:        UploadSourceDirectoryMonitor,
+		SourceType:    SourceType115,
+		LocalFullPath: "/watch/movie.mkv",
+		FileName:      "movie.mkv",
+		FileSize:      1024,
+		RemotePathId:  "100",
+	}
+	if err := db.Db.Create(task).Error; err != nil {
+		t.Fatalf("创建上传任务失败: %v", err)
+	}
+	session := &UploadSession{
+		UploadTaskId: task.ID,
+		AccountId:    task.AccountId,
+		ParentFileId: task.RemotePathId,
+		Bucket:       "bucket-1",
+		Object:       "object-1",
+	}
+
+	const credential = "RAW_CALLBACK_ACCESS_7DcP2"
+	const bodyMarker = "private-callback-body-marker"
+	message := "upstream rejected access_token=" + credential
+	originalMultipart := upload115MultipartWithResult
+	originalLogger := helpers.V115Log
+	var logs bytes.Buffer
+	helpers.V115Log = &helpers.QLogger{Logger: log.New(&logs, "", 0)}
+	upload115MultipartWithResult = func(context.Context, *v115open.OpenClient, v115open.UploadMultipartInput) (v115open.OSSMultipartUploadResult, error) {
+		return v115open.OSSMultipartUploadResult{
+			CallbackResult: map[string]any{
+				"state":   false,
+				"message": message,
+				"data":    map[string]any{"payload": bodyMarker},
+			},
+			UploadId:      "upload-1",
+			PartSize:      256,
+			TotalParts:    4,
+			UploadedBytes: 1024,
+			UploadedParts: 4,
+		}, nil
+	}
+	t.Cleanup(func() {
+		upload115MultipartWithResult = originalMultipart
+		helpers.V115Log = originalLogger
+	})
+
+	result, err := open115UploadRunner{}.uploadMultipart(context.Background(), task, nil, session, upload115LocalFileInfo{FileSize: task.FileSize})
+	if err == nil || err.Error() != "115 callback 返回失败："+message {
+		t.Fatalf("callback 失败应保留原始业务错误，得到 %v", err)
+	}
+	if result != (upload115TaskResult{}) {
+		t.Fatalf("callback 失败不能返回上传成功结果：%+v", result)
+	}
+	persisted, readErr := GetUploadSessionByUploadTaskId(task.ID)
+	if readErr != nil {
+		t.Fatalf("读取上传会话失败: %v", readErr)
+	}
+	if persisted.Status != UploadSessionStatusFailed || persisted.CompleteCallbackState != "failed" ||
+		persisted.CompleteCallbackError != err.Error() || persisted.LastError != err.Error() {
+		t.Fatalf("callback 失败应持久化原始错误和失败状态，得到 %+v", persisted)
+	}
+	output := logs.String()
+	for _, unsafe := range []string{credential, bodyMarker, "callback_result="} {
+		if strings.Contains(output, unsafe) {
+			t.Fatalf("callback 失败日志泄露上游正文或凭据：%s", output)
+		}
+	}
+	for _, diagnostic := range []string{
+		"115 callback 业务校验失败",
+		"upstream rejected",
+		fmt.Sprintf("task_id=%d", task.ID),
+		"bucket=bucket-1", "object_id=object-1", "upload_id=upload-1",
+	} {
+		if !strings.Contains(output, diagnostic) {
+			t.Fatalf("callback 失败日志缺少诊断 %q：%s", diagnostic, output)
+		}
 	}
 }
 

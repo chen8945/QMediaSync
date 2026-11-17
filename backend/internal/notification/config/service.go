@@ -146,7 +146,7 @@ func Delete(ctx context.Context, id uint) (Result, error) {
 	return Result{}, nil
 }
 
-// UpdateRule 保留既有查询后创建或更新规则的顺序，再应用规则路由。
+// UpdateRule 通过模型事务保存现有渠道的规则，再应用规则路由。
 func UpdateRule(ctx context.Context, input notification.NotificationRule) (Result, error) {
 	if input.ChannelID == 0 {
 		return Result{}, validation.New("channel_id", "不能为空")
@@ -154,22 +154,10 @@ func UpdateRule(ctx context.Context, input notification.NotificationRule) (Resul
 	if input.EventType == "" {
 		return Result{}, validation.New("event_type", "不能为空")
 	}
-	conn := db.Db.WithContext(ctx)
-	var rule notification.NotificationRule
-	err := conn.Where("channel_id = ? AND event_type = ?", input.ChannelID, input.EventType).First(&rule).Error
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return Result{}, fmt.Errorf("load notification rule: %w", err)
+	if err := models.UpdateNotificationRule(ctx, input); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Result{}, fmt.Errorf("%w: %w", ErrChannelNotFound, err)
 		}
-		// 显式列保存 false，避免结构体创建时被 default:true 替换。
-		now := conn.NowFunc()
-		if err := conn.Model(&notification.NotificationRule{}).Create(map[string]any{
-			"channel_id": input.ChannelID, "event_type": input.EventType, "is_enabled": input.IsEnabled,
-			"created_at": now, "updated_at": now,
-		}).Error; err != nil {
-			return Result{}, fmt.Errorf("create notification rule: %w", err)
-		}
-	} else if err := conn.Model(&rule).Update("is_enabled", input.IsEnabled).Error; err != nil {
 		return Result{}, fmt.Errorf("update notification rule: %w", err)
 	}
 	result := Result{}

@@ -284,7 +284,9 @@ func TestSyncTaskStreamFlushesFinalLogsBeforeComplete(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(fullLogPath), 0o755); err != nil {
 		t.Fatalf("创建同步日志目录失败: %v", err)
 	}
-	if err := os.WriteFile(fullLogPath, []byte("2026/07/18 10:00:00.000000 [INFO] started\n"), 0o644); err != nil {
+	initialMessage := "started " + strings.Repeat("中", 360000) + " tail"
+	initialLine := "2026/07/18 10:00:00.000000 [INFO] " + initialMessage + "\n"
+	if err := os.WriteFile(fullLogPath, []byte(initialLine), 0o644); err != nil {
 		t.Fatalf("写入初始同步日志失败: %v", err)
 	}
 
@@ -302,7 +304,21 @@ func TestSyncTaskStreamFlushesFinalLogsBeforeComplete(t *testing.T) {
 	_ = readSSEFrame(t, reader)
 	snapshot := readSSEFrame(t, reader)
 	if !strings.Contains(snapshot, "event:snapshot") {
-		t.Fatalf("运行中任务应先返回 snapshot，frame = %q", snapshot)
+		t.Fatalf("运行中任务应先返回 snapshot，frame length = %d", len(snapshot))
+	}
+	var decoded struct {
+		Data syncTaskSnapshot `json:"data"`
+	}
+	for _, line := range strings.Split(snapshot, "\n") {
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
+			if err := json.Unmarshal([]byte(data), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if len(decoded.Data.Logs) != 1 || decoded.Data.Logs[0].Message != initialMessage || decoded.Data.LogCursor != int64(len(initialLine)) {
+		t.Fatalf("任务 snapshot 长日志或 cursor 缺失: logs=%d cursor=%d", len(decoded.Data.Logs), decoded.Data.LogCursor)
 	}
 
 	realtime.GlobalSyncTaskHub.PublishSyncTaskEvent(realtime.EventSyncTaskUpdated, realtime.SyncTaskEventPayload{

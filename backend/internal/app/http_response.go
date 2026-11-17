@@ -1,8 +1,10 @@
 package app
 
 import (
-	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
+	"runtime/debug"
 	"strings"
 
 	"qmediasync/internal/httpapi"
@@ -32,10 +34,7 @@ func configureHTTPResponses(r *gin.Engine) {
 					panic(recovered)
 				}
 				c.Abort()
-				cause, ok := recovered.(error)
-				if !ok {
-					cause = errors.New("HTTP handler panic")
-				}
+				cause := httpPanicCause(recovered, debug.Stack())
 				httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "请求处理失败", Cause: cause})
 			}
 		}()
@@ -56,4 +55,27 @@ func configureHTTPResponses(r *gin.Engine) {
 		c.Writer.Header().Del("Allow")
 		c.String(http.StatusNotFound, "404 page not found")
 	})
+}
+
+func httpPanicCause(recovered any, stack []byte) error {
+	if cause, ok := recovered.(error); ok {
+		return fmt.Errorf("HTTP handler panic (%T): %w\n%s", recovered, cause, stack)
+	}
+	var detail string
+	if value, ok := recovered.(fmt.Stringer); ok {
+		detail = fmt.Sprintf("%.2048s", value.String())
+	} else {
+		value := reflect.ValueOf(recovered)
+		switch value.Kind() {
+		case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+			reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.String:
+			detail = fmt.Sprint(recovered)
+		case reflect.Array, reflect.Map, reflect.Slice:
+			detail = fmt.Sprintf("len=%d", value.Len())
+		default:
+			detail = "complex value"
+		}
+	}
+	return fmt.Errorf("HTTP handler panic (%T): %s\n%s", recovered, detail, stack)
 }

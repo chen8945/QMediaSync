@@ -24,7 +24,8 @@ type DownloadUrlResp struct {
 	RespBaseBool[map[string]DownloadUrlData]
 }
 
-// DownloadUrlResult 包含下载地址及远端文件身份；URL 带签名，不得写入日志或持久化。
+// DownloadUrlResult 包含下载地址及远端文件身份；签名 URL 仅允许在普通 SDK DEBUG 诊断中记录，不持久化。
+// 播放和预加载继续遵循各自的地址输出规则。
 // 115 返回的签名直链还会在查询参数中携带服务端校验信息：
 //   - t：链接过期时间戳；
 //   - u: 115 账号 ID
@@ -157,14 +158,14 @@ func (c *OpenClient) GetDownloadUrl(ctx context.Context, pickCode string, userAg
 func (c *OpenClient) GetDownloadUrlResult(ctx context.Context, pickCode string, userAgent string, bypassRateLimit bool) *DownloadUrlResult {
 	result, err := c.GetDownloadURLWithError(ctx, pickCode, userAgent, bypassRateLimit)
 	if err != nil {
-		helpers.V115Log.Errorf("获取文件下载地址失败：%v", err)
+		helpers.V115Log.Errorf("获取文件下载地址失败：原因=%q，错误类型=%T", helpers.SafeLogError(err), err)
 		return nil
 	}
 	return result
 }
 
 // GetDownloadURLWithError 返回下载地址和可分类错误，供播放编排控制短重试。
-func (c *OpenClient) GetDownloadURLWithError(ctx context.Context, pickCode, userAgent string, bypassRateLimit bool) (*DownloadUrlResult, error) {
+func (c *OpenClient) GetDownloadURLWithError(ctx context.Context, pickCode, userAgent string, bypassRateLimit bool) (result *DownloadUrlResult, err error) {
 	if strings.TrimSpace(pickCode) == "" {
 		return nil, fmt.Errorf("115 文件提取码不能为空")
 	}
@@ -173,6 +174,9 @@ func (c *OpenClient) GetDownloadURLWithError(ctx context.Context, pickCode, user
 	}
 	url := fmt.Sprintf("%s/open/ufile/downurl", OPEN_BASE_URL)
 	req := c.client.R().SetFormData(params).SetMethod("POST").SetHeader("User-Agent", userAgent)
+	defer func() {
+		err = helpers.WithLogSecrets(err, requestLogSecrets(req)...)
+	}()
 	respData := DownloadUrlResp{}
 	config := MakeRequestConfig(0, 0, 0)
 	config.BypassRateLimit = bypassRateLimit
@@ -225,7 +229,7 @@ func (c *OpenClient) GetVideoPlayUrl(ctx context.Context, pickCode string, userA
 	respData := &VideoPlayUrlData{}
 	_, _, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), respData)
 	if err != nil {
-		helpers.V115Log.Errorf("获取视频播放地址失败：%v", err)
+		helpers.V115Log.Errorf("获取视频播放地址失败：错误类型=%T", err)
 		return nil
 	}
 	return respData
@@ -264,14 +268,14 @@ func (c *OpenClient) Upload(ctx context.Context, filePath string, parentFileId s
 	helpers.V115Log.Infof("准备上传文件：%s，大小：%d，SHA1：%s，前 128 KiB SHA1：%s，Parent ID：%s", fileName, fileSize, fileSha1, preSha1, parentFileId)
 	initResult, err := c.UploadInit(ctx, initRequest)
 	if err != nil {
-		helpers.V115Log.Errorf("上传初始化失败：%v", err)
+		helpers.V115Log.Errorf("上传初始化失败：错误类型=%T", err)
 		return "", err
 	}
 	status := initResult.Status
 	if status == 7 {
 		signVal, err := signValueForRange(filePath, initResult.SignCheck)
 		if err != nil {
-			return "", err
+			return "", initResult.WithLogSecrets(err)
 		}
 		initRequest.SignKey = initResult.SignKey
 		initRequest.SignVal = signVal
@@ -317,8 +321,7 @@ func (c *OpenClient) Upload(ctx context.Context, filePath string, parentFileId s
 			FilePath:    filePath,
 			FileSize:    fileSize,
 			refreshClient: func(ctx context.Context) (ossMultipartClient, error) {
-				refreshedToken := c.GetUploadToken(ctx)
-				return newOSSMultipartClientFromToken(refreshedToken)
+				return uploader.refreshClientFromToken(c.GetUploadToken(ctx))
 			},
 		})
 		if ossErr != nil {
@@ -326,7 +329,7 @@ func (c *OpenClient) Upload(ctx context.Context, filePath string, parentFileId s
 		}
 		completeResult, err := ParseCompleteCallbackResult(callbackResult)
 		if err != nil {
-			return "", err
+			return "", helpers.WithLogSecrets(err, uploader.secrets...)
 		}
 
 		return completeResult.FileId, nil
@@ -342,7 +345,7 @@ func (c *OpenClient) GetUploadToken(ctx context.Context) *UploadToken {
 	respData := &UploadToken{}
 	_, _, uErr := c.doAuthRequest(ctx, url, req, MakeRequestConfig(0, 0, 0), respData)
 	if uErr != nil {
-		helpers.V115Log.Errorf("获取上传凭证失败：%v", uErr)
+		helpers.V115Log.Errorf("获取上传凭证失败：错误类型=%T", uErr)
 		return nil
 	}
 	respData.normalize()
@@ -381,8 +384,7 @@ func (c *OpenClient) UploadMultipartWithResult(ctx context.Context, input Upload
 		PartSize:    input.PartSize,
 		OnProgress:  input.OnProgress,
 		refreshClient: func(ctx context.Context) (ossMultipartClient, error) {
-			refreshedToken := c.GetUploadToken(ctx)
-			return newOSSMultipartClientFromToken(refreshedToken)
+			return uploader.refreshClientFromToken(c.GetUploadToken(ctx))
 		},
 	})
 }
@@ -401,5 +403,9 @@ func (c *OpenClient) UploadResume(ctx context.Context, pickCode string, fileSize
 	if _, _, err := c.doAuthRequest(ctx, url, req, MakeRequestConfig(1, 1, 15), respData); err != nil {
 		return nil, err
 	}
-	return respData.toUploadResumeResult()
+	result, err := respData.toUploadResumeResult()
+	if result != nil {
+		result.logSecrets = requestLogSecrets(req)
+	}
+	return result, helpers.WithLogSecrets(err, requestLogSecrets(req)...)
 }

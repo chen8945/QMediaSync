@@ -106,11 +106,11 @@ func (s *SyncStrm) StartOther() {
 					return err
 				}
 				if retryCount >= s.threadSettings.OpenlistRetry {
-					s.Sync.Logger.Errorf("重试 %d 次后，获取目录 %s 下的文件列表失败：%v", s.threadSettings.OpenlistRetry, pathItem.Path, err)
+					s.Sync.Logger.Errorf("重试 %d 次后，获取目录 %s 下的文件列表失败：错误类型=%T", s.threadSettings.OpenlistRetry, pathItem.Path, err)
 					return s.recordOtherDirectoryFailure(ctx, pathItem, err)
 				} else {
 					retryCount++
-					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，等待 %d 秒后重试第 %d 次：%v", pathItem.Path, s.threadSettings.OpenlistRetryDelay, retryCount, err)
+					s.Sync.Logger.Warnf("获取目录 %s 下的文件列表失败，等待 %d 秒后重试第 %d 次：错误类型=%T", pathItem.Path, s.threadSettings.OpenlistRetryDelay, retryCount, err)
 					if err := waitForScanRetry(ctx, time.Duration(s.threadSettings.OpenlistRetryDelay)*time.Second); err != nil {
 						return err
 					}
@@ -220,7 +220,7 @@ func (s *SyncStrm) StartOther() {
 	})
 
 	if err := eg.Wait(); err != nil {
-		s.Sync.Logger.Errorf("路径处理失败：%v", err)
+		s.Sync.Logger.Errorf("路径处理失败：错误类型=%T", err)
 		s.PathErrChan <- err
 		return
 	}
@@ -236,7 +236,7 @@ func (s *SyncStrm) StartFile() error {
 	// 查询文件详情
 	file, err := s.SyncDriver.DetailByFileId(s.Context, s.SourcePathId)
 	if err != nil {
-		s.Sync.Logger.Errorf("获取文件 %s 详情失败：%v", s.SourcePath, err)
+		s.Sync.Logger.Errorf("获取文件 %s 详情失败：错误类型=%T", s.SourcePath, err)
 		return err
 	}
 	if s.scopeRelease != nil && !sameSourceDirectory(filepath.Dir(s.SourcePath), file.GetPath()) {

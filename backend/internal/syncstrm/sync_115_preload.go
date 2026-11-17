@@ -19,7 +19,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 	// 查询第一个文件的详情，拿到路径
 	firstFile, detailErr := s.SyncDriver.DetailByFileId(s.Context, firstFileId)
 	if detailErr != nil {
-		s.Sync.Logger.Errorf("查询第一个文件详情失败：file_id=%s，%v", firstFileId, detailErr)
+		s.Sync.Logger.Errorf("查询第一个文件详情失败：file_id=%s，错误类型=%T", firstFileId, detailErr)
 		return detailErr
 	}
 	if firstFile == nil {
@@ -103,7 +103,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 		pathItems, err := s.list115Directories(ctx, item.Path, item.PathId)
 		if err != nil {
 			reason := "查询路径下的子目录失败"
-			s.Sync.Logger.Warnf("%s：%v", reason, err)
+			s.Sync.Logger.Warnf("%s：目录=%s，错误类型=%T", reason, item.Path, err)
 			s.recordScanFailure(item.Path, err)
 			if isFatalSyncError(err) {
 				return err

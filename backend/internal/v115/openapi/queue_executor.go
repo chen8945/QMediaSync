@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -366,6 +368,7 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	// 调用方取消等待后，实际请求可能仍在执行；直到 HTTP 结束才恢复复用。
 	defer beginRequestDirectoryWrite(req.AccountID, req.URL, req.Request)()
 	req.Request.SetResponseForceContentType("application/json")
+	logQueuedRequestInput(req)
 
 	var response *resty.Response
 	var err error
@@ -381,6 +384,13 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	}
 
 	if err != nil {
+		if response != nil && queuedRequestDetailsEnabled(req) {
+			if response.IsRead {
+				logQueuedRequestText(req, "响应（已取得部分）", string(response.Bytes()))
+			} else {
+				logQueuedResponseUnread(req, response.StatusCode())
+			}
+		}
 		return response, nil, nil, err
 	}
 
@@ -394,10 +404,18 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 		return response, data, nil, playbackResponseError(response.StatusCode(), data)
 	}
 	if !req.Playback && response.StatusCode() == http.StatusUnauthorized {
+		logQueuedResponseUnread(req, response.StatusCode())
 		return response, nil, nil, &OpenAPIError{HTTPStatus: http.StatusUnauthorized, Message: "115 账号授权失败"}
 	}
 
 	resBytes, ioErr := io.ReadAll(response.Body)
+	if queuedRequestDetailsEnabled(req) {
+		if ioErr != nil {
+			logQueuedRequestText(req, "响应（部分，读取失败）", string(resBytes))
+		} else {
+			logQueuedRequestText(req, "响应", string(resBytes))
+		}
+	}
 	if ioErr != nil {
 		// 响应体损坏不能抹掉已收到的明确 HTTP 拒绝状态。
 		if status := response.StatusCode(); req.Playback && status >= http.StatusBadRequest &&
@@ -415,9 +433,6 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 		if err := json.Unmarshal(resBytes, respBase); err != nil {
 			if req.Playback && response.StatusCode() >= http.StatusBadRequest {
 				return response, nil, resBytes, playbackResponseError(response.StatusCode(), nil)
-			}
-			if !isPreloadOperation(req.Ctx) {
-				helpers.V115Log.Errorf("解析响应失败：%s", bodyErr.Error())
 			}
 			return response, resp, resBytes, bodyErr
 		}
@@ -448,8 +463,13 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 		NewOpenAPIResponseError(resp.Code, resp.Errno, resp.Message, resp.Error, "115 文件详情未成功"))) {
 		helpers.V115Log.Infof("115 删除核验：确认目标已不存在，账号=%d，file_id=%.128q", req.AccountID, req.Request.QueryParams.Get("file_id"))
 	} else {
-		helpers.V115Log.Infof("队列执行 %s %s\nstate=%v, code=%d, msg=%s, data=%s\n",
-			req.Request.Method, req.URL, resp.State, resp.Code, resp.Message, string(resp.Data))
+		fields := parseResponseLogFields(resBytes)
+		state := strings.TrimSpace(string(fields.State))
+		if state == "" || state == "null" {
+			state = "unknown"
+		}
+		helpers.V115Log.Infof("队列执行 %s %s，账号=%d，HTTP=%d，state=%s，code=%v，errno=%v",
+			req.Request.Method, requestLogEndpoint(req.URL), req.AccountID, response.StatusCode(), state, logResponseCode(fields.Code), logResponseCode(fields.Errno))
 	}
 
 	// 检查错误码
@@ -470,6 +490,68 @@ func (qe *QueueExecutor) executeRequest(req *QueuedRequest) (*resty.Response, *R
 	}
 
 	return response, resp, resBytes, nil
+}
+
+func logQueuedRequestInput(req *QueuedRequest) {
+	if !queuedRequestDetailsEnabled(req) {
+		return
+	}
+	query := req.Request.QueryParams.Encode()
+	if endpoint, err := url.Parse(req.URL); err == nil && endpoint.RawQuery != "" {
+		if query != "" {
+			query = endpoint.RawQuery + "&" + query
+		} else {
+			query = endpoint.RawQuery
+		}
+	}
+	if query != "" {
+		logQueuedRequestText(req, "查询参数", query)
+	}
+	if req.Request.Method == http.MethodGet && !req.Request.IsMethodGetAllowPayload {
+		return
+	}
+	if len(req.Request.FormData) != 0 {
+		logQueuedRequestText(req, "请求表单（编码）", req.Request.FormData.Encode())
+		return
+	}
+	var body string
+	switch value := req.Request.Body.(type) {
+	case nil:
+		return
+	case string:
+		body = value
+	case []byte:
+		body = string(value)
+	case io.Reader:
+		helpers.V115Log.Debugf("115 %s %s，账号=%d，请求体未读取（流）", req.Method, requestLogEndpoint(req.URL), req.AccountID)
+		return
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			helpers.V115Log.Debugf("115 %s %s，账号=%d，请求体 JSON 表示生成失败，原因=%q",
+				req.Method, requestLogEndpoint(req.URL), req.AccountID, helpers.SafeLogText(err.Error(), req.logSecrets...))
+			return
+		}
+		logQueuedRequestText(req, "请求体（JSON 表示）", string(data))
+		return
+	}
+	logQueuedRequestText(req, "请求体", body)
+}
+
+func queuedRequestDetailsEnabled(req *QueuedRequest) bool {
+	return !req.Playback && !req.DeletionDetail && !isPreloadOperation(req.Ctx) && helpers.ConfiguredLogLevel() == helpers.LogLevelDebug
+}
+
+func logQueuedRequestText(req *QueuedRequest, kind, text string) {
+	if queuedRequestDetailsEnabled(req) {
+		helpers.V115Log.SensitiveDebugText(fmt.Sprintf("115 %s %s，账号=%d，%s", req.Method, requestLogEndpoint(req.URL), req.AccountID, kind), text, req.logSecrets...)
+	}
+}
+
+func logQueuedResponseUnread(req *QueuedRequest, status int) {
+	if queuedRequestDetailsEnabled(req) {
+		helpers.V115Log.Debugf("115 %s %s，账号=%d，HTTP=%d，响应正文未读取", req.Method, requestLogEndpoint(req.URL), req.AccountID, status)
+	}
 }
 
 // replyRequestError 仅回复 HTTP 发出前的失败，播放编排可据此跳过远端结果核验。

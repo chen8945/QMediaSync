@@ -54,13 +54,13 @@ mainloop:
 			if err != nil {
 				if err.Error() == "访问频率过高" {
 					// 访问频率过高，暂停 30 秒后重试。
-					d.s.Sync.Logger.Warnf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，%v，暂停 30 秒后重试", parentPathId, offset, limit, err)
+					d.s.Sync.Logger.Warnf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，错误类型=%T，暂停 30 秒后重试", parentPathId, offset, limit, err)
 					if err := wait115RateLimitRetry(ctx); err != nil {
 						return nil, err
 					}
 					continue mainloop
 				}
-				d.s.Sync.Logger.Errorf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，%v", parentPathId, offset, limit, err)
+				d.s.Sync.Logger.Errorf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，错误类型=%T", parentPathId, offset, limit, err)
 				return nil, err
 			}
 			if resp == nil {
@@ -305,13 +305,13 @@ func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId st
 		if err != nil {
 			if err.Error() == "访问频率过高" {
 				// 访问频率过高，暂停 30 秒后重试。
-				d.s.Sync.Logger.Warnf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，%v，暂停 30 秒后重试", pathId, offset, limit, err)
+				d.s.Sync.Logger.Warnf("获取 115 网盘文件列表失败：目录 ID %s，offset=%d，limit=%d，错误类型=%T，暂停 30 秒后重试", pathId, offset, limit, err)
 				if err := wait115RateLimitRetry(ctx); err != nil {
 					return nil, err
 				}
 				continue
 			}
-			d.s.Sync.Logger.Errorf("获取 115 网盘目录失败：目录 ID %s，%v", pathId, err)
+			d.s.Sync.Logger.Errorf("获取 115 网盘目录失败：目录 ID %s，错误类型=%T", pathId, err)
 			return nil, err
 		}
 		if resp == nil {

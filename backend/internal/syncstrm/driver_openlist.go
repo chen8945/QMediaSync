@@ -44,7 +44,7 @@ mainloop:
 		default:
 			resp, err := d.client.FileList(ctx, parentPath, page, pageSize)
 			if err != nil {
-				d.s.Sync.Logger.Errorf("获取 OpenList 文件列表失败：%v", err)
+				d.s.Sync.Logger.Errorf("获取 OpenList 文件列表失败：目录=%s，page=%d，page_size=%d，错误类型=%T", parentPath, page, pageSize, err)
 				return nil, err
 			}
 			if resp.Total == 0 {
@@ -151,7 +151,10 @@ func (d *openListDriver) CreateDirRecursively(ctx context.Context, path string) 
 
 func (d *openListDriver) GetPathIdByPath(ctx context.Context, path string) (string, error) {
 	fsDetail, err := d.client.FileDetail(path)
-	if err != nil || (fsDetail != nil && fsDetail.Name == "") {
+	if err != nil {
+		return "", fmt.Errorf("路径 %s 不存在：%w", path, err)
+	}
+	if fsDetail != nil && fsDetail.Name == "" {
 		return "", fmt.Errorf("路径 %s 不存在：%v", path, err)
 	}
 	return path, nil
@@ -184,7 +187,10 @@ func (d *openListDriver) GetFilesByPathId(ctx context.Context, rootPathId string
 // 所有文件详情，含路径
 func (d *openListDriver) DetailByFileId(ctx context.Context, fileId string) (*SyncFileCache, error) {
 	fsDetail, err := d.client.FileDetail(fileId)
-	if err != nil || (fsDetail != nil && fsDetail.Name == "") {
+	if err != nil {
+		return nil, fmt.Errorf("文件 ID %s 不存在：%w", fileId, err)
+	}
+	if fsDetail != nil && fsDetail.Name == "" {
 		return nil, fmt.Errorf("文件 ID %s 不存在：%v", fileId, err)
 	}
 	parentId := filepath.ToSlash(filepath.Dir(fileId))

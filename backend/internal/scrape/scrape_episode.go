@@ -38,7 +38,8 @@ func (t *tvShowScrapeImpl) scrapeEpisode(taskIndex int, wg *sync.WaitGroup) {
 		helpers.AppLogger.Infof("集刮削整理任务队列 %d 开始处理电视剧 %s 季 %d 集 %d", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
 		err := t.Process(mediaFile)
 		if err != nil {
-			helpers.AppLogger.Errorf("集刮削整理任务队列 %d 刮削电视剧 %s 季 %d 集 %d 失败：%v", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, err)
+			helpers.AppLogger.Errorf("集刮削整理任务队列 %d 刮削电视剧 %s 季 %d 集 %d 失败：原因=%q，错误类型=%T", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber,
+				helpers.SafeLogError(err, t.settings.GetTmdbApiKey(), t.settings.GetTmdbAccessToken(), t.settings.GetFanartApiKey(), t.settings.GetAiApiKey()), err)
 		} else {
 			helpers.AppLogger.Infof("集刮削整理任务队列 %d 处理电视剧 %s 季 %d 集 %d 成功", taskIndex, mediaFile.Name, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
 		}
@@ -242,7 +243,7 @@ func (t *tvShowScrapeImpl) FinishEpisode(mediaFile *models.ScrapeMediaFile) {
 	}
 	err := t.renameImpl.RemoveMediaSourcePath(mediaFile, t.scrapePath)
 	if err != nil {
-		helpers.AppLogger.Errorf("删除来源路径 %s 失败：%v", mediaFile.TvshowPath, err)
+		helpers.AppLogger.Errorf("删除来源路径 %s 失败：错误类型=%T", mediaFile.TvshowPath, err)
 	}
 }
 

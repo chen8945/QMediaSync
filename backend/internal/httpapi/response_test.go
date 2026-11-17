@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -120,10 +121,18 @@ func TestHEADPreservesStatusAndDiagnosticsWithoutBody(t *testing.T) {
 				t.Fatalf("HEAD failure lost correlation: %s", logs.String())
 			}
 			before := logs.String()
+			headers := recorder.Header().Clone()
 			Success(c, http.StatusCreated, nil, "late feedback")
-			Failure(c, http.StatusInternalServerError, Error{Code: "INTERNAL_ERROR"})
-			if recorder.Code != status || recorder.Body.Len() != 0 || logs.String() != before {
+			if recorder.Code != status || recorder.Body.Len() != 0 || !reflect.DeepEqual(recorder.Header(), headers) || logs.String() != before {
 				t.Fatal("HEAD response was written twice")
+			}
+			logs.Reset()
+			Failure(c, http.StatusInternalServerError, Error{Code: "INTERNAL_ERROR"})
+			if recorder.Code != status || recorder.Body.Len() != 0 || !reflect.DeepEqual(recorder.Header(), headers) {
+				t.Fatal("late failure changed the HEAD response")
+			}
+			if !strings.Contains(logs.String(), "[ERROR]") || !strings.Contains(logs.String(), "method=HEAD") || !strings.Contains(logs.String(), "/request-errors/") {
+				t.Fatalf("late HEAD failure lost diagnostics: %s", logs.String())
 			}
 		})
 	}
@@ -185,10 +194,17 @@ func TestWrittenResponseIsNotReplaced(t *testing.T) {
 	c.Status(http.StatusOK)
 	_, _ = c.Writer.WriteString("event: complete\n\ndata: {}\n\n")
 	before := recorder.Body.String()
-	Failure(c, http.StatusInternalServerError, Error{Code: "INTERNAL_ERROR"})
-	Success(c, http.StatusOK, make(chan int), "")
-	if recorder.Body.String() != before || recorder.Header().Get("Content-Type") != "text/event-stream" || logs.Len() != 0 {
+	headers := recorder.Header().Clone()
+	Failure(c, http.StatusInternalServerError, Error{
+		Code: "INTERNAL_ERROR", Cause: errors.New("stream callback failed: private-late-secret"), Secrets: []string{"private-late-secret"},
+	})
+	loggedFailure := logs.String()
+	Success(c, http.StatusCreated, make(chan int), "")
+	if recorder.Code != http.StatusOK || recorder.Body.String() != before || !reflect.DeepEqual(recorder.Header(), headers) || logs.String() != loggedFailure {
 		t.Fatalf("started native response was replaced or reinterpreted: body=%q logs=%q", recorder.Body.String(), logs.String())
+	}
+	if !strings.Contains(loggedFailure, "[ERROR]") || !strings.Contains(loggedFailure, "/request-errors/") || !strings.Contains(loggedFailure, "stream callback failed") || strings.Contains(loggedFailure, "private-late-secret") {
+		t.Fatalf("late failure lost safe diagnostics: %s", loggedFailure)
 	}
 }
 
@@ -278,8 +294,14 @@ func TestKnownSecretsStayOutOfResponseAndDiagnostic(t *testing.T) {
 	cause := fmt.Errorf("operation failed: %w", original)
 	failure := Error{Code: "UPSTREAM_REJECTED", Message: "test safe message", Cause: cause, Secrets: []string{secret}}
 	recorder := httptest.NewRecorder()
-	Failure(testContext(recorder), http.StatusBadGateway, failure)
+	c := testContext(recorder)
+	Failure(c, http.StatusBadGateway, failure)
 	response := readResponse(t, recorder)
+	originalBody := recorder.Body.String()
+	Failure(c, http.StatusInternalServerError, failure)
+	if recorder.Code != http.StatusBadGateway || recorder.Body.String() != originalBody || strings.Count(logs.String(), response.Instance) != 2 {
+		t.Fatalf("late failure changed the response or its diagnostic instance: body=%s logs=%s", recorder.Body.String(), logs.String())
+	}
 	if strings.Contains(logs.String(), secret) || strings.Contains(recorder.Body.String(), secret) {
 		t.Fatalf("known unlabelled secret leaked: body=%s logs=%s", recorder.Body.String(), logs.String())
 	}

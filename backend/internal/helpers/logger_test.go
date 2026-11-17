@@ -2,15 +2,19 @@ package helpers
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func useTestLogLevel(t *testing.T, level LogLevel) {
@@ -84,6 +88,226 @@ func TestRedactSensitiveLog已知密钥回显(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveLogPreservesCredentialShapeAndBusinessKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		secret string
+		want   string
+	}{
+		{
+			name:  "empty and null credentials",
+			input: `{"token":"","access_token":null,"AccessKeySecret":"","SecurityToken":null} token=null password='' Authorization=""`,
+			want:  `{"token":"","access_token":null,"AccessKeySecret":"","SecurityToken":null} token=null password='' Authorization=""`,
+		},
+		{
+			name:   "short numeric password",
+			input:  `{"password":"7","user_id":7,"data":[7,17]}`,
+			secret: "7",
+			want:   `{"password":"******","user_id":7,"data":[7,17]}`,
+		},
+		{
+			name:   "numeric password matches business number",
+			input:  `{"password":"123456","user_id":123456,"data":[123456],"enabled":false}`,
+			secret: "123456",
+			want:   `{"password":"******","user_id":123456,"data":[123456],"enabled":false}`,
+		},
+		{
+			name:   "short password matches business key",
+			input:  `{"password":"data","data":null,"token":"present"}`,
+			secret: "data",
+			want:   `{"password":"******","data":null,"token":"******"}`,
+		},
+		{
+			name:   "long password matches JSON key",
+			input:  `{"password":"password","opaque_password_field":"echo password"}`,
+			secret: "password",
+			want:   `{"password":"******","opaque_password_field":"echo ******"}`,
+		},
+		{
+			name:   "quote inside short password",
+			input:  `{"password":"a'b","data":"中文"}`,
+			secret: "a'b",
+			want:   `{"password":"******","data":"中文"}`,
+		},
+		{
+			name:   "password ending in backslash",
+			input:  `{"password":"normalpass\\","data":null,"path":"a\\b","counter":9007199254740993}`,
+			secret: `normalpass\`,
+			want:   `{"password":"******","data":null,"path":"a\\b","counter":9007199254740993}`,
+		},
+		{
+			name:   "backslash password echoed in business text",
+			input:  `{"message":"upstream echo normalpass\\","data":null,"path":"a\\b"}`,
+			secret: `normalpass\`,
+			want:   `{"message":"upstream echo ******","data":null,"path":"a\\b"}`,
+		},
+		{
+			name:   "credential cannot start inside backslash escape",
+			input:  `{"message":"\\\normalpass","data":null}`,
+			secret: `\normalpass`,
+			want:   `{"message":"\\\normalpass","data":null}`,
+		},
+		{
+			name:   "credential cannot start inside unicode escape",
+			input:  `{"message":"\u003cpass","data":null}`,
+			secret: `u003cpass`,
+			want:   `{"message":"\u003cpass","data":null}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactSensitiveLog(tt.input, tt.secret); got != tt.want {
+				t.Fatalf("redaction changed field shape or retained credentials: got %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSensitiveDebugTextPreservesCompleteBusinessResponse(t *testing.T) {
+	t.Setenv(UnsafeSensitiveLogEnv, "")
+	useTestLogLevel(t, LogLevelDebug)
+	const accessSecret = "opaque-access-sentinel"
+	const refreshSecret = "opaque-refresh-sentinel"
+	const escapedSecret = "opaque\"refresh<sentinel>"
+	escapedJSON, err := json.Marshal(escapedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail := strings.Repeat("中文", 10000) + "响应尾部"
+	raw := fmt.Sprintf(`{"token":"login-sentinel","AccessKeySecrett":"sts-compat-sentinel","AccessKeySecret":"sts-secret-sentinel","SecurityToken":"sts-token-sentinel","password":"p","access_token":"","refresh_token":null,"user_id":7,"unknown_counter":9007199254740993,"message":"upstream echo %s %s","escaped_echo":%s,"non_html_echo":"upstream echo opaque\"refresh<sentinel>","raw_url":"https://user:pass@cdn.example.test/movie.mkv?t=1800000000&u=7&c=0&f=1&sign=file-signature","tail":%q}`, accessSecret, refreshSecret, escapedJSON, tail)
+	var buf bytes.Buffer
+	logger := &QLogger{Logger: log.New(&buf, "", 0)}
+	logger.SensitiveDebugText("OpenList 响应", raw, accessSecret, refreshSecret, escapedSecret)
+	got := buf.String()
+	if strings.Count(got, "\n") != 1 || strings.Count(got, "[DEBUG]") != 1 {
+		t.Fatal("response should be one complete DEBUG record")
+	}
+	quoted := strings.TrimSuffix(strings.TrimPrefix(got, "[DEBUG] OpenList 响应="), "\n")
+	text, err := strconv.Unquote(quoted)
+	if err != nil {
+		t.Fatalf("response was not safely quoted: %v", err)
+	}
+	if !json.Valid([]byte(text)) {
+		t.Fatal("redaction broke JSON response structure")
+	}
+	for _, secret := range []string{accessSecret, refreshSecret, escapedSecret, string(escapedJSON[1 : len(escapedJSON)-1]), `opaque\"refresh<sentinel>`, "login-sentinel", "sts-compat-sentinel", "sts-secret-sentinel", "sts-token-sentinel", "user:pass"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("credential %q remains in default DEBUG output", secret)
+		}
+	}
+	for _, want := range []string{`"password":"******"`, `"access_token":""`, `"refresh_token":null`, `"user_id":7`, `"unknown_counter":9007199254740993`, `"non_html_echo":"upstream echo ******"`, "upstream echo", "https://******@cdn.example.test/movie.mkv?t=1800000000&u=7&c=0&f=1&sign=file-signature", tail} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("business response lost %q", want)
+		}
+	}
+	buf.Reset()
+	logger.SensitiveDebugText("response", "中文\n第二行\"quoted\"")
+	if strings.Count(buf.String(), "\n") != 1 || !strings.Contains(buf.String(), `\n`) || !strings.Contains(buf.String(), `\"quoted\"`) {
+		t.Fatal("text response must retain quoted newline and quote characters on one log line")
+	}
+}
+
+func TestSensitiveDebugTextLevelAndUnsafeBoundary(t *testing.T) {
+	for _, unsafe := range []string{"", "1"} {
+		t.Run("unsafe="+unsafe, func(t *testing.T) {
+			t.Setenv(UnsafeSensitiveLogEnv, unsafe)
+			useTestLogLevel(t, LogLevelInfo)
+			var buf bytes.Buffer
+			logger := &QLogger{Logger: log.New(&buf, "", 0)}
+			logger.SensitiveDebugText("response", `{"token":"debug-secret","user_id":7}`)
+			if buf.Len() != 0 {
+				t.Fatal("INFO should not expand DEBUG response")
+			}
+			SetGlobalLogLevel(LogLevelDebug)
+			logger.SensitiveDebugText("response", `{"token":"debug-secret","user_id":7}`)
+			if strings.Contains(buf.String(), "debug-secret") != (unsafe == "1") {
+				t.Fatal("unsafe should control only sensitive DEBUG credential output")
+			}
+			buf.Reset()
+			logger.Infof("token=%s", "info-secret")
+			logger.Errorf("原因=%q", SafeLogText("upstream echo error-secret", "error-secret"))
+			if strings.Contains(buf.String(), "info-secret") || strings.Contains(buf.String(), "error-secret") {
+				t.Fatal("unsafe must not disable normal INFO/ERROR redaction")
+			}
+		})
+	}
+}
+
+func TestLogSecretsPreserveErrorChainAndAccumulateRequestCredentials(t *testing.T) {
+	const access = "request-access-sentinel"
+	const sts = "request-sts-sentinel"
+	const outer = "saved-token-sentinel"
+	cause := &os.PathError{Op: "read", Path: "callback.json", Err: errors.New("upstream echo " + access + " " + sts + " " + outer)}
+	secrets := []string{access}
+	wrapped := WithLogSecrets(cause, secrets...)
+	secrets[0] = "later-replaced-value"
+	wrapped = WithLogSecrets(fmt.Errorf("upload failed: %w", wrapped), sts)
+	if wrapped.Error() != "upload failed: "+cause.Error() || !errors.Is(wrapped, cause) {
+		t.Fatal("log metadata must preserve the original error text and chain")
+	}
+	if matched, ok := errors.AsType[*os.PathError](wrapped); !ok || matched != cause {
+		t.Fatal("log metadata must retain original typed error inspection")
+	}
+	joined := errors.Join(wrapped, WithLogSecrets(errors.New("second branch request-refresh-sentinel"), "request-refresh-sentinel"))
+	got := SafeLogError(joined, outer)
+	for _, secret := range []string{access, sts, outer, "request-refresh-sentinel"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("request credential %q remained in final error", secret)
+		}
+	}
+	if !strings.Contains(got, "upload failed") || !strings.Contains(got, "upstream echo") || !strings.Contains(got, "second branch") {
+		t.Fatal("final error must retain its useful causes")
+	}
+	if WithLogSecrets(nil, access) != nil || SafeLogError(nil, access) != "" {
+		t.Fatal("log metadata must preserve a nil error")
+	}
+}
+
+func TestRotationWriterReportsRejectedRecordWithoutDumpingBody(t *testing.T) {
+	useTestLogLevel(t, LogLevelInfo)
+	stderrFile, err := os.CreateTemp(t.TempDir(), "stderr-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = stderrFile
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		stderrFile.Close()
+	})
+	path := filepath.Join(t.TempDir(), "rotation.log")
+	writer := newRotationWriter(&lumberjack.Logger{Filename: path, MaxSize: 1})
+	t.Cleanup(func() { writer.close() })
+	const marker = "opaque-record-sentinel"
+	message := strings.Repeat("x", 1024*1024) + marker
+	n, writeErr := writer.Write([]byte(message))
+	if n != 0 || writeErr == nil {
+		t.Fatalf("rotation write must preserve original rejection: n=%d err=%v", n, writeErr)
+	}
+	logger := &QLogger{Logger: log.New(writer, "", 0)}
+	if err := logger.Logger.Output(2, message); err == nil {
+		t.Fatal("log.Output must retain the writer error")
+	}
+	logger.Infof("%s", message)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized body must not be reported as saved: %v", err)
+	}
+	stderr, err := os.ReadFile(stderrFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(stderr)
+	for _, want := range []string{path, "bytes=", "max_bytes=1048576", "cause="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("write-failure warning lacks %q", want)
+		}
+	}
+	if strings.Contains(got, marker) || strings.Contains(got, strings.Repeat("x", 100)) {
+		t.Fatal("write-failure warning must not dump the rejected record")
+	}
+}
+
 func TestQLogger默认脱敏日志(t *testing.T) {
 	useTestLogLevel(t, LogLevelInfo)
 
@@ -99,6 +323,40 @@ func TestQLogger默认脱敏日志(t *testing.T) {
 	if !strings.Contains(got, "******") {
 		t.Fatalf("普通日志应输出脱敏占位符: %s", got)
 	}
+	for _, raw := range []string{
+		"password=credential-sentinel\ngoroutine 7 [running]:\nhandler frame",
+		"password=\"credential-sentinel\"\ngoroutine 7 [running]:\nhandler frame",
+		"token=credential-sentinel\nnext diagnostic line",
+		"password=credential-sentinel",
+	} {
+		buf.Reset()
+		cause := errors.New(raw)
+		safe := SafeLogError(cause)
+		logger.Errorf("cause=%q，错误类型=%T，次数=%d", safe, cause, 7)
+		want := fmt.Sprintf("[ERROR] cause=%q，错误类型=%T，次数=%d\n", safe, cause, 7)
+		if got := buf.String(); got != want || strings.Contains(got, "credential-sentinel") {
+			t.Fatalf("quoted safe cause lost content or format suffix: got %q, want %q", got, want)
+		}
+	}
+	buf.Reset()
+	logger.Infof("token=%s", "******opaque-token")
+	if strings.Contains(buf.String(), "opaque-token") {
+		t.Fatal("a six-star credential prefix must not bypass normal redaction")
+	}
+	t.Run("safe quoted cause does not hide following credential", func(t *testing.T) {
+		buf.Reset()
+		logger.Errorf("cause=%q，token=%s", SafeLogText("password=real-secret"), "other-secret")
+		if strings.Contains(buf.String(), "real-secret") || strings.Contains(buf.String(), "other-secret") {
+			t.Fatalf("a quoted masked value must not bypass later credentials: %q", buf.String())
+		}
+	})
+	t.Run("literal escape in raw credential is not a quote boundary", func(t *testing.T) {
+		buf.Reset()
+		logger.Infof("token=%s", `******\nopaque-token`)
+		if strings.Contains(buf.String(), "opaque-token") {
+			t.Fatalf("an unquoted six-star credential must still be redacted: %q", buf.String())
+		}
+	})
 }
 
 func TestRedactSensitiveLogPostgresPasswordWithAmpersand(t *testing.T) {

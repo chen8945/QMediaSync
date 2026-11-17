@@ -61,10 +61,11 @@ func TestLogStreamEmitsAppendedLogEntry(t *testing.T) {
 		t.Fatalf("首帧应为 connected 注释，frame = %q", connected)
 	}
 
+	message := "appended " + strings.Repeat("中", 360000) + " tail"
 	if file, err := os.OpenFile(fullLogPath, os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
 		t.Fatalf("打开测试日志失败: %v", err)
 	} else {
-		if _, err := file.WriteString("2026/07/18 10:00:01.000000 [INFO] appended\n"); err != nil {
+		if _, err := file.WriteString("2026/07/18 10:00:01.000000 [INFO] " + message + "\n"); err != nil {
 			_ = file.Close()
 			t.Fatalf("追加测试日志失败: %v", err)
 		}
@@ -74,8 +75,20 @@ func TestLogStreamEmitsAppendedLogEntry(t *testing.T) {
 	}
 
 	frame := readSSEFrame(t, reader)
-	if !strings.Contains(frame, "event:log_append") || !strings.Contains(frame, `"message":"appended"`) {
-		t.Fatalf("未收到追加日志 SSE 事件，frame = %q", frame)
+	if !strings.Contains(frame, "event:log_append") {
+		t.Fatalf("未收到追加日志 SSE 事件，frame length = %d", len(frame))
+	}
+	var entry logstream.Entry
+	for _, line := range strings.Split(frame, "\n") {
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
+			if err := json.Unmarshal([]byte(data), &entry); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if entry.Message != message {
+		t.Fatalf("追加日志被截断: message length = %d，期望 %d", len(entry.Message), len(message))
 	}
 }
 
@@ -167,25 +180,28 @@ func TestLogSnapshotAndNativeRangeDownload(t *testing.T) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := "2026/11/15 10:00:00.000000 [INFO] visible-entry\n"
+	message := "visible-entry " + strings.Repeat("中", 360000) + " tail"
+	content := "2026/11/15 10:00:00.000000 [INFO] " + message + "\n"
 	if err := os.WriteFile(filepath.Join(logDir, "app.log"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	router := gin.New()
 	router.GET("/logs/old", GetOldLogs)
 	router.GET("/logs/download", DownloadLogFile)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logs/old?path=app.log&direction=backward&limit=10", nil))
-	var snapshot httpapi.APIResponse[OldLogsResponse]
-	if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if w.Code != http.StatusOK || len(snapshot.Data.Entries) != 1 || !strings.Contains(snapshot.Data.Entries[0].Message, "visible-entry") {
-		t.Fatalf("log snapshot: HTTP=%d body=%s", w.Code, w.Body.String())
+	for _, direction := range []string{"forward", "backward"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logs/old?path=app.log&pos=-1&direction="+direction+"&limit=10", nil))
+		var snapshot httpapi.APIResponse[OldLogsResponse]
+		if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || len(snapshot.Data.Entries) != 1 || snapshot.Data.Entries[0].Message != message {
+			t.Fatalf("log snapshot %s: HTTP=%d entries=%d", direction, w.Code, len(snapshot.Data.Entries))
+		}
 	}
 	rangeRequest := httptest.NewRequest(http.MethodGet, "/logs/download?path=app.log", nil)
 	rangeRequest.Header.Set("Range", "bytes=0-9")
-	w = httptest.NewRecorder()
+	w := httptest.NewRecorder()
 	router.ServeHTTP(w, rangeRequest)
 	if w.Code != http.StatusPartialContent || w.Body.String() != content[:10] || w.Header().Get("Content-Range") == "" || w.Header().Get("Content-Type") != "application/octet-stream" {
 		t.Fatalf("native range download: HTTP=%d headers=%v body=%q", w.Code, w.Header(), w.Body.String())

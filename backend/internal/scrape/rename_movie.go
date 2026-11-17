@@ -63,7 +63,7 @@ func (r *renameMovieImpl) RenameAndMove(mediaFile *models.ScrapeMediaFile, destP
 func (r *renameMovieImpl) CheckAndMkDir(destFullPath, rootPath, rootPathId string) (string, error) {
 	newPathId, err := r.renameImpl.CheckAndMkDir(destFullPath, rootPath, rootPathId)
 	if err != nil {
-		helpers.AppLogger.Errorf("创建父文件夹失败：%v", err)
+		helpers.AppLogger.Errorf("创建父文件夹失败：错误类型=%T", err)
 		return "", err
 	}
 	return newPathId, nil

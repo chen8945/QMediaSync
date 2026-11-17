@@ -134,7 +134,7 @@ func (t *Tailer) sendCatchUp(sub *subscriber, startCursor int64) {
 		}
 	}
 	t.mu.Lock()
-	currentCursor := t.cursor
+	currentCursor := t.cursor - int64(len(t.leftover))
 	t.mu.Unlock()
 	if nextCursor < currentCursor {
 		sub.send(Message{Type: "resync_required", Reason: "catch_up_limit_reached"})
@@ -222,24 +222,12 @@ func (t *Tailer) readAvailable() {
 				content := append(t.leftover, line[:len(line)-1]...)
 				t.leftover = nil
 				t.mu.Unlock()
-				if len(content) > maxScannerBytes {
-					t.broadcast(Message{Type: "resync_required", Reason: "partial_line_too_long", Cursor: cursor})
-					continue
-				}
 				entry := ParseLine(string(content))
 				entry.Cursor = cursor
 				t.broadcast(Message{Type: "log_append", Entry: entry, Cursor: cursor})
 			} else {
 				t.leftover = append(t.leftover, line...)
-				partialLineTooLong := len(t.leftover) > maxScannerBytes
-				if partialLineTooLong {
-					t.leftover = nil
-				}
 				t.mu.Unlock()
-				if partialLineTooLong {
-					t.broadcast(Message{Type: "resync_required", Reason: "partial_line_too_long", Cursor: cursor})
-					return
-				}
 			}
 		}
 		if err == io.EOF {

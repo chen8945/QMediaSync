@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"strings"
 )
 
-const (
-	defaultTailLimit = 1000
-	maxScannerBytes  = 1024 * 1024
-)
+const defaultTailLimit = 1000
 
 // ReadTailEntries 读取文件末尾最近 limit 行，并返回文件末尾 cursor。
 func ReadTailEntries(path string, limit int) ([]Entry, int64, error) {
@@ -31,16 +29,21 @@ func ReadTailEntries(path string, limit int) ([]Entry, int64, error) {
 	}
 	cursor := stat.Size()
 	lines := make([]string, 0, limit)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxScannerBytes)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > limit {
-			lines = lines[1:]
+	reader := bufio.NewReader(io.LimitReader(file, cursor))
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			lines = append(lines, strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"))
+			if len(lines) > limit {
+				lines = lines[1:]
+			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 
 	entries := make([]Entry, 0, len(lines))
@@ -79,19 +82,22 @@ func ReadEntriesFromCursor(path string, cursor int64, limit int) ([]Entry, int64
 	if _, err := file.Seek(cursor, io.SeekStart); err != nil {
 		return nil, cursor, err
 	}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxScannerBytes)
+	reader := bufio.NewReader(file)
 	entries := make([]Entry, 0, limit)
 	nextCursor := cursor
-	for scanner.Scan() && len(entries) < limit {
-		line := scanner.Text()
-		nextCursor += int64(len(line) + 1)
-		entry := ParseLine(line)
+	for len(entries) < limit {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, cursor, err
+		}
+		// 补读与实时投递一致，未完成尾行留待后续换行补齐。
+		if !strings.HasSuffix(line, "\n") {
+			break
+		}
+		nextCursor += int64(len(line))
+		entry := ParseLine(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"))
 		entry.Cursor = nextCursor
 		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, cursor, err
 	}
 	return entries, nextCursor, nil
 }

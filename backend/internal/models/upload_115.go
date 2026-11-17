@@ -2,7 +2,6 @@ package models
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -142,7 +141,7 @@ func (runner open115UploadRunner) Upload(ctx context.Context, task *DbUploadTask
 			}
 			return runner.uploadMultipart(ctx, task, client, session, info)
 		}
-		helpers.V115Log.Warnf("115 续传调度失败，将重新初始化上传任务 %d：%v", task.ID, resumeErr)
+		helpers.V115Log.Warnf("115 续传调度失败，将重新初始化上传任务 %d：错误类型=%T", task.ID, resumeErr)
 		task.mark115SessionRestarted(session, resumeErr)
 	}
 
@@ -205,7 +204,7 @@ func (runner open115UploadRunner) uploadByInit(
 	if initResult.Status == v115open.UploadInitStatusNeedSign {
 		signVal, err := v115open.SignValueForRange(task.LocalFullPath, initResult.SignCheck)
 		if err != nil {
-			return upload115TaskResult{}, err
+			return upload115TaskResult{}, initResult.WithLogSecrets(err)
 		}
 		request.SignKey = initResult.SignKey
 		request.SignVal = signVal
@@ -295,7 +294,7 @@ func build115RapidUploadCompleteResult(
 	detail, err := get115FileDetailByCid(ctx, client, initResult.FileId)
 	if err != nil {
 		if !rapidUploadRequiresRemoteDetail(task) {
-			helpers.V115Log.Warnf("查询秒传文件详情失败，使用 init 返回兜底：file_id=%s, err=%v", initResult.FileId, err)
+			helpers.V115Log.Warnf("查询秒传文件详情失败，使用 init 返回兜底：file_id=%s, 错误类型=%T", initResult.FileId, err)
 			return fallback, nil
 		}
 		return UploadSessionCompleteResult{}, fmt.Errorf("查询秒传文件详情失败：%w", err)
@@ -384,7 +383,7 @@ func (runner open115UploadRunner) uploadMultipart(
 		isOSSCheckpointInvalidError(err) &&
 		session.ResumeState == UploadResumeStateResumedSession &&
 		strings.TrimSpace(session.UploadId) != "" {
-		helpers.V115Log.Warnf("OSS multipart checkpoint 失效，清空 upload_id 后重新开始上传任务 %d：%v", task.ID, err)
+		helpers.V115Log.Warnf("OSS multipart checkpoint 失效，清空 upload_id 后重新开始上传任务 %d：错误类型=%T", task.ID, err)
 		task.mark115SessionRestarted(session, err)
 		task.publish115UploadPhase(session, uploadPhaseMultipartUploading)
 		ossResult, err = upload115MultipartWithResult(ctx, client, v115open.UploadMultipartInput{
@@ -420,12 +419,16 @@ func (runner open115UploadRunner) uploadMultipart(
 
 	completeResult, err := v115open.ParseCompleteCallbackResult(ossResult.CallbackResult)
 	if err != nil {
-		helpers.V115Log.Errorf("115 callback 业务校验失败：task_id=%d，bucket=%s，object_id=%s，upload_id=%s，callback_result=%s，err=%v",
+		err = ossResult.WithLogSecrets(err)
+		helpers.V115Log.Errorf("115 callback 业务校验失败：task_id=%d，bucket=%s，object_id=%s，upload_id=%s，uploaded_parts=%d，total_parts=%d，uploaded_bytes=%d，原因=%q，错误类型=%T",
 			task.ID,
 			session.Bucket,
 			session.Object,
 			ossResult.UploadId,
-			upload115LogJSON(ossResult.CallbackResult),
+			ossResult.UploadedParts,
+			ossResult.TotalParts,
+			ossResult.UploadedBytes,
+			helpers.SafeLogError(err),
 			err,
 		)
 		_ = session.MarkCompleteCallbackFailed(err)
@@ -1345,12 +1348,4 @@ func remoteParentPathForStrmTask(remoteFilePath string, fileName string) string 
 		return ""
 	}
 	return parent
-}
-
-func upload115LogJSON(value any) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprintf("%v", value)
-	}
-	return string(data)
 }

@@ -3,8 +3,6 @@ package httpapi
 import (
 	"log"
 	"net/http"
-	"net/url"
-	"regexp"
 
 	"qmediasync/internal/helpers"
 
@@ -13,22 +11,12 @@ import (
 
 const instanceContextKey = "qms.httpapi.failure_instance"
 
-var causeURLPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
-
 // SafeCause 返回用于 HTTP 层诊断的安全摘要，保留来源并清理已知密钥。
 func SafeCause(cause error, secrets ...string) string {
 	if cause == nil {
 		return ""
 	}
-	detail := helpers.RedactSensitiveLog(cause.Error(), secrets...)
-	// 上游错误可能带含密钥的路径或查询；诊断只保留 URL 的来源。
-	return causeURLPattern.ReplaceAllStringFunc(detail, func(raw string) string {
-		parsed, err := url.Parse(raw)
-		if err != nil || parsed.Host == "" {
-			return "<url>"
-		}
-		return parsed.Scheme + "://" + parsed.Host
-	})
+	return helpers.SafeLogError(cause, secrets...)
 }
 
 func requestInstance(c *gin.Context) string {

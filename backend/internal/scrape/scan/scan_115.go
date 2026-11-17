@@ -34,14 +34,20 @@ var list115ScanFilesPage = func(ctx context.Context, client *v115open.OpenClient
 func (s *Scan115Impl) CheckPathExists() error {
 	// 检查来源目录 ID 是否存在
 	sourceDetail, err := s.client.GetFsDetailByCid(s.ctx, s.scrapePath.SourcePathId)
-	if err != nil || sourceDetail.FileId == "" {
+	if err != nil {
+		return fmt.Errorf("刮削来源目录 %s => %s 疑似不存在，请检查或编辑后重新选择来源目录：%w", s.scrapePath.SourcePathId, s.scrapePath.SourcePath, err)
+	}
+	if sourceDetail.FileId == "" {
 		ferr := fmt.Errorf("刮削来源目录 %s => %s 疑似不存在，请检查或编辑后重新选择来源目录：%v", s.scrapePath.SourcePathId, s.scrapePath.SourcePath, err)
 		return ferr
 	}
 	if s.scrapePath.ScrapeType != models.ScrapeTypeOnly {
 		// 检查目标目录 ID 是否存在
 		targetDetail, err := s.client.GetFsDetailByCid(s.ctx, s.scrapePath.DestPathId)
-		if err != nil || targetDetail.FileId == "" {
+		if err != nil {
+			return fmt.Errorf("刮削目标目录 %s => %s 疑似不存在，请检查或编辑后重新选择目标目录：%w", s.scrapePath.DestPathId, s.scrapePath.DestPath, err)
+		}
+		if targetDetail.FileId == "" {
 			ferr := fmt.Errorf("刮削目标目录 %s => %s 疑似不存在，请检查或编辑后重新选择目标目录：%v", s.scrapePath.DestPathId, s.scrapePath.DestPath, err)
 			return ferr
 		}
@@ -61,7 +67,10 @@ func (s *Scan115Impl) GetNetFileFiles() error {
 	}
 	// 检查来源目录 ID 是否存在
 	sourceDetail, err := s.client.GetFsDetailByCid(s.ctx, s.scrapePath.SourcePathId)
-	if err != nil || sourceDetail.FileId == "" {
+	if err != nil {
+		return fmt.Errorf("刮削目录 %s => %s 疑似不存在，请检查或编辑后重新选择来源目录：%w", s.scrapePath.SourcePathId, s.scrapePath.SourcePath, err)
+	}
+	if sourceDetail.FileId == "" {
 		ferr := fmt.Errorf("刮削目录 %s => %s 疑似不存在，请检查或编辑后重新选择来源目录：%v", s.scrapePath.SourcePathId, s.scrapePath.SourcePath, err)
 		return ferr
 	}
@@ -125,7 +134,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 						helpers.AppLogger.Infof("worker %d 处理目录 %s 失败：上下文已取消", workerID, pathId)
 						return
 					}
-					helpers.AppLogger.Errorf("worker %d 处理目录 %s 失败：%v", workerID, pathId, err)
+					helpers.AppLogger.Errorf("worker %d 处理目录 %s 失败：错误类型=%T", workerID, pathId, err)
 					continue pageloop
 				}
 				parentPath = fsList.PathStr
