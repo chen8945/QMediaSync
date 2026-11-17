@@ -125,15 +125,16 @@ func TestSTRMAutomaticIdentityRequiresUniqueEvidence(t *testing.T) {
 		IdentityCandidates: func(context.Context, Source) ([]Candidate, error) { return candidates, nil }})
 	inst := &instance{service: service, ctx: t.Context(), cache: newSourceCache()}
 	source := Source{ItemID: "movie", ID: "source", Path: "/different/movie.strm"}
-	if _, ok := inst.locate(t.Context(), source, []string{root}); ok {
+	roots := strmRoots{allowed: []string{root}, legacy: []string{root}}
+	if _, ok := inst.locate(t.Context(), source, roots); ok {
 		t.Fatal("没有上游可靠源身份仍自动匹配")
 	}
 	source.URL = stable
-	if _, ok := inst.locate(t.Context(), source, []string{root}); !ok {
+	if _, ok := inst.locate(t.Context(), source, roots); !ok {
 		t.Fatal("唯一可靠身份候选无法定位")
 	}
 	candidates = append(candidates, Candidate{Root: root, Path: filepath.Join(root, "second.strm"), URL: stable})
-	if _, ok := inst.locate(t.Context(), source, []string{root}); ok {
+	if _, ok := inst.locate(t.Context(), source, roots); ok {
 		t.Fatal("多个可靠候选仍选择第一条")
 	}
 }

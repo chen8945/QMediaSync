@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -866,63 +867,182 @@ func TestStrmGenerationServiceDefaultWriterComparesStrmOnce(t *testing.T) {
 	}
 }
 
+func TestCleanupOldGeneratedStrm(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		oldName    string
+		newName    string
+		missingOld bool
+		missingNew bool
+		caseChange bool
+	}{
+		{name: "真实移动", oldName: "old.strm", newName: "new.strm"},
+		{name: "旧文件缺失", oldName: "old.strm", newName: "new.strm", missingOld: true},
+		{name: "文件名大小写", oldName: "Show/Movie.strm", newName: "Show/movie.strm", caseChange: true},
+		{name: "父目录大小写", oldName: "Show/movie.strm", newName: "show/movie.strm", caseChange: true},
+		{name: "Windows 新文件不可确认", oldName: "old.strm", newName: "new.strm", missingNew: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.missingNew && runtime.GOOS != "windows" {
+				t.Skip("仅验证 Windows 文件身份保护")
+			}
+			root := filepath.Join(t.TempDir(), "剧集")
+			oldPath := filepath.Join(root, filepath.FromSlash(tt.oldName))
+			newPath := filepath.Join(root, filepath.FromSlash(tt.newName))
+			for _, filePath := range []string{oldPath, newPath} {
+				if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tt.missingOld {
+				if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tt.missingNew {
+				if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sameFile := false
+			if tt.caseChange {
+				oldInfo, err := os.Stat(oldPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				newInfo, err := os.Stat(newPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sameFile = os.SameFile(oldInfo, newInfo)
+				if runtime.GOOS != "windows" && sameFile {
+					t.Skip("POSIX 对照需要区分大小写的目录")
+				}
+			}
+			err := cleanupOldGeneratedStrm(root, filepath.ToSlash(oldPath), newPath)
+			if tt.missingNew {
+				if !errors.Is(err, errOldStrmCleanupFailed) {
+					t.Fatalf("新文件不可确认应报告清理失败，got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("清理旧 STRM 失败：%v", err)
+			}
+			if sameFile || tt.missingNew {
+				if _, err := os.Stat(oldPath); err != nil {
+					t.Fatalf("应保留旧路径指向的文件：%v", err)
+				}
+			} else if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("旧路径应不存在：%v", err)
+			}
+			if !tt.missingNew {
+				content, err := os.ReadFile(newPath)
+				if err != nil || string(content) != "new" {
+					t.Fatalf("应保留新 STRM 内容，content=%q err=%v", content, err)
+				}
+			}
+		})
+	}
+}
+
 func TestStrmGenerationServiceCleansOldStrmAfterRemotePathChanges(t *testing.T) {
-	account, syncPath := setupStrmGenerationServiceTestDB(t)
-	oldStrmPath := filepath.Join(syncPath.LocalPath, "old", "movie.strm")
-	if err := os.MkdirAll(filepath.Dir(oldStrmPath), 0o755); err != nil {
-		t.Fatalf("创建旧 STRM 目录失败: %v", err)
-	}
-	if err := os.WriteFile(oldStrmPath, []byte("old"), 0o644); err != nil {
-		t.Fatalf("创建旧 STRM 失败: %v", err)
-	}
-	if err := db.Db.Create(&models.SyncFile{
-		AccountId:     account.ID,
-		SyncPathId:    syncPath.ID,
-		SourceType:    models.SourceType115,
-		FileId:        "file-move",
-		ParentId:      "old-parent",
-		FileName:      "movie.mkv",
-		Path:          "/old",
-		PickCode:      "pick-move",
-		LocalFilePath: filepath.ToSlash(oldStrmPath),
-		IsVideo:       true,
-	}).Error; err != nil {
-		t.Fatalf("创建旧 SyncFile 失败: %v", err)
-	}
+	for _, tt := range []struct {
+		name         string
+		oldDirectory string
+		oldName      string
+		sameFile     bool
+	}{
+		{name: "真实移动", oldDirectory: "old", oldName: "movie.strm"},
+		{name: "Windows 文件名大小写", oldDirectory: "remote", oldName: "Movie.strm", sameFile: true},
+		{name: "Windows 父目录大小写", oldDirectory: "REMOTE", oldName: "movie.strm", sameFile: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.sameFile && runtime.GOOS != "windows" {
+				t.Skip("仅验证 Windows 同文件大小写别名")
+			}
+			account, syncPath := setupStrmGenerationServiceTestDB(t)
+			oldStrmPath := filepath.Join(syncPath.LocalPath, tt.oldDirectory, tt.oldName)
+			if err := os.MkdirAll(filepath.Dir(oldStrmPath), 0o755); err != nil {
+				t.Fatalf("创建旧 STRM 目录失败: %v", err)
+			}
+			if err := os.WriteFile(oldStrmPath, []byte("old"), 0o644); err != nil {
+				t.Fatalf("创建旧 STRM 失败: %v", err)
+			}
+			if err := db.Db.Create(&models.SyncFile{
+				AccountId:     account.ID,
+				SyncPathId:    syncPath.ID,
+				SourceType:    models.SourceType115,
+				FileId:        "file-move",
+				ParentId:      "old-parent",
+				FileName:      "movie.mkv",
+				Path:          "/old",
+				PickCode:      "pick-move",
+				LocalFilePath: filepath.ToSlash(oldStrmPath),
+				IsVideo:       true,
+			}).Error; err != nil {
+				t.Fatalf("创建旧 SyncFile 失败: %v", err)
+			}
 
-	newStrmPath := filepath.Join(syncPath.LocalPath, "remote", "movie.strm")
-	service := newTestGenerationService(t, syncPath, account)
-	service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error {
-		if err := os.MkdirAll(filepath.Dir(newStrmPath), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(newStrmPath, []byte("new"), 0o644)
-	}
-	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
-	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
+			newStrmPath := filepath.Join(syncPath.LocalPath, "remote", "movie.strm")
+			if tt.sameFile {
+				oldInfo, err := os.Stat(oldStrmPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				newInfo, err := os.Stat(newStrmPath)
+				if errors.Is(err, os.ErrNotExist) {
+					t.Skip("测试目录区分大小写，无法覆盖同文件大小写别名")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !os.SameFile(oldInfo, newInfo) {
+					t.Fatal("测试前置不成立：旧、新路径未指向同一实际文件")
+				}
+			}
+			service := newTestGenerationService(t, syncPath, account)
+			service.processStrmFile = func(_ *SyncStrm, _ *SyncFileCache) error {
+				if err := os.MkdirAll(filepath.Dir(newStrmPath), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(newStrmPath, []byte("new"), 0o644)
+			}
+			service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
+			service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
-	result, err := service.Generate(context.Background(), StrmGenerationInput{
-		Task: &models.StrmGenerationTask{
-			SyncPathId: syncPath.ID,
-			AccountId:  account.ID,
-			FileId:     "file-move",
-			ParentId:   "new-parent",
-			PickCode:   "pick-move",
-			Path:       "/remote",
-			FileName:   "movie.mkv",
-		},
-	})
-	if err != nil {
-		t.Fatalf("生成 STRM 失败: %v", err)
-	}
-	if !result.Changed {
-		t.Fatal("result.Changed = false，期望 true")
-	}
-	if _, err := os.Stat(oldStrmPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("旧 STRM 状态错误: %v，期望已删除", err)
-	}
-	if _, err := os.Stat(newStrmPath); err != nil {
-		t.Fatalf("新 STRM 应保留: %v", err)
+			result, err := service.Generate(context.Background(), StrmGenerationInput{
+				Task: &models.StrmGenerationTask{
+					SyncPathId: syncPath.ID,
+					AccountId:  account.ID,
+					FileId:     "file-move",
+					ParentId:   "new-parent",
+					PickCode:   "pick-move",
+					Path:       "/remote",
+					FileName:   "movie.mkv",
+				},
+			})
+			if err != nil {
+				t.Fatalf("生成 STRM 失败: %v", err)
+			}
+			if !result.Changed {
+				t.Fatal("result.Changed = false，期望 true")
+			}
+			if !tt.sameFile {
+				if _, err := os.Stat(oldStrmPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("旧 STRM 状态错误: %v，期望已删除", err)
+				}
+			}
+			content, err := os.ReadFile(newStrmPath)
+			if err != nil || string(content) != "new" {
+				t.Fatalf("新 STRM 应保留生成内容，content=%q err=%v", content, err)
+			}
+			var got models.SyncFile
+			if err := db.Db.Where("file_id = ? AND pick_code = ?", "file-move", "pick-move").First(&got).Error; err != nil {
+				t.Fatalf("读取更新后的 SyncFile 失败: %v", err)
+			}
+			if got.LocalFilePath != filepath.ToSlash(newStrmPath) || result.SyncFile.ID != got.ID {
+				t.Fatalf("账本未保存新 STRM 路径或返回错误记录：%+v", got)
+			}
+		})
 	}
 }
 
@@ -961,7 +1081,7 @@ func TestStrmGenerationServiceKeepsNewStrmWhenOldPathCleanupFails(t *testing.T) 
 	service.compareStrm = func(_ *SyncStrm, _ *SyncFileCache) int { return 0 }
 	service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) { return nil, nil }
 
-	_, err := service.Generate(context.Background(), StrmGenerationInput{
+	result, err := service.Generate(context.Background(), StrmGenerationInput{
 		Task: &models.StrmGenerationTask{
 			SyncPathId: syncPath.ID,
 			AccountId:  account.ID,
@@ -975,8 +1095,12 @@ func TestStrmGenerationServiceKeepsNewStrmWhenOldPathCleanupFails(t *testing.T) 
 	if err != nil {
 		t.Fatalf("旧路径清理失败不应阻断 STRM 生成: %v", err)
 	}
-	if _, statErr := os.Stat(newStrmPath); statErr != nil {
-		t.Fatalf("新 STRM 不应因旧路径清理失败被删除: %v", statErr)
+	if !result.Changed {
+		t.Fatal("旧路径清理失败不能改变成功生成的结果")
+	}
+	content, readErr := os.ReadFile(newStrmPath)
+	if readErr != nil || string(content) != "new" {
+		t.Fatalf("旧路径清理失败后新 STRM 内容错误，content=%q err=%v", content, readErr)
 	}
 	if _, statErr := os.Stat(oldDir); statErr != nil {
 		t.Fatalf("旧路径清理失败后旧路径应保持原状: %v", statErr)

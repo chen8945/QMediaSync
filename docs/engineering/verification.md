@@ -400,6 +400,20 @@ pnpm run check:build
 
 最终浏览器记录须匹配当前生产构建的 `index.html` 与相关资源指纹；旧构建通过不替代修改后的页面验证。报告区分真实认证／配置提交回读、故障注入、HTTP／provider 替身和真实媒体服务器；分轮补验可以复用已通过步骤，但须保留原失败及每轮准确范围，不将合并结果写成整条命令一次成功。
 
+## Windows 本地路径兼容验证
+
+以下长期回归使用临时目录、SQLite 与本地文件，分别保护生成成果、季海报授权、媒体来源恢复和飞牛定位顺序。在 `backend/` 执行：
+
+```bash
+go test -p 1 ./internal/syncstrm -run '^(TestCleanupOldGeneratedStrm|TestStrmGenerationServiceCleansOldStrmAfterRemotePathChanges|TestStrmGenerationServiceKeepsNewStrmWhenOldPathCleanupFails)$' -count=1 -v
+go test -p 1 ./internal/models -run '^(TestEmbyPathMapping.*|TestNormalizeEmbyPathMappings|TestInferEmbyPathMapping.*|TestEmbySeasonPosterPathRepresentationsReachPlan|TestJellyfinManagedSTRMPathRepresentations|TestEmbySnapshotLocalPathDisambiguation|TestEmbySnapshotWindowsMixedSeparatorDisambiguation|TestJellyfinManagedSTRMSourceRecovery|TestJellyfinManagedSTRMRecoveryFailurePreservesBoundSnapshot)$' -count=1 -v
+go test -p 1 ./internal/fnosproxy -run '^(TestSTRMWindowsPathFallbackOrder|TestSTRMWindowsRootsValidateBeforeClean|TestSTRMMappingPrecedenceAndCacheFileInvalidation|TestSTRMAutomaticIdentityRequiresUniqueEvidence)$' -count=1 -v
+```
+
+Windows 用例须在原生 Windows 实际运行；Linux 上跳过或 Windows 交叉编译成功不算平台验收。默认 NTFS 验证文件名、父目录仅变大小写时新成果仍在，真实移动仍清旧；大小写敏感目录另作不同文件对照，不可用时记录未覆盖。季海报验证冻结、持久化与删除计划，并复跑实际存活成员保护。Jellyfin 覆盖直接、有限回退及显式映射查询，核对账号、对象和来源；飞牛覆盖旧身份成功优先、无候选后的补充定位、映射失败和其他终止失败不换位置。
+
+POSIX 运行同组可执行用例、既有 `TestEmbyDirectoryScopedSeasonMetadata` 和受限读取回归，核对名称大小写、反斜杠与原有失败语义不被合并；该既有成员夹具含固定 POSIX 本地路径，Windows 成员保护由新的便携海报用例验证。Windows 链接拒绝另复用 `TestSTRMRestrictedRead`，需要创建链接权限；缺少权限须记录未验收。SQL 仍采用既有等值／IN 参数语法，既有 PostgreSQL 验证入口继续保留，不为分隔符修复增加 schema 或测试服务。真实云端删除、飞牛客户端播放、UNC 和同目标大小写 owner／锁别名问题，不能据本组本地回归宣称通过。
+
 ## Emby 本地资料与外部 STRM 验证
 
 根链、来源快照和删除执行必须一起验证。普通回归覆盖 `syncstrm`、`emby`、`models`、`controllers`、`requests`、`backup`、`medialibrary/client` 及三个网盘客户端；相关并发执行 race 和 vet。低内存机器用 `GOMAXPROCS=2 GOMEMLIMIT=300MiB`、`-p 1` 串行运行，避免多个编译／链接进程挤占内存。

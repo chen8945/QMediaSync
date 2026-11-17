@@ -7,6 +7,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1003,6 +1004,23 @@ func cleanupOldGeneratedStrm(targetRoot string, oldLocalPath string, newLocalPat
 	}
 	if err := ensureGeneratedStrmPathWithinRoot(targetRoot, oldLocalPath); err != nil {
 		return fmt.Errorf("%w: %v", errOldStrmCleanupFailed, err)
+	}
+	if runtime.GOOS == "windows" {
+		oldInfo, err := os.Stat(oldLocalPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %v", errOldStrmCleanupFailed, err)
+		}
+		newInfo, err := os.Stat(newLocalPath)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errOldStrmCleanupFailed, err)
+		}
+		// 大小写不同的 Windows 路径可能仍指向刚写入的同一个文件。
+		if os.SameFile(oldInfo, newInfo) {
+			return nil
+		}
 	}
 	if err := os.Remove(oldLocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%w: %v", errOldStrmCleanupFailed, err)

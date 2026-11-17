@@ -124,12 +124,42 @@ func TestInferEmbyPathMappingUsesCompleteRelativeComponents(t *testing.T) {
 		{"traversal", "/media/Films/../A/A.strm", "Films/A/A.strm", ""},
 		{"UNC share is not a relative directory", `\\NAS\Media\A.strm`, "Media/A.strm", ""},
 		{"outside local root", "/media/A.strm", "../A.strm", ""},
+		{"local root itself", "/media/A.strm", ".", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			local := filepath.Join(localRoot, filepath.FromSlash(tc.relative))
 			mapping, ok := inferEmbyPathMapping(tc.embyPath, localRoot, local)
 			if ok != (tc.wantRoot != "") || ok && (mapping.EmbyRoot != tc.wantRoot || mapping.LocalRoot != localRoot) {
 				t.Fatalf("mapping=%+v matched=%v, want root=%q", mapping, ok, tc.wantRoot)
+			}
+		})
+	}
+}
+
+func TestInferEmbyPathMappingNormalizesLocalSeparators(t *testing.T) {
+	parent := t.TempDir()
+	localRoot := filepath.Join(parent, "115open")
+	localPath := filepath.Join(localRoot, "电影", "视频.strm")
+	separator := string(filepath.Separator)
+	for _, tc := range []struct {
+		name, root, local string
+		matched           bool
+	}{
+		{"stored path", localRoot, filepath.ToSlash(localPath), true},
+		{"stored root", filepath.ToSlash(localRoot), localPath, true},
+		{"mixed separators", filepath.ToSlash(localRoot) + "/", localRoot + "/电影" + separator + "视频.strm", true},
+		{"trailing root separator", localRoot + separator, localPath, true},
+		{"repeated native separators", parent + separator + separator + "115open", localRoot + separator + separator + "电影" + separator + separator + "视频.strm", true},
+		{"repeated stored separators", filepath.ToSlash(parent) + "//115open/", filepath.ToSlash(localRoot) + "//电影//视频.strm", true},
+		{"dot in root", parent + separator + "." + separator + "115open", localPath, false},
+		{"parent in root", localRoot + separator + ".." + separator + "115open", localPath, false},
+		{"dot in path", localRoot, localRoot + separator + "." + separator + "电影" + separator + "视频.strm", false},
+		{"parent in path", localRoot, localRoot + separator + "child" + separator + ".." + separator + "电影" + separator + "视频.strm", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mapping, ok := inferEmbyPathMapping("/media/电影/视频.strm", tc.root, tc.local)
+			if ok != tc.matched || ok && (mapping.EmbyRoot != "/media" || mapping.LocalRoot != tc.root) {
+				t.Fatalf("mapping=%+v matched=%v, want matched=%v with original root=%q", mapping, ok, tc.matched, tc.root)
 			}
 		})
 	}

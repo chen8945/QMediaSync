@@ -84,11 +84,10 @@ func (mapping EmbyPathMapping) ResolveLocalPath(embyPath string) (string, bool) 
 func inferEmbyPathMapping(embyPath, localRoot, localPath string) (EmbyPathMapping, bool) {
 	candidate, windows, err := normalizeEmbyMappingPath(embyPath)
 	if err != nil || !filepath.IsAbs(localRoot) || !filepath.IsAbs(localPath) ||
-		filepath.Clean(localRoot) != localRoot || filepath.Clean(localPath) != localPath ||
 		invalidMappingComponents(filepath.ToSlash(localRoot)) || invalidMappingComponents(filepath.ToSlash(localPath)) {
 		return EmbyPathMapping{}, false
 	}
-	relative, err := filepath.Rel(localRoot, localPath)
+	relative, err := filepath.Rel(filepath.Clean(localRoot), filepath.Clean(localPath))
 	if err != nil || relative == "." || !filepath.IsLocal(relative) {
 		return EmbyPathMapping{}, false
 	}

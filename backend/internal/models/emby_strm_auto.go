@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -24,6 +25,42 @@ type embySTRMObservation struct {
 	digest   string
 	fileInfo os.FileInfo
 	rootInfo os.FileInfo
+}
+
+func embyLocalFilePath(value string) (string, bool) {
+	if !filepath.IsAbs(value) || os.IsPathSeparator(value[len(value)-1]) {
+		return "", false
+	}
+	if _, _, err := normalizeEmbyMappingPath(value); err != nil {
+		return "", false
+	}
+	return filepath.Clean(value), true
+}
+
+func embyLocalFilePathsMatch(left, right string) bool {
+	if left == right {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	leftPath, leftOK := embyLocalFilePath(left)
+	rightPath, rightOK := embyLocalFilePath(right)
+	return leftOK && rightOK && leftPath == rightPath
+}
+
+func embyLocalFilePathRepresentations(value string) []string {
+	values := []string{value}
+	if runtime.GOOS == "windows" {
+		if local, ok := embyLocalFilePath(value); ok {
+			for _, candidate := range []string{local, filepath.ToSlash(local)} {
+				if !slices.Contains(values, candidate) {
+					values = append(values, candidate)
+				}
+			}
+		}
+	}
+	return values
 }
 
 // embyPreparedSTRMReference 只在本次准备和提交之间使用，不持久化原始 STRM 内容。
@@ -278,7 +315,12 @@ func (c *EmbyDirectoryEvidenceCollector) RecoverJellyfinSTRMSources(ctx context.
 			directLocal = snapshot.Item.Path
 		}
 		var candidates []SyncFile
-		if err := db.Db.WithContext(ctx).Where("local_file_path = ? AND is_video = ?", directLocal, true).Find(&candidates).Error; err != nil {
+		directPaths := embyLocalFilePathRepresentations(directLocal)
+		query := db.Db.WithContext(ctx).Where("local_file_path = ? AND is_video = ?", directLocal, true)
+		if len(directPaths) > 1 {
+			query = db.Db.WithContext(ctx).Where("local_file_path IN ? AND is_video = ?", directPaths, true)
+		}
+		if err := query.Find(&candidates).Error; err != nil {
 			return false, err
 		}
 		directMatch := len(candidates) > 0 || explicit.LocalPath != ""
@@ -319,7 +361,18 @@ func (c *EmbyDirectoryEvidenceCollector) RecoverJellyfinSTRMSources(ctx context.
 			continue
 		}
 		if !directMatch {
-			if err := db.Db.WithContext(ctx).Where("local_file_path IN ? AND is_video = ?", locals, true).Find(&candidates).Error; err != nil {
+			localPaths := locals
+			if runtime.GOOS == "windows" {
+				localPaths = []string{}
+				for _, local := range locals {
+					for _, candidate := range embyLocalFilePathRepresentations(local) {
+						if !slices.Contains(localPaths, candidate) {
+							localPaths = append(localPaths, candidate)
+						}
+					}
+				}
+			}
+			if err := db.Db.WithContext(ctx).Where("local_file_path IN ? AND is_video = ?", localPaths, true).Find(&candidates).Error; err != nil {
 				return false, err
 			}
 		}
@@ -338,7 +391,7 @@ func (c *EmbyDirectoryEvidenceCollector) RecoverJellyfinSTRMSources(ctx context.
 			rootIndex := slices.IndexFunc(roots, func(root SyncPath) bool {
 				return root.ID == file.SyncPathId && root.AccountId == file.AccountId && root.SourceType == file.SourceType
 			})
-			if rootIndex < 0 || explicit.LocalPath != "" && explicit.LocalPath != file.LocalFilePath {
+			if rootIndex < 0 || explicit.LocalPath != "" && !embyLocalFilePathsMatch(explicit.LocalPath, file.LocalFilePath) {
 				continue
 			}
 			var account Account

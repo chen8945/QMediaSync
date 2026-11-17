@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -32,22 +33,34 @@ type Candidate struct {
 	URL  string
 }
 
-func (inst *instance) roots(ctx context.Context) ([]string, error) {
+type strmRoots struct {
+	allowed []string
+	// 保留旧流程可用的根，使新增兼容的根不会抢占原身份查找。
+	legacy []string
+}
+
+func (inst *instance) roots(ctx context.Context) (strmRoots, error) {
 	if inst.service.options.OutputRoots == nil {
-		return []string{}, nil
+		return strmRoots{}, nil
 	}
 	roots, err := inst.service.options.OutputRoots(ctx)
 	if err != nil {
-		return nil, err
+		return strmRoots{}, err
 	}
-	normalized := make([]string, 0, len(roots))
+	var normalized strmRoots
 	for _, root := range roots {
 		if filepath.IsAbs(root) && filepath.Clean(root) == root && root != string(filepath.Separator) {
-			normalized = append(normalized, root)
+			normalized.allowed = append(normalized.allowed, root)
+			normalized.legacy = append(normalized.legacy, root)
+		} else if local, ok := normalizeWindowsSTRMPath(root); ok {
+			normalized.allowed = append(normalized.allowed, local)
 		}
 	}
-	slices.Sort(normalized)
-	return slices.Compact(normalized), nil
+	slices.Sort(normalized.allowed)
+	normalized.allowed = slices.Compact(normalized.allowed)
+	slices.Sort(normalized.legacy)
+	normalized.legacy = slices.Compact(normalized.legacy)
+	return normalized, nil
 }
 
 func (inst *instance) resolveSource(ctx context.Context, r *http.Request, source Source) (sourceRecord, bool) {
@@ -71,7 +84,7 @@ func (inst *instance) resolveSource(ctx context.Context, r *http.Request, source
 	if err != nil || ctx.Err() != nil {
 		return sourceRecord{}, false
 	}
-	scope := fingerprint([]any{inst.config.FnosURL, inst.config.PathMappings, roots})
+	scope := fingerprint([]any{inst.config.FnosURL, inst.config.PathMappings, roots.allowed, roots.legacy})
 	generation := inst.cache.begin(scope)
 	key := fingerprint([]string{scope, credentialFingerprint(r), source.ItemID, source.ID})
 	if previous, ok := inst.cache.get(key, generation); ok {
@@ -109,12 +122,13 @@ func (inst *instance) resolveSource(ctx context.Context, r *http.Request, source
 	return record, true
 }
 
-func (inst *instance) currentRoots(ctx context.Context, previous []string) bool {
+func (inst *instance) currentRoots(ctx context.Context, previous strmRoots) bool {
 	current, err := inst.roots(ctx)
-	return err == nil && slices.Equal(current, previous) && ctx.Err() == nil && inst.ctx.Err() == nil
+	return err == nil && slices.Equal(current.allowed, previous.allowed) && slices.Equal(current.legacy, previous.legacy) &&
+		ctx.Err() == nil && inst.ctx.Err() == nil
 }
 
-func (inst *instance) locate(ctx context.Context, source Source, roots []string) ([]Candidate, bool) {
+func (inst *instance) locate(ctx context.Context, source Source, roots strmRoots) ([]Candidate, bool) {
 	for _, mapping := range inst.config.PathMappings {
 		adapted := models.EmbyPathMapping{EmbyRoot: mapping.FnosRoot, LocalRoot: mapping.LocalRoot}
 		if _, matched := adapted.RelativePath(source.Path); matched {
@@ -126,28 +140,24 @@ func (inst *instance) locate(ctx context.Context, source Source, roots []string)
 		}
 	}
 	if filepath.IsAbs(source.Path) && filepath.Clean(source.Path) == source.Path {
-		var match Candidate
-		for _, root := range roots {
-			relative, err := filepath.Rel(root, source.Path)
-			if err == nil && relative != "." && filepath.IsLocal(relative) && len(root) > len(match.Root) {
-				match = Candidate{Root: root, Path: source.Path}
-			}
-		}
-		if match.Root != "" {
+		if match, ok := directSTRMCandidate(source.Path, roots.legacy); ok {
 			return []Candidate{match}, true
 		}
 	}
 	if source.URL == "" || inst.service.options.IdentityCandidates == nil {
-		return nil, false
+		return inst.locateWindowsSTRM(ctx, source, roots.allowed)
 	}
 	// shortcut: 自动定位仅接收账本按可靠源身份给出的有限候选；其他异挂载需要用户声明根映射。
 	candidates, err := inst.service.options.IdentityCandidates(ctx, source)
 	if err != nil || len(candidates) > sourceCacheCapacity {
 		return nil, false
 	}
+	if len(candidates) == 0 {
+		return inst.locateWindowsSTRM(ctx, source, roots.allowed)
+	}
 	var matches []Candidate
 	for _, candidate := range candidates {
-		if !slices.Contains(roots, candidate.Root) || !sameSourceURL(source.URL, candidate.URL) {
+		if !slices.Contains(roots.legacy, candidate.Root) || !sameSourceURL(source.URL, candidate.URL) {
 			continue
 		}
 		relative, err := filepath.Rel(candidate.Root, candidate.Path)
@@ -167,6 +177,43 @@ func (inst *instance) locate(ctx context.Context, source Source, roots []string)
 		}
 	}
 	return matches, len(matches) == 1
+}
+
+func directSTRMCandidate(local string, roots []string) (Candidate, bool) {
+	var match Candidate
+	for _, root := range roots {
+		relative, err := filepath.Rel(root, local)
+		if err == nil && relative != "." && filepath.IsLocal(relative) && len(root) > len(match.Root) {
+			match = Candidate{Root: root, Path: local}
+		}
+	}
+	return match, match.Root != ""
+}
+
+func normalizeWindowsSTRMPath(raw string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	mappings, err := models.NormalizeEmbyPathMappings([]models.EmbyPathMapping{{EmbyRoot: raw, LocalRoot: raw}})
+	if err != nil {
+		return "", false
+	}
+	return mappings[0].LocalRoot, true
+}
+
+func (inst *instance) locateWindowsSTRM(ctx context.Context, source Source, roots []string) ([]Candidate, bool) {
+	if ctx.Err() != nil || inst.ctx.Err() != nil || strings.HasSuffix(source.Path, "/") || strings.HasSuffix(source.Path, `\`) {
+		return nil, false
+	}
+	local, ok := normalizeWindowsSTRMPath(source.Path)
+	if !ok {
+		return nil, false
+	}
+	match, ok := directSTRMCandidate(local, roots)
+	if !ok {
+		return nil, false
+	}
+	return []Candidate{match}, true
 }
 
 func openSTRM(rootPath, relative string, read bool) (sourceRecord, string, error) {

@@ -251,7 +251,7 @@ func freezeEmbyScopedMetadata(tx *gorm.DB, snapshot EmbyItemSnapshot, scopes []E
 				if series.Root.SourceType == SourceTypeBaiduPan {
 					parentMatches = embyRemoteDirectoriesMatch(series.Root.SourceType, candidate.ParentId, path.Join(series.Root.Path, series.Root.FileName))
 				}
-				if !embyRemoteDirectoriesMatch(series.Root.SourceType, candidate.Path, path.Join(series.Root.Path, series.Root.FileName)) || !parentMatches || candidate.LocalFilePath != filepath.Join(series.LocalPath, name) {
+				if !embyRemoteDirectoriesMatch(series.Root.SourceType, candidate.Path, path.Join(series.Root.Path, series.Root.FileName)) || !parentMatches || !embyLocalFilePathsMatch(candidate.LocalFilePath, filepath.Join(series.LocalPath, name)) {
 					continue
 				}
 				frozen, err := freezeEmbyFile(tx, candidate, "", candidate.LocalFilePath)

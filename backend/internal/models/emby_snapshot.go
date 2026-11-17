@@ -770,7 +770,7 @@ func resolveEmbySnapshotFiles(tx *gorm.DB, snapshot EmbyItemSnapshot) ([]EmbyFro
 			}
 			exact := []SyncFile{}
 			for _, candidate := range candidates {
-				if candidate.LocalFilePath == snapshot.Item.Path || reference.LocalPath != "" && candidate.LocalFilePath == reference.LocalPath {
+				if embyLocalFilePathsMatch(candidate.LocalFilePath, snapshot.Item.Path) || reference.LocalPath != "" && embyLocalFilePathsMatch(candidate.LocalFilePath, reference.LocalPath) {
 					exact = append(exact, candidate)
 				}
 			}
