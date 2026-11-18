@@ -332,7 +332,7 @@ func TestRotationWriterReportsRejectedRecordWithoutDumpingBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(stderr)
-	for _, want := range []string{path, "bytes=", "max_bytes=1048576", "cause="} {
+	for _, want := range []string{strconv.Quote(path), "bytes=", "max_bytes=1048576", "cause="} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("write-failure warning lacks %q", want)
 		}
@@ -757,7 +757,7 @@ func TestLoggerClosePreventsReopeningDeletedFile(t *testing.T) {
 			logger.Infof("before close")
 			logger.Close()
 			if !rotate {
-				if _, err := logger.file.Stat(); !errors.Is(err, os.ErrClosed) {
+				if _, err := logger.file.Write(nil); !errors.Is(err, os.ErrClosed) {
 					t.Fatalf("nonrotating task log descriptor not closed: %v", err)
 				}
 			}

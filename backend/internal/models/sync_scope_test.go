@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	syncscope "qmediasync/internal/strm/scope"
+	"qmediasync/internal/testfs"
 
 	"gorm.io/gorm"
 )
@@ -209,9 +210,7 @@ func TestSyncScopeIncludesOldTargetThroughNestedSymlink(t *testing.T) {
 			if fileLink {
 				target, oldPath = realFile, link
 			}
-			if err := os.Symlink(target, link); err != nil {
-				t.Fatal(err)
-			}
+			testfs.Symlink(t, target, link)
 			file := &SyncFile{SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId,
 				FileId: "old", Path: sp.RemotePath, LocalFilePath: oldPath}
 			if err := db.Db.Create(file).Error; err != nil {
@@ -328,9 +327,7 @@ func TestDeleteSyncPathWithUnresolvableOldLocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			link := filepath.Join(t.TempDir(), "broken")
-			if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), link); err != nil {
-				t.Fatal(err)
-			}
+			testfs.Symlink(t, filepath.Join(t.TempDir(), "missing"), link)
 			file := &SyncFile{SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId,
 				Path: sp.RemotePath, LocalFilePath: localFile}
 			if brokenRoot {

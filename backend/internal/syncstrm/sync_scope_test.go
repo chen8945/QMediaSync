@@ -17,6 +17,7 @@ import (
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
 	syncscope "qmediasync/internal/strm/scope"
+	"qmediasync/internal/testfs"
 )
 
 func newScopeTestSync(t *testing.T) *SyncStrm {
@@ -277,9 +278,7 @@ func TestSyncScopeRejectsSymlinkOutsideRoot(t *testing.T) {
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
-				t.Fatal(err)
-			}
+			testfs.Symlink(t, outside, filepath.Join(root, "linked"))
 			oldFile := filepath.Join(outside, name)
 			if err := os.WriteFile(oldFile, []byte("保留原文件"), 0o600); err != nil {
 				t.Fatal(err)
@@ -311,9 +310,7 @@ func TestSyncScopeCleanupKeepsSymlinkOutsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "movie.nfo")
-	if err := os.Symlink(oldFile, link); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, oldFile, link)
 	if err := s.acquireScope(); err != nil {
 		t.Fatal(err)
 	}
@@ -331,9 +328,7 @@ func TestSyncScopeCleanupKeepsSymlinkOutsideRoot(t *testing.T) {
 func TestAcquiredRootDoesNotFollowRetargetedSymlink(t *testing.T) {
 	first, second := t.TempDir(), t.TempDir()
 	link := filepath.Join(t.TempDir(), "root")
-	if err := os.Symlink(first, link); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, first, link)
 	s := &SyncStrm{TmpSyncPath: true, TargetPath: link, SourcePath: "/media", Context: t.Context(), Account: &models.Account{SourceType: models.SourceTypeLocal}}
 	if err := s.acquireScope(); err != nil {
 		t.Fatal(err)
@@ -345,9 +340,7 @@ func TestAcquiredRootDoesNotFollowRetargetedSymlink(t *testing.T) {
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(second, link); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, second, link)
 	if err := ensureGeneratedStrmPathWithinResolvedRoot(s.scopeLocalRoot, filepath.Join(link, "video.strm")); err == nil {
 		t.Fatal("许可仍保护旧根时必须拒绝新真实位置")
 	}

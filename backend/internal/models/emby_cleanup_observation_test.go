@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 )
 
@@ -13,7 +14,7 @@ func setupEmbyDirectoryObservation(t *testing.T) (EmbyIndexToken, SyncFile, Emby
 	t.Helper()
 	_, token, file := setupEmbySnapshotModelTest(t)
 	file.Path, file.ParentId = "/movies/Show/Season 1", "season-root"
-	file.LocalFilePath = "/strm/movies/Show/Season 1/episode.strm"
+	file.LocalFilePath = testfs.LocalPath("/strm/movies/Show/Season 1/episode.strm")
 	file.FileName = "episode.mkv"
 	if err := db.Db.Save(&file).Error; err != nil {
 		t.Fatal(err)
@@ -57,16 +58,16 @@ func TestEmbyDirectoryObservationPersistsPhysicalScopesAndSeasonPoster(t *testin
 	poster := file
 	poster.BaseModel = BaseModel{}
 	poster.FileId, poster.FileName, poster.ParentId = "poster", "season01-poster.jpg", "show-root"
-	poster.Path, poster.LocalFilePath = "/movies/Show", "/strm/movies/Show/season01-poster.jpg"
+	poster.Path, poster.LocalFilePath = "/movies/Show", testfs.LocalPath("/strm/movies/Show/season01-poster.jpg")
 	poster.PickCode, poster.IsVideo, poster.IsMeta = "poster-code", false, true
 	if err := db.Db.Create(&poster).Error; err != nil {
 		t.Fatal(err)
 	}
 	seasonNumber := 1
 	ancestors := []EmbyMediaDirectory{
-		{ItemID: "201", MediaType: "Series", LocalPath: "/strm/movies/Show"},
-		{ItemID: "202", MediaType: "Season", LocalPath: "/strm/movies/Show/Season 1", SeasonNumber: &seasonNumber},
-		{ItemID: "999", MediaType: "Series", LocalPath: "/strm/movies"},
+		{ItemID: "201", MediaType: "Series", LocalPath: testfs.LocalPath("/strm/movies/Show")},
+		{ItemID: "202", MediaType: "Season", LocalPath: testfs.LocalPath("/strm/movies/Show/Season 1"), SeasonNumber: &seasonNumber},
+		{ItemID: "999", MediaType: "Series", LocalPath: testfs.LocalPath("/strm/movies")},
 	}
 	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, ancestors); err != nil {
 		t.Fatal(err)
@@ -100,14 +101,14 @@ func TestEmbyDirectoryObservationDoesNotGrantFromNameOrChangedLedger(t *testing.
 			token, file, collector := setupEmbyDirectoryObservation(t)
 			snapshot := snapshotForFile(file)
 			snapshot.Item.Type, snapshot.Item.SeriesId = "Episode", "201"
-			candidate := EmbyMediaDirectory{ItemID: "201", MediaType: "Series", LocalPath: "/strm/movies/Show"}
+			candidate := EmbyMediaDirectory{ItemID: "201", MediaType: "Series", LocalPath: testfs.LocalPath("/strm/movies/Show")}
 			switch name {
 			case "unknown_id":
 				candidate.ItemID = "999"
 			case "sync_root":
-				candidate.LocalPath = "/strm/movies"
+				candidate.LocalPath = testfs.LocalPath("/strm/movies")
 			case "sibling_path":
-				candidate.LocalPath = "/strm/movies/Other"
+				candidate.LocalPath = testfs.LocalPath("/strm/movies/Other")
 			}
 			if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, []EmbyMediaDirectory{candidate}); err != nil {
 				t.Fatal(err)
@@ -140,7 +141,7 @@ func TestEmbyMovieDirectoryRequiresPositiveEvidence(t *testing.T) {
 	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, nil); err != nil || len(snapshot.DirectoryScopes) != 0 {
 		t.Fatalf("孤立 Movie 不能从 dirname 获得作品根：%#v %v", snapshot.DirectoryScopes, err)
 	}
-	physical := EmbyMediaDirectory{ItemID: snapshot.Item.ItemId, MediaType: "Movie", LocalPath: "/strm/movies/Show"}
+	physical := EmbyMediaDirectory{ItemID: snapshot.Item.ItemId, MediaType: "Movie", LocalPath: testfs.LocalPath("/strm/movies/Show")}
 	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, []EmbyMediaDirectory{physical}); err != nil || len(snapshot.DirectoryScopes) != 1 {
 		t.Fatalf("Movie 物理父目录没有获得作品根：%#v %v", snapshot.DirectoryScopes, err)
 	}
@@ -192,7 +193,7 @@ func TestEmbyMoviePhysicalDirectoryReachesDeletionCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := snapshotForFile(file)
-	physical := EmbyMediaDirectory{ItemID: "101", MediaType: "Movie", LocalPath: "/strm/movies/Show"}
+	physical := EmbyMediaDirectory{ItemID: "101", MediaType: "Movie", LocalPath: testfs.LocalPath("/strm/movies/Show")}
 	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, []EmbyMediaDirectory{physical}); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestJellyfinManagedMovieDirectoryPersistsWithoutScrapeOrPhysicalFolder(t *t
 	// 媒体直接位于同步根下时不能把整个同步根作为电影目录。
 	snapshot = snapshotForFile(file)
 	snapshot.Item.Type = "Movie"
-	file.LocalFilePath = "/strm/movies/root-movie.strm"
+	file.LocalFilePath = testfs.LocalPath("/strm/movies/root-movie.strm")
 	file.Path = "/movies"
 	file.ParentId = "root"
 	if err := db.Db.Save(&file).Error; err != nil {
@@ -297,7 +298,7 @@ func TestJellyfinGUIDSeasonSeriesScopesReachDeletionPlan(t *testing.T) {
 			snapshot.Sources[0].ItemID = snapshot.Item.ItemId
 			snapshot.Item.SeriesId = "b2222222222222222222222222222222"
 			snapshot.Item.SeasonId = "c3333333333333333333333333333333"
-			roles := []EmbyMediaDirectory{{ItemID: snapshot.Item.SeriesId, MediaType: "Series", LocalPath: "/strm/movies/Show"}, {ItemID: snapshot.Item.SeasonId, MediaType: "Season", LocalPath: "/strm/movies/Show/Season 1"}}
+			roles := []EmbyMediaDirectory{{ItemID: snapshot.Item.SeriesId, MediaType: "Series", LocalPath: testfs.LocalPath("/strm/movies/Show")}, {ItemID: snapshot.Item.SeasonId, MediaType: "Season", LocalPath: testfs.LocalPath("/strm/movies/Show/Season 1")}}
 			if err := collector.Enrich(t.Context(), MediaServerJellyfin, &snapshot, roles); err != nil {
 				t.Fatal(err)
 			}

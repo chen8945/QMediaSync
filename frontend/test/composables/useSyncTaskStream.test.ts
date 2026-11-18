@@ -98,16 +98,23 @@ describe('useSyncTaskStream', () => {
   }
 
   it.each([4, 5, 6])('新终态 %s 的结果在事件和刷新快照中一致', async (status) => {
+    const durations = {
+      net_file_duration_ms: 123,
+      local_file_duration_ms: 0,
+      generation_duration_ms: 234,
+      total_duration_ms: 345,
+    }
     vi.stubGlobal('EventSource', MockEventSource)
     const stream = withSetup(() => useSyncTaskStream(8))
     const source = MockEventSource.instances[0]
     source.emit('snapshot', { type: 'snapshot', data: snapshot })
     source.emit('complete', {
       type: 'complete',
-      data: { sync_id: 8, status, finish_at: 100, scan_result: scanResult },
+      data: { sync_id: 8, status, finish_at: 100, scan_result: scanResult, ...durations },
     })
     expect(stream.task.value?.scan_result).toEqual(scanResult)
     expect(stream.task.value?.status).toBe(status)
+    expect(stream.task.value).toMatchObject(durations)
     expect(stream.terminal.value).toBe(true)
     expect(source.closed).toBe(true)
 
@@ -117,7 +124,7 @@ describe('useSyncTaskStream', () => {
       type: 'snapshot',
       data: {
         ...snapshot,
-        task: { ...snapshot.task, status, finish_at: 100, scan_result: scanResult },
+        task: { ...snapshot.task, status, finish_at: 100, scan_result: scanResult, ...durations },
       },
     })
     expect(refreshed.task.value).toEqual(stream.task.value)
@@ -154,7 +161,15 @@ describe('useSyncTaskStream', () => {
         type: 'snapshot',
         data: {
           ...snapshot,
-          task: { ...snapshot.task, status: 2, finish_at: 100, ledger_status: ledgerStatus },
+          task: {
+            ...snapshot.task,
+            status: 2,
+            finish_at: 100,
+            ledger_status: ledgerStatus,
+            generation_duration_ms: 123,
+            net_file_duration_ms: 100,
+            local_file_duration_ms: 0,
+          },
         },
       })
       expect(source.closed).toBe(false)
@@ -170,6 +185,8 @@ describe('useSyncTaskStream', () => {
           ledger_status: 'failed',
           ledger_finished_at: 108,
           ledger_error: '写入失败',
+          generation_duration_ms: 999,
+          total_duration_ms: 1234,
         },
       })
       expect(stream.task.value).toMatchObject({
@@ -180,6 +197,10 @@ describe('useSyncTaskStream', () => {
         ledger_status: 'failed',
         ledger_finished_at: 108,
         ledger_error: '写入失败',
+        generation_duration_ms: 123,
+        net_file_duration_ms: 100,
+        local_file_duration_ms: 0,
+        total_duration_ms: 1234,
       })
       expect(source.closed).toBe(false)
       source.emit('log_append', {

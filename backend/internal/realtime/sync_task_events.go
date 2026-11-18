@@ -75,6 +75,11 @@ type SyncTaskEventPayload struct {
 	FailReason        string            `json:"fail_reason,omitempty"`
 	Deleted           bool              `json:"deleted,omitempty"`
 	ResyncReason      string            `json:"resync_reason,omitempty"`
+
+	NetFileDurationMs    *int64 `json:"net_file_duration_ms"`
+	LocalFileDurationMs  *int64 `json:"local_file_duration_ms"`
+	GenerationDurationMs *int64 `json:"generation_duration_ms"`
+	TotalDurationMs      *int64 `json:"total_duration_ms"`
 }
 
 // IsTerminal 等待生成和后台均结束；历史未记录后台字段仍按原终态结束订阅。

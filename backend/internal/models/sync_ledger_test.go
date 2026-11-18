@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
@@ -59,12 +60,12 @@ func TestSyncLedgerPreservesGenerationAndPublishesPersistedSnapshot(t *testing.T
 	if running.Terminal || running.Payload.Status != int(SyncStatusCompleted) || running.Payload.FinishAt != task.FinishAt || running.Payload.NewStrm != 3 {
 		t.Fatalf("后台事件使用了旧生成快照: %+v", running)
 	}
-	finishedAt := task.FinishAt + 8
+	finishedAt := time.Unix(task.FinishAt+8, 0)
 	if err := stale.UpdateLedger(t.Context(), realtime.SyncLedgerFailed, &finishedAt, "access_token=secret-value"); err != nil {
 		t.Fatal(err)
 	}
 	finished := <-events
-	if !finished.Terminal || finished.Payload.Sequence != running.Payload.Sequence+1 || finished.Payload.LedgerFinishedAt == nil || *finished.Payload.LedgerFinishedAt != finishedAt {
+	if !finished.Terminal || finished.Payload.Sequence != running.Payload.Sequence+1 || finished.Payload.LedgerFinishedAt == nil || *finished.Payload.LedgerFinishedAt != finishedAt.Unix() {
 		t.Fatalf("后台终态事件错误: %+v", finished)
 	}
 	var stored Sync
@@ -124,7 +125,7 @@ func TestSyncLedgerRequiredWritesFailWithoutPublishing(t *testing.T) {
 	if err := db.Db.Delete(&Sync{}, task.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	finishedAt := int64(100)
+	finishedAt := time.Unix(100, 0)
 	if err := task.UpdateLedger(t.Context(), realtime.SyncLedgerCompleted, &finishedAt, ""); err == nil {
 		t.Fatal("已删除任务不能重新写回")
 	}
@@ -187,7 +188,7 @@ func TestSyncLedgerNoWorkAndObservedInterruption(t *testing.T) {
 	if err := db.Db.Create(interrupted).Error; err != nil {
 		t.Fatal(err)
 	}
-	exit := int64(128)
+	exit := time.Unix(128, 0)
 	if err := interrupted.UpdateLedger(t.Context(), realtime.SyncLedgerInterrupted, &exit, "service shutdown"); err != nil {
 		t.Fatal(err)
 	}

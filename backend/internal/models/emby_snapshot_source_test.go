@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/testfs"
 )
 
 func readSnapshotSources(t *testing.T, itemID string) (EmbyItemEvidence, []EmbySnapshotSource, []EmbyFrozenFile) {
@@ -33,7 +34,7 @@ func readSnapshotSources(t *testing.T, itemID string) (EmbyItemEvidence, []EmbyS
 
 func TestEmbySnapshotExternalReferenceKeepsManagedIdentity(t *testing.T) {
 	config, _, file := setupEmbySnapshotModelTest(t)
-	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: "/external", SyncPathID: file.SyncPathId}}
+	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: testfs.LocalPath("/external"), SyncPathID: file.SyncPathId}}
 	config.PathMappingsJSON = embyJSON(config.PathMappings)
 	if err := db.Db.Model(config).Update("path_mappings_json", config.PathMappingsJSON).Error; err != nil {
 		t.Fatal(err)
@@ -50,7 +51,7 @@ func TestEmbySnapshotExternalReferenceKeepsManagedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence, sources, files := readSnapshotSources(t, "101")
-	if len(files) != 1 || files[0].Reason != "" || files[0].LocalFilePath != file.LocalFilePath || files[0].Reference.EmbyPath != snapshot.Item.Path || files[0].Reference.LocalPath != "/external/Movie/renamed.strm" {
+	if len(files) != 1 || files[0].Reason != "" || files[0].LocalFilePath != file.LocalFilePath || files[0].Reference.EmbyPath != snapshot.Item.Path || files[0].Reference.LocalPath != testfs.LocalPath("/external/Movie/renamed.strm") {
 		t.Fatalf("managed identity or external reference lost: %+v", files)
 	}
 	if len(sources) != 1 || sources[0].SyncFileID != file.ID || sources[0].ObjectKind != "file_id" || sources[0].ObjectID != file.FileId || sources[0].AccountID != file.AccountId || sources[0].AccountIdentity == "" || strings.Contains(evidence.SourcesJSON, "secret") {
@@ -73,7 +74,7 @@ func TestEmbySnapshotUnboundSourcesKeepIdentityBeforeRedaction(t *testing.T) {
 	if err := db.Db.Create(&Settings{SettingStrm: SettingStrm{StrmBaseUrl: "https://qms.test"}}).Error; err != nil {
 		t.Fatal(err)
 	}
-	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: "/external"}}
+	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/emby", LocalRoot: testfs.LocalPath("/external")}}
 	config.PathMappingsJSON = embyJSON(config.PathMappings)
 	if err := db.Db.Model(config).Update("path_mappings_json", config.PathMappingsJSON).Error; err != nil {
 		t.Fatal(err)
@@ -252,7 +253,7 @@ func TestEmbySnapshotExplicitMappingOverridesIdenticalPathText(t *testing.T) {
 	if err := db.Db.First(&root, file.SyncPathId).Error; err != nil {
 		t.Fatal(err)
 	}
-	config.PathMappings = []EmbyPathMapping{{EmbyRoot: root.GetFullLocalPath(), LocalRoot: "/different-mount"}}
+	config.PathMappings = []EmbyPathMapping{{EmbyRoot: root.GetFullLocalPath(), LocalRoot: testfs.LocalPath("/different-mount")}}
 	config.PathMappingsJSON = embyJSON(config.PathMappings)
 	if err := db.Db.Model(config).Update("path_mappings_json", config.PathMappingsJSON).Error; err != nil {
 		t.Fatal(err)
@@ -265,7 +266,7 @@ func TestEmbySnapshotExplicitMappingOverridesIdenticalPathText(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, sources, files := readSnapshotSources(t, "101")
-	if files[0].LocalFilePath != file.LocalFilePath || files[0].Reference.LocalPath != "/different-mount/movie.strm" || sources[0].Reference.LocalRoot != "/different-mount" {
+	if files[0].LocalFilePath != file.LocalFilePath || files[0].Reference.LocalPath != testfs.LocalPath("/different-mount/movie.strm") || sources[0].Reference.LocalRoot != testfs.LocalPath("/different-mount") {
 		t.Fatalf("equal path text ignored explicit mapping: %+v", files[0])
 	}
 	refrozen, err := freezeEmbyFile(db.Db, file, files[0].SourceID, file.LocalFilePath, config)

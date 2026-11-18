@@ -150,7 +150,7 @@ func TestEmbyDeleteProviderBaiduLedgerBatchComposition(t *testing.T) {
 		file.BaseModel = BaseModel{}
 		file.FileId, file.FileName, file.PickCode = path.Join(file.Path, name), name, strconv.Itoa(11+i)
 		file.IsVideo, file.IsMeta = false, true
-		file.LocalFilePath = path.Join(path.Dir(video.LocalFilePath), name)
+		file.LocalFilePath = filepath.Join(filepath.Dir(video.LocalFilePath), name)
 		if err := db.Db.Create(&file).Error; err != nil {
 			t.Fatal(err)
 		}

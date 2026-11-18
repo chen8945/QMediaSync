@@ -49,6 +49,7 @@ func setupConcurrentStrmGenerationTaskTestDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取底层测试数据库失败: %v", err)
 	}
+	t.Cleanup(func() { _ = sqlDb.Close() })
 	sqlDb.SetMaxOpenConns(16)
 	db.Db = testDb
 	if err := db.Db.AutoMigrate(&StrmGenerationTask{}); err != nil {

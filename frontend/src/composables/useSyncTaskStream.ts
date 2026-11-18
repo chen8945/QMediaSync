@@ -120,6 +120,12 @@ export function useSyncTaskStream(
         next.local_file_start_at = payload.local_file_start_at
       if (typeof payload.local_file_finish_at === 'number')
         next.local_file_finish_at = payload.local_file_finish_at
+      if (payload.net_file_duration_ms !== undefined)
+        next.net_file_duration_ms = payload.net_file_duration_ms
+      if (payload.local_file_duration_ms !== undefined)
+        next.local_file_duration_ms = payload.local_file_duration_ms
+      if (payload.generation_duration_ms !== undefined)
+        next.generation_duration_ms = payload.generation_duration_ms
       if (typeof payload.fail_reason === 'string') next.fail_reason = payload.fail_reason
       if (payload.scan_result !== undefined) next.scan_result = payload.scan_result
     }
@@ -128,6 +134,7 @@ export function useSyncTaskStream(
     if (payload.ledger_finished_at !== undefined)
       next.ledger_finished_at = payload.ledger_finished_at
     if (payload.ledger_error !== undefined) next.ledger_error = payload.ledger_error
+    if (payload.total_duration_ms !== undefined) next.total_duration_ms = payload.total_duration_ms
     task.value = next
   }
 

@@ -38,6 +38,7 @@ func newBackgroundTestSync(t *testing.T) *SyncStrm {
 		if err := s.backgroundService.stop(ctx); err != nil {
 			t.Error(err)
 		}
+		s.Sync.Logger.Close()
 	})
 	file := &SyncFileCache{SourceType: models.SourceType115, FileId: "file", ParentId: "root", Path: "/media", FileName: "movie.mkv", FileType: v115open.TypeFile, IsVideo: true, PickCode: "pick"}
 	file.GetLocalFilePath(s.TargetPath, s.SourcePath)
@@ -57,6 +58,34 @@ func waitBackgroundTest(t *testing.T, service *syncBackgroundService) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("background did not exit")
 	}
+}
+
+func TestSyncDurationSurvivesExecutorSnapshots(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newBackgroundTestSync(t)
+		time.Sleep(17 * time.Millisecond)
+		if err := s.updateSyncSubStatus(models.SyncSubStatusProcessNetFileList); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(123 * time.Millisecond)
+		if err := s.updateSyncSubStatus(models.SyncSubStatusProcessLocalFileList); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(456 * time.Millisecond)
+		if err := s.completeSync(); err != nil {
+			t.Fatal(err)
+		}
+		if s.Sync.NetFileDurationMs == nil || *s.Sync.NetFileDurationMs != 123 || s.Sync.LocalFileDurationMs == nil || *s.Sync.LocalFileDurationMs != 456 || s.Sync.GenerationDurationMs == nil || *s.Sync.GenerationDurationMs != 596 || s.Sync.TotalDurationMs != nil {
+			t.Fatalf("执行器丢失计时快照：%+v", s.Sync)
+		}
+		time.Sleep(789 * time.Millisecond)
+		s.startBackground(true)
+		waitBackgroundTest(t, s.backgroundService)
+		stored := readBackgroundTestSync(t, s.Sync.ID)
+		if stored.NetFileDurationMs == nil || *stored.NetFileDurationMs != 123 || stored.LocalFileDurationMs == nil || *stored.LocalFileDurationMs != 456 || stored.GenerationDurationMs == nil || *stored.GenerationDurationMs != 596 || stored.TotalDurationMs == nil || *stored.TotalDurationMs != 1385 {
+			t.Fatalf("后台没有使用同一计时起点：%+v", stored)
+		}
+	})
 }
 
 func readBackgroundTestSync(t *testing.T, id uint) models.Sync {

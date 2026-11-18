@@ -198,3 +198,11 @@ export const formatDuration = (seconds: number): string => {
 
   return parts.join(' ')
 }
+
+/** 格式化毫秒耗时，满一分钟后显示整秒的时分秒。 */
+export const formatDurationMs = (milliseconds: number): string => {
+  if (milliseconds < 1) return '<1 ms'
+  if (milliseconds < 1000) return `${milliseconds} ms`
+  if (milliseconds < 60000) return `${Math.floor(milliseconds / 10) / 100} 秒`
+  return formatDuration(milliseconds / 1000)
+}

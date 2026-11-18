@@ -1,9 +1,14 @@
 import { isSyncTaskTerminal } from '@/utils/syncTaskStatusUtils'
-import type { SyncLedgerState, SyncScanResult, SyncTaskStatus } from '@/types/syncTaskStream'
+import type {
+  SyncLedgerState,
+  SyncScanResult,
+  SyncTaskStatus,
+  SyncTaskDurations,
+} from '@/types/syncTaskStream'
 
 export type SyncRecordEventType = 'sync_task_created' | 'sync_task_updated' | 'sync_task_deleted'
 
-export interface SyncRecordRow extends SyncLedgerState {
+export interface SyncRecordRow extends SyncLedgerState, SyncTaskDurations {
   id: number
   start_time: number
   end_time: number | null
@@ -19,7 +24,7 @@ export interface SyncRecordRow extends SyncLedgerState {
   scan_result?: SyncScanResult | null
 }
 
-export interface SyncTaskRecordEventPayload extends SyncLedgerState {
+export interface SyncTaskRecordEventPayload extends SyncLedgerState, SyncTaskDurations {
   sync_id: number
   sync_path_id: number
   status: number
@@ -75,6 +80,8 @@ export const mapSyncTaskPayloadToRecord = (
   ledger_status: payload.ledger_status,
   ledger_finished_at: payload.ledger_finished_at,
   ledger_error: payload.ledger_error,
+  generation_duration_ms: payload.generation_duration_ms,
+  total_duration_ms: payload.total_duration_ms,
 })
 
 export function applySyncRecordEventPatch(
@@ -105,6 +112,9 @@ export function applySyncRecordEventPatch(
             ? { ledger_finished_at: payload.ledger_finished_at }
             : {}),
           ...(payload.ledger_error !== undefined ? { ledger_error: payload.ledger_error } : {}),
+          ...(payload.total_duration_ms !== undefined
+            ? { total_duration_ms: payload.total_duration_ms }
+            : {}),
         }
       : mapSyncTaskPayloadToRecord(payload, now)
     return { records: nextRecords, total, refreshNeeded: false }

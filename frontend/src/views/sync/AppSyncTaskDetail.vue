@@ -88,7 +88,15 @@
               </span>
             </el-descriptions-item>
             <el-descriptions-item label="生成耗时">
-              {{ task ? getSyncGenerationDuration(task.created_at, task.finish_at) : '-' }}
+              {{
+                task
+                  ? getSyncGenerationDuration(
+                      task.created_at,
+                      task.finish_at,
+                      task.generation_duration_ms,
+                    )
+                  : '-'
+              }}
             </el-descriptions-item>
             <el-descriptions-item label="文件记录更新">
               {{ getSyncLedgerStatusText(task?.ledger_status) }}
@@ -203,8 +211,9 @@ import {
   getSyncLedgerStatusText,
   getSyncGenerationDuration,
   getSyncTotalDuration,
+  formatSyncDuration,
 } from '@/utils/syncTaskStatusUtils'
-import { formatDateTime, formatDuration } from '@/utils/timeUtils'
+import { formatDateTime } from '@/utils/timeUtils'
 
 // 任务详情数据结构
 interface TaskInfo {
@@ -315,7 +324,10 @@ const getTimelineItems = () => {
 
   let netFileDuration = null
   if (netFileCompleted) {
-    netFileDuration = formatDuration(netFileFinishAt! - netFileStartAt!)
+    netFileDuration = formatSyncDuration(
+      netFileFinishAt! - netFileStartAt!,
+      task.value?.net_file_duration_ms,
+    )
   }
 
   items.push({
@@ -343,7 +355,10 @@ const getTimelineItems = () => {
 
   let localFileDuration = null
   if (localFileCompleted) {
-    localFileDuration = formatDuration(localFileFinishAt! - localFileStartAt!)
+    localFileDuration = formatSyncDuration(
+      localFileFinishAt! - localFileStartAt!,
+      task.value?.local_file_duration_ms,
+    )
   }
 
   items.push({

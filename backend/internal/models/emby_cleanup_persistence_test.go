@@ -17,6 +17,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/testfs"
 )
 
 type cleanupPersistenceDatabase func(*testing.T) (*gorm.DB, func() *gorm.DB)
@@ -81,15 +82,15 @@ func seedCleanupPersistence(t *testing.T, conn *gorm.DB) (EmbyIndexToken, EmbyIt
 			t.Fatal(err)
 		}
 	}
-	root := SyncPath{SourceType: SourceType115, AccountId: account.ID, BaseCid: "root", LocalPath: "/strm", RemotePath: "/movies"}
+	root := SyncPath{SourceType: SourceType115, AccountId: account.ID, BaseCid: "root", LocalPath: testfs.LocalPath("/strm"), RemotePath: "/movies"}
 	if err := conn.Create(&root).Error; err != nil {
 		t.Fatal(err)
 	}
-	file := SyncFile{SourceType: SourceType115, AccountId: account.ID, SyncPathId: root.ID, FileId: "video", ParentId: "movie-dir", FileName: "movie.mkv", Path: "/movies/Feature", LocalFilePath: root.GetFullLocalPath() + "/Feature/movie.strm", PickCode: "cleanup-pick", Sha1: "video-generation", FileSize: 42, MTime: 123, IsVideo: true}
+	file := SyncFile{SourceType: SourceType115, AccountId: account.ID, SyncPathId: root.ID, FileId: "video", ParentId: "movie-dir", FileName: "movie.mkv", Path: "/movies/Feature", LocalFilePath: filepath.Join(root.GetFullLocalPath(), "Feature/movie.strm"), PickCode: "cleanup-pick", Sha1: "video-generation", FileSize: 42, MTime: 123, IsVideo: true}
 	if err := conn.Create(&file).Error; err != nil {
 		t.Fatal(err)
 	}
-	sidecar := SyncFile{SourceType: file.SourceType, AccountId: file.AccountId, SyncPathId: file.SyncPathId, FileId: "sidecar", ParentId: file.ParentId, FileName: "movie.nfo", Path: file.Path, LocalFilePath: root.GetFullLocalPath() + "/Feature/movie.nfo", Sha1: "sidecar-generation", FileSize: 15, MTime: 124, IsMeta: true}
+	sidecar := SyncFile{SourceType: file.SourceType, AccountId: file.AccountId, SyncPathId: file.SyncPathId, FileId: "sidecar", ParentId: file.ParentId, FileName: "movie.nfo", Path: file.Path, LocalFilePath: filepath.Join(root.GetFullLocalPath(), "Feature/movie.nfo"), Sha1: "sidecar-generation", FileSize: 15, MTime: 124, IsMeta: true}
 	if err := conn.Create(&sidecar).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func seedCleanupPersistence(t *testing.T, conn *gorm.DB) (EmbyIndexToken, EmbyIt
 	if err != nil || len(snapshot.cleanupFiles) != 1 || snapshot.cleanupFiles[0].Reason != "" {
 		t.Fatalf("invalid physical fixture: %+v, %v", snapshot.cleanupFiles, err)
 	}
-	directory := EmbyFrozenFile{SourceType: file.SourceType, AccountID: account.ID, AccountIdentity: EmbyAccountIdentity(account), SyncPathID: root.ID, LocalRoot: root.GetFullLocalPath(), RemoteRoot: root.RemotePath, RootFileID: root.BaseCid, FileID: "movie-dir", ParentID: root.BaseCid, Path: root.RemotePath, FileName: "Feature", LocalFilePath: root.GetFullLocalPath() + "/Feature"}
+	directory := EmbyFrozenFile{SourceType: file.SourceType, AccountID: account.ID, AccountIdentity: EmbyAccountIdentity(account), SyncPathID: root.ID, LocalRoot: root.GetFullLocalPath(), RemoteRoot: root.RemotePath, RootFileID: root.BaseCid, FileID: "movie-dir", ParentID: root.BaseCid, Path: root.RemotePath, FileName: "Feature", LocalFilePath: filepath.Join(root.GetFullLocalPath(), "Feature")}
 	snapshot.DirectoryScopes = []EmbyDirectoryScope{{Root: directory, MediaType: "Movie", ItemID: snapshot.Item.ItemId, LocalPath: directory.LocalFilePath, EvidenceKind: "emby_physical_ancestor", Ancestors: []EmbyDirectoryAncestor{{FileID: "0", Path: "/"}, {FileID: root.BaseCid, ParentID: "0", Path: root.RemotePath}}}}
 	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
 		t.Fatal(err)

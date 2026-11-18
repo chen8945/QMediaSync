@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -16,6 +17,7 @@ import (
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
 	syncscope "qmediasync/internal/strm/scope"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 )
 
@@ -83,6 +85,16 @@ func TestStrmGenerationScopeValidatesRemotePaths(t *testing.T) {
 				}
 				return
 			}
+			if runtime.GOOS == "windows" && strings.HasSuffix(tt.remotePath, " ") {
+				if err == nil {
+					t.Fatal("Windows 不能将末尾空格目录映射到不同的实际路径")
+				}
+				var count int64
+				if err := db.Db.Model(&models.SyncFile{}).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("不可表示路径产生了成果：count=%d err=%v", count, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,7 +103,7 @@ func TestStrmGenerationScopeValidatesRemotePaths(t *testing.T) {
 				t.Fatalf("合法目录未生成 STRM：content=%q err=%v", data, err)
 			}
 			var saved models.SyncFile
-			if err := db.Db.First(&saved).Error; err != nil || saved.Path != tt.filePath || saved.LocalFilePath != localPath {
+			if err := db.Db.First(&saved).Error; err != nil || saved.Path != tt.filePath || saved.LocalFilePath != models.SyncFileLocalPathForWrite(localPath) {
 				t.Fatalf("账本应保留实际路径：%+v err=%v", saved, err)
 			}
 		})
@@ -125,6 +137,19 @@ func TestStrmGenerationScopeDirectoryScanPreservesSpaces(t *testing.T) {
 			}
 			if _, err := ProcessPendingStrmGenerationTasks(t.Context(), service, 1); err != nil {
 				t.Fatal(err)
+			}
+			if runtime.GOOS == "windows" && strings.HasSuffix(name, " ") {
+				if err := db.Db.First(parent, parent.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if parent.Status != models.StrmGenerationStatusFailed || parent.LastError == "" {
+					t.Fatalf("不可表示目录应明确失败：%+v", parent)
+				}
+				var count int64
+				if err := db.Db.Model(&models.StrmGenerationTask{}).Where("parent_task_id = ?", parent.ID).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("不可表示目录产生了子任务：%d %v", count, err)
+				}
+				return
 			}
 			var child models.StrmGenerationTask
 			if err := db.Db.Where("parent_task_id = ?", parent.ID).First(&child).Error; err != nil || child.Path != "/"+name {
@@ -419,9 +444,7 @@ func TestStrmGenerationScopeRejectsSymlinkOutsideRoot(t *testing.T) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, outside, filepath.Join(root, "linked"))
 	oldFile := filepath.Join(outside, "movie.strm")
 	if err := os.WriteFile(oldFile, []byte("保留原文件"), 0o600); err != nil {
 		t.Fatal(err)

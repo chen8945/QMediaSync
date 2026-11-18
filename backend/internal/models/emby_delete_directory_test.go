@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/testfs"
 )
 
 type embyDirectoryTestProvider struct {
@@ -84,7 +85,7 @@ func setupEmbyDirectoryTest(t *testing.T, itemType string) (EmbyDeletionInput, *
 	if err := db.Db.Model(config).Update("enable_delete_netdisk", 1).Error; err != nil {
 		t.Fatal(err)
 	}
-	file.Path, file.ParentId, file.LocalFilePath = "/movies/Work", "work-root", "/strm/movies/Work/movie.strm"
+	file.Path, file.ParentId, file.LocalFilePath = "/movies/Work", "work-root", testfs.LocalPath("/strm/movies/Work/movie.strm")
 	if err := db.Db.Save(&file).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func setupEmbyDirectoryTest(t *testing.T, itemType string) (EmbyDeletionInput, *
 		t.Fatalf("owners=%+v", input.Owners)
 	}
 	frozen := input.Owners[0].Files[0]
-	root := EmbyFrozenFile{SourceType: frozen.SourceType, AccountID: frozen.AccountID, AccountIdentity: frozen.AccountIdentity, SyncPathID: frozen.SyncPathID, LocalRoot: frozen.LocalRoot, RemoteRoot: frozen.RemoteRoot, RootFileID: frozen.RootFileID, FileID: "work-root", ParentID: "root", Path: "/movies", FileName: "Work", LocalFilePath: "/strm/movies/Work"}
+	root := EmbyFrozenFile{SourceType: frozen.SourceType, AccountID: frozen.AccountID, AccountIdentity: frozen.AccountIdentity, SyncPathID: frozen.SyncPathID, LocalRoot: frozen.LocalRoot, RemoteRoot: frozen.RemoteRoot, RootFileID: frozen.RootFileID, FileID: "work-root", ParentID: "root", Path: "/movies", FileName: "Work", LocalFilePath: testfs.LocalPath("/strm/movies/Work")}
 	scope := EmbyDirectoryScope{Root: root, MediaType: itemType, ItemID: itemID, LocalPath: root.LocalFilePath, EvidenceKind: "emby_physical_ancestor", Ancestors: []EmbyDirectoryAncestor{{FileID: "0", Path: "/"}, {FileID: "root", ParentID: "0", Path: "/movies"}}}
 	input.CleanupPolicy = CurrentEmbyCleanupPolicy()
 	input.DirectoryScopes = []EmbyDirectoryScope{scope}
@@ -205,9 +206,9 @@ func TestEmbyDirectoryBoundaryPolicyAndPlanningRetainers(t *testing.T) {
 				input.DirectoryScopes[0].Root.FileID = "root"
 				saveEmbyDirectoryTestEvidence(t, &input, input.DirectoryScopes, nil)
 			case "nested remote root", "nested local root":
-				nested := SyncPath{SourceType: input.DirectoryScopes[0].Root.SourceType, AccountId: input.DirectoryScopes[0].Root.AccountID, BaseCid: "nested", RemotePath: "/movies/Work/Nested", LocalPath: "/strm-other"}
+				nested := SyncPath{SourceType: input.DirectoryScopes[0].Root.SourceType, AccountId: input.DirectoryScopes[0].Root.AccountID, BaseCid: "nested", RemotePath: "/movies/Work/Nested", LocalPath: testfs.LocalPath("/strm-other")}
 				if name == "nested local root" {
-					nested.RemotePath, nested.LocalPath = "/elsewhere", "/strm/movies/Work/nested"
+					nested.RemotePath, nested.LocalPath = "/elsewhere", testfs.LocalPath("/strm/movies/Work/nested")
 				}
 				if err := db.Db.Create(&nested).Error; err != nil {
 					t.Fatal(err)
@@ -242,7 +243,7 @@ func addEmbyDirectoryRetainedUser(t *testing.T, input EmbyDeletionInput, complet
 	t.Helper()
 	file := input.Owners[0].Files[0]
 	file.SyncFileID, file.FileID, file.PickCode, file.FileName = 0, "other-file", "other-code", "other.mkv"
-	file.LocalFilePath = "/strm/movies/Work/other.strm"
+	file.LocalFilePath = testfs.LocalPath("/strm/movies/Work/other.strm")
 	row := SyncFile{SourceType: file.SourceType, AccountId: file.AccountID, SyncPathId: file.SyncPathID, FileId: file.FileID, ParentId: file.ParentID, Path: file.Path, LocalFilePath: file.LocalFilePath, FileName: file.FileName, FileSize: file.FileSize, Sha1: file.SHA1, MTime: file.MTime, PickCode: file.PickCode, IsVideo: true}
 	if err := db.Db.Create(&row).Error; err != nil {
 		t.Fatal(err)
@@ -298,7 +299,7 @@ func TestEmbyDirectoryHighestProvenRootAndEscapedSubtree(t *testing.T) {
 	input, provider := setupEmbyDirectoryTest(t, "Series")
 	child := input.DirectoryScopes[0]
 	child.Root.Path, child.Root.FileName, child.Root.FileID, child.Root.ParentID = "/movies/Work", "Season", "season-root", "work-root"
-	child.Root.LocalFilePath, child.LocalPath = "/strm/movies/Work/Season", "/strm/movies/Work/Season"
+	child.Root.LocalFilePath, child.LocalPath = testfs.LocalPath("/strm/movies/Work/Season"), testfs.LocalPath("/strm/movies/Work/Season")
 	child.Ancestors = append(slices.Clone(child.Ancestors), EmbyDirectoryAncestor{FileID: "work-root", ParentID: "root", Path: "/movies/Work"})
 	input.DirectoryScopes = append([]EmbyDirectoryScope{child}, input.DirectoryScopes...)
 	saveEmbyDirectoryTestEvidence(t, &input, input.DirectoryScopes, nil)

@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/testfs"
 )
 
 func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, SyncFile) {
@@ -29,11 +31,11 @@ func setupEmbySnapshotModelTest(t *testing.T) (*EmbyConfig, EmbyIndexToken, Sync
 	if err := db.Db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	root := SyncPath{SourceType: SourceType115, AccountId: account.ID, LocalPath: "/strm", RemotePath: "/movies", BaseCid: "root"}
+	root := SyncPath{SourceType: SourceType115, AccountId: account.ID, LocalPath: testfs.LocalPath("/strm"), RemotePath: "/movies", BaseCid: "root"}
 	if err := db.Db.Create(&root).Error; err != nil {
 		t.Fatal(err)
 	}
-	file := SyncFile{SourceType: SourceType115, AccountId: account.ID, SyncPathId: root.ID, FileId: "f1", PickCode: "p1", Path: "/movies", LocalFilePath: root.GetFullLocalPath() + "/movie.strm", FileName: "movie.mkv", FileSize: 100, Sha1: "sha1", MTime: 123, IsVideo: true}
+	file := SyncFile{SourceType: SourceType115, AccountId: account.ID, SyncPathId: root.ID, FileId: "f1", PickCode: "p1", Path: "/movies", LocalFilePath: filepath.Join(root.GetFullLocalPath(), "movie.strm"), FileName: "movie.mkv", FileSize: 100, Sha1: "sha1", MTime: 123, IsVideo: true}
 	if err := db.Db.Create(&file).Error; err != nil {
 		t.Fatal(err)
 	}

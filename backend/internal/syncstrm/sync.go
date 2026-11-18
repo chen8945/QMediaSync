@@ -333,6 +333,7 @@ func (s *SyncStrm) updateSyncSubStatus(status models.SyncSubStatus) error {
 	}
 	s.Sync.SubStatus, s.Sync.UpdatedAt = snapshot.SubStatus, snapshot.UpdatedAt
 	s.Sync.NetFileStartAt, s.Sync.NetFileFinishAt, s.Sync.LocalFileStartAt = snapshot.NetFileStartAt, snapshot.NetFileFinishAt, snapshot.LocalFileStartAt
+	s.Sync.NetFileStartedAt, s.Sync.LocalFileStartedAt, s.Sync.NetFileDurationMs = snapshot.NetFileStartedAt, snapshot.LocalFileStartedAt, snapshot.NetFileDurationMs
 	return nil
 }
 
@@ -374,6 +375,8 @@ func (s *SyncStrm) completeSync() error {
 	s.Sync.Status, s.Sync.FailReason, s.Sync.FinishAt = snapshot.Status, snapshot.FailReason, snapshot.FinishAt
 	s.Sync.LocalFileFinishAt, s.Sync.UpdatedAt = snapshot.LocalFileFinishAt, snapshot.UpdatedAt
 	s.Sync.ScanResult, s.Sync.IsFullSync = snapshot.ScanResult, snapshot.IsFullSync
+	s.Sync.NetFileFinishAt, s.Sync.NetFileDurationMs, s.Sync.LocalFileDurationMs = snapshot.NetFileFinishAt, snapshot.NetFileDurationMs, snapshot.LocalFileDurationMs
+	s.Sync.GenerationDurationMs, s.Sync.TotalDurationMs = snapshot.GenerationDurationMs, snapshot.TotalDurationMs
 	s.Sync.LedgerStatus, s.Sync.LedgerFinishedAt, s.Sync.LedgerError = snapshot.LedgerStatus, snapshot.LedgerFinishedAt, snapshot.LedgerError
 	s.generationSaved = true
 	finished = true
@@ -419,6 +422,8 @@ func (s *SyncStrm) failSync(cause error) (resultErr error) {
 	s.Sync.ScanResult, s.Sync.IsFullSync = snapshot.ScanResult, snapshot.IsFullSync
 	s.Sync.LedgerStatus, s.Sync.LedgerFinishedAt, s.Sync.LedgerError = snapshot.LedgerStatus, snapshot.LedgerFinishedAt, snapshot.LedgerError
 	s.Sync.Total, s.Sync.NewStrm, s.Sync.NewMeta, s.Sync.NewUpload = snapshot.Total, snapshot.NewStrm, snapshot.NewMeta, snapshot.NewUpload
+	s.Sync.NetFileFinishAt, s.Sync.NetFileDurationMs, s.Sync.LocalFileDurationMs = snapshot.NetFileFinishAt, snapshot.NetFileDurationMs, snapshot.LocalFileDurationMs
+	s.Sync.GenerationDurationMs, s.Sync.TotalDurationMs = snapshot.GenerationDurationMs, snapshot.TotalDurationMs
 	s.generationSaved = true
 	return cause
 }

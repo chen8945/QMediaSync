@@ -1,5 +1,12 @@
 export type SyncTaskStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6
 
+export interface SyncTaskDurations {
+  net_file_duration_ms?: number | null
+  local_file_duration_ms?: number | null
+  generation_duration_ms?: number | null
+  total_duration_ms?: number | null
+}
+
 export interface SyncLedgerState {
   ledger_status?:
     'not_required' | 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | null
@@ -16,7 +23,7 @@ export interface SyncScanResult {
   cleanup_reason: string
 }
 
-export interface SyncTask extends SyncLedgerState {
+export interface SyncTask extends SyncLedgerState, SyncTaskDurations {
   id: number
   sync_path_id: number
   created_at: number
@@ -38,7 +45,7 @@ export interface SyncTask extends SyncLedgerState {
   scan_result?: SyncScanResult | null
 }
 
-export interface SyncTaskEventPayload extends SyncLedgerState {
+export interface SyncTaskEventPayload extends SyncLedgerState, SyncTaskDurations {
   sync_id: number
   sync_path_id: number
   status: number

@@ -15,6 +15,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -1152,9 +1153,7 @@ func TestUploadSkipsDirectoryMonitorSymlinkChangedOutsideBeforeUpload(t *testing
 		t.Fatalf("设置监控外目标 mtime 失败: %v", err)
 	}
 	linkPath := filepath.Join(monitorPath, "movie.mkv")
-	if err := os.Symlink(insideTarget, linkPath); err != nil {
-		t.Fatalf("创建 symlink 失败: %v", err)
-	}
+	testfs.Symlink(t, insideTarget, linkPath)
 	info, err := os.Stat(linkPath)
 	if err != nil {
 		t.Fatalf("读取 symlink 指向文件失败: %v", err)
@@ -1206,9 +1205,7 @@ func TestUploadSkipsDirectoryMonitorSymlinkChangedOutsideBeforeUpload(t *testing
 	if err := os.Remove(linkPath); err != nil {
 		t.Fatalf("删除原 symlink 失败: %v", err)
 	}
-	if err := os.Symlink(outsideTarget, linkPath); err != nil {
-		t.Fatalf("切换 symlink 到监控外失败: %v", err)
-	}
+	testfs.Symlink(t, outsideTarget, linkPath)
 
 	task.Upload()
 

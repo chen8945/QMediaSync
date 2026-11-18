@@ -466,11 +466,17 @@ describe('同步记录后台状态', () => {
     const handlers = vi.mocked(useRealtimeEvent).mock.calls
     const reconnect = handlers.find(([name]) => name === 'sync_task_created')![2]!
     const update = handlers.find(([name]) => name === 'sync_task_updated')![1]
-    const pending = { ...record, ledger_status: 'pending' }
+    const pending = {
+      ...record,
+      ledger_status: 'pending',
+      generation_duration_ms: 123,
+      total_duration_ms: null,
+    }
     readReply.mockResolvedValueOnce(envelope({ records: [pending], total: 1 }))
     reconnect()
     await flushPromises()
     expect(wrapper.text()).toContain('等待后台更新记录')
+    expect(field('generation_duration')).toBe('123 ms')
     expect(field('total_duration')).toBe('统计中')
     update({
       sync_id: 1,
@@ -482,15 +488,18 @@ describe('同步记录后台状态', () => {
       ledger_status: 'failed',
       ledger_finished_at: 10,
       ledger_error: '写入失败',
+      generation_duration_ms: 999,
+      total_duration_ms: 1234,
     })
     await flushPromises()
     expect(field('status')).toBe('已完成')
     expect(field('stats')).toContain('STRM 2')
-    expect(field('generation_duration')).toBe('1 秒')
-    expect(field('total_duration')).toBe('9 秒')
+    expect(field('generation_duration')).toBe('123 ms')
+    expect(field('total_duration')).toBe('1.23 秒')
     expect(field('ledger_error')).toBe('写入失败')
     const failed = {
-      ...record,
+      ...pending,
+      total_duration_ms: 1234,
       ledger_status: 'failed',
       ledger_finished_at: 10,
       ledger_error: '写入失败',
@@ -498,8 +507,8 @@ describe('同步记录后台状态', () => {
     readReply.mockResolvedValueOnce(envelope({ records: [failed], total: 1 }))
     reconnect()
     await flushPromises()
-    expect(field('generation_duration')).toBe('1 秒')
-    expect(field('total_duration')).toBe('9 秒')
+    expect(field('generation_duration')).toBe('123 ms')
+    expect(field('total_duration')).toBe('1.23 秒')
     expect(wrapper.text()).toContain('记录更新失败')
   })
 })

@@ -105,7 +105,7 @@ func testMediaLibraryMigration(t *testing.T, setup func(*testing.T) (*gorm.DB, f
 
 func assertMediaLibraryDefaults(t *testing.T, conn *gorm.DB, oldConfig bool) {
 	t.Helper()
-	assertEmbyMigrationVersion(t, conn, 71)
+	assertEmbyMigrationVersion(t, conn, MaxVersionCode)
 	var emby EmbyConfig
 	var jellyfin JellyfinConfig
 	if err := conn.First(&emby).Error; err != nil {

@@ -626,7 +626,7 @@ func NewLogger(logFileName string, isConsole bool, rotate bool) *QLogger {
 			writers = append(writers, rotation)
 		}
 	} else {
-		fd, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		fd, err := openAppendLogFile(logFile)
 		if err != nil {
 			log.Printf("Failed to open log file: %v", err)
 			writers = append(writers, os.Stdout)

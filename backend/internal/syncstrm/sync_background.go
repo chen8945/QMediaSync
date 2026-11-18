@@ -187,7 +187,7 @@ func (s *SyncStrm) runBackgroundLedger() {
 }
 
 func (s *SyncStrm) finishBackgroundLedger(status realtime.SyncLedgerStatus, cause error) {
-	finishedAt := time.Now().Unix()
+	finishedAt := time.Now()
 	message := "同步文件记录更新结束"
 	switch status {
 	case realtime.SyncLedgerCompleted:

@@ -78,6 +78,8 @@ QMediaSync 使用 Server-Sent Events（SSE）提供只读实时更新。启动�
 
 代理层的缓冲、超时和可信转发 header 要求见 [反向代理](../operations/reverse-proxy.md)。
 
+HTTP 快照、详情流和全局事件使用相同的可空耗时字段：`net_file_duration_ms`、`local_file_duration_ms`、`generation_duration_ms`、`total_duration_ms`。NULL 表示未记录，0 是有效的不足 1 毫秒。生成终态冻结阶段及生成耗时，后续后台事件仍可更新总耗时；重连与 HTTP 降级保留同一显示精度。字段语义见 [数据库 schema](../reference/database-schema.md#syncs)。
+
 ## 不变量
 
 - SSE 只从服务端向浏览器推送状态，写操作仍通过既有鉴权和 CSRF 保护的 HTTP API。

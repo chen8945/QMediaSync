@@ -88,6 +88,33 @@ describe('同步任务失败范围展示', () => {
 })
 
 describe('同步任务后台结果与双耗时', () => {
+  it('时间线、生成和总耗时使用毫秒，开始结束时间仍显示到秒', () => {
+    task.value = {
+      ...baseTask,
+      net_file_duration_ms: 123,
+      local_file_duration_ms: 0,
+      generation_duration_ms: 1234,
+      total_duration_ms: 61230,
+      ledger_status: 'completed',
+      ledger_finished_at: 72,
+    }
+    const wrapper = shallowMount(AppSyncTaskDetail, {
+      global: { renderStubDefaultSlot: true, directives: { loading: () => {} } },
+    })
+    expect(wrapper.text()).toContain('耗时：123 ms')
+    expect(wrapper.text()).toContain('耗时：<1 ms')
+    const description = (name: string) =>
+      wrapper
+        .findAll('el-descriptions-item-stub')
+        .find((item) => item.attributes('label') === name)!
+        .text()
+    expect(description('生成耗时')).toBe('1.23 秒')
+    expect(description('总耗时')).toBe('1 分 1 秒')
+    expect(description('开始时间')).toMatch(/\d{2}:\d{2}:\d{2}$/)
+    expect(description('结束时间')).toMatch(/\d{2}:\d{2}:\d{2}$/)
+    wrapper.unmount()
+  })
+
   it.each<[SyncLedgerState, string, string]>([
     [{ ledger_status: 'pending' }, '等待后台更新记录', '统计中'],
     [{ ledger_status: 'running' }, '后台更新记录中', '统计中'],

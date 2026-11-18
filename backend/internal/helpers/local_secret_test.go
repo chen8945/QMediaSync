@@ -3,6 +3,7 @@ package helpers
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func TestInitEncryptionKeyCreatesAndReusesLocalKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读取本机加密密钥文件失败: %v", err)
 		}
-		if info.Mode().Perm() != 0600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 			t.Fatalf("本机加密密钥文件权限 = %v，期望 0600", info.Mode().Perm())
 		}
 

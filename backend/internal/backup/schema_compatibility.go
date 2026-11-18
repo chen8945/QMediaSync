@@ -10,6 +10,8 @@ import (
 	"qmediasync/internal/models"
 )
 
+var syncDurationColumns = []string{"net_file_duration_ms", "local_file_duration_ms", "generation_duration_ms", "total_duration_ms"}
+
 func legacyEmbyIdentityColumn() logicalColumn {
 	return logicalColumn{Name: "emby_item_id", Type: "unsigned_integer", Bits: 64}
 }
@@ -92,6 +94,15 @@ func supportsLogicalSchemaVersion(version int) bool {
 
 // logicalTablesForSchemaVersion 只回退明确新增的表和列，其他清单、行及文件校验保持原样。
 func logicalTablesForSchemaVersion(tables []logicalTable, version int) []logicalTable {
+	if version < 72 {
+		for i := range tables {
+			if tables[i].Name == "syncs" {
+				tables[i].Columns = slices.DeleteFunc(tables[i].Columns, func(column logicalColumn) bool {
+					return slices.Contains(syncDurationColumns, column.Name)
+				})
+			}
+		}
+	}
 	if version < 71 {
 		tables = slices.DeleteFunc(tables, func(table logicalTable) bool { return table.Name == "jellyfin_config" })
 		for i := range tables {
@@ -146,6 +157,29 @@ func logicalExclusionsForSchemaVersion(excluded []logicalExclusion, version int)
 		})
 	}
 	return excluded
+}
+
+// adaptSyncDurationRestorePlan 保留旧记录的未知精度，不从秒时间戳补造毫秒耗时。
+func adaptSyncDurationRestorePlan(plan *restorePlan) {
+	for i := range plan.tables {
+		table := &plan.tables[i]
+		readRows, name := table.readRows, table.schema.Table
+		if name != "syncs" && name != "migrator" {
+			continue
+		}
+		table.readRows = func(consume func(map[string]any) error) error {
+			return readRows(func(row map[string]any) error {
+				if name == "migrator" {
+					row["version_code"] = int64(models.MaxVersionCode)
+				} else {
+					for _, field := range syncDurationColumns {
+						row[field] = nil
+					}
+				}
+				return consume(row)
+			})
+		}
+	}
 }
 
 // adaptPreloadRestorePlan 只为已验证的旧版本补关闭值，不继承目标机的预加载开关。

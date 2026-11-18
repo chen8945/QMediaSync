@@ -28,6 +28,8 @@ CI 另有 `release-scripts` job，在 Linux 运行安装、发版、fnpack 获�
 
 局部加载遮罩的导航层级契约随 Vitest 执行；浏览器中的绘制、点击命中及模态层级按 [稳定回归验证](../engineering/verification.md#稳定回归验证) 复核。
 
+同步耗时的格式边界、历史回退和 HTTP／SSE 收敛回归沿用现有 Vitest 与 Go 测试入口；迁移、备份和额外 PostgreSQL 验证见 [同步耗时精度验证](../engineering/verification.md#同步耗时精度验证)。Windows 扩展回归使用同一套长期测试，文件系统夹具与权限限制按 [验证选择原则](../engineering/verification.md#选择原则) 报告，跳过不计为实际通过。
+
 跨接口响应变更按 [API 响应验证](../engineering/verification.md#api-响应验证) 完成一次同构建基本成品联调，后端、前端与向导共同切换；实际结果和未验证条件单独记录，不增加发布设施。
 
 下载、上传队列的全局剩余数、筛选分页、快照刷新、下载状态过滤选项和详情标签，以及上传并发设置的保存和校验回归也随 Vitest 执行。状态验证使用组件公开选项和详情结果，不绑定帮助文案或源码导入格式。后端同时覆盖上传并发调整、暂停恢复、任务领取和设置迁移，验证方式见 [稳定回归验证](../engineering/verification.md#稳定回归验证)。

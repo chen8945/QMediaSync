@@ -83,6 +83,7 @@ func TestLogEffectiveStrmConfigUsesGlobalSources(t *testing.T) {
 	if syncStrm == nil {
 		t.Fatal("NewSyncStrmFromSyncPath() 返回 nil")
 	}
+	t.Cleanup(func() { syncStrm.Cancel(); syncStrm.Sync.Logger.Close() })
 
 	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames, syncStrm.Config.ExcludeNameRegexes)
 
@@ -175,6 +176,7 @@ func TestLogEffectiveStrmConfigUsesMixedSources(t *testing.T) {
 	if syncStrm == nil {
 		t.Fatal("NewSyncStrmFromSyncPath() 返回 nil")
 	}
+	t.Cleanup(func() { syncStrm.Cancel(); syncStrm.Sync.Logger.Close() })
 
 	logEffectiveStrmConfig(syncPath, syncStrm.Config.VideoExt, syncStrm.Config.MetaExt, syncStrm.Config.ExcludeNames, syncStrm.Config.ExcludeNameRegexes)
 

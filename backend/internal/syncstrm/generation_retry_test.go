@@ -14,6 +14,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
+	"qmediasync/internal/testfs"
 )
 
 func retryFile(t *testing.T, sp *models.SyncPath, name string) *models.StrmGenerationTask {
@@ -63,9 +64,7 @@ func TestGenerationFinalizingScopeFailureRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	broken := filepath.Join(t.TempDir(), "broken-target")
-	if err := os.Symlink(broken, broken); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, broken, broken)
 	if err := db.Db.Model(sp).Update("local_path", broken).Error; err != nil {
 		t.Fatal(err)
 	}

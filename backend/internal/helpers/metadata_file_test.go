@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"qmediasync/internal/testfs"
 )
 
 func TestMetadataSafeWrite(t *testing.T) {
@@ -159,9 +161,7 @@ func TestMetadataConcurrentPublish(t *testing.T) {
 			publish := make(chan struct{})
 			results := make(chan error, 2)
 			aliasDir := filepath.Join(t.TempDir(), "alias")
-			if err := os.Symlink(filepath.Dir(path), aliasDir); err != nil {
-				t.Fatal(err)
-			}
+			testfs.Symlink(t, filepath.Dir(path), aliasDir)
 			for i, content := range []string{"one", "two"} {
 				target := path
 				if i == 1 {
@@ -203,9 +203,7 @@ func TestMetadataRejectsSymlinkTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, target, link)
 	if _, err := MetadataFingerprint(link); err == nil {
 		t.Fatal("symlink fingerprint accepted")
 	}
@@ -234,9 +232,7 @@ func TestMetadataCopySymlinkSource(t *testing.T) {
 			if err := os.Chtimes(source, mtime, mtime); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink("source.nfo", link); err != nil {
-				t.Fatal(err)
-			}
+			testfs.Symlink(t, "source.nfo", link)
 			baseline, err := MetadataFingerprint(target)
 			if err != nil {
 				t.Fatal(err)

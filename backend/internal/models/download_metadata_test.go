@@ -17,6 +17,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/testfs"
 )
 
 func TestMetadataDownloadSourceHashes(t *testing.T) {
@@ -146,9 +147,7 @@ func TestMetadataDownloadRecovery(t *testing.T) {
 			}
 			if mode == "source_link" {
 				link := filepath.Join(filepath.Dir(source), "link.nfo")
-				if err := os.Symlink(source, link); err != nil {
-					t.Fatal(err)
-				}
+				testfs.Symlink(t, source, link)
 				source = link
 			}
 			if err := os.WriteFile(target, []byte("old"), 0644); err != nil {

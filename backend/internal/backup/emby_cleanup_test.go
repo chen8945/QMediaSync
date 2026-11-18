@@ -13,6 +13,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/models"
+	"qmediasync/internal/testfs"
 )
 
 func TestBackupRestoreEmbyCleanupAuthorityAndAttempts(t *testing.T) {
@@ -90,11 +91,11 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 	if err := conn.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	root := models.SyncPath{SourceType: account.SourceType, AccountId: account.ID, BaseCid: "root", LocalPath: "/strm", RemotePath: "/movies"}
+	root := models.SyncPath{SourceType: account.SourceType, AccountId: account.ID, BaseCid: "root", LocalPath: testfs.LocalPath("/strm"), RemotePath: "/movies"}
 	if err := conn.Create(&root).Error; err != nil {
 		t.Fatal(err)
 	}
-	mappings := []models.EmbyPathMapping{{EmbyRoot: "/emby/电影", LocalRoot: "/mounted/电影", SyncPathID: root.ID}}
+	mappings := []models.EmbyPathMapping{{EmbyRoot: "/emby/电影", LocalRoot: testfs.LocalPath("/mounted/电影"), SyncPathID: root.ID}}
 	if _, err := models.NormalizeEmbyPathMappings(mappings); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 	if err := conn.Create(&rootEvidence).Error; err != nil {
 		t.Fatal(err)
 	}
-	file := models.SyncFile{SourceType: account.SourceType, AccountId: account.ID, SyncPathId: root.ID, FileId: "video", ParentId: "feature-dir", FileName: "movie.mkv", Path: "/movies/Feature", LocalFilePath: root.GetFullLocalPath() + "/Feature/movie.strm", PickCode: "backup-pick", Sha1: "video-generation", FileSize: 100, MTime: 123, IsVideo: true}
+	file := models.SyncFile{SourceType: account.SourceType, AccountId: account.ID, SyncPathId: root.ID, FileId: "video", ParentId: "feature-dir", FileName: "movie.mkv", Path: "/movies/Feature", LocalFilePath: filepath.Join(root.GetFullLocalPath(), "Feature/movie.strm"), PickCode: "backup-pick", Sha1: "video-generation", FileSize: 100, MTime: 123, IsVideo: true}
 	if err := conn.Create(&file).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func seedEmbyCleanupBackup(t *testing.T, conn *gorm.DB) embyCleanupBackupFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory := models.EmbyFrozenFile{SyncPathID: root.ID, SourceType: root.SourceType, AccountID: account.ID, AccountIdentity: models.EmbyAccountIdentity(account), LocalRoot: root.GetFullLocalPath(), RemoteRoot: root.RemotePath, RootFileID: root.BaseCid, FileID: file.ParentId, ParentID: root.BaseCid, FileName: "Feature", Path: root.RemotePath, LocalFilePath: root.GetFullLocalPath() + "/Feature"}
+	directory := models.EmbyFrozenFile{SyncPathID: root.ID, SourceType: root.SourceType, AccountID: account.ID, AccountIdentity: models.EmbyAccountIdentity(account), LocalRoot: root.GetFullLocalPath(), RemoteRoot: root.RemotePath, RootFileID: root.BaseCid, FileID: file.ParentId, ParentID: root.BaseCid, FileName: "Feature", Path: root.RemotePath, LocalFilePath: filepath.Join(root.GetFullLocalPath(), "Feature")}
 	scope := models.EmbyDirectoryScope{Root: directory, MediaType: "Movie", ItemID: "101", LocalPath: directory.LocalFilePath, EvidenceKind: "qms_scrape_output", Ancestors: []models.EmbyDirectoryAncestor{{FileID: "0", Path: "/"}, {FileID: root.BaseCid, ParentID: "0", Path: root.RemotePath}}}
 	metadata.DirectoryScopes = []models.EmbyDirectoryScope{scope}
 	// 构造已保存的合法目录观察，后续走生产收件、计划、尝试和备份／恢复入口。

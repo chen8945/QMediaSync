@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -144,7 +145,7 @@ func TestEmbyOpenListPlanDeletesVideoAndSidecarWithDownloadURLs(t *testing.T) {
 	sidecar := video
 	sidecar.BaseModel = BaseModel{}
 	sidecar.FileId, sidecar.FileName = "/movies/movie.nfo", "movie.nfo"
-	sidecar.LocalFilePath = path.Join(path.Dir(video.LocalFilePath), "movie.nfo")
+	sidecar.LocalFilePath = filepath.Join(filepath.Dir(video.LocalFilePath), "movie.nfo")
 	sidecar.OpenlistObjectId, sidecar.OpenlistSHA1 = "nfo-object", "nfo-hash"
 	sidecar.PickCode = helpers.MakeOpenListUrl(server.URL, "test-sign", sidecar.FileId)
 	sidecar.IsVideo, sidecar.IsMeta = false, true

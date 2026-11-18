@@ -354,7 +354,8 @@ const syncRecordColumns: RecordColumn<SyncRecord>[] = [
     detailField: {
       key: 'generation_duration',
       label: '生成耗时',
-      value: (row) => getSyncGenerationDuration(row.start_time, row.end_time),
+      value: (row) =>
+        getSyncGenerationDuration(row.start_time, row.end_time, row.generation_duration_ms),
     },
   },
   {
@@ -526,6 +527,8 @@ const loadSyncRecords = async () => {
           ledger_status: item.ledger_status,
           ledger_finished_at: item.ledger_finished_at,
           ledger_error: item.ledger_error,
+          generation_duration_ms: item.generation_duration_ms,
+          total_duration_ms: item.total_duration_ms,
         }))
 
         for (const payload of requestEvents) {

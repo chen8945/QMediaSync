@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"qmediasync/internal/db"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 )
 
@@ -19,8 +21,8 @@ func localEpisodeSnapshot(file SyncFile) (EmbyItemSnapshot, []EmbyMediaDirectory
 	snapshot.Item.Type, snapshot.Item.SeriesId, snapshot.Item.SeasonId, snapshot.Item.ParentIndexNumber = "Episode", "201", "202", 1
 	season := 1
 	return snapshot, []EmbyMediaDirectory{
-		{ItemID: "201", MediaType: "Series", LocalPath: "/strm/movies/Show"},
-		{ItemID: "202", MediaType: "Season", LocalPath: "/strm/movies/Show/Season 1", SeasonNumber: &season},
+		{ItemID: "201", MediaType: "Series", LocalPath: testfs.LocalPath("/strm/movies/Show")},
+		{ItemID: "202", MediaType: "Season", LocalPath: testfs.LocalPath("/strm/movies/Show/Season 1"), SeasonNumber: &season},
 	}
 }
 
@@ -369,7 +371,7 @@ func TestEmbySeasonPosterQueryUsesExactDirectory(t *testing.T) {
 		if i == 0 {
 			poster.Path = "/movies/Show"
 		}
-		poster.LocalFilePath = filepath.Join("/strm", poster.Path, poster.FileName)
+		poster.LocalFilePath = filepath.Join(testfs.LocalPath("/strm"), poster.Path, poster.FileName)
 		if err := db.Db.Create(&poster).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -421,7 +423,7 @@ func TestEmbyLocalDirectoryKeepsRolesWithoutFileAndUsesExplicitMapping(t *testin
 			if err := db.Db.First(&config).Error; err != nil {
 				t.Fatal(err)
 			}
-			mapping := EmbyPathMapping{EmbyRoot: "/external", LocalRoot: "/mounted"}
+			mapping := EmbyPathMapping{EmbyRoot: "/external", LocalRoot: testfs.LocalPath("/mounted")}
 			if mode == "mapped_windows" {
 				mapping.EmbyRoot = `D:\External`
 			} else if mode == "mapped_unc" {
@@ -442,7 +444,7 @@ func TestEmbyLocalDirectoryKeepsRolesWithoutFileAndUsesExplicitMapping(t *testin
 			snapshot.Item.Path = "/external/Show/Season 1/external.strm"
 			snapshot.Sources = []EmbySnapshotSource{{ID: "outside", ItemID: "101", Path: "https://qms.test/115/url/video.mkv?userid=owner&pickcode=untracked", PickCode: "untracked"}}
 			for i := range roles {
-				roles[i].LocalPath = strings.Replace(roles[i].LocalPath, "/strm/movies", "/external", 1)
+				roles[i].LocalPath = strings.Replace(filepath.ToSlash(roles[i].LocalPath), filepath.ToSlash(testfs.LocalPath("/strm/movies")), "/external", 1)
 			}
 			if mode == "mapped_windows" || mode == "mapped_unc" {
 				snapshot.Item.Path = mapping.EmbyRoot + `\Show\Season 1\external.strm`
@@ -510,7 +512,7 @@ func TestEmbyLocalDirectorySameCodeDifferentAccountKeepsUnboundScope(t *testing.
 	if err := db.Db.First(&config).Error; err != nil {
 		t.Fatal(err)
 	}
-	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/external", LocalRoot: "/mounted", SyncPathID: originalRoot}}
+	config.PathMappings = []EmbyPathMapping{{EmbyRoot: "/external", LocalRoot: testfs.LocalPath("/mounted"), SyncPathID: originalRoot}}
 	if err := db.Db.Model(&config).Update("path_mappings_json", embyJSON(config.PathMappings)).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +527,7 @@ func TestEmbyLocalDirectorySameCodeDifferentAccountKeepsUnboundScope(t *testing.
 		{ID: "unbound-owner", ItemID: "101", Path: "https://qms.test/115/newurl?userid=owner&pickcode=p1", PickCode: "p1"},
 	}
 	for i := range roles {
-		roles[i].LocalPath = strings.Replace(roles[i].LocalPath, "/strm/movies", "/external", 1)
+		roles[i].LocalPath = strings.Replace(filepath.ToSlash(roles[i].LocalPath), filepath.ToSlash(testfs.LocalPath("/strm/movies")), "/external", 1)
 	}
 	collector := EmbyDirectoryEvidenceCollector{}
 	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
@@ -557,15 +559,15 @@ func TestEmbyManagedMediaDirectoryHonorsExplicitMappingBoundaries(t *testing.T) 
 		name, embyRoot, directory, want string
 		syncPathID                      uint
 	}{
-		{name: "Windows", embyRoot: `D:\External`, directory: `d:\external\Show`, want: "/strm/movies/Show", syncPathID: 1},
-		{name: "UNC", embyRoot: `\\server\share\External`, directory: `\\SERVER\share\External\Show`, want: "/strm/movies/Show", syncPathID: 1},
+		{name: "Windows", embyRoot: `D:\External`, directory: `d:\external\Show`, want: testfs.LocalPath("/strm/movies/Show"), syncPathID: 1},
+		{name: "UNC", embyRoot: `\\server\share\External`, directory: `\\SERVER\share\External\Show`, want: testfs.LocalPath("/strm/movies/Show"), syncPathID: 1},
 		{name: "sibling prefix", embyRoot: `D:\External`, directory: `D:\External-other\Show`, syncPathID: 1},
 		{name: "traversal", embyRoot: `D:\External`, directory: `D:\External\..\Show`, syncPathID: 1},
-		{name: "same text mount only", embyRoot: "/strm/movies", directory: "/strm/movies/Show"},
+		{name: "same text mount only", embyRoot: testfs.LocalPath("/strm/movies"), directory: testfs.LocalPath("/strm/movies/Show")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			file := EmbyFrozenFile{SyncPathID: 1, LocalRoot: "/strm/movies", LocalFilePath: "/strm/movies/Show/video.strm",
-				Reference: EmbySTRMReference{EmbyPath: "/strm/movies/Show/video.strm", EmbyRoot: tc.embyRoot, LocalRoot: "/mounted", SyncPathID: tc.syncPathID}}
+			file := EmbyFrozenFile{SyncPathID: 1, LocalRoot: testfs.LocalPath("/strm/movies"), LocalFilePath: testfs.LocalPath("/strm/movies/Show/video.strm"),
+				Reference: EmbySTRMReference{EmbyPath: testfs.LocalPath("/strm/movies/Show/video.strm"), EmbyRoot: tc.embyRoot, LocalRoot: testfs.LocalPath("/mounted"), SyncPathID: tc.syncPathID}}
 			got, valid := embyManagedMediaDirectory(file, tc.directory)
 			if valid != (tc.want != "") || got != tc.want {
 				t.Fatalf("directory = %q, %v; want %q", got, valid, tc.want)
@@ -608,7 +610,7 @@ func TestEmbyLocalBaiduDirectoryReusesHistoricalFSIDsWithoutHTTP(t *testing.T) {
 					nodeIndex := i + 2
 					node := chain[nodeIndex]
 					root := frozen[0]
-					root.SyncFileID, root.FileID, root.ParentID, root.FileName, root.Path, root.LocalFilePath = 0, node.FileID, node.ParentID, filepath.Base(node.Path), filepath.Dir(node.Path), role.LocalPath
+					root.SyncFileID, root.FileID, root.ParentID, root.FileName, root.Path, root.LocalFilePath = 0, node.FileID, node.ParentID, path.Base(node.Path), path.Dir(node.Path), role.LocalPath
 					snapshot.DirectoryScopes = append(snapshot.DirectoryScopes, EmbyDirectoryScope{Root: root, ItemID: role.ItemID, MediaType: role.MediaType, LocalPath: role.LocalPath, SeasonNumber: role.SeasonNumber, EvidenceKind: "emby_physical_ancestor", Ancestors: chain[:nodeIndex]})
 				}
 				snapshot.cleanupFiles = frozen

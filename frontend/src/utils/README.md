@@ -239,6 +239,8 @@ STRM 正则输入的语法预检：
 - `getSyncTaskStatusTagType(status)`
 - `getSyncTaskStatusText(status)`
 - `getSyncTaskSubStatusText(subStatus)`
+- `formatSyncDuration(seconds, milliseconds)`：优先显示毫秒，缺失时保留秒级历史显示。
+- `getSyncGenerationDuration(start, finish, milliseconds)`、`getSyncTotalDuration(start, finish, ledger)`：保持生成结束后固定、后台在途统计中和未知终点不推算的显示边界。
 
 状态机器值（0 待开始 / 1 运行中 / 2 已完成 / 3 失败）与子状态的稳定展示见 [任务来源](../../../docs/reference/task-sources.md)。
 
@@ -309,6 +311,7 @@ STRM 正则输入的语法预检：
 - `formatDateTime(timestamp)`
 - `formatTime(timestamp)`
 - `formatDuration(seconds)`
+- `formatDurationMs(milliseconds)`：毫秒耗时显示，满一分钟后使用整秒的时分秒；同步任务对缺失毫秒值的历史回退由 `syncTaskStatusUtils.ts` 处理。
 
 兼容规则：
 

@@ -201,6 +201,9 @@ func prepareRestorePlan(dir string, database *gorm.DB) (*restorePlan, error) {
 			return nil, err
 		}
 	}
+	if sourceVersion < 72 {
+		adaptSyncDurationRestorePlan(plan)
+	}
 	// 浏览器会话一律清空；派生索引只从恢复后的原始记录重建。
 	for _, model := range models.AllTables {
 		if restoreRebuildsModel(model) {

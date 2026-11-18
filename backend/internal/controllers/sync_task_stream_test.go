@@ -462,7 +462,7 @@ func TestSyncTaskStreamWaitsForLedgerAfterGeneration(t *testing.T) {
 	if !strings.Contains(patch, "event:task_patch") || !strings.Contains(patch, `"ledger_status":"running"`) {
 		t.Fatalf("生成结束过早停止了详情流: %s", patch)
 	}
-	exit := int64(128)
+	exit := time.Unix(128, 0)
 	if err := task.UpdateLedger(t.Context(), realtime.SyncLedgerFailed, &exit, "ledger unavailable"); err != nil {
 		t.Fatal(err)
 	}

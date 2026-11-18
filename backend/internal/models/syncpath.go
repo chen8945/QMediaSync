@@ -320,7 +320,10 @@ func (sp *SyncPath) SetIsFullSync(isFullSync bool) error {
 // 给同步路径创建一个同步任务
 func (sp *SyncPath) CreateSyncTask() *Sync {
 	// 新建同步任务
+	now := time.Now()
 	sync := &Sync{
+		BaseModel:  BaseModel{CreatedAt: now.Unix()},
+		StartedAt:  now,
 		SyncPathId: sp.ID,
 		Status:     SyncStatusPending,
 		SubStatus:  SyncSubStatusNone,

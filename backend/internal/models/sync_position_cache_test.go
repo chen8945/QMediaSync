@@ -16,6 +16,7 @@ import (
 
 	"qmediasync/internal/db"
 	syncscope "qmediasync/internal/strm/scope"
+	"qmediasync/internal/testfs"
 )
 
 func TestSyncPositionCacheColdHotAndContentUpdate(t *testing.T) {
@@ -188,9 +189,7 @@ func TestSyncPositionCacheRevalidatesSymlinkAcrossRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	if err := os.Symlink(outside, link); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, outside, link)
 	busy, err := syncscope.Acquire(t.Context(), syncscope.Scope{LocalPath: outside})
 	if err != nil {
 		t.Fatal(err)

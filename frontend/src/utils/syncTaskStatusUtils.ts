@@ -1,7 +1,7 @@
 // 同步任务状态与子状态的展示映射。
 // 状态机器值与展示差异见 docs/reference/task-sources.md。
-import type { SyncLedgerState, SyncScanResult } from '@/types/syncTaskStream'
-import { formatDuration } from '@/utils/timeUtils'
+import type { SyncLedgerState, SyncScanResult, SyncTaskDurations } from '@/types/syncTaskStream'
+import { formatDuration, formatDurationMs } from '@/utils/timeUtils'
 
 export type SyncTaskStatusTagType = 'info' | 'primary' | 'success' | 'danger' | 'warning'
 
@@ -33,20 +33,30 @@ export function getSyncLedgerStatusText(status: SyncLedgerState['ledger_status']
   }
 }
 
-export const getSyncGenerationDuration = (start: number, finish?: number | null) =>
-  !start ? '-' : finish ? formatDuration(Math.max(0, finish - start)) : '统计中'
+export const formatSyncDuration = (seconds: number, milliseconds?: number | null) =>
+  milliseconds == null ? formatDuration(Math.max(0, seconds)) : formatDurationMs(milliseconds)
+
+export const getSyncGenerationDuration = (
+  start: number,
+  finish?: number | null,
+  milliseconds?: number | null,
+) => (!start ? '-' : finish ? formatSyncDuration(finish - start, milliseconds) : '统计中')
 
 export function getSyncTotalDuration(
   start: number,
   finish: number | null | undefined,
-  ledger: SyncLedgerState,
+  ledger: SyncLedgerState & SyncTaskDurations,
 ): string {
   if (!ledger.ledger_status) return '未记录'
   if (!start) return '-'
   if (isSyncLedgerActive(ledger.ledger_status)) return '统计中'
-  if (ledger.ledger_status === 'not_required') return getSyncGenerationDuration(start, finish)
+  if (ledger.ledger_status === 'not_required')
+    return getSyncGenerationDuration(start, finish, ledger.total_duration_ms)
   if (!finish || !ledger.ledger_finished_at) return '未完整统计'
-  return formatDuration(Math.max(0, Math.max(finish, ledger.ledger_finished_at) - start))
+  return formatSyncDuration(
+    Math.max(finish, ledger.ledger_finished_at) - start,
+    ledger.total_duration_ms,
+  )
 }
 
 export const getSyncScanSummary = (

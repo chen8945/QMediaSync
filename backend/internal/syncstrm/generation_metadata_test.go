@@ -11,6 +11,7 @@ import (
 	"qmediasync/internal/db"
 	"qmediasync/internal/directoryupload"
 	"qmediasync/internal/models"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 )
 
@@ -40,12 +41,10 @@ func TestGenerationMetadataSourceLinks(t *testing.T) {
 			source := filepath.Join(monitor, "episode.nfo")
 			if mode == "parent_link" {
 				parent := filepath.Join(monitor, "linked")
-				if err := os.Symlink(realDir, parent); err != nil {
-					t.Fatal(err)
-				}
+				testfs.Symlink(t, realDir, parent)
 				source = filepath.Join(parent, "episode.nfo")
-			} else if err := os.Symlink(realSource, source); err != nil {
-				t.Fatal(err)
+			} else {
+				testfs.Symlink(t, realSource, source)
 			}
 			upload := &models.DbUploadTask{
 				Source: models.UploadSourceDirectoryMonitor, AccountId: account.ID, SyncPathId: syncPath.ID,
@@ -78,9 +77,7 @@ func TestGenerationMetadataSourceLinks(t *testing.T) {
 				if err := os.WriteFile(original, []byte("old"), 0644); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(original, target); err != nil {
-					t.Fatal(err)
-				}
+				testfs.Symlink(t, original, target)
 			} else if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -108,9 +105,7 @@ func TestGenerationMetadataSourceLinks(t *testing.T) {
 							if err := os.Remove(source); err != nil {
 								t.Fatal(err)
 							}
-							if err := os.Symlink(outside, source); err != nil {
-								t.Fatal(err)
-							}
+							testfs.Symlink(t, outside, source)
 						}
 					}
 				}); err != nil {

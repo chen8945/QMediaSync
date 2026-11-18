@@ -88,6 +88,15 @@ type Sync struct {
 	IsFullSync        bool                       `json:"is_full_sync"`                // 是否全量同步
 	SyncPath          *SyncPath                  `gorm:"-" json:"-"`                  // 同步路径实例
 	Logger            *helpers.QLogger           `gorm:"-" json:"-"`                  // 日志句柄，不参与数据读写
+
+	NetFileDurationMs    *int64 `json:"net_file_duration_ms"`
+	LocalFileDurationMs  *int64 `json:"local_file_duration_ms"`
+	GenerationDurationMs *int64 `json:"generation_duration_ms"`
+	TotalDurationMs      *int64 `json:"total_duration_ms"`
+
+	StartedAt          time.Time `gorm:"-" json:"-"`
+	NetFileStartedAt   time.Time `gorm:"-" json:"-"`
+	LocalFileStartedAt time.Time `gorm:"-" json:"-"`
 }
 
 // SyncLogRelativePath 返回前端日志接口使用的同步任务日志相对路径。
@@ -161,6 +170,11 @@ func (s *Sync) SyncTaskEventPayload() realtime.SyncTaskEventPayload {
 		LocalPath:         s.LocalPath,
 		RemotePath:        s.RemotePath,
 		FailReason:        s.FailReason,
+
+		NetFileDurationMs:    s.NetFileDurationMs,
+		LocalFileDurationMs:  s.LocalFileDurationMs,
+		GenerationDurationMs: s.GenerationDurationMs,
+		TotalDurationMs:      s.TotalDurationMs,
 	}
 }
 
@@ -209,11 +223,22 @@ func (s *Sync) SaveGeneration(ctx context.Context, status SyncStatus, reason str
 	completed.LedgerFinishedAt, completed.LedgerError = nil, ""
 	reason = helpers.RedactSensitiveLog(reason)
 	completed.Status, completed.FailReason = status, reason
-	completed.FinishAt = time.Now().Unix()
+	now := time.Now()
+	completed.FinishAt = now.Unix()
 	completed.LocalFileFinishAt = completed.FinishAt
+	completed.GenerationDurationMs = syncElapsedMs(s.StartedAt, now)
+	if !s.LocalFileStartedAt.IsZero() {
+		completed.LocalFileDurationMs = syncElapsedMs(s.LocalFileStartedAt, now)
+	} else if !s.NetFileStartedAt.IsZero() {
+		completed.NetFileFinishAt = completed.FinishAt
+		completed.NetFileDurationMs = syncElapsedMs(s.NetFileStartedAt, now)
+	}
+	if *completed.LedgerStatus == realtime.SyncLedgerNotRequired {
+		completed.TotalDurationMs = completed.GenerationDurationMs
+	}
 	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&completed).Where("id = ? AND status IN (?, ?)", s.ID, SyncStatusPending, SyncStatusInProgress).
-			Select("status", "fail_reason", "finish_at", "local_file_finish_at", "total", "new_strm", "new_meta", "new_upload", "is_full_sync", "scan_result", "ledger_status", "ledger_finished_at", "ledger_error", "updated_at").Updates(&completed)
+			Select("status", "fail_reason", "finish_at", "net_file_finish_at", "local_file_finish_at", "net_file_duration_ms", "local_file_duration_ms", "generation_duration_ms", "total_duration_ms", "total", "new_strm", "new_meta", "new_upload", "is_full_sync", "scan_result", "ledger_status", "ledger_finished_at", "ledger_error", "updated_at").Updates(&completed)
 		if err := syncUpdateError(result); err != nil {
 			return err
 		}
@@ -237,6 +262,8 @@ func (s *Sync) SaveGeneration(ctx context.Context, status SyncStatus, reason str
 	}
 	s.Status, s.FailReason, s.FinishAt, s.LocalFileFinishAt, s.UpdatedAt = completed.Status, completed.FailReason, completed.FinishAt, completed.LocalFileFinishAt, completed.UpdatedAt
 	s.LedgerStatus, s.LedgerFinishedAt, s.LedgerError = completed.LedgerStatus, completed.LedgerFinishedAt, completed.LedgerError
+	s.NetFileFinishAt, s.NetFileDurationMs, s.LocalFileDurationMs = completed.NetFileFinishAt, completed.NetFileDurationMs, completed.LocalFileDurationMs
+	s.GenerationDurationMs, s.TotalDurationMs = completed.GenerationDurationMs, completed.TotalDurationMs
 	s.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
 	if s.Logger != nil {
 		s.Logger.Infof("同步任务结果：%d，%s", s.ID, SyncStatusText[status])
@@ -266,7 +293,7 @@ func (s *Sync) NotifyGeneration(ctx context.Context, sourceType SourceType) {
 }
 
 // UpdateLedger 只推进尚在途的后台状态，以持久化的生成快照发布结果。
-func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatus, finishedAt *int64, reason string) error {
+func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatus, finishedAt *time.Time, reason string) error {
 	release, err := syncRecordEvents.acquire(ctx, s.ID)
 	if err != nil {
 		return err
@@ -280,11 +307,11 @@ func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatu
 		}
 		allowed = allowed[:1]
 	case realtime.SyncLedgerCompleted, realtime.SyncLedgerFailed:
-		if finishedAt == nil || *finishedAt <= 0 {
+		if finishedAt == nil || finishedAt.Unix() <= 0 {
 			return errors.New("同步文件记录更新结束时必须记录实际结束时间")
 		}
 	case realtime.SyncLedgerInterrupted:
-		if finishedAt != nil && *finishedAt <= 0 {
+		if finishedAt != nil && finishedAt.Unix() <= 0 {
 			return errors.New("同步文件记录更新结束时间必须为正值或未知")
 		}
 	default:
@@ -293,11 +320,16 @@ func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatu
 	if status == realtime.SyncLedgerRunning || status == realtime.SyncLedgerCompleted {
 		reason = ""
 	}
-	updated := Sync{LedgerStatus: &status, LedgerFinishedAt: finishedAt, LedgerError: helpers.RedactSensitiveLog(reason)}
+	updated := Sync{LedgerStatus: &status, LedgerError: helpers.RedactSensitiveLog(reason)}
+	if finishedAt != nil {
+		unix := finishedAt.Unix()
+		updated.LedgerFinishedAt = &unix
+		updated.TotalDurationMs = syncElapsedMs(s.StartedAt, *finishedAt)
+	}
 	var persisted Sync
 	err = db.Db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&updated).Where("id = ? AND ledger_status IN ? AND status BETWEEN ? AND ?", s.ID, allowed, SyncStatusCompleted, SyncStatusCancelled).
-			Select("ledger_status", "ledger_finished_at", "ledger_error", "updated_at").Updates(&updated)
+			Select("ledger_status", "ledger_finished_at", "ledger_error", "total_duration_ms", "updated_at").Updates(&updated)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -317,6 +349,7 @@ func (s *Sync) UpdateLedger(ctx context.Context, status realtime.SyncLedgerStatu
 		return err
 	}
 	s.LedgerStatus, s.LedgerFinishedAt, s.LedgerError, s.UpdatedAt = persisted.LedgerStatus, persisted.LedgerFinishedAt, persisted.LedgerError, persisted.UpdatedAt
+	s.TotalDurationMs = persisted.TotalDurationMs
 	persisted.broadcastSyncTaskEvent(realtime.EventSyncTaskUpdated)
 	return nil
 }
@@ -328,6 +361,7 @@ func InterruptRunningSyncLedgers(ctx context.Context) error {
 		Updates(map[string]any{
 			"ledger_status":      realtime.SyncLedgerInterrupted,
 			"ledger_finished_at": nil,
+			"total_duration_ms":  nil,
 			"ledger_error":       "服务中断，未记录同步文件记录更新的实际结束时间",
 		}).Error
 }
@@ -343,6 +377,15 @@ func (status SyncStatus) IsTerminal() bool {
 
 func (s *Sync) GetDuration() string {
 	return helpers.FormatDuration(s.FinishAt - s.CreatedAt)
+}
+
+// syncElapsedMs 只使用本轮保留的计时起点，历史记录不能从整秒时间恢复精度。
+func syncElapsedMs(start, finish time.Time) *int64 {
+	if start.IsZero() {
+		return nil
+	}
+	elapsed := finish.Sub(start).Milliseconds()
+	return &elapsed
 }
 
 // UpdateProgress 更新同步任务运行中计数。
@@ -409,23 +452,26 @@ func (s *Sync) UpdateSubStatus(ctx context.Context, subStatus SyncSubStatus) err
 	defer release()
 	oldSubStatus := s.SubStatus
 	s.SubStatus = subStatus
+	now := time.Now()
 	var updateSync Sync
 	switch subStatus {
 	case SyncSubStatusProcessNetFileList:
-		// 开始查找文件列表，修改 NetFileFinishAt
-		s.NetFileStartAt = time.Now().Unix()
+		s.NetFileStartAt = now.Unix()
+		s.NetFileStartedAt = now
 		updateSync = Sync{
 			SubStatus:      subStatus,
 			NetFileStartAt: s.NetFileStartAt,
 		}
 	case SyncSubStatusProcessLocalFileList:
-		// 开始对比文件，修改 FetchFileFinishAt
-		s.NetFileFinishAt = time.Now().Unix()
+		s.NetFileFinishAt = now.Unix()
 		s.LocalFileStartAt = s.NetFileFinishAt
+		s.LocalFileStartedAt = now
+		s.NetFileDurationMs = syncElapsedMs(s.NetFileStartedAt, now)
 		updateSync = Sync{
-			SubStatus:        subStatus,
-			NetFileFinishAt:  s.NetFileFinishAt,
-			LocalFileStartAt: s.LocalFileStartAt,
+			SubStatus:         subStatus,
+			NetFileFinishAt:   s.NetFileFinishAt,
+			LocalFileStartAt:  s.LocalFileStartAt,
+			NetFileDurationMs: s.NetFileDurationMs,
 		}
 	}
 	result := db.Db.WithContext(ctx).Model(&updateSync).Where("id = ?", s.ID).Updates(&updateSync)
@@ -618,7 +664,10 @@ func ClearExpiredSyncRecords(days int) {
 
 func CreateSync(syncPathId uint, sourcePath, sourcePathId, targetPath string) *Sync {
 	// 新建同步任务
+	now := time.Now()
 	sync := &Sync{
+		BaseModel:  BaseModel{CreatedAt: now.Unix()},
+		StartedAt:  now,
 		SyncPathId: syncPathId,
 		Status:     SyncStatusPending,
 		SubStatus:  SyncSubStatusNone,

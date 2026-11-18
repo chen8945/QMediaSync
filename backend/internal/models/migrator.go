@@ -20,7 +20,7 @@ type Migrator struct {
 	VersionCode int `json:"version_code"` // 版本号
 }
 
-var MaxVersionCode = 71
+var MaxVersionCode = 72
 
 const (
 	activeDownloadTaskUniqueIndexName = "idx_db_download_tasks_active_target"
@@ -874,6 +874,27 @@ func migrateExistingDB(migrator Migrator) (migrationErr error) {
 			return fmt.Errorf("迁移媒体条目关联失败：%w", err)
 		}
 		migrator.VersionCode = 71
+	}
+	if migrator.VersionCode == 71 {
+		if err := db.Db.Transaction(func(tx *gorm.DB) error {
+			if !tx.Migrator().HasTable(&Sync{}) {
+				if err := tx.Migrator().CreateTable(&Sync{}); err != nil {
+					return err
+				}
+			} else {
+				for _, field := range []string{"NetFileDurationMs", "LocalFileDurationMs", "GenerationDurationMs", "TotalDurationMs"} {
+					if !tx.Migrator().HasColumn(&Sync{}, field) {
+						if err := tx.Migrator().AddColumn(&Sync{}, field); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			return tx.Model(&migrator).Update("version_code", 72).Error
+		}); err != nil {
+			return fmt.Errorf("迁移同步任务毫秒耗时失败：%w", err)
+		}
+		migrator.VersionCode = 72
 	}
 	if migrator.VersionCode == MaxVersionCode {
 		if !accountIdentityIndexesEnsured {

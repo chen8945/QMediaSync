@@ -17,6 +17,7 @@ import (
 
 	"qmediasync/internal/db"
 	"qmediasync/internal/helpers"
+	"qmediasync/internal/testfs"
 	v115open "qmediasync/internal/v115/openapi"
 )
 
@@ -69,7 +70,7 @@ func setupDeletionMatrix(t *testing.T, videos []deletionMatrixVideo) *deletionMa
 		account := Account{BaseModel: BaseModel{ID: accountID}, SourceType: SourceType115, UserId: fmt.Sprintf("owner-%d", accountID)}
 		root := SyncPath{
 			BaseModel: BaseModel{ID: accountID}, SourceType: SourceType115, AccountId: accountID,
-			BaseCid: fmt.Sprintf("root-%d", accountID), LocalPath: fmt.Sprintf("/strm/account-%d", accountID), RemotePath: "/movies",
+			BaseCid: fmt.Sprintf("root-%d", accountID), LocalPath: fmt.Sprintf(testfs.LocalPath("/strm/account-%d"), accountID), RemotePath: "/movies",
 		}
 		if err := conn.Create(&account).Error; err != nil {
 			t.Fatal(err)

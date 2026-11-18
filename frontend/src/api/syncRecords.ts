@@ -4,9 +4,9 @@ import type { ParsedHttpError } from '@/http/errors'
 import { isAPIResponse } from '@/http/envelope'
 import { unwrapResponse } from './response'
 import type { APIResponse, SettingsSaveResult } from './types'
-import type { SyncLedgerState, SyncScanResult } from '@/types/syncTaskStream'
+import type { SyncLedgerState, SyncScanResult, SyncTaskDurations } from '@/types/syncTaskStream'
 
-export interface ApiSyncRecord extends SyncLedgerState {
+export interface ApiSyncRecord extends SyncLedgerState, SyncTaskDurations {
   id: number
   created_at: number
   finish_at: number | null
