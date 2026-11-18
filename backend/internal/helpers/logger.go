@@ -162,6 +162,9 @@ func RedactSensitiveLog(input string, secrets ...string) string {
 	if input == "" {
 		return input
 	}
+	if len(secrets) == 0 && !hasSensitiveLogField(input) {
+		return input
+	}
 	isJSON := json.Valid([]byte(input))
 	for _, secret := range secrets {
 		// 短口令只按明确字段处理，避免替换普通数字或 data/token 等键名。
@@ -187,6 +190,17 @@ func RedactSensitiveLog(input string, secrets ...string) string {
 	output = redactLogValue(sensitiveLogSpaceKeyValueRegexp, output, 3)
 	output = redactLogValue(sensitiveLogKeyValueRegexp, output, 2)
 	return output
+}
+
+func hasSensitiveLogField(input string) bool {
+	lower := strings.ToLower(input)
+	// ſ 也能被正则 (?i) 匹配为 s，不能因预筛漏掉现有脱敏。
+	for _, keyword := range [...]string{"api_key", "apikey", "api-key", "authorization", "password", "token", "accesskeysecret", "cookie", "ſ"} {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func replaceLogSecret(input, secret string) string {

@@ -95,8 +95,6 @@ func Publish(eventType EventType, data any) {
 		Data: data,
 	}
 
-	AppLogger.Debugf("发布事件：%s，订阅者数量：%d", eventType, len(handlers))
-
 	// 异步处理事件，避免阻塞
 	go func() {
 		for _, handler := range handlers {

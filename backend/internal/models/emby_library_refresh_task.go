@@ -1919,6 +1919,13 @@ func claimEmbyRefreshTaskForExecution(task *EmbyLibraryRefreshTask, expectedConf
 }
 
 func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRefreshTask, configs ...*EmbyConfig) error {
+	refreshLibrary := func(libraryID, libraryName string) error {
+		if err := client.RefreshLibrary(libraryID, libraryName); err != nil {
+			return err
+		}
+		helpers.AppLogger.Infof("已触发 %s 媒体库 %s => %s 刷新", task.MediaServerType.DisplayName(), libraryID, libraryName)
+		return nil
+	}
 	checkConfig := func() error {
 		if len(configs) == 0 {
 			return nil
@@ -1988,12 +1995,13 @@ func executeEmbyRefreshTask(client *embyclientrestgo.Client, task *EmbyLibraryRe
 				if err := checkConfig(); err != nil {
 					return err
 				}
-				return client.RefreshLibrary(task.FallbackLibraryId, task.FallbackLibraryName)
+				return refreshLibrary(task.FallbackLibraryId, task.FallbackLibraryName)
 			}
+			helpers.AppLogger.Infof("已触发 %s 条目刷新，ItemId %s => %s，recursive=%v", task.MediaServerType.DisplayName(), itemId, task.LibraryName, task.ItemRecursive)
 		}
 		return nil
 	}
-	return client.RefreshLibrary(task.LibraryId, task.LibraryName)
+	return refreshLibrary(task.LibraryId, task.LibraryName)
 }
 
 func markEmbyRefreshTaskCompleted(task *EmbyLibraryRefreshTask) error {

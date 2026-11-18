@@ -1054,7 +1054,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 				if isVideo {
 					// STRM 文件，检查文件在临时表是否存在，不存在需要删除临时文件
 					if existsFile != nil {
-						s.Sync.Logger.Infof("本地 STRM 已对应网盘文件，跳过处理：local_path=%s，file_id=%s，remote_path=%s", path, existsFile.GetFileId(), existsFile.GetFullRemotePath())
+						s.Sync.Logger.Debugf("本地 STRM 已对应网盘文件，跳过处理：local_path=%s，file_id=%s，remote_path=%s", path, existsFile.GetFileId(), existsFile.GetFullRemotePath())
 						return nil
 					}
 					s.Sync.Logger.Infof("本地 STRM 对应的网盘文件不存在，准备删除：local_path=%s", path)

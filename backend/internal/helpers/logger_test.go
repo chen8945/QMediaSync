@@ -88,6 +88,40 @@ func TestRedactSensitiveLog已知密钥回显(t *testing.T) {
 	}
 }
 
+func TestRedactSensitiveLogPrefilter(t *testing.T) {
+	for _, key := range []string{"api_key", "apikey", "x-api-key", "authorization", "x-emby-authorization", "password", "token", "access_token", "refresh_token", "x-emby-token", "AccessKeySecret", "AccessKeySecrett", "SecurityToken", "Cookie", "Set-Cookie"} {
+		t.Run(key, func(t *testing.T) {
+			key = strings.ToUpper(key)
+			for _, input := range []string{key + "=private-value", fmt.Sprintf(`{"%s":"private-value"}`, key)} {
+				want := strings.ReplaceAll(input, "private-value", SensitiveLogMask)
+				if got := RedactSensitiveLog(input); got != want {
+					t.Fatalf("脱敏结果 = %q，期望 %q", got, want)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, input, secret, want string
+	}{
+		{"普通中文日志", "本地文件 /media/动漫/S01E01.strm 已存在\n文件数=123", "", "本地文件 /media/动漫/S01E01.strm 已存在\n文件数=123"},
+		{"路径包含关键词", "/media/tokenizer/Season 01/cookie.strm", "", "/media/tokenizer/Season 01/cookie.strm"},
+		{"长 s 大小写折叠", `{"paſſword":"private-value"}`, "", `{"paſſword":"******"}`},
+		{"Kelvin 大小写折叠", "CooKie=session-private", "", "CooKie=******"},
+		{"无字段名的秘密回显", "上游返回 private-value", "private-value", "上游返回 ******"},
+		{"JSON 中无字段名的秘密回显", `{"message":"private-value","n":1,"n":2}`, "private-value", `{"message":"******","n":1,"n":2}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var secrets []string
+			if tc.secret != "" {
+				secrets = []string{tc.secret}
+			}
+			if got := RedactSensitiveLog(tc.input, secrets...); got != tc.want {
+				t.Fatalf("脱敏结果 = %q，期望 %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRedactSensitiveLogPreservesCredentialShapeAndBusinessKeys(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -560,6 +561,7 @@ func TestRefreshTaskDownloadEventPrefersIndexedLibraryOverIncorrectFallback(t *t
 
 func TestRefreshItemFailureRepairsIncorrectFallbackBeforeLibraryRefresh(t *testing.T) {
 	setupEmbyRefreshTestDB(t)
+	output := captureRefreshTaskLogs(t)
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-movie", LibraryName: "电影", SyncPathId: 10})
 	db.Db.Create(&EmbyLibrarySyncPath{LibraryId: "lib-tv", LibraryName: "剧集", SyncPathId: 10})
 	db.Db.Create(&EmbyMediaItem{ServerId: "server-a", ItemId: "301", ItemIdInt: 301, LibraryId: "lib-tv", Name: "第 1 集", Type: "Episode"})
@@ -612,6 +614,71 @@ func TestRefreshItemFailureRepairsIncorrectFallbackBeforeLibraryRefresh(t *testi
 	}
 	if updated.FallbackLibraryId != "lib-tv" || updated.FallbackLibraryName != "剧集" {
 		t.Fatalf("持久化 fallback = %s/%s，期望 lib-tv/剧集", updated.FallbackLibraryId, updated.FallbackLibraryName)
+	}
+	if got := output.String(); strings.Count(got, "已触发 ") != 1 || !strings.Contains(got, "lib-tv => 剧集") || strings.Contains(got, "条目刷新") {
+		t.Fatalf("回退刷新应只记录真实媒体库的成功日志：%s", got)
+	}
+}
+
+func captureRefreshTaskLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	oldLogger, oldLevel := helpers.AppLogger, helpers.ConfiguredLogLevel()
+	t.Cleanup(func() {
+		helpers.AppLogger = oldLogger
+		helpers.SetGlobalLogLevel(oldLevel)
+	})
+	var output bytes.Buffer
+	helpers.AppLogger = &helpers.QLogger{Logger: log.New(&output, "", 0)}
+	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
+	return &output
+}
+
+func TestExecuteEmbyRefreshTaskLogsAcceptedRequests(t *testing.T) {
+	setupEmbyRefreshTestDB(t)
+	for _, kind := range []MediaServerType{MediaServerEmby, MediaServerJellyfin} {
+		for _, target := range []string{EmbyLibraryRefreshTargetTypeLibrary, EmbyLibraryRefreshTargetTypeItem} {
+			for _, status := range []int{http.StatusNoContent, http.StatusInternalServerError} {
+				t.Run(fmt.Sprintf("%s/%s/%d", kind, target, status), func(t *testing.T) {
+					output := captureRefreshTaskLogs(t)
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if strings.HasSuffix(r.URL.Path, "/System/Ping") {
+							fmt.Fprint(w, kind.DisplayName())
+							return
+						}
+						if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/Refresh") {
+							w.WriteHeader(status)
+							return
+						}
+						http.NotFound(w, r)
+					}))
+					defer server.Close()
+					const targetID = "123456781234123412341234567890ab"
+					task := &EmbyLibraryRefreshTask{MediaServerType: kind, ServerID: "server-a", TargetType: target, LibraryId: targetID, LibraryName: "动漫", ItemRecursive: true}
+					task.SetItemIds([]string{targetID})
+					client := embyclientrestgo.NewClientForProduct(server.URL, "refresh-private-key", embyclientrestgo.Product(kind))
+					err := executeEmbyRefreshTask(client, task)
+					got := output.String()
+					if status == http.StatusNoContent {
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, part := range []string{"[INFO]", kind.DisplayName(), targetID, "动漫"} {
+							if !strings.Contains(got, part) {
+								t.Errorf("成功日志缺少 %q：%s", part, got)
+							}
+						}
+						if strings.Count(got, "已触发 ") != 1 {
+							t.Errorf("每次接受的请求应只记录一次成功：%s", got)
+						}
+					} else if err == nil || strings.Contains(got, "已触发 ") {
+						t.Errorf("失败请求不能记录成功：err=%v log=%s", err, got)
+					}
+					if strings.Contains(got, server.URL) || strings.Contains(got, "refresh-private-key") || strings.Contains(got, "api_key") {
+						t.Errorf("日志不应包含连接 URL 或凭据：%s", got)
+					}
+				})
+			}
+		}
 	}
 }
 
