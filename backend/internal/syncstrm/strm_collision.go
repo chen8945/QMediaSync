@@ -173,7 +173,12 @@ func resolveLatest115StrmOwnerWithDirectory(ctx context.Context, syncer *SyncStr
 	targetPath = filepath.ToSlash(filepath.Clean(targetPath))
 
 	query := db.Db.Model(&models.SyncFile{}).
-		Where("sync_path_id = ? AND local_file_path = ? AND is_video = ?", syncer.SyncPathId, targetPath, true)
+		Where("sync_path_id = ? AND is_video = ?", syncer.SyncPathId, true)
+	if filepath.Separator == '\\' {
+		query = query.Where("local_file_path IN ?", []string{targetPath, filepath.FromSlash(targetPath)})
+	} else {
+		query = query.Where("local_file_path = ?", targetPath)
+	}
 	if fileID := file.GetFileId(); fileID != "" {
 		query = query.Where("file_id <> ?", fileID)
 	} else if file.PickCode != "" {

@@ -240,7 +240,7 @@ func embySameDirectoryRoot(left, right EmbyFrozenFile) bool {
 }
 
 func embyFrozenMatchesLedger(file EmbyFrozenFile, row SyncFile) bool {
-	return file.Reason == "" && row.ID != 0 && file.SyncFileID == row.ID && file.FileCreatedAt == row.CreatedAt && file.SyncPathID == row.SyncPathId && file.AccountID == row.AccountId && file.SourceType == row.SourceType && file.FileID == row.FileId && file.ParentID == row.ParentId && file.FileName == row.FileName && file.Path == row.Path && file.LocalFilePath == row.LocalFilePath && file.PickCode == row.PickCode && file.SHA1 == row.Sha1 && file.FileSize == row.FileSize && file.MTime == row.MTime
+	return file.Reason == "" && row.ID != 0 && file.SyncFileID == row.ID && file.FileCreatedAt == row.CreatedAt && file.SyncPathID == row.SyncPathId && file.AccountID == row.AccountId && file.SourceType == row.SourceType && file.FileID == row.FileId && file.ParentID == row.ParentId && file.FileName == row.FileName && file.Path == row.Path && sameSyncFileLocalPath(file.LocalFilePath, row.LocalFilePath) && file.PickCode == row.PickCode && file.SHA1 == row.Sha1 && file.FileSize == row.FileSize && file.MTime == row.MTime
 }
 
 // ValidateEmbyDirectoryScopesTx 在原快照事务内重新检查根链及涉及的目录节点，准备缓存

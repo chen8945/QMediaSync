@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -84,6 +85,44 @@ func TestEmbyDeleteProviderListingAttemptScope(t *testing.T) {
 				t.Fatalf("reads=%d files=%+v err=%v", reads, after, err)
 			}
 		})
+	}
+}
+
+func TestEmbyDeleteProviderCacheTracksSavedPositions(t *testing.T) {
+	sp := setupSyncScopeTest(t)
+	row := SyncFile{SyncPathId: sp.ID, SourceType: sp.SourceType, AccountId: sp.AccountId,
+		Path: sp.RemotePath, LocalFilePath: filepath.Join(sp.GetFullLocalPath(), "episode.strm")}
+	if err := db.Db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	files := embyProviderBatchFiles(SourceType115)
+	reads := 0
+	stub := &embyDelete115Stub{list: func(int) (*v115open.FileListResp, error) {
+		reads++
+		return embyProviderBatchList115(files), nil
+	}}
+	provider := &embyDeleteProvider{source: SourceType115, accountID: 1, accountIdentity: "owner", v115: stub}
+	ctx, release, err := BeginEmbyDeletionExecution(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := provider.List(ctx, files[0]); err != nil || reads != 1 {
+		t.Fatalf("cold listing reads=%d err=%v", reads, err)
+	}
+	row.LocalFilePath = filepath.ToSlash(row.LocalFilePath)
+	if err := SaveSyncFilePosition(db.Db, &row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.List(ctx, files[0]); err != nil || reads != 1 {
+		t.Fatalf("format-only save invalidated remote listing: reads=%d err=%v", reads, err)
+	}
+	row.LocalFilePath = filepath.Join(sp.GetFullLocalPath(), "moved.strm")
+	if err := SaveSyncFilePosition(db.Db, &row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.List(ctx, files[0]); err != nil || reads != 2 {
+		t.Fatalf("real move must invalidate remote listing: reads=%d err=%v", reads, err)
 	}
 }
 

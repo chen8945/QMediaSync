@@ -141,6 +141,109 @@ func TestEmbyLocalDirectoryUsesOnlyMatchingCurrentEvidence(t *testing.T) {
 	}
 }
 
+func TestEmbyLocalDirectoryReusesEvidenceAfterPathFormatting(t *testing.T) {
+	token, file, collector := setupEmbyDirectoryObservation(t)
+	localRoot := t.TempDir()
+	if err := db.Db.Model(&SyncPath{}).Where("id = ?", file.SyncPathId).Update("local_path", localRoot).Error; err != nil {
+		t.Fatal(err)
+	}
+	series := filepath.Join(localRoot, "movies", "Show")
+	season := filepath.Join(series, "Season 1")
+	file.LocalFilePath = filepath.Join(season, "episode.strm")
+	wantLocalPath := filepath.ToSlash(file.LocalFilePath)
+	if err := db.Db.Save(&file).Error; err != nil {
+		t.Fatal(err)
+	}
+	reads := forbidEmbyObservationHTTP(t)
+	snapshot, roles := localEpisodeSnapshot(file)
+	roles[0].LocalPath, roles[1].LocalPath = series, season
+	if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.DirectoryScopes) != 2 {
+		t.Fatalf("fixture directory scopes=%+v", snapshot.DirectoryScopes)
+	}
+	if err := ApplyEmbySnapshots(token, []EmbyItemSnapshot{snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	var before EmbyItemEvidence
+	if err := db.Db.First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Db.Where("sync_path_id = ?", file.SyncPathId).Delete(&SyncRootEvidence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSyncFilePosition(db.Db, &file); err != nil {
+		t.Fatal(err)
+	}
+	var saved SyncFile
+	if err := db.Db.First(&saved, file.ID).Error; err != nil || saved.LocalFilePath != wantLocalPath {
+		t.Fatalf("saved path=%q err=%v", saved.LocalFilePath, err)
+	}
+	for _, changed := range []bool{false, true} {
+		if changed {
+			file.Sha1 = "replacement"
+			if err := SaveSyncFilePosition(db.Db, &file); err != nil {
+				t.Fatal(err)
+			}
+		}
+		collector = EmbyDirectoryEvidenceCollector{}
+		if err := collector.Enrich(t.Context(), MediaServerEmby, &snapshot, roles); err != nil {
+			t.Fatal(err)
+		}
+		want := 2
+		if changed {
+			want = 0
+		}
+		if len(snapshot.DirectoryScopes) != want {
+			t.Fatalf("changed=%v scopes=%+v", changed, snapshot.DirectoryScopes)
+		}
+	}
+	var after EmbyItemEvidence
+	if err := db.Db.First(&after, before.ID).Error; err != nil || before.FilesJSON != after.FilesJSON || before.SidecarsJSON != after.SidecarsJSON || *reads != 0 {
+		t.Fatalf("frozen evidence changed or cloud accessed: reads=%d err=%v", *reads, err)
+	}
+}
+
+func TestEmbyFrozenMatchesLedgerKeepsIdentityChecks(t *testing.T) {
+	row := SyncFile{BaseModel: BaseModel{ID: 1, CreatedAt: 10}, SyncPathId: 2, SourceType: SourceType115, AccountId: 3,
+		FileId: "video", ParentId: "parent", FileName: "E01.mkv", Path: "/remote", LocalFilePath: "F:/STRM/E01.strm",
+		PickCode: "pick", Sha1: "sha", FileSize: 100, MTime: 20}
+	frozen := EmbyFrozenFile{SyncFileID: row.ID, FileCreatedAt: row.CreatedAt, SyncPathID: row.SyncPathId, SourceType: row.SourceType, AccountID: row.AccountId,
+		FileID: row.FileId, ParentID: row.ParentId, FileName: row.FileName, Path: row.Path, LocalFilePath: row.LocalFilePath,
+		PickCode: row.PickCode, SHA1: row.Sha1, FileSize: row.FileSize, MTime: row.MTime}
+	for _, tt := range []struct {
+		name   string
+		change func(*EmbyFrozenFile)
+	}{
+		{"reason", func(f *EmbyFrozenFile) { f.Reason = "unverified" }},
+		{"row", func(f *EmbyFrozenFile) { f.SyncFileID++ }},
+		{"created", func(f *EmbyFrozenFile) { f.FileCreatedAt++ }},
+		{"root", func(f *EmbyFrozenFile) { f.SyncPathID++ }},
+		{"account", func(f *EmbyFrozenFile) { f.AccountID++ }},
+		{"source", func(f *EmbyFrozenFile) { f.SourceType = SourceTypeBaiduPan }},
+		{"file", func(f *EmbyFrozenFile) { f.FileID += "new" }},
+		{"parent", func(f *EmbyFrozenFile) { f.ParentID += "new" }},
+		{"name", func(f *EmbyFrozenFile) { f.FileName = "E02.mkv" }},
+		{"remote", func(f *EmbyFrozenFile) { f.Path += "/moved" }},
+		{"local", func(f *EmbyFrozenFile) { f.LocalFilePath = "F:/STRM/E02.strm" }},
+		{"case", func(f *EmbyFrozenFile) { f.LocalFilePath = "F:/STRM/e01.strm" }},
+		{"dots", func(f *EmbyFrozenFile) { f.LocalFilePath = "F:/STRM/./E01.strm" }},
+		{"pick", func(f *EmbyFrozenFile) { f.PickCode += "new" }},
+		{"sha", func(f *EmbyFrozenFile) { f.SHA1 += "new" }},
+		{"size", func(f *EmbyFrozenFile) { f.FileSize++ }},
+		{"mtime", func(f *EmbyFrozenFile) { f.MTime++ }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			next := frozen
+			tt.change(&next)
+			if !embyFrozenMatchesLedger(frozen, row) || embyFrozenMatchesLedger(next, row) {
+				t.Fatalf("directory reuse accepted changed identity: %+v", next)
+			}
+		})
+	}
+}
+
 func TestEmbyLocalDirectoryTransactionRejectsPreparedDirectoryChanges(t *testing.T) {
 	for _, change := range []string{"directory_id", "directory_parent", "directory_moved", "root_invalidated", "root_ancestors"} {
 		t.Run(change, func(t *testing.T) {

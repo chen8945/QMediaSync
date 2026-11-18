@@ -116,6 +116,8 @@ func TestSyncLedgerPostgresSerializesBeforeSourceRows(t *testing.T) {
 			if changed {
 				cachedVideo.LocalFilePath = filepath.Join(directory.LocalFilePath, "moved.strm")
 			}
+			scannedVideoPath := cachedVideo.LocalFilePath
+			wantSavedVideoPath := models.SyncFileLocalPathForWrite(scannedVideoPath)
 			syncer := ledgerTestSync(t, []*SyncFileCache{cachedDirectory, cachedVideo})
 			if models.SameSyncFilePosition(&video, cachedVideo.GetSyncFile(syncer, "")) == changed {
 				t.Fatal("fixture did not exercise the intended position-change branch")
@@ -219,7 +221,13 @@ func TestSyncLedgerPostgresSerializesBeforeSourceRows(t *testing.T) {
 			if err := conn.First(&savedDirectory, directory.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if sourceWrites.Load() != 2 || savedVideo.Sha1 != "new-sha" || savedVideo.LocalFilePath != cachedVideo.LocalFilePath || savedDirectory.UpdatedAt != 300 || syncer.memSyncCache.Count() != 0 {
+			if cachedVideo.LocalFilePath != scannedVideoPath {
+				t.Fatalf("ledger changed scan cache path: got=%q want=%q", cachedVideo.LocalFilePath, scannedVideoPath)
+			}
+			if savedVideo.LocalFilePath != wantSavedVideoPath {
+				t.Fatalf("ledger saved path=%q, want %q", savedVideo.LocalFilePath, wantSavedVideoPath)
+			}
+			if sourceWrites.Load() != 2 || savedVideo.Sha1 != "new-sha" || savedDirectory.UpdatedAt != 300 || syncer.memSyncCache.Count() != 0 {
 				t.Fatalf("ledger did not commit both its unchanged directory and changed video: writes=%d video=%+v directory=%+v", sourceWrites.Load(), savedVideo, savedDirectory)
 			}
 			var guard models.EmbyIndexState

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -157,6 +158,152 @@ func TestSyncLedgerBatchBoundariesAndFields(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestSyncLedgerLocalPathFormat(t *testing.T) {
+	for _, tt := range []struct {
+		name, previous, next, windows string
+	}{
+		{"insert-native", "", `F:\\STRM/\Show\\E01.strm`, "F:/STRM/Show/E01.strm"},
+		{"insert-unc", "", `\\NAS\\Media\\Show\E01.strm`, "//NAS/Media/Show/E01.strm"},
+		{"insert-namespace", "", `\\?\F:\\STRM\\E01.strm`, `\\?\F:\\STRM\\E01.strm`},
+		{"native-to-slash", `F:\STRM\Show\E01.strm`, "F:/STRM/Show/E01.strm", "F:/STRM/Show/E01.strm"},
+		{"slash-to-native", "F:/STRM/Show/E01.strm", `F:\STRM\Show\E01.strm`, "F:/STRM/Show/E01.strm"},
+		{"repeated-to-slash", `F:\\STRM\\Show\\E01.strm`, "F:/STRM/Show/E01.strm", "F:/STRM/Show/E01.strm"},
+		{"slash-to-repeated", "F:/STRM/Show/E01.strm", `F:\\STRM\\Show\\E01.strm`, "F:/STRM/Show/E01.strm"},
+		{"move", `F:\STRM\Show\E01.strm`, `F:\\STRM\\Other\E02.strm`, "F:/STRM/Other/E02.strm"},
+		{"move-unc", `\\NAS\Old\E01.strm`, `\\NAS\\Media\\Show\E01.strm`, "//NAS/Media/Show/E01.strm"},
+		{"posix-backslash", "", `/data/STRM/Episode\A.strm`, "/data/STRM/Episode/A.strm"},
+		{"posix-repeated-slash", "", "/data/STRM//E01.strm", "/data/STRM/E01.strm"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupSyncStateTestDB(t)
+			const now = 900
+			db.Db.NowFunc = func() time.Time { return time.Unix(now, 0) }
+			row := ledgerTestFile(0)
+			row.LocalFilePath = tt.previous
+			if tt.previous != "" {
+				if err := db.Db.Create(&row).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			cached := ledgerTestCache(row, false)
+			cached.LocalFilePath = tt.next
+			protected, sentinel := ledgerTestFile(1), ledgerTestFile(2)
+			protected.LocalFilePath, sentinel.LocalFilePath = `F:\\STRM\\protected.strm`, `F:\\STRM\\other-root.strm`
+			sentinel.SyncPathId = 2
+			if err := db.Db.Create(&protected).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Db.Create(&sentinel).Error; err != nil {
+				t.Fatal(err)
+			}
+			protectedCache := ledgerTestCache(protected, false)
+			protectedCache.LocalFilePath = "F:/STRM/protected.strm"
+			syncer := ledgerTestSync(t, []*SyncFileCache{cached, protectedCache})
+			syncer.protectedFileIDs = map[string]bool{protected.FileId: true}
+			var updates []int
+			if err := db.Db.Callback().Update().After("gorm:update").Register("ledger_format_updates", func(tx *gorm.DB) {
+				if tx.Statement.Table == "sync_files" {
+					updates = append(updates, len(tx.Statement.Dest.(map[string]any)))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := syncer.handleTempTableDiff(); err != nil {
+				t.Fatal(err)
+			}
+			want := tt.next
+			if filepath.Separator == '\\' {
+				want = tt.windows
+			}
+			var got []models.SyncFile
+			if err := db.Db.Where("sync_path_id = ? AND file_id = ?", 1, row.FileId).Find(&got).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].LocalFilePath != want || got[0].FileName != row.FileName || got[0].UpdatedAt != now {
+				t.Fatalf("saved=%+v, want path=%q", got, want)
+			}
+			if cached.LocalFilePath != tt.next || protectedCache.LocalFilePath != "F:/STRM/protected.strm" {
+				t.Fatal("ledger formatting mutated the scan cache")
+			}
+			if tt.previous != "" {
+				if got[0].ID != row.ID || got[0].CreatedAt != row.CreatedAt || !got[0].Uploaded || !got[0].Processed {
+					t.Fatalf("existing row state changed: %+v", got[0])
+				}
+				columns := len(syncLedgerColumns) + 1
+				if want == tt.previous {
+					columns = 1
+				}
+				if len(updates) != 1 || updates[0] != columns {
+					t.Fatalf("updated columns=%v, want [%d]", updates, columns)
+				}
+			}
+			for _, untouched := range []models.SyncFile{protected, sentinel} {
+				var actual models.SyncFile
+				if err := db.Db.First(&actual, untouched.ID).Error; err != nil || !reflect.DeepEqual(actual, untouched) {
+					t.Fatalf("protected or unrelated row changed: %+v err=%v", actual, err)
+				}
+			}
+		})
+	}
+	t.Run("position-cache", func(t *testing.T) {
+		setupSyncStateTestDB(t)
+		if err := db.Db.AutoMigrate(&models.SyncPath{}); err != nil {
+			t.Fatal(err)
+		}
+		sp := &models.SyncPath{BaseModel: models.BaseModel{ID: 1}, SourceType: models.SourceType115,
+			AccountId: 7, BaseCid: "cache-test", LocalPath: t.TempDir(), RemotePath: "/remote"}
+		if err := db.Db.Create(sp).Error; err != nil {
+			t.Fatal(err)
+		}
+		row := ledgerTestFile(0)
+		row.Path, row.LocalFilePath = sp.RemotePath, filepath.Join(sp.GetFullLocalPath(), "E01.strm")
+		if err := db.Db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		queries := 0
+		if err := db.Db.Callback().Query().After("gorm:query").Register("ledger_format_positions", func(tx *gorm.DB) {
+			if _, ok := tx.Statement.Dest.(*[]models.SyncFile); tx.Statement.Table == "sync_files" && ok {
+				queries++
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		acquire := func() {
+			t.Helper()
+			_, release, err := models.AcquireSyncPathScope(t.Context(), sp.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release()
+		}
+		acquire()
+		if queries != 1 {
+			t.Fatalf("cold position queries=%d", queries)
+		}
+		cached := ledgerTestCache(row, false)
+		cached.LocalFilePath = filepath.ToSlash(filepath.Dir(row.LocalFilePath)) + "//" + filepath.Base(row.LocalFilePath)
+		if err := ledgerTestSync(t, []*SyncFileCache{cached}).handleTempTableDiff(); err != nil {
+			t.Fatal(err)
+		}
+		var saved models.SyncFile
+		wantPath := cached.LocalFilePath
+		if filepath.Separator == '\\' {
+			wantPath = filepath.ToSlash(row.LocalFilePath)
+		}
+		if err := db.Db.First(&saved, row.ID).Error; err != nil || saved.LocalFilePath != wantPath {
+			t.Fatalf("saved=%q want=%q err=%v", saved.LocalFilePath, wantPath, err)
+		}
+		acquire()
+		want := 2
+		if filepath.Separator == '\\' {
+			want = 1
+		}
+		if queries != want {
+			t.Fatalf("position queries=%d, want %d", queries, want)
+		}
+	})
 }
 
 func TestSyncLedgerChangedPageRollbackAndFreshRetry(t *testing.T) {

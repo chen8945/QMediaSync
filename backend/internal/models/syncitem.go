@@ -1,6 +1,9 @@
 package models
 
 import (
+	"path/filepath"
+	"strings"
+
 	"qmediasync/internal/db"
 	v115open "qmediasync/internal/v115/openapi"
 
@@ -28,7 +31,7 @@ type SyncFile struct {
 	PickCode         string            `json:"pick_code" gorm:"index:pick_code"`
 	Sha1             string            `json:"sha1"`
 	MTime            int64             `json:"mtime"`                                        // 最后修改时间
-	LocalFilePath    string            `json:"local_file_path" gorm:"index:local_file_path"` // 本地文件路径，包含文件名
+	LocalFilePath    string            `json:"local_file_path" gorm:"index:local_file_path"` // 本地文件路径；Windows 普通路径保存时统一使用 /
 	Path             string            `json:"path"`                                         // 绝对路径，不包含 FileName
 	SyncPath         *SyncPath         `json:"-" gorm:"-"`                                   // 关联的同步路径
 	Sync             *Sync             `json:"-" gorm:"-"`                                   // 关联的同步项
@@ -42,6 +45,39 @@ type SyncFile struct {
 	Uploaded         bool              `json:"uploaded"`      // 是否上传完成，未上传完成的记录不触发删除
 	ThumbUrl         string            `json:"thumb_url"`     // 缩略图 URL
 	Processed        bool              `json:"processed"`     // 是否已处理
+}
+
+// SyncFileLocalPathForWrite 仅统一正常保存账本时的 Windows 分隔符。
+func SyncFileLocalPathForWrite(value string) string {
+	if filepath.Separator != '\\' {
+		return value
+	}
+	slash := filepath.ToSlash(value)
+	if strings.HasPrefix(slash, "//?/") || strings.HasPrefix(slash, "//./") || strings.HasPrefix(slash, "/??/") {
+		return value
+	}
+	leading := 0
+	for leading < len(slash) && slash[leading] == '/' {
+		leading++
+	}
+	if !strings.Contains(slash[leading:], "//") {
+		return slash
+	}
+	var result strings.Builder
+	result.Grow(len(slash))
+	result.WriteString(slash[:leading])
+	for i := leading; i < len(slash); i++ {
+		if slash[i] == '/' && i > leading && slash[i-1] == '/' {
+			continue
+		}
+		result.WriteByte(slash[i])
+	}
+	return result.String()
+}
+
+// sameSyncFileLocalPath 只供逻辑位置与目录资料复用比较，不证明物理身份或删除授权。
+func sameSyncFileLocalPath(a, b string) bool {
+	return a == b || filepath.Separator == '\\' && SyncFileLocalPathForWrite(a) == SyncFileLocalPathForWrite(b)
 }
 
 func (sf *SyncFile) GetAccount() *Account {

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,14 +183,17 @@ func TestStrmGenerationServiceSkipsNonOwnerWithoutComparingOrWriting(t *testing.
 }
 
 func TestResolveLatest115StrmOwner(t *testing.T) {
-	tests := []struct {
+	type testCase struct {
 		name              string
 		existingCollision bool
 		currentMTime      int64
 		wantOwner         bool
 		wantListCalls     int
 		excludeName       string
-	}{
+		nativeLedger      bool
+		backslashName     bool
+	}
+	tests := []testCase{
 		{name: "较新候选被排除时选择旧文件", existingCollision: true, currentMTime: 100, wantOwner: true, wantListCalls: 1, excludeName: "episode.mp4"},
 		{
 			name:          "数据库没有冲突时不请求远端目录",
@@ -211,6 +215,25 @@ func TestResolveLatest115StrmOwner(t *testing.T) {
 			wantOwner:         true,
 			wantListCalls:     1,
 		},
+		{
+			name:              "未重存的原生历史账本阻止较旧文件覆盖 owner",
+			existingCollision: true,
+			nativeLedger:      true,
+			currentMTime:      100,
+			wantOwner:         false,
+			wantListCalls:     1,
+		},
+		{
+			name:              "未重存的原生历史账本仍允许最新 owner",
+			existingCollision: true,
+			nativeLedger:      true,
+			currentMTime:      200,
+			wantOwner:         true,
+			wantListCalls:     1,
+		},
+	}
+	if filepath.Separator != '\\' {
+		tests = append(tests, testCase{name: "POSIX 反斜杠名称不是同一目标", existingCollision: true, backslashName: true, currentMTime: 100, wantOwner: true})
 	}
 
 	for _, tt := range tests {
@@ -245,6 +268,11 @@ func TestResolveLatest115StrmOwner(t *testing.T) {
 					FileName:      "episode.avi",
 					LocalFilePath: current.LocalFilePath,
 					IsVideo:       true,
+				}
+				if tt.nativeLedger {
+					existing.LocalFilePath = filepath.FromSlash(current.LocalFilePath)
+				} else if tt.backslashName {
+					existing.LocalFilePath = strings.ReplaceAll(current.LocalFilePath, "/", `\`)
 				}
 				if err := db.Db.Create(existing).Error; err != nil {
 					t.Fatalf("创建冲突 SyncFile 失败: %v", err)

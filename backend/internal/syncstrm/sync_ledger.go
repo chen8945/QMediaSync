@@ -106,6 +106,7 @@ func (s *SyncStrm) handleTempTableDiff() error {
 				continue
 			}
 			next := cached.GetSyncFile(s, s.Account.BaseUrl)
+			next.LocalFilePath = models.SyncFileLocalPathForWrite(next.LocalFilePath)
 			consumed[file.FileId] = true
 			if s.ledgerProtected(next) {
 				// 新位置扫描不完整时，即使旧位置可清理也保留旧行。
@@ -169,6 +170,7 @@ func (s *SyncStrm) handleTempTableDiff() error {
 			return err
 		}
 		next := file.GetSyncFile(s, s.Account.BaseUrl)
+		next.LocalFilePath = models.SyncFileLocalPathForWrite(next.LocalFilePath)
 		if s.ledgerProtected(next) || (file.SourceType == models.SourceType115 && file.Path == "") {
 			continue
 		}

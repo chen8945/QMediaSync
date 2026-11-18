@@ -402,6 +402,25 @@ pnpm run check:build
 
 ## Windows 本地路径兼容验证
 
+账本路径保存格式由 [`sync_files` 字段契约](../reference/database-schema.md#sync_files)定义。在 `backend/` 执行以下长期保存回归，原生 Windows 和 POSIX 均需运行：
+
+```bash
+go test -p 1 ./internal/models -run '^(TestSaveSyncFilePositionLocalPathFormat|TestSameSyncFilePosition|TestSyncPositionCache|TestEmbyLocalDirectoryReusesEvidenceAfterPathFormatting|TestEmbyFrozenMatchesLedgerKeepsIdentityChecks|TestEmbyDeleteProviderCacheTracksSavedPositions)$' -count=1 -v
+go test -p 1 ./internal/syncstrm -run '^TestResolveLatest115StrmOwner$' -count=1 -v
+go test -p 1 ./internal/syncstrm -run '^(TestSyncLedger|TestSyncExclusions|TestStrmGenerationServiceGenerateUpsertsSyncFileAndProcessesStrm|TestStrmGenerationServiceGenerateSkipsRefreshWhenStrmUnchanged|TestCleanupOldGeneratedStrm|TestStrmGenerationServiceCleansOldStrmAfterRemotePathChanges|TestStrmGenerationServiceKeepsNewStrmWhenOldPathCleanupFails)' -count=1 -v
+go test -p 1 ./internal/medialibrary/client -run '^TestFindItemByPathUsesPathQuery$' -count=1
+go test -p 1 ./internal/backup -run '^(TestLogicalBackupPreservesDatabaseValues|TestRestorePreservesDatabaseZeroNullAndHiddenValues)$' -count=1
+go vet -p 1 ./internal/models ./internal/syncstrm
+```
+
+`TestSaveSyncFilePositionLocalPathFormat` 与 `TestSyncLedgerLocalPathFormat` 通过真实 SQLite 入口保存并读回，覆盖新增和实际改名、原生／正斜杠／实际重复及混合分隔符、UNC、旧原生及重复拼写正常重存后统一、保留字段及保护行；同时核对纯格式更新真正落库、位置缓存保留旧逻辑副本且不失效。Windows 保存用例只使用字符串和临时数据库，无需实际盘符、NAS、管理员权限或网盘连接。特殊命名空间只验证整值保留，不据此声称设备或长路径读写通过；POSIX 核对反斜杠名称及重复 `/` 原值。复用既有批次、回滚、内容更新、生成与清理回归，不新增路径准入测试框架或性能基准。
+
+`TestSyncPositionCacheReusesSeparatorOnlySave` 在原生 Windows 验证格式重存后暖缓存中的旧原生路径仍保护同一实际目录。`TestSameSyncFilePosition` 验证真实位置、账号、来源、根或远端变化仍不等价，大小写和点组件不折叠。`TestEmbyLocalDirectoryReusesEvidenceAfterPathFormatting` 通过真实快照与 SQLite 验证缺少根资料时仍能复用目录祖先，摘要变化后不可复用，冻结 JSON 不变且零网盘请求；`TestEmbyFrozenMatchesLedgerKeepsIdentityChecks` 保护其余身份字段。`TestEmbyDeleteProviderCacheTracksSavedPositions` 核对格式保存后继续复用已有清单，真实移动后重新请求。符号链接解析、并发构建及等待后版本核验继续复用既有 `TestSyncPositionCache*`，缺少权限或 DSN 的跳过明确记录。
+
+`TestResolveLatest115StrmOwner` 覆盖未重存的旧原生历史账本仍能发现冲突、较旧视频不能接管、最新视频仍可写入，以及无冲突时零目录请求；POSIX 另核对反斜杠名称不会被合并。临时 overlay 可定位 Windows 字符串分支的回归，但不能替代原生 Windows 执行。
+
+有隔离的 `QMS_TEST_POSTGRES_DSN` 时复用 models 位置缓存与带 `integration` 标签的 `TestSyncLedgerPostgresSerializesBeforeSourceRows`，分别核对按保存规则确定的落库路径和扫描缓存的原始路径，不能要求两者在 Windows 上逐字相等。未设置导致的跳过不计 PostgreSQL 通过。保存改动不增加查询或外部 I/O；测试不替代实际运行性能测量。Windows 特有分支必须在原生 Windows 执行，交叉编译只证明能够构建。
+
 以下长期回归使用临时目录、SQLite 与本地文件，分别保护生成成果、季海报授权、媒体来源恢复和飞牛定位顺序。在 `backend/` 执行：
 
 ```bash

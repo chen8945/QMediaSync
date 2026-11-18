@@ -117,9 +117,9 @@ func readSyncLogicalPositions(ctx context.Context, handle *gorm.DB, id uint, all
 	}
 }
 
-// SameSyncFilePosition 只比较范围发现依赖的位置和归属，忽略内容、时间和签名。
+// SameSyncFilePosition 只比较范围发现依赖的位置和归属，忽略内容、时间、签名与 Windows 普通分隔符差异。
 func SameSyncFilePosition(a, b *SyncFile) bool {
-	return a != nil && b != nil && a.SyncPathId == b.SyncPathId && a.SourceType == b.SourceType && a.AccountId == b.AccountId && a.Path == b.Path && a.LocalFilePath == b.LocalFilePath
+	return a != nil && b != nil && a.SyncPathId == b.SyncPathId && a.SourceType == b.SourceType && a.AccountId == b.AccountId && a.Path == b.Path && sameSyncFileLocalPath(a.LocalFilePath, b.LocalFilePath)
 }
 
 // SaveSyncFilePosition 保存单文件或元数据记录，同时维护逻辑位置版本。
@@ -131,8 +131,10 @@ func SaveSyncFilePosition(handle *gorm.DB, file *SyncFile) error {
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		changed = err != nil || !SameSyncFilePosition(&old, file)
+		changed = err != nil
 	}
+	file.LocalFilePath = SyncFileLocalPathForWrite(file.LocalFilePath)
+	changed = changed || !SameSyncFilePosition(&old, file)
 	if changed {
 		finish := BeginSyncPositionMutation()
 		defer finish()
