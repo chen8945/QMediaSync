@@ -65,13 +65,19 @@ func (s *SyncStrm) removeLocalFile(filePath string, removedFileParents map[strin
 
 // removeEmptyLocalDirs 在遍历成功后从子目录向父目录收尾，保留之后新增的失败保护。
 func (s *SyncStrm) removeEmptyLocalDirs(dirs []string, removedFileParents map[string]bool) error {
+	var nonEmptyDirs int
+	defer func() {
+		if nonEmptyDirs > 0 {
+			s.Sync.Logger.Infof("已保留非空目录：%d 个", nonEmptyDirs)
+		}
+	}()
 	for i := len(dirs) - 1; i >= 0; i-- {
 		if err := s.Context.Err(); err != nil {
 			return err
 		}
 		dir := dirs[i]
 		if !s.Config.DelEmptyLocalDir || s.missingCleanupReason != "" {
-			s.Sync.Logger.Infof("当前设置不允许删除空目录，跳过本地目录 %s", dir)
+			s.Sync.Logger.Debugf("当前设置不允许删除空目录，跳过本地目录 %s", dir)
 			continue
 		}
 		if s.cleanupProtected(dir, true) {
@@ -84,7 +90,8 @@ func (s *SyncStrm) removeEmptyLocalDirs(dirs []string, removedFileParents map[st
 			continue
 		}
 		if len(entries) != 0 {
-			s.Sync.Logger.Infof("本地目录 %s 不是空目录，跳过删除", dir)
+			nonEmptyDirs++
+			s.Sync.Logger.Debugf("本地目录 %s 不是空目录，跳过删除", dir)
 			continue
 		}
 		if err := s.Context.Err(); err != nil {

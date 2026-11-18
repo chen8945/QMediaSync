@@ -944,6 +944,18 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 		}
 
 		s.Sync.Logger.Infof("开始对比本地文件和同步缓存中的文件，根目录：%s", rootPath)
+		if !s.Config.DelEmptyLocalDir {
+			s.Sync.Logger.Info("本轮未启用空目录删除")
+		}
+		if s.missingCleanupReason != "" {
+			s.Sync.Logger.Infof("本轮跳过缺项清理，原因：%s", s.missingCleanupReason)
+		}
+		var metadataDownloadDisabled, metadataKept int
+		defer func() {
+			if metadataDownloadDisabled+metadataKept > 0 {
+				s.Sync.Logger.Infof("本地元数据跳过统计：关闭元数据下载=%d，配置为保留=%d", metadataDownloadDisabled, metadataKept)
+			}
+		}()
 		// 对比本地文件和临时表中的文件
 		s.scanMu.Lock()
 		s.cleanupStarted = true
@@ -1014,7 +1026,7 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 					if s.Config.DelEmptyLocalDir && s.missingCleanupReason == "" {
 						localDirs = append(localDirs, path)
 					} else {
-						s.Sync.Logger.Infof("当前设置不允许删除空目录，跳过本地目录 %s", path)
+						s.Sync.Logger.Debugf("当前设置不允许删除空目录，跳过本地目录 %s", path)
 					}
 					return nil
 				}
@@ -1023,7 +1035,8 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 				isMeta := s.IsValidMetaExt(info.Name())
 				if isMeta && s.Config.EnableDownloadMeta == 0 {
 					// 如果是元数据文件且设置为不下载，则跳过检查（代表着不上传）
-					s.Sync.Logger.Infof("本地元数据文件 %s 由于关闭了元数据下载所以不需要处理", info.Name())
+					metadataDownloadDisabled++
+					s.Sync.Logger.Debugf("本地元数据文件 %s 由于关闭了元数据下载所以不需要处理", info.Name())
 					return nil
 				}
 				if !isVideo && !isMeta {
@@ -1067,7 +1080,8 @@ func (s *SyncStrm) compareLocalFilesWithTempTable() error {
 				if isMeta {
 					// 如果选择忽略，则跳过
 					if s.Config.NetNotFoundFileAction == models.SyncTreeItemMetaActionKeep {
-						s.Sync.Logger.Infof("本地元数据文件 %s 由于设置为保留所以不需要处理", path)
+						metadataKept++
+						s.Sync.Logger.Debugf("本地元数据文件 %s 由于设置为保留所以不需要处理", path)
 						return nil
 					}
 					// 如果选择删除，则检查是否存在，不存在则删除
