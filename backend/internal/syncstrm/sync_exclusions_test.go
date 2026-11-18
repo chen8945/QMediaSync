@@ -343,7 +343,7 @@ func TestSyncExclusionsRemoteScanSkipsGenerationAndDownloads(t *testing.T) {
 	if err := db.Db.Find(&downloads).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(downloads) != 1 || downloads[0].LocalFullPath != filepath.Join(s.TargetPath, "movie.nfo") || s.NewMeta != 1 || s.NewStrm != 1 || s.NewUpload != 0 {
+	if len(downloads) != 1 || downloads[0].LocalFullPath != filepath.ToSlash(filepath.Join(s.TargetPath, "movie.nfo")) || s.NewMeta != 1 || s.NewStrm != 1 || s.NewUpload != 0 {
 		t.Fatalf("downloads=%+v meta=%d strm=%d upload=%d", downloads, s.NewMeta, s.NewStrm, s.NewUpload)
 	}
 	if status, err := s.scanOutcome(); status != models.SyncStatusCompleted || err != nil || s.scanResultSnapshot().SkippedFiles != 1 {

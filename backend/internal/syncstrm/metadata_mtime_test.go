@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -227,9 +228,14 @@ func TestMetadataScanEnqueueFailureKeepsOldFile(t *testing.T) {
 }
 
 func TestDirectoryUploadMetadataRejectsNanoTimeChange(t *testing.T) {
-	path, info := writeMetadataMtimeTestFile(t, []byte("old"), time.Unix(100, 1))
+	step := time.Nanosecond
+	if runtime.GOOS == "windows" {
+		// Windows 文件时间精度为 100ns，其他平台保留原有的纳秒覆盖。
+		step = 100 * time.Nanosecond
+	}
+	path, info := writeMetadataMtimeTestFile(t, []byte("old"), time.Unix(100, int64(step)))
 	task := &models.DbUploadTask{FileSize: info.Size(), LocalMtime: 100, SourceFingerprint: models.BuildDirectoryUploadSourceFingerprint(info.Size(), info.ModTime().UnixNano())}
-	changed := time.Unix(100, 2)
+	changed := time.Unix(100, int64(2*step))
 	if err := os.Chtimes(path, changed, changed); err != nil {
 		t.Fatal(err)
 	}

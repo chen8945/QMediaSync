@@ -72,7 +72,7 @@ func new115UploadParentSync(t *testing.T) (*SyncStrm, models.SyncFile) {
 	t.Cleanup(s.Cancel)
 	dir := models.SyncFile{SyncPathId: sp.ID, AccountId: account.ID, SourceType: models.SourceType115,
 		FileId: "empty-dir", FileName: "Empty", ParentId: "root", Path: "Media", FileType: v115open.TypeDir,
-		LocalFilePath: filepath.Join(s.TargetPath, "Media", "Empty"), MTime: 1}
+		LocalFilePath: filepath.ToSlash(filepath.Join(s.TargetPath, "Media", "Empty")), MTime: 1}
 	if err := db.Db.Create(&dir).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func Test115EmptyParentListingMustMatchRequestedLocation(t *testing.T) {
 			child := parent
 			child.ID, child.FileId, child.FileName, child.ParentId = 0, "child-dir", "Child", parent.FileId
 			child.Path = "Media/Empty"
-			child.LocalFilePath = filepath.Join(parent.LocalFilePath, "Child")
+			child.LocalFilePath = filepath.ToSlash(filepath.Join(parent.LocalFilePath, "Child"))
 			if err := db.Db.Create(&child).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -204,7 +204,7 @@ func Test115EmptyExistingDirectoryPreservesUploadMetadata(t *testing.T) {
 			}
 			for _, task := range uploads {
 				requireScopeFile(t, task.LocalFullPath, true)
-				if task.RemotePathId != "empty-dir" || filepath.Dir(task.RemoteFullPath) != "Media/Empty" {
+				if task.RemotePathId != "empty-dir" || filepath.ToSlash(filepath.Dir(task.RemoteFullPath)) != "Media/Empty" {
 					t.Fatalf("wrong remote parent: %+v", task)
 				}
 			}
@@ -951,7 +951,7 @@ func Test115AccessoryDirectoryRequiresExistingHost(t *testing.T) {
 					},
 					create: func(ctx context.Context, local string) (string, string, error) {
 						creates++
-						if local != localDir {
+						if local != filepath.ToSlash(localDir) {
 							t.Fatalf("wrong create target %s", local)
 						}
 						parent, parentID := host, hostID
@@ -1039,7 +1039,7 @@ func Test115UploadShortCircuitsNeedNoDirectoryRequests(t *testing.T) {
 			case "excluded_attachment_file":
 				s.Config.ExcludeNames = []string{"movie.nfo"}
 			case "pending_upload":
-				file := &models.SyncFile{AccountId: s.Account.ID, SyncPathId: s.SyncPathId, SourceType: models.SourceType115, FileType: v115open.TypeFile, ParentId: old.FileId, Path: "Media/Empty", FileName: "movie.nfo", LocalFilePath: local}
+				file := &models.SyncFile{AccountId: s.Account.ID, SyncPathId: s.SyncPathId, SourceType: models.SourceType115, FileType: v115open.TypeFile, ParentId: old.FileId, Path: "Media/Empty", FileName: "movie.nfo", LocalFilePath: filepath.ToSlash(local)}
 				if err := models.AddUploadTaskFromSyncFile(file); err != nil {
 					t.Fatal(err)
 				}

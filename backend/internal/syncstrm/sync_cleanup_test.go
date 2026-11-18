@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"qmediasync/internal/db"
@@ -32,7 +33,7 @@ func TestLocalCleanupRemovesNestedEmptyDirectoriesInOnePass(t *testing.T) {
 				s.Config.ExcludeNames = []string{"keep.nfo"}
 			case "active_upload":
 				retained = filepath.Join(season, "keep.nfo")
-				task := models.DbUploadTask{Source: models.UploadSourceStrm, LocalFullPath: retained, Status: models.UploadStatusPending}
+				task := models.DbUploadTask{Source: models.UploadSourceStrm, LocalFullPath: filepath.ToSlash(retained), Status: models.UploadStatusPending}
 				if err := db.Db.Create(&task).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -79,7 +80,7 @@ func TestLocalCleanupPreservesInitiallyEmptyDirectoryLedger(t *testing.T) {
 				}
 				meta := &SyncFileCache{SourceType: models.SourceType115, FileId: "metadata", ParentId: old.FileId,
 					FileType: v115open.TypeFile, FileName: "movie.nfo", Path: "Media/Empty", IsMeta: true,
-					LocalFilePath: filepath.Join(old.LocalFilePath, "movie.nfo"), PickCode: "meta-pick", FileSize: 8}
+					LocalFilePath: filepath.ToSlash(filepath.Join(old.LocalFilePath, "movie.nfo")), PickCode: "meta-pick", FileSize: 8}
 				if err := s.memSyncCache.Insert(meta); err != nil {
 					t.Fatal(err)
 				}
@@ -195,8 +196,17 @@ func TestLocalCleanupFinalizationPreservesFailedDirectories(t *testing.T) {
 				}
 				writeScopeFile(t, child)
 			case "remove_failure":
-				// 保留末尾 /.，使目录读取成功、删除返回真实文件系统错误。
-				dirs[1] = child + string(filepath.Separator) + "."
+				if runtime.GOOS == "windows" {
+					// Windows 会清理末尾的 /.，用打开的目录句柄阻止删除。
+					locked, err := os.Open(child)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer locked.Close()
+				} else {
+					// 保留末尾 /.，使目录读取成功、删除返回真实文件系统错误。
+					dirs[1] = child + string(filepath.Separator) + "."
+				}
 			case "late_failure":
 				s.recordScanFailure(s.remotePathForLocal(child), errors.New("收尾前发现目录读取失败"))
 			case "cancel":
@@ -228,7 +238,7 @@ func Test115UploadTaskRecheckedAfterDirectoryConfirmation(t *testing.T) {
 	writeScopeFile(t, local)
 	s.SyncDriver = &uploadParent115Driver{
 		detail: func(_ context.Context, id string) (*SyncFileCache, error) {
-			task := models.DbUploadTask{Source: models.UploadSourceStrm, LocalFullPath: local, Status: models.UploadStatusPending}
+			task := models.DbUploadTask{Source: models.UploadSourceStrm, LocalFullPath: filepath.ToSlash(local), Status: models.UploadStatusPending}
 			if err := db.Db.Create(&task).Error; err != nil {
 				t.Fatal(err)
 			}

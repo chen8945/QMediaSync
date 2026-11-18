@@ -90,7 +90,7 @@ func TestLocalMetadataCleanupFollowsMissingVideo(t *testing.T) {
 				}
 				file := &SyncFileCache{SourceType: models.SourceType115, FileId: name, ParentId: parent.FileId,
 					FileType: v115open.TypeFile, FileName: name, Path: "Media/Empty", IsVideo: isVideo, IsMeta: !isVideo,
-					LocalFilePath: filepath.Join(parent.LocalFilePath, localName)}
+					LocalFilePath: filepath.ToSlash(filepath.Join(parent.LocalFilePath, localName))}
 				if err := s.memSyncCache.Insert(file); err != nil {
 					t.Fatal(err)
 				}
@@ -165,7 +165,7 @@ func TestLocalMetadataCleanupPreservesProtectedOwners(t *testing.T) {
 				s.Config.NetNotFoundFileAction = models.SyncTreeItemMetaActionKeep
 			case "active_upload":
 				if err := models.AddUploadTaskFromSyncFile(&models.SyncFile{AccountId: s.Account.ID, SyncPathId: s.SyncPathId,
-					SourceType: models.SourceType115, FileName: "Episode.nfo", LocalFilePath: meta, Path: "Media/Empty", ParentId: parent.FileId}); err != nil {
+					SourceType: models.SourceType115, FileName: "Episode.nfo", LocalFilePath: filepath.ToSlash(meta), Path: "Media/Empty", ParentId: parent.FileId}); err != nil {
 					t.Fatal(err)
 				}
 			case "scope_failure":

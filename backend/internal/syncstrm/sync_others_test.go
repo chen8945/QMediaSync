@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -84,7 +86,7 @@ func TestStartFileHonorsGlobalExclusions(t *testing.T) {
 			if syncer == nil {
 				t.Fatal("创建手动同步器失败")
 			}
-			t.Cleanup(syncer.Cancel)
+			t.Cleanup(func() { syncer.Cancel(); syncer.Sync.Logger.Close() })
 			syncer.SyncDriver = &fakeDirectoryScanDriver{
 				detailsByID: map[string]*SyncFileCache{file.FileId: file},
 				strmContent: "http://qms.local/video",
@@ -171,7 +173,7 @@ func TestStartOtherHonorsGlobalAndCustomExclusions(t *testing.T) {
 			if syncer == nil {
 				t.Fatal("创建同步器失败")
 			}
-			t.Cleanup(syncer.Cancel)
+			t.Cleanup(func() { syncer.Cancel(); syncer.Sync.Logger.Close() })
 			syncer.StartOther()
 			select {
 			case err := <-syncer.PathErrChan:
@@ -238,7 +240,12 @@ func newFailureScanSyncer(t *testing.T) *SyncStrm {
 	if s == nil {
 		t.Fatal("创建同步器失败")
 	}
-	t.Cleanup(s.Cancel)
+	t.Cleanup(func() {
+		s.Cancel()
+		if s.ownsLogger {
+			s.Sync.Logger.Close()
+		}
+	})
 	s.Config.VideoExt = []string{".mkv"}
 	return s
 }
@@ -424,7 +431,14 @@ func TestStartOtherKeepsThreadSnapshotAcrossSettingsSave(t *testing.T) {
 func TestLocalSourceStatFailurePreservesScopeAndContinues(t *testing.T) {
 	s := newFailureScanSyncer(t)
 	source := t.TempDir()
-	if err := os.Symlink(filepath.Join(source, "missing"), filepath.Join(source, "broken.mkv")); err != nil {
+	if runtime.GOOS == "windows" {
+		// 目录联接无需符号链接权限，断链仍使真实 os.Stat 失败。
+		command := exec.Command("cmd", "/d", "/c", "mklink", "/J", "broken.mkv", "missing")
+		command.Dir = source
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("创建断裂目录联接失败：%v，输出：%s", err, output)
+		}
+	} else if err := os.Symlink(filepath.Join(source, "missing"), filepath.Join(source, "broken.mkv")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "good.mkv"), []byte("video"), 0644); err != nil {
@@ -437,7 +451,7 @@ func TestLocalSourceStatFailurePreservesScopeAndContinues(t *testing.T) {
 	s.SyncDriver = driver
 	s.StartOther()
 	result := s.scanResultSnapshot()
-	if s.NewStrm != 1 || s.TotalFile != 2 || len(result.Failures) != 1 || result.Failures[0].Path != source {
+	if s.NewStrm != 1 || s.TotalFile != 2 || len(result.Failures) != 1 || result.Failures[0].Path != filepath.ToSlash(source) {
 		t.Fatalf("generated=%d, total=%d, result=%+v", s.NewStrm, s.TotalFile, result)
 	}
 	if _, err := os.Stat(filepath.Join(s.TargetPath, "good.strm")); err != nil {

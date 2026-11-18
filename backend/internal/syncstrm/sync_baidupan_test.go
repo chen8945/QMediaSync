@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,16 +54,18 @@ func newSavedBaiduTestSyncer(t *testing.T, remotePath string) (*SyncStrm, *model
 
 func TestBaiduSavedPathIncrementalScope(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		remotePath string
-		root       string
-		filePath   string
-		reject     bool
+		name         string
+		remotePath   string
+		root         string
+		filePath     string
+		reject       bool
+		localFailure bool
 	}{
 		{name: "absolute", remotePath: "/media", root: "/media", filePath: "/media/movie.mkv"},
 		{name: "relative", remotePath: "media", root: "/media", filePath: "/media/movie.mkv"},
 		{name: "root", remotePath: "/", root: "/", filePath: "/movie.mkv"},
-		{name: "spaces", remotePath: "/ media /", root: "/ media ", filePath: "/ media /movie.mkv"},
+		{name: "spaces", remotePath: "/ media /", root: "/ media ", filePath: "/ media /movie.mkv", localFailure: runtime.GOOS == "windows"},
+		{name: "leading_and_internal_spaces", remotePath: "/ media name/", root: "/ media name", filePath: "/ media name/movie.mkv"},
 		{name: "outside", remotePath: "/media", root: "/media", filePath: "/other/movie.mkv", reject: true},
 		{name: "sibling_prefix", remotePath: "/media", root: "/media", filePath: "/media-extra/movie.mkv", reject: true},
 	} {
@@ -103,10 +106,16 @@ func TestBaiduSavedPathIncrementalScope(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if s.NewStrm != 1 {
+				if tt.localFailure {
+					// Windows 将目录末尾空格折叠为别名，必须保留失败而非放宽路径保护。
+					result := s.scanResultSnapshot()
+					if _, err := s.scanOutcome(); err == nil || s.NewStrm != 0 || len(result.Failures) != 1 || result.Failures[0].Kind != "file" || result.Failures[0].Path != tt.filePath {
+						t.Fatalf("本地不支持的路径未正确报告失败：生成数=%d，结果=%+v，错误=%v", s.NewStrm, result, err)
+					}
+				} else if s.NewStrm != 1 {
 					t.Fatalf("生成数=%d，期望 1", s.NewStrm)
 				}
-				requireScopeFile(t, filepath.Join(saved.LocalPath, strings.TrimSuffix(tt.filePath, ".mkv")+".strm"), true)
+				requireScopeFile(t, filepath.Join(saved.LocalPath, strings.TrimSuffix(tt.filePath, ".mkv")+".strm"), !tt.localFailure)
 			}
 			if calls != 1 || s.SourcePath != tt.root {
 				t.Fatalf("请求数=%d，运行时根=%q，期望 %q", calls, s.SourcePath, tt.root)
