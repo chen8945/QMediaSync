@@ -2,8 +2,11 @@ package requests
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"qmediasync/internal/testfs"
 )
 
 func TestEmbyConfigRequestValidate(t *testing.T) {
@@ -57,6 +60,8 @@ func TestEmbyConfigRequestValidate(t *testing.T) {
 }
 
 func TestEmbyConfigPathMappingRequest(t *testing.T) {
+	localRoot := testfs.LocalPath("/mnt/strm")
+	filmsRoot := testfs.LocalPath("/mnt/films")
 	for _, test := range []struct {
 		name, body       string
 		present, invalid bool
@@ -64,9 +69,9 @@ func TestEmbyConfigPathMappingRequest(t *testing.T) {
 		{"omitted", `{}`, false, false},
 		{"null preserves", `{"path_mappings":null}`, false, false},
 		{"clear", `{"path_mappings":[]}`, true, false},
-		{"mapped", `{"path_mappings":[{"emby_root":"/emby","local_root":"/mnt/strm","sync_path_id":42}]}`, true, false},
-		{"relative path", `{"path_mappings":[{"emby_root":"relative","local_root":"/mnt/strm"}]}`, true, true},
-		{"overlap", `{"path_mappings":[{"emby_root":"/emby","local_root":"/mnt/strm"},{"emby_root":"/emby/films","local_root":"/mnt/films"}]}`, true, true},
+		{"mapped", fmt.Sprintf(`{"path_mappings":[{"emby_root":"/emby","local_root":%q,"sync_path_id":42}]}`, localRoot), true, false},
+		{"relative path", fmt.Sprintf(`{"path_mappings":[{"emby_root":"relative","local_root":%q}]}`, localRoot), true, true},
+		{"overlap", fmt.Sprintf(`{"path_mappings":[{"emby_root":"/emby","local_root":%q},{"emby_root":"/emby/films","local_root":%q}]}`, localRoot, filmsRoot), true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var request UpdateEmbyConfigRequest

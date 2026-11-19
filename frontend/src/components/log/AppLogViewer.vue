@@ -17,8 +17,9 @@
               :show-realtime-controls="isRealTime"
               :download-disabled="!props.logPath.trim()"
               @connect="connect"
-              @disconnect="disconnect"
+              @disconnect="stop"
               @clear="clearLogs"
+              @view="viewLogs"
               @download="downloadLogs"
             />
           </div>
@@ -27,10 +28,24 @@
 
       <div class="log-content">
         <!-- 日志显示区域 -->
-        <div class="logs" id="logs" ref="logsContainer" @scroll="handleScroll" v-loading="loading">
+        <div
+          class="logs"
+          id="logs"
+          ref="logsContainer"
+          @scroll="handleScroll"
+          @wheel.passive="handleWheel"
+          @touchstart.passive="handleTouchStart"
+          @touchmove.passive="handleTouchMove"
+          @keydown="handleKeydown"
+          tabindex="0"
+          aria-label="日志，向下滚动加载更早内容"
+          v-loading="loading && !logLines.length && !history"
+        >
+          <div :style="{ height: `${before}px` }" aria-hidden="true" />
           <div
-            v-for="(log, index) in limitedLogLines"
-            :key="log.id || index"
+            v-for="log in limitedLogLines"
+            :key="log.id"
+            :data-log-id="log.id"
             class="log-line"
             :class="`log-level-${log.level}`"
           >
@@ -38,13 +53,13 @@
             <span class="log-level">{{ log.level.toUpperCase() }}</span>
             <span class="log-message">{{ log.message }}</span>
           </div>
+          <div :style="{ height: `${after}px` }" aria-hidden="true" />
           <div v-if="limitedLogLines.length === 0" class="empty-logs">暂无日志内容</div>
         </div>
 
         <!-- 日志信息 -->
         <div class="log-info">
           <el-text size="small">
-            当前显示 {{ limitedLogLines.length }} / 已加载 {{ logLines.length }} 行日志
             <span v-if="streamConnectionState === 'connected'" class="status-indicator connected">
               ● 已连接
             </span>
@@ -57,6 +72,7 @@
             >
               ● 已断开
             </span>
+            当前显示 {{ limitedLogLines.length }} / 已加载 {{ loadedCount }} 行日志
             <span
               v-if="props.isRealTime && streamConnectionState === 'unsupported'"
               class="stream-status-message"
@@ -69,7 +85,18 @@
             >
               实时日志暂时断开，正在重新连接…
             </span>
+            <span v-if="history" class="history-status" aria-live="polite">
+              <span v-if="historyLoading">正在加载历史日志…</span>
+              <template v-else-if="historyError">
+                {{ historyError }}
+                <el-button link type="primary" size="small" @click="retry">重试</el-button>
+              </template>
+              <span v-else-if="!hasOlder">已到最早日志</span>
+            </span>
           </el-text>
+          <el-button v-if="history" link type="primary" size="small" @click="returnLatest">
+            返回最新
+          </el-button>
         </div>
       </div>
     </el-card>
@@ -81,14 +108,15 @@ import { ref, computed, onMounted, onUnmounted, shallowRef, watch, useTemplateRe
 import LogActionToolbar from '@/components/log/LogActionToolbar.vue'
 import LogLevelFilter from '@/components/log/LogLevelFilter.vue'
 import { useLogFileActions } from '@/composables/useLogFileActions'
+import { useLogBuffer } from '@/composables/useLogBuffer'
+import { useLogScroll } from '@/composables/useLogScroll'
 import { registerRealtimeSource } from '@/composables/realtimeSources'
 import type { LogEntry, LogLevel } from '@/types/log'
-import { DEFAULT_VISIBLE_LOG_LEVELS, filterLogEntriesByLevels } from '@/utils/logLevel'
+import { DEFAULT_VISIBLE_LOG_LEVELS } from '@/utils/logLevel'
 import { formatDateTime } from '@/utils/timeUtils'
-import { fetchLogSnapshot } from '@/api/logs'
+import { fetchLogSnapshot, fetchLogCatchUp } from '@/api/logs'
 import { parseHttpError } from '@/http/errors'
 
-// 定义组件属性
 interface Props {
   logPath: string
   isRealTime: boolean
@@ -96,281 +124,253 @@ interface Props {
   mobileHeight?: string
   fullscreen?: boolean
 }
-
-type StreamConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'unsupported'
-
 const props = withDefaults(defineProps<Props>(), {
   isRealTime: true,
   height: '',
   mobileHeight: '',
   fullscreen: false,
 })
-
 const logViewerStyle = computed<Record<string, string>>(() => ({
   '--log-viewer-height': props.height || 'calc(100vh - 320px)',
   '--log-viewer-mobile-height': props.mobileHeight || props.height || 'calc(100dvh - 220px)',
 }))
-
-// 组件状态
+type StreamConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'unsupported'
 const stream = shallowRef<EventSource | null>(null)
-const logLines = ref<LogEntry[]>([])
+const buffer = useLogBuffer()
+const logLines = buffer.logs
 const selectedLogLevels = ref<LogLevel[]>([...DEFAULT_VISIBLE_LOG_LEVELS])
 const streamConnectionState = ref<StreamConnectionState>('idle')
 const isConnected = computed(() => streamConnectionState.value === 'connected')
 const loading = ref(false)
 const logsContainer = useTemplateRef<HTMLElement>('logsContainer')
-const { downloadLogFile } = useLogFileActions()
-
-// 日志数量限制配置
-const MAX_LOG_ENTRIES = 2000
-const CLEANUP_THRESHOLD = 2500
-let cleanupTimer: ReturnType<typeof setTimeout> | null = null
-
-// 日志配置
-let isLoadingOldLogs = false
-let currentOffset = 0
-let hasReachedEnd = false
-let followLatest = true
-let unregisterStream: (() => void) | null = null
-let streamOpened = false
-let hasInitialSnapshot = false
-let snapshotRequestID = 0
-let snapshotController: AbortController | null = null
-
-const STREAM_URL = '/api/logs/stream'
-
-// 限制显示的日志条目
-const limitedLogLines = computed(() => {
-  return filterLogEntriesByLevels(logLines.value, selectedLogLevels.value).slice(0, MAX_LOG_ENTRIES)
-})
-
-const resetLogState = () => {
-  cancelSnapshotRequest()
-  currentOffset = 0
-  hasReachedEnd = false
-  followLatest = true
-  hasInitialSnapshot = false
-  logLines.value = []
+const { viewLogFile, downloadLogFile } = useLogFileActions()
+let fileID: string | undefined
+const scrolling = useLogScroll(
+  logLines,
+  selectedLogLevels,
+  logsContainer,
+  loading,
+  () => props.logPath,
+  () => fileID,
+  () => void recover(true),
+)
+const {
+  loadedCount,
+  rows: limitedLogLines,
+  before,
+  after,
+  history,
+  historyLoading,
+  historyError,
+  hasOlder,
+  handleScroll,
+  handleWheel,
+  handleTouchStart,
+  handleTouchMove,
+  handleKeydown,
+  retry,
+} = scrolling
+const returnLatest = () => {
+  buffer.flush()
+  scrolling.returnLatest()
 }
+let cursor: number | undefined
+let hasInitialSnapshot = false
+let unregisterStream: (() => void) | null = null
+let requestID = 0
+let controller: AbortController | null = null
+let recovering = false
+let liveRequested = false
+let closedRecoveryAttempted = false
 
-const cancelSnapshotRequest = () => {
-  snapshotRequestID++
-  snapshotController?.abort()
-  snapshotController = null
-  isLoadingOldLogs = false
+const cancelRequest = () => {
+  requestID++
+  controller?.abort()
+  controller = null
   loading.value = false
 }
-
-// 监听日志路径和实时模式变化，自动维护连接
-watch(
-  () => [props.logPath, props.isRealTime] as const,
-  async ([logPath, isRealTime], oldValue) => {
-    const oldLogPath = oldValue?.[0] ?? ''
-    const normalizedLogPath = logPath.trim()
-    if (logPath !== oldLogPath) {
-      disconnect()
-      resetLogState()
-    }
-    if (!isRealTime) {
-      disconnect()
-      return
-    }
-    if (normalizedLogPath) {
-      streamConnectionState.value = 'connecting'
-      const loaded = await loadInitialLogs()
-      if (loaded) connect()
-    }
-  },
-)
-
-// 初始化
-onMounted(async () => {
-  // 如果提供了日志路径，先加载历史日志
-  if (props.logPath) {
-    resetLogState()
-    if (props.isRealTime) streamConnectionState.value = 'connecting'
-    // 加载历史日志，设置 limit 为 1000
-    const loaded = await loadInitialLogs()
-    if (props.isRealTime && loaded) {
-      connect()
-    }
+const cancelHistory = scrolling.cancel
+const addSystemLog = (message: string, level: LogEntry['level'] = 'info') => {
+  buffer.append([{ level, message, timestamp: formatDateTime(Math.floor(Date.now() / 1000)) }])
+  buffer.flush()
+}
+const showFailure = (error: unknown, message: string) => {
+  const failure = parseHttpError(error, { fallbackMessage: message })
+  if (failure.shouldNotify) {
+    console.error(`${message}：`, failure.diagnostics)
+    addSystemLog(failure.message, 'error')
   }
-})
-
-// 加载初始历史日志
-const loadInitialLogs = async (): Promise<boolean> => {
-  const logPath = props.logPath.trim()
-  if (!logPath) {
-    return false
+}
+const loadInitialLogs = async (resetHistory = false): Promise<boolean> => {
+  const path = props.logPath.trim()
+  if (!path) return false
+  if (resetHistory) {
+    cursor = undefined
+    fileID = undefined
+    hasInitialSnapshot = false
+    scrolling.returnLatest()
+    scrolling.setSnapshot(0, 0)
+    buffer.clear()
   }
-
-  cancelSnapshotRequest()
-  const requestID = ++snapshotRequestID
-  const controller = new AbortController()
-  snapshotController = controller
-  const isCurrentSnapshotRequest = () =>
-    snapshotRequestID === requestID &&
-    snapshotController === controller &&
-    props.logPath.trim() === logPath
-
-  isLoadingOldLogs = true
+  cancelRequest()
+  const currentID = ++requestID
+  const current = new AbortController()
+  controller = current
   loading.value = true
-
   try {
-    const rs = await fetchLogSnapshot(logPath, -1, 1000, controller.signal)
-    if (!isCurrentSnapshotRequest()) return false
-    const entries = rs.entries || []
-    currentOffset = rs.pos
-    // 处理返回的旧日志条目
-    logLines.value = Array.isArray(entries) ? [...entries] : []
+    const page = await fetchLogSnapshot(path, -1, 1000, current.signal)
+    if (currentID !== requestID) return false
+    if (fileID !== undefined && page.file_id !== fileID) {
+      scrolling.returnLatest()
+    }
+    buffer.replace(
+      props.isRealTime && page.cursor !== undefined
+        ? page.entries.filter((entry) => !!entry.cursor)
+        : page.entries,
+    )
+    cursor = page.cursor
+    fileID = page.file_id
+    scrolling.setSnapshot(page.pos, page.start_pos ?? page.cursor ?? 0)
     hasInitialSnapshot = true
     return true
   } catch (error) {
-    if (controller.signal.aborted || !isCurrentSnapshotRequest()) {
-      return false
-    }
-    const failure = parseHttpError(error, { fallbackMessage: '加载初始日志失败' })
-    if (failure.shouldNotify) {
-      console.error('加载初始日志失败：', failure.diagnostics)
-      addSystemLog(failure.message, 'error')
-    }
-    hasInitialSnapshot = false
-    if (!stream.value && streamConnectionState.value === 'connecting') {
+    if (!current.signal.aborted && currentID === requestID) {
+      showFailure(error, '加载初始日志失败')
+      hasInitialSnapshot = false
       streamConnectionState.value = 'idle'
     }
     return false
   } finally {
-    if (isCurrentSnapshotRequest()) {
-      isLoadingOldLogs = false
+    if (currentID === requestID) {
       loading.value = false
-      snapshotController = null
+      controller = null
     }
   }
 }
-
-// 清理资源
-onUnmounted(() => {
+const disconnect = (current = stream.value) => {
+  if (current && stream.value !== current) return
+  stream.value = null
+  unregisterStream?.()
+  unregisterStream = null
+  current?.close()
+  streamConnectionState.value = 'idle'
+  buffer.flush()
+}
+const stop = () => {
+  liveRequested = false
+  cancelRequest()
+  cancelHistory()
   disconnect()
-  cancelSnapshotRequest()
-  if (cleanupTimer) {
-    clearTimeout(cleanupTimer)
-  }
-})
-
-// 处理滚动事件
-const handleScroll = () => {
-  if (!logsContainer.value) return
-
-  const scrollTop = logsContainer.value.scrollTop
-  const scrollHeight = logsContainer.value.scrollHeight
-  const clientHeight = logsContainer.value.clientHeight
-
-  followLatest = scrollTop <= 20
-
-  // 检查是否滚动到底部，需要加载更多旧日志
-  if (scrollHeight - scrollTop - clientHeight < 50 && !isLoadingOldLogs && !hasReachedEnd) {
-    loadOldLogs()
-  }
 }
-
-// 防抖清理函数
-const debouncedCleanupLogs = () => {
-  if (cleanupTimer) {
-    clearTimeout(cleanupTimer)
-  }
-
-  cleanupTimer = setTimeout(() => {
-    if (logLines.value.length > CLEANUP_THRESHOLD) {
-      logLines.value = logLines.value.slice(0, MAX_LOG_ENTRIES)
-    }
-  }, 300)
-}
-
-// 添加日志条目
-const addLogEntry = (entry: LogEntry) => {
-  // 为日志条目添加唯一 ID
-  const entryWithId = {
-    ...entry,
-    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-  }
-
-  // 添加到日志数组前面（最新的日志在最前面）
-  logLines.value = [entryWithId, ...logLines.value]
-
-  // 防抖清理检查
-  debouncedCleanupLogs()
-
-  if (followLatest) {
-    requestAnimationFrame(() => {
-      if (logsContainer.value) {
-        logsContainer.value.scrollTop = 0
+const recover = async (reset: boolean) => {
+  if (recovering) return
+  recovering = true
+  disconnect()
+  cancelRequest()
+  const currentID = ++requestID
+  const current = new AbortController()
+  controller = current
+  streamConnectionState.value = 'reconnecting'
+  let reloaded = false
+  try {
+    if (reset || cursor === undefined || fileID === undefined) {
+      if (!(await loadInitialLogs(reset))) return
+      reloaded = true
+      if (reset) addSystemLog('日志位置已变化，已重新加载最新窗口')
+    } else {
+      let more = true
+      // shortcut: 一次恢复最多补读 20 页，持续落后时回到最新窗口，历史仍可分页。
+      for (let page = 0; page < 20 && more; page++) {
+        const data = await fetchLogCatchUp(props.logPath, cursor!, current.signal, fileID)
+        if (currentID !== requestID) return
+        buffer.append(data.entries)
+        cursor = data.cursor
+        more = data.has_more
       }
-    })
+      if (more) {
+        if (!(await loadInitialLogs())) return
+        reloaded = true
+        addSystemLog('实时日志积压较多，已恢复最新窗口；较早内容可通过历史分页查看')
+      }
+    }
+    buffer.flush()
+    if (reloaded || !current.signal.aborted) openStream()
+  } catch (error) {
+    if (!current.signal.aborted && currentID === requestID) {
+      const changed = parseHttpError(error).diagnostics.errorCode === 'LOG_CURSOR_INVALID'
+      if (await loadInitialLogs(changed)) {
+        if (changed) addSystemLog('日志位置已变化，已重新加载最新窗口')
+        if (props.isRealTime) openStream()
+      }
+    }
+  } finally {
+    recovering = false
   }
 }
-
-// 添加系统日志
-const addSystemLog = (message: string, level: LogEntry['level'] = 'info') => {
-  addLogEntry({
-    level,
-    message,
-    timestamp: formatDateTime(Math.floor(Date.now() / 1000)),
-  })
-}
-
-const connect = () => {
-  if (stream.value) {
-    return
-  }
-
-  const logPath = props.logPath.trim()
-  if (!logPath) {
-    addSystemLog('请输入日志文件路径', 'error')
-    return
-  }
-  if (!hasInitialSnapshot) {
-    streamConnectionState.value = 'connecting'
-    void loadInitialLogs().then((loaded) => {
-      if (loaded) connect()
-    })
-    return
-  }
-
+const openStream = () => {
+  if (!liveRequested || stream.value || !props.logPath.trim()) return
   if (typeof EventSource === 'undefined') {
     streamConnectionState.value = 'unsupported'
     return
   }
-
+  const position = cursor === undefined ? '' : `&cursor=${cursor}`
+  const identity = fileID === undefined ? '' : `&file_id=${encodeURIComponent(fileID)}`
+  const source = new EventSource(
+    `/api/logs/stream?path=${encodeURIComponent(props.logPath.trim())}${position}${identity}`,
+  )
+  stream.value = source
   streamConnectionState.value = 'connecting'
-  const currentStream = new EventSource(`${STREAM_URL}?path=${encodeURIComponent(logPath)}`)
-  stream.value = currentStream
-  unregisterStream = registerRealtimeSource(() => disconnect(currentStream))
-  currentStream.onopen = () => {
-    if (stream.value !== currentStream) return
+  unregisterStream = registerRealtimeSource(stop)
+  let opened = false
+  source.onopen = () => {
+    if (stream.value !== source) return
+    closedRecoveryAttempted = false
+    if (opened) {
+      void recover(false)
+      return
+    }
+    opened = true
     streamConnectionState.value = 'connected'
-    if (streamOpened) void loadInitialLogs()
-    streamOpened = true
   }
-  currentStream.onerror = (event) => {
-    if ('data' in event) return
-    if (stream.value !== currentStream) return
-    // CLOSED 表示浏览器已放弃自动重连，释放连接并回到“已断开”，由用户手动重新连接。
-    if (currentStream.readyState === EventSource.CLOSED) disconnect(currentStream)
-    else streamConnectionState.value = 'reconnecting'
+  source.onerror = (event) => {
+    if ('data' in event || stream.value !== source) return
+    if (source.readyState === EventSource.CLOSED) {
+      disconnect(source)
+      if (!closedRecoveryAttempted) {
+        closedRecoveryAttempted = true
+        void recover(false)
+      }
+    } else streamConnectionState.value = 'reconnecting'
   }
-  currentStream.addEventListener('log_append', (event) => {
-    if (stream.value !== currentStream) return
+  source.addEventListener('log_batch', (event) => {
+    if (stream.value !== source) return
     try {
-      addLogEntry(JSON.parse((event as MessageEvent<string>).data) as LogEntry)
+      const data = JSON.parse((event as MessageEvent<string>).data) as {
+        entries: LogEntry[]
+        cursor: number
+        file_id: string
+      }
+      if (!data.file_id || data.file_id !== fileID) {
+        void recover(true)
+        return
+      }
+      buffer.append(
+        data.entries.filter(
+          (entry) => !entry.cursor || cursor === undefined || entry.cursor > cursor,
+        ),
+      )
+      cursor = Math.max(cursor || 0, data.cursor)
     } catch {
       addSystemLog('解析实时日志失败', 'error')
     }
   })
-  currentStream.addEventListener('resync_required', () => {
-    if (stream.value === currentStream) void loadInitialLogs()
+  source.addEventListener('resync_required', (event) => {
+    if (stream.value !== source) return
+    const { reason } = JSON.parse((event as MessageEvent<string>).data) as { reason: string }
+    void recover(!['subscriber_queue_full', 'catch_up_limit_reached'].includes(reason))
   })
-  currentStream.addEventListener('error', (event) => {
-    if (stream.value !== currentStream) return
+  source.addEventListener('error', (event) => {
+    if (stream.value !== source) return
     try {
       const { reason } = JSON.parse((event as MessageEvent<string>).data) as { reason?: string }
       addSystemLog(`实时日志错误：${reason || '未知错误'}`, 'error')
@@ -379,86 +379,55 @@ const connect = () => {
     }
   })
 }
-
-const disconnect = (currentStream = stream.value) => {
-  if (!currentStream) {
-    streamConnectionState.value = 'idle'
-    streamOpened = false
+const connect = async () => {
+  if (stream.value || recovering) return
+  closedRecoveryAttempted = false
+  liveRequested = true
+  if (!props.logPath.trim()) {
+    addSystemLog('请输入日志文件路径', 'error')
     return
   }
-  if (stream.value !== currentStream) return
-  stream.value = null
-  unregisterStream?.()
-  unregisterStream = null
-  currentStream.close()
-  streamConnectionState.value = 'idle'
-  streamOpened = false
+  streamConnectionState.value = 'connecting'
+  if (!hasInitialSnapshot && !(await loadInitialLogs())) return
+  openStream()
 }
-
-// 通过 HTTP 接口加载旧日志
-const loadOldLogs = async () => {
-  const logPath = props.logPath.trim()
-  if (!logPath) {
-    return
-  }
-
-  // 如果已经到达日志文件末尾，不再加载
-  if (hasReachedEnd || isLoadingOldLogs) {
-    return
-  }
-
-  const requestID = ++snapshotRequestID
-  const controller = new AbortController()
-  snapshotController = controller
-  const isCurrentSnapshotRequest = () =>
-    snapshotRequestID === requestID &&
-    snapshotController === controller &&
-    props.logPath.trim() === logPath
-  isLoadingOldLogs = true
-  loading.value = true
-
-  try {
-    const rs = await fetchLogSnapshot(logPath, currentOffset, 100, controller.signal)
-    if (!isCurrentSnapshotRequest()) return
-    currentOffset = rs.pos
-    if (rs.entries.length > 0) {
-      logLines.value = [...logLines.value, ...rs.entries]
-    } else {
-      hasReachedEnd = true
+watch(
+  () => [props.logPath, props.isRealTime] as const,
+  async ([path, live], previous) => {
+    closedRecoveryAttempted = false
+    liveRequested = live
+    disconnect()
+    cancelRequest()
+    if (path !== previous?.[0]) {
+      cancelHistory()
+      buffer.clear()
+      scrolling.returnLatest()
+      cursor = undefined
+      fileID = undefined
+      hasInitialSnapshot = false
     }
-  } catch (error) {
-    if (controller.signal.aborted || !isCurrentSnapshotRequest()) return
-    const failure = parseHttpError(error, { fallbackMessage: '加载旧日志失败' })
-    if (failure.shouldNotify) {
-      console.error('加载旧日志失败：', failure.diagnostics)
-      addSystemLog(failure.message, 'error')
-    }
-  } finally {
-    if (isCurrentSnapshotRequest()) {
-      isLoadingOldLogs = false
-      loading.value = false
-      snapshotController = null
-    }
-  }
-}
-
-// 清空日志
+    if (path.trim() && (await loadInitialLogs()) && live && props.isRealTime) openStream()
+  },
+)
+onMounted(async () => {
+  liveRequested = props.isRealTime
+  if (!props.logPath.trim()) return
+  if (props.isRealTime) streamConnectionState.value = 'connecting'
+  if ((await loadInitialLogs()) && props.isRealTime) openStream()
+})
+onUnmounted(stop)
 const clearLogs = () => {
-  logLines.value = []
+  cancelHistory()
+  buffer.clear()
+  scrolling.returnLatest()
 }
-
-// 下载日志文件
-const downloadLogs = () => {
+const viewLogs = () => viewLogFile(props.logPath)
+const downloadLogs = () =>
   downloadLogFile(props.logPath, {
     emptyMessage: '请输入日志文件路径',
     errorPrefix: '下载日志失败',
   })
-}
-
-// 暴露方法给父组件
-defineExpose({
-  disconnect,
-})
+defineExpose({ disconnect: stop, refresh: loadInitialLogs })
 </script>
 
 <style scoped>
@@ -518,6 +487,7 @@ defineExpose({
   padding: 10px;
   height: var(--log-viewer-height);
   overflow-y: auto;
+  overflow-anchor: none;
   background-color: #fafafa;
   font-family: 'Courier New', Courier, monospace;
   font-size: 13px;
@@ -604,10 +574,20 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+}
+
+.log-info > .el-button {
+  flex-shrink: 0;
+  min-height: 24px;
+}
+
+.history-status {
+  margin-left: 10px;
 }
 
 .status-indicator {
-  margin-left: 10px;
+  margin-right: 10px;
   font-size: 12px;
   font-weight: 500;
 }

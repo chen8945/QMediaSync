@@ -150,7 +150,7 @@ func (s *Sync) SyncTaskEventPayload() realtime.SyncTaskEventPayload {
 		LedgerStatus:      s.LedgerStatus,
 		LedgerFinishedAt:  s.LedgerFinishedAt,
 		LedgerError:       s.LedgerError,
-		ScanResult:        s.ScanResult,
+		ScanResult:        s.ScanResult.Summary(),
 		SyncID:            s.ID,
 		SyncPathID:        s.SyncPathId,
 		Status:            int(s.Status),
@@ -501,21 +501,6 @@ func (s *Sync) InitLogger() {
 	logFileName := filepath.Join(helpers.SyncLogDir(), helpers.SyncLogFileName(s.ID))
 	s.Logger = helpers.NewLogger(logFileName, true, false)
 	s.Logger.Infof("创建同步日志文件：%s", logFileName)
-}
-
-// 获取所有同步记录
-func GetSyncRecords(page, pageSize int) ([]*Sync, int64, error) {
-	var count int64
-	if err := db.Db.Model(&Sync{}).Count(&count).Error; err != nil {
-		helpers.AppLogger.Errorf("统计同步记录总数失败：%v", err)
-		return nil, 0, err
-	}
-	var syncs []*Sync
-	if err := db.Db.Offset((page - 1) * pageSize).Limit(pageSize).Order("id DESC").Find(&syncs).Error; err != nil {
-		helpers.AppLogger.Errorf("获取同步记录失败：%v", err)
-		return nil, 0, err
-	}
-	return syncs, count, nil
 }
 
 func GetSyncByID(id uint) (*Sync, error) {

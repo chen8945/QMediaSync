@@ -9,7 +9,6 @@ import (
 	"qmediasync/internal/httpapi"
 
 	"qmediasync/internal/helpers"
-	"qmediasync/internal/logstream"
 	"qmediasync/internal/models"
 	"qmediasync/internal/realtime"
 	"qmediasync/internal/requests"
@@ -20,10 +19,9 @@ import (
 )
 
 const (
-	syncTaskStreamVersion        = 1
+	syncTaskStreamVersion        = 2
 	syncTaskStreamSnapshot       = "snapshot"
 	syncTaskStreamTaskPatch      = "task_patch"
-	syncTaskStreamLogAppend      = "log_append"
 	syncTaskStreamComplete       = "complete"
 	syncTaskStreamError          = "error"
 	syncTaskStreamResyncRequired = "resync_required"
@@ -40,29 +38,16 @@ type syncTaskStreamMessage struct {
 }
 
 type syncTaskSnapshot struct {
-	Task      *models.Sync      `json:"task"`
-	Logs      []logstream.Entry `json:"logs"`
-	LogCursor int64             `json:"log_cursor"`
-	LogPath   string            `json:"log_path"`
+	Task    *models.Sync `json:"task"`
+	LogPath string       `json:"log_path"`
 }
 
-func buildSyncTaskSnapshotMessage(task *models.Sync, logs []logstream.Entry, logCursor int64, sequence uint64, logPath string) syncTaskStreamMessage {
-	return syncTaskStreamMessage{
-		Type:       syncTaskStreamSnapshot,
-		Version:    syncTaskStreamVersion,
-		SyncID:     task.ID,
-		Sequence:   sequence,
-		ServerTime: time.Now().Unix(),
-		Data: syncTaskSnapshot{
-			Task:      task,
-			Logs:      logs,
-			LogCursor: logCursor,
-			LogPath:   logPath,
-		},
-	}
+func buildSyncTaskSnapshotMessage(task *models.Sync, sequence uint64, logPath string) syncTaskStreamMessage {
+	return syncTaskStreamMessage{Type: syncTaskStreamSnapshot, Version: syncTaskStreamVersion, SyncID: task.ID,
+		Sequence: sequence, ServerTime: time.Now().Unix(), Data: syncTaskSnapshot{Task: task, LogPath: logPath}}
 }
 
-// SyncTaskStream 推送同步任务详情快照、状态 patch 和日志增量。
+// SyncTaskStream 只推送任务状态，不等待日志或扫描明细读取。
 func SyncTaskStream(c *gin.Context) {
 	idReq, err := requests.ParsePositiveIDRequest(c.Param("id"))
 	if err != nil {
@@ -104,25 +89,7 @@ func SyncTaskStream(c *gin.Context) {
 	}
 	task = latestTask
 
-	fullLogPath, logPath := models.ExistingSyncLogPath(task.ID)
-	logs, cursor, err := logstream.ReadTailEntries(fullLogPath, 1000)
-	if err != nil {
-		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "读取同步任务日志失败", Cause: err, Data: nil})
-		return
-	}
-	if isSSEStreamStopped(streamCtx) {
-		return
-	}
-
-	logEvents, unsubscribeLog, err := logstream.GlobalManager.Subscribe(streamCtx, fullLogPath, cursor, 512)
-	if err != nil {
-		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "订阅同步任务日志失败", Cause: err, Data: nil})
-		return
-	}
-	defer unsubscribeLog()
-	if isSSEStreamStopped(streamCtx) {
-		return
-	}
+	_, logPath := models.ExistingSyncLogPath(task.ID)
 
 	setSSEHeaders(c)
 	if isSSEStreamStopped(streamCtx) {
@@ -151,7 +118,7 @@ func SyncTaskStream(c *gin.Context) {
 			return
 		}
 	} else {
-		message := buildSyncTaskSnapshotMessage(task, logs, cursor, snapshotSequence, logPath)
+		message := buildSyncTaskSnapshotMessage(task, snapshotSequence, logPath)
 		if err := writeSyncTaskStreamEvent(c, syncTaskStreamSnapshot, message, realtime.GlobalSyncTaskHub.EventID(snapshotSequence)); err != nil {
 			if isSSEStreamStopError(err) {
 				return
@@ -165,12 +132,12 @@ func SyncTaskStream(c *gin.Context) {
 		return
 	}
 
-	serveSyncTaskStream(c, streamCtx, task.ID, taskEvents, logEvents, snapshotSequence)
+	serveSyncTaskStream(c, streamCtx, task.ID, taskEvents, snapshotSequence)
 }
 
 // loadSyncTaskForStream 读取同步任务，并将可判断的服务端错误作为普通 HTTP 响应返回。
 func loadSyncTaskForStream(c *gin.Context, syncID uint) (*models.Sync, bool) {
-	task, err := models.GetSyncByID(syncID)
+	task, err := models.GetSyncTaskState(c.Request.Context(), syncID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false
 	}
@@ -191,7 +158,6 @@ func serveSyncTaskStream(
 	streamCtx context.Context,
 	syncID uint,
 	taskEvents <-chan realtime.TaskStreamEvent,
-	logEvents <-chan logstream.Message,
 	snapshotSequence uint64,
 ) {
 	keepalive := time.NewTicker(sseKeepaliveInterval)
@@ -225,6 +191,9 @@ func serveSyncTaskStream(
 				continue
 			}
 			if event.Terminal {
+				if err := writeSyncTaskStreamEvent(c, syncTaskStreamTaskPatch, taskStreamMessage(event), realtime.GlobalSyncTaskHub.EventID(event.Payload.Sequence)); err != nil {
+					return
+				}
 				terminalPayload = event.Payload
 				taskEvents = nil
 				completeC = time.After(syncTaskFinalFlushDuration)
@@ -239,33 +208,6 @@ func serveSyncTaskStream(
 					return
 				}
 				helpers.AppLogger.Errorf("写入同步任务 patch 失败: %v", err)
-				return
-			}
-		case logMessage, ok := <-logEvents:
-			if !ok {
-				return
-			}
-			if isSSEStreamStopped(streamCtx) {
-				return
-			}
-			eventType := syncTaskStreamLogAppend
-			if logMessage.Type == "resync_required" {
-				eventType = syncTaskStreamResyncRequired
-			}
-			if logMessage.Type == "error" {
-				eventType = syncTaskStreamError
-			}
-			if err := writeSyncTaskStreamEvent(c, eventType, syncTaskStreamMessage{
-				Type:       eventType,
-				Version:    syncTaskStreamVersion,
-				SyncID:     syncID,
-				ServerTime: time.Now().Unix(),
-				Data:       logMessage,
-			}, ""); err != nil {
-				if isSSEStreamStopError(err) {
-					return
-				}
-				helpers.AppLogger.Errorf("写入同步任务日志失败: %v", err)
 				return
 			}
 		case <-completeC:

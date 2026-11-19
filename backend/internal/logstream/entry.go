@@ -11,7 +11,7 @@ type Entry struct {
 	Level     string `json:"level"`
 	Message   string `json:"message"`
 	Timestamp string `json:"timestamp"`
-	Cursor    int64  `json:"cursor,omitempty"`
+	Cursor    int64  `json:"cursor"`
 }
 
 var logLinePattern = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d{6}) \[(\w+)\] (.+)$`)

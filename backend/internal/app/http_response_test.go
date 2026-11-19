@@ -64,6 +64,7 @@ func TestMainRouterFrameworkResponsesRespectProtocol(t *testing.T) {
 		{http.MethodGet, "/api/missing", "RESOURCE_NOT_FOUND", "", 404, true},
 		{http.MethodGet, "/api/login", "METHOD_NOT_ALLOWED", "POST", 405, true},
 		{http.MethodPost, "/api/sync/tasks/123/stream", "", "", 404, false},
+		{http.MethodPost, "/api/logs/view", "", "", 404, false},
 		{http.MethodHead, "/api/login", "", "", 404, false},
 		{http.MethodPost, "/", "", "", 404, false},
 	} {

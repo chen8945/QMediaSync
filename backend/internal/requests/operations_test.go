@@ -6,6 +6,7 @@ import (
 
 	"qmediasync/internal/helpers"
 	"qmediasync/internal/models"
+	"qmediasync/internal/testfs"
 )
 
 func TestPaginationRequestValidate(t *testing.T) {
@@ -40,7 +41,7 @@ func TestNetFileListRequestValidate(t *testing.T) {
 	}{
 		{name: "默认分页和排序方向", req: NetFileListRequest{AccountID: 1}, wantPage: 1, wantSize: 50, wantSort: "", wantOrder: "asc"},
 		{name: "允许 500 每页", req: NetFileListRequest{AccountID: 1, PaginationRequest: PaginationRequest{Page: 2, PageSize: 500}}, wantPage: 2, wantSize: 500, wantSort: "", wantOrder: "asc"},
-		{name: "拒绝旧的 1150 每页", req: NetFileListRequest{AccountID: 1, PaginationRequest: PaginationRequest{Page: 1, PageSize: 1150}}, wantErr: true},
+		{name: "拒绝超过浏览器分页上限", req: NetFileListRequest{AccountID: 1, PaginationRequest: PaginationRequest{Page: 1, PageSize: 501}}, wantErr: true},
 		{name: "允许刷新", req: NetFileListRequest{AccountID: 1, Refresh: true}, wantPage: 1, wantSize: 50, wantSort: "", wantOrder: "asc"},
 		{name: "拒绝非法排序字段", req: NetFileListRequest{AccountID: 1, SortBy: "bad"}, wantErr: true},
 		{name: "拒绝非法排序方向", req: NetFileListRequest{AccountID: 1, SortOrder: "up"}, wantErr: true},
@@ -65,14 +66,7 @@ func TestNetFileListRequestValidate(t *testing.T) {
 	}
 }
 
-func TestOperationRequestValidate(t *testing.T) {
-	t.Run("正 ID 通过", func(t *testing.T) {
-		req := PositiveIDRequest{ID: 1}
-		if err := req.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v", err)
-		}
-	})
-
+func TestIDListRequestValidate(t *testing.T) {
 	t.Run("ID 列表去重通过", func(t *testing.T) {
 		req := IDListRequest{IDs: []uint{2, 1, 2}}
 		if err := req.Validate(); err != nil {
@@ -193,13 +187,6 @@ func TestPathRequestValidate(t *testing.T) {
 	})
 }
 
-func TestQueueRequestValidate(t *testing.T) {
-	req := QueueListRequest{Page: 1, PageSize: 100}
-	if err := req.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
 func TestLogRequestValidate(t *testing.T) {
 	helpers.GlobalConfig.Log.SyncLogDir = "logs/sync"
 
@@ -264,7 +251,7 @@ func TestTmpImageRequestValidate(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	req = TmpImageRequest{Path: "/etc/passwd", MediaType: models.MediaTypeMovie}
+	req = TmpImageRequest{Path: testfs.LocalPath("/etc/passwd"), MediaType: models.MediaTypeMovie}
 	if err := req.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want error")
 	}

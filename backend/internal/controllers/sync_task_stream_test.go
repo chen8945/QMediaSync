@@ -26,45 +26,6 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestBuildSyncTaskSnapshotMessageIncludesCursorAndVersion(t *testing.T) {
-	task := &models.Sync{
-		ID: 9, CreatedAt: 100, UpdatedAt: 120,
-		SyncPathId: 5,
-		Status:     models.SyncStatusInProgress,
-		SubStatus:  models.SyncSubStatusProcessNetFileList,
-	}
-	msg := buildSyncTaskSnapshotMessage(task, []logstream.Entry{{Message: "hello"}}, 88, 3, "sync/sync_9.log")
-
-	if msg.Type != syncTaskStreamSnapshot {
-		t.Fatalf("type = %s，期望 %s", msg.Type, syncTaskStreamSnapshot)
-	}
-	if msg.Version != syncTaskStreamVersion {
-		t.Fatalf("version = %d，期望 %d", msg.Version, syncTaskStreamVersion)
-	}
-	data, ok := msg.Data.(syncTaskSnapshot)
-	if !ok {
-		t.Fatalf("data 类型 = %T，期望 syncTaskSnapshot", msg.Data)
-	}
-	if data.LogCursor != 88 {
-		t.Fatalf("log_cursor = %d，期望 88", data.LogCursor)
-	}
-	if data.Task.ID != 9 {
-		t.Fatalf("task.id = %d，期望 9", data.Task.ID)
-	}
-}
-
-func TestBuildSyncTaskSnapshotMessageUsesSelectedLogPath(t *testing.T) {
-	task := &models.Sync{ID: 9}
-	msg := buildSyncTaskSnapshotMessage(task, nil, 0, 0, "libs/sync_9.log")
-	data, ok := msg.Data.(syncTaskSnapshot)
-	if !ok {
-		t.Fatalf("data 类型 = %T，期望 syncTaskSnapshot", msg.Data)
-	}
-	if data.LogPath != "libs/sync_9.log" {
-		t.Fatalf("log_path = %s，期望 libs/sync_9.log", data.LogPath)
-	}
-}
-
 func TestSyncTaskStreamSendsDeletedCompleteForMissingTask(t *testing.T) {
 	setupControllerTestDB(t, &models.Sync{})
 	setupSyncTaskStreamRuntime(t)
@@ -158,8 +119,8 @@ func TestSyncTaskStreamTerminalSnapshotDoesNotRepeatComplete(t *testing.T) {
 				t.Fatalf("终态 snapshot 后不应重复发送 complete，body = %q", body)
 			}
 
-			if !strings.Contains(string(body), `"failed_files":1`) {
-				t.Fatalf("snapshot 缺少扫描结果: %s", body)
+			if strings.Contains(string(body), `"failures"`) || strings.Contains(string(body), `"failed_files"`) {
+				t.Fatalf("状态快照不应读取或发送扫描明细: %s", body)
 			}
 
 		})
@@ -272,7 +233,7 @@ func TestSyncTaskStreamSnapshotCarriesWaterlineEventID(t *testing.T) {
 	}
 }
 
-func TestSyncTaskStreamFlushesFinalLogsBeforeComplete(t *testing.T) {
+func TestSyncTaskStreamKeepsStatusIndependentFromLogs(t *testing.T) {
 	testDB := setupControllerTestDB(t, &models.Sync{})
 	setupSyncTaskStreamRuntime(t)
 
@@ -306,19 +267,8 @@ func TestSyncTaskStreamFlushesFinalLogsBeforeComplete(t *testing.T) {
 	if !strings.Contains(snapshot, "event:snapshot") {
 		t.Fatalf("运行中任务应先返回 snapshot，frame length = %d", len(snapshot))
 	}
-	var decoded struct {
-		Data syncTaskSnapshot `json:"data"`
-	}
-	for _, line := range strings.Split(snapshot, "\n") {
-		if data, ok := strings.CutPrefix(line, "data:"); ok {
-			if err := json.Unmarshal([]byte(data), &decoded); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
-	}
-	if len(decoded.Data.Logs) != 1 || decoded.Data.Logs[0].Message != initialMessage || decoded.Data.LogCursor != int64(len(initialLine)) {
-		t.Fatalf("任务 snapshot 长日志或 cursor 缺失: logs=%d cursor=%d", len(decoded.Data.Logs), decoded.Data.LogCursor)
+	if strings.Contains(snapshot, initialMessage) || strings.Contains(snapshot, `"logs"`) {
+		t.Fatal("状态流携带日志正文")
 	}
 
 	realtime.GlobalSyncTaskHub.PublishSyncTaskEvent(realtime.EventSyncTaskUpdated, realtime.SyncTaskEventPayload{
@@ -337,9 +287,9 @@ func TestSyncTaskStreamFlushesFinalLogsBeforeComplete(t *testing.T) {
 		}
 	}
 
-	logAppend := readSSEFrame(t, reader)
-	if !strings.Contains(logAppend, "event:log_append") || !strings.Contains(logAppend, `"message":"final line"`) {
-		t.Fatalf("终态 final flush 未发送新增日志，frame = %q", logAppend)
+	patch := readSSEFrame(t, reader)
+	if !strings.Contains(patch, "event:task_patch") {
+		t.Fatalf("终态未及时发布: %s", patch)
 	}
 	complete := readSSEFrame(t, reader)
 	if !strings.Contains(complete, "event:complete") {
@@ -419,7 +369,7 @@ func TestSyncTaskStreamReconnectUsesTerminalSnapshotAfterSubscription(t *testing
 			if response.StatusCode != http.StatusOK || queries.Load() != 2 || strings.Count(stream, "event:snapshot") != 1 || strings.Contains(stream, "event:task_patch") || strings.Contains(stream, "event:complete") {
 				t.Fatalf("terminal reconnect did not converge: status=%d queries=%d body=%s", response.StatusCode, queries.Load(), stream)
 			}
-			if !strings.Contains(stream, `"status":`+strconv.Itoa(int(status))) || !strings.Contains(stream, `"succeeded_files":1`) {
+			if !strings.Contains(stream, `"status":`+strconv.Itoa(int(status))) {
 				t.Fatalf("terminal snapshot lost actual result: %s", stream)
 			}
 		})

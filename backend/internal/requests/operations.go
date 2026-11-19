@@ -495,6 +495,7 @@ func (r RescrapeRequest) Validate() error {
 // OldLogsRequest 读取旧日志请求。
 type OldLogsRequest struct {
 	Path      string `json:"path" form:"path"`
+	FileID    string `json:"file_id" form:"file_id"`
 	Pos       int64  `json:"pos" form:"pos"`
 	Limit     int    `json:"limit" form:"limit"`
 	Direction string `json:"direction" form:"direction"`

@@ -407,7 +407,7 @@ STRM 相关字段：
 - `remote_path`：远程同步路径。
 - `base_cid`：根目录 ID。
 - `fail_reason`：失败原因。
-- `scan_result`：可空文本 JSON；HTTP / SSE 输出为对象。包含 `succeeded_files`、`failed_files`、`skipped_files`、`failures`（`kind=file/directory`、`path`、可选 `file_id`、`reason`），以及 `cleanup_status=completed/partial/skipped` 和 `cleanup_reason`。数量只记录实际已知文件，不推算失败目录中的未知文件；旧记录为 NULL。
+- `scan_result`：可空文本 JSON；存储结构保持完整结果，展示查询和 SSE 使用不含 failures 的摘要，失败明细通过独立分页请求取得，见 [实时事件](../architecture/realtime-events.md)。包含 `succeeded_files`、`failed_files`、`skipped_files`、`failures`（`kind=file/directory`、`path`、可选 `file_id`、`reason`），以及 `cleanup_status=completed/partial/skipped` 和 `cleanup_reason`。数量只记录实际已知文件，不推算失败目录中的未知文件；旧记录为 NULL。
 - `ledger_status`：可空字符串，`not_required` 无需后台、`pending` 待执行、`running` 执行中、`completed` 成功、`failed` 失败、`interrupted` 中断；历史 NULL 表示未记录。
 - `ledger_finished_at`：可空 Unix 秒，实际观察到的后台退出终点；服务重启识别遗留后台时保持 NULL，不使用重启时间补值。
 - `ledger_error`：后台错误摘要，保存前脱敏；不覆盖生成的 `fail_reason`。

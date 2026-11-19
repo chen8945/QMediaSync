@@ -3,6 +3,7 @@ package logstream
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,10 +34,18 @@ func NewManager() *Manager {
 }
 
 // Subscribe 订阅指定日志文件的新行。
-func (m *Manager) Subscribe(ctx context.Context, path string, startCursor int64, buffer int) (<-chan Message, func(), error) {
+func (m *Manager) Subscribe(ctx context.Context, path string, startCursor int64, buffer int, expectedFileID string) (<-chan Message, func(), error) {
 	canonical, err := filepath.Abs(path)
 	if err != nil {
 		return nil, nil, err
+	}
+	file, info, fileID, err := OpenFile(canonical, expectedFileID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	if startCursor < 0 || startCursor > info.Size() {
+		return nil, nil, ErrCursorInvalid
 	}
 	if buffer <= 0 {
 		buffer = 128
@@ -44,18 +53,28 @@ func (m *Manager) Subscribe(ctx context.Context, path string, startCursor int64,
 
 	m.mu.Lock()
 	tailer := m.tailers[canonical]
+	if tailer != nil {
+		select {
+		case <-tailer.done:
+			tailer = nil
+		default:
+		}
+	}
 	if tailer == nil {
 		tailer = newTailer(canonical, startCursor, func() {
 			m.mu.Lock()
-			delete(m.tailers, canonical)
+			if m.tailers[canonical] == tailer {
+				delete(m.tailers, canonical)
+			}
 			m.mu.Unlock()
 		})
+		tailer.fileID = fileID
 		m.tailers[canonical] = tailer
 		go tailer.run()
 	}
+	ch, unsubscribe := tailer.subscribe(ctx, startCursor, buffer, fileID)
 	m.mu.Unlock()
-
-	ch, unsubscribe := tailer.subscribe(ctx, startCursor, buffer)
+	tailer.stop()
 	return ch, unsubscribe, nil
 }
 
@@ -69,6 +88,7 @@ func (m *Manager) TailerCount() int {
 type subscriber struct {
 	ch     chan Message
 	cursor int64
+	fileID string
 	mu     sync.Mutex
 	closed bool
 }
@@ -84,6 +104,7 @@ type Tailer struct {
 	subs     map[*subscriber]struct{}
 	cursor   int64
 	leftover []byte
+	fileID   string
 }
 
 func newTailer(path string, startCursor int64, onStop func()) *Tailer {
@@ -96,16 +117,9 @@ func newTailer(path string, startCursor int64, onStop func()) *Tailer {
 	}
 }
 
-func (t *Tailer) subscribe(ctx context.Context, startCursor int64, buffer int) (<-chan Message, func()) {
-	sub := &subscriber{ch: make(chan Message, buffer), cursor: startCursor}
-	t.mu.Lock()
-	t.subs[sub] = struct{}{}
-	currentCursor := t.cursor
-	t.mu.Unlock()
-
-	if startCursor < currentCursor {
-		go t.sendCatchUp(sub, startCursor)
-	}
+func (t *Tailer) subscribe(ctx context.Context, startCursor int64, buffer int, fileID string) (<-chan Message, func()) {
+	sub := &subscriber{ch: make(chan Message, buffer), cursor: startCursor, fileID: fileID}
+	t.sendCatchUp(sub, startCursor)
 
 	var once sync.Once
 	unsubscribe := func() {
@@ -122,23 +136,41 @@ func (t *Tailer) subscribe(ctx context.Context, startCursor int64, buffer int) (
 }
 
 func (t *Tailer) sendCatchUp(sub *subscriber, startCursor int64) {
-	entries, nextCursor, err := ReadEntriesFromCursor(t.path, startCursor, 500)
-	if err != nil {
-		sub.send(Message{Type: "resync_required", Reason: err.Error()})
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	select {
+	case <-t.done:
+		sub.resync("tailer_stopped")
+		return
+	default:
+	}
+	if sub.fileID != "" && sub.fileID != t.fileID {
+		sub.resync("log_file_rotated")
 		return
 	}
-	for _, entry := range entries {
-		if !sub.send(Message{Type: "log_append", Entry: entry, Cursor: entry.Cursor}) {
-			t.unsubscribe(sub)
+	// 补读与注册串行，避免实时消息越过补读中的较旧记录。
+	if startCursor < t.cursor-int64(len(t.leftover)) {
+		entries, nextCursor, _, err := ReadEntriesFromCursor(t.path, startCursor, 500, t.fileID)
+		if err != nil {
+			reason := "log_read_failed"
+			if errors.Is(err, ErrCursorInvalid) {
+				reason = "log_file_rotated"
+			}
+			sub.resync(reason)
+			return
+		}
+		for _, entry := range entries {
+			if !sub.send(Message{Type: "log_append", Entry: entry, Cursor: entry.Cursor}) {
+				sub.resync("subscriber_queue_full")
+				return
+			}
+		}
+		if nextCursor < t.cursor-int64(len(t.leftover)) {
+			sub.resync("catch_up_limit_reached")
 			return
 		}
 	}
-	t.mu.Lock()
-	currentCursor := t.cursor - int64(len(t.leftover))
-	t.mu.Unlock()
-	if nextCursor < currentCursor {
-		sub.send(Message{Type: "resync_required", Reason: "catch_up_limit_reached"})
-	}
+	t.subs[sub] = struct{}{}
 }
 
 func (t *Tailer) unsubscribe(sub *subscriber) {
@@ -155,12 +187,20 @@ func (t *Tailer) unsubscribe(sub *subscriber) {
 }
 
 func (t *Tailer) stop() {
+	t.mu.Lock()
+	if len(t.subs) != 0 {
+		t.mu.Unlock()
+		return
+	}
+	stopped := false
 	t.stopOnce.Do(func() {
 		close(t.done)
-		if t.onStop != nil {
-			t.onStop()
-		}
+		stopped = true
 	})
+	t.mu.Unlock()
+	if stopped && t.onStop != nil {
+		t.onStop()
+	}
 }
 
 func (t *Tailer) run() {
@@ -178,7 +218,7 @@ func (t *Tailer) run() {
 }
 
 func (t *Tailer) readAvailable() {
-	file, err := os.Open(t.path)
+	file, stat, fileID, err := OpenFile(t.path, "")
 	if err != nil {
 		if os.IsNotExist(err) {
 			t.broadcast(Message{Type: "resync_required", Reason: "log_file_missing"})
@@ -189,23 +229,27 @@ func (t *Tailer) readAvailable() {
 	}
 	defer file.Close()
 
-	stat, err := file.Stat()
-	if err != nil {
-		t.broadcast(Message{Type: "error", Reason: err.Error()})
-		return
-	}
 	t.mu.Lock()
 	cursor := t.cursor
-	truncated := stat.Size() < cursor
+	rotated := t.fileID != "" && t.fileID != fileID
+	t.fileID = fileID
+	truncated := stat.Size() < cursor || rotated
 	if truncated {
 		t.cursor = 0
 		t.leftover = nil
-		cursor = 0
+		reason := "log_file_truncated"
+		if rotated {
+			reason = "log_file_rotated"
+		}
+		for sub := range t.subs {
+			sub.resync(reason)
+			delete(t.subs, sub)
+		}
+		t.mu.Unlock()
+		t.stop()
+		return
 	}
 	t.mu.Unlock()
-	if truncated {
-		t.broadcast(Message{Type: "resync_required", Reason: "log_file_truncated"})
-	}
 	if _, err := file.Seek(cursor, io.SeekStart); err != nil {
 		t.broadcast(Message{Type: "error", Reason: err.Error()})
 		return
@@ -244,7 +288,7 @@ func (t *Tailer) broadcast(msg Message) {
 	t.mu.Lock()
 	for sub := range t.subs {
 		if !sub.send(msg) {
-			sub.send(Message{Type: "resync_required", Reason: "subscriber_queue_full"})
+			sub.resync("subscriber_queue_full")
 			delete(t.subs, sub)
 			sub.close()
 		}
@@ -261,6 +305,9 @@ func (s *subscriber) send(msg Message) (sent bool) {
 	defer s.mu.Unlock()
 	if s.closed {
 		return false
+	}
+	if msg.Type == "log_append" && msg.Cursor > 0 && msg.Cursor <= s.cursor {
+		return true
 	}
 	defer func() {
 		if recover() != nil {
@@ -289,5 +336,28 @@ func (s *subscriber) close() {
 	defer func() {
 		_ = recover()
 	}()
+	close(s.ch)
+}
+
+// resync 丢弃已失效的排队增量，为恢复提示留出位置后关闭慢订阅。
+func (s *subscriber) resync(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	draining := true
+	for draining {
+		select {
+		case <-s.ch:
+		default:
+			draining = false
+		}
+	}
+	select {
+	case s.ch <- Message{Type: "resync_required", Reason: reason}:
+	default:
+	}
+	s.closed = true
 	close(s.ch)
 }

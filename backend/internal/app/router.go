@@ -78,8 +78,10 @@ func setRouter(r *gin.Engine, mediaSettings *controllers.MediaLibraryConfigContr
 		api.GET("/events/stream", controllers.EventStream)                 // SSE 事件推送
 		api.GET("/sync/tasks/:id/stream", controllers.SyncTaskStream)      // 同步任务详情实时流
 		api.GET("/logs/old", controllers.GetOldLogs)                       // 通过 HTTP 获取旧日志
-		api.GET("/logs/download", controllers.DownloadLogFile)             // 下载日志文件
-		api.GET("/path/is-fn-os", controllers.IsFnOS)                      // 查询是否是飞牛环境
+		api.GET("/logs/catch-up", controllers.CatchUpLogs)
+		api.GET("/logs/view", controllers.ViewLogFile)         // 查看完整日志
+		api.GET("/logs/download", controllers.DownloadLogFile) // 下载日志文件
+		api.GET("/path/is-fn-os", controllers.IsFnOS)          // 查询是否是飞牛环境
 
 		// 获取应用版本与运行环境信息
 		api.GET("/version", func(c *gin.Context) {
@@ -186,9 +188,11 @@ func setRouter(r *gin.Engine, mediaSettings *controllers.MediaLibraryConfigContr
 		api.GET("/jellyfin/libraries", controllers.GetJellyfinLibraries)
 		// 删除媒体库与同步目录关联
 
-		api.POST("/sync/start", controllers.StartSync)                       // 启动同步
-		api.GET("/sync/records", controllers.GetSyncRecords)                 // 同步列表
-		api.GET("/sync/task", controllers.GetSyncTask)                       // 获取同步任务详情
+		api.POST("/sync/start", controllers.StartSync)       // 启动同步
+		api.GET("/sync/records", controllers.GetSyncRecords) // 同步列表
+		api.GET("/sync/task", controllers.GetSyncTask)       // 获取同步任务详情
+		api.GET("/sync/tasks/:id/result", controllers.GetSyncTaskResult)
+		api.GET("/sync/tasks/:id/failures", controllers.GetSyncTaskFailures)
 		api.GET("/sync/path-list", controllers.GetSyncPathList)              // 获取同步路径列表
 		api.POST("/sync/paths", controllers.CreateSyncPathAggregate)         // 原子创建同步路径
 		api.PUT("/sync/paths/:id", controllers.UpdateSyncPathAggregate)      // 原子更新同步路径

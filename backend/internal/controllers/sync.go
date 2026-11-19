@@ -47,7 +47,7 @@ func GetSyncRecords(c *gin.Context) {
 	}
 
 	// 获取同步记录
-	records, total, err := models.GetSyncRecords(page, pageSize)
+	records, total, err := models.GetSyncRecordViews(c.Request.Context(), page, pageSize)
 	if err != nil {
 		httpapi.Failure(c, http.StatusInternalServerError, httpapi.Error{Code: "INTERNAL_ERROR", Message: "获取同步记录失败", Cause: err, Data: nil})
 		return
@@ -70,7 +70,7 @@ func GetSyncTask(c *gin.Context) {
 		return
 	}
 
-	sync, err := models.GetSyncByID(req.SyncID)
+	sync, err := models.GetSyncTaskState(c.Request.Context(), req.SyncID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		httpapi.Failure(c, http.StatusNotFound, httpapi.Error{Code: "SYNC_TASK_NOT_FOUND", Message: "未找到对应的同步任务", Cause: err})
 		return
@@ -85,7 +85,11 @@ func GetSyncTask(c *gin.Context) {
 		return
 	}
 
-	httpapi.Success(c, http.StatusOK, sync, "获取同步任务详情成功")
+	_, logPath := models.ExistingSyncLogPath(sync.ID)
+	httpapi.Success(c, http.StatusOK, struct {
+		*models.Sync
+		LogPath string `json:"log_path"`
+	}{sync, logPath}, "获取同步任务详情成功")
 }
 
 // GetSyncPathList 获取同步路径列表

@@ -14,11 +14,18 @@ export interface SyncLedgerState {
   ledger_error?: string
 }
 
+export interface SyncScanFailure {
+  kind: 'file' | 'directory'
+  path: string
+  file_id?: string
+  reason: string
+}
+
 export interface SyncScanResult {
   succeeded_files: number
   failed_files: number
   skipped_files: number
-  failures: { kind: 'file' | 'directory'; path: string; file_id?: string; reason: string }[]
+  failures?: SyncScanFailure[]
   cleanup_status: 'completed' | 'partial' | 'skipped'
   cleanup_reason: string
 }
@@ -42,6 +49,7 @@ export interface SyncTask extends SyncLedgerState, SyncTaskDurations {
   local_path: string
   remote_path: string
   fail_reason: string
+  log_path?: string
   scan_result?: SyncScanResult | null
 }
 
@@ -72,16 +80,8 @@ export interface SyncTaskEventPayload extends SyncLedgerState, SyncTaskDurations
   resync_reason?: string
 }
 
-export interface SyncTaskLogEntry {
-  level: 'info' | 'warn' | 'error' | 'debug'
-  message: string
-  timestamp: string
-  cursor?: number
-  id?: string
-}
-
 export interface SyncTaskStreamMessage<T = unknown> {
-  type: 'snapshot' | 'task_patch' | 'log_append' | 'complete' | 'error' | 'resync_required'
+  type: 'snapshot' | 'task_patch' | 'complete' | 'error' | 'resync_required'
   version: number
   sync_id: number
   sequence?: number
@@ -91,7 +91,5 @@ export interface SyncTaskStreamMessage<T = unknown> {
 
 export interface SyncTaskSnapshot {
   task: SyncTask
-  logs: SyncTaskLogEntry[]
-  log_cursor: number
   log_path: string
 }

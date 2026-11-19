@@ -261,26 +261,28 @@ func CleanFileName(name string) string {
 // forward 返回最新行在前，backward 返回较早行在前。
 // 返回：读取到的行，新的读取位置，错误信息
 func ReadLines(filename string, startPos int64, maxLines int, direction string) ([]string, int64, error) {
-	if direction == "backward" {
-		return readLinesBackward(filename, startPos, maxLines)
-	}
-	return readLinesForward(filename, startPos, maxLines)
-}
-
-// 向后读取
-func readLinesBackward(filename string, startPos int64, maxLines int) ([]string, int64, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer file.Close()
+	return ReadLinesFromFile(file, startPos, maxLines, direction)
+}
 
-	// 获取文件大小
+// ReadLinesFromFile 从已打开的文件读取，调用方负责关闭文件。
+func ReadLinesFromFile(file *os.File, startPos int64, maxLines int, direction string) ([]string, int64, error) {
 	stat, err := file.Stat()
 	if err != nil {
 		return nil, 0, err
 	}
-	fileSize := stat.Size()
+	if direction == "backward" {
+		return readLinesBackward(file, stat.Size(), startPos, maxLines)
+	}
+	return readLinesForward(file, stat.Size(), startPos, maxLines)
+}
+
+// 向后读取
+func readLinesBackward(file *os.File, fileSize, startPos int64, maxLines int) ([]string, int64, error) {
 
 	// 如果起始位置超过文件大小，返回空结果
 	if startPos >= fileSize {
@@ -291,7 +293,7 @@ func readLinesBackward(filename string, startPos int64, maxLines int) ([]string,
 	}
 
 	// 设置读取起始位置
-	_, err = file.Seek(startPos, io.SeekStart)
+	_, err := file.Seek(startPos, io.SeekStart)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -321,19 +323,7 @@ func readLinesBackward(filename string, startPos int64, maxLines int) ([]string,
 }
 
 // 向前读取
-func readLinesForward(filename string, startPos int64, maxLines int) ([]string, int64, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer file.Close()
-
-	// 获取文件大小
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, 0, err
-	}
-	fileSize := stat.Size()
+func readLinesForward(file *os.File, fileSize, startPos int64, maxLines int) ([]string, int64, error) {
 
 	// 如果起始位置是文件末尾，或者超过文件大小，则从文件末尾开始
 	if startPos < 0 || startPos > fileSize {

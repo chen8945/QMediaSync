@@ -15,7 +15,7 @@ import (
 // nativeAPIPath 标识成功时遵循文件或流协议的路由。
 func nativeAPIPath(path string) bool {
 	switch path {
-	case "/api/scrape/tmp-image", "/api/scrape/records/export", "/api/logs/stream", "/api/events/stream", "/api/logs/download":
+	case "/api/scrape/tmp-image", "/api/scrape/records/export", "/api/logs/stream", "/api/events/stream", "/api/logs/view", "/api/logs/download":
 		return true
 	}
 	return strings.HasPrefix(path, "/api/backup/download/") ||

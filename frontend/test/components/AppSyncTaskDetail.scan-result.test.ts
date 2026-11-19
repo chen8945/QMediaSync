@@ -37,9 +37,7 @@ vi.mock('@/composables/useLogFileActions', () => ({
 vi.mock('@/composables/useSyncTaskStream', () => ({
   useSyncTaskStream: () => ({
     task,
-    logs: shallowRef([]),
     terminal: shallowRef(true),
-    connected: shallowRef(false),
     logPath: shallowRef(''),
   }),
 }))
@@ -70,8 +68,10 @@ describe('同步任务失败范围展示', () => {
     expect(wrapper.text()).toContain('成功 2，失败 1，跳过 3')
     expect(wrapper.text()).toContain('仅清理完整范围')
     expect(wrapper.text()).toContain('保留受影响的目录及后代')
-    expect(wrapper.text()).toContain('/cloud/locked')
-    expect(wrapper.text()).toContain('无权读取')
+    expect(wrapper.findComponent({ name: 'SyncTaskFailures' }).props()).toMatchObject({
+      syncId: 8,
+      status,
+    })
     expect(wrapper.text()).not.toContain('完成任务')
     wrapper.unmount()
   })

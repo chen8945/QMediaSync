@@ -46,12 +46,29 @@ type SyncScanResult struct {
 	CleanupReason  string            `json:"cleanup_reason"`
 }
 
+// SyncScanSummary 是展示与事件使用的扫描摘要，不携带失败范围正文。
+type SyncScanSummary struct {
+	SucceededFiles int    `json:"succeeded_files"`
+	FailedFiles    int    `json:"failed_files"`
+	SkippedFiles   int    `json:"skipped_files"`
+	CleanupStatus  string `json:"cleanup_status"`
+	CleanupReason  string `json:"cleanup_reason"`
+}
+
+// Summary 保留历史未记录语义，不复制失败范围。
+func (r *SyncScanResult) Summary() *SyncScanSummary {
+	if r == nil {
+		return nil
+	}
+	return &SyncScanSummary{r.SucceededFiles, r.FailedFiles, r.SkippedFiles, r.CleanupStatus, r.CleanupReason}
+}
+
 // SyncTaskEventPayload 是同步任务结构化事件数据。
 type SyncTaskEventPayload struct {
 	LedgerStatus      *SyncLedgerStatus `json:"ledger_status"`
 	LedgerFinishedAt  *int64            `json:"ledger_finished_at"`
 	LedgerError       string            `json:"ledger_error"`
-	ScanResult        *SyncScanResult   `json:"scan_result"`
+	ScanResult        *SyncScanSummary  `json:"scan_result"`
 	SyncID            uint              `json:"sync_id"`
 	SyncPathID        uint              `json:"sync_path_id"`
 	Status            int               `json:"status"`

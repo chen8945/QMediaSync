@@ -12,7 +12,7 @@
 
 自有普通 JSON API 使用 `application/json` 和统一 `APIResponse[T]` 包络，包含管理接口、版本与公告、日志历史、首次数据库配置向导和自有 STRM Webhook。成功与请求失败共用外层结构；前后端及向导同构建发布，不保留历史数值 `code`、通知专用成功码、裸管理 JSON 或嵌套请求错误兼容。
 
-SSE、HTML、静态资源、文件下载、Range/HEAD、重定向、第三方媒体 Webhook 确认及兼容代理遵循各自协议。代理的上游 JSON 与后台任务结果不因含有 `code`、`status` 或 `error_code` 而转换为管理包络。本包络是项目自定义契约，不使用 `application/problem+json`。
+SSE、HTML、静态资源、纯文本日志预览、文件下载、Range/HEAD、重定向、第三方媒体 Webhook 确认及兼容代理遵循各自协议。代理的上游 JSON 与后台任务结果不因含有 `code`、`status` 或 `error_code` 而转换为管理包络。本包络是项目自定义契约，不使用 `application/problem+json`。
 
 | 字段 | 类型 | 成功 | 请求失败 |
 | --- | --- | --- | --- |
@@ -80,6 +80,8 @@ HTTP 状态表达本次请求结果，正文 `status` 用同一个值写出。�
 | `503` | 临时不可用、恢复维护或服务准备失败 |
 
 状态不能根据控制器名称、历史数值码或任意错误文案推断。公共层识别已有校验、sentinel 和可识别领域错误，使用 Go 错误链匹配；领域原因留在原拥有者。数据库查询失败与资源不存在分别处理，上游网盘凭据失效不表示 QMediaSync 会话失效。认证及恢复回执规则见 [认证会话](../architecture/authentication-sessions.md#请求错误码)。
+
+日志补读与带 cursor 的订阅缺少 `file_id`，或 cursor／文件身份与当前文件不符时，返回 `409 / LOG_CURSOR_INVALID`；历史读取传入 `file_id` 时也按该身份条件校验。浏览器按 [实时事件](../architecture/realtime-events.md#通用日志) 重新加载文件快照，不能把文件变化归为认证失败。
 
 在线更新的发布查询成功后，目标版本不存在或没有当前平台安装包，返回 `400 / UPDATE_TARGET_UNAVAILABLE`，不创建更新任务。发布列表查询故障仍返回 `500 / UPDATE_RELEASE_LOOKUP_FAILED`；下载和安装边界见 [部署说明](../operations/deployment.md#发布二进制与-systemd)。
 

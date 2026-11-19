@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Close, Connection, Delete, Download } from '@element-plus/icons-vue'
+import { Close, Connection, Delete, Download, View } from '@element-plus/icons-vue'
 
 withDefaults(
   defineProps<{
@@ -25,6 +25,7 @@ const emit = defineEmits<{
   connect: []
   disconnect: []
   clear: []
+  view: []
   download: []
 }>()
 </script>
@@ -56,31 +57,40 @@ const emit = defineEmits<{
           <span class="button-text">断开</span>
         </el-button>
       </el-tooltip>
-      <el-tooltip content="清空当前显示日志" placement="top">
-        <el-button
-          type="info"
-          :icon="Delete"
-          aria-label="清空当前显示日志"
-          size="small"
-          :disabled="clearDisabled"
-          @click="emit('clear')"
-        >
-          <span class="button-text">清空</span>
-        </el-button>
-      </el-tooltip>
     </template>
-    <el-tooltip content="下载日志文件" placement="top">
+    <el-tooltip content="清空当前显示日志" placement="top">
       <el-button
-        type="success"
-        :icon="Download"
-        aria-label="下载日志文件"
+        type="info"
+        :icon="Delete"
+        aria-label="清空当前显示日志"
         size="small"
-        :disabled="downloadDisabled"
-        @click="emit('download')"
+        :disabled="clearDisabled"
+        @click="emit('clear')"
       >
-        <span class="button-text">下载日志</span>
+        <span class="button-text">清空</span>
       </el-button>
     </el-tooltip>
+    <el-dropdown
+      split-button
+      type="success"
+      size="small"
+      trigger="click"
+      placement="bottom-end"
+      :disabled="downloadDisabled"
+      :button-props="{ 'aria-label': '查看日志' }"
+      @click="emit('view')"
+      @command="emit('download')"
+    >
+      <el-icon><View /></el-icon>
+      <span class="button-text">查看日志</span>
+      <template #dropdown>
+        <el-dropdown-menu>
+          <el-dropdown-item command="download" :icon="Download" aria-label="下载日志文件">
+            下载日志
+          </el-dropdown-item>
+        </el-dropdown-menu>
+      </template>
+    </el-dropdown>
   </div>
 </template>
 
@@ -104,6 +114,19 @@ const emit = defineEmits<{
 
   .log-action-toolbar :deep(.el-button) {
     flex: 1 1 calc(50% - 4px);
+  }
+
+  .log-action-toolbar :deep(.el-dropdown) {
+    flex: 1 1 calc(50% - 4px);
+  }
+
+  .log-action-toolbar :deep(.el-button-group) {
+    display: flex;
+    width: 100%;
+  }
+
+  .log-action-toolbar :deep(.el-dropdown__caret-button) {
+    flex: 0 0 auto;
   }
 
   .log-action-toolbar.is-compact :deep(.el-button) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchLogSnapshot, logDownloadURL } from '@/api/logs'
+import { fetchLogCatchUp, fetchLogSnapshot, logDownloadURL } from '@/api/logs'
 import { fetchSyncTask } from '@/api/syncTasks'
 import { parseHttpError } from '@/http/errors'
 
@@ -9,17 +9,36 @@ const jsonResponse = (body: unknown, status = 200, headers?: HeadersInit) =>
 afterEach(() => vi.unstubAllGlobals())
 
 describe('原生 HTTP 快照 API', () => {
-  it('保留日志参数、Cookie、取消信号和业务快照数据', async () => {
-    const snapshot = { entries: [], pos: 12, start_pos: -1 }
-    const fetch = vi.fn().mockResolvedValue(jsonResponse({ status: 200, data: snapshot }))
+  it.each([undefined, 'file:test&1'])(
+    '日志快照保留文件身份 %s、Cookie 和取消信号',
+    async (fileID) => {
+      const snapshot = { entries: [], pos: 12, start_pos: -1, file_id: 'file:test&1' }
+      const fetch = vi.fn().mockResolvedValue(jsonResponse({ status: 200, data: snapshot }))
+      vi.stubGlobal('fetch', fetch)
+      const controller = new AbortController()
+
+      await expect(
+        fetchLogSnapshot('logs/a b&c.log', -1, 1000, controller.signal, fileID),
+      ).resolves.toEqual(snapshot)
+      expect(fetch).toHaveBeenCalledExactlyOnceWith(
+        '/api/logs/old?path=logs%2Fa%20b%26c.log&pos=-1&direction=forward&limit=1000' +
+          (fileID ? '&file_id=file%3Atest%261' : ''),
+        { credentials: 'include', signal: controller.signal },
+      )
+    },
+  )
+
+  it('日志补读将文件身份与 cursor 一起传回服务端', async () => {
+    const page = { entries: [], cursor: 42, has_more: false, file_id: 'file:test&1' }
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ status: 200, data: page }))
     vi.stubGlobal('fetch', fetch)
     const controller = new AbortController()
 
-    await expect(fetchLogSnapshot('logs/a b&c.log', -1, 1000, controller.signal)).resolves.toEqual(
-      snapshot,
+    await expect(fetchLogCatchUp('a b.log', 42, controller.signal, page.file_id)).resolves.toEqual(
+      page,
     )
     expect(fetch).toHaveBeenCalledExactlyOnceWith(
-      '/api/logs/old?path=logs%2Fa%20b%26c.log&pos=-1&direction=forward&limit=1000',
+      '/api/logs/catch-up?path=a%20b.log&cursor=42&limit=500&file_id=file%3Atest%261',
       { credentials: 'include', signal: controller.signal },
     )
   })
@@ -95,13 +114,18 @@ describe('原生 HTTP 快照 API', () => {
     expect(parseHttpError(error).shouldNotify).toBe(false)
   })
 
-  it.each([null, { status: 500, message: 'secret' }, { entries: 'invalid', pos: 1 }])(
-    '无效日志快照不得误判为成功',
-    async (body) => {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body)))
-      await expect(fetchLogSnapshot('a.log', -1, 1000)).rejects.toThrow()
-    },
-  )
+  it.each([
+    null,
+    { status: 500, message: 'secret' },
+    { entries: 'invalid', pos: 1 },
+    { status: 200, data: { entries: [], pos: 0 } },
+    { status: 200, data: { entries: [], pos: 0, file_id: '' } },
+    { status: 200, data: { entries: [], pos: 0, file_id: 123 } },
+    { status: 200, data: { entries: [], pos: 0, file_id: 'another-file' } },
+  ])('无效日志快照不得误判为成功', async (body) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body)))
+    await expect(fetchLogSnapshot('a.log', -1, 1000, undefined, 'file:test&1')).rejects.toThrow()
+  })
 
   it('同步任务读取校验业务成功和记录身份，不把错误对象写入任务', async () => {
     const fetch = vi

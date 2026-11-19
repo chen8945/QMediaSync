@@ -5,4 +5,5 @@ export interface LogEntry {
   message: string
   timestamp: string
   id?: string
+  cursor?: number
 }

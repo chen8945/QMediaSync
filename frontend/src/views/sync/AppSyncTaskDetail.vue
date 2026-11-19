@@ -50,7 +50,12 @@
               {{ taskInfo?.processed_files || 0 }}
             </el-descriptions-item>
             <el-descriptions-item label="处理结果">
-              {{ getSyncScanSummary(task?.scan_result) }}
+              <span v-if="resultLoading">正在加载…</span>
+              <span v-else-if="resultErrorMessage"
+                >{{ resultErrorMessage }}
+                <el-button link @click="reloadResult">重试</el-button></span
+              >
+              <span v-else>{{ getSyncScanSummary(task?.scan_result) }}</span>
             </el-descriptions-item>
             <el-descriptions-item label="缺项清理">
               {{ getSyncCleanupText(task?.scan_result?.cleanup_status) }}
@@ -61,13 +66,8 @@
             <el-descriptions-item v-if="task?.fail_reason" label="失败原因">
               {{ task.fail_reason }}
             </el-descriptions-item>
-            <el-descriptions-item v-if="task?.scan_result?.failures.length" label="失败范围">
-              <ul class="scan-failures">
-                <li v-for="(failure, index) in task.scan_result.failures" :key="index">
-                  {{ failure.kind === 'directory' ? '目录' : '文件' }} {{ failure.path }}：
-                  {{ failure.reason }}
-                </li>
-              </ul>
+            <el-descriptions-item v-if="task && task.status >= 2" label="失败范围">
+              <SyncTaskFailures :sync-id="taskId" :status="task.status" />
             </el-descriptions-item>
             <el-descriptions-item label="生成 STRM">
               {{ taskInfo?.created_strm || 0 }}
@@ -169,15 +169,7 @@
 
         <!-- 同步日志 -->
         <div class="task-logs">
-          <SyncTaskLogPanel
-            :logs="logs"
-            :connected="connected"
-            :log-path="resolvedLogPath"
-            @connect="reconnect"
-            @disconnect="disconnect"
-            @clear="clearLogs"
-            @download="downloadTaskLogs"
-          />
+          <AppLogViewer v-if="logPath" :log-path="logPath" :is-real-time="!terminal" />
         </div>
       </div>
     </el-card>
@@ -196,8 +188,8 @@ import {
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
-import SyncTaskLogPanel from '@/components/sync-task/SyncTaskLogPanel.vue'
-import { useLogFileActions } from '@/composables/useLogFileActions'
+import AppLogViewer from '@/components/log/AppLogViewer.vue'
+import SyncTaskFailures from '@/components/sync-task/SyncTaskFailures.vue'
 import { useSyncTaskStream } from '@/composables/useSyncTaskStream'
 import { navigateBackOrReplace } from '@/utils/navigation'
 import { getEmbyRefreshDecision } from '@/utils/syncRefreshDecision'
@@ -241,29 +233,16 @@ const taskId = computed(() => Number(route.params.id))
 
 const {
   task,
-  logs,
   loading,
-  connected,
   connectionState,
   terminal,
   unsupported,
   errorMessage,
   logPath,
-  reconnect,
-  disconnect,
-  clearLogs,
+  resultErrorMessage,
+  resultLoading,
+  reloadResult,
 } = useSyncTaskStream(taskId)
-const { downloadLogFile } = useLogFileActions()
-
-const resolvedLogPath = computed(() => logPath.value || `sync/sync_${taskId.value}.log`)
-
-const downloadTaskLogs = () => {
-  downloadLogFile(resolvedLogPath.value, {
-    emptyMessage: '同步任务日志路径为空',
-    errorPrefix: '下载同步任务日志失败',
-  })
-}
-
 const taskInfo = computed<TaskInfo | null>(() => {
   if (!task.value) return null
   return {
@@ -395,12 +374,6 @@ const getTimelineItems = () => {
 
 <style scoped>
 .ledger-error {
-  overflow-wrap: anywhere;
-}
-
-.scan-failures {
-  margin: 0;
-  padding-left: 20px;
   overflow-wrap: anywhere;
 }
 

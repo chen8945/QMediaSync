@@ -122,6 +122,17 @@ func TestBackupFileRoutesRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestLogFileRoutesRequireAuthentication(t *testing.T) {
+	router := testMainRouter(t)
+	for _, path := range []string{"/api/logs/view?path=app.log", "/api/logs/download?path=app.log"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "AUTHENTICATION_REQUIRED") {
+			t.Fatalf("log file route bypassed authentication: %s HTTP=%d %s", path, response.Code, response.Body)
+		}
+	}
+}
+
 func TestMediaLibraryRoutesRequireAuthentication(t *testing.T) {
 	root := t.TempDir()
 	previousRoot := helpers.RootDir

@@ -73,6 +73,25 @@ func TestReadLinesForwardStopsAtEmptyOrBlankFile(t *testing.T) {
 	}
 }
 
+func TestReadLinesFromFilePreservesPartialEOFAndLeavesHandleOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, []byte("old\npartial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	lines, pos, err := ReadLinesFromFile(file, -1, 10, "backward")
+	if err != nil || !slices.Equal(lines, []string{"old", "partial"}) || pos != 11 {
+		t.Fatalf("已打开文件的静态尾行读取错误: lines=%v pos=%d err=%v", lines, pos, err)
+	}
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("读取函数不应关闭调用方的文件: %v", err)
+	}
+}
+
 const (
 	testFilePath = "C:\\Users\\qicfa\\Videos\\NarakaBladepoint\\Record\\Naraka-record-20251228-18-13-54.mp4"
 )
