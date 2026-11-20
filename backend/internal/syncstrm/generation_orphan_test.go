@@ -512,13 +512,14 @@ func TestGenerationOrphanDeletionBetweenGenerationAndFinalization(t *testing.T) 
 			if err := os.WriteFile(file.GetLocalFilePath(syncer.TargetPath, syncer.SourcePath), []byte("generated"), 0600); err != nil {
 				return err
 			}
+			// 生成退出时账本已保存，但范围尚未释放；在此排队删除，避免位置版本变化使删除重排。
+			syncer.Cancel = func() {
+				close(generated)
+				<-proceed
+			}
 			return nil
 		}
 		service.resolveRefreshTargets = func(*models.SyncFile) ([]models.EmbyRefreshTarget, error) {
-			// 首次保存账本会推进范围版本；在保存后排队删除，避免旧申请重排时收尾先获权。
-			// 此处生成仍持有范围，删除完成后才能重新取得收尾许可。
-			close(generated)
-			<-proceed
 			return []models.EmbyRefreshTarget{{TargetType: models.EmbyRefreshTargetTypeItem, ItemID: "item"}}, nil
 		}
 		oldCleanup := cleanupSourceAfterStrmSuccess
@@ -533,6 +534,10 @@ func TestGenerationOrphanDeletionBetweenGenerationAndFinalization(t *testing.T) 
 		case <-generated:
 		case err := <-done:
 			t.Fatalf("generation ended before write: %v", err)
+		}
+		var saved models.SyncFile
+		if err := db.Db.Where("sync_path_id = ? AND file_id = ?", sp.ID, task.FileId).First(&saved).Error; err != nil {
+			t.Fatalf("generation paused before ledger save: %v", err)
 		}
 		deleted := make(chan error, 1)
 		go func() { deleted <- models.DeleteSyncPathByID(t.Context(), sp.ID) }()

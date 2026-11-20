@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"qmediasync/internal/db"
 	"qmediasync/internal/models"
 	v115open "qmediasync/internal/v115/openapi"
 )
@@ -120,6 +122,205 @@ func make115ScanPage(offset, limit, total int) []v115open.File {
 		files = append(files, v115open.File{FileId: fmt.Sprintf("file-%d", i), Pid: "root", FileName: name, FileCategory: v115open.TypeFile, Aid: "1", PickCode: fmt.Sprintf("pick-%d", i)})
 	}
 	return files
+}
+
+func Test115ScanPreservesPageAndPathFailures(t *testing.T) {
+	account, syncPath := setupStrmExclusionTestDB(t)
+	s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{VideoExt: []string{".mkv"}}, false, 0, false, false)
+	t.Cleanup(s.Cancel)
+	s.threadSettings.FileListPageSize = 100
+	s.PathWorkerMax = 1
+	s.sync115 = &Sync115{firstFileID: "file-0", paths: map[string]verified115Path{"root": {path: "Media", within: true, root: true}}}
+	original := list115FilesPage
+	t.Cleanup(func() { list115FilesPage = original })
+	list115FilesPage = func(_ context.Context, _ *v115open.OpenClient, _ string, _, _, _ bool, offset, limit int) (*v115open.FileListResp, error) {
+		files := make115ScanPage(offset, limit, 250)
+		if offset == 100 {
+			files = files[:99]
+		}
+		return &v115open.FileListResp{RespBaseBool: v115open.RespBaseBool[[]v115open.File]{Data: files}, Count: 250}, nil
+	}
+	if err := s.Start115FileDispathcer(250); err != nil {
+		t.Fatal(err)
+	}
+	s.SyncDriver = &incomplete115PathDriver{detail: func(_ context.Context, id string) (*SyncFileCache, error) {
+		return &SyncFileCache{FileId: id, FileName: "masked**name", FileType: v115open.TypeDir, Paths: []v115open.FileDetailPath{{FileId: "root", Name: "Media"}}}, nil
+	}}
+	if err := s.memSyncCache.Insert(&SyncFileCache{FileId: "unknown-video", ParentId: "unknown-parent", FileName: "other.mkv", FileType: v115open.TypeFile, SourceType: models.SourceType115, IsVideo: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start115PathDispathcer(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.process115CollectedFiles(); err != nil {
+		t.Fatal(err)
+	}
+	result := s.scanResultSnapshot()
+	if len(result.Failures) != 1 || s.NewStrm != 0 || !s.cleanupProtected(filepath.Join(s.TargetPath, "Media", "old.strm"), false) {
+		t.Fatalf("失败目录计数或完整性保护改变：result=%+v, generated=%d", result, s.NewStrm)
+	}
+	for _, want := range []string{"offset=100", "unknown-parent", "masked**name"} {
+		if !strings.Contains(result.Failures[0].Reason, want) {
+			t.Errorf("缺少失败诊断 %q：%s", want, result.Failures[0].Reason)
+		}
+	}
+}
+
+type fileRepair115Driver struct {
+	driverImpl
+	detail func(context.Context, string) (*SyncFileCache, error)
+}
+
+func (d *fileRepair115Driver) DetailByFileId(ctx context.Context, id string) (*SyncFileCache, error) {
+	return d.detail(ctx, id)
+}
+
+func Test115FileAnomaliesKeepIndependentVideos(t *testing.T) {
+	original := list115FilesPage
+	t.Cleanup(func() { list115FilesPage = original })
+	for _, mode := range []string{"irrelevant", "excluded", "small_video", "disabled_metadata", "bad_name", "empty_name", "missing_parent", "missing_both", "cached_parent", "cached_name", "unresolved_parent", "empty_basename", "bad_detail", "outside_parent", "auth"} {
+		t.Run(mode, func(t *testing.T) {
+			account, syncPath := setupStrmExclusionTestDB(t)
+			s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{VideoExt: []string{".mkv", ".mp4"}, StrmBaseUrl: "http://qms.test"}, false, 0, false, false)
+			t.Cleanup(s.Cancel)
+			s.threadSettings.FileListPageSize = 100
+			s.PathWorkerMax = 1
+			s.sync115 = &Sync115{paths: map[string]verified115Path{
+				"root":    {path: "Media", within: true, root: true},
+				"sibling": {path: "Media/Sibling", parentID: "root", within: true},
+			}}
+			files := []v115open.File{
+				{FileId: "bad", FileName: "broken.mkv", FileCategory: v115open.TypeFile, Aid: "1", PickCode: "list-pick", FileSize: 16, Utime: 200},
+				{FileId: "good", Pid: "root", FileName: "same.mkv", FileCategory: v115open.TypeFile, Aid: "1"},
+				{FileId: "sibling-file", Pid: "sibling", FileName: "other.mkv", FileCategory: v115open.TypeFile, Aid: "1"},
+			}
+			wantGenerated, wantDetails := int64(3), int64(1)
+			switch mode {
+			case "irrelevant":
+				files[0].FileName = "invalid/name.txt"
+				wantGenerated, wantDetails = 2, 0
+			case "excluded":
+				s.Config.ExcludeNames = []string{"broken.mkv"}
+				wantGenerated, wantDetails = 2, 0
+			case "small_video":
+				s.Config.MinVideoSize = 100
+				files[0].FileName = "invalid/small.mkv"
+				files[1].FileSize, files[2].FileSize = 200*1024*1024, 200*1024*1024
+				wantGenerated, wantDetails = 2, 0
+			case "disabled_metadata":
+				s.Config.MetaExt = []string{".nfo"}
+				files[0].FileName = "invalid/metadata.nfo"
+				wantGenerated, wantDetails = 2, 0
+			case "bad_name":
+				files[0].FileName, files[0].Pid = "invalid/name.mkv", "root"
+				wantGenerated, wantDetails = 1, 0
+			case "empty_name":
+				files[0].FileName, files[0].Pid = "", "root"
+				wantGenerated, wantDetails = 1, 0
+			case "missing_both":
+				files[0].FileName = ""
+			case "cached_name":
+				files[0].FileName, files[0].Pid = "invalid/name.txt", "root"
+			case "unresolved_parent":
+				files[0].FileName, files[1].FileName = "broken.mp4", "broken.mkv"
+				wantGenerated = 1
+			case "empty_basename":
+				files[0].FileName, files[1].FileName = ".mkv", ".mp4"
+				wantGenerated = 1
+			case "bad_detail", "outside_parent":
+				wantGenerated = 2
+			}
+			var pages, details atomic.Int64
+			list115FilesPage = func(_ context.Context, _ *v115open.OpenClient, _ string, _, _, _ bool, offset, limit int) (*v115open.FileListResp, error) {
+				pages.Add(1)
+				return &v115open.FileListResp{RespBaseBool: v115open.RespBaseBool[[]v115open.File]{Data: files[offset:min(offset+limit, len(files))]}, Count: len(files)}, nil
+			}
+			s.SyncDriver = &fileRepair115Driver{driverImpl: s.SyncDriver, detail: func(_ context.Context, id string) (*SyncFileCache, error) {
+				details.Add(1)
+				if id != "bad" {
+					t.Errorf("不必要的详情请求：%s", id)
+				}
+				if mode == "auth" {
+					return nil, v115open.NewOpenAPIError(v115open.ACCESS_AUTH_INVALID, "fixture: authorization required")
+				}
+				if mode == "unresolved_parent" || mode == "empty_basename" {
+					return nil, errors.New("fixture: detail unavailable")
+				}
+				parts := []v115open.FileDetailPath{{FileId: "root", Name: "Media"}}
+				if mode == "bad_detail" {
+					id = "wrong-file"
+				}
+				if mode == "outside_parent" {
+					parts = []v115open.FileDetailPath{{FileId: "outside", Name: "Outside"}}
+				}
+				if mode == "cached_parent" || mode == "cached_name" {
+					for i := range 4 {
+						parts = append(parts, v115open.FileDetailPath{FileId: fmt.Sprintf("dir-%d", i), Name: fmt.Sprintf("Dir%d", i)})
+					}
+				}
+				return &SyncFileCache{FileId: id, FileName: "broken.mkv", FileType: v115open.TypeFile, SourceType: models.SourceType115, Paths: parts}, nil
+			}}
+			total, first, err := s.SyncDriver.GetTotalFileCount(s.Context)
+			if err != nil || total != 3 {
+				t.Fatalf("条目异常不应影响计数：total=%d, err=%v", total, err)
+			}
+			s.sync115.firstFileID = first
+			if mode == "cached_parent" || mode == "cached_name" {
+				if err := s.Preload115Dirs(first); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old := filepath.Join(s.TargetPath, "Media", "old.strm")
+			writeScopeFile(t, old)
+			row := models.SyncFile{SyncPathId: syncPath.ID, AccountId: account.ID, SourceType: models.SourceType115, FileId: "bad", FileName: "old.mkv", Path: "Media", LocalFilePath: old, IsVideo: true}
+			if err := db.Db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+			err = s.Start115FileDispathcer(total)
+			if mode == "auth" {
+				if !isFatalSyncError(err) || details.Load() != 1 {
+					t.Fatalf("补查授权失败未停止：err=%v, details=%d", err, details.Load())
+				}
+				return
+			}
+			if err != nil || s.sync115.incompletePages || len(s.sync115.rawFileIDs) != 3 {
+				t.Fatalf("单条异常被升级为缺页：err=%v, incomplete=%v", err, s.sync115.incompletePages)
+			}
+			if err := s.Start115PathDispathcer(); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.process115CollectedFiles(); err != nil {
+				t.Fatal(err)
+			}
+			if s.NewStrm != wantGenerated || details.Load() != wantDetails || pages.Load() != 2 {
+				t.Fatalf("生成或请求次数异常：generated=%d/%d, details=%d/%d, pages=%d", s.NewStrm, wantGenerated, details.Load(), wantDetails, pages.Load())
+			}
+			if wantGenerated == 3 {
+				repaired, err := s.memSyncCache.GetByFileId("bad")
+				if err != nil || repaired.PickCode != "list-pick" || repaired.FileSize != 16 || repaired.MTime != 200 {
+					t.Fatalf("定位补全丢失原文件资料：file=%+v, err=%v", repaired, err)
+				}
+			}
+			if mode == "irrelevant" || mode == "bad_name" || mode == "empty_name" || mode == "unresolved_parent" || mode == "empty_basename" || mode == "bad_detail" || mode == "outside_parent" {
+				if err := s.prepareCleanupProtection(); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.compareLocalFilesWithTempTable(); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.handleTempTableDiff(); err != nil {
+					t.Fatal(err)
+				}
+				if content, err := os.ReadFile(old); err != nil || string(content) != "original" {
+					t.Fatalf("异常条目的旧文件丢失：%q, %v", content, err)
+				}
+				var remaining models.SyncFile
+				if err := db.Db.First(&remaining, row.ID).Error; err != nil {
+					t.Fatalf("异常条目的旧账本丢失：%v", err)
+				}
+			}
+		})
+	}
 }
 
 func Test115DriverCountAndDirectoryResponsesMustBeComplete(t *testing.T) {
@@ -240,7 +441,7 @@ func Test115PreloadFailureProtectsOnlyFailedSubtreeAndContinuesSibling(t *testin
 	}
 }
 
-func Test115UnknownPathProtectsConflictingOwnerAndContinuesIndependentFile(t *testing.T) {
+func Test115UnknownPathDoesNotBlockIndependentParent(t *testing.T) {
 	account, syncPath := setupStrmExclusionTestDB(t)
 	s := newSyncStrm(account, syncPath.ID, "Media", "root", t.TempDir(), SyncStrmConfig{}, false, 0, false, false)
 	t.Cleanup(s.Cancel)
@@ -273,8 +474,8 @@ func Test115UnknownPathProtectsConflictingOwnerAndContinuesIndependentFile(t *te
 	if err := s.process115CollectedFiles(); err != nil {
 		t.Fatal(err)
 	}
-	if content, err := os.ReadFile(conflict); err != nil || string(content) != "old-owner" {
-		t.Fatalf("unresolved owner overwritten: %q %v", content, err)
+	if content, err := os.ReadFile(conflict); err != nil || string(content) != "http://qms.test/movie" {
+		t.Fatalf("independent parent did not generate: %q %v", content, err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(conflict), "independent.strm")); err != nil {
 		t.Fatal(err)
@@ -282,7 +483,7 @@ func Test115UnknownPathProtectsConflictingOwnerAndContinuesIndependentFile(t *te
 	if _, err := os.Stat(filepath.Join(s.TargetPath, "conflict.strm")); !os.IsNotExist(err) {
 		t.Fatalf("unknown path generated at root: %v", err)
 	}
-	if result := s.scanResultSnapshot(); result.SucceededFiles != 1 || result.SkippedFiles != 0 || len(result.Failures) == 0 {
+	if result := s.scanResultSnapshot(); result.SucceededFiles != 2 || result.SkippedFiles != 0 || len(result.Failures) == 0 {
 		t.Fatalf("result=%+v", result)
 	}
 	if !s.cleanupProtected(filepath.Join(s.TargetPath, "Media", "other.strm"), false) {

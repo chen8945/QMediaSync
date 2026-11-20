@@ -40,7 +40,7 @@ func (s *SyncStrm) observe115RootPaths(ctx context.Context, parts []v115open.Fil
 			continue
 		}
 		if part.FileId == "" || part.FileId == "0" || part.Name == "" || part.Name == "." || part.Name == ".." || strings.ContainsAny(part.Name, "/\\\x00") {
-			return fmt.Errorf("115 同步根祖先身份或名称不完整")
+			return fmt.Errorf("115 同步根祖先身份或名称不完整：root_id=%q，index=%d，ancestor_id=%q，ancestor_name=%q", rootID, i, part.FileId, part.Name)
 		}
 		fullPath = path.Join(fullPath, part.Name)
 		nodes = append(nodes, models.EmbyDirectoryAncestor{FileID: part.FileId, ParentID: parentID, Path: fullPath})
@@ -83,7 +83,7 @@ func (s *SyncStrm) observe115RootPaths(ctx context.Context, parts []v115open.Fil
 		if err := models.InvalidateSyncRootEvidence(ctx, *evidence); err != nil {
 			return fatalSyncError(fmt.Errorf("标记已变化的同步根目录资料失败：%w", err))
 		}
-		return fmt.Errorf("115 同步根当前身份或路径与任务入口不一致")
+		return fmt.Errorf("115 同步根当前身份或路径与任务入口不一致：预期 ID=%q，实际 ID=%q，预期路径=%q，实际路径=%q", rootID, root.FileID, s.SourcePath, root.Path)
 	}
 	if old := s.rootEvidence; old != nil {
 		if old.RootFileID != evidence.RootFileID || !slices.Equal(old.Ancestors, evidence.Ancestors) {

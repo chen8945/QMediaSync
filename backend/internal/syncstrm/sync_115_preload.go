@@ -25,6 +25,7 @@ func (s *SyncStrm) Preload115Dirs(firstFileId string) error {
 	if firstFile == nil {
 		return fmt.Errorf("115 首文件详情响应为空")
 	}
+	s.sync115.firstFile = firstFile
 
 	depth := s.GetDepth(firstFile.Paths)
 	if depth < 1 || depth > 2 {

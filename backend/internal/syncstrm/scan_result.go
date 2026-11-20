@@ -65,7 +65,9 @@ func (s *SyncStrm) recordScanFailure(remotePath string, err error) {
 		s.scanFailures = make(map[string]realtime.SyncScanFailure)
 	}
 	remotePath = normalizedScanPath(remotePath)
-	s.scanFailures["directory:"+remotePath] = realtime.SyncScanFailure{Kind: "directory", Path: remotePath, Reason: helpers.RedactSensitiveLog(err.Error())}
+	reason := helpers.SafeLogError(err)
+	// 保留同一目录的不同原因，快照仍按目录聚合，避免后续路径错误覆盖分页失败。
+	s.scanFailures["directory:"+remotePath+"\x00"+reason] = realtime.SyncScanFailure{Kind: "directory", Path: remotePath, Reason: reason}
 	s.scanMu.Unlock()
 	if s.Sync != nil {
 		logf := s.Sync.Logger.Errorf
@@ -144,7 +146,7 @@ func (s *SyncStrm) recordFileFailure(file *SyncFileCache, err error) {
 		id = file.GetFullRemotePath()
 	}
 	s.scanFiles[id] = "failed"
-	s.scanFailures["file:"+id] = realtime.SyncScanFailure{Kind: "file", Path: file.GetFullRemotePath(), FileID: file.GetFileId(), Reason: helpers.RedactSensitiveLog(err.Error())}
+	s.scanFailures["file:"+id] = realtime.SyncScanFailure{Kind: "file", Path: file.GetFullRemotePath(), FileID: file.GetFileId(), Reason: helpers.SafeLogError(err)}
 	if file.GetFileId() != "" {
 		s.protectedFileIDs[file.GetFileId()] = true
 	}
@@ -201,8 +203,17 @@ func (s *SyncStrm) scanResultSnapshot() *realtime.SyncScanResult {
 			result.SkippedFiles++
 		}
 	}
+	directoryReasons := make(map[string][]string)
 	for _, failure := range s.scanFailures {
-		result.Failures = append(result.Failures, failure)
+		if failure.Kind == "directory" {
+			directoryReasons[failure.Path] = append(directoryReasons[failure.Path], failure.Reason)
+		} else {
+			result.Failures = append(result.Failures, failure)
+		}
+	}
+	for path, reasons := range directoryReasons {
+		slices.Sort(reasons)
+		result.Failures = append(result.Failures, realtime.SyncScanFailure{Kind: "directory", Path: path, Reason: strings.Join(reasons, "；")})
 	}
 	slices.SortFunc(result.Failures, func(a, b realtime.SyncScanFailure) int { return strings.Compare(a.Kind+":"+a.Path, b.Kind+":"+b.Path) })
 	if !s.cleanupStarted {

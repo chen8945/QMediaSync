@@ -129,7 +129,7 @@ func (s *SyncStrm) confirm115Path(ctx context.Context, pathId, expectedPath stri
 	}
 	if known {
 		if expectedPath != "" && normalizeStrmRemotePath(knownPath.path) != normalizeStrmRemotePath(expectedPath) {
-			return fmt.Errorf("115 目录身份与待确认路径不匹配：path_id=%s", pathId)
+			return fmt.Errorf("115 目录身份与待确认路径不匹配：path_id=%q，预期路径=%q，实际路径=%q", pathId, expectedPath, knownPath.path)
 		}
 		return nil
 	}
@@ -149,7 +149,10 @@ func (s *SyncStrm) confirm115PathDetail(ctx context.Context, pathId, expectedPat
 
 func (s *SyncStrm) publish115DirectoryDetail(ctx context.Context, pathId, expectedPath string, detail *SyncFileCache, allowOutside bool) error {
 	if detail == nil || detail.FileId != pathId || detail.FileType != v115open.TypeDir {
-		return fmt.Errorf("115 目录详情身份或类型不匹配：path_id=%s", pathId)
+		if detail == nil {
+			return fmt.Errorf("115 目录详情响应为空：path_id=%q", pathId)
+		}
+		return fmt.Errorf("115 目录详情身份或类型不匹配：请求 ID=%q，实际 ID=%q，实际类型=%q", pathId, detail.FileId, detail.FileType)
 	}
 	paths := append(append([]v115open.FileDetailPath(nil), detail.Paths...), v115open.FileDetailPath{
 		FileId: detail.FileId,
@@ -157,16 +160,16 @@ func (s *SyncStrm) publish115DirectoryDetail(ctx context.Context, pathId, expect
 	})
 	foundRoot := s.SourcePathId == "0"
 	seen := make(map[string]struct{})
-	for _, part := range paths {
+	for i, part := range paths {
 		if part.FileId == "0" {
 			continue
 		}
 		if part.FileId == "" || part.Name == "" || part.Name == "." || part.Name == ".." ||
 			strings.ContainsAny(part.Name, "/\\") || strings.Contains(part.Name, "**") {
-			return fmt.Errorf("115 目录祖先身份或名称不完整：path_id=%s", pathId)
+			return fmt.Errorf("115 目录祖先身份或名称不完整：path_id=%s，ancestor_id=%q，ancestor_name=%q", pathId, part.FileId, part.Name)
 		}
 		if _, duplicate := seen[part.FileId]; duplicate {
-			return fmt.Errorf("115 目录祖先身份重复：path_id=%s", pathId)
+			return fmt.Errorf("115 目录祖先身份重复：path_id=%q，index=%d，ancestor_id=%q", pathId, i, part.FileId)
 		}
 		seen[part.FileId] = struct{}{}
 		foundRoot = foundRoot || part.FileId == s.SourcePathId
@@ -191,7 +194,7 @@ func (s *SyncStrm) publish115DirectoryDetail(ctx context.Context, pathId, expect
 		facts["0"] = verified115Path{path: "/", within: true, root: true}
 	}
 	if expectedPath != "" && normalizeStrmRemotePath(facts[pathId].path) != normalizeStrmRemotePath(expectedPath) {
-		return fmt.Errorf("115 目录详情与待确认路径不匹配：path_id=%s", pathId)
+		return fmt.Errorf("115 目录详情与待确认路径不匹配：path_id=%q，预期路径=%q，实际路径=%q", pathId, expectedPath, facts[pathId].path)
 	}
 	return s.publish115Paths(ctx, facts)
 }
@@ -234,12 +237,12 @@ func (s *SyncStrm) publish115Paths(ctx context.Context, facts map[string]verifie
 		}
 		if oldID != "" && oldID != id {
 			s.sync115.pathConflict = true
-			return fmt.Errorf("115 目录路径 %s 在本轮返回了不同身份", fact.path)
+			return fmt.Errorf("115 目录路径 %q 在本轮返回了不同身份：原 ID=%q，新 ID=%q", fact.path, oldID, id)
 		}
 		newPathIDs[key] = id
 		if old, ok := s.sync115.paths[id]; ok && (old.path != fact.path || old.parentID != "" && fact.parentID != "" && old.parentID != fact.parentID) {
 			s.sync115.pathConflict = true
-			return fmt.Errorf("115 目录 %s 在本轮返回了不同位置", id)
+			return fmt.Errorf("115 目录 %q 在本轮返回了不同位置：原路径=%q，新路径=%q，原父目录=%q，新父目录=%q", id, old.path, fact.path, old.parentID, fact.parentID)
 		}
 	}
 	if s.sync115.paths == nil {
@@ -296,7 +299,7 @@ func (s *SyncStrm) publish115Paths(ctx context.Context, facts map[string]verifie
 
 // 所有路径请求结束后才补路径或移除排除文件，避免在途响应出现冲突后无法恢复。
 func (s *SyncStrm) apply115Paths() error {
-	if s.sync115.pathConflict {
+	if s.sync115.pathConflict || s.rootEvidenceConflict {
 		s.recordScanFailure(s.SourcePath, fmt.Errorf("115 目录位置冲突，本轮不使用已取得的路径"))
 		return nil
 	}

@@ -28,9 +28,11 @@ type Sync115 struct {
 	pathConflict    bool
 	expectedTotal   int64 // 文件 worker 启动前固定，按原始响应校验，不使用过滤后的缓存数
 	firstFileID     string
+	firstFile       *SyncFileCache // 复用预取详情，异常条目补全不重复请求。
 	pageMu          sync.Mutex
 	rawFileIDs      map[string]struct{}
 	incompletePages bool
+	unresolvedFiles []*SyncFileCache
 }
 
 func (s *SyncStrm) Start115Sync() {

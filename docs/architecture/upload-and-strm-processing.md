@@ -376,7 +376,7 @@ STRM 入队成功后，目录上传账本会更新为上传终态；后续清理
 - OpenList 客户端测试覆盖并发创建、缓存命中、配置更新、同配置 Token 刷新去重、跨地址刷新隔离及登录 `401` 及时返回；认证恢复回归须覆盖零普通重试预算下的完整 multipart 重发、普通网络重试次数不变及持续 `401` 及时失败。`models/upload_openlist_test.go` 使用真实上传队列和本地 HTTP 替身覆盖单 worker 对照、同账号与不同账号并发，验证冷缓存和后续缓存命中、请求实际重叠、凭据隔离、有效凭据下每个文件只上传一次及任务正确完成。运行 `(cd backend && go test -race ./internal/openlist)` 和 `(cd backend && go test -race ./internal/models -run 'Test(UploadQueue|UpdateOpenList)')`。
 - 运行 `(cd backend && go test ./internal/directoryupload/)`、`(cd backend && go test ./internal/syncstrm/)` 和相关 `models` 测试。
 - STRM 收尾回归使用生产 SQLite 单连接配置，覆盖信息补齐、重复收尾去重、准备失败以及账本更新失败时的事务回滚；OpenList 真实上传队列测试也使用该配置，覆盖上传到本地收尾的完整链路。
-- 失效引用回归运行 `syncstrm` 包的 `TestGenerationOrphan*`、`TestGenerationMissingUpload`，覆盖目录删除、超过一页的父子任务、已有生成或跳过计数、上传历史清空、执行期间删除、事务回滚和独立任务推进；设置隔离 `QMS_TEST_POSTGRES_DSN` 后，以 `-tags=integration` 运行 `TestGenerationOrphanPostgres` 和 `TestGenerationRetryPostgres`，未设置而跳过不计通过。
+- 失效引用回归运行 `syncstrm` 包的 `TestGenerationOrphan*`、`TestGenerationMissingUpload`，覆盖目录删除、超过一页的父子任务、已有生成或跳过计数、上传历史清空、执行期间删除、事务回滚和独立任务推进。生成与收尾之间的删除用例须确认账本已保存，再在生成范围释放前排队删除，验证文件保留、父子计数及刷新／源清理未执行；设置隔离 `QMS_TEST_POSTGRES_DSN` 后，以 `-tags=integration` 运行 `TestGenerationOrphanPostgres` 和 `TestGenerationRetryPostgres`，未设置而跳过不计通过。
 - 剧集刮削回归运行 `(cd backend && go test ./internal/scrape -run '^TestEpisodeScrape')`，覆盖本地与网盘目标、可选海报缺失或存在、同目录其他剧集隔离、必需 NFO 缺失、文件读取或复制失败，以及失败后源文件保留。
 - 修改外部上传协议时使用 mock 覆盖 callback、part size、checkpoint 和幂等行为；真实 115 / OSS 上传仅在获得沙箱账号和远端写入授权后执行。
 - 修改前端目录监控配置时按 [验证说明](../engineering/verification.md) 选择相应验证。

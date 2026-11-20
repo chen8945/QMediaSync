@@ -271,7 +271,7 @@ func (d *open115Driver) GetTotalFileCount(ctx context.Context) (int64, string, e
 	if resp == nil {
 		return 0, "", fmt.Errorf("115 文件计数响应为空")
 	}
-	if err := validate115FilePage(resp.Data, int64(resp.Count), 0, 1, make(map[string]struct{})); err != nil {
+	if err := validate115FilePageIdentities(resp.Data, int64(resp.Count), 0, 1, make(map[string]struct{})); err != nil {
 		return 0, "", err
 	}
 	if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
@@ -321,13 +321,16 @@ func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId st
 			expectedTotal = resp.Count
 		}
 		if resp.Count != expectedTotal {
-			return nil, fmt.Errorf("115 子目录总数在分页期间变化")
+			return nil, fmt.Errorf("115 子目录总数在分页期间变化：path_id=%q，offset=%d，预期=%d，实际=%d", pathId, offset, expectedTotal, resp.Count)
 		}
 		if err := validate115FilePage(resp.Data, int64(expectedTotal), offset, limit, seen); err != nil {
 			return nil, err
 		}
-		if len(resp.Path) == 0 || resp.Path[len(resp.Path)-1].FileId.String() != pathId {
-			return nil, fmt.Errorf("115 子目录列表缺少匹配父目录身份")
+		if len(resp.Path) == 0 {
+			return nil, fmt.Errorf("115 子目录列表缺少父目录路径：请求 ID=%q", pathId)
+		}
+		if actualID := resp.Path[len(resp.Path)-1].FileId.String(); actualID != pathId {
+			return nil, fmt.Errorf("115 子目录列表父目录身份不匹配：请求 ID=%q，实际 ID=%q", pathId, actualID)
 		}
 		parts := make([]string, 0, len(resp.Path))
 		pathIDs := make(map[string]bool, len(resp.Path))
@@ -337,14 +340,14 @@ func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId st
 				continue
 			}
 			if id == "" || id == "0" || pathIDs[id] || part.Name == "" || part.Name == "." || part.Name == ".." || strings.ContainsAny(part.Name, "/\\\x00") {
-				return nil, fmt.Errorf("115 子目录列表祖先路径不完整")
+				return nil, fmt.Errorf("115 子目录列表祖先路径不完整：path_id=%q，index=%d，ancestor_id=%q，ancestor_name=%q", pathId, i, id, part.Name)
 			}
 			pathIDs[id] = true
 			parts = append(parts, part.Name)
 		}
 		currentPath := normalizeStrmRemotePath(filepath.Join(parts...))
 		if currentPath != normalizeStrmRemotePath(resp.PathStr) || expectedPath != "" && currentPath != expectedPath {
-			return nil, fmt.Errorf("115 子目录列表父路径不匹配或在分页期间变化")
+			return nil, fmt.Errorf("115 子目录列表父路径不匹配或在分页期间变化：path_id=%q，预期=%q，实际=%q，响应路径=%q", pathId, expectedPath, currentPath, resp.PathStr)
 		}
 		expectedPath = currentPath
 		if err := d.s.observe115RootList(ctx, resp, observedAt); err != nil {
@@ -353,7 +356,7 @@ func (d *open115Driver) GetDirsByPath(ctx context.Context, parentPath, pathId st
 		for _, file := range resp.Data {
 			if file.Aid != "1" || file.FileCategory != v115open.TypeDir && file.FileCategory != v115open.TypeFile || file.FileId == "0" || file.FileId == pathId || file.Pid != pathId ||
 				file.FileName == "" || file.FileName == "." || file.FileName == ".." || strings.ContainsAny(file.FileName, "/\\\x00") {
-				return nil, fmt.Errorf("115 子目录列表条目身份或父目录不匹配")
+				return nil, fmt.Errorf("115 子目录列表条目身份或父目录不匹配：请求父目录=%q，file_id=%q，parent_id=%q，类型=%q，名称=%q，状态=%q", pathId, file.FileId, file.Pid, file.FileCategory, file.FileName, file.Aid)
 			}
 			// stdir=1 仍可能返回文件，原始页必须全部校验后再筛出目录。
 			if file.FileCategory == v115open.TypeFile {
@@ -414,7 +417,10 @@ func (d *open115Driver) DetailByFileId(ctx context.Context, fileId string) (*Syn
 		return nil, err
 	}
 	if resp == nil || resp.FileId != fileId || (len(resp.Paths) == 0 && fileId != "0") {
-		return nil, fmt.Errorf("115 详情缺少匹配身份或祖先路径：file_id=%s", fileId)
+		if resp == nil {
+			return nil, fmt.Errorf("115 详情响应为空：file_id=%q", fileId)
+		}
+		return nil, fmt.Errorf("115 详情缺少匹配身份或祖先路径：请求 ID=%q，实际 ID=%q，类型=%q，祖先数=%d", fileId, resp.FileId, resp.FileCategory, len(resp.Paths))
 	}
 	if err := d.observeRootDetail(ctx, resp, observedAt); err != nil {
 		return nil, err

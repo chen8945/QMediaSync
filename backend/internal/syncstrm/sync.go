@@ -414,7 +414,7 @@ func (s *SyncStrm) failSync(cause error) (resultErr error) {
 	if s.Context.Err() != nil || s.stopped.Load() {
 		status = models.SyncStatusCancelled
 	}
-	if err := snapshot.SaveGeneration(ctx, status, cause.Error(), false); err != nil {
+	if err := snapshot.SaveGeneration(ctx, status, helpers.SafeLogError(cause), false); err != nil {
 		return errors.Join(cause, err)
 	}
 	s.Sync.Status, s.Sync.FailReason, s.Sync.FinishAt = snapshot.Status, snapshot.FailReason, snapshot.FinishAt

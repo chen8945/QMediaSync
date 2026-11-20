@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,7 +310,7 @@ func TestScanResultFailureReasonsRedactCredentials(t *testing.T) {
 	oldLevel := helpers.ConfiguredLogLevel()
 	helpers.SetGlobalLogLevel(helpers.LogLevelInfo)
 	t.Cleanup(func() { helpers.SetGlobalLogLevel(oldLevel) })
-	cause := errors.New("目录读取失败 GET https://example.test/files?access_token=secret-token failed")
+	cause := helpers.WithLogSecrets(errors.New("目录读取失败 GET https://example.test/files?access_token=secret-token failed，服务器回显 secret-token"), "secret-token")
 	s.recordScanFailure(s.SourcePath, cause)
 	s.recordFileFailure(&SyncFileCache{FileId: "file", FileName: "movie.mkv"}, cause)
 	for _, failure := range s.scanResultSnapshot().Failures {
@@ -334,6 +335,36 @@ func TestScanResultFailureReasonsRedactCredentials(t *testing.T) {
 	got := output.String()
 	if strings.Contains(got, "secret-token") || !strings.Contains(got, "目录读取失败") || !strings.Contains(got, "/source") || !strings.Contains(got, "movie.mkv") || !strings.Contains(got, "STRM 同步结束") {
 		t.Fatalf("未完成项及任务结论缺少具体原因或泄露凭据: %s", got)
+	}
+}
+
+func TestScanResultPreservesDistinctDirectoryFailureReasons(t *testing.T) {
+	s := newScanResultTestSync(t)
+	reasons := []string{"文件页不完整 access_token=page-secret", "目录路径未决 access_token=path-secret"}
+	var workers sync.WaitGroup
+	for range 3 {
+		for _, reason := range reasons {
+			workers.Go(func() { s.recordScanFailure(s.SourcePath+"/./", errors.New(reason)) })
+		}
+	}
+	workers.Wait()
+	s.recordScanFailure(s.SourcePath+"/child", errors.New("子目录读取失败"))
+	s.recordFileFailure(&SyncFileCache{FileId: "failed", FileName: "movie.mkv"}, errors.New("文件写入失败"))
+	result := s.scanResultSnapshot()
+	if len(result.Failures) != 3 || result.FailedFiles != 1 {
+		t.Fatalf("失败范围未按目录和文件计数：%+v", result)
+	}
+	root := result.Failures[0]
+	if root.Kind != "directory" || root.Path != s.SourcePath {
+		t.Fatalf("同步根失败范围错误：%+v", root)
+	}
+	for _, want := range []string{"文件页不完整", "目录路径未决"} {
+		if strings.Count(root.Reason, want) != 1 {
+			t.Errorf("失败原因丢失或重复：want=%q, got=%q", want, root.Reason)
+		}
+	}
+	if strings.Contains(root.Reason, "page-secret") || strings.Contains(root.Reason, "path-secret") {
+		t.Fatalf("合并原因泄露凭据：%q", root.Reason)
 	}
 }
 

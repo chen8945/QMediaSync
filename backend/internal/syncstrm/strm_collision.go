@@ -60,10 +60,47 @@ func isNewer115StrmCandidate(candidate, current *SyncFileCache) bool {
 // process115CollectedFiles 在 115 文件和路径收集完成后统一处理文件。
 func (s *SyncStrm) process115CollectedFiles() error {
 	files := s.memSyncCache.ListAllFiles()
-	unknownNames := make(map[string]bool)
+	// 合法名称不含 NUL，避免把 .mkv 等空 basename 误当成名称未知。
+	const unknownName = "\x00"
+	unknownByParent := make(map[string]map[string]bool)
+	protectCandidate := func(file *SyncFileCache) {
+		name := unknownName
+		if valid115FileName(file.FileName) {
+			name = strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
+		}
+		if unknownByParent[file.ParentId] == nil {
+			unknownByParent[file.ParentId] = make(map[string]bool)
+		}
+		unknownByParent[file.ParentId][name] = true
+	}
+	if s.sync115 != nil {
+		for _, file := range s.sync115.unresolvedFiles {
+			s.scanMu.Lock()
+			reason := s.scanFailures["file:"+file.GetFileId()].Reason
+			s.scanMu.Unlock()
+			remotePath := s.SourcePath
+			s.sync115.pathMu.Lock()
+			parent, known := s.sync115.paths[file.ParentId]
+			if !known {
+				parent, known = s.sync115.historicalPaths[file.ParentId]
+			}
+			s.sync115.pathMu.Unlock()
+			if known && parent.within {
+				remotePath = parent.path
+			}
+			s.recordScanFailure(remotePath, fmt.Errorf("115 异常条目的旧文件与账本保留：%s", reason))
+			if !s.IsExcludeName(file.FileName) && file.FileSize >= s.GetMinVideoSize() && (file.FileName == "" || s.IsValidVideoExt(file.FileName)) {
+				protectCandidate(file)
+			}
+		}
+	}
+	videoCount := 0
 	for _, file := range files {
-		if file != nil && file.IsVideo && file.Path == "" {
-			unknownNames[strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))] = true
+		if file != nil && file.IsVideo {
+			videoCount++
+			if file.Path == "" {
+				protectCandidate(file)
+			}
 		}
 	}
 	owners := selectLatest115StrmOwners(files)
@@ -110,6 +147,8 @@ func (s *SyncStrm) process115CollectedFiles() error {
 
 	eg, ctx := errgroup.WithContext(s.Context)
 	eg.SetLimit(max(1, int(s.PathWorkerMax)))
+	blockedVideos, unresolvedPaths := 0, 0
+	hasUnknownCandidates := len(unknownByParent) > 0
 	for _, file := range files {
 		if ctx.Err() != nil {
 			break
@@ -119,12 +158,20 @@ func (s *SyncStrm) process115CollectedFiles() error {
 		}
 		if file.Path == "" {
 			// 没有可信路径，不能向目标根写入或把文件当作已处理。
+			unresolvedPaths++
 			continue
 		}
 		if file.IsVideo {
-			if (s.sync115 != nil && s.sync115.incompletePages) || unknownNames[strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))] {
-				// 未知页可能包含任何同名候选；已知文件的未知路径只影响相同 basename。
+			if (s.sync115 != nil && s.sync115.incompletePages) || s.rootEvidenceConflict {
 				continue
+			}
+			if hasUnknownCandidates {
+				name := strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
+				if unknownByParent[""][unknownName] || unknownByParent[""][name] || unknownByParent[file.ParentId][unknownName] || unknownByParent[file.ParentId][name] {
+					// 父目录可信时只保护本目录；父目录未知时保留跨目录同名保护。
+					blockedVideos++
+					continue
+				}
 			}
 			targetPath := filepath.ToSlash(filepath.Clean(file.LocalFilePath))
 			if owners[targetPath] != file {
@@ -151,6 +198,16 @@ func (s *SyncStrm) process115CollectedFiles() error {
 	}
 	if err := eg.Wait(); err != nil {
 		return err
+	}
+	if s.sync115 != nil && s.sync115.pathConflict || s.rootEvidenceConflict {
+		s.Sync.Logger.Warnf("115 目录位置冲突，本轮不应用收集的路径，暂停生成与元数据处理，缺项清理未执行")
+	} else if s.sync115 != nil && s.sync115.incompletePages {
+		s.Sync.Logger.Warnf("115 文件分页不完整，本轮视频生成暂停（已发现 %d 个视频）；可信元数据继续处理，缺项清理未执行", videoCount)
+	} else if blockedVideos > 0 {
+		s.Sync.Logger.Warnf("115 候选归属未确认，暂停 %d 个已发现视频的生成并保留既有 STRM；其他已确认文件继续处理", blockedVideos)
+	}
+	if unresolvedPaths > 0 {
+		s.Sync.Logger.Warnf("115 有 %d 个已发现文件缺少可信路径，保留受影响范围的旧文件与账本", unresolvedPaths)
 	}
 	return s.Context.Err()
 }
